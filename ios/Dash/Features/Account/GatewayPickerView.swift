@@ -174,6 +174,13 @@ struct GatewayPickerView: View {
           .accessibilityIdentifier("account.signout")
         }
       }
+      // `.contain` makes this modifier chain's target its own accessibility
+      // container (so `account.picker` itself stays queryable) WITHOUT
+      // combining or overriding descendants' own identifiers — without it,
+      // states whose root isn't already a container (`.error`'s plain
+      // `VStack`, `.empty`'s `ContentUnavailableView`) leak this identifier
+      // onto every accessible child instead, stomping e.g. `account.retry`.
+      .accessibilityElement(children: .contain)
       .accessibilityIdentifier("account.picker")
       .alert("Couldn't connect", isPresented: connectErrorPresented) {
         Button("OK") { viewModel.connectError = nil }

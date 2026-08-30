@@ -19,16 +19,22 @@ import Testing
           "active-recovery",
           "agents",
           "settings-forget",
+          "signed-out",
+          "account-picker",
+          "account-picker-error",
+          "account-not-enrolled",
         ]
       )
     }
 
-    @Test("unpaired is the only scenario without a selected profile")
+    @Test("only startsPaired scenarios launch with a selected profile")
     func profileSelection() async throws {
-      let unpaired = try AppDependencies.uiTesting(scenario: .unpaired)
-      #expect(try await unpaired.loadProfile() == nil)
+      for scenario in UITestScenario.allCases where scenario.startsPaired == false {
+        let dependencies = try AppDependencies.uiTesting(scenario: scenario)
+        #expect(try await dependencies.loadProfile() == nil)
+      }
 
-      for scenario in UITestScenario.allCases where scenario != .unpaired {
+      for scenario in UITestScenario.allCases where scenario.startsPaired {
         let dependencies = try AppDependencies.uiTesting(scenario: scenario)
         #expect(try await dependencies.loadProfile()?.gatewayID == "ui-gateway")
       }

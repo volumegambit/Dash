@@ -113,6 +113,7 @@
 		F1D2774A290331363443850C /* ConversationSyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D62912515DAA014B61D0634 /* ConversationSyncEngine.swift */; };
 		F467FF174CB4A26FBA86A34B /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C306CEF49AA522BAB778074 /* NetworkReachability.swift */; };
 		F76FE5ECE339F9D2ED073EE5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D03FF993B29B9BD3E12AFD2C /* Assets.xcassets */; };
+		F9F83548CD6D0684A94DA974 /* AccountUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FD936DB9D382EE36259347A /* AccountUITests.swift */; };
 		FA3BFDBA8B2A2E0199D7B8EE /* SSEClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E96D1AB756929364C39A41C9 /* SSEClient.swift */; };
 		FA5146987F59ECCC880147D8 /* AgentsFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE80FDD8FB6ACAB48ADB048D /* AgentsFeatureTests.swift */; };
 /* End PBXBuildFile section */
@@ -167,6 +168,7 @@
 		2E9BDFB9E00507E3408765FD /* QRScannerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerService.swift; sourceTree = "<group>"; };
 		2ED81E18E432E48CF99BBD01 /* ChatFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFeature.swift; sourceTree = "<group>"; };
 		2F541184761F1CC7E83C44FD /* AppClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppClock.swift; sourceTree = "<group>"; };
+		2FD936DB9D382EE36259347A /* AccountUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountUITests.swift; sourceTree = "<group>"; };
 		3436D52686B6A2F61E80468E /* MessageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageViews.swift; sourceTree = "<group>"; };
 		34F7AB70C0AC1954E310311A /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		354D25374E6933F31A56E87A /* PairingPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingPayload.swift; sourceTree = "<group>"; };
@@ -350,6 +352,7 @@
 			isa = PBXGroup;
 			children = (
 				406ED5EC4E5DA5F705B8723C /* AccessibilityUITests.swift */,
+				2FD936DB9D382EE36259347A /* AccountUITests.swift */,
 				37A6F1A6E03C1781CB09F099 /* AgentsUITests.swift */,
 				2097A8BDBBFD9F47F93E2B7A /* ConversationUITests.swift */,
 				76AE84542DB1FFF33B421EB6 /* DashUITestCase.swift */,
@@ -823,6 +826,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D557A079551695CC329C07CB /* AccessibilityUITests.swift in Sources */,
+				F9F83548CD6D0684A94DA974 /* AccountUITests.swift in Sources */,
 				43C7A734393D5249697D7DE2 /* AgentsUITests.swift in Sources */,
 				5A185574926764E61B446F58 /* ConversationUITests.swift in Sources */,
 				C84A3B690FFEB2A6170DAB8C /* DashUITestCase.swift in Sources */,
