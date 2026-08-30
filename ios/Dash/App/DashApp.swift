@@ -24,7 +24,11 @@ private struct AppLaunchView: View {
       ContentUnavailableView {
         Label("Dash couldn't start", systemImage: "exclamationmark.triangle")
       } description: {
-        Text("Check available storage, then try again. Your gateway data has not been changed.")
+        // The honest reason, not a fixed guess: a build that was never pointed
+        // at a control plane says so (and how to fix it) instead of sending
+        // the user off to free up disk space that was never the problem. See
+        // `AppLaunch.message(for:)`.
+        Text(launch.errorMessage ?? AppLaunch.storageFailureMessage)
       } actions: {
         Button("Retry") { launch.retry() }
           .frame(minWidth: 44, minHeight: 44)

@@ -5,9 +5,18 @@ import UIKit
 
 @testable import Dash
 
-@Suite("Pairing feature", .serialized)
+/// Covers the verify → install pipeline (`PairingVerifier`,
+/// `PairingProfileInstaller`, `VerifiedPairing`, `PairingCancellation`) and
+/// `PairingFeature`'s payload-driven orchestration, plus the still-shipping
+/// `QRScannerService`/camera-preview mechanics. QR/paste/manual pairing ENTRY
+/// (scanning into `PairingFeature`, clipboard paste, the manual-entry form)
+/// was retired in Task 7 of the iOS account sign-in plan — those tests moved
+/// with the retired code; this file keeps everything downstream of an
+/// already-formed `PairingPayload`, which `AccountConnectFeature` now reaches
+/// directly.
+@Suite("Pairing pipeline", .serialized)
 @MainActor
-struct PairingFeatureTests {
+struct PairingPipelineTests {
   @Test("verification probes health, identity, agents, then chat before returning identity")
   func verificationOrder() async throws {
     let recorder = PairingCallRecorder()
@@ -108,7 +117,7 @@ struct PairingFeatureTests {
         onPaired: { _ in await recorder.append(.activated) }
       )
 
-      await feature.pair(rawPayload: lanPayloadJSON)
+      await feature.pair(payload: lanPayload())
 
       #expect(await recorder.values == [.health, .identity])
       #expect(await keychain.savedProfileIDs.isEmpty)
@@ -141,7 +150,7 @@ struct PairingFeatureTests {
       onPaired: { _ in await recorder.append(.activated) }
     )
 
-    await feature.pair(rawPayload: lanPayloadJSON)
+    await feature.pair(payload: lanPayload())
 
     #expect(
       await recorder.values
@@ -173,7 +182,7 @@ struct PairingFeatureTests {
       onPaired: { _ in await recorder.append(.activated) }
     )
 
-    await feature.pair(rawPayload: lanPayloadJSON)
+    await feature.pair(payload: lanPayload())
 
     #expect(
       await recorder.values
@@ -202,7 +211,7 @@ struct PairingFeatureTests {
       onPaired: { _ in await recorder.append(.activated) }
     )
 
-    await feature.pair(rawPayload: lanPayloadJSON)
+    await feature.pair(payload: lanPayload())
 
     #expect(
       await recorder.values == [.health, .identity, .agents, .chat, .keychainSave]
@@ -287,100 +296,6 @@ struct PairingFeatureTests {
     #expect(await keychain.deletedProfileIDs.isEmpty)
   }
 
-  @Test("relay manual entry constructs the canonical v2 TLS payload")
-  func relayManualEntry() async throws {
-    let verifier = CapturingPairingVerifier()
-    let feature = PairingFeature(
-      verifier: verifier,
-      installer: NoopPairingInstaller(),
-      onPaired: { _ in }
-    )
-
-    await feature.pair(
-      manual: ManualPairingInput(
-        mode: .relay,
-        host: "relay.example",
-        managementPort: "1234",
-        mobileToken: " mobile ",
-        relayCredential: " relay "
-      )
-    )
-
-    let payload = try #require(await verifier.payloads.first)
-    #expect(payload.v == 2)
-    #expect(payload.host == "relay.example")
-    #expect(payload.secure == true)
-    #expect(payload.mgmtPort == nil)
-    #expect(payload.chatPort == nil)
-    #expect(payload.relayCredential == " relay ")
-    let (profile, secrets) = try payload.validated(profileID: UUID())
-    #expect(profile.managementPort == 443)
-    #expect(profile.chatPort == 443)
-    #expect(secrets.managementToken == "mobile")
-    #expect(secrets.chatToken == "mobile")
-    #expect(secrets.relayCredential == "relay")
-  }
-
-  @Test("LAN manual entry constructs one-port pinned v3 TLS payload")
-  func lanManualEntry() async throws {
-    let verifier = CapturingPairingVerifier()
-    let feature = PairingFeature(
-      verifier: verifier,
-      installer: NoopPairingInstaller(),
-      onPaired: { _ in }
-    )
-    let pin = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-
-    await feature.pair(
-      manual: ManualPairingInput(
-        mode: .lan,
-        host: "gateway.local",
-        managementPort: "9400",
-        mobileToken: " mobile ",
-        relayCredential: "",
-        tlsCertificateSha256: pin
-      )
-    )
-
-    let payload = try #require(await verifier.payloads.first)
-    #expect(payload.v == 3)
-    #expect(payload.secure == true)
-    #expect(payload.mgmtPort == 9400)
-    #expect(payload.chatPort == 9400)
-    #expect(payload.mgmtToken == " mobile ")
-    #expect(payload.chatToken == " mobile ")
-    #expect(payload.tlsCertificateSha256 == pin)
-    let (profile, _) = try payload.validated(profileID: UUID())
-    #expect(profile.tlsCertificateSha256 == pin.lowercased())
-  }
-
-  @Test("invalid LAN port stops before any verification")
-  func invalidManualPort() async {
-    let verifier = CapturingPairingVerifier()
-    let feature = PairingFeature(
-      verifier: verifier,
-      installer: NoopPairingInstaller(),
-      onPaired: { _ in }
-    )
-
-    await feature.pair(
-      manual: ManualPairingInput(
-        mode: .lan,
-        host: "gateway.local",
-        managementPort: "not-a-port",
-        mobileToken: "mobile",
-        relayCredential: ""
-      )
-    )
-
-    #expect(await verifier.payloads.isEmpty)
-    guard case .failed(let failure) = feature.state else {
-      Issue.record("Expected failed state, received \(feature.state)")
-      return
-    }
-    #expect(failure.title == "Invalid connection details")
-  }
-
   @Test("gateway failures use curated recovery copy")
   func curatedFailures() async {
     let cases: [(GatewayError, String, String)] = [
@@ -398,7 +313,7 @@ struct PairingFeatureTests {
         installer: NoopPairingInstaller(),
         onPaired: { _ in }
       )
-      await feature.pair(rawPayload: lanPayloadJSON)
+      await feature.pair(payload: lanPayload())
       guard case .failed(let failure) = feature.state else {
         Issue.record("Expected failure for \(error), received \(feature.state)")
         continue
@@ -421,7 +336,7 @@ struct PairingFeatureTests {
       }
     )
 
-    await feature.pair(rawPayload: lanPayloadJSON)
+    await feature.pair(payload: lanPayload())
 
     #expect(
       announcements.values
@@ -430,74 +345,6 @@ struct PairingFeatureTests {
         ]
     )
     #expect(announcements.values.first?.contains("secret raw failure") == false)
-  }
-
-  @Test("camera denial keeps paste and manual alternatives available")
-  func cameraDenialFallback() async {
-    let scanner = FakeQRScanner(status: .denied)
-    let feature = PairingFeature(
-      verifier: CapturingPairingVerifier(),
-      installer: NoopPairingInstaller(),
-      scanner: scanner,
-      onPaired: { _ in }
-    )
-
-    await feature.requestCameraAndScan()
-
-    #expect(feature.cameraAuthorization == .denied)
-    #expect(feature.canPastePairingCode)
-    #expect(feature.canEnterManually)
-    #expect(await scanner.scanCallCount == 0)
-  }
-
-  @Test("a QR result arriving after scanning stops is ignored")
-  func stoppedScannerIgnoresLateResult() async {
-    let scanner = ControllableQRScanner()
-    let verifier = CapturingPairingVerifier()
-    let feature = PairingFeature(
-      verifier: verifier,
-      installer: NoopPairingInstaller(),
-      scanner: scanner,
-      onPaired: { _ in }
-    )
-
-    let scanTask = Task { await feature.requestCameraAndScan() }
-    for _ in 0..<100 where await scanner.scanCallCount == 0 {
-      await Task.yield()
-    }
-    #expect(await scanner.scanCallCount == 1)
-
-    await feature.stopScanning()
-    await scanner.returnLateResult(lanPayloadJSON)
-    await scanTask.value
-
-    #expect(await verifier.payloads.isEmpty)
-    #expect(feature.state == .idle)
-  }
-
-  @Test("a buffered QR result is ignored after the scanner task is cancelled")
-  func cancelledScannerIgnoresBufferedResult() async {
-    let scanner = ControllableQRScanner()
-    let verifier = CapturingPairingVerifier()
-    let feature = PairingFeature(
-      verifier: verifier,
-      installer: NoopPairingInstaller(),
-      scanner: scanner,
-      onPaired: { _ in }
-    )
-
-    let scanTask = Task { await feature.requestCameraAndScan() }
-    for _ in 0..<100 where await scanner.scanCallCount == 0 {
-      await Task.yield()
-    }
-    #expect(await scanner.scanCallCount == 1)
-
-    scanTask.cancel()
-    await scanner.returnLateResult(lanPayloadJSON)
-    await scanTask.value
-
-    #expect(await verifier.payloads.isEmpty)
-    #expect(feature.state == .idle)
   }
 
   @Test("cancelling a scan during startup stops the runtime before startup returns")
@@ -516,6 +363,44 @@ struct PairingFeatureTests {
     }
     #expect(runtime.stoppedBeforeStartReturned)
     #expect(runtime.stopCallCount >= 1)
+  }
+
+  @Test("a QR result arriving after scanning stops is ignored")
+  func stoppedScannerIgnoresLateResult() async {
+    let scanner = ControllableQRScanner()
+    let coordinator = ScanCoordinator()
+
+    let scanTask = Task {
+      await coordinator.requestCameraAndScan(using: scanner) { _ in }
+    }
+    for _ in 0..<100 where await scanner.scanCallCount == 0 {
+      await Task.yield()
+    }
+    #expect(await scanner.scanCallCount == 1)
+
+    coordinator.stop()
+    await scanner.returnLateResult("late-result-payload")
+
+    #expect(await scanTask.value == .ignored)
+  }
+
+  @Test("a buffered QR result is ignored after the scanner task is cancelled")
+  func cancelledScannerIgnoresBufferedResult() async {
+    let scanner = ControllableQRScanner()
+    let coordinator = ScanCoordinator()
+
+    let scanTask = Task {
+      await coordinator.requestCameraAndScan(using: scanner) { _ in }
+    }
+    for _ in 0..<100 where await scanner.scanCallCount == 0 {
+      await Task.yield()
+    }
+    #expect(await scanner.scanCallCount == 1)
+
+    scanTask.cancel()
+    await scanner.returnLateResult("buffered-result-payload")
+
+    #expect(await scanTask.value == .ignored)
   }
 
   @Test("camera preview attaches, remains silent to VoiceOver, and detaches its session")
@@ -567,10 +452,10 @@ struct PairingFeatureTests {
       onPaired: { _ in }
     )
 
-    let first = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    let first = Task { await feature.pair(payload: lanPayload()) }
     await gate.waitUntilWaiting()
 
-    await feature.pair(rawPayload: relayPayloadJSON)
+    await feature.pair(payload: relayPayload())
 
     #expect(await verifier.payloadVersions == [3])
     await gate.release()
@@ -592,7 +477,7 @@ struct PairingFeatureTests {
       }
     )
 
-    let pairing = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    let pairing = Task { await feature.pair(payload: lanPayload()) }
     await gate.waitUntilWaiting()
 
     feature.cancelPairing()
@@ -620,7 +505,7 @@ struct PairingFeatureTests {
       }
     )
 
-    let pairing = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    let pairing = Task { await feature.pair(payload: lanPayload()) }
     await gate.waitUntilWaiting()
 
     feature.cancelPairing()
@@ -669,7 +554,7 @@ struct PairingFeatureTests {
       onPaired: { _ in await recorder.append(.activated) }
     )
 
-    let pairing = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    let pairing = Task { await feature.pair(payload: lanPayload()) }
     await gate.waitUntilWaiting()
 
     feature.cancelPairing()
@@ -707,7 +592,7 @@ struct PairingFeatureTests {
     let appModel = AppModel(dependencies: dependencies)
     let feature = appModel.makePairingFeature()
 
-    await feature.pair(rawPayload: lanPayloadJSON)
+    await feature.pair(payload: lanPayload())
 
     #expect(appModel.selectedProfile?.gatewayID == "gateway-captured")
     #expect(appModel.route == .paired(tab: .conversations))
@@ -735,7 +620,7 @@ struct PairingFeatureTests {
     let appModel = AppModel(dependencies: dependencies)
     let feature = appModel.makePairingFeature()
 
-    await feature.pair(rawPayload: lanPayloadJSON)
+    await feature.pair(payload: lanPayload())
 
     #expect(appModel.selectedProfile == nil)
     #expect(appModel.route == .connect)
@@ -748,7 +633,7 @@ struct PairingFeatureTests {
     #expect(appModel.banner == nil)
 
     appModel.banner = .failed("stale activation failure")
-    let retry = Task { await feature.pair(rawPayload: lanPayloadJSON) }
+    let retry = Task { await feature.pair(payload: lanPayload()) }
     await retryGate.waitUntilWaiting()
 
     #expect(appModel.banner == nil)
@@ -1018,31 +903,6 @@ private actor RecordingPairingInstaller: PairingProfileInstalling {
   }
 }
 
-private actor FakeQRScanner: QRScanning {
-  let status: AVAuthorizationStatus
-  private(set) var scanCallCount = 0
-
-  init(status: AVAuthorizationStatus) {
-    self.status = status
-  }
-
-  func authorizationStatus() -> AVAuthorizationStatus {
-    status
-  }
-
-  func requestAccess() async -> Bool {
-    false
-  }
-
-  func scan() async throws -> String {
-    scanCallCount += 1
-    return lanPayloadJSON
-  }
-
-  func stop() {
-  }
-}
-
 private actor ControllableQRScanner: QRScanning {
   private(set) var scanCallCount = 0
   private var continuation: CheckedContinuation<String, any Error>?
@@ -1185,30 +1045,20 @@ private func lanPayload() -> PairingPayload {
   )
 }
 
-private let lanPayloadJSON = """
-  {
-    "v": 3,
-    "host": "gateway.local",
-    "mgmtToken": "mobile-token",
-    "chatToken": "mobile-token",
-    "mgmtPort": 9400,
-    "chatPort": 9400,
-    "label": "Home",
-    "secure": true,
-    "tlsCertificateSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  }
-  """
-
-private let relayPayloadJSON = """
-  {
-    "v": 2,
-    "host": "relay.example",
-    "secure": true,
-    "mgmtToken": "mobile-token-2",
-    "chatToken": "mobile-token-2",
-    "relayCredential": "relay-credential"
-  }
-  """
+private func relayPayload() -> PairingPayload {
+  PairingPayload(
+    v: 2,
+    host: "relay.example",
+    mgmtToken: "mobile-token-2",
+    chatToken: "mobile-token-2",
+    mgmtPort: nil,
+    chatPort: nil,
+    label: nil,
+    secure: true,
+    relayCredential: "relay-credential",
+    tlsCertificateSha256: nil
+  )
+}
 
 private func existingPairingProfile(id: UUID) -> ConnectionProfileSnapshot {
   ConnectionProfileSnapshot(

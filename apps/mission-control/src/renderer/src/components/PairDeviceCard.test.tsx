@@ -40,13 +40,13 @@ describe('PairDeviceCard', () => {
       });
     });
 
-    it('uses platform-neutral mobile pairing copy', async () => {
+    it('uses Android-only mobile pairing copy now that iOS connects by account sign-in', async () => {
       render(<PairDeviceCard />);
 
       expect(
-        await screen.findByText('Scan this code with the Dash mobile app for Android or iOS.'),
+        await screen.findByText('Scan this code with the Dash mobile app for Android.'),
       ).toBeInTheDocument();
-      expect(screen.queryByText(/Dash Android app/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/or iOS/i)).not.toBeInTheDocument();
       expect(
         await screen.findByRole('img', {
           name: 'Pairing QR code for the Dash mobile app',

@@ -17,6 +17,8 @@ describe('parseControlPlaneFlags', () => {
       parseControlPlaneFlags([
         '--port',
         '9500',
+        '--host',
+        '127.0.0.1',
         '--db-path',
         '/d/cp.db',
         '--relay-admin-url',
@@ -32,6 +34,7 @@ describe('parseControlPlaneFlags', () => {
       ]),
     ).toEqual({
       port: 9500,
+      host: '127.0.0.1',
       dbPath: '/d/cp.db',
       relayAdminUrl: 'https://relay.example/admin',
       relayAdminSecret: 'sek',
@@ -56,9 +59,21 @@ describe('loadConfig', () => {
   it('applies defaults when only the required fields are set', () => {
     const cfg = loadConfig({ env: requiredEnv });
     expect(cfg.port).toBe(9400);
+    expect(cfg.host).toBeUndefined();
     expect(cfg.dialTokenTtlSec).toBe(86400);
     expect(cfg.relayAdminSecret).toBe('master');
     expect(cfg.dialTokenPrivateKeyPath).toBe('/k/cp.pem');
+  });
+
+  it('reads host from RELAY_CP_HOST, and a --host flag overrides it', () => {
+    const fromEnv = loadConfig({ env: { ...requiredEnv, RELAY_CP_HOST: '127.0.0.1' } });
+    expect(fromEnv.host).toBe('127.0.0.1');
+
+    const fromFlag = loadConfig({
+      argv: ['--host', '10.0.0.1'],
+      env: { ...requiredEnv, RELAY_CP_HOST: '127.0.0.1' },
+    });
+    expect(fromFlag.host).toBe('10.0.0.1');
   });
 
   it('reads every value from RELAY_CP_* env', () => {

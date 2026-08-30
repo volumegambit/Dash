@@ -143,6 +143,27 @@ describe('POST /v1/gateways', () => {
     const body = (await res.json()) as { gateways: Array<{ gatewayId: string }> };
     expect(body.gateways.map((g) => g.gatewayId)).toEqual(['alice']);
   });
+
+  it('projects a deliberate gateway shape: publicKey in, accountId never echoed', async () => {
+    await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 });
+
+    const res = await req('GET', '/v1/gateways', 'a1');
+    const body = (await res.json()) as { gateways: Array<Record<string, unknown>> };
+    const [gateway] = body.gateways;
+
+    // The mobile client cross-checks the gateway's verified identity against
+    // this value, so it MUST be on the wire.
+    expect(gateway.publicKey).toBe(gwPubB64);
+    // A deliberate projection, not the raw record: the account id the caller
+    // already authenticated as is never echoed back.
+    expect(Object.keys(gateway as object).sort()).toEqual([
+      'createdAt',
+      'gatewayId',
+      'publicKey',
+      'status',
+      'subdomain',
+    ]);
+  });
 });
 
 describe('DELETE /v1/gateways/:id', () => {
@@ -624,6 +645,7 @@ describe('web pairings return the registered chat token', () => {
       credential: expect.any(String),
       pairingId: expect.any(String),
       chatToken: 'chat-tok',
+      status: 'active',
     });
     // The credential is real: the relay's edge accepts it.
     expect(relayStore.isValid(gatewayId, body.credential as string)).toBe(true);
@@ -643,22 +665,62 @@ describe('web pairings return the registered chat token', () => {
     });
   });
 
-  it('mobile pairings never carry a chat token, even when one is registered', async () => {
+  it('mobile pairing-id-v1 mint returns the chat token and status when one is registered', async () => {
     const gatewayId = await makeGateway('a1', 'alice');
     await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
 
-    const legacy = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
       deviceLabel: 'iPhone',
     });
-    expect(await legacy.json()).toEqual({ credential: expect.any(String) });
-
-    const versioned = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
-      deviceLabel: 'iPhone',
-    });
-    expect(await versioned.json()).toEqual({
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
       credential: expect.any(String),
       pairingId: expect.any(String),
+      chatToken: 'chat-tok',
+      status: 'active',
     });
+  });
+
+  it('mobile pairing-id-v1 mint never 409s and omits chatToken when none is registered (MC/Android compat)', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      status: 'active',
+    });
+    expect('chatToken' in body).toBe(false);
+  });
+
+  it('the legacy mobile mint also receives the chat token when one is registered (additive, backward compatible)', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      chatToken: 'chat-tok',
+    });
+  });
+
+  it('the legacy mobile mint stays byte-compatible ({ credential } only) when no token is registered', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ credential: expect.any(String) });
+    expect('chatToken' in body).toBe(false);
   });
 
   it('409s a web pairing when no chat token is registered, minting nothing', async () => {

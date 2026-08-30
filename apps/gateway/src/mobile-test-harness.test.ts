@@ -193,6 +193,28 @@ function settlesWithin<T>(promise: Promise<T>, timeoutMs = 1000): Promise<T> {
 }
 
 describe('mobile test harness', () => {
+  it('self-reports the caller-supplied public key from /identity', async () => {
+    // The account-flow rig (`live-account-flow-harness-cli.ts`) enrolls this
+    // harness with a control plane under its REAL Ed25519 relay identity, and
+    // the iOS client refuses to install a pairing whose verified identity
+    // disagrees with the enrolled record — so the harness must be able to
+    // report the same key rather than a hardcoded stand-in.
+    const harness = await startMobileTestHarness({
+      scenario: 'stream',
+      publicKey: 'caller-supplied-public-key',
+    });
+    try {
+      expect(harness.publicKey).toBe('caller-supplied-public-key');
+      const identity = await mobileRequest(harness, '/identity');
+      expect(await identity.json()).toEqual({
+        gatewayId: harness.gatewayId,
+        publicKey: 'caller-supplied-public-key',
+      });
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('starts real ephemeral management and chat listeners', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
     try {

@@ -88,7 +88,7 @@ struct RootView: View {
   }
 
   private var pairingNavigation: some View {
-    PairingNavigationView(appModel: appModel)
+    AccountNavigationView(appModel: appModel)
   }
 
   private var compactNavigation: some View {
@@ -361,29 +361,54 @@ private struct ChatHostTaskID: Equatable {
   let appGeneration: UInt64
 }
 
+/// Signed-out entry point: `SignInView` until the Clerk account session has a
+/// live token, then `GatewayPickerView` to choose which enrolled gateway to
+/// connect to. Owns the signed-in/signed-out toggle locally (rather than in
+/// `AppModel`) since it mirrors `AccountSession`'s own actor-isolated cache,
+/// not app-wide navigation state that other features need to observe.
 @MainActor
-private struct PairingNavigationView: View {
+private struct AccountNavigationView: View {
   @Bindable var appModel: AppModel
-  @State private var feature: PairingFeature
-
-  init(appModel: AppModel) {
-    self.appModel = appModel
-    _feature = State(initialValue: appModel.makePairingFeature())
-  }
+  @State private var isSignedIn: Bool?
+  @State private var pickerViewModel: GatewayPickerViewModel?
 
   var body: some View {
-    NavigationStack(path: $appModel.pairingPath) {
-      ConnectView()
-        .navigationDestination(for: PairingRoute.self) { route in
-          switch route {
-          case .scanner:
-            QRScannerView()
-          case .manual:
-            ManualEntryView()
-          }
+    NavigationStack {
+      Group {
+        if isSignedIn == true, let pickerViewModel {
+          GatewayPickerView(viewModel: pickerViewModel)
+        } else if isSignedIn == false {
+          SignInView(signIn: signIn)
+        } else {
+          ProgressView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+      }
     }
-    .environment(feature)
+    .task { await refreshSignInState() }
+    .task(id: pickerViewModel.map(ObjectIdentifier.init)) {
+      guard let pickerViewModel else { return }
+      await pickerViewModel.load()
+    }
+  }
+
+  private func signIn() async throws {
+    try await appModel.signInToAccount()
+    isSignedIn = true
+    pickerViewModel = makePickerViewModel()
+  }
+
+  private func refreshSignInState() async {
+    let signedIn = await appModel.isAccountSignedIn()
+    isSignedIn = signedIn
+    pickerViewModel = signedIn ? makePickerViewModel() : nil
+  }
+
+  private func makePickerViewModel() -> GatewayPickerViewModel {
+    appModel.makeGatewayPickerViewModel {
+      isSignedIn = false
+      pickerViewModel = nil
+    }
   }
 }
 

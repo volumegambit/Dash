@@ -9,13 +9,13 @@ enum AppTab: String, CaseIterable, Hashable, Identifiable, Sendable {
 }
 
 enum AppRoute: Equatable, Sendable {
+  /// No gateway selected yet: shows `SignInView` (signed out) or
+  /// `GatewayPickerView` (signed in, choosing a gateway to connect to).
+  /// Named `connect` for source compatibility with existing call sites; QR/
+  /// paste/manual pairing entry, this route's original UI, was retired in
+  /// Task 7 of the iOS account sign-in plan.
   case connect
   case paired(tab: AppTab)
-}
-
-enum PairingRoute: Hashable, Sendable {
-  case scanner
-  case manual
 }
 
 enum ConversationRoute: Hashable, Sendable {

@@ -1,4 +1,3 @@
-import AVFoundation
 import Accessibility
 import Foundation
 import Observation
@@ -32,6 +31,27 @@ struct VerifiedPairing: Sendable {
   let secrets: ConnectionSecrets
 }
 
+#if DEBUG
+  extension VerifiedPairing {
+    /// See `ConnectionProfile.applyingDebugRelayPortOverride`. `PairingVerifier`
+    /// already bakes the override in before its own network calls, so a
+    /// `VerifiedPairing` it returns already carries it — this exists so
+    /// `AccountConnectFeature` can apply the SAME override defensively to
+    /// whatever `VerifiedPairing` it receives, regardless of which
+    /// `PairingVerifying` conformer produced it. Never compiled into Release.
+    func applyingDebugRelayPortOverride(_ port: Int) -> VerifiedPairing {
+      VerifiedPairing(
+        profile: ConnectionProfileSnapshot(
+          gatewayID: profile.gatewayID,
+          profile: profile.profile.applyingDebugRelayPortOverride(port)
+        ),
+        identity: identity,
+        secrets: secrets
+      )
+    }
+  }
+#endif
+
 protocol PairingVerifying: Sendable {
   func verify(
     payload: PairingPayload,
@@ -55,6 +75,13 @@ struct PairingVerifier: Sendable {
     @Sendable (ConnectionEndpoint, ConnectionSecrets) -> any PairingGatewayChecking
   private let makeChat: @Sendable (ConnectionEndpoint) -> any PairingChatChecking
   private let makeProfileID: @Sendable () -> UUID
+  #if DEBUG
+    /// See `ConnectionProfile.applyingDebugRelayPortOverride` — applied right
+    /// after `PairingPayload.validated()` so it's in effect for every network
+    /// call this method makes (health/identity/agents/chat probe), not just
+    /// the profile this returns. `validated()` itself is never touched.
+    private let debugRelayPortOverride: Int?
+  #endif
 
   init(
     makeGateway: @escaping @Sendable (
@@ -62,18 +89,34 @@ struct PairingVerifier: Sendable {
       ConnectionSecrets
     ) -> any PairingGatewayChecking,
     makeChat: @escaping @Sendable (ConnectionEndpoint) -> any PairingChatChecking,
-    makeProfileID: @escaping @Sendable () -> UUID = UUID.init
+    makeProfileID: @escaping @Sendable () -> UUID = UUID.init,
+    debugRelayPortOverride: Int? = nil
   ) {
     self.makeGateway = makeGateway
     self.makeChat = makeChat
     self.makeProfileID = makeProfileID
+    #if DEBUG
+      self.debugRelayPortOverride = debugRelayPortOverride
+    #else
+      _ = debugRelayPortOverride
+    #endif
   }
 
   func verify(
     payload: PairingPayload,
     onStep: @escaping @MainActor @Sendable (PairingVerificationStep) -> Void
   ) async throws -> VerifiedPairing {
-    let (rawProfile, secrets) = try payload.validated(profileID: makeProfileID())
+    let (validatedProfile, secrets) = try payload.validated(profileID: makeProfileID())
+    #if DEBUG
+      let rawProfile: ConnectionProfile
+      if let debugRelayPortOverride, validatedProfile.mode == .relay {
+        rawProfile = validatedProfile.applyingDebugRelayPortOverride(debugRelayPortOverride)
+      } else {
+        rawProfile = validatedProfile
+      }
+    #else
+      let rawProfile = validatedProfile
+    #endif
     let endpoint = ConnectionEndpoint(profile: rawProfile, secrets: secrets)
     let gateway = makeGateway(endpoint, secrets)
 
@@ -345,63 +388,6 @@ struct PairingFailure: Equatable, Sendable {
   let message: String
 }
 
-enum ManualPairingMode: String, CaseIterable, Identifiable, Sendable {
-  case lan
-  case relay
-
-  var id: Self { self }
-}
-
-struct ManualPairingInput: Equatable, Sendable {
-  var mode: ManualPairingMode = .lan
-  var host = ""
-  var managementPort = ""
-  var mobileToken = ""
-  var relayCredential = ""
-  var tlsCertificateSha256 = ""
-
-  func payload() throws -> PairingPayload {
-    switch mode {
-    case .lan:
-      let lanPort = try port(managementPort, field: "mgmtPort") ?? 9400
-      return PairingPayload(
-        v: 3,
-        host: host,
-        mgmtToken: mobileToken,
-        chatToken: mobileToken,
-        mgmtPort: lanPort,
-        chatPort: lanPort,
-        label: nil,
-        secure: true,
-        relayCredential: nil,
-        tlsCertificateSha256: tlsCertificateSha256
-      )
-    case .relay:
-      return PairingPayload(
-        v: 2,
-        host: host,
-        mgmtToken: mobileToken,
-        chatToken: mobileToken,
-        mgmtPort: nil,
-        chatPort: nil,
-        label: nil,
-        secure: true,
-        relayCredential: relayCredential,
-        tlsCertificateSha256: nil
-      )
-    }
-  }
-
-  private func port(_ value: String, field: String) throws -> Int? {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.isEmpty == false else { return nil }
-    guard let value = Int(trimmed), (1...65_535).contains(value) else {
-      throw PairingValidationError.invalidPort(field)
-    }
-    return value
-  }
-}
-
 enum PairingState: Equatable, Sendable {
   case idle
   case validating
@@ -419,31 +405,30 @@ enum PairingState: Equatable, Sendable {
   }
 }
 
+/// Drives the verify → install pipeline for an already-formed `PairingPayload`
+/// — cancellably, with curated failure copy. QR/paste/manual entry (which
+/// used to produce that payload and own this class's lifecycle) were retired
+/// in Task 7 of the iOS account sign-in plan; account sign-in
+/// (`AccountConnectFeature`) now reaches the same `PairingVerifying`/
+/// `PairingProfileInstalling` machinery directly instead of through this
+/// class. Retained, currently unreferenced by product UI, as a reusable
+/// payload-driven orchestrator.
 @MainActor
 @Observable
 final class PairingFeature {
-  var rawPayload = ""
   private(set) var state: PairingState = .idle
-  var cameraAuthorization: AVAuthorizationStatus = .notDetermined
-
-  var canPastePairingCode: Bool { true }
-  var canEnterManually: Bool { true }
-  var scannerPreviewSource: QRScannerPreviewSource? { scanner.previewSource }
 
   @ObservationIgnored private let verifier: any PairingVerifying
   @ObservationIgnored private let installer: any PairingProfileInstalling
-  @ObservationIgnored private let scanner: any QRScanning
   @ObservationIgnored private let onPaired:
     @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
   @ObservationIgnored private let announceFailure: @MainActor @Sendable (PairingFailure) -> Void
-  @ObservationIgnored private var activeScanID: UUID?
   @ObservationIgnored private var activePairingID: UUID?
   @ObservationIgnored private var activePairingCancellation: PairingCancellation?
 
   init(
     verifier: any PairingVerifying,
     installer: any PairingProfileInstalling,
-    scanner: any QRScanning = UnavailableQRScanner(),
     onPaired: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void,
     announceFailure: @escaping @MainActor @Sendable (PairingFailure) -> Void = { failure in
       AccessibilityNotification.Announcement("\(failure.title). \(failure.message)").post()
@@ -451,106 +436,26 @@ final class PairingFeature {
   ) {
     self.verifier = verifier
     self.installer = installer
-    self.scanner = scanner
     self.onPaired = onPaired
     self.announceFailure = announceFailure
   }
 
-  func pair(rawPayload: String) async {
+  func pair(payload: PairingPayload) async {
     guard state.isWorking == false else { return }
     let pairingID = UUID()
     let cancellation = PairingCancellation()
     activePairingID = pairingID
     activePairingCancellation = cancellation
-    activeScanID = nil
-    self.rawPayload = rawPayload
     state = .validating
-    await scanner.stop()
     do {
       try requireActivePairing(pairingID, cancellation: cancellation)
-      let payload = try ContractCoding.decoder().decode(
-        PairingPayload.self,
-        from: Data(rawPayload.utf8)
-      )
       try await pair(payload: payload, pairingID: pairingID, cancellation: cancellation)
     } catch {
       finishPairing(pairingID, cancellation: cancellation, with: error)
     }
   }
 
-  func pair(manual: ManualPairingInput) async {
-    guard state.isWorking == false else { return }
-    let pairingID = UUID()
-    let cancellation = PairingCancellation()
-    activePairingID = pairingID
-    activePairingCancellation = cancellation
-    activeScanID = nil
-    state = .validating
-    await scanner.stop()
-    do {
-      try requireActivePairing(pairingID, cancellation: cancellation)
-      try await pair(
-        payload: manual.payload(),
-        pairingID: pairingID,
-        cancellation: cancellation
-      )
-    } catch {
-      finishPairing(pairingID, cancellation: cancellation, with: error)
-    }
-  }
-
-  func requestCameraAndScan() async {
-    let scanID = UUID()
-    activeScanID = scanID
-    var authorization = await scanner.authorizationStatus()
-    guard activeScanID == scanID else { return }
-    cameraAuthorization = authorization
-    if authorization == .notDetermined {
-      _ = await scanner.requestAccess()
-      guard activeScanID == scanID else { return }
-      authorization = await scanner.authorizationStatus()
-      guard activeScanID == scanID else { return }
-      cameraAuthorization = authorization
-    }
-    guard authorization == .authorized else {
-      activeScanID = nil
-      return
-    }
-    do {
-      let payload = try await scanner.scan()
-      try Task.checkCancellation()
-      guard activeScanID == scanID else { return }
-      activeScanID = nil
-      await pair(rawPayload: payload)
-    } catch is CancellationError {
-      if activeScanID == scanID {
-        activeScanID = nil
-      }
-      return
-    } catch QRScannerError.stopped {
-      if activeScanID == scanID {
-        activeScanID = nil
-      }
-      return
-    } catch {
-      guard activeScanID == scanID else { return }
-      activeScanID = nil
-      fail(
-        with:
-          PairingFailure(
-            title: "Couldn't scan code",
-            message: "Keep the code in the frame, or paste it instead."
-          )
-      )
-    }
-  }
-
-  func invalidateScanning() {
-    activeScanID = nil
-  }
-
   func cancelPairing() {
-    activeScanID = nil
     if let activePairingCancellation, activePairingCancellation.cancel() == false {
       return
     }
@@ -559,11 +464,6 @@ final class PairingFeature {
     if state.isWorking {
       state = .idle
     }
-  }
-
-  func stopScanning() async {
-    invalidateScanning()
-    await scanner.stop()
   }
 
   private func pair(

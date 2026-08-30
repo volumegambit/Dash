@@ -32,16 +32,14 @@ final class AccessibilityUITests: DashUITestCase {
     let confirmation = confirmationDialog(titled: "Disconnect & Forget?", in: app)
     confirmation.buttons["Disconnect & Forget"].tap()
 
-    XCTAssertTrue(element("pairing.scan", in: app).waitForExistence(timeout: 5))
+    XCTAssertTrue(element("account.picker", in: app).waitForExistence(timeout: 5))
     XCTAssertFalse(app.descendants(matching: .any)["conversation.row.shared-plan"].exists)
     XCTAssertFalse(app.descendants(matching: .any)["agent.row.research-agent"].exists)
   }
 
   func testAccessibilityXXXL() {
     var app = launch(scenario: "unpaired", contentSize: Self.accessibilityXXXL)
-    assertFitsHorizontally(element("pairing.scan", in: app), in: app)
-    assertFitsHorizontally(element("pairing.paste", in: app), in: app)
-    assertFitsHorizontally(element("pairing.manual", in: app), in: app)
+    assertFitsHorizontally(element("account.signin", in: app), in: app)
     app.terminate()
 
     app = launch(scenario: "paired-online", contentSize: Self.accessibilityXXXL)

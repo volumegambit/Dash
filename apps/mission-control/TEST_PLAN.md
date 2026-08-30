@@ -1160,14 +1160,17 @@ isolated MC profile. Do not run this against a personal gateway or production re
 5. Toggle it back on
 6. **Verify:** The companion widget reappears (full widget behavior is covered in Section 30)
 
-### 22.6 Pair Device (Devices)
+### 22.6 Pair Device (Devices) — Android
+
+Dash for iOS no longer uses this card — it connects by account sign-in instead (see 22.7).
+
 1. Navigate to Settings → Devices
 2. **Verify:** "Pair Device" card renders a QR code on a white tile
-3. **Verify:** The card says `Scan this code with the Dash mobile app for Android or iOS.` and its QR image has platform-neutral accessibility text.
+3. **Verify:** The card says `Scan this code with the Dash mobile app for Android.` (no iOS mention) and its QR image has platform-neutral accessibility text.
 4. **Verify:** The gateway host is shown below the QR with a mode badge reading "local network" or "relay"
 5. **Verify:** No tokens or credentials appear as plain text anywhere on the card
-6. With the badge showing "local network", scan the QR in the Dash iOS app on the same Wi-Fi network.
-7. **Verify:** iOS connects to the same gateway. Create a conversation on either client and confirm the same title, messages, running state, rename, and deletion appear on both clients.
+6. With the badge showing "local network", scan the QR in the Dash Android app on the same Wi-Fi network.
+7. **Verify:** Android connects to the same gateway and chat succeeds. (Android keeps a private, non-resumable history — it does not join Mission Control's canonical conversation list; that's 22.7's iOS/Mission Control check.)
 8. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
 9. Claim a gateway in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
 10. On a computer with multiple physical network connections, leave local pairing active. **Verify:** the QR uses the address selected by the operating system's default route; if no active route identifies one connection, Pair Device shows an ambiguity error instead of choosing an arbitrary address.
@@ -1177,9 +1180,12 @@ isolated MC profile. Do not run this against a personal gateway or production re
 1. On Settings → Devices, locate the "Remote access" section below Pair Device
 2. **Verify:** When signed out, a "Sign in to Dash" button is shown
 3. If signed in and enrolled: **Verify:** "Gateway ready at" shows the claimed subdomain and a "Paired devices" list (with Revoke buttons) is present
-4. With relay mode active, pair the Dash iOS app and move the phone off the LAN (for example, use cellular data).
-5. Create a conversation on iOS and open it in Mission Control. **Verify:** both clients show the same canonical history and active turn through the relay.
-6. Rename the conversation in Mission Control and delete it on iOS. **Verify:** both changes propagate without a duplicate or empty replacement conversation.
+4. On the Dash iOS app, tap **Sign In**, sign in with the same Dash account, and tap this gateway in the list. **Verify:** it appears in the "Paired devices" list above once connected — iOS never uses the Pair Device QR code.
+5. With the iOS device connected, move the phone off the LAN (for example, use cellular data). **Verify:** it keeps working — Dash for iOS is relay-only, so there's no LAN fallback to lose.
+6. Create a conversation on iOS and open it in Mission Control. **Verify:** both clients show the same canonical history and active turn through the relay.
+7. Rename the conversation in Mission Control and delete it on iOS. **Verify:** both changes propagate without a duplicate or empty replacement conversation.
+8. Click **Revoke** next to the iOS device, then reopen Dash on iOS. **Verify:** it shows "Re-pair required"; on the phone, open Settings → Disconnect & Forget, then sign back in and tap the gateway again in the picker — no QR code needed — to reconnect.
+9. Simulate a pre-web enrollment: enroll a gateway, then clear its chat capability on the control plane so only the relay address remains. Quit and relaunch Mission Control. **Verify:** the relaunch pushes the chat capability again (no user action beyond relaunching) — Dash for iOS can now connect to that gateway from the picker without showing "needs to be re-enrolled."
 
 ---
 

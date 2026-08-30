@@ -1,6 +1,11 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+// Retained (currently unreferenced by product code) for an upcoming
+// signer-device feature that reuses camera scanning. QR pairing entry, this
+// service's former consumer, was retired in Task 7 of the iOS account
+// sign-in plan — see `PairingFeature.swift`.
+
 final class QRScannerPreviewSource: @unchecked Sendable {
   let session: AVCaptureSession
 
@@ -31,6 +36,87 @@ enum QRScannerError: Error, Equatable, Sendable {
   case inputUnavailable
   case outputUnavailable
   case stopped
+}
+
+/// The result of one `ScanCoordinator.requestCameraAndScan` attempt.
+/// `.ignored` covers every path where the attempt was superseded or
+/// invalidated (stopped, cancelled, or a fresher scan started) before it
+/// resolved — the caller should treat it exactly like "nothing happened".
+enum ScanOutcome: Equatable, Sendable {
+  case scanned(String)
+  case authorizationDenied
+  case failed
+  case ignored
+}
+
+/// Drives one camera authorization + scan attempt against a `QRScanning`
+/// actor, guarding against a result that arrives after the attempt has been
+/// invalidated — a late permission callback, or a value already buffered on
+/// the scanner's async stream when `stop()`/cancellation fires — reaching
+/// the caller. Extracted out of `QRScannerView` so this guard has direct
+/// test coverage instead of living only in untested SwiftUI view state.
+@MainActor
+final class ScanCoordinator {
+  private var activeScanID: UUID?
+
+  /// Runs the full authorization → scan flow. `onAuthorizationChange` is
+  /// invoked synchronously (still on the caller's actor) each time the
+  /// authorization status is read, but only while this attempt remains the
+  /// active one.
+  func requestCameraAndScan(
+    using scanner: any QRScanning,
+    onAuthorizationChange: (AVAuthorizationStatus) -> Void
+  ) async -> ScanOutcome {
+    let scanID = UUID()
+    activeScanID = scanID
+    var authorization = await scanner.authorizationStatus()
+    guard isActive(scanID) else { return .ignored }
+    onAuthorizationChange(authorization)
+    if authorization == .notDetermined {
+      _ = await scanner.requestAccess()
+      guard isActive(scanID) else { return .ignored }
+      authorization = await scanner.authorizationStatus()
+      guard isActive(scanID) else { return .ignored }
+      onAuthorizationChange(authorization)
+    }
+    guard authorization == .authorized else {
+      invalidate(scanID)
+      return .authorizationDenied
+    }
+    do {
+      let payload = try await scanner.scan()
+      try Task.checkCancellation()
+      guard isActive(scanID) else { return .ignored }
+      invalidate(scanID)
+      return .scanned(payload)
+    } catch is CancellationError {
+      invalidate(scanID)
+      return .ignored
+    } catch QRScannerError.stopped {
+      invalidate(scanID)
+      return .ignored
+    } catch {
+      guard isActive(scanID) else { return .ignored }
+      invalidate(scanID)
+      return .failed
+    }
+  }
+
+  /// Invalidates whatever attempt is currently active, so its eventual
+  /// result (if any) resolves to `.ignored`.
+  func stop() {
+    activeScanID = nil
+  }
+
+  private func isActive(_ id: UUID) -> Bool {
+    activeScanID == id
+  }
+
+  private func invalidate(_ id: UUID) {
+    if activeScanID == id {
+      activeScanID = nil
+    }
+  }
 }
 
 actor QRScannerService: QRScanning {
@@ -76,22 +162,6 @@ actor QRScannerService: QRScanning {
   func stop() {
     runtime.stop()
   }
-}
-
-actor UnavailableQRScanner: QRScanning {
-  func authorizationStatus() -> AVAuthorizationStatus {
-    .restricted
-  }
-
-  func requestAccess() async -> Bool {
-    false
-  }
-
-  func scan() async throws -> String {
-    throw QRScannerError.cameraUnavailable
-  }
-
-  func stop() {}
 }
 
 private final class QRScannerRuntime: QRScannerRuntimeControlling, @unchecked Sendable {

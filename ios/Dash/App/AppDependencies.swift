@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UIKit
 
 enum AppDependencyError: Error, Equatable, Sendable {
   case missingSecrets(profileID: UUID)
@@ -12,16 +13,13 @@ typealias PairedProfileHandler =
 struct PairingFeatureFactory: Sendable {
   let verifier: any PairingVerifying
   let installer: any PairingProfileInstalling
-  let makeScanner: @Sendable () -> any QRScanning
 
   init(
     verifier: any PairingVerifying,
-    installer: any PairingProfileInstalling,
-    makeScanner: @escaping @Sendable () -> any QRScanning = { UnavailableQRScanner() }
+    installer: any PairingProfileInstalling
   ) {
     self.verifier = verifier
     self.installer = installer
-    self.makeScanner = makeScanner
   }
 
   @MainActor
@@ -29,7 +27,6 @@ struct PairingFeatureFactory: Sendable {
     PairingFeature(
       verifier: verifier,
       installer: installer,
-      scanner: makeScanner(),
       onPaired: onPaired
     )
   }
@@ -38,6 +35,110 @@ struct PairingFeatureFactory: Sendable {
     verifier: UnavailablePairingVerifier(),
     installer: UnavailablePairingInstaller()
   )
+}
+
+/// A `WebAuthPresenting` conformer that always fails immediately, used only
+/// to give `AccountFeatureFactory.unavailable` a harmless placeholder
+/// `AccountSession` (mirrors `UnavailablePairingVerifier`/
+/// `UnavailablePairingInstaller`).
+private struct UnavailableWebAuthPresenter: WebAuthPresenting {
+  func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+    throw AccountSessionError.exchangeFailed
+  }
+}
+
+/// Bundles the account sign-in surface (`AccountSession`, `ControlPlaneClient`)
+/// with the SAME verify/install pipeline pairing uses, mirroring
+/// `PairingFeatureFactory`'s shape so `AppModel` can construct
+/// `AccountConnectFeature` per connect attempt without reaching into
+/// `AppDependencies.live()`'s private closures.
+struct AccountFeatureFactory: Sendable {
+  let session: AccountSession
+  let client: ControlPlaneClient
+  let verifier: any PairingVerifying
+  let installer: any PairingProfileInstalling
+  let makeDeviceLabel: @Sendable () -> String
+
+  init(
+    session: AccountSession,
+    client: ControlPlaneClient,
+    verifier: any PairingVerifying,
+    installer: any PairingProfileInstalling,
+    makeDeviceLabel: @escaping @Sendable () -> String = AccountFeatureFactory.defaultDeviceLabel
+  ) {
+    self.session = session
+    self.client = client
+    self.verifier = verifier
+    self.installer = installer
+    self.makeDeviceLabel = makeDeviceLabel
+  }
+
+  var isSignedIn: Bool {
+    get async { await session.isSignedIn }
+  }
+
+  func signIn() async throws {
+    try await session.signIn()
+  }
+
+  func signOut() async {
+    await session.signOut()
+  }
+
+  func listGateways() async throws -> [GatewayInfoDTO] {
+    try await client.listGateways()
+  }
+
+  /// Best-effort: swallows failures since callers use this for opportunistic
+  /// cleanup (e.g. on account sign-out), never as a precondition for it.
+  func revokePairing(gatewayId: String, pairingId: String) async {
+    try? await client.revokePairing(gatewayId: gatewayId, pairingId: pairingId)
+  }
+
+  @MainActor
+  func makeConnect(
+    onGrantMinted: @escaping @MainActor @Sendable (String, String) -> Void = { _, _ in },
+    onConnected: @escaping PairedProfileHandler
+  ) -> AccountConnectFeature {
+    AccountConnectFeature(
+      client: client,
+      verifier: verifier,
+      installer: installer,
+      deviceLabel: makeDeviceLabel(),
+      onGrantMinted: onGrantMinted,
+      onConnected: onConnected
+    )
+  }
+
+  /// `UIDevice.current.name` is the MODEL name (e.g. "iPhone"), not the
+  /// user's custom device name, on iOS 16+ without the
+  /// `com.apple.developer.device-information.user-assigned-device-name`
+  /// entitlement — a literal `"iPhone · \(UIDevice.current.name)"` would
+  /// read as the redundant "iPhone · iPhone". Append a short, stable-per-app
+  /// suffix instead so MC's device list can tell two same-model phones
+  /// apart.
+  static func defaultDeviceLabel() -> String {
+    let name = UIDevice.current.name
+    let suffix = UIDevice.current.identifierForVendor.map { String($0.uuidString.suffix(4)) }
+    guard let suffix else { return name }
+    return "\(name) (\(suffix))"
+  }
+
+  static let unavailable: AccountFeatureFactory = {
+    let config = AccountAuthConfig(
+      frontendAPIHost: "unavailable.invalid",
+      clientID: "unavailable",
+      controlPlaneURL: URL(string: "https://unavailable.invalid")!,
+      redirectURI: "dash://oauth-callback"
+    )
+    let session = AccountSession(config: config, presenter: UnavailableWebAuthPresenter())
+    return AccountFeatureFactory(
+      session: session,
+      client: ControlPlaneClient(config: config, tokens: session),
+      verifier: UnavailablePairingVerifier(),
+      installer: UnavailablePairingInstaller()
+    )
+  }()
 }
 
 struct AppDependencies: Sendable {
@@ -58,6 +159,7 @@ struct AppDependencies: Sendable {
       ConversationSummaryDTO
     ) async -> ChatFeature?
   let pairingFeatureFactory: PairingFeatureFactory
+  let accountFeatureFactory: AccountFeatureFactory
 
   init(
     clock: any AppClock,
@@ -86,7 +188,8 @@ struct AppDependencies: Sendable {
       ConnectionProfileSnapshot,
       ConversationSummaryDTO
     ) async -> ChatFeature? = { _, _ in nil },
-    pairingFeatureFactory: PairingFeatureFactory = .unavailable
+    pairingFeatureFactory: PairingFeatureFactory = .unavailable,
+    accountFeatureFactory: AccountFeatureFactory = .unavailable
   ) {
     self.clock = clock
     self.loadProfile = loadProfile
@@ -100,6 +203,7 @@ struct AppDependencies: Sendable {
     self.makeAgentsFeature = makeAgentsFeature
     self.makeChatFeature = makeChatFeature
     self.pairingFeatureFactory = pairingFeatureFactory
+    self.accountFeatureFactory = accountFeatureFactory
   }
 
   @MainActor
@@ -168,6 +272,23 @@ struct AppDependencies: Sendable {
     let profileVerifier = GatewayProfileVerifier { endpoint, secrets in
       makeAPI(makeCancellableTransport(endpoint, secrets))
     }
+    // Shared with `accountFeatureFactory` below: the account sign-in connect
+    // pipeline reuses the SAME hardened verify+install machinery QR/manual
+    // pairing uses, so a gateway reached via account sign-in and one reached
+    // via a scanned code land on identical, metadata-reusing profiles.
+    let pairingVerifier = PairingVerifier(
+      makeGateway: { endpoint, secrets in
+        makeAPI(makeTransport(endpoint, secrets))
+      },
+      makeChat: makeChat
+    )
+    let pairingInstaller = PairingProfileInstaller(keychain: keychain, metadata: pairingMetadata)
+    let accountAuthConfig = try AccountAuthConfig.fromBundle()
+    let accountSession = AccountSession(
+      config: accountAuthConfig,
+      presenter: SystemWebAuthPresenter()
+    )
+    let controlPlaneClient = ControlPlaneClient(config: accountAuthConfig, tokens: accountSession)
 
     return AppDependencies(
       clock: clock,
@@ -286,14 +407,14 @@ struct AppDependencies: Sendable {
         )
       },
       pairingFeatureFactory: PairingFeatureFactory(
-        verifier: PairingVerifier(
-          makeGateway: { endpoint, secrets in
-            makeAPI(makeTransport(endpoint, secrets))
-          },
-          makeChat: makeChat
-        ),
-        installer: PairingProfileInstaller(keychain: keychain, metadata: pairingMetadata),
-        makeScanner: { QRScannerService() }
+        verifier: pairingVerifier,
+        installer: pairingInstaller
+      ),
+      accountFeatureFactory: AccountFeatureFactory(
+        session: accountSession,
+        client: controlPlaneClient,
+        verifier: pairingVerifier,
+        installer: pairingInstaller
       )
     )
   }

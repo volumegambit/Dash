@@ -32,6 +32,15 @@ export interface MobileTestHarnessOptions {
   dataDir?: string;
   managementToken?: string;
   chatToken?: string;
+  /**
+   * What this harness's `/identity` route reports as its public key. Callers
+   * that ALSO enroll the harness with a control plane (see
+   * `live-account-flow-harness-cli.ts`) must pass the SAME key they registered
+   * — clients cross-check the two, so a harness that self-reports a stand-in
+   * value would fail verification for the wrong reason. Defaults to a fixed
+   * stand-in for the direct-LAN suites, which never enroll anything.
+   */
+  publicKey?: string;
 }
 
 export interface RunningMobileTestHarness {
@@ -43,6 +52,8 @@ export interface RunningMobileTestHarness {
   managementToken: string;
   chatToken: string;
   gatewayId: string;
+  /** Exactly what this harness's `/identity` route reports. */
+  publicKey: string;
   agentId: string;
   dataDir: string;
   stop(): Promise<void>;
@@ -260,6 +271,7 @@ export async function startMobileTestHarness(
   const managementToken = options.managementToken ?? 'mobile-test-management-token';
   const chatToken = options.chatToken ?? 'mobile-test-chat-token';
   const gatewayId = 'mobile-test-gateway';
+  const publicKey = options.publicKey ?? 'mobile-test-public-key';
   const logger = new StructuredLoggerImpl('error', []);
   const agentRegistry = new AgentRegistry(join(dataDir, 'agents.json'));
   const channelRegistry = new ChannelRegistry(join(dataDir, 'channels.json'));
@@ -343,7 +355,7 @@ export async function startMobileTestHarness(
       agents,
       agentRegistry,
       channelRegistry,
-      identity: { gatewayId, publicKey: 'mobile-test-public-key' },
+      identity: { gatewayId, publicKey },
       credentialStore,
       modelsStore,
       conversationService: conversations,
@@ -414,6 +426,7 @@ export async function startMobileTestHarness(
       managementToken,
       chatToken,
       gatewayId,
+      publicKey,
       agentId: registered.id,
       dataDir,
       stop,

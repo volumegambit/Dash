@@ -20,6 +20,11 @@ struct GatewayIdentityDTO: Codable, Hashable, Sendable {
   let publicKey: String
 }
 
+struct WsTicketResponseDTO: Codable, Hashable, Sendable {
+  let ticket: String
+  let expiresAt: Date
+}
+
 struct MobileAPIError: Codable, Hashable, Sendable, Error {
   let code: String
   let error: String

@@ -99,6 +99,38 @@ struct SettingsFeatureTests {
     #expect(feature.reconnectButtonTitle == "Reconnecting")
   }
 
+  @Test("authorization loss uses account-era copy, never retired re-pairing instructions")
+  func authorizationLossUsesAccountEraCopy() async {
+    // QR/paste/manual pairing entry is retired, so "re-pair this device" names
+    // a screen the app no longer has. Every unauthorized-shaped reconnect
+    // failure must instead point at the two paths that still exist.
+    let unauthorizedFailures: [@MainActor @Sendable () async throws -> Void] = [
+      { throw AppDependencyError.missingSecrets(profileID: UUID()) },
+      { throw GatewayProfileVerificationError.identityMismatch },
+      { throw GatewayError.unauthorized },
+    ]
+
+    for failure in unauthorizedFailures {
+      let feature = SettingsFeature(
+        profile: profile(),
+        connection: .offline,
+        lastSuccessfulSyncAt: nil,
+        reconnectAction: failure,
+        disconnectAction: {}
+      )
+
+      await feature.reconnect()
+
+      #expect(
+        feature.error
+          == "Sign in again from the gateway list, or Disconnect & Forget this gateway, then try again."
+      )
+      #expect(feature.error?.contains("Re-pair") == false)
+    }
+
+    #expect(makeFeature(connection: .repairRequired).connectionText == "Session no longer authorized")
+  }
+
   @Test("disconnect does nothing before confirmation")
   func disconnectRequiresConfirmation() async {
     let actions = SettingsActionRecorder()

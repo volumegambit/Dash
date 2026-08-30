@@ -20,10 +20,27 @@
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>DashClerkFrontendAPI</key>
+  <string>$(DASH_CLERK_FRONTEND_API)</string>
+  <key>DashClerkClientID</key>
+  <string>$(DASH_CLERK_CLIENT_ID)</string>
+  <key>DashControlPlaneURL</key>
+  <string>$(DASH_CONTROL_PLANE_URL)</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>dash</string>
+      </array>
+    </dict>
+  </array>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSCameraUsageDescription</key>
-  <string>Scan a Dash pairing code to connect this device.</string>
+  <string>Dash uses the camera to scan QR codes, such as approving a new device sign-in.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Connect to your Dash gateway on this network.</string>
   <key>UILaunchScreen</key>

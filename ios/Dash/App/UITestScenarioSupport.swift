@@ -1,6 +1,4 @@
-@preconcurrency import AVFoundation
 import Foundation
-import UIKit
 
 extension AppDependenciesFactory {
   @MainActor
@@ -12,9 +10,6 @@ extension AppDependenciesFactory {
         environment["DASH_UI_TEST_SCENARIO"]
         ?? arguments.uiTestValue(after: "--dash-ui-test-scenario")
       if let rawScenario {
-        let rawPasteboardFixture =
-          environment["DASH_UI_TEST_PASTEBOARD_FIXTURE"]
-          ?? arguments.uiTestValue(after: "--dash-ui-test-pasteboard-fixture")
         let dataIdentifier =
           environment["DASH_UI_TEST_DATA_IDENTIFIER"]
           ?? arguments.uiTestValue(after: "--dash-ui-test-data-identifier")
@@ -22,12 +17,6 @@ extension AppDependenciesFactory {
         return AppDependenciesFactory {
           guard let scenario = UITestScenario(rawValue: rawScenario) else {
             throw UITestScenarioError.unsupported(rawScenario)
-          }
-          if let rawPasteboardFixture {
-            guard let fixture = UITestPasteboardFixture(rawValue: rawPasteboardFixture) else {
-              throw UITestScenarioError.unsupportedPasteboardFixture(rawPasteboardFixture)
-            }
-            UIPasteboard.general.string = fixture.contents
           }
           return try AppDependencies.uiTesting(
             scenario: scenario,
@@ -52,7 +41,6 @@ extension AppDependenciesFactory {
 
   enum UITestScenarioError: Error, Equatable, Sendable {
     case unsupported(String)
-    case unsupportedPasteboardFixture(String)
   }
 
   enum UITestScenario: String, CaseIterable, Sendable {
@@ -65,34 +53,35 @@ extension AppDependenciesFactory {
     case activeRecovery = "active-recovery"
     case agents
     case settingsForget = "settings-forget"
+    /// Signed-out entry point (`SignInView`) — functionally identical to
+    /// `.unpaired`, kept as its own case so `AccountUITests` reads
+    /// independently of the older pairing-flow suite.
+    case signedOut = "signed-out"
+    /// Signed in, account has one enrolled gateway that loads successfully;
+    /// tapping it runs the full connect pipeline through to `RootView`'s
+    /// paired content.
+    case accountPicker = "account-picker"
+    /// Signed in, but `GET /v1/gateways` fails — exercises `.error` state
+    /// (CP-unreachable copy + `account.retry`).
+    case accountPickerError = "account-picker-error"
+    /// Signed in, one enrolled gateway loads, but connecting mints a grant
+    /// with no `chatToken` — exercises `AccountConnectError.notEnrolled`.
+    case accountNotEnrolled = "account-not-enrolled"
 
-    var startsPaired: Bool { self != .unpaired }
+    /// Explicit enumeration (rather than `self != .unpaired`) so adding a new
+    /// signed-out-first case can't silently start it paired by omission.
+    var startsPaired: Bool {
+      switch self {
+      case .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
+        .pendingRecovery, .activeRecovery, .agents, .settingsForget:
+        return true
+      case .unpaired, .signedOut, .accountPicker, .accountPickerError, .accountNotEnrolled:
+        return false
+      }
+    }
 
     var connection: GatewayConnectionState {
       self == .pairedOffline ? .offline : .online
-    }
-  }
-
-  enum UITestPasteboardFixture: String, CaseIterable, Sendable {
-    case canonicalLAN = "canonical-lan"
-    case canonicalRelay = "canonical-relay"
-    case malformedScheme = "malformed-scheme"
-    case malformedPath = "malformed-path"
-    case malformedPort = "malformed-port"
-
-    var contents: String {
-      switch self {
-      case .canonicalLAN:
-        #"{"v":3,"host":"192.168.1.50","mgmtToken":"mobile-test-token","chatToken":"mobile-test-token","mgmtPort":9400,"chatPort":9400,"secure":true,"tlsCertificateSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
-      case .canonicalRelay:
-        #"{"v":2,"host":"gateway-01.relay.dash.example","secure":true,"mgmtToken":"mobile-test-token","chatToken":"mobile-test-token","relayCredential":"relay-device-credential"}"#
-      case .malformedScheme:
-        "dash://pair?payload=not-json"
-      case .malformedPath:
-        #"{"v":1,"host":"gateway.local/path","mgmtToken":"m","chatToken":"m"}"#
-      case .malformedPort:
-        #"{"v":1,"host":"gateway.local","mgmtToken":"m","chatToken":"m","mgmtPort":70000}"#
-      }
     }
   }
 
@@ -362,6 +351,144 @@ extension AppDependenciesFactory {
         deletedAt: deletedAt
       )
     }
+
+    /// A minimal, fully offline `AccountFeatureFactory` that reports as
+    /// already signed in — see the call site's comment for why paired
+    /// scenarios need one at all despite never showing `GatewayPickerView`
+    /// for more than a stray frame.
+    static func signedInAccountFactory(
+      keychain: any KeychainStoring,
+      clock: any AppClock
+    ) -> AccountFeatureFactory {
+      let config = AccountAuthConfig(
+        frontendAPIHost: "ui-test-account.invalid",
+        clientID: "ui-test",
+        controlPlaneURL: URL(string: "https://ui-test-account.invalid")!,
+        redirectURI: "dash://oauth-callback"
+      )
+      let session = AccountSession(
+        preSignedInWithIDToken: "ui-test-id-token",
+        expiresAt: Date.distantFuture,
+        config: config,
+        presenter: UITestWebAuthPresenter(),
+        clock: clock
+      )
+      return AccountFeatureFactory(
+        session: session,
+        client: ControlPlaneClient(config: config, tokens: session),
+        verifier: UITestPairingVerifier(),
+        installer: UITestPairingInstaller(keychain: keychain)
+      )
+    }
+
+    /// Builds the account factory for the sign-in/gateway-picker scenarios
+    /// themselves (as opposed to `signedInAccountFactory`'s "already past
+    /// this screen" fake for already-paired scenarios).
+    ///
+    /// `ControlPlaneClient` is a concrete `actor` with no protocol seam, so
+    /// rather than let it make a real `URLSession.shared` call against an
+    /// `.invalid` host (fine for `signedInAccountFactory`, which only needs
+    /// the request to fail fast during a stray pre-`start()` frame, never to
+    /// actually resolve), scenario-configurable states inject a stubbed
+    /// `URLSession` via `ControlPlaneClient`'s `session:` parameter — see
+    /// `UITestControlPlaneURLProtocol`.
+    static func accountFactory(
+      for scenario: UITestScenario,
+      keychain: any KeychainStoring,
+      clock: any AppClock
+    ) -> AccountFeatureFactory {
+      switch scenario {
+      case .signedOut:
+        return .unavailable
+
+      case .accountPicker:
+        UITestControlPlaneScript.shared.setListGateways(
+          .init(
+            statusCode: 200,
+            body: Data(
+              """
+              {"gateways":[{"gatewayId":"ui-picker-gateway","subdomain":"ui-picker-gateway.relay.dash.example","status":"active","publicKey":"ui-public-key-for-accessibility"}]}
+              """.utf8
+            )
+          )
+        )
+        UITestControlPlaneScript.shared.setCreatePairing(
+          .init(
+            statusCode: 200,
+            body: Data(
+              """
+              {"credential":"ui-relay-credential","pairingId":"ui-pairing-1","chatToken":"ui-chat-token","status":"active"}
+              """.utf8
+            )
+          )
+        )
+        return signedInPickerFactory(keychain: keychain, clock: clock)
+
+      case .accountPickerError:
+        UITestControlPlaneScript.shared.setListGateways(.init(statusCode: 500, body: Data()))
+        return signedInPickerFactory(keychain: keychain, clock: clock)
+
+      case .accountNotEnrolled:
+        UITestControlPlaneScript.shared.setListGateways(
+          .init(
+            statusCode: 200,
+            body: Data(
+              """
+              {"gateways":[{"gatewayId":"ui-not-enrolled-gateway","subdomain":"ui-not-enrolled-gateway.relay.dash.example","status":"active","publicKey":"ui-public-key-for-accessibility"}]}
+              """.utf8
+            )
+          )
+        )
+        UITestControlPlaneScript.shared.setCreatePairing(
+          .init(
+            statusCode: 200,
+            body: Data(
+              """
+              {"credential":"ui-relay-credential","pairingId":"ui-pairing-2","chatToken":null,"status":"active"}
+              """.utf8
+            )
+          )
+        )
+        return signedInPickerFactory(keychain: keychain, clock: clock)
+
+      case .unpaired, .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
+        .pendingRecovery, .activeRecovery, .agents, .settingsForget:
+        return .unavailable
+      }
+    }
+
+    /// Signed-in `AccountFeatureFactory` backed by `UITestControlPlaneURLProtocol`
+    /// instead of a live network call, and by the SAME verifier/installer
+    /// pair `signedInAccountFactory` and pairing scenarios use — so a
+    /// successful connect lands on the identical `"ui-gateway"` fixtures
+    /// (`sharedConversation`, `research-agent`, …) `pairedOnline` shows.
+    private static func signedInPickerFactory(
+      keychain: any KeychainStoring,
+      clock: any AppClock
+    ) -> AccountFeatureFactory {
+      let config = AccountAuthConfig(
+        frontendAPIHost: "ui-test-account.invalid",
+        clientID: "ui-test",
+        controlPlaneURL: URL(string: "https://ui-test-control-plane.invalid")!,
+        redirectURI: "dash://oauth-callback"
+      )
+      let session = AccountSession(
+        preSignedInWithIDToken: "ui-test-id-token",
+        expiresAt: Date.distantFuture,
+        config: config,
+        presenter: UITestWebAuthPresenter(),
+        clock: clock
+      )
+      let configuration = URLSessionConfiguration.ephemeral
+      configuration.protocolClasses = [UITestControlPlaneURLProtocol.self]
+      let stubbedSession = URLSession(configuration: configuration)
+      return AccountFeatureFactory(
+        session: session,
+        client: ControlPlaneClient(config: config, tokens: session, session: stubbedSession),
+        verifier: UITestPairingVerifier(),
+        installer: UITestPairingInstaller(keychain: keychain)
+      )
+    }
   }
 
   extension AppDependencies {
@@ -423,14 +550,25 @@ extension AppDependenciesFactory {
         },
         pairingFeatureFactory: PairingFeatureFactory(
           verifier: UITestPairingVerifier(),
-          installer: UITestPairingInstaller(keychain: keychain),
-          makeScanner: {
-            if scenario == .unpaired {
-              return QRScannerService()
-            }
-            return UITestCameraScanner()
-          }
-        )
+          installer: UITestPairingInstaller(keychain: keychain)
+        ),
+        // Account sign-in (`SignInView`/`GatewayPickerView`) fronts every
+        // scenario's unpaired state now that QR/manual pairing entry is
+        // retired. `.unpaired` needs an actually-signed-out factory so its UI
+        // tests can exercise `SignInView`; every other (already-paired)
+        // scenario gets a minimal pre-signed-in fake purely so `RootView`'s
+        // brief pre-`start()` render (before `selectedProfile` is set) has
+        // somewhere sensible to land instead of a stray `SignInView` flash.
+        accountFeatureFactory: scenario.startsPaired
+          ? UITestScenarioFixtures.signedInAccountFactory(
+            keychain: keychain,
+            clock: clock
+          )
+          : UITestScenarioFixtures.accountFactory(
+            for: scenario,
+            keychain: keychain,
+            clock: clock
+          )
       )
     }
   }
@@ -504,23 +642,101 @@ extension AppDependenciesFactory {
     }
   }
 
-  private actor UITestCameraScanner: QRScanning {
-    private var status: AVAuthorizationStatus = .notDetermined
+  /// Never actually invoked by current scenarios (nothing signs out and
+  /// back in mid-test), but backs `signedInAccountFactory`'s pre-signed-in
+  /// `AccountSession` the same way `UnavailableWebAuthPresenter` backs
+  /// `AccountFeatureFactory.unavailable` — a harmless placeholder that fails
+  /// closed if it's ever reached.
+  private struct UITestWebAuthPresenter: WebAuthPresenting {
+    func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+      throw AccountSessionError.exchangeFailed
+    }
+  }
 
-    func authorizationStatus() -> AVAuthorizationStatus {
-      status
+  /// Lock-guarded canned responses `UITestControlPlaneURLProtocol` serves,
+  /// mirroring `UITestIdentifierSource`'s `NSLock`-based `@unchecked Sendable`
+  /// shape below. The app process is scenario-scoped (one scenario per
+  /// launch), so a single shared script — set once before `GatewayPickerView`
+  /// issues its first request — is enough.
+  private final class UITestControlPlaneScript: @unchecked Sendable {
+    struct Response {
+      let statusCode: Int
+      let body: Data
     }
 
-    func requestAccess() async -> Bool {
-      status = .denied
-      return false
+    static let shared = UITestControlPlaneScript()
+
+    private let lock = NSLock()
+    private var listGateways = Response(statusCode: 200, body: Data(#"{"gateways":[]}"#.utf8))
+    private var createPairing = Response(
+      statusCode: 200,
+      body: Data(
+        #"{"credential":"ui-relay-credential","pairingId":"ui-pairing","chatToken":"ui-chat-token","status":"active"}"#
+          .utf8
+      )
+    )
+
+    func setListGateways(_ response: Response) {
+      lock.withLock { listGateways = response }
     }
 
-    func scan() async throws -> String {
-      throw QRScannerError.cameraUnavailable
+    func setCreatePairing(_ response: Response) {
+      lock.withLock { createPairing = response }
     }
 
-    func stop() {}
+    func currentListGateways() -> Response {
+      lock.withLock { listGateways }
+    }
+
+    func currentCreatePairing() -> Response {
+      lock.withLock { createPairing }
+    }
+  }
+
+  /// `URLProtocol` stub letting UI-test scenarios drive the concrete
+  /// `ControlPlaneClient` (an `actor` with no protocol seam) through canned
+  /// HTTP responses. Installed on a private `URLSessionConfiguration` handed
+  /// to `ControlPlaneClient`'s `session:` initializer parameter — the one
+  /// seam that type already exposes — instead of letting requests reach a
+  /// live `URLSession`.
+  private final class UITestControlPlaneURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+      request.url?.host == "ui-test-control-plane.invalid"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+      guard let url = request.url else {
+        client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+        return
+      }
+      let response: UITestControlPlaneScript.Response
+      if request.httpMethod == "GET", url.path.hasSuffix("/gateways") {
+        response = UITestControlPlaneScript.shared.currentListGateways()
+      } else if request.httpMethod == "POST", url.path.contains("/pairings/") {
+        response = UITestControlPlaneScript.shared.currentCreatePairing()
+      } else {
+        client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+        return
+      }
+      guard
+        let httpResponse = HTTPURLResponse(
+          url: url,
+          statusCode: response.statusCode,
+          httpVersion: "HTTP/1.1",
+          headerFields: ["Content-Type": "application/json"]
+        )
+      else {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotParseResponse))
+        return
+      }
+      client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
+      client?.urlProtocol(self, didLoad: response.body)
+      client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
   }
 
   private actor UITestSyncEngine: AppSyncing {

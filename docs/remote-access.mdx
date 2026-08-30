@@ -3,18 +3,22 @@ title: "Remote Access"
 description: "Reach your agents from your phone over the internet, from anywhere."
 ---
 
-By default the Dash iOS or Android app connects to your gateway over your local Wi-Fi. The
-**hosted relay** lets you reach the same agents from anywhere — on cellular, at
-the office, travelling — without opening any ports on your home network.
+Dash for Android connects to your gateway over your local Wi-Fi by default, and can also pair
+through the **hosted relay** to reach the same agents from anywhere — on cellular, at the office,
+travelling — without opening any ports on your home network.
+
+Dash for iOS always connects through the hosted relay: sign in with your Dash account and pick
+your gateway from the list — no local network or QR code involved.
 
 <Note>
 The hosted relay is run by Dash. You sign in to your Dash account, create a
-gateway, and pair your phone — there's no server to set up and no domain to buy.
-Traffic is encrypted with TLS from your phone to the hosted relay and again from
+gateway, then connect your phone or tablet — there's no server to set up and no domain
+to buy. Traffic is encrypted with TLS from your device to the hosted relay and again from
 the relay to your gateway. The relay terminates those connections to route requests,
 so treat the Dash-hosted relay as a trusted service: it can process request headers
-and bodies while forwarding them. Pairing never gives a phone the gateway's
-administrative token; it uses a phone-scoped capability and a revocable device credential.
+and bodies while forwarding them. Neither Android's QR pairing nor iOS's account sign-in
+ever gives a device the gateway's administrative token; each gets a phone-scoped capability
+and a revocable device credential instead.
 </Note>
 
 ## When you need it
@@ -22,10 +26,10 @@ administrative token; it uses a phone-scoped capability and a revocable device c
 <CardGroup cols={2}>
   <Card title="Use the relay" icon="globe">
     You want to chat with your agents from your phone while away from home, where
-    your phone and the gateway are on different networks.
+    your phone and the gateway are on different networks. Dash for iOS always uses this path.
   </Card>
   <Card title="Skip the relay" icon="wifi">
-    Your phone and the machine running Dash are on the same Wi-Fi. Just pair over
+    Your Android phone and the machine running Dash are on the same Wi-Fi. Just pair over
     the local network — no relay needed.
   </Card>
 </CardGroup>
@@ -45,9 +49,10 @@ graph LR
 
 TLS protects both network legs, while the hosted relay terminates each leg so it can
 route HTTP and WebSocket traffic. Your Dash sign-in identifies you, each gateway gets
-its own address, and every phone you pair carries its own revocable credential. The
-gateway still enforces one phone-scoped capability for both the mobile API and chat;
-the administrative bearer remains on the gateway machine.
+its own address, and every device you connect — Android by pairing, iOS by signing in —
+carries its own revocable credential. The gateway still enforces one phone-scoped
+capability for both the mobile API and chat; the administrative bearer remains on the
+gateway machine.
 
 ## Set it up
 
@@ -72,18 +77,23 @@ the administrative bearer remains on the gateway machine.
     restarts the gateway so it connects out. When it's ready you'll see **Gateway ready
     at** followed by your address.
   </Step>
-  <Step title="Pair your phone by QR">
-    Open **Settings → Devices**. With a gateway created, the QR code in the
-    **Pair Device** section now carries your relay address and a per-device
-    credential. Scan it with the Dash iOS or Android app — your phone or tablet connects
-    through the relay from then on, wherever you are.
+  <Step title="Connect your phone or tablet">
+    **Android:** open **Settings → Devices**. With a gateway created, the QR code in the
+    **Pair Device** section now carries your relay address and a per-device credential.
+    Scan it with the Dash Android app — it connects through the relay from then on,
+    wherever you are.
+
+    **iOS:** open Dash on your iPhone or iPad and tap **Sign In**. Sign in with the same
+    Dash account, then tap your gateway in the list — see [Dash for iPhone and
+    iPad](/ios#sign-in) for the full flow. There's no QR code to scan.
   </Step>
 </Steps>
 
 Dash for iOS and Mission Control share the gateway-authoritative conversation history, including
 running turns, replay, renames, and deletions. Android remains a legacy, non-resumable client in
 this release: its chat sessions stay private to that app until the separate Android conversation
-sync migration. Both apps use the same LAN/relay pairing security boundaries.
+sync migration. Both apps get a phone-scoped capability and a revocable device credential, whether
+by QR pairing (Android) or account sign-in (iOS).
 
 <Note>
 Your gateway's address is **permanent**. Once you claim a name it belongs to this
@@ -100,14 +110,15 @@ you like and manage them one at a time.
 ## Manage your devices
 
 Back on **Settings → Devices**, under **Remote access**, the **Paired devices** list shows every
-phone connected to your gateway. To disconnect one — a phone you've lost, sold, or
-no longer use — click **Revoke** next to it. That device can no longer reach your
-agents through the relay; your other devices keep working untouched.
+phone or tablet connected to your gateway, including any signed-in iPhone or iPad. To disconnect
+one — a device you've lost, sold, or no longer use — click **Revoke** next to it. That device can
+no longer reach your agents through the relay; your other devices keep working untouched.
 
 <Tip>
-A revoked phone simply needs to be paired again to come back. Open **Settings →
-Devices**, scan a fresh **Pair Device** QR code on that phone, and it gets a new
-credential.
+A revoked device just needs to reconnect to come back, and gets a new credential either way. On
+Android, open **Settings → Devices** and scan a fresh **Pair Device** QR code. On iOS, open
+**Settings** on the phone and choose **Disconnect & Forget**, then sign back in and tap the
+gateway again in the picker — no QR code needed.
 </Tip>
 
 ## Signing out

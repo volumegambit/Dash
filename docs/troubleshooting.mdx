@@ -182,14 +182,37 @@ Something not working? Here are the most common issues and how to fix them.
 ## Remote access (relay)
 
 <AccordionGroup>
-  <Accordion title="iPhone cannot reach a gateway on local Wi-Fi">
-    **Symptom:** Pairing succeeds, but Dash for iOS cannot load the gateway while the phone and
-    gateway computer are on the same Wi-Fi network.
+  <Accordion title="Dash for iOS can't reach your Dash account service">
+    **Symptom:** The gateway picker on Dash for iOS shows:
 
-    **Fix:** Open iOS **Settings → Privacy & Security → Local Network** and enable Dash. Return to
-    Dash and retry. If Dash is already enabled, confirm both devices are on the same network and
-    that the gateway is running. You can still use the paste/manual pairing fallback when camera
-    access is unavailable.
+    > Couldn't reach your Dash account service. Check your connection and try again.
+
+    **Fix:** This means loading your enrolled gateways failed — the app never confuses this with
+    "no gateways enrolled," so seeing this message doesn't mean your account is empty. Check the
+    phone's connection and tap **Retry**. If it persists, confirm the machine that hosts your Dash
+    account service is reachable from the internet.
+  </Accordion>
+
+  <Accordion title="Dash for iOS shows no gateways linked to your account">
+    **Symptom:** The gateway picker on Dash for iOS shows:
+
+    > No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.
+
+    **Fix:** Open **Settings → Devices → Remote access** in Mission Control on the machine running
+    your gateway, sign in with the same Dash account, and click **Create gateway**. Then tap
+    **Refresh** on that same empty screen in the app — the new gateway appears without signing out
+    or restarting. (Once the list has gateways in it, pull down on the list to refresh instead.)
+  </Accordion>
+
+  <Accordion title="Dash for iOS says a gateway needs to be re-enrolled">
+    **Symptom:** Tapping a gateway in the picker shows:
+
+    > This gateway needs to be re-enrolled from Mission Control before app access works.
+
+    **Fix:** This gateway's Remote access setup on Mission Control predates this app's account
+    sign-in support, so it never registered the app's chat capability. Open Mission Control on
+    the machine that runs this gateway — it updates the gateway's app access automatically on
+    launch — then try the gateway again in Dash for iOS.
   </Accordion>
 
   <Accordion title="Mission Control cannot create a local pairing code">
@@ -247,15 +270,20 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="QR code still pairs over the local network">
-    **Symptom:** The **Pair Device** section on **Settings → Devices** says it connects over your **local network** even though you want remote access.
+    **Symptom:** The **Pair Device** section on **Settings → Devices** — used by the Dash Android
+    app — says it connects over your **local network** even though you want remote access.
 
     **Fix:** The QR code only switches to remote access after you've created a gateway. On **Settings → Devices**, confirm the **Remote access** section shows **Gateway ready at** with an address, then check the **Pair Device** section above it — the code now carries your relay address.
   </Accordion>
 
   <Accordion title="Phone can no longer connect after a revoke">
-    **Symptom:** A phone that used to work remotely now can't reach your agents.
+    **Symptom:** A phone or tablet that used to work remotely now can't reach your agents.
 
-    **Fix:** If that device was removed under **Settings → Devices → Paired devices** (by you or from another machine), its credential no longer works — this is expected. Pair it again: open **Settings → Devices**, scan a fresh QR code on the phone, and it gets a new credential.
+    **Fix:** If that device was removed under **Settings → Devices → Paired devices** (by you or
+    from another machine), its credential no longer works — this is expected. On Android, pair it
+    again: open **Settings → Devices**, scan a fresh QR code on the phone, and it gets a new
+    credential. On iOS, open **Settings** on the phone, choose **Disconnect & Forget**, then sign
+    back in and tap the gateway again in the picker — no QR code needed.
   </Accordion>
 
   <Accordion title="The address I want is already taken">
