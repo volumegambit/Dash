@@ -4,13 +4,14 @@ import Testing
 
 @testable import Dash
 
-private struct FakeCancelError: Error, Sendable {}
+private struct PresenterFixtureError: Error, Sendable {}
 
 private actor FakeWebAuthPresenter: WebAuthPresenting {
   enum Behavior: Sendable {
     case echoState(code: String)
     case wrongState(code: String)
-    case fail(FakeCancelError)
+    case wrongScheme(code: String)
+    case fail(any Error & Sendable)
   }
 
   private let behavior: Behavior
@@ -30,6 +31,11 @@ private actor FakeWebAuthPresenter: WebAuthPresenting {
       return try callbackURL(scheme: callbackScheme, code: code, state: state)
     case .wrongState(let code):
       return try callbackURL(scheme: callbackScheme, code: code, state: "some-other-state")
+    case .wrongScheme(let code):
+      // Echo the real state so the failure is attributable purely to the
+      // scheme mismatch, not a state mismatch.
+      let state = try requireState(in: url)
+      return try callbackURL(scheme: "https", code: code, state: state)
     case .fail(let error):
       throw error
     }
@@ -40,7 +46,7 @@ private actor FakeWebAuthPresenter: WebAuthPresenting {
       let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
       let state = components.queryItems?.first(where: { $0.name == "state" })?.value
     else {
-      throw FakeCancelError()
+      throw PresenterFixtureError()
     }
     return state
   }
@@ -53,7 +59,7 @@ private actor FakeWebAuthPresenter: WebAuthPresenting {
       URLQueryItem(name: "code", value: code),
       URLQueryItem(name: "state", value: state),
     ]
-    guard let url = components.url else { throw FakeCancelError() }
+    guard let url = components.url else { throw PresenterFixtureError() }
     return url
   }
 }
@@ -68,13 +74,13 @@ struct AccountSessionTests {
 
   @Test("config loads the three interpolated keys from a test bundle")
   func configLoadsFromBundle() throws {
-    let bundle = try makeConfigBundle(
-      frontendAPIHost: "example.clerk.accounts.dev",
-      clientID: "client-123",
-      controlPlaneURL: "https://cp.example.com"
-    )
-
-    let config = try AccountAuthConfig.fromBundle(bundle)
+    let config = try withConfigBundle([
+      "DashClerkFrontendAPI": "example.clerk.accounts.dev",
+      "DashClerkClientID": "client-123",
+      "DashControlPlaneURL": "https://cp.example.com",
+    ]) { bundle in
+      try AccountAuthConfig.fromBundle(bundle)
+    }
 
     #expect(config.frontendAPIHost == "example.clerk.accounts.dev")
     #expect(config.clientID == "client-123")
@@ -82,12 +88,34 @@ struct AccountSessionTests {
     #expect(config.redirectURI == "dash://oauth-callback")
   }
 
-  @Test("a missing config key throws")
-  func configMissingKeyThrows() throws {
-    let bundle = try makeConfigBundle(clientID: "")
+  @Test("an entirely absent config key throws .missingKey with that key's name")
+  func configAbsentKeyThrowsMissingKey() throws {
+    try withConfigBundle([
+      "DashClerkFrontendAPI": "example.clerk.accounts.dev",
+      "DashControlPlaneURL": "https://cp.example.com",
+      // DashClerkClientID intentionally omitted.
+    ]) { bundle in
+      #expect(throws: AccountAuthConfig.ConfigError.missingKey("DashClerkClientID")) {
+        _ = try AccountAuthConfig.fromBundle(bundle)
+      }
+    }
+  }
 
-    #expect(throws: AccountAuthConfig.ConfigError.self) {
-      _ = try AccountAuthConfig.fromBundle(bundle)
+  @Test(
+    """
+    an xcconfig var that interpolates to an empty string throws .missingKey \
+    (the real failure mode for an undefined build setting), not a decode crash
+    """
+  )
+  func configEmptyStringValueThrowsMissingKey() throws {
+    try withConfigBundle([
+      "DashClerkFrontendAPI": "example.clerk.accounts.dev",
+      "DashClerkClientID": "",
+      "DashControlPlaneURL": "https://cp.example.com",
+    ]) { bundle in
+      #expect(throws: AccountAuthConfig.ConfigError.missingKey("DashClerkClientID")) {
+        _ = try AccountAuthConfig.fromBundle(bundle)
+      }
     }
   }
 
@@ -112,7 +140,7 @@ struct AccountSessionTests {
     #expect(authorizeComponents.scheme == "https")
     #expect(authorizeComponents.host == config.frontendAPIHost)
     #expect(authorizeComponents.path == "/oauth/authorize")
-    let authorizeQuery = try queryDictionary(authorizeComponents)
+    let authorizeQuery = queryDictionary(authorizeComponents)
     #expect(authorizeQuery["client_id"] == config.clientID)
     #expect(authorizeQuery["redirect_uri"] == "dash://oauth-callback")
     #expect(authorizeQuery["code_challenge_method"] == "S256")
@@ -138,6 +166,65 @@ struct AccountSessionTests {
     #expect(await session.isSignedIn == true)
   }
 
+  @Test("two signIn() calls generate distinct, RFC 7636-sized PKCE material")
+  func signInGeneratesFreshPKCEMaterialEachTime() async throws {
+    let config = try makeConfig()
+    let presenter = FakeWebAuthPresenter(.echoState(code: "abc"))
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try tokenResponseData(idToken: "jwt-1", expiresIn: 3600)
+    )
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try tokenResponseData(idToken: "jwt-2", expiresIn: 3600)
+    )
+    let session = AccountSession(config: config, presenter: presenter, session: testURLSession())
+
+    try await session.signIn()
+    let firstRequest = try #require(URLProtocolStub.requests.first)
+    let firstBody = try formBody(firstRequest)
+    let firstVerifier = try #require(firstBody["code_verifier"])
+    let firstAuthorizeURL = try #require(await presenter.lastAuthorizeURL)
+    let firstAuthorizeComponents = try #require(
+      URLComponents(url: firstAuthorizeURL, resolvingAgainstBaseURL: false)
+    )
+    let firstState = try #require(queryDictionary(firstAuthorizeComponents)["state"])
+
+    try await session.signIn()
+    let secondRequest = try #require(URLProtocolStub.requests.last)
+    let secondBody = try formBody(secondRequest)
+    let secondVerifier = try #require(secondBody["code_verifier"])
+    let secondAuthorizeURL = try #require(await presenter.lastAuthorizeURL)
+    let secondAuthorizeComponents = try #require(
+      URLComponents(url: secondAuthorizeURL, resolvingAgainstBaseURL: false)
+    )
+    let secondState = try #require(queryDictionary(secondAuthorizeComponents)["state"])
+
+    #expect(firstVerifier != secondVerifier)
+    #expect(firstState != secondState)
+    #expect((43...128).contains(firstVerifier.count))
+    #expect((43...128).contains(secondVerifier.count))
+  }
+
+  @Test("the token exchange body percent-encodes a literal '+' in a parameter value")
+  func tokenExchangeEncodesPlusInBody() async throws {
+    let config = try makeConfig()
+    let presenter = FakeWebAuthPresenter(.echoState(code: "abc+def"))
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: try tokenResponseData(idToken: "jwt-x", expiresIn: 3600)
+    )
+    let session = AccountSession(config: config, presenter: presenter, session: testURLSession())
+
+    try await session.signIn()
+
+    let request = try #require(URLProtocolStub.requests.last)
+    let rawBody = String(decoding: try #require(request.httpBody), as: UTF8.self)
+    #expect(rawBody.contains("code=abc%2Bdef"))
+    #expect(rawBody.contains("code=abc+def") == false)
+    #expect(try formBody(request)["code"] == "abc+def")
+  }
+
   @Test("a callback with a mismatched state is rejected before any network call")
   func signInRejectsMismatchedState() async throws {
     let config = try makeConfig()
@@ -151,14 +238,43 @@ struct AccountSessionTests {
     #expect(await session.isSignedIn == false)
   }
 
-  @Test("a presenter failure (e.g. user cancel) maps to .cancelled and leaves the session signed out")
-  func presenterFailureMapsToCancelled() async throws {
+  @Test("a callback whose scheme doesn't match the redirect URI's is rejected as an invalid callback")
+  func signInRejectsWrongSchemeCallback() async throws {
     let config = try makeConfig()
-    let presenter = FakeWebAuthPresenter(.fail(FakeCancelError()))
+    let presenter = FakeWebAuthPresenter(.wrongScheme(code: "abc"))
+    let session = AccountSession(config: config, presenter: presenter, session: testURLSession())
+
+    #expect(
+      await accountSessionError { try await session.signIn() } == .invalidCallback
+    )
+    #expect(URLProtocolStub.requests.isEmpty)
+    #expect(await session.isSignedIn == false)
+  }
+
+  @Test("a WebAuthCancelled presenter failure maps to .cancelled and leaves the session signed out")
+  func presenterCancelledSentinelMapsToCancelled() async throws {
+    let config = try makeConfig()
+    let presenter = FakeWebAuthPresenter(.fail(WebAuthCancelled()))
     let session = AccountSession(config: config, presenter: presenter, session: testURLSession())
 
     #expect(
       await accountSessionError { try await session.signIn() } == .cancelled
+    )
+    #expect(URLProtocolStub.requests.isEmpty)
+    #expect(await session.isSignedIn == false)
+  }
+
+  @Test(
+    "a non-cancellation presenter failure maps to .exchangeFailed (never .cancelled) and leaves the session signed out"
+  )
+  func presenterOtherFailureMapsToExchangeFailed() async throws {
+    struct PresentationContextMissing: Error, Sendable {}
+    let config = try makeConfig()
+    let presenter = FakeWebAuthPresenter(.fail(PresentationContextMissing()))
+    let session = AccountSession(config: config, presenter: presenter, session: testURLSession())
+
+    #expect(
+      await accountSessionError { try await session.signIn() } == .exchangeFailed
     )
     #expect(URLProtocolStub.requests.isEmpty)
     #expect(await session.isSignedIn == false)
@@ -245,40 +361,32 @@ private func makeConfig(
   clientID: String = "test-client-id",
   controlPlaneURL: String = "https://api.dash.example"
 ) throws -> AccountAuthConfig {
-  try AccountAuthConfig.fromBundle(
-    makeConfigBundle(
-      frontendAPIHost: frontendAPIHost,
-      clientID: clientID,
-      controlPlaneURL: controlPlaneURL
-    )
-  )
+  try withConfigBundle([
+    "DashClerkFrontendAPI": frontendAPIHost,
+    "DashClerkClientID": clientID,
+    "DashControlPlaneURL": controlPlaneURL,
+  ]) { bundle in
+    try AccountAuthConfig.fromBundle(bundle)
+  }
 }
 
-private func makeConfigBundle(
-  frontendAPIHost: String = "resolved-seahorse-39.clerk.accounts.dev",
-  clientID: String = "test-client-id",
-  controlPlaneURL: String = "https://api.dash.example"
-) throws -> Bundle {
+/// Writes `entries` as a standalone `Info.plist` in a fresh temp directory,
+/// loads it as a `Bundle`, hands it to `body`, and always removes the
+/// directory afterward (success or throw) so repeated test runs don't leak
+/// scratch directories under `/tmp`.
+private func withConfigBundle<T>(
+  _ entries: [String: String],
+  _ body: (Bundle) throws -> T
+) throws -> T {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("AccountAuthConfigTests-\(UUID().uuidString)", isDirectory: true)
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-  var plist: [String: Any] = [:]
-  if frontendAPIHost.isEmpty == false {
-    plist["DashClerkFrontendAPI"] = frontendAPIHost
-  }
-  if clientID.isEmpty == false {
-    plist["DashClerkClientID"] = clientID
-  }
-  if controlPlaneURL.isEmpty == false {
-    plist["DashControlPlaneURL"] = controlPlaneURL
-  }
-  let data = try PropertyListSerialization.data(
-    fromPropertyList: plist,
-    format: .xml,
-    options: 0
-  )
+  defer { try? FileManager.default.removeItem(at: directory) }
+
+  let data = try PropertyListSerialization.data(fromPropertyList: entries, format: .xml, options: 0)
   try data.write(to: directory.appendingPathComponent("Info.plist"))
-  return try #require(Bundle(url: directory))
+  let bundle = try #require(Bundle(url: directory))
+  return try body(bundle)
 }
 
 private func tokenResponseData(idToken: String, expiresIn: Int) throws -> Data {
@@ -296,7 +404,7 @@ private func codeChallengeS256(for verifier: String) -> String {
     .replacingOccurrences(of: "=", with: "")
 }
 
-private func queryDictionary(_ components: URLComponents) throws -> [String: String] {
+private func queryDictionary(_ components: URLComponents) -> [String: String] {
   var result: [String: String] = [:]
   for item in components.queryItems ?? [] {
     result[item.name] = item.value
@@ -304,11 +412,24 @@ private func queryDictionary(_ components: URLComponents) throws -> [String: Str
   return result
 }
 
+/// Decodes an `application/x-www-form-urlencoded` body the way a spec-correct
+/// server would: `+` means a literal space, so it's translated before percent
+/// decoding — a percent-encoded `+` (`%2B`) is unaffected and comes back as
+/// `+`, distinguishing it from an actual space.
 private func formBody(_ request: URLRequest) throws -> [String: String] {
   let data = try #require(request.httpBody)
-  var components = URLComponents()
-  components.percentEncodedQuery = String(decoding: data, as: UTF8.self)
-  return try queryDictionary(components)
+  let string = String(decoding: data, as: UTF8.self)
+  var result: [String: String] = [:]
+  for pair in string.split(separator: "&") {
+    let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2 else { continue }
+    result[decodeFormComponent(String(parts[0]))] = decodeFormComponent(String(parts[1]))
+  }
+  return result
+}
+
+private func decodeFormComponent(_ value: String) -> String {
+  value.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? value
 }
 
 private func encodedPath(_ request: URLRequest) throws -> String {

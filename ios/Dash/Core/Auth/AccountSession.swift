@@ -5,8 +5,19 @@ import Security
 /// Presents a system auth sheet for a URL and resolves with the full callback
 /// URL once the redirect fires (concretely `ASWebAuthenticationSession` in a
 /// later task; a fake in tests).
+///
+/// Throw `WebAuthCancelled` when the user dismisses the sheet — that is the
+/// only failure `AccountSession` treats as a user-initiated cancel. Any other
+/// error (a missing presentation context, a transport failure, etc.) is
+/// surfaced as `.exchangeFailed` so it isn't silently mistaken for cancel.
 protocol WebAuthPresenting: Sendable {
   func authenticate(url: URL, callbackScheme: String) async throws -> URL
+}
+
+/// Sentinel thrown by a `WebAuthPresenting` conformer to signal that the user
+/// dismissed the auth sheet (as opposed to some other presentation failure).
+struct WebAuthCancelled: Error, Equatable, Sendable {
+  init() {}
 }
 
 enum AccountSessionError: Error, Equatable {
@@ -65,11 +76,17 @@ actor AccountSession {
     let callbackURL: URL
     do {
       callbackURL = try await presenter.authenticate(url: authorizeURL, callbackScheme: callbackScheme)
-    } catch {
+    } catch is WebAuthCancelled {
       throw AccountSessionError.cancelled
+    } catch {
+      throw AccountSessionError.exchangeFailed
     }
 
-    let code = try Self.code(fromCallback: callbackURL, expectedState: state)
+    let code = try Self.code(
+      fromCallback: callbackURL,
+      expectedState: state,
+      expectedScheme: callbackScheme
+    )
     let tokenResponse = try await exchangeCode(code, verifier: verifier)
 
     cachedIDToken = tokenResponse.idToken
@@ -118,9 +135,14 @@ actor AccountSession {
     return url
   }
 
-  private static func code(fromCallback callbackURL: URL, expectedState: String) throws -> String {
+  private static func code(
+    fromCallback callbackURL: URL,
+    expectedState: String,
+    expectedScheme: String
+  ) throws -> String {
     guard
-      let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)
+      let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+      components.scheme == expectedScheme
     else {
       throw AccountSessionError.invalidCallback
     }
@@ -160,15 +182,13 @@ actor AccountSession {
     request.httpMethod = "POST"
     request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
-    var bodyComponents = URLComponents()
-    bodyComponents.queryItems = [
-      URLQueryItem(name: "grant_type", value: "authorization_code"),
-      URLQueryItem(name: "code", value: code),
-      URLQueryItem(name: "client_id", value: config.clientID),
-      URLQueryItem(name: "redirect_uri", value: config.redirectURI),
-      URLQueryItem(name: "code_verifier", value: verifier),
-    ]
-    request.httpBody = Data((bodyComponents.percentEncodedQuery ?? "").utf8)
+    request.httpBody = Self.formURLEncodedBody([
+      ("grant_type", "authorization_code"),
+      ("code", code),
+      ("client_id", config.clientID),
+      ("redirect_uri", config.redirectURI),
+      ("code_verifier", verifier),
+    ])
 
     let data: Data
     let response: URLResponse
@@ -192,6 +212,31 @@ actor AccountSession {
 
   private static func scheme(forRedirectURI redirectURI: String) -> String {
     URLComponents(string: redirectURI)?.scheme ?? redirectURI
+  }
+
+  /// `application/x-www-form-urlencoded` characters that never need escaping.
+  /// Notably excludes `+` — Clerk's `code` is opaque and may itself contain a
+  /// literal `+`, which `URLComponents`' query-percent-encoding (RFC 3986,
+  /// where `+` is a legal, unreserved query character) would leave
+  /// unescaped, corrupting it under the `+` == space form convention.
+  private static let formValueAllowedCharacters: CharacterSet = {
+    var set = CharacterSet.alphanumerics
+    set.insert(charactersIn: "-._*")
+    return set
+  }()
+
+  private static func formEncode(_ value: String) -> String {
+    let encoded = value.addingPercentEncoding(withAllowedCharacters: formValueAllowedCharacters)
+      ?? value
+    return encoded.replacingOccurrences(of: "%20", with: "+")
+  }
+
+  private static func formURLEncodedBody(_ parameters: [(name: String, value: String)]) -> Data {
+    Data(
+      parameters.map { "\(formEncode($0.name))=\(formEncode($0.value))" }
+        .joined(separator: "&")
+        .utf8
+    )
   }
 
   private static func makeCodeVerifier() -> String {
