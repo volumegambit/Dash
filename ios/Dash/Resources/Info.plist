@@ -20,6 +20,12 @@
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>DashClerkFrontendAPI</key>
+  <string>$(DASH_CLERK_FRONTEND_API)</string>
+  <key>DashClerkClientID</key>
+  <string>$(DASH_CLERK_CLIENT_ID)</string>
+  <key>DashControlPlaneURL</key>
+  <string>$(DASH_CONTROL_PLANE_URL)</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSCameraUsageDescription</key>

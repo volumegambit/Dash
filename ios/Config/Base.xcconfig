@@ -7,3 +7,10 @@ CLANG_ENABLE_MODULES = YES
 ENABLE_USER_SCRIPT_SANDBOXING = YES
 ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
 TARGETED_DEVICE_FAMILY = 1,2
+
+// Account sign-in (Clerk PKCE against the control plane). `Local.xcconfig`
+// (gitignored, optionally included by Debug.xcconfig) overrides
+// DASH_CONTROL_PLANE_URL for live testing against a real deployment.
+DASH_CLERK_FRONTEND_API = resolved-seahorse-39.clerk.accounts.dev
+DASH_CLERK_CLIENT_ID = 5KwDiIAztapVfeoE
+DASH_CONTROL_PLANE_URL = https:/$()/api.dash.example
