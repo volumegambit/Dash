@@ -28,6 +28,7 @@ final class AccountConnectFeature {
   private let verifier: any PairingVerifying
   private let installer: any PairingProfileInstalling
   private let deviceLabel: String
+  private let onGrantMinted: @MainActor @Sendable (String, String) -> Void
   private let onConnected: @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
 
   init(
@@ -35,12 +36,14 @@ final class AccountConnectFeature {
     verifier: any PairingVerifying,
     installer: any PairingProfileInstalling,
     deviceLabel: String,
+    onGrantMinted: @escaping @MainActor @Sendable (String, String) -> Void = { _, _ in },
     onConnected: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
   ) {
     self.client = client
     self.verifier = verifier
     self.installer = installer
     self.deviceLabel = deviceLabel
+    self.onGrantMinted = onGrantMinted
     self.onConnected = onConnected
   }
 
@@ -48,6 +51,11 @@ final class AccountConnectFeature {
   /// exactly like a scanned/manual relay pairing would.
   func connect(to gateway: GatewayInfoDTO) async throws {
     let grant = try await client.createPairing(gatewayId: gateway.gatewayId, deviceLabel: deviceLabel)
+    // Reported regardless of the grant's outcome below so a caller (the
+    // gateway picker UI) can best-effort revoke an abandoned mint — e.g. if
+    // the account signs out before a `.pendingApproval`/`.notEnrolled` grant
+    // is ever completed. Default no-op preserves existing callers' behavior.
+    onGrantMinted(gateway.gatewayId, grant.pairingId)
 
     guard grant.status == "active" else {
       throw AccountConnectError.pendingApproval

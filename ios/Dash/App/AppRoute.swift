@@ -9,6 +9,10 @@ enum AppTab: String, CaseIterable, Hashable, Identifiable, Sendable {
 }
 
 enum AppRoute: Equatable, Sendable {
+  /// No gateway selected yet: shows `SignInView` (signed out) or
+  /// `GatewayPickerView` (signed in, choosing a gateway to connect to).
+  /// Named `connect` for source compatibility with existing call sites;
+  /// pairing (QR/manual) is no longer the only path this represents.
   case connect
   case paired(tab: AppTab)
 }

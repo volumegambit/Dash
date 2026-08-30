@@ -54,6 +54,11 @@ final class AppModel {
   @ObservationIgnored private var activeEngineSceneRevision: UInt64 = 0
   @ObservationIgnored private var isBackgrounded = false
   @ObservationIgnored private var isDisconnecting = false
+  /// The most recently minted, not-yet-installed account pairing grant (from
+  /// `GatewayPickerView`'s connect attempts this session), tracked so
+  /// `signOutOfAccount()` can best-effort revoke an abandoned mint. Cleared
+  /// once a connect attempt installs successfully.
+  @ObservationIgnored private var lastAccountGrant: (gatewayId: String, pairingId: String)?
 
   private struct PreparedActivation {
     let engine: any AppSyncing
@@ -329,6 +334,78 @@ final class AppModel {
         throw AppDependencyError.pairingActivationFailed
       }
     }
+  }
+
+  /// Whether the Clerk account session currently holds a live token. Checked
+  /// on demand (rather than cached as `@Observable` state) since it reflects
+  /// `AccountSession`'s own actor-isolated cache, not app-owned state.
+  func isAccountSignedIn() async -> Bool {
+    await dependencies.accountFeatureFactory.isSignedIn
+  }
+
+  func signInToAccount() async throws {
+    try await dependencies.accountFeatureFactory.signIn()
+  }
+
+  /// Builds a `GatewayPickerViewModel` wired to this app's account/connect
+  /// dependencies. `onSignedOut` lets the presenting view (which owns the
+  /// signed-in/signed-out toggle) fall back to `SignInView` once sign-out
+  /// completes.
+  func makeGatewayPickerViewModel(
+    onSignedOut: @escaping @MainActor @Sendable () -> Void
+  ) -> GatewayPickerViewModel {
+    GatewayPickerViewModel(
+      listGateways: { [dependencies] in
+        try await dependencies.accountFeatureFactory.listGateways()
+      },
+      connect: { [weak self] gateway in
+        guard let self else { throw AppDependencyError.pairingActivationFailed }
+        try await self.connectToAccountGateway(gateway)
+      },
+      signOut: { [weak self] in
+        await self?.signOutOfAccount()
+        onSignedOut()
+      }
+    )
+  }
+
+  private func connectToAccountGateway(_ gateway: GatewayInfoDTO) async throws {
+    let feature = dependencies.accountFeatureFactory.makeConnect(
+      onGrantMinted: { [weak self] gatewayId, pairingId in
+        self?.lastAccountGrant = (gatewayId, pairingId)
+      },
+      onConnected: { [weak self] profile in
+        guard
+          let self,
+          await self.activatePairedProfile(profile, reportsFailureInBanner: false)
+        else {
+          throw AppDependencyError.pairingActivationFailed
+        }
+        self.lastAccountGrant = nil
+      }
+    )
+    try await feature.connect(to: gateway)
+  }
+
+  /// Signs out of the Dash account: defensively tears down any active
+  /// gateway connection this device holds (same Keychain-wipe +
+  /// selection-forgetting + local-cache-clearing Settings' "Disconnect &
+  /// Forget" performs — `GatewayPickerView` only shows once `selectedProfile`
+  /// is already nil, so this is normally a no-op belt-and-suspenders check),
+  /// best-effort revokes the most recently minted — but never completed —
+  /// pairing grant from this session, then drops the cached account token.
+  func signOutOfAccount() async {
+    if selectedProfile != nil {
+      try? await disconnectAndForget()
+    }
+    if let grant = lastAccountGrant {
+      await dependencies.accountFeatureFactory.revokePairing(
+        gatewayId: grant.gatewayId,
+        pairingId: grant.pairingId
+      )
+      lastAccountGrant = nil
+    }
+    await dependencies.accountFeatureFactory.signOut()
   }
 
   func reconnect() async throws {
