@@ -502,6 +502,20 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         reconnectAttempt = 0;
         disposed = false; // a disposed store is reusable — this is a fresh connect intent.
         currentConversationId = conversationId;
+        // Reset BEFORE the replay attempt, not after it succeeds: `lastSeq`
+        // is a single per-store closure variable, not keyed by conversation.
+        // Switching from conversation A (replay succeeded, lastSeq = N) to
+        // conversation B whose own replay then fails would otherwise leave
+        // `lastSeq` holding A's cursor — and the non-auth-failure path below
+        // schedules a reconnect that resumes *this* (B's) conversation via
+        // `attemptReconnect`'s `sinceSeq: lastSeq`. Sending B's gateway A's
+        // cursor would desync the resume (wrong/missing history, or the
+        // gateway rejecting an out-of-range `sinceSeq` for a conversation it
+        // never saw at that seq) — B would then look like it silently
+        // replays nothing, forever, without a fresh full replay to recover.
+        // A successful replay overwrites this with the real value below;
+        // this is only ever observed if that never happens.
+        lastSeq = 0;
 
         let replay: { messages: ConversationMessage[]; lastSeq: number };
         try {

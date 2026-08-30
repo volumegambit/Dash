@@ -573,6 +573,55 @@ describe('createWebAppStore', () => {
   });
 
   describe('reconnect', () => {
+    it("resets lastSeq on openConversation, so a switch-then-failed-replay reconnect resumes the NEW conversation at 0, never the previous one's cursor (regression: lastSeq is a single per-store variable, only ever set on successful replay)", async () => {
+      const CONV_A = 'conv-a';
+      const CONV_B = 'conv-b';
+      const rest = {
+        listConversations: vi.fn(async () => ({
+          items: [
+            summary({ id: CONV_A, agentId: 'agent-a' }),
+            summary({ id: CONV_B, agentId: 'agent-b' }),
+          ],
+          nextCursor: null,
+        })),
+        getMessages: vi.fn(async (conversationId: string) => {
+          if (conversationId === CONV_A) {
+            return { items: [], nextCursor: null, throughSeq: 42 };
+          }
+          throw new TypeError('fetch failed'); // conv-b's own replay always fails (non-auth)
+        }),
+        identity: vi.fn(async () => ({ gatewayId: 'gw-1', publicKey: 'pk-stub' })),
+      } as unknown as MobileRestClient;
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      // Conversation A replays successfully with a real cursor (42) and connects.
+      await openAndConnect(store, sockets, CONV_A);
+      expect(sockets).toHaveLength(1);
+
+      // Switching to conversation B: its own initial replay fails (non-auth),
+      // so openConversation() takes the 'reconnecting' + scheduleReconnect()
+      // path added for the earlier fix — never touching conv-b's transcript
+      // with conv-a's lastSeq.
+      await store.getState().openConversation(CONV_B);
+      expect(store.getState().connection).toBe('reconnecting');
+      expect(sockets).toHaveLength(1); // no socket attempted for the failed replay itself
+
+      // The armed reconnect resumes conv-b, not conv-a.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2));
+      sockets[1].open();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+      expect(sockets[1].sent).toHaveLength(1);
+      expect(sockets[1].sent[0]).toMatchObject({
+        type: 'resume',
+        conversationId: CONV_B,
+        agentId: 'agent-b',
+        sinceSeq: 0, // NOT 42 — conv-a's cursor must never leak into conv-b's resume
+      });
+    });
+
     it('resumes from lastSeq via a typed resume frame (chat-resume.jsonl) instead of refetching history, and finalizes the interrupted turn through replay', async () => {
       // Real fixture: contracts/mobile/v1/fixtures/chat-resume.jsonl. Line 0
       // is the client `resume` frame this store must send, verbatim, on
