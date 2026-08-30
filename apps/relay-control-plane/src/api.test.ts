@@ -143,6 +143,27 @@ describe('POST /v1/gateways', () => {
     const body = (await res.json()) as { gateways: Array<{ gatewayId: string }> };
     expect(body.gateways.map((g) => g.gatewayId)).toEqual(['alice']);
   });
+
+  it('projects a deliberate gateway shape: publicKey in, accountId never echoed', async () => {
+    await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 });
+
+    const res = await req('GET', '/v1/gateways', 'a1');
+    const body = (await res.json()) as { gateways: Array<Record<string, unknown>> };
+    const [gateway] = body.gateways;
+
+    // The mobile client cross-checks the gateway's verified identity against
+    // this value, so it MUST be on the wire.
+    expect(gateway.publicKey).toBe(gwPubB64);
+    // A deliberate projection, not the raw record: the account id the caller
+    // already authenticated as is never echoed back.
+    expect(Object.keys(gateway as object).sort()).toEqual([
+      'createdAt',
+      'gatewayId',
+      'publicKey',
+      'status',
+      'subdomain',
+    ]);
+  });
 });
 
 describe('DELETE /v1/gateways/:id', () => {

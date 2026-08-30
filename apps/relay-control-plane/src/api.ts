@@ -112,9 +112,25 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     }
   });
 
+  /**
+   * A DELIBERATE projection of `GatewayRecord`, never the raw row. `publicKey`
+   * is part of the contract on purpose: the iOS client cross-checks the
+   * gateway's relay-verified identity against this enrolled value before it
+   * installs a pairing (`AccountConnectFeature.connect`), so dropping it would
+   * silently disarm that check. `accountId` is deliberately NOT echoed — the
+   * caller already authenticated as it, and listing it back only widens what a
+   * leaked response discloses.
+   */
   app.get('/v1/gateways', (c) => {
     const accountId = c.get('accountId');
-    return c.json({ gateways: provisioning.listGateways(accountId) });
+    const gateways = provisioning.listGateways(accountId).map((gateway) => ({
+      gatewayId: gateway.gatewayId,
+      subdomain: gateway.subdomain,
+      status: gateway.status,
+      createdAt: gateway.createdAt,
+      publicKey: gateway.publicKey,
+    }));
+    return c.json({ gateways });
   });
 
   app.get('/v1/subdomains/:label', (c) => {
