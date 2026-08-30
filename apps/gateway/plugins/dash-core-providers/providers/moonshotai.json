@@ -7,9 +7,9 @@
   "models": [
     {
       "id": "kimi-k2.6",
-      "name": "Kimi K2.6",
       "contextWindow": 262144,
       "maxTokens": 262144,
+      "name": "Kimi K2.6",
       "reasoning": true,
       "input": [
         "text",
@@ -24,9 +24,9 @@
     },
     {
       "id": "kimi-k2.7-code",
-      "name": "Kimi K2.7 Code",
       "contextWindow": 262144,
       "maxTokens": 262144,
+      "name": "Kimi K2.7 Code",
       "reasoning": true,
       "input": [
         "text",
@@ -41,9 +41,9 @@
     },
     {
       "id": "kimi-k2.5",
-      "name": "Kimi K2.5",
       "contextWindow": 262144,
       "maxTokens": 262144,
+      "name": "Kimi K2.5",
       "reasoning": true,
       "input": [
         "text",
@@ -70,31 +70,35 @@
   },
   "supportedPatterns": [
     {
-      "pattern": "kimi-k2-thinking*",
+      "pattern": "kimi-k3*",
       "tier": 0
     },
     {
-      "pattern": "kimi-k2.7*",
+      "pattern": "kimi-k2-thinking*",
       "tier": 1
     },
     {
-      "pattern": "kimi-k2.6",
+      "pattern": "kimi-k2.7*",
       "tier": 2
     },
     {
-      "pattern": "kimi-k2.5",
+      "pattern": "kimi-k2.6",
       "tier": 3
+    },
+    {
+      "pattern": "kimi-k2.5",
+      "tier": 4
     },
     {
       "pattern": "kimi-k2.*",
-      "tier": 3
+      "tier": 4
     },
     {
       "pattern": "kimi-k2*",
-      "tier": 4
+      "tier": 5
     }
   ],
-  "reviewedAt": "2026-06-21",
+  "reviewedAt": "2026-08-30",
   "ui": {
     "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys",
     "keyPlaceholder": "sk-...",
