@@ -407,7 +407,7 @@ extension AppDependenciesFactory {
             statusCode: 200,
             body: Data(
               """
-              {"gateways":[{"gatewayId":"ui-picker-gateway","subdomain":"ui-picker-gateway.relay.dash.example","status":"active"}]}
+              {"gateways":[{"gatewayId":"ui-picker-gateway","subdomain":"ui-picker-gateway.relay.dash.example","status":"active","publicKey":"ui-public-key-for-accessibility"}]}
               """.utf8
             )
           )
@@ -434,7 +434,7 @@ extension AppDependenciesFactory {
             statusCode: 200,
             body: Data(
               """
-              {"gateways":[{"gatewayId":"ui-not-enrolled-gateway","subdomain":"ui-not-enrolled-gateway.relay.dash.example","status":"active"}]}
+              {"gateways":[{"gatewayId":"ui-not-enrolled-gateway","subdomain":"ui-not-enrolled-gateway.relay.dash.example","status":"active","publicKey":"ui-public-key-for-accessibility"}]}
               """.utf8
             )
           )

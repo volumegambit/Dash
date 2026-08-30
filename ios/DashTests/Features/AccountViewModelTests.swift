@@ -152,6 +152,49 @@ struct GatewayPickerViewModelTests {
     #expect(await callCount.value == 2)
   }
 
+  @Test("retry from the empty state re-fetches and shows a newly enrolled gateway")
+  func emptyStateRefreshPicksUpANewGateway() async {
+    // The `.empty` copy tells the user to go enroll a machine in Mission
+    // Control. Without a refresh affordance there, the only way back is to
+    // kill the app — so `retry()` must work from `.empty`, not just `.error`.
+    let callCount = Counter()
+    let viewModel = GatewayPickerViewModel(
+      listGateways: {
+        let count = await callCount.increment()
+        return count == 1 ? [] : [gatewayFixture()]
+      },
+      connect: { _ in }
+    )
+
+    await viewModel.load()
+    #expect(viewModel.state == .empty)
+
+    await viewModel.retry()
+
+    #expect(viewModel.state == .loaded([gatewayFixture()]))
+    #expect(await callCount.value == 2)
+  }
+
+  @Test("an empty-state refresh that fails surfaces .error rather than staying silently empty")
+  func emptyStateRefreshFailureSurfacesError() async {
+    let callCount = Counter()
+    let viewModel = GatewayPickerViewModel(
+      listGateways: {
+        let count = await callCount.increment()
+        if count == 1 { return [] }
+        throw ControlPlaneError.network
+      },
+      connect: { _ in }
+    )
+
+    await viewModel.load()
+    #expect(viewModel.state == .empty)
+
+    await viewModel.retry()
+
+    #expect(viewModel.state == .error(AccountCopy.cpUnreachable))
+  }
+
   @Test("signing out invokes the injected sign-out closure, then signals the nav layer")
   func signOutTappedInvokesClosureThenSignalsSignedOut() async {
     let signOutRecorder = SignOutRecorder()
@@ -277,7 +320,13 @@ private final class ViewModelBox: @unchecked Sendable {
 private func gatewayFixture(
   gatewayId: String = "gw-1",
   subdomain: String = "mygw.relay.dash.example",
-  status: String = "online"
+  status: String = "online",
+  publicKey: String = "public-key-1"
 ) -> GatewayInfoDTO {
-  GatewayInfoDTO(gatewayId: gatewayId, subdomain: subdomain, status: status)
+  GatewayInfoDTO(
+    gatewayId: gatewayId,
+    subdomain: subdomain,
+    status: status,
+    publicKey: publicKey
+  )
 }

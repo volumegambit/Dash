@@ -7,6 +7,14 @@ struct GatewayInfoDTO: Decodable, Equatable, Sendable {
   /// zone to this value.
   let subdomain: String
   let status: String
+  /// The gateway's Ed25519 public key (raw, base64url) as recorded when the
+  /// account enrolled it. This is the ACCOUNT's record of who the gateway is;
+  /// `AccountConnectFeature.connect` refuses to install a pairing whose
+  /// relay-verified `/identity` disagrees with it, so a relay that
+  /// impersonated a tenant's subdomain still cannot get a credential
+  /// installed. Non-optional on purpose: a control plane that stopped sending
+  /// it must fail loudly at decode rather than silently disarm that check.
+  let publicKey: String
 }
 
 /// The credential minted for a mobile device pairing with a gateway.

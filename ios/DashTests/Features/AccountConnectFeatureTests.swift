@@ -35,6 +35,11 @@ private enum AccountConnectTestError: Error, Equatable {
   case installerFailure
 }
 
+/// What `CapturingAccountVerifier` always reports as the gateway's
+/// `/identity` public key. A `GatewayInfoDTO` carrying anything else models a
+/// control-plane record that disagrees with the gateway actually reached.
+private let verifiedPublicKey = "public-key-verified"
+
 @Suite("Account connect feature", .serialized)
 @MainActor
 struct AccountConnectFeatureTests {
@@ -65,7 +70,12 @@ struct AccountConnectFeatureTests {
     )
 
     try await feature.connect(
-      to: GatewayInfoDTO(gatewayId: "gw-1", subdomain: "mygw.relay.dash.example", status: "online")
+      to: GatewayInfoDTO(
+        gatewayId: "gw-1",
+        subdomain: "mygw.relay.dash.example",
+        status: "online",
+        publicKey: verifiedPublicKey
+      )
     )
 
     #expect(connected.profiles == [installedSnapshot])
@@ -98,7 +108,12 @@ struct AccountConnectFeatureTests {
     )
 
     try await feature.connect(
-      to: GatewayInfoDTO(gatewayId: "gw-9", subdomain: "gw9.relay.dash.example", status: "online")
+      to: GatewayInfoDTO(
+        gatewayId: "gw-9",
+        subdomain: "gw9.relay.dash.example",
+        status: "online",
+        publicKey: verifiedPublicKey
+      )
     )
 
     let payload = try #require(await verifier.payloads.first)
@@ -167,6 +182,61 @@ struct AccountConnectFeatureTests {
 
     #expect(await verifier.payloads.isEmpty)
     #expect(await installer.installedPairings.isEmpty)
+  }
+
+  @Test("a gateway whose verified identity key differs from the CP record never installs")
+  func identityPublicKeyMismatchRejectsBeforeInstall() async throws {
+    let client = try await stubbedClient(
+      grant: PairingGrant(
+        credential: "relay-cred-mismatch",
+        pairingId: "pairing-mismatch",
+        chatToken: "chat-mismatch",
+        status: "active"
+      )
+    )
+    let verifier = CapturingAccountVerifier()
+    let installer = RecordingAccountInstaller()
+    let feature = AccountConnectFeature(
+      client: client,
+      verifier: verifier,
+      installer: installer,
+      deviceLabel: "Device",
+      onConnected: { _ in Issue.record("must not connect") }
+    )
+
+    // Verification itself SUCCEEDS — the gateway that answered is reachable,
+    // healthy and capable. It is simply not the gateway this account enrolled.
+    await #expect(throws: AccountConnectError.verificationFailed) {
+      try await feature.connect(to: gatewayFixture(publicKey: "public-key-someone-else"))
+    }
+
+    #expect(await verifier.payloads.count == 1)
+    #expect(await installer.installedPairings.isEmpty)
+  }
+
+  @Test("a matching identity key installs (the mismatch guard is not blanket-refusing)")
+  func identityPublicKeyMatchStillInstalls() async throws {
+    let client = try await stubbedClient(
+      grant: PairingGrant(
+        credential: "relay-cred-match",
+        pairingId: "pairing-match",
+        chatToken: "chat-match",
+        status: "active"
+      )
+    )
+    let installer = RecordingAccountInstaller()
+    let feature = AccountConnectFeature(
+      client: client,
+      verifier: CapturingAccountVerifier(),
+      installer: installer,
+      deviceLabel: "Device",
+      onConnected: { _ in }
+    )
+
+    try await feature.connect(to: gatewayFixture(publicKey: verifiedPublicKey))
+
+    let installed = try #require(await installer.installedPairings.first)
+    #expect(installed.identity.publicKey == verifiedPublicKey)
   }
 
   @Test("a verifier failure maps to .verificationFailed and never installs")
@@ -302,7 +372,7 @@ private actor CapturingAccountVerifier: PairingVerifying {
       throw error
     }
     let (profile, secrets) = try payload.validated(profileID: UUID())
-    let identity = GatewayIdentityDTO(gatewayId: "gateway-verified", publicKey: "public-key-verified")
+    let identity = GatewayIdentityDTO(gatewayId: "gateway-verified", publicKey: verifiedPublicKey)
     var identified = profile
     identified.gatewayId = identity.gatewayId
     identified.publicKey = identity.publicKey
@@ -343,9 +413,15 @@ private final class ConnectedRecorder {
 private func gatewayFixture(
   gatewayId: String = "gw-1",
   subdomain: String = "mygw.relay.dash.example",
-  status: String = "online"
+  status: String = "online",
+  publicKey: String = verifiedPublicKey
 ) -> GatewayInfoDTO {
-  GatewayInfoDTO(gatewayId: gatewayId, subdomain: subdomain, status: status)
+  GatewayInfoDTO(
+    gatewayId: gatewayId,
+    subdomain: subdomain,
+    status: status,
+    publicKey: publicKey
+  )
 }
 
 private func fixtureSnapshot(id: UUID, gatewayID: String) -> ConnectionProfileSnapshot {
@@ -371,7 +447,7 @@ private func makeConfig() throws -> AccountAuthConfig {
   try withConfigBundle([
     "DashClerkFrontendAPI": "resolved-seahorse-39.clerk.accounts.dev",
     "DashClerkClientID": "test-client-id",
-    "DashControlPlaneURL": "https://api.dash.example",
+    "DashControlPlaneURL": "https://cp.dash.test",
   ]) { bundle in
     try AccountAuthConfig.fromBundle(bundle)
   }

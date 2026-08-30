@@ -106,6 +106,15 @@ final class LiveAccountFlowTests: XCTestCase {
     // trusts over the CP registration label (`environment.gatewayID`, "127" —
     // chosen purely for relay-routing, see the harness header comment).
     XCTAssertEqual(profile.gatewayID, environment.identityGatewayID)
+    // The security invariant `AccountConnectFeature.connect` enforces, proven
+    // end to end against real processes: the key the relay-reached gateway
+    // signed in with at `/identity` is the SAME key this account enrolled with
+    // the control plane. `connect` throws `.verificationFailed` (installing
+    // nothing) when they differ, so reaching this line at all already means
+    // the cross-check passed — asserting it here keeps the invariant readable
+    // and pins that the CP really does ship `publicKey` on the wire.
+    XCTAssertFalse(gateway.publicKey.isEmpty)
+    XCTAssertEqual(profile.profile.publicKey, gateway.publicKey)
     XCTAssertEqual(profile.profile.mode, .relay)
     XCTAssertTrue(profile.profile.secure)
     XCTAssertEqual(profile.profile.managementPort, environment.relayPort)

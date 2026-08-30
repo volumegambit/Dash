@@ -64,12 +64,17 @@ struct ControlPlaneClientTests {
 
     #expect(
       gateways == [
-        GatewayInfoDTO(gatewayId: "gw-1", subdomain: "mygw.relay.dash.example", status: "online")
+        GatewayInfoDTO(
+          gatewayId: "gw-1",
+          subdomain: "mygw.relay.dash.example",
+          status: "online",
+          publicKey: "pk-1"
+        )
       ]
     )
     let request = try #require(URLProtocolStub.requests.last)
     #expect(request.httpMethod == "GET")
-    #expect(request.url?.absoluteString == "https://api.dash.example/v1/gateways")
+    #expect(request.url?.absoluteString == "https://cp.dash.test/v1/gateways")
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-abc")
   }
 
@@ -110,7 +115,7 @@ struct ControlPlaneClientTests {
     #expect(request.httpMethod == "POST")
     #expect(
       request.url?.absoluteString
-        == "https://api.dash.example/v1/gateways/gw-1/pairings/pairing-id-v1"
+        == "https://cp.dash.test/v1/gateways/gw-1/pairings/pairing-id-v1"
     )
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-xyz")
     let body = try #require(request.httpBody)
@@ -163,7 +168,7 @@ struct ControlPlaneClientTests {
     #expect(request.httpMethod == "DELETE")
     #expect(
       request.url?.absoluteString
-        == "https://api.dash.example/v1/gateways/gw-1/pairings/pairing-1"
+        == "https://cp.dash.test/v1/gateways/gw-1/pairings/pairing-1"
     )
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-del")
   }
@@ -234,7 +239,7 @@ private func makeConfig() throws -> AccountAuthConfig {
   try withConfigBundle([
     "DashClerkFrontendAPI": "resolved-seahorse-39.clerk.accounts.dev",
     "DashClerkClientID": "test-client-id",
-    "DashControlPlaneURL": "https://api.dash.example",
+    "DashControlPlaneURL": "https://cp.dash.test",
   ]) { bundle in
     try AccountAuthConfig.fromBundle(bundle)
   }

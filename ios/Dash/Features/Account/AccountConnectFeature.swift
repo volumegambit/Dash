@@ -12,7 +12,12 @@ enum AccountConnectError: Error, Equatable {
   /// (`grant.status != "active"`).
   case pendingApproval
   /// The relay-verified gateway (health/identity/agents/chat probe) rejected
-  /// or failed to reach the newly minted grant.
+  /// or failed to reach the newly minted grant — OR the gateway it reached
+  /// answered `/identity` with a public key that does NOT match the one the
+  /// account enrolled with the control plane. Deliberately the same case: a
+  /// caller (and the copy it shows) must not have to distinguish "couldn't
+  /// verify" from "verified something else", and an attacker learns nothing
+  /// from the difference.
   case verificationFailed
   /// The verified pairing could not be installed (Keychain/metadata).
   case installFailed
@@ -114,6 +119,19 @@ final class AccountConnectFeature {
         throw AccountConnectError.verificationFailed
       }
     #endif
+
+    // The security hinge of the whole account-connect path. Everything above
+    // trusts the CP for WHERE to connect (`gateway.subdomain`) and the relay
+    // for WHAT answered; only this compares the two. `verified.identity` is
+    // the gateway's own signed-in-fact answer from `/identity` over the
+    // established relay connection; `gateway.publicKey` is what the account
+    // enrolled through Mission Control. If they disagree, the grant is thrown
+    // away UNINSTALLED — no Keychain write, no profile, nothing to resume
+    // later. Constant-time comparison is unnecessary: both values are public
+    // keys, neither is a secret.
+    guard verified.identity.publicKey == gateway.publicKey else {
+      throw AccountConnectError.verificationFailed
+    }
 
     let installed: ConnectionProfileSnapshot
     do {
