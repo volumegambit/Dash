@@ -22,6 +22,7 @@ import {
   createLegacyWireChatAdapter,
   disposePendingConversationRuntime,
   enrollGateway,
+  healEnrolledGatewayChatToken,
   isSetupConfigured,
   makePackagedSpawner,
   parseConversationInvalidations,
@@ -948,6 +949,58 @@ describe('enrollGateway', () => {
       keychain,
       getChatToken: async () => null,
       controlPlaneClient: { createGateway, setWebChatToken } as never,
+    });
+
+    expect(setWebChatToken).not.toHaveBeenCalled();
+  });
+});
+
+describe('healEnrolledGatewayChatToken', () => {
+  it('re-pushes the chat token for an already-enrolled gateway on launch', async () => {
+    const setWebChatToken = vi.fn().mockResolvedValue(undefined);
+
+    await healEnrolledGatewayChatToken({
+      getIssuedGateway: async () => ({ gatewayId: 'alice-mbp' }),
+      getChatToken: async () => 'chat-capability',
+      controlPlaneClient: { setWebChatToken } as never,
+    });
+
+    expect(setWebChatToken).toHaveBeenCalledWith('alice-mbp', 'chat-capability');
+  });
+
+  it('no-ops when nothing is enrolled on this machine yet', async () => {
+    const setWebChatToken = vi.fn().mockResolvedValue(undefined);
+
+    await healEnrolledGatewayChatToken({
+      getIssuedGateway: async () => null,
+      getChatToken: async () => 'chat-capability',
+      controlPlaneClient: { setWebChatToken } as never,
+    });
+
+    expect(setWebChatToken).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a control-plane failure silently — never throws, never blocks launch', async () => {
+    const setWebChatToken = vi.fn().mockRejectedValue(new Error('control plane down'));
+
+    await expect(
+      healEnrolledGatewayChatToken({
+        getIssuedGateway: async () => ({ gatewayId: 'alice-mbp' }),
+        getChatToken: async () => 'chat-capability',
+        controlPlaneClient: { setWebChatToken } as never,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(setWebChatToken).toHaveBeenCalledWith('alice-mbp', 'chat-capability');
+  });
+
+  it('skips the upload when no chat token exists yet', async () => {
+    const setWebChatToken = vi.fn().mockResolvedValue(undefined);
+
+    await healEnrolledGatewayChatToken({
+      getIssuedGateway: async () => ({ gatewayId: 'alice-mbp' }),
+      getChatToken: async () => null,
+      controlPlaneClient: { setWebChatToken } as never,
     });
 
     expect(setWebChatToken).not.toHaveBeenCalled();

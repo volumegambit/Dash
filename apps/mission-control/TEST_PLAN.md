@@ -1185,6 +1185,7 @@ Dash for iOS no longer uses this card — it connects by account sign-in instead
 6. Create a conversation on iOS and open it in Mission Control. **Verify:** both clients show the same canonical history and active turn through the relay.
 7. Rename the conversation in Mission Control and delete it on iOS. **Verify:** both changes propagate without a duplicate or empty replacement conversation.
 8. Click **Revoke** next to the iOS device, then reopen Dash on iOS. **Verify:** it shows "Re-pair required"; on the phone, open Settings → Disconnect & Forget, then sign back in and tap the gateway again in the picker — no QR code needed — to reconnect.
+9. Simulate a pre-web enrollment: enroll a gateway, then clear its chat capability on the control plane so only the relay address remains. Quit and relaunch Mission Control. **Verify:** the relaunch pushes the chat capability again (no user action beyond relaunching) — Dash for iOS can now connect to that gateway from the picker without showing "needs to be re-enrolled."
 
 ---
 

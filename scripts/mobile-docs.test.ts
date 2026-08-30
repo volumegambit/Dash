@@ -168,7 +168,7 @@ describe('mobile documentation', () => {
     expect(guide).toContain('gateway picker');
     expect(guide).not.toContain('Scan the displayed QR code');
     expect(readme).toContain('run-live-account-flow-test.mjs');
-    expect(readme).not.toContain('paste, or entering a pairing code');
+    expect(readme).not.toContain('scanning, pasting, or entering a pairing code');
 
     expect(qa).toContain('## Sign-in and security');
     expect(qa).toContain('Disconnect & Forget, then reconnect from the gateway picker');
@@ -178,6 +178,13 @@ describe('mobile documentation', () => {
     expect(remote).not.toContain('Scan it with the Dash iOS or Android app');
 
     expect(troubleshooting).not.toContain('iPhone cannot reach a gateway on local Wi-Fi');
+
+    // notEnrolled has a working, self-service remedy (`healEnrolledGatewayChatToken` re-pushes
+    // the chat token on every local-gateway launch) — docs must point at that, not a dead end.
+    for (const document of [guide, troubleshooting, readme]) {
+      expect(document).toContain('updates the gateway');
+      expect(document).not.toContain('redo Remote access setup');
+    }
 
     expect(pairDeviceCard).toContain('Scan this code with the Dash mobile app for Android.');
     expect(pairDeviceCard).not.toContain('for Android or iOS');

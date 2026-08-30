@@ -244,7 +244,11 @@ account path is relay-only and never offers a QR/paste/manual fallback.
 A gateway only appears in the picker once it has been enrolled from Mission Control's
 **Settings → Devices → Remote access**, which registers both the relay address and this app's
 chat capability. A gateway enrolled before this app's account sign-in shipped has the relay
-address but never registered the chat capability; tapping it fails instead of connecting.
+address but never registered the chat capability; tapping it fails instead of connecting. Opening
+Mission Control once on the machine that runs that gateway updates the gateway's app access
+automatically — `healEnrolledGatewayChatToken` (`apps/mission-control/src/main/ipc.ts`) re-pushes
+the chat token for any already-enrolled gateway on every local-gateway launch, so no user action
+beyond starting Mission Control is needed.
 
 `GatewayPickerViewModel`'s `AccountCopy` constants are exact, binding UI copy — do not paraphrase
 them elsewhere:

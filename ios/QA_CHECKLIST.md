@@ -18,7 +18,7 @@ replace Keychain, cellular relay, or background execution evidence.
 - [ ] Fresh install -> tapping Sign In opens the browser sheet; completing sign-in shows the gateway picker
 - [ ] Empty account (no gateways enrolled) -> shows "No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine."
 - [ ] Control plane unreachable while loading gateways -> shows "Couldn't reach your Dash account service. Check your connection and try again." with a working Retry
-- [ ] Tap a gateway enrolled before this app's account sign-in shipped -> shows "This gateway needs to be re-enrolled from Mission Control before app access works."
+- [ ] Tap a gateway whose chat capability was never registered (simulate a pre-web enrollment) -> shows "This gateway needs to be re-enrolled from Mission Control before app access works."; opening Mission Control once on that gateway's machine heals it automatically, and the same gateway then connects
 - [ ] Connect to an enrolled gateway on cellular (no local Wi-Fi) -> HTTPS/WSS chat succeeds through the relay
 - [ ] Revoke this device in Mission Control -> Dash shows "Re-pair required"; Disconnect & Forget, then reconnect from the gateway picker without a QR code
 - [ ] Sign Out on the gateway picker -> disconnects any active gateway, drops the cached account token, and returns to Sign In

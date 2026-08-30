@@ -619,6 +619,27 @@ export async function enrollGateway(deps: {
   await deps.restart();
 }
 
+/**
+ * Heals a "pre-web enrollment" on every local-gateway launch: if this machine
+ * already has an issued (control-plane-enrolled) gateway, re-push its current
+ * chat token. A gateway enrolled before app chat-token registration existed —
+ * or whose enroll crashed between `setIssuedGateway` and the original
+ * `registerWebChatToken` call — has a relay address but no chat capability,
+ * which is what makes Dash for iOS show `.notEnrolled` when a user taps it in
+ * the gateway picker. `registerWebChatToken` is idempotent (last value wins)
+ * and best-effort (never throws), so calling it unconditionally on every
+ * launch is safe. No-ops when nothing is enrolled on this machine yet.
+ */
+export async function healEnrolledGatewayChatToken(deps: {
+  getIssuedGateway: () => Promise<{ gatewayId: string } | null>;
+  getChatToken: () => Promise<string | null>;
+  controlPlaneClient: Pick<ControlPlaneClient, 'setWebChatToken'>;
+}): Promise<void> {
+  const issued = await deps.getIssuedGateway();
+  if (!issued) return;
+  await registerWebChatToken(deps, issued.gatewayId);
+}
+
 /** Upload the gateway's chat capability for web pairings. Never throws. */
 async function registerWebChatToken(
   deps: {
@@ -1267,6 +1288,14 @@ export async function registerIpcHandlers(
     if (launchProfile.mode === 'local') {
       try {
         await gw.ensureRunning();
+        // See `healEnrolledGatewayChatToken` — heals a gateway enrolled
+        // before app chat-token registration existed, or an enroll that
+        // crashed mid-way, on every local-gateway launch.
+        await healEnrolledGatewayChatToken({
+          getIssuedGateway: () => gw.getIssuedGateway(),
+          getChatToken: () => gw.getChatToken(),
+          controlPlaneClient,
+        });
       } catch (err) {
         console.error('Gateway startup failed on MC launch:', err);
       }
