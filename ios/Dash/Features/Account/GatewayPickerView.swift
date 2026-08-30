@@ -34,34 +34,52 @@ final class GatewayPickerViewModel {
   private(set) var state: State = .loading
   private(set) var connectingGatewayID: String?
   private(set) var isSigningOut = false
+  /// Guards `load()`/`retry()` against overlapping requests — without it, a
+  /// slow stale request finishing after a fast fresh one can clobber the
+  /// fresh result (or a fresh `.error` can stomp a fresh `.loaded`).
+  private(set) var isRefreshing = false
   var connectError: String?
 
   @ObservationIgnored private let listGateways: @Sendable () async throws -> [GatewayInfoDTO]
   @ObservationIgnored private let connect: @MainActor @Sendable (GatewayInfoDTO) async throws -> Void
   @ObservationIgnored private let signOut: @MainActor @Sendable () async -> Void
+  /// Called when the account session itself turns out to be unusable
+  /// (`ControlPlaneError.signInRequired` from either a load or a connect
+  /// attempt) as well as after an explicit sign-out completes — either way,
+  /// the presenting nav layer should fall back to `SignInView`. The cached
+  /// account token is memory-only with no refresh path, so once it expires
+  /// there's nothing this screen's own Retry button can do.
+  @ObservationIgnored private let onSignedOut: @MainActor @Sendable () -> Void
 
   init(
     listGateways: @escaping @Sendable () async throws -> [GatewayInfoDTO],
     connect: @escaping @MainActor @Sendable (GatewayInfoDTO) async throws -> Void,
-    signOut: @escaping @MainActor @Sendable () async -> Void = {}
+    signOut: @escaping @MainActor @Sendable () async -> Void = {},
+    onSignedOut: @escaping @MainActor @Sendable () -> Void = {}
   ) {
     self.listGateways = listGateways
     self.connect = connect
     self.signOut = signOut
+    self.onSignedOut = onSignedOut
   }
 
   /// Loads the account's gateways. Safe to call repeatedly (e.g. from a
   /// `.task` that could re-run); always resets to `.loading` first so a
-  /// slow refetch doesn't show stale content indefinitely.
+  /// slow refetch doesn't show stale content indefinitely. No-ops while a
+  /// load/retry is already in flight.
   func load() async {
+    guard isRefreshing == false else { return }
     state = .loading
     await refresh()
   }
 
   /// Re-fetches without resetting to `.loading` first, so the Retry button's
-  /// tap target and the error copy stay on screen while the request is in
-  /// flight rather than flashing a spinner.
+  /// tap target and the error copy stay on screen (with the button disabled
+  /// via `isRefreshing`) while the request is in flight rather than flashing
+  /// a spinner. No-ops while a load/retry is already in flight, so rapid
+  /// double-taps issue exactly one request.
   func retry() async {
+    guard isRefreshing == false else { return }
     await refresh()
   }
 
@@ -72,6 +90,8 @@ final class GatewayPickerViewModel {
     defer { connectingGatewayID = nil }
     do {
       try await connect(gateway)
+    } catch ControlPlaneError.signInRequired {
+      onSignedOut()
     } catch {
       connectError = Self.copy(forConnectFailure: error)
     }
@@ -82,12 +102,17 @@ final class GatewayPickerViewModel {
     isSigningOut = true
     defer { isSigningOut = false }
     await signOut()
+    onSignedOut()
   }
 
   private func refresh() async {
+    isRefreshing = true
+    defer { isRefreshing = false }
     do {
       let gateways = try await listGateways()
       state = gateways.isEmpty ? .empty : .loaded(gateways.sorted { $0.subdomain < $1.subdomain })
+    } catch ControlPlaneError.signInRequired {
+      onSignedOut()
     } catch {
       // Binding: a load failure is ALWAYS `.error`, never `.empty` — an
       // unreachable control plane must not be confused with "no gateways
@@ -109,7 +134,14 @@ final class GatewayPickerViewModel {
     }
     if let controlPlaneError = error as? ControlPlaneError {
       switch controlPlaneError {
-      case .signInRequired, .unauthorized, .notEnrolled, .network, .decoding:
+      case .signInRequired:
+        // Defense in depth: `connectTapped` already intercepts this case
+        // before reaching here (see the `catch ControlPlaneError.signInRequired`
+        // clause above) and routes it through `onSignedOut()` instead. Kept
+        // in this exhaustive switch so a future refactor that bypasses that
+        // early catch still gets a sane copy instead of a compiler error.
+        return AccountCopy.cpUnreachable
+      case .unauthorized, .notEnrolled, .network, .decoding:
         return AccountCopy.cpUnreachable
       }
     }
@@ -176,10 +208,17 @@ struct GatewayPickerView: View {
           .font(.subheadline)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
-        Button("Retry") {
+        Button {
           Task { await viewModel.retry() }
+        } label: {
+          if viewModel.isRefreshing {
+            ProgressView()
+          } else {
+            Text("Retry")
+          }
         }
         .buttonStyle(.borderedProminent)
+        .disabled(viewModel.isRefreshing)
         .accessibilityIdentifier("account.retry")
       }
       .padding(24)

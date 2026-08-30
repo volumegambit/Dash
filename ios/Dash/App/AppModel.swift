@@ -349,8 +349,10 @@ final class AppModel {
 
   /// Builds a `GatewayPickerViewModel` wired to this app's account/connect
   /// dependencies. `onSignedOut` lets the presenting view (which owns the
-  /// signed-in/signed-out toggle) fall back to `SignInView` once sign-out
-  /// completes.
+  /// signed-in/signed-out toggle) fall back to `SignInView` — the view model
+  /// invokes it itself both after an explicit sign-out completes AND when a
+  /// load/connect discovers the cached account token has gone stale
+  /// (`ControlPlaneError.signInRequired`).
   func makeGatewayPickerViewModel(
     onSignedOut: @escaping @MainActor @Sendable () -> Void
   ) -> GatewayPickerViewModel {
@@ -364,8 +366,8 @@ final class AppModel {
       },
       signOut: { [weak self] in
         await self?.signOutOfAccount()
-        onSignedOut()
-      }
+      },
+      onSignedOut: onSignedOut
     )
   }
 

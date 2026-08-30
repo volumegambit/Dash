@@ -98,9 +98,7 @@ struct GatewayPickerViewModelTests {
 
   @Test(
     "ControlPlaneError variants during connect map to the CP-unreachable copy",
-    arguments: [
-      ControlPlaneError.signInRequired, .unauthorized, .notEnrolled, .network, .decoding,
-    ]
+    arguments: [ControlPlaneError.unauthorized, .notEnrolled, .network, .decoding]
   )
   func controlPlaneErrorDuringConnectMapsToCPUnreachable(error: ControlPlaneError) async {
     let viewModel = GatewayPickerViewModel(
@@ -154,18 +152,82 @@ struct GatewayPickerViewModelTests {
     #expect(await callCount.value == 2)
   }
 
-  @Test("signing out invokes the injected sign-out closure")
-  func signOutTappedInvokesClosure() async {
-    let recorder = SignOutRecorder()
+  @Test("signing out invokes the injected sign-out closure, then signals the nav layer")
+  func signOutTappedInvokesClosureThenSignalsSignedOut() async {
+    let signOutRecorder = SignOutRecorder()
+    let signedOutRecorder = SignedOutRecorder()
     let viewModel = GatewayPickerViewModel(
       listGateways: { [] },
       connect: { _ in },
-      signOut: { await recorder.record() }
+      signOut: { await signOutRecorder.record() },
+      onSignedOut: { signedOutRecorder.record() }
     )
 
     await viewModel.signOutTapped()
 
-    #expect(await recorder.count == 1)
+    #expect(await signOutRecorder.count == 1)
+    #expect(signedOutRecorder.count == 1)
+  }
+
+  @Test("a signInRequired load failure signals the nav layer instead of an unrecoverable Retry loop")
+  func signInRequiredDuringLoadSignalsSignedOut() async {
+    let signedOutRecorder = SignedOutRecorder()
+    let viewModel = GatewayPickerViewModel(
+      listGateways: { throw ControlPlaneError.signInRequired },
+      connect: { _ in },
+      onSignedOut: { signedOutRecorder.record() }
+    )
+
+    await viewModel.load()
+
+    #expect(signedOutRecorder.count == 1)
+  }
+
+  @Test("a signInRequired connect failure signals the nav layer instead of a CP-unreachable dead end")
+  func signInRequiredDuringConnectSignalsSignedOut() async {
+    let signedOutRecorder = SignedOutRecorder()
+    let viewModel = GatewayPickerViewModel(
+      listGateways: { [] },
+      connect: { _ in throw ControlPlaneError.signInRequired },
+      onSignedOut: { signedOutRecorder.record() }
+    )
+
+    await viewModel.connectTapped(gatewayFixture())
+
+    #expect(signedOutRecorder.count == 1)
+    #expect(viewModel.connectError == nil)
+  }
+
+  @Test("rapid double-retry issues exactly one in-flight load")
+  func rapidDoubleRetryIssuesOneLoad() async {
+    let box = ViewModelBox()
+    let callCount = Counter()
+    let viewModel = GatewayPickerViewModel(
+      listGateways: {
+        let count = await callCount.increment()
+        if count == 1 {
+          // A genuinely reentrant second call, fired while the FIRST
+          // `listGateways()` is still suspended awaiting `callCount`'s actor
+          // hop above — this is the deterministic equivalent of "a rapid
+          // double-tap on Retry": `isRefreshing` was already flipped `true`
+          // synchronously before this call started, so this nested `retry()`
+          // must see it and no-op rather than issuing a second request.
+          await box.viewModel?.retry()
+        }
+        return [gatewayFixture()]
+      },
+      connect: { _ in }
+    )
+    box.viewModel = viewModel
+
+    await viewModel.load()
+
+    #expect(await callCount.value == 1)
+    guard case .loaded(let gateways) = viewModel.state else {
+      Issue.record("expected .loaded, got \(viewModel.state)")
+      return
+    }
+    #expect(gateways == [gatewayFixture()])
   }
 }
 
@@ -186,6 +248,30 @@ private actor SignOutRecorder {
   func record() {
     count += 1
   }
+}
+
+/// `onSignedOut` is `@MainActor @Sendable () -> Void` (synchronous), so a
+/// plain `@MainActor` class records it without the async/await ceremony an
+/// actor would need — the test itself already runs on `@MainActor`.
+@MainActor
+private final class SignedOutRecorder {
+  private(set) var count = 0
+
+  func record() {
+    count += 1
+  }
+}
+
+/// Lets a fake closure reach back into the view model it's constructing —
+/// used to fire a genuinely reentrant second call from inside the first
+/// call's in-flight fake work, deterministically exercising a re-entrancy
+/// guard without depending on task-scheduling timing. `@unchecked Sendable`
+/// because it's captured by `listGateways`'s plain `@Sendable` closure type
+/// (not a `@MainActor`-typed one); only ever touched from `@MainActor` test
+/// code in practice.
+@MainActor
+private final class ViewModelBox: @unchecked Sendable {
+  weak var viewModel: GatewayPickerViewModel?
 }
 
 private func gatewayFixture(

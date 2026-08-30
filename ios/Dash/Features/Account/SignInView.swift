@@ -14,62 +14,66 @@ struct SignInView: View {
   @State private var errorMessage: String?
 
   var body: some View {
-    ScrollView {
-      VStack(spacing: 28) {
-        Spacer(minLength: 24)
+    GeometryReader { proxy in
+      ScrollView {
+        VStack(spacing: 28) {
+          Spacer()
 
-        VStack(spacing: 16) {
-          Image(systemName: "person.crop.circle.badge.checkmark")
-            .font(.system(size: 68, weight: .medium))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(DashTheme.accent)
-            .accessibilityHidden(true)
+          VStack(spacing: 16) {
+            Image(systemName: "person.crop.circle.badge.checkmark")
+              .font(.system(size: 68, weight: .medium))
+              .symbolRenderingMode(.hierarchical)
+              .foregroundStyle(DashTheme.accent)
+              .accessibilityHidden(true)
 
-          VStack(spacing: 8) {
-            Text("Sign in to Dash")
-              .font(.largeTitle.bold())
-              .multilineTextAlignment(.center)
-            Text("Sign in with your Dash account to reach the gateways you've enrolled.")
-              .font(.body)
-              .foregroundStyle(.secondary)
-              .multilineTextAlignment(.center)
-          }
-        }
-
-        Button {
-          Task { await signInTapped() }
-        } label: {
-          HStack {
-            if isSigningIn {
-              ProgressView()
-                .tint(.white)
+            VStack(spacing: 8) {
+              Text("Sign in to Dash")
+                .font(.largeTitle.bold())
+                .multilineTextAlignment(.center)
+              Text("Sign in with your Dash account to reach the gateways you've enrolled.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             }
-            Text(isSigningIn ? "Signing In" : "Sign In")
           }
-          .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(isSigningIn)
-        .accessibilityIdentifier("account.signin")
 
-        if let errorMessage {
-          Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-            .font(.subheadline)
-            .foregroundStyle(.red)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-            .accessibilityElement(children: .combine)
-        }
+          Button {
+            Task { await signInTapped() }
+          } label: {
+            HStack {
+              if isSigningIn {
+                ProgressView()
+                  .tint(.white)
+              }
+              Text(isSigningIn ? "Signing In" : "Sign In")
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+          }
+          .buttonStyle(.borderedProminent)
+          .disabled(isSigningIn)
+          .accessibilityIdentifier("account.signin")
 
-        Spacer(minLength: 12)
+          if let errorMessage {
+            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+              .font(.subheadline)
+              .foregroundStyle(.red)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(16)
+              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+              .accessibilityElement(children: .combine)
+          }
+
+          Spacer()
+        }
+        .frame(minHeight: proxy.size.height)
+        .frame(maxWidth: 520)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity)
       }
-      .frame(maxWidth: 520)
-      .padding(.horizontal, 24)
-      .frame(maxWidth: .infinity)
     }
     .background(Color(uiColor: .systemGroupedBackground))
-    .navigationTitle("Connect")
+    .navigationTitle("Sign In")
     .navigationBarTitleDisplayMode(.inline)
   }
 

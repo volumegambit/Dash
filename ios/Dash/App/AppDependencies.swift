@@ -114,8 +114,18 @@ struct AccountFeatureFactory: Sendable {
     )
   }
 
+  /// `UIDevice.current.name` is the MODEL name (e.g. "iPhone"), not the
+  /// user's custom device name, on iOS 16+ without the
+  /// `com.apple.developer.device-information.user-assigned-device-name`
+  /// entitlement — a literal `"iPhone · \(UIDevice.current.name)"` would
+  /// read as the redundant "iPhone · iPhone". Append a short, stable-per-app
+  /// suffix instead so MC's device list can tell two same-model phones
+  /// apart.
   static func defaultDeviceLabel() -> String {
-    "iPhone · \(UIDevice.current.name)"
+    let name = UIDevice.current.name
+    let suffix = UIDevice.current.identifierForVendor.map { String($0.uuidString.suffix(4)) }
+    guard let suffix else { return name }
+    return "\(name) (\(suffix))"
   }
 
   static let unavailable: AccountFeatureFactory = {
