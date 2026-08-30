@@ -6,10 +6,10 @@
   "api": "anthropic-messages",
   "models": [
     {
-      "id": "claude-opus-4-8",
+      "id": "claude-opus-5",
       "contextWindow": 1000000,
       "maxTokens": 128000,
-      "name": "Claude Opus 4.8",
+      "name": "Claude Opus 5",
       "reasoning": true,
       "input": [
         "text",
@@ -23,20 +23,20 @@
       }
     },
     {
-      "id": "claude-sonnet-4-6",
+      "id": "claude-sonnet-5",
       "contextWindow": 1000000,
-      "maxTokens": 64000,
-      "name": "Claude Sonnet 4.6",
+      "maxTokens": 128000,
+      "name": "Claude Sonnet 5",
       "reasoning": true,
       "input": [
         "text",
         "image"
       ],
       "cost": {
-        "input": 3,
-        "output": 15,
-        "cacheRead": 0.3,
-        "cacheWrite": 3.75
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
       }
     },
     {
@@ -98,7 +98,7 @@
       "tier": 2
     }
   ],
-  "reviewedAt": "2026-07-05",
+  "reviewedAt": "2026-08-30",
   "ui": {
     "keyConsoleUrl": "https://console.anthropic.com/settings/keys",
     "keyPlaceholder": "sk-ant-...",

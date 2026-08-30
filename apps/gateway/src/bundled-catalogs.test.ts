@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ModelsFetchSpec } from '@dash/plugin-sdk';
-import { RESERVED_PROVIDER_IDS, validateProviderCatalog } from '@dash/plugins';
+import { RESERVED_PROVIDER_IDS, findCatalogPattern, validateProviderCatalog } from '@dash/plugins';
 
 const DIR = fileURLToPath(new URL('../plugins/dash-core-providers/providers', import.meta.url));
 
@@ -54,10 +54,16 @@ describe('bundled dash-core-providers catalogs (checked-in JSON invariants)', ()
       'gemini-*-tts*',
       'gemini-robotics-*',
       'gemini-*-computer-use*',
+      'gemini-*transcribe*',
+      'gemini-*native-audio*',
+      'gemini-*-live-*',
       'imagen-*',
       'veo-*',
       'lyria-*',
       'nano-banana-*',
+      'deep-research-*',
+      'antigravity-*',
+      'aqa',
     ]);
   });
 
@@ -85,5 +91,67 @@ describe('bundled dash-core-providers catalogs (checked-in JSON invariants)', ()
     const cat = validateProviderCatalog(await readCatalog('moonshotai'));
     expect(cat.id).toBe('moonshotai');
     expect(cat.baseUrl).toBe('https://api.moonshot.ai/v1');
+  });
+
+  it('moonshotai ranks kimi-k3 above every k2 generation', async () => {
+    // K3 shipped with no matching glob, so it was invisible to every user until
+    // `kimi-k3*` was added. Pin the ordering so a future k2 edit can't outrank it.
+    const cat = validateProviderCatalog(await readCatalog('moonshotai'));
+    const k3 = findCatalogPattern(cat, 'kimi-k3');
+    expect(k3?.pattern).toBe('kimi-k3*');
+    const k2Tiers = (cat.supportedPatterns ?? [])
+      .filter((p) => p.pattern.startsWith('kimi-k2'))
+      .map((p) => p.tier);
+    expect(k2Tiers.length).toBeGreaterThan(0);
+    expect(Math.min(...k2Tiers)).toBeGreaterThan(k3?.tier ?? Number.POSITIVE_INFINITY);
+  });
+
+  it('openai denies the non-chat modality families via excludedPatterns', async () => {
+    const cat = validateProviderCatalog(await readCatalog('openai'));
+    expect(cat.excludedPatterns).toEqual([
+      'text-embedding-*',
+      'omni-moderation-*',
+      'whisper-*',
+      'tts-1*',
+      '*-tts*',
+      '*-transcribe*',
+      'gpt-audio*',
+      'gpt-realtime*',
+      'gpt-image-*',
+      'chatgpt-image-*',
+      'sora-*',
+      '*-deep-research*',
+      '*-search-preview*',
+      'gpt-5-search-api*',
+      'davinci*',
+      'babbage-*',
+    ]);
+  });
+
+  it('openai lists gpt-5.6* after the codex glob so codex ids keep their tier', async () => {
+    // findCatalogPattern returns the FIRST matching allow pattern, so a
+    // `gpt-5.6*` entry placed above `gpt-*-codex*` would swallow a future
+    // gpt-5.6-codex and demote it to the generic 5.6 tier.
+    const cat = validateProviderCatalog(await readCatalog('openai'));
+    const patterns = (cat.supportedPatterns ?? []).map((p) => p.pattern);
+    expect(patterns).toContain('gpt-5.6*');
+    expect(patterns.indexOf('gpt-*-codex*')).toBeLessThan(patterns.indexOf('gpt-5.6*'));
+    expect(findCatalogPattern(cat, 'gpt-5.6-codex')?.pattern).toBe('gpt-*-codex*');
+    expect(findCatalogPattern(cat, 'gpt-5.6-sol')?.pattern).toBe('gpt-5.6*');
+  });
+
+  it('no catalog deny glob shadows its own static bootstrap models', async () => {
+    // excludedPatterns short-circuits before the allow list, so an over-broad
+    // deny silently removes a bootstrap model for users with zero credentials.
+    const files = (await readdir(DIR)).filter((f) => f.endsWith('.json')).sort();
+    for (const f of files) {
+      const cat = validateProviderCatalog(JSON.parse(await readFile(join(DIR, f), 'utf-8')));
+      for (const model of cat.models) {
+        expect(
+          findCatalogPattern(cat, model.id),
+          `${f}: static "${model.id}" resolves to no pattern`,
+        ).not.toBeNull();
+      }
+    }
   });
 });
