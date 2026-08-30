@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -36,6 +37,22 @@ export interface PairingRecord {
   deviceLabel: string | null;
   clientKind: ClientKind;
   status: 'active' | 'revoked';
+  createdAt: number;
+}
+
+/**
+ * A registered signer device: an account-scoped Ed25519 public key an iOS/
+ * signer client enrolled to co-sign gateway operations (Tasks 3/5/7). Keyed
+ * by `(accountId, publicKey)` — re-registering the same key for the same
+ * account returns the SAME `signerId`, never a duplicate row.
+ */
+export interface SignerRecord {
+  signerId: string;
+  accountId: string;
+  /** Raw Ed25519 public key, base64url — validated by the caller (see
+   *  `ProvisioningService.registerSigner`), stored verbatim here. */
+  publicKey: string;
+  label: string;
   createdAt: number;
 }
 
@@ -82,6 +99,19 @@ export interface Store {
   addPairing(r: Omit<PairingRecord, 'status' | 'createdAt'>): PairingRecord;
   listPairings(gatewayId: string): PairingRecord[];
   revokePairing(gatewayId: string, id: string): boolean;
+  /** All signers registered for `accountId`, newest-agnostic (no ordering guarantee). */
+  listSigners(accountId: string): SignerRecord[];
+  /**
+   * Register a signer's public key for `accountId`. Idempotent on
+   * `(accountId, publicKey)`: a matching existing row keeps its `signerId` and
+   * `createdAt`, only its `label` is overwritten. Otherwise a fresh row is
+   * inserted with a newly minted `signerId`.
+   */
+  addSigner(r: { accountId: string; publicKey: string; label: string }): SignerRecord;
+  /** Count of signers registered for `accountId` (0 when none). */
+  signerCount(accountId: string): number;
+  /** The signer, scoped to `accountId` — `null` if unknown OR owned by another account. */
+  signerByAccountAndId(accountId: string, signerId: string): SignerRecord | null;
 }
 
 interface GatewayRow {
@@ -101,6 +131,14 @@ interface PairingRow {
   device_label: string | null;
   client_kind: string;
   status: string;
+  created_at: number;
+}
+
+interface SignerRow {
+  id: string;
+  account_id: string;
+  public_key: string;
+  label: string | null;
   created_at: number;
 }
 
@@ -134,8 +172,17 @@ export class SqliteStore implements Store {
         status          TEXT NOT NULL,
         created_at      INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS signers (
+        id         TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(account_id),
+        public_key TEXT NOT NULL,
+        label      TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(account_id, public_key)
+      );
       CREATE INDEX IF NOT EXISTS idx_gateways_account ON gateways(account_id);
       CREATE INDEX IF NOT EXISTS idx_pairings_gateway ON pairings(gateway_id);
+      CREATE INDEX IF NOT EXISTS idx_signers_account ON signers(account_id);
     `);
     // Guarded migration: a dev DB created before the pubkey model lacks
     // `public_key`. Add it if absent (CREATE TABLE IF NOT EXISTS won't alter an
@@ -274,6 +321,50 @@ export class SqliteStore implements Store {
     return result.changes > 0;
   }
 
+  listSigners(accountId: string): SignerRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM signers WHERE account_id = ?')
+      .all(accountId) as unknown as SignerRow[];
+    return rows.map((row) => this.toSigner(row));
+  }
+
+  addSigner(r: { accountId: string; publicKey: string; label: string }): SignerRecord {
+    const existing = this.db
+      .prepare('SELECT * FROM signers WHERE account_id = ? AND public_key = ?')
+      .get(r.accountId, r.publicKey) as SignerRow | undefined;
+    if (existing) {
+      this.db.prepare('UPDATE signers SET label = ? WHERE id = ?').run(r.label, existing.id);
+      return this.toSigner({ ...existing, label: r.label });
+    }
+    const record: SignerRecord = {
+      signerId: `sg-${randomBytes(6).toString('hex')}`,
+      accountId: r.accountId,
+      publicKey: r.publicKey,
+      label: r.label,
+      createdAt: this.now(),
+    };
+    this.db
+      .prepare(
+        'INSERT INTO signers (id, account_id, public_key, label, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(record.signerId, record.accountId, record.publicKey, record.label, record.createdAt);
+    return record;
+  }
+
+  signerCount(accountId: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM signers WHERE account_id = ?')
+      .get(accountId) as { n: number };
+    return row.n;
+  }
+
+  signerByAccountAndId(accountId: string, signerId: string): SignerRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM signers WHERE id = ? AND account_id = ?')
+      .get(signerId, accountId) as SignerRow | undefined;
+    return row ? this.toSigner(row) : null;
+  }
+
   /** Close the underlying database handle. */
   close(): void {
     this.db.close();
@@ -303,6 +394,16 @@ export class SqliteStore implements Store {
       deviceLabel: row.device_label,
       clientKind: row.client_kind as ClientKind,
       status: row.status as PairingRecord['status'],
+      createdAt: row.created_at,
+    };
+  }
+
+  private toSigner(row: SignerRow): SignerRecord {
+    return {
+      signerId: row.id,
+      accountId: row.account_id,
+      publicKey: row.public_key,
+      label: row.label ?? '',
       createdAt: row.created_at,
     };
   }

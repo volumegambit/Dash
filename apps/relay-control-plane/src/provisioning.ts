@@ -1,14 +1,18 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DialTokenSigner } from './dial-token-signer.js';
 import type { RelayAdminClient } from './relay-admin-client.js';
-import type { ClientKind, GatewayRecord, PairingRecord, Store } from './store.js';
+import type { ClientKind, GatewayRecord, PairingRecord, SignerRecord, Store } from './store.js';
 import { validateSubdomainLabel } from './subdomain.js';
 
 /** Thrown when a requested subdomain label is not DNS-safe or is reserved. */
 export class InvalidSubdomainError extends Error {}
 /** Thrown when a label is already claimed (active or burned — never recycled). */
 export class SubdomainTakenError extends Error {}
-/** Thrown when the supplied gateway public key is empty/malformed. */
+/**
+ * Thrown when a supplied public key is empty/malformed — the gateway pubkey
+ * (any non-empty string) or a signer pubkey (must base64url-decode to exactly
+ * 32 raw Ed25519 bytes and re-encode back to the identical string).
+ */
 export class InvalidPublicKeyError extends Error {}
 /**
  * Thrown when a `'web'` pairing is requested for a gateway whose owner has not
@@ -227,6 +231,49 @@ export class ProvisioningService {
       hexToRelayHash(pairing.credentialHash),
     );
     return true;
+  }
+
+  /**
+   * Register a signer device's public key for `accountId`. Idempotent per
+   * `(accountId, publicKey)` — a matching prior registration keeps its
+   * `signerId` and just refreshes `label`, matching the store's upsert.
+   * Throws `InvalidPublicKeyError` (nothing persisted) when `publicKey` does
+   * not decode to exactly 32 raw Ed25519 bytes in canonical unpadded
+   * base64url — the same form the relay's `cnf`/JWK convention requires (see
+   * `apps/relay/src/assertion.ts`).
+   */
+  registerSigner(accountId: string, opts: { publicKey: string; label: string }): SignerRecord {
+    if (!isValidEd25519PublicKey(opts.publicKey)) {
+      throw new InvalidPublicKeyError(`invalid signer public key: ${opts.publicKey}`);
+    }
+    this.#store.createAccount(accountId);
+    return this.#store.addSigner({
+      accountId,
+      publicKey: opts.publicKey,
+      label: opts.label,
+    });
+  }
+
+  /** List the signers registered for `accountId`. */
+  listSigners(accountId: string): SignerRecord[] {
+    return this.#store.listSigners(accountId);
+  }
+}
+
+/**
+ * True iff `key` is a canonical, unpadded base64url encoding of exactly 32
+ * raw bytes (a raw Ed25519 public key). Re-encoding and comparing catches
+ * padded (`=`), standard-alphabet (`+`/`/`), or otherwise non-canonical
+ * strings that `Buffer.from` would otherwise decode leniently — the wire
+ * format must match exactly what `apps/relay/src/assertion.ts`'s JWK `x`
+ * convention expects.
+ */
+function isValidEd25519PublicKey(key: string): boolean {
+  try {
+    const decoded = Buffer.from(key, 'base64url');
+    return decoded.length === 32 && decoded.toString('base64url') === key;
+  } catch {
+    return false;
   }
 }
 

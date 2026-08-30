@@ -1,4 +1,4 @@
-import { createPublicKey, generateKeyPairSync } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import {
   DurableCredentialStore,
@@ -23,6 +23,11 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 // A gateway identity keypair for /gw/dial-token tests; its raw pubkey is cnf.
 const gwKeys = generateKeyPairSync('ed25519');
 const gwPubB64 = (gwKeys.publicKey.export({ format: 'jwk' }) as { x: string }).x;
+
+/** A fresh, canonical unpadded-base64url-encoded 32-byte Ed25519-shaped key. */
+function freshSignerKey(): string {
+  return randomBytes(32).toString('base64url');
+}
 
 let relayServer: RelayServer;
 let relayStore: DurableCredentialStore;
@@ -752,6 +757,95 @@ describe('web pairings return the registered chat token', () => {
       clientKind: 'web',
     });
     expect(crossAccount.status).toBe(404);
+  });
+});
+
+describe('POST /v1/signers', () => {
+  it('registers a signer, returning 201 + an sg-<hex12> id', async () => {
+    const key = freshSignerKey();
+    const res = await req('POST', '/v1/signers', 'a1', { publicKey: key, label: 'iPhone 15' });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { signerId: string };
+    expect(body.signerId).toMatch(/^sg-[0-9a-f]{12}$/);
+    // The projection never echoes the key back.
+    expect(Object.keys(body)).toEqual(['signerId']);
+  });
+
+  it('is idempotent per (accountId, publicKey): re-registering returns the same id and updates the label', async () => {
+    const key = freshSignerKey();
+    const first = (await (
+      await req('POST', '/v1/signers', 'a1', { publicKey: key, label: 'iPhone 15' })
+    ).json()) as { signerId: string };
+
+    const second = (await (
+      await req('POST', '/v1/signers', 'a1', { publicKey: key, label: 'iPhone 15 Pro' })
+    ).json()) as { signerId: string };
+    expect(second.signerId).toBe(first.signerId);
+
+    const list = (await (await req('GET', '/v1/signers', 'a1')).json()) as {
+      signers: Array<{ signerId: string; label: string }>;
+    };
+    expect(list.signers).toHaveLength(1);
+    expect(list.signers[0]).toMatchObject({ signerId: first.signerId, label: 'iPhone 15 Pro' });
+  });
+
+  it('400s a key with the wrong byte length (31 bytes)', async () => {
+    const shortKey = randomBytes(31).toString('base64url');
+    const res = await req('POST', '/v1/signers', 'a1', { publicKey: shortKey, label: 'bad' });
+    expect(res.status).toBe(400);
+
+    const list = (await (await req('GET', '/v1/signers', 'a1')).json()) as { signers: unknown[] };
+    expect(list.signers).toEqual([]);
+  });
+
+  it('400s malformed base64url', async () => {
+    const res = await req('POST', '/v1/signers', 'a1', {
+      publicKey: 'not valid base64url!!',
+      label: 'bad',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s a non-canonical (padded) encoding even though it decodes to 32 bytes', async () => {
+    const padded = `${freshSignerKey()}==`;
+    const res = await req('POST', '/v1/signers', 'a1', { publicKey: padded, label: 'bad' });
+    expect(res.status).toBe(400);
+  });
+
+  it('401s an unauthenticated request', async () => {
+    const res = await req('POST', '/v1/signers', undefined, {
+      publicKey: freshSignerKey(),
+      label: 'iPhone',
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /v1/signers', () => {
+  it('401s an unauthenticated request', async () => {
+    const res = await req('GET', '/v1/signers');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists only the calling account’s signers, projected without publicKey', async () => {
+    await req('POST', '/v1/signers', 'a1', { publicKey: freshSignerKey(), label: 'a1-phone' });
+    await req('POST', '/v1/signers', 'a2', { publicKey: freshSignerKey(), label: 'a2-phone' });
+
+    const res = await req('GET', '/v1/signers', 'a1');
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const body = JSON.parse(raw) as { signers: Array<Record<string, unknown>> };
+    expect(body.signers).toHaveLength(1);
+    expect(body.signers[0]).toMatchObject({ label: 'a1-phone', createdAt: expect.any(Number) });
+    expect(Object.keys(body.signers[0]).sort()).toEqual(['createdAt', 'label', 'signerId']);
+    // The raw key must never reach the wire through this route.
+    expect(raw).not.toContain('publicKey');
+  });
+
+  it('returns an empty list for an account with no signers', async () => {
+    const res = await req('GET', '/v1/signers', 'a1');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ signers: [] });
   });
 });
 

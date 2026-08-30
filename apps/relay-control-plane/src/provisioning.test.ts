@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import {
   DurableCredentialStore,
@@ -8,9 +8,18 @@ import {
   verifyDialToken,
 } from '@dash/relay';
 import { DialTokenSigner } from './dial-token-signer.js';
-import { ProvisioningService, WebChatTokenMissingError } from './provisioning.js';
+import {
+  InvalidPublicKeyError,
+  ProvisioningService,
+  WebChatTokenMissingError,
+} from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
+
+/** A fresh, canonical unpadded-base64url-encoded 32-byte Ed25519-shaped key. */
+function freshSignerKey(): string {
+  return randomBytes(32).toString('base64url');
+}
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 
@@ -159,6 +168,101 @@ describe('ProvisioningService.deleteGateway', () => {
     expect(ok).toBe(true);
     expect(store.getGateway(gw.gatewayId)?.status).toBe('revoked');
     expect(calls.revokeGateway).toEqual([['acct-1', gw.gatewayId]]);
+  });
+});
+
+describe('ProvisioningService.registerSigner', () => {
+  it('registers a signer, minting an sg-<hex12> id', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+    const key = freshSignerKey();
+
+    const signer = service.registerSigner('acct-1', { publicKey: key, label: 'iPhone 15' });
+
+    expect(signer.signerId).toMatch(/^sg-[0-9a-f]{12}$/);
+    expect(signer.publicKey).toBe(key);
+    expect(signer.label).toBe('iPhone 15');
+    expect(store.listSigners('acct-1')).toEqual([signer]);
+  });
+
+  it('is idempotent per (accountId, publicKey): re-registering returns the same id, label updated', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+    const key = freshSignerKey();
+
+    const first = service.registerSigner('acct-1', { publicKey: key, label: 'iPhone 15' });
+    const second = service.registerSigner('acct-1', { publicKey: key, label: 'iPhone 15 Pro' });
+
+    expect(second.signerId).toBe(first.signerId);
+    expect(second.label).toBe('iPhone 15 Pro');
+    expect(store.listSigners('acct-1')).toHaveLength(1);
+  });
+
+  it('rejects a key that does not base64url-decode to 32 bytes, without persisting anything', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+    const shortKey = randomBytes(31).toString('base64url');
+
+    expect(() => service.registerSigner('acct-1', { publicKey: shortKey, label: 'bad' })).toThrow(
+      InvalidPublicKeyError,
+    );
+    expect(store.listSigners('acct-1')).toEqual([]);
+  });
+
+  it('rejects malformed base64url, without persisting anything', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+
+    expect(() =>
+      service.registerSigner('acct-1', { publicKey: 'not valid base64url!!', label: 'bad' }),
+    ).toThrow(InvalidPublicKeyError);
+    expect(store.listSigners('acct-1')).toEqual([]);
+  });
+
+  it('rejects a non-canonical encoding (padded / non-base64url alphabet) even though it decodes to 32 bytes', () => {
+    const { client } = spyRelayClient();
+    const { store, service } = makeService(client);
+    const raw = randomBytes(32);
+    const paddedKey = `${raw.toString('base64url')}==`;
+    const standardBase64Key = raw.toString('base64'); // may contain '+'/'/'
+
+    expect(() => service.registerSigner('acct-1', { publicKey: paddedKey, label: 'bad' })).toThrow(
+      InvalidPublicKeyError,
+    );
+    expect(() =>
+      service.registerSigner('acct-1', { publicKey: standardBase64Key, label: 'bad' }),
+    ).toThrow(InvalidPublicKeyError);
+    expect(store.listSigners('acct-1')).toEqual([]);
+  });
+
+  it('allows the same public key to be registered independently by different accounts', () => {
+    const { client } = spyRelayClient();
+    const { service } = makeService(client);
+    const key = freshSignerKey();
+
+    const a1 = service.registerSigner('acct-1', { publicKey: key, label: 'A' });
+    const a2 = service.registerSigner('acct-2', { publicKey: key, label: 'B' });
+
+    expect(a1.signerId).not.toBe(a2.signerId);
+  });
+});
+
+describe('ProvisioningService.listSigners', () => {
+  it('returns only the calling account’s signers', () => {
+    const { client } = spyRelayClient();
+    const { service } = makeService(client);
+
+    service.registerSigner('acct-1', { publicKey: freshSignerKey(), label: 'a' });
+    service.registerSigner('acct-2', { publicKey: freshSignerKey(), label: 'b' });
+
+    expect(service.listSigners('acct-1')).toHaveLength(1);
+    expect(service.listSigners('acct-1')[0]?.label).toBe('a');
+  });
+
+  it('returns an empty list for an account with no signers', () => {
+    const { client } = spyRelayClient();
+    const { service } = makeService(client);
+    expect(service.listSigners('acct-1')).toEqual([]);
   });
 });
 

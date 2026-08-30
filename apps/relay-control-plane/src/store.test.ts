@@ -285,6 +285,15 @@ describe('SqliteStore', () => {
         expect(migrated.getWebChatToken('gw-old')).toBeNull();
         expect(migrated.setWebChatToken('gw-old', 'chat-token')).toBe(true);
         expect(migrated.getWebChatToken('gw-old')).toBe('chat-token');
+        // The legacy DB predates signers entirely — CREATE TABLE IF NOT EXISTS
+        // creates it fresh on open, so it is immediately usable.
+        expect(migrated.listSigners('acct-1')).toEqual([]);
+        const signer = migrated.addSigner({
+          accountId: 'acct-1',
+          publicKey: 'pk-new',
+          label: 'new device',
+        });
+        expect(migrated.listSigners('acct-1')).toEqual([signer]);
         migrated.close();
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -367,6 +376,86 @@ describe('SqliteStore', () => {
       });
       expect(store.getGatewayPublicKey('alice-mbp')).toBe('pk-alice');
       expect(store.getGatewayPublicKey('gw-missing')).toBeNull();
+    });
+  });
+
+  describe('signers', () => {
+    beforeEach(() => {
+      store.createAccount('acct-1');
+      store.createAccount('acct-2');
+    });
+
+    it('adds a signer and reads it back', () => {
+      const added = store.addSigner({
+        accountId: 'acct-1',
+        publicKey: 'pk-signer-1',
+        label: 'iPhone 15',
+      });
+      expect(added.signerId).toMatch(/^sg-[0-9a-f]{12}$/);
+      expect(added.accountId).toBe('acct-1');
+      expect(added.publicKey).toBe('pk-signer-1');
+      expect(added.label).toBe('iPhone 15');
+      expect(typeof added.createdAt).toBe('number');
+    });
+
+    it('is idempotent per (accountId, publicKey): same key returns the same id, label updated', () => {
+      const first = store.addSigner({
+        accountId: 'acct-1',
+        publicKey: 'pk-signer-1',
+        label: 'iPhone 15',
+      });
+      const second = store.addSigner({
+        accountId: 'acct-1',
+        publicKey: 'pk-signer-1',
+        label: 'iPhone 15 Pro',
+      });
+      expect(second.signerId).toBe(first.signerId);
+      expect(second.label).toBe('iPhone 15 Pro');
+      expect(second.createdAt).toBe(first.createdAt);
+      expect(store.listSigners('acct-1')).toHaveLength(1);
+      expect(store.listSigners('acct-1')[0]?.label).toBe('iPhone 15 Pro');
+    });
+
+    it('allows the SAME public key to be registered independently under different accounts', () => {
+      const a1 = store.addSigner({ accountId: 'acct-1', publicKey: 'pk-shared', label: 'A' });
+      const a2 = store.addSigner({ accountId: 'acct-2', publicKey: 'pk-shared', label: 'B' });
+      expect(a1.signerId).not.toBe(a2.signerId);
+      expect(store.listSigners('acct-1').map((s) => s.signerId)).toEqual([a1.signerId]);
+      expect(store.listSigners('acct-2').map((s) => s.signerId)).toEqual([a2.signerId]);
+    });
+
+    it('lists signers scoped to an account', () => {
+      store.addSigner({ accountId: 'acct-1', publicKey: 'pk-1', label: 'a' });
+      store.addSigner({ accountId: 'acct-1', publicKey: 'pk-2', label: 'b' });
+      store.addSigner({ accountId: 'acct-2', publicKey: 'pk-3', label: 'c' });
+
+      expect(
+        store
+          .listSigners('acct-1')
+          .map((s) => s.publicKey)
+          .sort(),
+      ).toEqual(['pk-1', 'pk-2']);
+      expect(store.listSigners('acct-2').map((s) => s.publicKey)).toEqual(['pk-3']);
+    });
+
+    it('returns an empty list for an account with no signers', () => {
+      expect(store.listSigners('acct-1')).toEqual([]);
+    });
+
+    it('counts signers per account', () => {
+      expect(store.signerCount('acct-1')).toBe(0);
+      store.addSigner({ accountId: 'acct-1', publicKey: 'pk-1', label: 'a' });
+      store.addSigner({ accountId: 'acct-1', publicKey: 'pk-2', label: 'b' });
+      store.addSigner({ accountId: 'acct-2', publicKey: 'pk-3', label: 'c' });
+      expect(store.signerCount('acct-1')).toBe(2);
+      expect(store.signerCount('acct-2')).toBe(1);
+    });
+
+    it('signerByAccountAndId returns the record for the owner, null for a wrong account or unknown id', () => {
+      const added = store.addSigner({ accountId: 'acct-1', publicKey: 'pk-1', label: 'a' });
+      expect(store.signerByAccountAndId('acct-1', added.signerId)).toEqual(added);
+      expect(store.signerByAccountAndId('acct-2', added.signerId)).toBeNull();
+      expect(store.signerByAccountAndId('acct-1', 'sg-missing')).toBeNull();
     });
   });
 });

@@ -252,6 +252,43 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ ok: true });
   });
 
+  // --- Signers (Tasks 3/5/7 depend on this registration surface) ---
+
+  app.post('/v1/signers', async (c) => {
+    const accountId = c.get('accountId');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      publicKey?: unknown;
+      label?: unknown;
+    };
+    const publicKey = typeof body.publicKey === 'string' ? body.publicKey : '';
+    const label = typeof body.label === 'string' ? body.label : '';
+    try {
+      const signer = provisioning.registerSigner(accountId, { publicKey, label });
+      return c.json({ signerId: signer.signerId }, 201);
+    } catch (err) {
+      if (err instanceof InvalidPublicKeyError) {
+        return c.json({ error: 'invalid public key' }, 400);
+      }
+      throw err;
+    }
+  });
+
+  /**
+   * A DELIBERATE projection: `publicKey` is never echoed back once
+   * registered — unlike a gateway's pubkey (which the iOS client must
+   * cross-check), nothing downstream needs a signer's key returned through
+   * this listing route, so it stays off the wire.
+   */
+  app.get('/v1/signers', (c) => {
+    const accountId = c.get('accountId');
+    const signers = provisioning.listSigners(accountId).map((signer) => ({
+      signerId: signer.signerId,
+      label: signer.label,
+      createdAt: signer.createdAt,
+    }));
+    return c.json({ signers });
+  });
+
   return app;
 }
 
