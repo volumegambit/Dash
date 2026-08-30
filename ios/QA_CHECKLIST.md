@@ -2,7 +2,7 @@
 
 Use this checklist for an installed build on real hardware. Leave a case unchecked until a tester
 has observed it directly. Simulator evidence may be linked for layout-only cases, but it does not
-replace camera, Keychain, local-network, cellular relay, or background execution evidence.
+replace Keychain, cellular relay, or background execution evidence.
 
 ## QA run metadata
 
@@ -13,16 +13,18 @@ replace camera, Keychain, local-network, cellular relay, or background execution
 - Tester: Not assigned
 - Evidence links: None yet
 
-## Pairing and security
+## Sign-in and security
 
-- [ ] Fresh install: camera denied -> paste/manual fallback remains usable
-- [ ] Local Network permission denied -> enable it in iOS Settings and reconnect without re-pairing
-- [ ] LAN v3 QR on same Wi-Fi -> pinned HTTPS/WSS health, agents, and chat succeed
-- [ ] Relay v2 QR on cellular -> HTTPS/WSS chat succeeds
-- [ ] Revoke this device in Mission Control -> iOS requests re-pairing
-- [ ] App termination/relaunch -> paired profile and device-only Keychain credential remain usable
-- [ ] Uninstall/reinstall -> app starts unpaired and never reconnects from Keychain material alone
-- [ ] Disconnect & Forget -> Keychain item and gateway cache are removed
+- [ ] Fresh install -> tapping Sign In opens the browser sheet; completing sign-in shows the gateway picker
+- [ ] Empty account (no gateways enrolled) -> shows "No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine."
+- [ ] Control plane unreachable while loading gateways -> shows "Couldn't reach your Dash account service. Check your connection and try again." with a working Retry
+- [ ] Tap a gateway enrolled before this app's account sign-in shipped -> shows "This gateway needs to be re-enrolled from Mission Control before app access works."
+- [ ] Connect to an enrolled gateway on cellular (no local Wi-Fi) -> HTTPS/WSS chat succeeds through the relay
+- [ ] Revoke this device in Mission Control -> Dash shows "Re-pair required"; Disconnect & Forget, then reconnect from the gateway picker without a QR code
+- [ ] Sign Out on the gateway picker -> disconnects any active gateway, drops the cached account token, and returns to Sign In
+- [ ] App termination/relaunch -> selected gateway profile and device-only Keychain credential remain usable
+- [ ] Uninstall/reinstall -> app starts signed out and never reconnects from Keychain material alone
+- [ ] Disconnect & Forget -> Keychain item and gateway cache are removed; account sign-in state is unaffected
 
 ## Conversation synchronization
 
@@ -36,7 +38,7 @@ replace camera, Keychain, local-network, cellular relay, or background execution
 
 - [ ] Attach four valid images; reject per-file and aggregate oversize cases
 - [ ] VoiceOver labels status and announces final response once
-- [ ] Largest Dynamic Type does not clip pairing, chat, agent, or settings flows
+- [ ] Largest Dynamic Type does not clip sign-in, chat, agent, or settings flows
 - [ ] Reduce Motion removes nonessential streaming/navigation animation
 - [ ] iPad split view works in full screen and multitasking widths
 - [ ] Hardware keyboard -> Tab traversal, Return-to-send, and cancel shortcuts work on iPad
@@ -44,5 +46,5 @@ replace camera, Keychain, local-network, cellular relay, or background execution
 ## Evidence notes
 
 For each checked item, record the device, OS, build commit, date, tester, and a screenshot or
-secret-free log link here. Describe failures without pasting pairing payloads, bearer tokens, relay
-credentials, Keychain values, or raw diagnostic URLs containing credentials.
+secret-free log link here. Describe failures without pasting account tokens, pairing payloads,
+bearer tokens, relay credentials, Keychain values, or raw diagnostic URLs containing credentials.

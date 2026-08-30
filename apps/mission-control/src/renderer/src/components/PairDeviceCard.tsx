@@ -27,11 +27,12 @@ export function qrPayload(i: PairingInfo): string {
 }
 
 /**
- * Read-only settings card that renders a QR code the Dash mobile app scans to
- * pair on Android or iOS. The QR encodes the gateway host, one phone-scoped mobile token, and,
- * over relay, the per-device relay credential; secrets are never shown as plaintext on screen.
- * The QR is built as an SVG data URI (pure JS, no canvas) so it renders
- * identically in Electron and under test.
+ * Read-only settings card that renders a QR code the Dash Android app scans to pair. (Dash for
+ * iOS connects by signing in to a Dash account instead — see the account sign-in flow — so this
+ * card no longer mentions it.) The QR encodes the gateway host, one phone-scoped mobile token,
+ * and, over relay, the per-device relay credential; secrets are never shown as plaintext on
+ * screen. The QR is built as an SVG data URI (pure JS, no canvas) so it renders identically in
+ * Electron and under test.
  */
 export function PairDeviceCard({
   onPairingIdChanged,
@@ -68,7 +69,7 @@ export function PairDeviceCard({
         Pair Device
       </h2>
       <p className="mb-4 text-xs text-muted">
-        Scan this code with the Dash mobile app for Android or iOS.
+        Scan this code with the Dash mobile app for Android.
       </p>
 
       {error && <p className="text-red text-sm">{error}</p>}

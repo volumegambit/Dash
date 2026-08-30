@@ -1,6 +1,6 @@
 ---
 title: Dash for iPhone and iPad
-description: Pair with your gateway, share conversations with Mission Control, and manage agents from iOS.
+description: Sign in to reach your gateway, share conversations with Mission Control, and manage agents from iOS.
 ---
 
 Dash for iOS is a native companion for your gateway. It lets you continue the same conversations
@@ -11,29 +11,34 @@ you see in Mission Control and manage agents without running an agent on the pho
   while offline, then reconciles with the gateway when the connection returns.
 </Note>
 
-## Pair your device
+## Sign in
 
-In Mission Control, open **Settings → Devices** and choose **Pair Device**.
+Dash for iOS connects to your gateway through your Dash account, not a pairing code.
 
 <Steps>
-  <Step title="Choose how to connect">
-    Use your local network when the phone can reach the gateway directly. Enable [Remote
-    Access](/remote-access) first when you want to connect away from home or the office.
+  <Step title="Enroll your gateway in Mission Control">
+    Open **Settings → Devices → Remote access**, sign in to Dash, and create a gateway if you
+    haven't already. Enrolling here is also what makes the gateway visible to the app.
   </Step>
-  <Step title="Open Dash on iOS">
-    Scan the displayed QR code. If camera access is unavailable, paste the complete pairing code or
-    enter the connection details manually.
+  <Step title="Sign in on iOS">
+    Open Dash and tap **Sign In**. A browser opens to the Dash sign-in page — sign in with the
+    same account you used in Mission Control, then the browser hands you back to the app.
   </Step>
-  <Step title="Confirm the gateway">
-    For local pairing, the QR also carries the gateway's exact TLS certificate fingerprint. Dash
-    pins that certificate before sending a token. The Conversations tab opens after the gateway
-    identity and mobile capabilities are accepted.
+  <Step title="Choose your gateway">
+    Dash lists every gateway enrolled in your account, by its address. Tap one to connect. The
+    Conversations tab opens once the gateway accepts the connection.
   </Step>
 </Steps>
 
-If pairing fails, check that the phone can reach the gateway, that the code has not been altered,
-and that both sides are up to date. A local certificate mismatch requires a fresh QR; Dash never
-falls back to plaintext. Also allow Local Network access in iOS Settings.
+Dash for iOS always connects through Dash's hosted relay, so it works the same way at home, at
+the office, or on cellular — there's no local-network step and no QR code to scan. The gateway
+picker's toolbar also has **Sign Out**, which disconnects this device and returns to Sign In.
+
+If something goes wrong, the gateway picker tells you exactly what:
+
+- **Couldn't reach your Dash account service. Check your connection and try again.** — check your connection and tap **Retry**.
+- **No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.** — open Remote access in Mission Control and enroll this machine.
+- **This gateway needs to be re-enrolled from Mission Control before app access works.** — its Remote access setup predates this app's sign-in support; redo Remote access setup for it from Mission Control.
 
 ## Use shared conversations
 
@@ -96,10 +101,11 @@ in Mission Control.
 Previously synced conversations and agents remain readable when the gateway is offline. You can
 keep a local draft, but creating, sending, renaming, deleting, and agent changes wait until the
 gateway reconnects. A banner distinguishes an offline gateway, a temporary relay failure, a rate
-limit, credentials that require re-pairing, and an incompatible app or gateway version.
+limit, rejected credentials, and an incompatible app or gateway version.
 
-Use **Settings → Reconnect** after fixing connectivity. Re-pair only when the gateway rejects the
-saved device credentials or its identity changed.
+Use **Settings → Reconnect** after fixing connectivity. If the gateway rejected the saved
+credentials or its identity changed, open **Settings** and choose **Disconnect & Forget**, then
+sign back in and tap the gateway again in the picker — no QR code needed.
 
 ## Remove a gateway from the device
 

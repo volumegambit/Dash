@@ -6,7 +6,8 @@ reconciles when connectivity returns, and never runs an agent on the device.
 
 ## Supported scope
 
-- Pair with a Dash gateway over LAN or relay by scanning, pasting, or entering a pairing code.
+- Sign in with your Dash account and connect to any gateway enrolled through Mission Control's
+  Remote access, over the hosted relay (no QR/paste/manual entry).
 - Read archived conversations and create, rename, or delete canonical conversations.
 - Stream chat, resume interrupted turns, answer agent questions, cancel active turns, and attach
   supported images.
@@ -106,6 +107,23 @@ scopes every test value to the simulator test host, removes them in `finally`, a
 the harness without printing its credentials. Successful result bundles are removed; a failed
 selector keeps its secret-free `ios/LiveGateway-*.xcresult` for CI diagnostics. Never put tokens in
 a committed scheme or command history.
+
+A separate harness, `ios/scripts/run-live-account-flow-test.mjs`, exercises the account sign-in
+path end to end against a real (locally spun-up) control plane, relay, and gateway: a
+sign-in-shaped mint, `AccountConnectFeature.connect`, relay-verified install, then one chat
+round-trip:
+
+```bash
+node ios/scripts/run-live-account-flow-test.mjs
+```
+
+It targets whatever `iPhone 17 Pro` simulator is already available on the host (no
+Xcode-16.3-pinned preflight) and runs exactly
+`DashIntegrationTests/LiveAccountFlowTests/testAccountSignInMintAndChat`. Running the
+`DashIntegration` scheme directly, without either harness script, fails 7 tests — the 6
+pre-existing LAN/relay pairing cases `run-live-gateway-tests.mjs` drives plus this account-flow
+test — each with a precise "missing environment variable" error instead of a silent skip. That
+7-test baseline is expected and honest, not a regression.
 
 ## Run on a physical iPhone
 
@@ -211,26 +229,39 @@ one tap on the phone; there is no way around that short of enrolling the device 
 adds Apple's processing delay (~5-15 min), but it requires a paid Apple Developer Program
 membership.
 
-## Pair a gateway
+## Sign in
 
-Open Dash and choose one of three paths:
+Dash for iOS connects through a Dash account rather than a QR/paste/manual pairing code. Open the
+app and tap **Sign In** — a browser sheet (`ASWebAuthenticationSession`) drives the Clerk OAuth
+round trip. Once signed in, `GatewayPickerView` lists every gateway enrolled in the account
+(`ControlPlaneClient.listGateways`) by its relay subdomain. Tapping a gateway runs
+`AccountConnectFeature.connect(to:)`: it mints a fresh pairing grant from the control plane for
+that gateway, turns it into a relay `PairingPayload` (v2, port 443, both mobile tokens equal to
+the grant's chat token), and verifies + installs it through the exact same machinery QR/manual
+pairing used (`PairingVerifying`, `PairingProfileInstalling`, `Features/Pairing` below) — so the
+account path is relay-only and never offers a QR/paste/manual fallback.
 
-1. **Scan QR Code** uses the camera to read a pairing payload displayed by Dash.
-2. **Paste Pairing Code** reads a complete payload already on the clipboard.
-3. **Enter Manually** accepts the connection fields without camera access.
+A gateway only appears in the picker once it has been enrolled from Mission Control's
+**Settings → Devices → Remote access**, which registers both the relay address and this app's
+chat capability. A gateway enrolled before this app's account sign-in shipped has the relay
+address but never registered the chat capability; tapping it fails instead of connecting.
 
-For LAN pairing, the phone and gateway must be reachable on the same network. Current pairing
-codes use version 3, one pinned-TLS mobile listener (port 9400 by default), a phone-scoped mobile
-token, and the gateway certificate's exact SHA-256 fingerprint. The app rejects legacy plaintext
-version 1 codes; generate a fresh code in Mission Control. For relay pairing, use the relay host,
-the phone-scoped mobile capability, and the per-device relay credential from the pairing payload. Relay
-connections use TLS on port 443. Never enter Dash's administrative management bearer on a phone,
-and do not substitute a management URL for the host field.
+`GatewayPickerViewModel`'s `AccountCopy` constants are exact, binding UI copy — do not paraphrase
+them elsewhere:
 
-Before saving anything, the app validates the payload, checks gateway health and identity, and
-requires the mobile capabilities above. Connection secrets are then stored in Keychain. SwiftData
-stores gateway-scoped profiles, conversations, messages, cursors, agents, drafts, and attachment
-metadata without those secrets.
+| State | Exact copy |
+| --- | --- |
+| Control plane unreachable while loading gateways | Couldn't reach your Dash account service. Check your connection and try again. |
+| Account has no enrolled gateways | No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine. |
+| Gateway enrolled before this app's account sign-in shipped (`chatToken` absent) | This gateway needs to be re-enrolled from Mission Control before app access works. |
+
+`GatewayPickerView`'s toolbar has **Sign Out**, which tears down any active gateway connection,
+best-effort revokes an abandoned mint, drops the cached account token, and returns to `SignInView`.
+
+Before saving anything, the connect pipeline validates the payload, checks gateway health and
+identity, and requires the mobile capabilities above. Connection secrets are then stored in
+Keychain. SwiftData stores gateway-scoped profiles, conversations, messages, cursors, agents,
+drafts, and attachment metadata without those secrets.
 
 ## Local architecture
 
@@ -241,7 +272,8 @@ metadata without those secrets.
 | `Core/Security` | Device-only Keychain storage for the Mobile bearer and optional relay credential. |
 | `Core/Persistence` | Gateway-scoped SwiftData cache, replay cursors, drafts, insert-only pending sends, durable deletion revision floors, and external attachment data. |
 | `Core/Sync` | Cache-first bootstrap, canonical reconciliation, tombstones, replay gaps, and reconnect backoff. |
-| `Features/Pairing` | QR, paste, and manual pairing with identity verification. |
+| `Features/Account` | Account sign-in (Clerk-hosted browser flow) and the gateway picker that lists enrolled gateways. |
+| `Features/Pairing` | Shared verify + install machinery reused by account sign-in's connect flow; the QR/paste/manual entry UI is no longer reachable from the app. |
 | `Features/Conversations` | Canonical list mutations, transcript projection, resumable chat, recovery, answers, cancel, and images. |
 | `Features/Agents` | Cache-first agent list, safe owned-field edits, enable/disable/delete, and Start Chat. |
 | `Features/Settings` | Sanitized gateway status, reconnect, and secure Disconnect & Forget. |
@@ -284,8 +316,9 @@ retry mutations against an incompatible contract.
 ### Re-pair required
 
 An unauthorized response means the stored credentials are no longer accepted. Cached content
-stays visible but read-only. Generate a new pairing payload at the gateway and pair again. If you
-intend to remove all local data first, use **Disconnect & Forget**.
+stays visible but read-only. Open **Settings** and use **Disconnect & Forget**, then sign back in
+and tap the gateway again in the picker — the account connect path always mints a fresh grant, so
+no QR code is involved.
 
 ### Rate limited (HTTP 429)
 
@@ -295,21 +328,17 @@ countdown instead of repeatedly reconnecting or resending a mutation.
 ### Relay returns HTTP 502
 
 A relay 502 normally means the relay cannot currently reach the gateway. Confirm the gateway is
-online and registered with the relay, then use Reconnect. Re-pair only if the relay credential or
-gateway identity changed.
+online and registered with the relay, then use Reconnect. Only fall back to Disconnect & Forget
+and reconnecting from the gateway picker if the relay credential or gateway identity changed.
 
-### LAN connection fails
+### LAN connection fails (pairing pipeline tests only)
 
-Confirm the iPhone and gateway share a reachable network, Local Network access is enabled for
-Dash in Settings, the host contains no scheme or path, and the pinned-TLS mobile port is reachable.
-If the certificate changed, generate a fresh pairing code. Dash does not enable an ATS cleartext
-exception and never falls back from HTTPS/WSS to plaintext.
-
-### Camera or local networking in Simulator
-
-Simulator camera behavior does not fully match a physical iPhone. Use Paste Pairing Code or Enter
-Manually when no camera feed is available. Local-network routing also depends on the Mac and may
-not reproduce device firewall, Wi-Fi isolation, VPN, or captive-network behavior.
+The shipped app UI only offers the account sign-in path above, which is always relay-mode. This
+applies to `PairingPipelineTests` and `run-live-gateway-tests.mjs`'s LAN cases, which still
+exercise `Features/Pairing`'s verify + install machinery directly: confirm the iPhone and gateway
+share a reachable network, the host contains no scheme or path, and the pinned-TLS mobile port is
+reachable. Dash does not enable an ATS cleartext exception and never falls back from HTTPS/WSS to
+plaintext.
 
 ### iOS 18.4 runtime is missing
 
