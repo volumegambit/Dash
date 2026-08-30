@@ -10,6 +10,7 @@ const uiTestFiles = [
   'ConversationUITests.swift',
   'AgentsUITests.swift',
   'AccessibilityUITests.swift',
+  'AccountUITests.swift',
 ].map((name) => `ios/DashUITests/${name}`);
 const uiTestSources = await Promise.all(uiTestFiles.map((path) => readFile(path, 'utf8')));
 const conversationUITestSource = uiTestSources[0];
@@ -41,6 +42,11 @@ const privacyManifestSource = await readFile(
   'utf8',
 ).catch(() => '');
 const xcodeProjectSource = await readFile('ios/Dash.xcodeproj/project.pbxproj', 'utf8');
+const [baseXcconfig, debugXcconfig, releaseXcconfig] = await Promise.all([
+  readFile('ios/Config/Base.xcconfig', 'utf8'),
+  readFile('ios/Config/Debug.xcconfig', 'utf8'),
+  readFile('ios/Config/Release.xcconfig', 'utf8'),
+]);
 const projectSpec = parse(await readFile('ios/project.yml', 'utf8'));
 
 assert.doesNotMatch(
@@ -48,6 +54,22 @@ assert.doesNotMatch(
   /NSAllowsLocalNetworking|NSAllowsArbitraryLoads/,
   'pinned HTTPS LAN transport must not depend on App Transport Security exceptions',
 );
+
+// `AccountAuthConfig.fromBundle` refuses Base.xcconfig's placeholder control-plane
+// host outright, so every build configuration needs the same optional local
+// override to be pointable at a real deployment — Release included, or a locally
+// built archive can never sign in at all.
+assert.match(baseXcconfig, /DASH_CONTROL_PLANE_URL/);
+for (const [name, source] of [
+  ['Debug.xcconfig', debugXcconfig],
+  ['Release.xcconfig', releaseXcconfig],
+]) {
+  assert.match(
+    source,
+    /^#include\? "Local\.xcconfig"$/m,
+    `${name} must optionally include the gitignored Local.xcconfig override`,
+  );
+}
 
 assert.ok(Array.isArray(steps), 'expected jobs.ios.steps in the parsed workflow');
 
@@ -362,7 +384,9 @@ assert.match(
 const uiTestSource = uiTestSources.join('\n');
 const uiTestCount = uiTestSource.match(/func test\w+\s*\(/g)?.length ?? 0;
 // PairingUITests.swift (4 tests) was deleted in Task 7 of the iOS account
-// sign-in plan along with the QR/paste/manual pairing entry it covered.
-assert.ok(uiTestCount >= 19, `expected at least 19 UI tests, found ${uiTestCount}`);
+// sign-in plan along with the QR/paste/manual pairing entry it covered, and
+// AccountUITests.swift replaced it with coverage of the account sign-in entry
+// path — so the pre-existing floor of 20 stands rather than being lowered.
+assert.ok(uiTestCount >= 20, `expected at least 20 UI tests, found ${uiTestCount}`);
 
 console.log(`PASS: iOS workflow runs ${uiTestCount} non-empty UI tests on exact simulator UDIDs`);
