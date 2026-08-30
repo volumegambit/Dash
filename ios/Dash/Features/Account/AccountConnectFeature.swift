@@ -30,6 +30,14 @@ final class AccountConnectFeature {
   private let deviceLabel: String
   private let onGrantMinted: @MainActor @Sendable (String, String) -> Void
   private let onConnected: @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  #if DEBUG
+    /// See `ConnectionProfile.applyingDebugRelayPortOverride`. Re-applied here
+    /// (defensively — `verifier` may or may not have been configured with the
+    /// same override) to whatever `VerifiedPairing` verification produces,
+    /// before installing, so the persisted profile is guaranteed consistent.
+    /// Never compiled into a Release build.
+    private let debugRelayPortOverride: Int?
+  #endif
 
   init(
     client: ControlPlaneClient,
@@ -37,7 +45,8 @@ final class AccountConnectFeature {
     installer: any PairingProfileInstalling,
     deviceLabel: String,
     onGrantMinted: @escaping @MainActor @Sendable (String, String) -> Void = { _, _ in },
-    onConnected: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
+    onConnected: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void,
+    debugRelayPortOverride: Int? = nil
   ) {
     self.client = client
     self.verifier = verifier
@@ -45,6 +54,11 @@ final class AccountConnectFeature {
     self.deviceLabel = deviceLabel
     self.onGrantMinted = onGrantMinted
     self.onConnected = onConnected
+    #if DEBUG
+      self.debugRelayPortOverride = debugRelayPortOverride
+    #else
+      _ = debugRelayPortOverride
+    #endif
   }
 
   /// Mints a mobile pairing grant for `gateway`, then verifies and installs it
@@ -80,12 +94,26 @@ final class AccountConnectFeature {
       relayCredential: grant.credential
     )
 
-    let verified: VerifiedPairing
-    do {
-      verified = try await verifier.verify(payload: payload) { _ in }
-    } catch {
-      throw AccountConnectError.verificationFailed
-    }
+    #if DEBUG
+      let verified: VerifiedPairing
+      do {
+        let unadjusted = try await verifier.verify(payload: payload) { _ in }
+        if let debugRelayPortOverride, unadjusted.profile.profile.mode == .relay {
+          verified = unadjusted.applyingDebugRelayPortOverride(debugRelayPortOverride)
+        } else {
+          verified = unadjusted
+        }
+      } catch {
+        throw AccountConnectError.verificationFailed
+      }
+    #else
+      let verified: VerifiedPairing
+      do {
+        verified = try await verifier.verify(payload: payload) { _ in }
+      } catch {
+        throw AccountConnectError.verificationFailed
+      }
+    #endif
 
     let installed: ConnectionProfileSnapshot
     do {

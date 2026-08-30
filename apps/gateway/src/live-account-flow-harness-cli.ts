@@ -165,6 +165,13 @@ async function main(): Promise<void> {
       type: 'ready',
       gatewayId: created.gatewayId,
       subdomain: created.subdomain,
+      // The scripted backend's OWN self-reported identity (what its /identity
+      // route answers) -- deliberately DIFFERENT from `gatewayId` above (the
+      // relay-routing/CP label "127"). `PairingVerifier.verify()` overwrites
+      // the installed profile's `gatewayId` with this value (trusting the
+      // gateway's own identity over the label it happened to register under),
+      // so the account-flow test needs both to assert against the right one.
+      harnessGatewayId: harness.gatewayId,
       agentId: harness.agentId,
       dataDir: harness.dataDir,
     })}\n`,

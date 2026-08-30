@@ -18,9 +18,14 @@ import XCTest
 /// exercises: a relay (hosted mode), a control plane (`RELAY_CP_DEV_STUB_AUTH`),
 /// and the SAME scripted gateway `LiveGatewayEnvironment`'s suite uses,
 /// enrolled and dialed into the relay with its own Ed25519 holder-of-key
-/// identity — then a TLS terminator on :443 (the one port
-/// `ConnectionEndpoint.swift`'s `validated()` hardcodes for v2/relay
-/// pairings) the simulator is told to trust via `simctl keychain add-root-cert`.
+/// identity — then a TLS terminator on a high port the simulator is told to
+/// trust via `simctl keychain add-root-cert`. Production always terminates
+/// v2/relay pairings on port 443 (`ConnectionEndpoint.swift`'s `validated()`);
+/// this host can bind neither 127.0.0.1:443 (EACCES, unprivileged) nor
+/// 0.0.0.0:443 (owned by another local service), so this test drives the
+/// `#if DEBUG`-only `applyingDebugRelayPortOverride` seam instead — applied
+/// AFTER `validated()` runs (see `PairingVerifier`/`AccountConnectFeature`),
+/// never touching `validated()`'s hardcoded-443 production invariant.
 final class LiveAccountFlowTests: XCTestCase {
   @MainActor
   func testAccountSignInMintAndChat() async throws {
@@ -64,7 +69,8 @@ final class LiveAccountFlowTests: XCTestCase {
     }
     let pairingVerifier = PairingVerifier(
       makeGateway: { endpoint, secrets in GatewayAPI(transport: makeTransport(endpoint, secrets)) },
-      makeChat: { endpoint in ChatConnection(endpoint: endpoint, clock: clock) }
+      makeChat: { endpoint in ChatConnection(endpoint: endpoint, clock: clock) },
+      debugRelayPortOverride: environment.relayPort
     )
     let metadataStore = PersistencePairingMetadataStore(store: try PersistenceStore.inMemory())
     let keychain = SystemKeychainStore()
@@ -78,7 +84,8 @@ final class LiveAccountFlowTests: XCTestCase {
       installer: installer,
       deviceLabel: "Dash iOS live integration test",
       onGrantMinted: { gatewayId, pairingId in mintedPairing = (gatewayId, pairingId) },
-      onConnected: { profile in installedProfile = profile }
+      onConnected: { profile in installedProfile = profile },
+      debugRelayPortOverride: environment.relayPort
     )
     defer {
       if let mintedPairing {
@@ -94,11 +101,15 @@ final class LiveAccountFlowTests: XCTestCase {
     try await feature.connect(to: gateway)
 
     let profile = try XCTUnwrap(installedProfile, "Expected AccountConnectFeature to install a profile")
-    XCTAssertEqual(profile.gatewayID, environment.gatewayID)
+    // The installed profile's gatewayID is the gateway's OWN self-reported
+    // identity (what its /identity route answers), which `PairingVerifier`
+    // trusts over the CP registration label (`environment.gatewayID`, "127" —
+    // chosen purely for relay-routing, see the harness header comment).
+    XCTAssertEqual(profile.gatewayID, environment.identityGatewayID)
     XCTAssertEqual(profile.profile.mode, .relay)
     XCTAssertTrue(profile.profile.secure)
-    XCTAssertEqual(profile.profile.managementPort, 443)
-    XCTAssertEqual(profile.profile.chatPort, 443)
+    XCTAssertEqual(profile.profile.managementPort, environment.relayPort)
+    XCTAssertEqual(profile.profile.chatPort, environment.relayPort)
     defer { Task { try? await keychain.delete(for: profile.id) } }
 
     let loadedSecrets = try await keychain.load(for: profile.id)

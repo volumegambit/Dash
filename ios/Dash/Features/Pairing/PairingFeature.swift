@@ -31,6 +31,27 @@ struct VerifiedPairing: Sendable {
   let secrets: ConnectionSecrets
 }
 
+#if DEBUG
+  extension VerifiedPairing {
+    /// See `ConnectionProfile.applyingDebugRelayPortOverride`. `PairingVerifier`
+    /// already bakes the override in before its own network calls, so a
+    /// `VerifiedPairing` it returns already carries it — this exists so
+    /// `AccountConnectFeature` can apply the SAME override defensively to
+    /// whatever `VerifiedPairing` it receives, regardless of which
+    /// `PairingVerifying` conformer produced it. Never compiled into Release.
+    func applyingDebugRelayPortOverride(_ port: Int) -> VerifiedPairing {
+      VerifiedPairing(
+        profile: ConnectionProfileSnapshot(
+          gatewayID: profile.gatewayID,
+          profile: profile.profile.applyingDebugRelayPortOverride(port)
+        ),
+        identity: identity,
+        secrets: secrets
+      )
+    }
+  }
+#endif
+
 protocol PairingVerifying: Sendable {
   func verify(
     payload: PairingPayload,
@@ -54,6 +75,13 @@ struct PairingVerifier: Sendable {
     @Sendable (ConnectionEndpoint, ConnectionSecrets) -> any PairingGatewayChecking
   private let makeChat: @Sendable (ConnectionEndpoint) -> any PairingChatChecking
   private let makeProfileID: @Sendable () -> UUID
+  #if DEBUG
+    /// See `ConnectionProfile.applyingDebugRelayPortOverride` — applied right
+    /// after `PairingPayload.validated()` so it's in effect for every network
+    /// call this method makes (health/identity/agents/chat probe), not just
+    /// the profile this returns. `validated()` itself is never touched.
+    private let debugRelayPortOverride: Int?
+  #endif
 
   init(
     makeGateway: @escaping @Sendable (
@@ -61,18 +89,34 @@ struct PairingVerifier: Sendable {
       ConnectionSecrets
     ) -> any PairingGatewayChecking,
     makeChat: @escaping @Sendable (ConnectionEndpoint) -> any PairingChatChecking,
-    makeProfileID: @escaping @Sendable () -> UUID = UUID.init
+    makeProfileID: @escaping @Sendable () -> UUID = UUID.init,
+    debugRelayPortOverride: Int? = nil
   ) {
     self.makeGateway = makeGateway
     self.makeChat = makeChat
     self.makeProfileID = makeProfileID
+    #if DEBUG
+      self.debugRelayPortOverride = debugRelayPortOverride
+    #else
+      _ = debugRelayPortOverride
+    #endif
   }
 
   func verify(
     payload: PairingPayload,
     onStep: @escaping @MainActor @Sendable (PairingVerificationStep) -> Void
   ) async throws -> VerifiedPairing {
-    let (rawProfile, secrets) = try payload.validated(profileID: makeProfileID())
+    let (validatedProfile, secrets) = try payload.validated(profileID: makeProfileID())
+    #if DEBUG
+      let rawProfile: ConnectionProfile
+      if let debugRelayPortOverride, validatedProfile.mode == .relay {
+        rawProfile = validatedProfile.applyingDebugRelayPortOverride(debugRelayPortOverride)
+      } else {
+        rawProfile = validatedProfile
+      }
+    #else
+      let rawProfile = validatedProfile
+    #endif
     let endpoint = ConnectionEndpoint(profile: rawProfile, secrets: secrets)
     let gateway = makeGateway(endpoint, secrets)
 

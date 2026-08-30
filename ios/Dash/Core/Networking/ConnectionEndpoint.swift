@@ -48,6 +48,34 @@ struct ConnectionProfile: Codable, Hashable, Identifiable, Sendable {
   }
 }
 
+#if DEBUG
+  extension ConnectionProfile {
+    /// Test-only escape hatch for the live account-flow integration test
+    /// (`LiveAccountFlowTests`). Production relay pairings always terminate on
+    /// port 443 (`PairingPayload.validated()` case 2, untouched by this) — the
+    /// live harness needs a throwaway TLS terminator on a HIGH port instead,
+    /// because this class of host can neither bind 127.0.0.1:443 (EACCES,
+    /// unprivileged) nor 0.0.0.0:443 (already owned by another local service).
+    /// Never compiled into a Release build.
+    func applyingDebugRelayPortOverride(_ port: Int) -> ConnectionProfile {
+      ConnectionProfile(
+        id: id,
+        gatewayId: gatewayId,
+        publicKey: publicKey,
+        label: label,
+        host: host,
+        managementPort: port,
+        chatPort: port,
+        secure: secure,
+        mode: mode,
+        tlsCertificateSha256: tlsCertificateSha256,
+        createdAt: createdAt,
+        lastSuccessfulSyncAt: lastSuccessfulSyncAt
+      )
+    }
+  }
+#endif
+
 enum PairingValidationError: Error, Equatable, Sendable {
   case unsupportedVersion(Int)
   case invalidHost
@@ -190,10 +218,20 @@ struct ConnectionEndpoint: CustomStringConvertible, Sendable {
       let relayCredential = secrets.relayCredential?.trimmingCharacters(
         in: .whitespacesAndNewlines
       )
+      #if DEBUG
+        // Relaxed for `applyingDebugRelayPortOverride` (the live account-flow
+        // integration harness): both ports must still agree with each other
+        // (the relay's single-port design) rather than pinned literally to
+        // 443. A normal DEBUG-config pairing is still 443 == 443, so this is a
+        // no-op for every path except the explicit debug override. Never
+        // compiled into a Release build.
+        let relayPortsValid = profile.managementPort == profile.chatPort && profile.managementPort > 0
+      #else
+        let relayPortsValid = profile.managementPort == 443 && profile.chatPort == 443
+      #endif
       guard
         profile.secure,
-        profile.managementPort == 443,
-        profile.chatPort == 443,
+        relayPortsValid,
         relayCredential?.isEmpty == false
       else {
         throw GatewayError.validation("Re-pair this gateway to use secure relay transport")

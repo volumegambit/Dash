@@ -224,6 +224,62 @@ struct AccountConnectFeatureTests {
     #expect(await verifier.payloads.count == 1)
     #expect(connected.profiles.isEmpty)
   }
+
+  @Test("debugRelayPortOverride overrides the installed profile's relay ports (DEBUG-only test seam)")
+  func debugRelayPortOverrideAppliesToInstalledProfile() async throws {
+    let client = try await stubbedClient(
+      grant: PairingGrant(
+        credential: "relay-cred-7",
+        pairingId: "pairing-7",
+        chatToken: "chat-7",
+        status: "active"
+      )
+    )
+    let verifier = CapturingAccountVerifier()
+    let installer = RecordingAccountInstaller()
+    let feature = AccountConnectFeature(
+      client: client,
+      verifier: verifier,
+      installer: installer,
+      deviceLabel: "Device",
+      onConnected: { _ in },
+      debugRelayPortOverride: 18443
+    )
+
+    try await feature.connect(to: gatewayFixture())
+
+    let installed = try #require(await installer.installedPairings.first)
+    #expect(installed.profile.profile.managementPort == 18443)
+    #expect(installed.profile.profile.chatPort == 18443)
+    #expect(installed.profile.profile.mode == .relay)
+  }
+
+  @Test("without debugRelayPortOverride the installed profile keeps production's port 443")
+  func noDebugRelayPortOverrideKeepsProductionPort() async throws {
+    let client = try await stubbedClient(
+      grant: PairingGrant(
+        credential: "relay-cred-8",
+        pairingId: "pairing-8",
+        chatToken: "chat-8",
+        status: "active"
+      )
+    )
+    let verifier = CapturingAccountVerifier()
+    let installer = RecordingAccountInstaller()
+    let feature = AccountConnectFeature(
+      client: client,
+      verifier: verifier,
+      installer: installer,
+      deviceLabel: "Device",
+      onConnected: { _ in }
+    )
+
+    try await feature.connect(to: gatewayFixture())
+
+    let installed = try #require(await installer.installedPairings.first)
+    #expect(installed.profile.profile.managementPort == 443)
+    #expect(installed.profile.profile.chatPort == 443)
+  }
 }
 
 // MARK: - Fakes

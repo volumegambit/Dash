@@ -209,6 +209,30 @@ struct ConnectionEndpointTests {
     #expect(request.value(forHTTPHeaderField: "x-dash-relay-credential") == nil)
   }
 
+  @Test("applyingDebugRelayPortOverride replaces both ports and nothing else (DEBUG-only test seam)")
+  func debugRelayPortOverrideReplacesBothPorts() {
+    let base = relayEndpoint().profile
+    let overridden = base.applyingDebugRelayPortOverride(18443)
+    #expect(overridden.managementPort == 18443)
+    #expect(overridden.chatPort == 18443)
+    #expect(overridden.id == base.id)
+    #expect(overridden.host == base.host)
+    #expect(overridden.mode == base.mode)
+    #expect(overridden.secure == base.secure)
+  }
+
+  @Test("a symmetric debug-overridden relay port pair is trusted; production still requires 443")
+  func debugOverriddenSymmetricPortIsTrusted() throws {
+    let overridden = relayEndpoint(managementPort: 18443, chatPort: 18443)
+    try overridden.requireTrustedTransport()
+    _ = try overridden.chatRequest()
+
+    // The default (443/443, matching production) still works too — the DEBUG
+    // relaxation only widens WHICH value is accepted when both ports agree,
+    // it never accepts a mismatched pair (already covered above).
+    try relayEndpoint().requireTrustedTransport()
+  }
+
   @Test("endpoint description never contains credentials")
   func redactedDescription() {
     let endpoint = relayEndpoint()

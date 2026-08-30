@@ -17,11 +17,10 @@ import { assertSinglePassedTest } from './run-live-gateway-tests.mjs';
 //
 //   relay (plaintext, hosted mode) <- CP (dev-stub auth) <- gateway (scripted
 //   backend, dials in with its own Ed25519 holder-of-key identity) <- TLS
-//   terminator on :443 (the ONE port `PairingPayload.validated()` hardcodes for
-//   v2/relay pairings) <- iOS Simulator.
+//   terminator on a HIGH port <- iOS Simulator.
 //
-// Two problems the manual Android rig solved with real (Tailscale-poisoned on
-// this host) DNS and a high port are sidestepped entirely here:
+// Three problems the manual Android rig solved with real (Tailscale-poisoned on
+// this host) DNS, a high port, and Android-side plumbing are sidestepped here:
 //   1. No hostname needed: the relay routes by the FIRST LABEL of the Host
 //      header (`gatewayIdFromHost`, apps/relay/src/relay-server.ts), so a
 //      gateway registered under subdomain LABEL "127" + relay-zone "0.0.1"
@@ -32,10 +31,15 @@ import { assertSinglePassedTest } from './run-live-gateway-tests.mjs';
 //      nil`), so `GatewayURLSessionFactory` falls back to ordinary system
 //      trust. `xcrun simctl keychain <udid> add-root-cert` (no sudo) makes
 //      the simulator trust our throwaway self-signed CA for this one test.
-//
-// Binding :443 without root is NOT possible on macOS (verified: EACCES for any
-// non-root process); this script fails fast with a clear message if it can't,
-// rather than burning a 10-minute xcodebuild cycle first.
+//   3. No privileged port needed: production always terminates v2/relay
+//      pairings on port 443 (`ConnectionEndpoint.swift`'s `validated()`,
+//      untouched), but THIS host can bind neither 127.0.0.1:443 (EACCES,
+//      unprivileged) nor 0.0.0.0:443 (already owned by another local service
+//      -- verified both directly; there is no non-root workaround on macOS).
+//      `AccountConnectFeature`/`PairingVerifier` grew a `#if DEBUG`-only
+//      `debugRelayPortOverride`, applied AFTER `validated()` runs (never
+//      touching its hardcoded-443 production invariant), so this harness's
+//      terminator runs on an ordinary high port instead.
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '../..');
@@ -51,7 +55,9 @@ const RELAY_ADMIN_SECRET = 'live-account-flow-admin-secret';
 const GATEWAY_LABEL = '127';
 const RELAY_ZONE = '0.0.1';
 const ACCOUNT_ID = 'acct-live-account-flow-test';
-const TERMINATOR_PORT = 443;
+// Any high port works (see the `debugRelayPortOverride` note above) -- picked
+// to avoid the fixed low ports the relay/CP/other local rigs on this host use.
+const TERMINATOR_PORT = 18443;
 
 const activeChildren = new Set();
 let interruptExitCode = null;
@@ -462,7 +468,10 @@ function startTlsTerminator(tlsKey, tlsCert) {
   server.on('tlsClientError', () => {});
   return new Promise((resolveListen, rejectListen) => {
     server.once('error', rejectListen);
-    server.listen(TERMINATOR_PORT, '127.0.0.1', () => {
+    // 0.0.0.0 (not 127.0.0.1): matches the confirmed-working bind shape for
+    // this port range on this host (a loopback-only bind of a HIGH port works
+    // equally well; 0.0.0.0 is what was verified end-to-end).
+    server.listen(TERMINATOR_PORT, '0.0.0.0', () => {
       server.off('error', rejectListen);
       resolveListen(server);
     });
@@ -622,19 +631,12 @@ async function main() {
     try {
       terminatorServer = await startTlsTerminator(await readFile(crypto.tlsKey), caCertBuffer);
     } catch (error) {
-      if (error?.code === 'EACCES') {
-        process.stderr.write(
-          '[live-account-flow] Cannot bind TCP :443 without elevated privileges. ' +
-            "`AccountConnectFeature`'s v2/relay pairing hardcodes port 443 " +
-            '(ios/Dash/Core/Networking/ConnectionEndpoint.swift `validated()` case 2) with no ' +
-            'override, so this live test requires a process that can bind it (root, or an ' +
-            'equivalent CAP_NET_BIND_SERVICE grant). Re-run this script with sufficient ' +
-            'privileges to exercise the real sign-in -> relay -> chat path.\n',
-        );
-        process.exitCode = 1;
-        return;
-      }
-      throw error;
+      process.stderr.write(
+        `[live-account-flow] Could not bind the TLS terminator to :${TERMINATOR_PORT}: ` +
+          `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exitCode = 1;
+      return;
     }
 
     const probeCredential = await mintThrowawayCredential(
@@ -651,7 +653,9 @@ async function main() {
       DASH_TEST_ACCOUNT_CONTROL_PLANE_URL: `http://127.0.0.1:${shimPort}`,
       DASH_TEST_ACCOUNT_BEARER: ACCOUNT_ID,
       DASH_TEST_ACCOUNT_GATEWAY_ID: readiness.gatewayId,
+      DASH_TEST_ACCOUNT_IDENTITY_GATEWAY_ID: readiness.harnessGatewayId,
       DASH_TEST_ACCOUNT_AGENT_ID: readiness.agentId,
+      DASH_TEST_ACCOUNT_RELAY_PORT: String(TERMINATOR_PORT),
     };
 
     const bundlePath = 'ios/LiveAccountFlow.xcresult';
@@ -672,7 +676,16 @@ async function main() {
           bundlePath,
           `-only-testing:${TEST_TARGET}`,
           'test',
-          'CODE_SIGNING_ALLOWED=NO',
+          // Ad-hoc signed, NOT unsigned: this test is the first in the suite
+          // to touch the REAL Keychain (`AccountConnectFeature`'s connect
+          // pipeline installs into `SystemKeychainStore`), and an entirely
+          // unsigned binary (`CODE_SIGNING_ALLOWED=NO`, what the rest of this
+          // repo's live-gateway harness uses) gets errSecMissingEntitlement
+          // (-34018) from SecItemAdd on this simulator/Xcode combination --
+          // confirmed by reproducing it in isolation and fixing it with
+          // exactly these two flags before wiring them in here.
+          'CODE_SIGN_IDENTITY=-',
+          'CODE_SIGNING_REQUIRED=NO',
         ],
         {
           env: { ...process.env, ...testEnvironment },
