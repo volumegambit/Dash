@@ -125,6 +125,8 @@ interface FakeRest {
   listConversations: ReturnType<typeof vi.fn>;
   getMessages: ReturnType<typeof vi.fn>;
   identity: ReturnType<typeof vi.fn>;
+  createConversation: ReturnType<typeof vi.fn>;
+  listAgents: ReturnType<typeof vi.fn>;
 }
 
 function fakeRest(opts: {
@@ -144,6 +146,11 @@ function fakeRest(opts: {
    * needs *some* `identity()` behavior; tests simulating a remotely-revoked
    * credential pass a rejecting fn here. */
   identityImpl?: () => Promise<unknown>;
+  /** Override for `rest.createConversation()` — used by `startConversation`
+   * tests, including one simulating a REST failure. */
+  createConversationImpl?: (req: unknown) => Promise<ConversationSummary>;
+  /** Override for `rest.listAgents()`. */
+  listAgentsImpl?: () => Promise<unknown[]>;
 }): FakeRest {
   const messagePages = opts.messagePages ?? [{ items: [], nextCursor: null, throughSeq: 0 }];
   let getMessagesCall = 0;
@@ -162,12 +169,18 @@ function fakeRest(opts: {
   const identity = vi.fn(
     opts.identityImpl ?? (async () => ({ gatewayId: 'gw-1', publicKey: 'pk-stub' })),
   );
+  const createConversation = vi.fn(
+    opts.createConversationImpl ?? (async () => summary({ id: 'new-conv' })),
+  );
+  const listAgents = vi.fn(opts.listAgentsImpl ?? (async () => []));
   const rest = {
     listConversations,
     getMessages,
     identity,
+    createConversation,
+    listAgents,
   } as unknown as MobileRestClient;
-  return { rest, listConversations, getMessages, identity };
+  return { rest, listConversations, getMessages, identity, createConversation, listAgents };
 }
 
 /** Drives a store through `openConversation`, resolving the scripted
@@ -195,6 +208,27 @@ describe('createWebAppStore', () => {
     vi.useRealTimers();
   });
 
+  describe('initial state', () => {
+    it("starts with connection 'idle' — not 'offline' — before anything has ever gone wrong", () => {
+      const { rest } = fakeRest({});
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      expect(store.getState().connection).toBe('idle');
+    });
+
+    it("a healthy loadConversations() on an empty account leaves connection 'idle' (not reinterpreted as an outage)", async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [], nextCursor: null } });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await store.getState().loadConversations();
+
+      expect(store.getState().conversations).toEqual([]);
+      expect(store.getState().connection).toBe('idle');
+    });
+  });
+
   describe('loadConversations', () => {
     it('populates conversations from the REST client', async () => {
       const page = { items: [summary(), summary({ id: 'conv-2' })], nextCursor: null };
@@ -205,6 +239,83 @@ describe('createWebAppStore', () => {
       await store.getState().loadConversations();
 
       expect(store.getState().conversations).toEqual(page.items);
+    });
+  });
+
+  describe('listAgents', () => {
+    it('delegates to rest.listAgents()', async () => {
+      const agents = [
+        {
+          id: 'agent-1',
+          name: 'Mobile Helper',
+          config: { name: 'Mobile Helper', model: 'anthropic/claude', systemPrompt: 'Help.' },
+          status: 'active',
+          registeredAt: '2026-07-12T00:00:00.000Z',
+        },
+      ];
+      const { rest, listAgents } = fakeRest({ listAgentsImpl: async () => agents });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await expect(store.getState().listAgents()).resolves.toEqual(agents);
+      expect(listAgents).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('startConversation', () => {
+    it('creates a conversation via REST, adds it to the list, and opens it', async () => {
+      const created = summary({ id: 'new-conv', agentId: 'agent-02', title: 'Fresh chat' });
+      const { rest, createConversation } = fakeRest({
+        createConversationImpl: async () => created,
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const starting = store.getState().startConversation('agent-02', 'Fresh chat');
+      await vi.waitFor(() => expect(sockets.length).toBe(1));
+      sockets[0].open();
+      const result = await starting;
+
+      expect(createConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: 'agent-02', title: 'Fresh chat' }),
+      );
+      const sentRequestId = createConversation.mock.calls[0][0].requestId;
+      expect(typeof sentRequestId).toBe('string');
+      expect(sentRequestId.length).toBeGreaterThan(0);
+
+      expect(result).toEqual(created);
+      expect(store.getState().conversations).toContainEqual(created);
+      expect(store.getState().connection).toBe('connected');
+    });
+
+    it('omits a title when none is given', async () => {
+      const { rest, createConversation } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const starting = store.getState().startConversation('agent-02');
+      await vi.waitFor(() => expect(sockets.length).toBe(1));
+      sockets[0].open();
+      await starting;
+
+      expect(createConversation.mock.calls[0][0].title).toBeUndefined();
+    });
+
+    it('propagates a REST failure from createConversation instead of swallowing it into a connection state', async () => {
+      const { rest, createConversation } = fakeRest({
+        createConversationImpl: async () => {
+          throw new Error('gateway rejected the create');
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      await expect(store.getState().startConversation('agent-02')).rejects.toThrow(
+        'gateway rejected the create',
+      );
+      expect(createConversation).toHaveBeenCalledTimes(1);
+      expect(store.getState().conversations).toEqual([]);
+      expect(store.getState().connection).toBe('idle'); // untouched — not reinterpreted as an outage
     });
   });
 
@@ -730,7 +841,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
 
       await expect(store.getState().loadConversations()).rejects.toThrow('network blip');
-      expect(store.getState().connection).toBe('offline'); // untouched initial value, not reinterpreted
+      expect(store.getState().connection).toBe('idle'); // untouched initial value, not reinterpreted
     });
 
     it("a 401 from resolveAgentId's listConversations fallback during an in-flight reconnect goes straight to 'unauthorized' (no further scheduleReconnect)", async () => {

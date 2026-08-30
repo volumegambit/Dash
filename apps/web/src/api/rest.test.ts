@@ -107,6 +107,19 @@ describe('MobileRestClient', () => {
       expect(url.searchParams.has('cursor')).toBe(false);
     });
 
+    it('joins listAgents() under the /agents path', async () => {
+      const fetchImpl = fakeFetch(jsonResponse([]));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await client.listAgents();
+      const url = new URL(fetchImpl.mock.calls[0][0] as string);
+      expect(url.pathname).toBe('/mobile/v1/agents');
+      expect(fetchImpl.mock.calls[0][1]?.method).toBe('GET');
+    });
+
     it('encodes the conversationId path segment for getMessages', async () => {
       const fetchImpl = fakeFetch(jsonResponse({ items: [], nextCursor: null, throughSeq: 0 }));
       const client = new MobileRestClient(
@@ -143,6 +156,7 @@ describe('MobileRestClient', () => {
           c.createConversation({ agentId: 'a', requestId: 'r' } as ConversationCreateRequest),
       ],
       ['createWsTicket', (c: MobileRestClient) => c.createWsTicket()],
+      ['listAgents', (c: MobileRestClient) => c.listAgents()],
     ])('sends Authorization: Bearer <token> for %s()', async (_name, call) => {
       const fetchImpl = fakeFetch(
         jsonResponse({
@@ -305,6 +319,29 @@ describe('MobileRestClient', () => {
       expect(JSON.parse(init?.body as string)).toEqual(request);
       const headers = init?.headers as Record<string, string>;
       expect(headers['Content-Type']).toBe('application/json');
+    });
+
+    it('resolves listAgents() with the typed MobileAgent[] body (a bare array, no envelope)', async () => {
+      const body = [
+        {
+          id: 'agent-1',
+          name: 'Mobile Helper',
+          config: {
+            name: 'Mobile Helper',
+            model: 'anthropic/claude-sonnet',
+            systemPrompt: 'Help.',
+          },
+          status: 'active' as const,
+          registeredAt: '2026-07-12T00:00:00.000Z',
+        },
+      ];
+      const fetchImpl = fakeFetch(jsonResponse(body));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await expect(client.listAgents()).resolves.toEqual(body);
     });
 
     it('resolves createWsTicket() with the typed WsTicketResponse body', async () => {

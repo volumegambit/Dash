@@ -1,6 +1,7 @@
 import type {
   ConversationMessage,
   ConversationSummary,
+  MobileAgent,
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
@@ -14,6 +15,17 @@ export interface WebAppState {
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
   /**
+   * `'idle'` is the store's INITIAL state — before any conversation has ever
+   * been opened or reconnect has ever been attempted. It means "nothing has
+   * gone wrong yet," not "the gateway is unreachable": a healthy account
+   * with zero conversations (so nothing ever calls `openConversation()`)
+   * stays `'idle'` forever, and consumers (`ChatView`'s unreachable banner,
+   * `ConversationList`'s empty-state copy) must not treat it as an outage.
+   * `'offline'` is reserved for the two outage cases that actually earned
+   * it: the reconnect-attempt cap exhausting (`finalizeReconnectExhausted`)
+   * or that probe confirming the gateway is genuinely unreachable — never
+   * the starting point.
+   *
    * `'unauthorized'` is terminal, same spirit as `'offline'` but for a
    * *credential* problem rather than a *transport* one: the gateway's own
    * `chatToken` or this browser's relay credential was rejected (401) —
@@ -24,7 +36,26 @@ export interface WebAppState {
    * `'reconnecting'`/`'offline'`, nothing in this store ever retries out of
    * `'unauthorized'` on its own; see `enterUnauthorized`/`isAuthError`.
    */
-  connection: 'connected' | 'reconnecting' | 'offline' | 'unauthorized';
+  connection: 'idle' | 'connected' | 'reconnecting' | 'offline' | 'unauthorized';
+  /**
+   * Fetches the account's registered agents (`GET /agents`), un-cached and
+   * un-stored on this state — callers like `ConversationList`'s "New
+   * conversation" flow just need the list transiently to build an agent
+   * picker (or skip straight past it when there's exactly one).
+   */
+  listAgents(): Promise<MobileAgent[]>;
+  /**
+   * Creates a conversation via REST (`rest.createConversation`, a fresh
+   * `requestId` per call), prepends the result to `conversations` so
+   * `sendMessage`'s `conversations.find(...)` lookup can resolve it without
+   * a separate `loadConversations()` round-trip, then opens it exactly like
+   * `openConversation(id)` would. Any REST failure (network, non-2xx)
+   * propagates to the caller rather than being swallowed into a `connection`
+   * state — unlike `loadConversations`/`openConversation`, a failed *create*
+   * isn't a transport/credential problem the store itself should reinterpret,
+   * it's an action the UI asked for that didn't happen and must say so.
+   */
+  startConversation(agentId: string, title?: string): Promise<ConversationSummary>;
   loadConversations(): Promise<void>;
   openConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
@@ -432,7 +463,22 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     return {
       conversations: [],
       transcripts: {},
-      connection: 'offline',
+      connection: 'idle',
+
+      async listAgents() {
+        return rest.listAgents();
+      },
+
+      async startConversation(agentId: string, title?: string) {
+        const created = await rest.createConversation({
+          agentId,
+          requestId: crypto.randomUUID(),
+          title,
+        });
+        set((state) => ({ conversations: [created, ...state.conversations] }));
+        await get().openConversation(created.id);
+        return created;
+      },
 
       async loadConversations() {
         try {

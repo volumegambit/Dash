@@ -4,6 +4,7 @@ import type {
   ConversationPage,
   ConversationSummary,
   GatewayIdentity,
+  MobileAgent,
   MobileHealth,
   WsTicketResponse,
 } from '@dash/mobile-contract';
@@ -89,6 +90,13 @@ export class MobileRestClient {
 
   identity(): Promise<GatewayIdentity> {
     return this.request<GatewayIdentity>('GET', '/identity');
+  }
+
+  /** `MobileAgentList` (openapi.yaml `/agents` GET) is a bare array, not an
+   * envelope — the response body IS the `MobileAgent[]`, no `items` wrapper
+   * like the paginated conversation/message endpoints. */
+  listAgents(): Promise<MobileAgent[]> {
+    return this.request<MobileAgent[]>('GET', '/agents');
   }
 
   listConversations(cursor?: string): Promise<ConversationPage> {

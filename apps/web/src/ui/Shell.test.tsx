@@ -26,6 +26,10 @@ function fakeWebAppState() {
     conversations: [],
     transcripts: {},
     connection: 'connected',
+    listAgents: vi.fn(async () => []),
+    startConversation: vi.fn(async () => {
+      throw new Error('startConversation: not used by Shell tests');
+    }),
     loadConversations: vi.fn(async () => undefined),
     openConversation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),

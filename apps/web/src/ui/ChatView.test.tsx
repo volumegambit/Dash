@@ -124,6 +124,23 @@ async function renderConnected(
 }
 
 describe('ChatView', () => {
+  it("shows no unreachable banner for a healthy empty account (connection 'idle', no conversation selected)", async () => {
+    const rest = fakeRest({ items: [], nextCursor: null }, []);
+    const { factory } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+    expect(store.getState().connection).toBe('idle');
+
+    render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={null} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+
+    expect(screen.queryByText("Your gateway 'acme' is unreachable.")).toBeNull();
+    expect(screen.getByText('Select a conversation to get started.')).toBeTruthy();
+  });
+
   it('renders the transcript replayed from the store', async () => {
     await renderConnected({ messages: [message({ content: { type: 'user', text: 'Ping' } })] });
     expect(screen.getByText('Ping')).toBeTruthy();
