@@ -418,6 +418,15 @@ async function runCase(entry, destination) {
           bundlePath,
           `-only-testing:${entry.target}`,
           'test',
+          // Fully unsigned is fine here ONLY because none of this suite's
+          // tests touch the real Keychain (`LiveGatewayEnvironment` builds its
+          // clients directly, bypassing `PairingProfileInstaller`). If a
+          // future test in this harness starts exercising `SystemKeychainStore`
+          // for real, expect `errSecMissingEntitlement` (-34018) from
+          // `SecItemAdd` on this class of simulator/Xcode combination -- see
+          // `run-live-account-flow-test.mjs`'s `CODE_SIGN_IDENTITY=-
+          // CODE_SIGNING_REQUIRED=NO` (ad-hoc signing) for the fix, found and
+          // verified there first.
           'CODE_SIGNING_ALLOWED=NO',
         ],
         {

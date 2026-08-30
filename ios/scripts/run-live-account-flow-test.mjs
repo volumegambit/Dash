@@ -39,7 +39,22 @@ import { assertSinglePassedTest } from './run-live-gateway-tests.mjs';
 //      `AccountConnectFeature`/`PairingVerifier` grew a `#if DEBUG`-only
 //      `debugRelayPortOverride`, applied AFTER `validated()` runs (never
 //      touching its hardcoded-443 production invariant), so this harness's
-//      terminator runs on an ordinary high port instead.
+//      terminator runs on an ordinary high (ephemeral) port instead.
+//
+// Trust posture: every process this script starts (relay, control plane,
+// gateway, the auth shim, the TLS terminator) binds LOOPBACK ONLY
+// (127.0.0.1) — the iOS Simulator shares the host's network stack directly
+// (unlike a device or an emulator behind NAT), so nothing here needs to be
+// LAN/tailnet-reachable, and the dev-stub control plane in particular must
+// not be (its auth trusts a caller-supplied header verbatim). If you add a
+// new listener to this rig, bind it to 127.0.0.1 explicitly -- `serve()`
+// (Hono/`@hono/node-server`) and plain `net`/`http`/`https` servers all
+// default to every interface (`0.0.0.0`) when no hostname is given.
+//
+// Root-cert accumulation: `xcrun simctl keychain <udid> add-root-cert` has no
+// matching single-cert remove (only a full `reset`, which would wipe the
+// simulator's ENTIRE keychain) -- see the M1 note by `main()`'s teardown for
+// exactly when this script does and doesn't reset it.
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = resolve(SCRIPT_DIR, '../..');
@@ -55,9 +70,6 @@ const RELAY_ADMIN_SECRET = 'live-account-flow-admin-secret';
 const GATEWAY_LABEL = '127';
 const RELAY_ZONE = '0.0.1';
 const ACCOUNT_ID = 'acct-live-account-flow-test';
-// Any high port works (see the `debugRelayPortOverride` note above) -- picked
-// to avoid the fixed low ports the relay/CP/other local rigs on this host use.
-const TERMINATOR_PORT = 18443;
 
 const activeChildren = new Set();
 let interruptExitCode = null;
@@ -222,13 +234,16 @@ async function resolveDestination() {
     .filter((device) => device?.isAvailable !== false && device?.name === DEVICE_NAME);
   const chosen = candidates.find((d) => d.state === 'Booted') ?? candidates[0];
   if (!chosen?.udid) throw new Error(`No available "${DEVICE_NAME}" simulator exists`);
+  const alreadyBooted = chosen.state === 'Booted';
   const destination = `id=${chosen.udid}`;
   const booted = await runCommand('xcrun', ['simctl', 'bootstatus', chosen.udid, '-b'], {
     timeoutMs: 5 * 60_000,
     label: 'simulator boot',
   });
-  if (booted.code !== 0) return { code: booted.code, destination: null };
-  return { code: 0, destination };
+  if (booted.code !== 0) return { code: booted.code, destination: null, bootedByScript: false };
+  // M1 (keychain hygiene): only true when THIS run is the one that booted the
+  // simulator -- see the reset-on-teardown note by `main()`.
+  return { code: 0, destination, bootedByScript: !alreadyBooted };
 }
 
 /** Ed25519 dial-token keypair + a self-signed TLS cert (SAN IP 127.0.0.1). */
@@ -331,6 +346,56 @@ async function waitForHttpHealth(url, timeoutMs = READINESS_TIMEOUT_MS) {
   }
 }
 
+/** Tail a child's stderr into a bounded rolling buffer for failure diagnostics. */
+function captureStderrTail(child, limit = 16_384) {
+  let tail = '';
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk) => {
+    tail = `${tail}${chunk}`.slice(-limit);
+  });
+  return () => tail;
+}
+
+/**
+ * Race a readiness `promise` (e.g. "port accepts connections") against
+ * `child` exiting first. Without this, a startup failure -- most importantly
+ * EADDRINUSE, another process already holding the port this script assumes
+ * is free -- makes the readiness poll dies invisibly (stdio discarded) while
+ * `waitForTcpOpen`/`waitForHttpHealth` keeps retrying and eventually succeeds
+ * against that FOREIGN process instead of ours. An early child exit must
+ * always fail loudly, with whatever stderr it printed on the way out.
+ */
+function raceChildExit(child, getStderrTail, promise) {
+  return new Promise((resolveRace, rejectRace) => {
+    let settled = false;
+    const onExit = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      const detail = getStderrTail().trim();
+      rejectRace(
+        new Error(
+          `Child process exited before becoming ready (${code ?? signal})${detail ? `: ${detail}` : ''}`,
+        ),
+      );
+    };
+    child.once('exit', onExit);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        child.off('exit', onExit);
+        resolveRace(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        child.off('exit', onExit);
+        rejectRace(error);
+      },
+    );
+  });
+}
+
 /**
  * Mint a throwaway pairing credential directly against the CP (no shim — we
  * speak its native `x-test-account` stub header ourselves), purely to drive
@@ -360,14 +425,19 @@ async function mintThrowawayCredential(cpUrl, gatewayId) {
  * the terminator's cert chains to `caCert`, and we connect to the literal IP
  * its SAN covers, so ordinary hostname+chain validation succeeds).
  */
-async function waitForTunnelHealth(caCert, credential, timeoutMs = READINESS_TIMEOUT_MS) {
+async function waitForTunnelHealth(
+  terminatorPort,
+  caCert,
+  credential,
+  timeoutMs = READINESS_TIMEOUT_MS,
+) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const ok = await new Promise((resolveCheck) => {
       const req = httpsRequest(
         {
           host: '127.0.0.1',
-          port: TERMINATOR_PORT,
+          port: terminatorPort,
           path: '/mobile/v1/health',
           method: 'GET',
           ca: caCert,
@@ -424,7 +494,7 @@ function startAuthShim(cpPort) {
   });
 }
 
-/** TLS-terminate :443 -> plaintext relay. Condensed from the proven manual rig. */
+/** TLS-terminate a loopback high port -> plaintext relay. Condensed from the proven manual rig. */
 function startTlsTerminator(tlsKey, tlsCert) {
   const server = createHttpsServer({ key: tlsKey, cert: tlsCert }, (clientReq, clientRes) => {
     const proxyReq = httpRequest(
@@ -468,18 +538,29 @@ function startTlsTerminator(tlsKey, tlsCert) {
   server.on('tlsClientError', () => {});
   return new Promise((resolveListen, rejectListen) => {
     server.once('error', rejectListen);
-    // 0.0.0.0 (not 127.0.0.1): matches the confirmed-working bind shape for
-    // this port range on this host (a loopback-only bind of a HIGH port works
-    // equally well; 0.0.0.0 is what was verified end-to-end).
-    server.listen(TERMINATOR_PORT, '0.0.0.0', () => {
+    // Loopback + ephemeral: the Simulator shares the host's network stack, so
+    // 127.0.0.1 is all it ever needs (see the trust-posture header note), and
+    // an ephemeral port -- resolved via `.address().port` right below, no log
+    // parsing needed since this server lives in THIS process -- means one
+    // fewer fixed port that could collide with another rig on this host.
+    server.listen(0, '127.0.0.1', () => {
       server.off('error', rejectListen);
       resolveListen(server);
     });
   });
 }
 
+/**
+ * `Server.close()` alone waits for every open connection (e.g. a lingering
+ * keep-alive from a proxied request) to end on its own -- which can hang
+ * indefinitely. `closeAllConnections()` (Node 18.2+) force-terminates
+ * anything still open right away, so this always settles promptly.
+ */
 function closeServer(server) {
-  return new Promise((res) => server.close(() => res()));
+  return new Promise((res) => {
+    server.close(() => res());
+    server.closeAllConnections?.();
+  });
 }
 
 /** Spawn the gateway+relay-dial-in harness and await its readiness JSON line. */
@@ -547,7 +628,7 @@ function startGatewayHarness(cpUrl, relayUrl) {
 }
 
 async function main() {
-  const { code, destination } = await resolveDestination();
+  const { code, destination, bootedByScript } = await resolveDestination();
   if (code !== 0 || !destination) {
     process.exitCode = code || 1;
     return;
@@ -582,10 +663,9 @@ async function main() {
         '--admin-secret',
         RELAY_ADMIN_SECRET,
       ],
-      { cwd: ROOT_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+      { cwd: ROOT_DIR, env: process.env, stdio: ['ignore', 'ignore', 'pipe'] },
     );
-    relayChild.stdout?.on('data', () => {});
-    relayChild.stderr?.on('data', () => {});
+    const relayStderrTail = captureStderrTail(relayChild);
 
     cpChild = trackedSpawn(
       process.execPath,
@@ -595,6 +675,13 @@ async function main() {
         'apps/relay-control-plane/src/main.ts',
         '--port',
         String(CP_PORT),
+        // Loopback-only (see the trust-posture header note): without this the
+        // dev-stub control plane -- whose auth trusts a caller-supplied header
+        // verbatim -- listens on every interface (`@hono/node-server`'s
+        // default) and any LAN/tailnet host could mint credentials against it
+        // for the run's duration.
+        '--host',
+        '127.0.0.1',
         '--db-path',
         join(workdir, 'cp.db'),
         '--relay-admin-url',
@@ -609,14 +696,17 @@ async function main() {
       {
         cwd: ROOT_DIR,
         env: { ...process.env, RELAY_CP_DEV_STUB_AUTH: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'ignore', 'pipe'],
       },
     );
-    cpChild.stdout?.on('data', () => {});
-    cpChild.stderr?.on('data', () => {});
+    const cpStderrTail = captureStderrTail(cpChild);
 
-    await waitForTcpOpen(RELAY_PORT);
-    await waitForHttpHealth(`http://127.0.0.1:${CP_PORT}/health`);
+    await raceChildExit(relayChild, relayStderrTail, waitForTcpOpen(RELAY_PORT));
+    await raceChildExit(
+      cpChild,
+      cpStderrTail,
+      waitForHttpHealth(`http://127.0.0.1:${CP_PORT}/health`),
+    );
 
     gatewayHarness = startGatewayHarness(
       `http://127.0.0.1:${CP_PORT}`,
@@ -628,12 +718,13 @@ async function main() {
     const shimPort = shimServer.address().port;
 
     const caCertBuffer = await readFile(crypto.caCert);
+    let terminatorPort;
     try {
       terminatorServer = await startTlsTerminator(await readFile(crypto.tlsKey), caCertBuffer);
+      terminatorPort = terminatorServer.address().port;
     } catch (error) {
       process.stderr.write(
-        `[live-account-flow] Could not bind the TLS terminator to :${TERMINATOR_PORT}: ` +
-          `${error instanceof Error ? error.message : String(error)}\n`,
+        `[live-account-flow] Could not bind the loopback TLS terminator: ${error instanceof Error ? error.message : String(error)}\n`,
       );
       process.exitCode = 1;
       return;
@@ -643,7 +734,7 @@ async function main() {
       `http://127.0.0.1:${CP_PORT}`,
       readiness.gatewayId,
     );
-    await waitForTunnelHealth(caCertBuffer, probeCredential);
+    await waitForTunnelHealth(terminatorPort, caCertBuffer, probeCredential);
     await runCommand('xcrun', ['simctl', 'keychain', udid, 'add-root-cert', crypto.caCert], {
       timeoutMs: 30_000,
       label: 'simctl add-root-cert',
@@ -655,7 +746,7 @@ async function main() {
       DASH_TEST_ACCOUNT_GATEWAY_ID: readiness.gatewayId,
       DASH_TEST_ACCOUNT_IDENTITY_GATEWAY_ID: readiness.harnessGatewayId,
       DASH_TEST_ACCOUNT_AGENT_ID: readiness.agentId,
-      DASH_TEST_ACCOUNT_RELAY_PORT: String(TERMINATOR_PORT),
+      DASH_TEST_ACCOUNT_RELAY_PORT: String(terminatorPort),
     };
 
     const bundlePath = 'ios/LiveAccountFlow.xcresult';
@@ -726,6 +817,22 @@ async function main() {
     await terminate(cpChild);
     await terminate(relayChild);
     await rm(workdir, { recursive: true, force: true });
+
+    // M1 (keychain hygiene): `simctl keychain` has no single-cert remove, only
+    // `add-root-cert`/`add-cert`/a full `reset` (wipes EVERYTHING, including
+    // anything unrelated a human or another agent put there) -- checked via
+    // `xcrun simctl keychain --help`. Only safe to reset when THIS run is the
+    // one that booted the simulator (nothing else could have accumulated
+    // state in it yet); otherwise, leave the throwaway root cert in place and
+    // just document the accumulation (see the header note) rather than
+    // destroy a simulator some other session/human owns.
+    if (bootedByScript) {
+      await runCommand('xcrun', ['simctl', 'keychain', udid, 'reset'], {
+        quiet: true,
+        timeoutMs: 30_000,
+        label: 'simctl keychain reset',
+      }).catch(() => {});
+    }
   }
 
   process.exitCode = interruptExitCode ?? outcome;

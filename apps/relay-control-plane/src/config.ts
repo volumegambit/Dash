@@ -2,6 +2,13 @@
 export interface ControlPlaneConfig {
   /** TCP port to listen on. */
   port: number;
+  /**
+   * Bind address. Unset (the default) preserves the historical behavior of
+   * handing `@hono/node-server` no `hostname` at all (binds every interface).
+   * Pass `127.0.0.1` for a loopback-only control plane (e.g. a local dev-stub
+   * rig that must not be reachable from the LAN/tailnet).
+   */
+  host?: string;
   /** Path to the SQLite store (accounts → gateways → pairings). */
   dbPath: string;
   /** Base URL of the relay's admin API (the control plane is its sole caller). */
@@ -30,6 +37,7 @@ export interface ControlPlaneConfig {
 /** A subset of {@link ControlPlaneConfig} parsed from CLI flags. */
 export interface ControlPlaneFlags {
   port?: number;
+  host?: string;
   dbPath?: string;
   relayAdminUrl?: string;
   relayAdminSecret?: string;
@@ -55,6 +63,9 @@ export function parseControlPlaneFlags(argv: string[]): ControlPlaneFlags {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port' && argv[i + 1]) {
       flags.port = Number(argv[i + 1]);
+      i++;
+    } else if (argv[i] === '--host' && argv[i + 1]) {
+      flags.host = argv[i + 1];
       i++;
     } else if (argv[i] === '--db-path' && argv[i + 1]) {
       flags.dbPath = argv[i + 1];
@@ -108,6 +119,7 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
   const env = sources.env ?? {};
 
   const port = flags.port ?? (env.RELAY_CP_PORT ? Number(env.RELAY_CP_PORT) : DEFAULT_PORT);
+  const host = flags.host ?? env.RELAY_CP_HOST ?? undefined;
   const dbPath = flags.dbPath ?? env.RELAY_CP_DB_PATH ?? DEFAULT_DB_PATH;
   const relayAdminUrl =
     flags.relayAdminUrl ?? env.RELAY_CP_RELAY_ADMIN_URL ?? DEFAULT_RELAY_ADMIN_URL;
@@ -140,6 +152,7 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
 
   return {
     port,
+    host,
     dbPath,
     relayAdminUrl,
     relayAdminSecret,
