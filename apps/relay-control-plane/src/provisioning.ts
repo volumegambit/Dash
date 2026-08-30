@@ -31,11 +31,18 @@ export interface CreatedPairing {
   credential: string;
   pairingId: string;
   /**
-   * The gateway's chat-scoped bearer, returned ONLY for `'web'` pairings. A
-   * browser has no QR channel to receive it (see `Store.setWebChatToken`);
-   * native clients get it out of band and never see this field.
+   * The gateway's chat-scoped bearer, present whenever the gateway has a
+   * registered web chat token (see `Store.setWebChatToken`). Always present
+   * for `'web'` pairings — a browser has no QR channel to receive it out of
+   * band, so a missing registration throws `WebChatTokenMissingError` before
+   * this point instead. Present for `'mobile'`/account-authenticated pairings
+   * only when a token happens to be registered; absence is never an error, so
+   * legacy MC-driven mints for Android QR pairing keep their exact
+   * historical response shape.
    */
   chatToken?: string;
+  /** Lifecycle status of the freshly minted pairing — always `'active'`. */
+  status: PairingRecord['status'];
 }
 
 /** Collaborators the {@link ProvisioningService} orchestrates. */
@@ -167,16 +174,21 @@ export class ProvisioningService {
     // would leave an orphan credential live on the relay that the caller never
     // received and cannot revoke by id.
     let chatToken: string | undefined;
+    const registered = this.#store.getWebChatToken(gatewayId);
     if (clientKind === 'web') {
-      const registered = this.#store.getWebChatToken(gatewayId);
       if (!registered) {
         throw new WebChatTokenMissingError(`no web chat token registered for gateway ${gatewayId}`);
       }
       chatToken = registered;
+    } else if (registered) {
+      // Account-authenticated native clients (iOS sign-in) receive the same
+      // chat-scoped token when available; absence is not an error so legacy
+      // MC-driven mints for Android QR pairing keep their exact behavior.
+      chatToken = registered;
     }
     const credential = await this.#relay.provisionPairing(accountId, gatewayId);
     const pairingId = generatePairingId();
-    this.#store.addPairing({
+    const pairing = this.#store.addPairing({
       id: pairingId,
       gatewayId,
       credentialHash: sha256(credential),
@@ -184,8 +196,8 @@ export class ProvisioningService {
       clientKind,
     });
     return chatToken === undefined
-      ? { credential, pairingId }
-      : { credential, pairingId, chatToken };
+      ? { credential, pairingId, status: pairing.status }
+      : { credential, pairingId, chatToken, status: pairing.status };
   }
 
   /**

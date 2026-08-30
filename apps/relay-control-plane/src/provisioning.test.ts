@@ -274,16 +274,28 @@ describe('ProvisioningService pairings', () => {
     expect(created.chatToken).toBe('chat-1');
     expect(created.credential).toBeTruthy();
     expect(created.pairingId).toBeTruthy();
+    expect(created.status).toBe('active');
   });
 
-  it('never returns a chat token for a mobile pairing, even when one is registered', async () => {
+  it('returns the registered chat token for an account-authenticated mobile pairing too', async () => {
     const { service } = makeRealService();
     const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
     service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
 
+    const created = await service.createPairing('acct-1', gw.gatewayId, 'iPhone', 'mobile');
+
+    expect(created.chatToken).toBe('chat-1');
+    expect(created.status).toBe('active');
+  });
+
+  it('omits the chat token (and never throws) for a mobile pairing when none is registered — MC/Android compat', async () => {
+    const { service } = makeRealService();
+    const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+
     const created = await service.createPairing('acct-1', gw.gatewayId, 'iPhone');
 
     expect(created.chatToken).toBeUndefined();
+    expect(created.status).toBe('active');
   });
 
   it('refuses a web pairing before minting when no chat token is registered', async () => {

@@ -169,8 +169,10 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
         parsed.deviceLabel,
         parsed.clientKind,
       );
-      // Browser pairings additionally carry the gateway's chat bearer; native
-      // clients see the unchanged `{ credential }` body.
+      // Any client whose gateway has a registered chat token gets it back
+      // additively; a mobile pairing with none registered keeps the exact
+      // historical `{ credential }` body (never a 409 — MC/Android compat).
+      // `status` is intentionally NOT surfaced on this legacy route.
       return c.json(chatToken === undefined ? { credential } : { credential, chatToken });
     } catch (err) {
       if (err instanceof WebChatTokenMissingError) {
