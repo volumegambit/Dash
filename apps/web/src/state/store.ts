@@ -507,11 +507,29 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         try {
           replay = await replayHistory(conversationId);
         } catch (err) {
+          if (disposed) return;
           if (isAuthError(err)) {
             enterUnauthorized();
             return;
           }
-          throw err;
+          // A gateway that is unreachable during the initial history replay
+          // is not a programming error, any more than a failed socket
+          // `connect()` is (see the identical handling further down) — and
+          // the only caller is a React effect, so rethrowing here would
+          // surface as an unhandled rejection and leave `connection` stuck
+          // wherever it was. That "wherever it was" matters more now that
+          // `'idle'` is the initial value: a fresh store whose very first
+          // `openConversation()` call fails this replay would otherwise be
+          // stranded on `'idle'` forever — no banner, no reconnecting
+          // indicator, no retry ever scheduled, since nothing else drives
+          // this store's state machine. Treat it exactly like a socket that
+          // drops later: report the outage and retry on the normal backoff
+          // schedule; if it's a genuine outage the reconnect machinery's own
+          // probe (`finalizeReconnectExhausted`) is what eventually lands on
+          // `'offline'`.
+          set({ connection: 'reconnecting' });
+          scheduleReconnect();
+          return;
         }
         // `dispose()` can land while the replay round-trip is in flight. Without
         // this check we would go on to open a socket the store no longer owns
@@ -609,6 +627,12 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
       dispose() {
         haltReconnectMachinery();
+        // A teardown-terminal value, not an outage report: by the time this
+        // runs the store is being discarded (Shell nulls out the store on
+        // gateway switch/self-revocation/unmount — see Shell.tsx's teardown
+        // effect), so no UI ever reads `connection` off a disposed store
+        // afterwards. `'offline'` (over introducing yet another state just
+        // for this) is fine precisely because it's unobserved.
         set({ connection: 'offline' });
       },
     };

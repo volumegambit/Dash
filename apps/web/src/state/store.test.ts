@@ -378,6 +378,35 @@ describe('createWebAppStore', () => {
       const finalMessages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
       expect(finalMessages.map((m) => m.id)).toEqual(['server-msg-1']);
     });
+
+    it("a non-auth failure during the initial replay reconnects on the normal backoff instead of stranding the store (regression: used to rethrow, leaving a fresh store stuck on 'idle' with no banner, no indicator, and no retry ever scheduled)", async () => {
+      const { rest } = fakeRest({
+        getMessagesImpl: async () => {
+          throw new TypeError('fetch failed'); // a plain network error, not MobileApiError
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({
+        rest,
+        socketFactory: factory,
+        reconnect: { maxAttempts: 1 },
+      });
+
+      // Resolves — never rejects on a transport failure; the only caller is
+      // a React effect.
+      await store.getState().openConversation(CONVERSATION_ID);
+      expect(store.getState().connection).toBe('reconnecting');
+      // No socket was ever attempted for the failed replay itself.
+      expect(factory).not.toHaveBeenCalled();
+
+      // A reconnect was armed on the normal backoff schedule.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(1));
+
+      // And cap-exhaustion still ends 'offline', same as any other reconnect path.
+      sockets[0].failToOpen(); // cap reached (maxAttempts: 1) — probe fires
+      await vi.waitFor(() => expect(store.getState().connection).toBe('offline'));
+    });
   });
 
   describe('sendMessage', () => {

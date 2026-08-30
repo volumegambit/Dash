@@ -41,11 +41,13 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   useEffect(() => {
     if (!conversationId) return;
-    // The store handles every expected failure itself (auth → 'unauthorized',
-    // unreachable gateway → 'reconnecting' + backoff), so a rejection here is
-    // genuinely unexpected. Catch it anyway: an effect cannot await, and a bare
-    // `void` on a rejected promise becomes an unhandled rejection that some
-    // hosts escalate to a page-level error.
+    // The store handles every expected failure itself, whether it happens
+    // during the initial history replay or the socket connect that follows
+    // it (auth → 'unauthorized'; unreachable gateway → 'reconnecting' +
+    // backoff), so a rejection here is genuinely unexpected. Catch it
+    // anyway: an effect cannot await, and a bare `void` on a rejected
+    // promise becomes an unhandled rejection that some hosts escalate to a
+    // page-level error.
     openConversation(conversationId).catch((err: unknown) => {
       console.error('ChatView: failed to open conversation', err);
     });
