@@ -15,7 +15,7 @@ struct QRScannerView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var cameraAuthorization: AVAuthorizationStatus = .notDetermined
   @State private var errorMessage: String?
-  @State private var activeScanID: UUID?
+  @State private var coordinator = ScanCoordinator()
 
   var body: some View {
     ScrollView {
@@ -61,55 +61,31 @@ struct QRScannerView: View {
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         Button("Close") {
-          activeScanID = nil
+          coordinator.stop()
           onCancel()
           dismiss()
         }
         .frame(minWidth: 44, minHeight: 44)
       }
     }
-    .task { await requestCameraAndScan() }
+    .task { await runScan() }
     .onDisappear {
-      activeScanID = nil
+      coordinator.stop()
       Task { await scanner.stop() }
     }
   }
 
-  private func requestCameraAndScan() async {
-    let scanID = UUID()
-    activeScanID = scanID
-    var authorization = await scanner.authorizationStatus()
-    guard activeScanID == scanID else { return }
-    cameraAuthorization = authorization
-    if authorization == .notDetermined {
-      _ = await scanner.requestAccess()
-      guard activeScanID == scanID else { return }
-      authorization = await scanner.authorizationStatus()
-      guard activeScanID == scanID else { return }
+  private func runScan() async {
+    let outcome = await coordinator.requestCameraAndScan(using: scanner) { authorization in
       cameraAuthorization = authorization
     }
-    guard authorization == .authorized else {
-      activeScanID = nil
-      return
-    }
-    do {
-      let payload = try await scanner.scan()
-      try Task.checkCancellation()
-      guard activeScanID == scanID else { return }
-      activeScanID = nil
+    switch outcome {
+    case .scanned(let payload):
       onScanned(payload)
-    } catch is CancellationError {
-      if activeScanID == scanID {
-        activeScanID = nil
-      }
-    } catch QRScannerError.stopped {
-      if activeScanID == scanID {
-        activeScanID = nil
-      }
-    } catch {
-      guard activeScanID == scanID else { return }
-      activeScanID = nil
+    case .failed:
       errorMessage = "Couldn't scan the code. Try again."
+    case .authorizationDenied, .ignored:
+      break
     }
   }
 

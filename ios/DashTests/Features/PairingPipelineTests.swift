@@ -365,6 +365,44 @@ struct PairingPipelineTests {
     #expect(runtime.stopCallCount >= 1)
   }
 
+  @Test("a QR result arriving after scanning stops is ignored")
+  func stoppedScannerIgnoresLateResult() async {
+    let scanner = ControllableQRScanner()
+    let coordinator = ScanCoordinator()
+
+    let scanTask = Task {
+      await coordinator.requestCameraAndScan(using: scanner) { _ in }
+    }
+    for _ in 0..<100 where await scanner.scanCallCount == 0 {
+      await Task.yield()
+    }
+    #expect(await scanner.scanCallCount == 1)
+
+    coordinator.stop()
+    await scanner.returnLateResult("late-result-payload")
+
+    #expect(await scanTask.value == .ignored)
+  }
+
+  @Test("a buffered QR result is ignored after the scanner task is cancelled")
+  func cancelledScannerIgnoresBufferedResult() async {
+    let scanner = ControllableQRScanner()
+    let coordinator = ScanCoordinator()
+
+    let scanTask = Task {
+      await coordinator.requestCameraAndScan(using: scanner) { _ in }
+    }
+    for _ in 0..<100 where await scanner.scanCallCount == 0 {
+      await Task.yield()
+    }
+    #expect(await scanner.scanCallCount == 1)
+
+    scanTask.cancel()
+    await scanner.returnLateResult("buffered-result-payload")
+
+    #expect(await scanTask.value == .ignored)
+  }
+
   @Test("camera preview attaches, remains silent to VoiceOver, and detaches its session")
   func cameraPreviewLifecycle() {
     let session = AVCaptureSession()
@@ -862,6 +900,33 @@ private actor RecordingPairingInstaller: PairingProfileInstalling {
   func install(_ pairing: VerifiedPairing) async throws -> ConnectionProfileSnapshot {
     installCallCount += 1
     return pairing.profile
+  }
+}
+
+private actor ControllableQRScanner: QRScanning {
+  private(set) var scanCallCount = 0
+  private var continuation: CheckedContinuation<String, any Error>?
+
+  func authorizationStatus() -> AVAuthorizationStatus {
+    .authorized
+  }
+
+  func requestAccess() async -> Bool {
+    true
+  }
+
+  func scan() async throws -> String {
+    scanCallCount += 1
+    return try await withCheckedThrowingContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func stop() {}
+
+  func returnLateResult(_ payload: String) {
+    continuation?.resume(returning: payload)
+    continuation = nil
   }
 }
 

@@ -40,7 +40,7 @@
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSCameraUsageDescription</key>
-  <string>Scan a Dash pairing code to connect this device.</string>
+  <string>Dash uses the camera to scan QR codes, such as approving a new device sign-in.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Connect to your Dash gateway on this network.</string>
   <key>UILaunchScreen</key>
