@@ -198,6 +198,48 @@ describe('ChatView', () => {
     await waitFor(() => expect(screen.getByText('Streaming reply continues')).toBeTruthy());
   });
 
+  it('shows a Thinking… indicator pre-first-token and swaps it for a streaming caret once ' +
+    'content arrives (chat-ux Phase 2 Task 5, audit #13)', async () => {
+    const { sockets, onFrames } = await renderConnected();
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    const turnId = sockets[0].sent[0].id;
+
+    // Right after `accepted`, before any `event` frame: `streaming` is a
+    // non-null empty-events shell (`assemble.ts`) — this is exactly the
+    // "no visible event yet" window MC's `ThinkingIndicator` fills.
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByTestId('thinking-indicator')).toBeTruthy());
+    expect(screen.queryByTestId('streaming-caret')).toBeNull();
+
+    act(() => {
+      onFrames[0]({
+        type: 'event',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        event: { type: 'text_delta', text: 'Streaming reply' },
+      });
+    });
+
+    // First visible content flips the indicator off and the caret on.
+    await waitFor(() => expect(screen.getByTestId('streaming-caret')).toBeTruthy());
+    expect(screen.queryByTestId('thinking-indicator')).toBeNull();
+  });
+
   it('shows the Reconnecting… banner when the connection drops', async () => {
     const { onCloses } = await renderConnected();
     act(() => onCloses[0]('error'));

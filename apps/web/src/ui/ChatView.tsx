@@ -64,6 +64,25 @@ function ArrowDownIcon(): ReactNode {
   );
 }
 
+/**
+ * Streaming presence, pre-first-token (chat-ux Phase 2 Task 5, audit #13):
+ * MC parity port of `ThinkingIndicator` (`apps/mission-control/src/renderer/
+ * src/routes/chat.tsx:363-370`, called at `isStreaming && liveEvents.length
+ * === 0`) — shown only in the window between the `accepted` frame (which
+ * sets `transcript.streaming` to an empty-events shell, see `assemble.ts`)
+ * and the first `event` frame actually populating it. The spinner itself is
+ * `.thinking-indicator-spinner` in `styles.css`, gated static under
+ * `prefers-reduced-motion` there rather than in this component.
+ */
+function ThinkingIndicator(): ReactNode {
+  return (
+    <div className="thinking-indicator" data-testid="thinking-indicator">
+      <span className="thinking-indicator-spinner" aria-hidden="true" />
+      <span>Thinking…</span>
+    </div>
+  );
+}
+
 function CheckIcon(): ReactNode {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" className="copy-check">
@@ -498,6 +517,13 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // chat.tsx:2633-2643) and locks the textarea while a turn is in flight,
   // same as MC's `composerLocked`.
   const isStreaming = streaming !== null;
+  // Streaming presence (chat-ux Phase 2 Task 5, audit #13): "no visible
+  // event yet" mirrors MC's own `liveEvents.length === 0` check exactly —
+  // `streaming.events` is the same raw per-frame array `ContentBlocks`
+  // walks, so an empty array means nothing has rendered from this turn yet
+  // (still true right after `accepted`, before the first `event` frame).
+  const streamingHasVisibleContent =
+    streaming !== null && streaming.type === 'assistant' && streaming.events.length > 0;
 
   async function handleSend(): Promise<void> {
     const text = draft.trim();
@@ -545,7 +571,19 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
             ))}
             {streaming && (
               <div data-testid="chat-message-streaming" data-role="assistant">
+                {!streamingHasVisibleContent && <ThinkingIndicator />}
                 <ContentBlocks content={streaming} />
+                {/* Streaming caret (audit #13): only once there's actual
+                 * content to trail — while `ThinkingIndicator` above is
+                 * showing (no visible event yet) there's nothing for a
+                 * caret to sit after. */}
+                {streamingHasVisibleContent && (
+                  <span
+                    className="streaming-caret"
+                    aria-hidden="true"
+                    data-testid="streaming-caret"
+                  />
+                )}
               </div>
             )}
             {/* Zero-height bottom sentinel (audit #4): `usePinnedScroll`'s

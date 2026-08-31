@@ -800,6 +800,64 @@ textarea:focus-visible {
 }
 
 /* ---------------------------------------------------------------------
+ * Streaming presence, pre-first-token (chat-ux Phase 2 Task 5, audit #13):
+ * `ThinkingIndicator` (MC parity port, chat.tsx:363-370) and the trailing
+ * streaming caret. Both gated static under `prefers-reduced-motion` per the
+ * task brief — `.tool-status-spinner` above predates this sweep and is
+ * intentionally left alone (pre-existing scope, not part of #13).
+ * ------------------------------------------------------------------- */
+
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 8px;
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.thinking-indicator-spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  animation: tool-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-indicator-spinner {
+    animation: none;
+    border-top-color: var(--border);
+  }
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--text-muted);
+  animation: caret-blink 1s step-end infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-caret {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* ---------------------------------------------------------------------
  * Thinking block (spec appendix §4, MC ThinkingBlock parity)
  * ------------------------------------------------------------------- */
 
