@@ -391,6 +391,9 @@ struct AccountConnectFeatureTests {
     let body = try #require(request.httpBody)
     let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
     #expect(json == ["publicKey": expectedPublicKey, "label": "Gerry's iPhone"])
+    // Task 6's scan-to-approve flow reads this back via `signer.signerId()`
+    // instead of re-registering on every approval.
+    #expect(try await signer.signerId() == "signer-1")
   }
 
   @Test("a signer registration failure is swallowed and never fails connect")
@@ -408,11 +411,12 @@ struct AccountConnectFeatureTests {
     // propagate out of `connect(to:)`.
     let connected = ConnectedRecorder()
     var reportedFailure: (any Error)?
+    let signer = makeSigner()
     let feature = AccountConnectFeature(
       client: client,
       verifier: CapturingAccountVerifier(),
       installer: RecordingAccountInstaller(),
-      signer: makeSigner(),
+      signer: signer,
       deviceLabel: "Device",
       onConnected: { connected.profiles.append($0) },
       onSignerRegistrationFailed: { error in reportedFailure = error }
@@ -422,6 +426,8 @@ struct AccountConnectFeatureTests {
 
     #expect(connected.profiles.count == 1)
     #expect(reportedFailure as? ControlPlaneError == .network)
+    // Never got a signerId back, so there is nothing to persist.
+    #expect(try await signer.signerId() == nil)
   }
 }
 

@@ -23,6 +23,7 @@ import Testing
           "account-picker",
           "account-picker-error",
           "account-not-enrolled",
+          "approve-device",
         ]
       )
     }

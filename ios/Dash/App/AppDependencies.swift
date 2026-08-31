@@ -58,6 +58,12 @@ struct AccountFeatureFactory: Sendable {
   let verifier: any PairingVerifying
   let installer: any PairingProfileInstalling
   let signer: SignerIdentity
+  /// The camera scanner Task 6's "Approve a device" flow presents. A stored
+  /// instance (mirroring `verifier`/`installer` above) rather than a
+  /// per-call factory closure, since a real `QRScannerService` is cheap to
+  /// hold and UI tests substitute a scripted fake here the same way they do
+  /// for `verifier`/`installer`.
+  let scanner: any QRScanning
   let makeDeviceLabel: @Sendable () -> String
 
   init(
@@ -66,6 +72,7 @@ struct AccountFeatureFactory: Sendable {
     verifier: any PairingVerifying,
     installer: any PairingProfileInstalling,
     signer: SignerIdentity,
+    scanner: any QRScanning = QRScannerService(),
     makeDeviceLabel: @escaping @Sendable () -> String = AccountFeatureFactory.defaultDeviceLabel
   ) {
     self.session = session
@@ -73,6 +80,7 @@ struct AccountFeatureFactory: Sendable {
     self.verifier = verifier
     self.installer = installer
     self.signer = signer
+    self.scanner = scanner
     self.makeDeviceLabel = makeDeviceLabel
   }
 
@@ -111,6 +119,50 @@ struct AccountFeatureFactory: Sendable {
       deviceLabel: makeDeviceLabel(),
       onGrantMinted: onGrantMinted,
       onConnected: onConnected
+    )
+  }
+
+  /// Builds a fresh `ApproveDeviceViewModel` for one scan-to-approve attempt
+  /// (Task 6). `resolveSignerId` implements "register-then-decide": most of
+  /// the time `signer.signerId()` already holds a value from the best-effort
+  /// registration `makeConnect`'s `connect(to:)` performs on every
+  /// successful gateway connect, but a device that reaches this screen
+  /// despite that registration having failed (offline, CP blip) registers
+  /// now, on demand, using this same signer key — rather than showing a dead
+  /// end that tells the user to reconnect a gateway they're already
+  /// connected to.
+  @MainActor
+  func makeApproveDeviceViewModel() -> ApproveDeviceViewModel {
+    ApproveDeviceViewModel(
+      scanner: scanner,
+      fetchApproval: { id in try await self.client.fetchApproval(id: id) },
+      resolveSignerId: {
+        if let existing = try await self.signer.signerId() {
+          return existing
+        }
+        let publicKey = try await self.signer.publicKeyB64()
+        let signerId = try await self.client.registerSigner(
+          publicKey: publicKey,
+          label: self.makeDeviceLabel()
+        )
+        try await self.signer.persistSignerId(signerId)
+        return signerId
+      },
+      sign: { approvalId, pairingId, decision in
+        try await self.signer.sign(
+          approvalId: approvalId,
+          pairingId: pairingId,
+          decision: decision
+        )
+      },
+      postDecision: { approvalId, decision, signerId, signature in
+        try await self.client.postDecision(
+          approvalId: approvalId,
+          decision: decision,
+          signerId: signerId,
+          signature: signature
+        )
+      }
     )
   }
 

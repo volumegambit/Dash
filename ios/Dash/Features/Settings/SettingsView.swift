@@ -2,7 +2,9 @@ import SwiftUI
 
 struct SettingsView: View {
   @Environment(SettingsFeature.self) private var feature
+  @Environment(AppModel.self) private var appModel
   @State private var showForgetConfirmation = false
+  @State private var approveDeviceViewModel: ApproveDeviceViewModel?
 
   var body: some View {
     Form {
@@ -43,6 +45,18 @@ struct SettingsView: View {
         }
         .disabled(feature.canReconnect == false)
         .accessibilityLabel(feature.reconnectButtonTitle)
+      }
+
+      Section {
+        Button("Approve a device") {
+          approveDeviceViewModel = appModel.makeApproveDeviceViewModel()
+        }
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("account.approve-device")
+      } header: {
+        Text("Account")
+      } footer: {
+        Text("Scan the code shown on a browser or new device to let it sign in to your account.")
       }
 
       Section {
@@ -90,12 +104,24 @@ struct SettingsView: View {
     } message: {
       Text(feature.error ?? "Dash couldn't update gateway settings.")
     }
+    .sheet(isPresented: approveDeviceSheetPresented) {
+      if let approveDeviceViewModel {
+        ApproveDeviceView(viewModel: approveDeviceViewModel)
+      }
+    }
   }
 
   private var errorPresented: Binding<Bool> {
     Binding(
       get: { feature.error != nil },
       set: { if $0 == false { feature.error = nil } }
+    )
+  }
+
+  private var approveDeviceSheetPresented: Binding<Bool> {
+    Binding(
+      get: { approveDeviceViewModel != nil },
+      set: { if $0 == false { approveDeviceViewModel = nil } }
     )
   }
 }

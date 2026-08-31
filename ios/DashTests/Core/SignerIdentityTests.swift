@@ -143,6 +143,68 @@ struct SignerIdentityTests {
     let originalKey = try await identity.publicKeyB64()
     #expect(stillSameKey == originalKey)
   }
+
+  @Test("signerId is nil before any registration has been recorded")
+  func signerIDIsNilBeforePersisted() async throws {
+    let identity = SignerIdentity(keychain: FakeKeychain())
+    // Creating the key alone (no registration yet) must not fabricate one.
+    _ = try await identity.publicKeyB64()
+
+    #expect(try await identity.signerId() == nil)
+  }
+
+  @Test("persistSignerId makes signerId return the persisted value")
+  func persistSignerIDIsReadableAfterward() async throws {
+    let identity = SignerIdentity(keychain: FakeKeychain())
+
+    try await identity.persistSignerId("signer-abc")
+
+    #expect(try await identity.signerId() == "signer-abc")
+  }
+
+  @Test("persistSignerId survives across a fresh SignerIdentity instance over the same keychain")
+  func persistedSignerIDSurvivesAcrossInstances() async throws {
+    let keychain = FakeKeychain()
+    let first = SignerIdentity(keychain: keychain)
+    try await first.persistSignerId("signer-xyz")
+
+    let second = SignerIdentity(keychain: keychain)
+    #expect(try await second.signerId() == "signer-xyz")
+  }
+
+  @Test("persistSignerId does not change the device's signing key")
+  func persistSignerIDPreservesTheSigningKey() async throws {
+    let identity = SignerIdentity(keychain: FakeKeychain())
+    let keyBeforePersist = try await identity.publicKeyB64()
+
+    try await identity.persistSignerId("signer-preserve")
+
+    #expect(try await identity.publicKeyB64() == keyBeforePersist)
+  }
+
+  @Test("persistSignerId called before any key exists creates one rather than throwing")
+  func persistSignerIDCreatesKeyIfNeeded() async throws {
+    let keychain = FakeKeychain()
+    let identity = SignerIdentity(keychain: keychain)
+
+    try await identity.persistSignerId("signer-fresh")
+
+    #expect(try await identity.signerId() == "signer-fresh")
+    // The key it created is stable across a fresh instance, exactly like the
+    // create-on-first-use path `publicKeyStableAcrossCalls` exercises.
+    let reloaded = SignerIdentity(keychain: keychain)
+    #expect(try await reloaded.publicKeyB64() == (try await identity.publicKeyB64()))
+  }
+
+  @Test("persisting a second signerId overwrites the first")
+  func persistSignerIDOverwritesPreviousValue() async throws {
+    let identity = SignerIdentity(keychain: FakeKeychain())
+    try await identity.persistSignerId("signer-old")
+
+    try await identity.persistSignerId("signer-new")
+
+    #expect(try await identity.signerId() == "signer-new")
+  }
 }
 
 // MARK: - Test helper

@@ -56,4 +56,24 @@ final class AccountUITests: DashUITestCase {
     // a stuck spinner.
     XCTAssertTrue(element("account.gateway.ui-not-enrolled-gateway", in: app).isHittable)
   }
+
+  /// Task 6: the "Approve a device" scan-to-approve flow. The `approve-device`
+  /// scenario wires a fake `QRScanning` that hands back a canned
+  /// `dash-approve:v1:` payload instead of requiring a camera, and a scripted
+  /// `ControlPlaneClient` for `fetchApproval`/`postDecision` — see
+  /// `UITestScenarioFixtures.approveDeviceAccountFactory`.
+  func testApproveDeviceScansConfirmsAndApproves() {
+    let app = launch(scenario: "approve-device")
+
+    selectTab("tab.settings", in: app)
+    element("account.approve-device", in: app).tap()
+
+    XCTAssertTrue(
+      app.staticTexts["Allow \"Chrome on MacBook\" to access ui-approve-gateway?"]
+        .waitForExistence(timeout: 5)
+    )
+    element("account.approve", in: app).tap()
+
+    XCTAssertTrue(app.staticTexts["Device approved."].waitForExistence(timeout: 5))
+  }
 }

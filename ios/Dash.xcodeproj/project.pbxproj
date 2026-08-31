@@ -54,6 +54,7 @@
 		64E8C456A78A1674C85030C1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8595E34F3DDA23930BA1A37 /* ChatView.swift */; };
 		659C3BDACE475612B04A2414 /* DashTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD11566894C3CCA12E94DE6 /* DashTheme.swift */; };
 		67266DDF994F01A8B74AB7BB /* SignerIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE855A3D49D0EA45859EF93E /* SignerIdentity.swift */; };
+		6C03E36530AEFF2CF9EAF3D6 /* ApproveDeviceViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D25113D6E91EF651A920429 /* ApproveDeviceViewModelTests.swift */; };
 		6EABFCC6BD281137847CA2D7 /* ChatFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0203D495290D5C03FE6AB2AB /* ChatFeatureTests.swift */; };
 		728D0D7250C62AE2A03CCB5B /* GatewayAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F485644FF2B5F2EE6D0554C4 /* GatewayAPI.swift */; };
 		737B5822B1DD2D5B46A78D89 /* GatewayPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A74A8FF922439B8122B7ED4E /* GatewayPickerView.swift */; };
@@ -107,6 +108,7 @@
 		D9C389BBA8474EAECA364A56 /* AppLaunch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D2B87B5739D99E6FE4961FA /* AppLaunch.swift */; };
 		DBB000E094D94ECC3EF3BB22 /* PersistenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07525DD3A981A91EB916EE6 /* PersistenceStore.swift */; };
 		DE173F96B5CDCE15F9A5945A /* FixtureLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0AD75CCB7719441B1328C0 /* FixtureLoader.swift */; };
+		DE86C2D4DCE0A0245D46B221 /* ApproveDeviceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 339D485E9963F2D92E960A68 /* ApproveDeviceView.swift */; };
 		E06F637D6BD0B2E6B1349AA7 /* ImageAttachmentValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44FD56EFF46E2001067D727F /* ImageAttachmentValidator.swift */; };
 		E2872BBE78A96A70546A4334 /* GatewayContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B126558F955E1B204D2FC09 /* GatewayContracts.swift */; };
 		E321FD6C48B7A9E60F13D517 /* QRScannerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E9BDFB9E00507E3408765FD /* QRScannerService.swift */; };
@@ -168,12 +170,14 @@
 		247BD9B6EABCDC4C3283949B /* ChatFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFrames.swift; sourceTree = "<group>"; };
 		25EDAF628CC06039429777EF /* ChatReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatReducerTests.swift; sourceTree = "<group>"; };
 		2B126558F955E1B204D2FC09 /* GatewayContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayContracts.swift; sourceTree = "<group>"; };
+		2D25113D6E91EF651A920429 /* ApproveDeviceViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApproveDeviceViewModelTests.swift; sourceTree = "<group>"; };
 		2D380AAE3238769E6CA7CAC6 /* DashContractTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DashContractTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D5F3F418B176D0AF85721C2 /* AgentsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsListView.swift; sourceTree = "<group>"; };
 		2E9BDFB9E00507E3408765FD /* QRScannerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerService.swift; sourceTree = "<group>"; };
 		2ED81E18E432E48CF99BBD01 /* ChatFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFeature.swift; sourceTree = "<group>"; };
 		2F541184761F1CC7E83C44FD /* AppClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppClock.swift; sourceTree = "<group>"; };
 		2FD936DB9D382EE36259347A /* AccountUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountUITests.swift; sourceTree = "<group>"; };
+		339D485E9963F2D92E960A68 /* ApproveDeviceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApproveDeviceView.swift; sourceTree = "<group>"; };
 		3436D52686B6A2F61E80468E /* MessageViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageViews.swift; sourceTree = "<group>"; };
 		34F7AB70C0AC1954E310311A /* ConversationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListView.swift; sourceTree = "<group>"; };
 		354D25374E6933F31A56E87A /* PairingPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingPayload.swift; sourceTree = "<group>"; };
@@ -280,6 +284,7 @@
 			isa = PBXGroup;
 			children = (
 				802CB5BE377C22DC1D1F8E82 /* AccountConnectFeature.swift */,
+				339D485E9963F2D92E960A68 /* ApproveDeviceView.swift */,
 				A74A8FF922439B8122B7ED4E /* GatewayPickerView.swift */,
 				F7D11AED12708893A7452931 /* SignInView.swift */,
 			);
@@ -558,6 +563,7 @@
 				C221F00F7183A92CFB4F6AEC /* AccountConnectFeatureTests.swift */,
 				604F7C0B662AEBA3B9804CB4 /* AccountViewModelTests.swift */,
 				FE80FDD8FB6ACAB48ADB048D /* AgentsFeatureTests.swift */,
+				2D25113D6E91EF651A920429 /* ApproveDeviceViewModelTests.swift */,
 				0203D495290D5C03FE6AB2AB /* ChatFeatureTests.swift */,
 				25EDAF628CC06039429777EF /* ChatReducerTests.swift */,
 				4CEF5E6B43DC31B55FEA7B6A /* ConversationListFeatureTests.swift */,
@@ -795,6 +801,7 @@
 				1602B3C6A6B7DA8951C5A71F /* AccountViewModelTests.swift in Sources */,
 				FA5146987F59ECCC880147D8 /* AgentsFeatureTests.swift in Sources */,
 				BB2D3D42B8C75FEA6DD783AD /* AppModelTests.swift in Sources */,
+				6C03E36530AEFF2CF9EAF3D6 /* ApproveDeviceViewModelTests.swift in Sources */,
 				161FA2C5128CB06B16476667 /* BackoffPolicyTests.swift in Sources */,
 				CC33C25272F46102059E80C2 /* ChatConnectionTests.swift in Sources */,
 				6EABFCC6BD281137847CA2D7 /* ChatFeatureTests.swift in Sources */,
@@ -866,6 +873,7 @@
 				D9C389BBA8474EAECA364A56 /* AppLaunch.swift in Sources */,
 				A2CBED965ED701C64F58F71A /* AppModel.swift in Sources */,
 				26010FC4424C2E5E9238F5D3 /* AppRoute.swift in Sources */,
+				DE86C2D4DCE0A0245D46B221 /* ApproveDeviceView.swift in Sources */,
 				479D1FFD68253DAEE6FE8C96 /* AsyncStateView.swift in Sources */,
 				C12B9F0E99E41FCC634FE84C /* BackoffPolicy.swift in Sources */,
 				4A6476EA294BBE263BA5FB94 /* ChatConnection.swift in Sources */,

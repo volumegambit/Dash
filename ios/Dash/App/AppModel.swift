@@ -370,6 +370,14 @@ final class AppModel {
     )
   }
 
+  /// Builds a fresh `ApproveDeviceViewModel` for `SettingsView`'s
+  /// "Approve a device" row (Task 6) — a new instance per tap, mirroring
+  /// `makeGatewayPickerViewModel`'s per-presentation construction, so a
+  /// previous scan/decide attempt never leaks into the next one.
+  func makeApproveDeviceViewModel() -> ApproveDeviceViewModel {
+    dependencies.accountFeatureFactory.makeApproveDeviceViewModel()
+  }
+
   private func connectToAccountGateway(_ gateway: GatewayInfoDTO) async throws {
     let feature = dependencies.accountFeatureFactory.makeConnect(
       onGrantMinted: { [weak self] gatewayId, pairingId in

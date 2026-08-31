@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 extension AppDependenciesFactory {
@@ -67,13 +68,19 @@ extension AppDependenciesFactory {
     /// Signed in, one enrolled gateway loads, but connecting mints a grant
     /// with no `chatToken` — exercises `AccountConnectError.notEnrolled`.
     case accountNotEnrolled = "account-not-enrolled"
+    /// Signed in AND already paired (so `SettingsView`'s "Approve a device"
+    /// row is reachable), with a scripted `ControlPlaneClient` (approvals
+    /// routes) and a fake `QRScanning` that hands back a canned
+    /// `dash-approve:v1:` payload instead of requiring a camera — see
+    /// `AccountUITests`.
+    case approveDevice = "approve-device"
 
     /// Explicit enumeration (rather than `self != .unpaired`) so adding a new
     /// signed-out-first case can't silently start it paired by omission.
     var startsPaired: Bool {
       switch self {
       case .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
-        .pendingRecovery, .activeRecovery, .agents, .settingsForget:
+        .pendingRecovery, .activeRecovery, .agents, .settingsForget, .approveDevice:
         return true
       case .unpaired, .signedOut, .accountPicker, .accountPickerError, .accountNotEnrolled:
         return false
@@ -453,7 +460,9 @@ extension AppDependenciesFactory {
         return signedInPickerFactory(keychain: keychain, clock: clock)
 
       case .unpaired, .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
-        .pendingRecovery, .activeRecovery, .agents, .settingsForget:
+        .pendingRecovery, .activeRecovery, .agents, .settingsForget, .approveDevice:
+        // `.approveDevice` never reaches here — `uiTesting`'s ternary routes
+        // it to `approveDeviceAccountFactory` first. Listed for exhaustiveness.
         return .unavailable
       }
     }
@@ -489,6 +498,59 @@ extension AppDependenciesFactory {
         verifier: UITestPairingVerifier(),
         installer: UITestPairingInstaller(keychain: keychain),
         signer: SignerIdentity(keychain: keychain)
+      )
+    }
+
+    /// Signed-in-AND-paired factory for the `approve-device` scenario
+    /// (Task 6): same stubbed-`URLSession` shape `signedInPickerFactory` uses
+    /// for the concrete, protocol-seamless `ControlPlaneClient`, but scripted
+    /// for the approvals routes (`GET /v1/approvals/:id`,
+    /// `POST /v1/approvals/:id/decision`, and `POST /v1/signers` for the
+    /// register-then-decide path) instead of gateways/pairings — and paired
+    /// with `UITestApprovalQRScanner` instead of a live camera, so the whole
+    /// scan-to-approve flow runs with no camera in CI.
+    static func approveDeviceAccountFactory(
+      keychain: any KeychainStoring,
+      clock: any AppClock
+    ) -> AccountFeatureFactory {
+      let config = AccountAuthConfig(
+        frontendAPIHost: "ui-test-account.invalid",
+        clientID: "ui-test",
+        controlPlaneURL: URL(string: "https://ui-test-control-plane.invalid")!,
+        redirectURI: "dash://oauth-callback"
+      )
+      let session = AccountSession(
+        preSignedInWithIDToken: "ui-test-id-token",
+        expiresAt: Date.distantFuture,
+        config: config,
+        presenter: UITestWebAuthPresenter(),
+        clock: clock
+      )
+      let configuration = URLSessionConfiguration.ephemeral
+      configuration.protocolClasses = [UITestControlPlaneURLProtocol.self]
+      let stubbedSession = URLSession(configuration: configuration)
+      let expiresAt = Int64((UITestScenarioFixtures.now.timeIntervalSince1970 + 300) * 1000)
+      UITestControlPlaneScript.shared.setFetchApproval(
+        .init(
+          statusCode: 200,
+          body: Data(
+            """
+            {"approvalId":"ui-approval-1","pairingId":"ui-approval-pairing","gatewayId":"ui-approve-gateway","deviceLabel":"Chrome on MacBook","expiresAt":\(expiresAt)}
+            """.utf8
+          )
+        )
+      )
+      UITestControlPlaneScript.shared.setPostDecision(.init(statusCode: 204, body: Data()))
+      UITestControlPlaneScript.shared.setRegisterSigner(
+        .init(statusCode: 201, body: Data(#"{"signerId":"ui-signer-1"}"#.utf8))
+      )
+      return AccountFeatureFactory(
+        session: session,
+        client: ControlPlaneClient(config: config, tokens: session, session: stubbedSession),
+        verifier: UITestPairingVerifier(),
+        installer: UITestPairingInstaller(keychain: keychain),
+        signer: SignerIdentity(keychain: keychain),
+        scanner: UITestApprovalQRScanner(payload: "dash-approve:v1:ui-approval-1")
       )
     }
   }
@@ -561,16 +623,21 @@ extension AppDependenciesFactory {
         // scenario gets a minimal pre-signed-in fake purely so `RootView`'s
         // brief pre-`start()` render (before `selectedProfile` is set) has
         // somewhere sensible to land instead of a stray `SignInView` flash.
-        accountFeatureFactory: scenario.startsPaired
-          ? UITestScenarioFixtures.signedInAccountFactory(
+        accountFeatureFactory: scenario == .approveDevice
+          ? UITestScenarioFixtures.approveDeviceAccountFactory(
             keychain: keychain,
             clock: clock
           )
-          : UITestScenarioFixtures.accountFactory(
-            for: scenario,
-            keychain: keychain,
-            clock: clock
-          )
+          : scenario.startsPaired
+            ? UITestScenarioFixtures.signedInAccountFactory(
+              keychain: keychain,
+              clock: clock
+            )
+            : UITestScenarioFixtures.accountFactory(
+              for: scenario,
+              keychain: keychain,
+              clock: clock
+            )
       )
     }
   }
@@ -644,6 +711,24 @@ extension AppDependenciesFactory {
     }
   }
 
+  /// A scripted `QRScanning` fake for the `approve-device` scenario: reports
+  /// itself already camera-authorized and hands back `payload` on the first
+  /// (and every) `scan()` — no `AVCaptureSession`, so `ApproveDeviceView`'s
+  /// scan-to-approve flow runs deterministically with no camera in CI.
+  private actor UITestApprovalQRScanner: QRScanning {
+    nonisolated let previewSource: QRScannerPreviewSource? = nil
+    private let payload: String
+
+    init(payload: String) {
+      self.payload = payload
+    }
+
+    func authorizationStatus() -> AVAuthorizationStatus { .authorized }
+    func requestAccess() async -> Bool { true }
+    func scan() async throws -> String { payload }
+    func stop() {}
+  }
+
   /// Never actually invoked by current scenarios (nothing signs out and
   /// back in mid-test), but backs `signedInAccountFactory`'s pre-signed-in
   /// `AccountSession` the same way `UnavailableWebAuthPresenter` backs
@@ -677,6 +762,15 @@ extension AppDependenciesFactory {
           .utf8
       )
     )
+    /// `GET /v1/approvals/:id` (Task 6's `approve-device` scenario).
+    private var fetchApproval = Response(statusCode: 404, body: Data(#"{"error":"not found"}"#.utf8))
+    /// `POST /v1/approvals/:id/decision`.
+    private var postDecision = Response(statusCode: 204, body: Data())
+    /// `POST /v1/signers` (the register-then-decide path).
+    private var registerSigner = Response(
+      statusCode: 201,
+      body: Data(#"{"signerId":"ui-signer"}"#.utf8)
+    )
 
     func setListGateways(_ response: Response) {
       lock.withLock { listGateways = response }
@@ -686,12 +780,36 @@ extension AppDependenciesFactory {
       lock.withLock { createPairing = response }
     }
 
+    func setFetchApproval(_ response: Response) {
+      lock.withLock { fetchApproval = response }
+    }
+
+    func setPostDecision(_ response: Response) {
+      lock.withLock { postDecision = response }
+    }
+
+    func setRegisterSigner(_ response: Response) {
+      lock.withLock { registerSigner = response }
+    }
+
     func currentListGateways() -> Response {
       lock.withLock { listGateways }
     }
 
     func currentCreatePairing() -> Response {
       lock.withLock { createPairing }
+    }
+
+    func currentFetchApproval() -> Response {
+      lock.withLock { fetchApproval }
+    }
+
+    func currentPostDecision() -> Response {
+      lock.withLock { postDecision }
+    }
+
+    func currentRegisterSigner() -> Response {
+      lock.withLock { registerSigner }
     }
   }
 
@@ -718,6 +836,12 @@ extension AppDependenciesFactory {
         response = UITestControlPlaneScript.shared.currentListGateways()
       } else if request.httpMethod == "POST", url.path.contains("/pairings/") {
         response = UITestControlPlaneScript.shared.currentCreatePairing()
+      } else if request.httpMethod == "GET", url.path.contains("/approvals/") {
+        response = UITestControlPlaneScript.shared.currentFetchApproval()
+      } else if request.httpMethod == "POST", url.path.hasSuffix("/decision") {
+        response = UITestControlPlaneScript.shared.currentPostDecision()
+      } else if request.httpMethod == "POST", url.path.hasSuffix("/signers") {
+        response = UITestControlPlaneScript.shared.currentRegisterSigner()
       } else {
         client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
         return

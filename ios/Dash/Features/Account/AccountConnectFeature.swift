@@ -165,7 +165,11 @@ final class AccountConnectFeature {
     // later successful connect gets another chance to register.
     do {
       let publicKey = try await signer.publicKeyB64()
-      _ = try await client.registerSigner(publicKey: publicKey, label: deviceLabel)
+      let signerId = try await client.registerSigner(publicKey: publicKey, label: deviceLabel)
+      // So Task 6's scan-to-approve flow can find this device's signerId
+      // without re-registering on every approval — see
+      // `SignerIdentity.persistSignerId`.
+      try await signer.persistSignerId(signerId)
     } catch {
       onSignerRegistrationFailed(error)
     }

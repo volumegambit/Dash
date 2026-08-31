@@ -77,6 +77,35 @@ actor SignerIdentity {
     return key
   }
 
+  /// This device's `signerId`, if `registerSigner` has ever completed and
+  /// been recorded here (Task 6 calls `persistSignerId` right after a
+  /// successful registration). `nil` until then — a fresh install, or one
+  /// whose best-effort registration (`AccountConnectFeature.connect`) never
+  /// succeeded, has a signing key but no registered `signerId` yet.
+  func signerId() async throws -> String? {
+    try await keychain.load(for: Self.keychainNamespace)?.relayCredential
+  }
+
+  /// Records `signerId` alongside this device's existing signing key so a
+  /// later `signerId()` call returns it. Reuses `ConnectionSecrets`'
+  /// otherwise-unused `relayCredential` slot (see the type doc comment) —
+  /// there is no dedicated storage for this, and adding one would mean a
+  /// second Keychain entry for what is conceptually one signer identity.
+  /// Ensures a key exists first (creating one if this is somehow called
+  /// before any `publicKeyB64()`/`sign(...)`) so the save never clobbers an
+  /// as-yet-nonexistent key with a signerId-only record.
+  func persistSignerId(_ signerId: String) async throws {
+    let key = try await loadOrCreateKey()
+    try await keychain.save(
+      ConnectionSecrets(
+        managementToken: key.rawRepresentation.base64EncodedString(),
+        chatToken: "",
+        relayCredential: signerId
+      ),
+      for: Self.keychainNamespace
+    )
+  }
+
   private static func base64URLUnpadded(_ data: Data) -> String {
     data.base64EncodedString()
       .replacingOccurrences(of: "+", with: "-")
