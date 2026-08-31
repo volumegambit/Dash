@@ -5,7 +5,7 @@ import type {
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
 import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
@@ -373,6 +373,41 @@ describe('ChatView message copy button', () => {
     expect(() => fireEvent.click(copyButton)).not.toThrow();
     // No state change: still shows the copy icon, not the "copied" check.
     expect(copyButton.querySelector('.copy-check')).toBeNull();
+  });
+});
+
+describe('ChatView shell structure (chat-ux Phase 2 Task 1, audit #1)', () => {
+  it('keeps the composer in document flow, outside the scroll container, with 50 messages', async () => {
+    const messages = Array.from({ length: 50 }, (_, i) =>
+      message({ id: `msg-${i}`, content: { type: 'user', text: `Message number ${i}` } }),
+    );
+    await renderConnected({ messages });
+
+    // The scroll container (Task 3's future IntersectionObserver target)
+    // holds every message...
+    const transcript = screen.getByTestId('chat-transcript');
+    expect(within(transcript).getByText('Message number 0')).toBeTruthy();
+    expect(within(transcript).getByText('Message number 49')).toBeTruthy();
+
+    // ...while the composer (send box) is a sibling of the transcript, not a
+    // descendant of it — so it can never scroll off-screen with the
+    // messages, regardless of how many pile up.
+    const messageInput = screen.getByLabelText('Message');
+    expect(within(transcript).queryByLabelText('Message')).toBeNull();
+    expect(messageInput).toBeTruthy();
+    expect(screen.getByText('Send')).toBeTruthy();
+  });
+
+  it('renders the transcript and composer as siblings under a single app-main shell root', async () => {
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    const transcript = screen.getByTestId('chat-transcript');
+    const shellRoot = transcript.closest('.app-main');
+    expect(shellRoot).toBeTruthy();
+    // The composer lives inside the same shell root, in its own row.
+    expect(shellRoot?.querySelector('.app-composer-row input[aria-label="Message"]')).toBeTruthy();
   });
 });
 

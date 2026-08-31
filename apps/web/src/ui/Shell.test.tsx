@@ -382,6 +382,34 @@ describe('Shell', () => {
     expect(screen.queryByText(SESSION_REVOKED_COPY)).toBeNull();
   });
 
+  it('toggles the mobile sidebar drawer via the hamburger (aria-expanded) and closes it on Escape', async () => {
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+
+    const hamburger = screen.getByRole('button', { name: 'Toggle conversations menu' });
+    expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(hamburger);
+    expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('disposes the store on unmount', async () => {
     const controlPlaneClient = baseControlPlaneClient();
     const credentialStore = {

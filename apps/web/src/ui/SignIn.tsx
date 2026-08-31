@@ -8,7 +8,7 @@ import { SignIn as ClerkSignIn } from '@clerk/clerk-react';
  */
 export function SignIn() {
   return (
-    <main>
+    <main className="sign-in-page">
       <h1>Dash</h1>
       <ClerkSignIn />
     </main>

@@ -273,14 +273,14 @@ export function PendingApproval({
   }, [phase, checkOnce]);
 
   return (
-    <div>
+    <div className="pending-approval">
       <h2>{APPROVAL_HEADING}</h2>
       {phase === 'declined' && <p>{APPROVAL_DECLINED_COPY}</p>}
       {phase === 'expired' && <p>{APPROVAL_EXPIRED_COPY}</p>}
       {(phase === 'waiting' || phase === 'claimed') && (
         <>
           <p>{WAITING_FOR_APPROVAL_COPY}</p>
-          {qrDataUrl && <img src={qrDataUrl} alt="Approval code" />}
+          {qrDataUrl && <img className="pending-approval-qr" src={qrDataUrl} alt="Approval code" />}
           <p data-testid="approval-countdown">{formatCountdown(remainingMs)}</p>
           {error && <p role="alert">{error}</p>}
         </>

@@ -113,7 +113,7 @@ const MessageRow = memo(function MessageRow({
       <ContentBlocks content={message.content} />
       {copyText && <CopyButton text={copyText} />}
       {message.status === 'failed' && (
-        <span role="alert" style={{ color: '#b00020', fontSize: '0.85em' }}>
+        <span role="alert" className="chat-message-failed">
           Failed to send
         </span>
       )}
@@ -171,17 +171,21 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   if (connection === 'offline') {
     return (
-      <div>
-        <p role="alert">{unreachableCopy(gatewayLabel)}</p>
-      </div>
+      <main className="app-main app-main--empty">
+        <div className="app-empty-state">
+          <p role="alert">{unreachableCopy(gatewayLabel)}</p>
+        </div>
+      </main>
     );
   }
 
   if (!conversationId) {
     return (
-      <div>
-        <p>Select a conversation to get started.</p>
-      </div>
+      <main className="app-main app-main--empty">
+        <div className="app-empty-state">
+          <p>Select a conversation to get started.</p>
+        </div>
+      </main>
     );
   }
 
@@ -203,35 +207,45 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   }
 
   return (
-    <div>
-      {connection === 'reconnecting' && <output>{RECONNECTING_COPY}</output>}
-      {transcript?.error && <p role="alert">{transcript.error.message}</p>}
-
-      <div>
-        {messages.map((message) => (
-          <MessageRow key={message.id} message={message} />
-        ))}
-        {streaming && (
-          <div data-testid="chat-message-streaming" data-role="assistant">
-            <ContentBlocks content={streaming} />
-          </div>
-        )}
+    <main className="app-main">
+      <div className="app-banner-row">
+        {connection === 'reconnecting' && <output>{RECONNECTING_COPY}</output>}
+        {transcript?.error && <p role="alert">{transcript.error.message}</p>}
       </div>
 
-      <form onSubmit={(event) => void handleSubmit(event)}>
-        <input
-          aria-label="Message"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          disabled={!canSend}
-          placeholder={canSend ? 'Message…' : 'Reconnecting…'}
-        />
-        <button type="submit" disabled={!canSend || !draft.trim()}>
-          Send
-        </button>
-      </form>
-      {sendError && <p role="alert">{sendError}</p>}
-    </div>
+      {/* Stable class/testid for Task 3's scroll-pinning IntersectionObserver
+       * (audit #4) to target — this is the ONLY element that scrolls
+       * (overflow-y auto + overscroll-behavior contain), so the composer
+       * below never gets carried off-screen with it. */}
+      <div className="app-transcript" data-testid="chat-transcript">
+        <div className="app-message-column">
+          {messages.map((message) => (
+            <MessageRow key={message.id} message={message} />
+          ))}
+          {streaming && (
+            <div data-testid="chat-message-streaming" data-role="assistant">
+              <ContentBlocks content={streaming} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="app-composer-row">
+        <form className="app-composer" onSubmit={(event) => void handleSubmit(event)}>
+          <input
+            aria-label="Message"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            disabled={!canSend}
+            placeholder={canSend ? 'Message…' : 'Reconnecting…'}
+          />
+          <button type="submit" disabled={!canSend || !draft.trim()}>
+            Send
+          </button>
+        </form>
+        {sendError && <p role="alert">{sendError}</p>}
+      </div>
+    </main>
   );
 }
 

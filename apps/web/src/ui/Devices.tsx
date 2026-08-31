@@ -82,23 +82,23 @@ export function Devices({
   }
 
   if (pairings === null) {
-    return <p>Loading devices…</p>;
+    return (
+      <div className="app-devices-pane">
+        <p>Loading devices…</p>
+      </div>
+    );
   }
 
   return (
-    <div>
+    <div className="app-devices-pane">
       <h2>Devices</h2>
       {error && <p role="alert">{error}</p>}
       {pairings.length === 0 ? (
         <p>No paired devices.</p>
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <ul className="device-list">
           {pairings.map((pairing) => (
-            <li
-              key={pairing.id}
-              data-testid="pairing-row"
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}
-            >
+            <li key={pairing.id} data-testid="pairing-row" className="device-row">
               <span>{pairing.deviceLabel ?? 'Unnamed device'}</span>
               <span data-testid="pairing-client-kind">{pairing.clientKind}</span>
               {pairing.id === currentPairingId && <span>This device</span>}

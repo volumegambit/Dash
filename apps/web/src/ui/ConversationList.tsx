@@ -100,26 +100,26 @@ export function ConversationList({ selectedConversationId, onSelect }: Conversat
   const suppressEmptyCopy = connection === 'offline' || connection === 'unauthorized';
 
   return (
-    <nav aria-label="Conversations" style={{ borderRight: '1px solid #ddd', minWidth: 220 }}>
+    <nav aria-label="Conversations" className="conversation-list">
       <button
         type="button"
         data-testid={NEW_CONVERSATION_TESTID}
         onClick={() => void handleNewConversation()}
         disabled={busy}
-        style={{ display: 'block', width: '100%', padding: '8px', cursor: 'pointer' }}
+        className="conversation-new-button"
       >
         {NEW_CONVERSATION_LABEL}
       </button>
 
       {agentChoices && agentChoices.length > 1 && (
-        <ul aria-label="Choose an agent" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <ul aria-label="Choose an agent" className="conversation-agent-list">
           {agentChoices.map((agent) => (
             <li key={agent.id}>
               <button
                 type="button"
                 onClick={() => void createWithAgent(agent.id)}
                 disabled={busy}
-                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px' }}
+                className="conversation-agent-choice"
               >
                 {agent.name}
               </button>
@@ -132,10 +132,10 @@ export function ConversationList({ selectedConversationId, onSelect }: Conversat
 
       {conversations.length === 0 ? (
         suppressEmptyCopy ? null : (
-          <p style={{ padding: '0 8px', color: '#888' }}>{NO_CONVERSATIONS_COPY}</p>
+          <p className="conversation-empty">{NO_CONVERSATIONS_COPY}</p>
         )
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <ul className="conversation-items">
           {conversations.map((conversation) => {
             const isSelected = conversation.id === selectedConversationId;
             return (
@@ -144,21 +144,13 @@ export function ConversationList({ selectedConversationId, onSelect }: Conversat
                   type="button"
                   aria-current={isSelected ? 'true' : undefined}
                   onClick={() => onSelect(conversation.id)}
-                  style={{
-                    display: 'block',
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: '8px',
-                    border: 'none',
-                    background: isSelected ? '#eef' : 'transparent',
-                    cursor: 'pointer',
-                  }}
+                  className="conversation-row"
                 >
-                  <div style={{ fontWeight: isSelected ? 600 : 400 }}>
+                  <div className="conversation-row-title">
                     {conversation.title || conversation.agentName}
                   </div>
                   {conversation.lastMessagePreview && (
-                    <div style={{ fontSize: '0.8em', color: '#888' }}>
+                    <div className="conversation-row-preview">
                       {conversation.lastMessagePreview}
                     </div>
                   )}

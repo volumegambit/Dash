@@ -146,7 +146,7 @@ export function GatewayPicker({
   return (
     <div>
       <p>Choose a gateway to connect to.</p>
-      <ul>
+      <ul className="pick-gateway-list">
         {gateways.map((gateway) => (
           <li key={gateway.gatewayId}>
             <button

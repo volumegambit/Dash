@@ -256,7 +256,7 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
   }
 
   return (
-    <>
+    <div className="pick-gateway-page">
       {pickGatewayNotice && <p role="alert">{pickGatewayNotice}</p>}
       <GatewayPicker
         gateways={gateways}
@@ -264,7 +264,7 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
         credentialStore={credentialStore}
         onReady={handleReady}
       />
-    </>
+    </div>
   );
 }
 
@@ -284,6 +284,13 @@ interface ChatWorkspaceProps {
  * caller (`Shell`), so `ConversationList`/`ChatView` reach the store via
  * `useWebAppStore()` same as any consumer mounted under `Shell`'s `'chat'`
  * view.
+ *
+ * Layout (chat-ux Phase 2 Task 1, audit #1): a 100dvh app-shell grid — a
+ * topbar (gateway label + Conversations/Devices tabs + a hamburger that only
+ * shows under 768px) over a sidebar/main body. The sidebar (`ConversationList`)
+ * is a normal grid column at desktop width and an overlay drawer under
+ * 768px, toggled by the hamburger (`aria-expanded`, closes on Escape or a
+ * backdrop click, and on picking a conversation).
  */
 function ChatWorkspace({
   gateway,
@@ -294,19 +301,46 @@ function ChatWorkspace({
 }: ChatWorkspaceProps) {
   const [screen, setScreen] = useState<'conversations' | 'devices'>('conversations');
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Escape closes the mobile drawer — a no-op (no listener attached) once
+  // the drawer is already closed.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setSidebarOpen(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [sidebarOpen]);
+
+  function selectConversation(conversationId: string): void {
+    setSelectedConversationId(conversationId);
+    // Harmless when the drawer isn't open (desktop widths never set it true).
+    setSidebarOpen(false);
+  }
 
   return (
-    <div data-testid="chat-workspace">
-      <header style={{ display: 'flex', justifyContent: 'space-between', padding: 8 }}>
-        <strong>{gateway.subdomain}</strong>
-        <nav>
+    <div data-testid="chat-workspace" className="app-shell">
+      <div className="app-topbar">
+        <button
+          type="button"
+          className="app-hamburger"
+          aria-expanded={sidebarOpen}
+          aria-label="Toggle conversations menu"
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          ☰
+        </button>
+        <strong className="app-topbar-title">{gateway.subdomain}</strong>
+        <nav className="app-topbar-nav">
           <button
             type="button"
             onClick={() => setScreen('conversations')}
             aria-current={screen === 'conversations' ? 'page' : undefined}
           >
             Conversations
-          </button>{' '}
+          </button>
           <button
             type="button"
             onClick={() => setScreen('devices')}
@@ -315,26 +349,36 @@ function ChatWorkspace({
             Devices
           </button>
         </nav>
-      </header>
-      {screen === 'devices' ? (
-        <Devices
-          gatewayId={gateway.gatewayId}
-          currentPairingId={currentPairingId}
-          controlPlaneClient={controlPlaneClient}
-          credentialStore={credentialStore}
-          onCurrentDeviceRevoked={onGatewayForgotten}
-        />
-      ) : (
-        <div style={{ display: 'flex' }}>
-          <ConversationList
-            selectedConversationId={selectedConversationId}
-            onSelect={setSelectedConversationId}
+      </div>
+      <div className="app-body">
+        {screen === 'devices' ? (
+          <Devices
+            gatewayId={gateway.gatewayId}
+            currentPairingId={currentPairingId}
+            controlPlaneClient={controlPlaneClient}
+            credentialStore={credentialStore}
+            onCurrentDeviceRevoked={onGatewayForgotten}
           />
-          <div style={{ flex: 1 }}>
+        ) : (
+          <>
+            {sidebarOpen && (
+              <button
+                type="button"
+                className="app-sidebar-backdrop"
+                aria-label="Close conversations menu"
+                onClick={() => setSidebarOpen(false)}
+              />
+            )}
+            <aside className={`app-sidebar${sidebarOpen ? ' app-sidebar--open' : ''}`}>
+              <ConversationList
+                selectedConversationId={selectedConversationId}
+                onSelect={selectConversation}
+              />
+            </aside>
             <ChatView conversationId={selectedConversationId} gatewayLabel={gateway.subdomain} />
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
