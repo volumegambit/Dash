@@ -1,21 +1,18 @@
 import { toDataURL } from 'qrcode';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ClaimCredentialResult,
   ControlPlaneClient,
   PairingInfo,
 } from '../auth/control-plane.js';
 
-/** Exact copy the design doc mandates for the waiting state (see
- * `docs/plans/2026-08-30-signer-device-design.md`, Component changes). */
+/** Exact copy mandated by the plan's Global Constraints (the binding source —
+ * supersedes the earlier design doc's combined "declined/expired" string). */
+export const APPROVAL_HEADING = 'Approve this device';
 export const WAITING_FOR_APPROVAL_COPY =
   'Waiting for approval — scan this code with the Dash app on your phone.';
-
-/** Exact copy for both terminal, non-success states — the design doc gives a
- * single combined string ("declined/expired") rather than two distinct
- * messages: a denied approval and one this browser simply never heard back
- * from in time read identically to the person staring at the screen. */
-export const APPROVAL_CLOSED_COPY = 'Approval declined/expired — try again.';
+export const APPROVAL_DECLINED_COPY = 'Approval declined. You can try again from the gateway list.';
+export const APPROVAL_EXPIRED_COPY = 'The code expired. Try again from the gateway list.';
 
 const POLL_INTERVAL_MS = 2_000;
 const COUNTDOWN_TICK_MS = 1_000;
@@ -51,6 +48,15 @@ export interface PendingApprovalProps {
 
 type Phase = 'waiting' | 'declined' | 'expired' | 'claimed';
 
+/** A single status-check-and-maybe-claim round. `'settled'` means `checkOnce`
+ * itself already committed a phase transition (claimed, or a definitive
+ * declined/expired from a disappeared/gone pairing) — the caller does
+ * nothing further. `'not-active'` means the pairing is still pending (no
+ * verdict yet) — safe to retry. `'busy'` means another `checkOnce` call was
+ * already in flight (the shared guard below) — the caller should not draw
+ * any conclusion, just try again shortly. */
+type CheckOutcome = 'settled' | 'not-active' | 'busy';
+
 /**
  * Task 4: the screen a browser sees after `createWebPairing` returns
  * `status: 'pending'` (the account is signer-gated — see
@@ -59,8 +65,9 @@ type Phase = 'waiting' | 'declined' | 'expired' | 'claimed';
  * polls `getPairingStatus` every 2s: once it reports `'active'`, claims the
  * single-use credential and hands it to `onReady`. The pairing disappearing
  * from the list (a signer denied it — the row is hard-deleted server-side,
- * never transitioned to a status) or the countdown reaching zero both land
- * on the same declined/expired copy, with a way back to the picker.
+ * never transitioned to a status) or the countdown reaching zero (with one
+ * final authoritative check first — see `checkOnce`) land on distinct
+ * declined/expired copy, with a way back to the picker.
  */
 export function PendingApproval({
   gatewayId,
@@ -75,11 +82,12 @@ export function PendingApproval({
   const [remainingMs, setRemainingMs] = useState(() => approvalExpiresAt - Date.now());
   const [phase, setPhase] = useState<Phase>('waiting');
   const [error, setError] = useState<string | null>(null);
-  // Guards against a slow-resolving claim overlapping the next poll tick —
-  // `phase` itself flips synchronously only once the claim settles, so
-  // without this a fast 2s tick during an in-flight claim could fire a
-  // second one.
-  const claimingRef = useRef(false);
+  // Shared across the poll loop AND the countdown's final check (see
+  // `checkOnce`) — without a single cross-effect guard, a slow check
+  // overlapping the next scheduled one (poll-vs-poll, or poll-vs-the
+  // countdown's zero-crossing check) could call `claimCredential` twice for
+  // the same pairing.
+  const checkingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,95 +105,160 @@ export function PendingApproval({
     };
   }, [approvalId]);
 
-  // Countdown: independent of the poll loop, and stops updating once the
-  // screen has left the 'waiting' phase (declined/expired/claimed).
-  useEffect(() => {
-    if (phase !== 'waiting') return;
-    const tick = (): void => {
-      const remaining = approvalExpiresAt - Date.now();
-      setRemainingMs(remaining);
-      if (remaining <= 0) setPhase('expired');
-    };
-    tick();
-    const id = setInterval(tick, COUNTDOWN_TICK_MS);
-    return () => clearInterval(id);
-  }, [approvalExpiresAt, phase]);
+  /** A 410 from `claimCredential`, or the pairing vanishing from the list, is
+   * ambiguous on its own — it covers a genuine denial AND a swept-expired
+   * approval alike. Disambiguate locally by comparing against the same
+   * deadline the countdown itself counts down to: if it's already passed,
+   * this is an expiry; otherwise it's a denial. */
+  const closedPhaseFor = useCallback(
+    (now: number): 'declined' | 'expired' => (now >= approvalExpiresAt ? 'expired' : 'declined'),
+    [approvalExpiresAt],
+  );
 
-  // Poll loop: only runs while 'waiting' — the effect cleanup below clears
-  // the interval the moment `phase` moves away from it (declined, expired,
-  // or claimed), which is also what makes "claim called exactly once" hold
-  // even if the parent doesn't unmount this component immediately on
-  // `onReady`.
-  useEffect(() => {
-    if (phase !== 'waiting') return;
-    let cancelled = false;
-
-    async function pollOnce(): Promise<void> {
-      if (cancelled || claimingRef.current) return;
+  /** One status check, claiming immediately if it comes back `'active'`.
+   * Used by both the 2s poll loop and the countdown's final check on hitting
+   * zero, through the shared `checkingRef` guard — so however this ends up
+   * getting called from two places at once, `claimCredential` still only
+   * ever fires once per activation. */
+  const checkOnce = useCallback(async (): Promise<CheckOutcome> => {
+    if (checkingRef.current) return 'busy';
+    checkingRef.current = true;
+    try {
       let status: PairingInfo['status'] | undefined;
       try {
         status = await controlPlaneClient.getPairingStatus(gatewayId, pairingId);
       } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to check the approval status.');
-        }
-        return;
+        setError(err instanceof Error ? err.message : 'Failed to check the approval status.');
+        return 'not-active';
       }
-      if (cancelled) return;
 
       if (status === undefined) {
-        setPhase('declined');
-        return;
+        setPhase(closedPhaseFor(Date.now()));
+        return 'settled';
       }
-      if (status !== 'active') return;
+      if (status !== 'active') return 'not-active';
 
-      claimingRef.current = true;
       let result: ClaimCredentialResult;
       try {
         result = await controlPlaneClient.claimCredential(gatewayId, pairingId);
       } catch (err) {
-        claimingRef.current = false;
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : 'Failed to claim the credential.');
-        return;
+        setError(err instanceof Error ? err.message : 'Failed to claim the credential.');
+        return 'not-active';
       }
-      claimingRef.current = false;
-      if (cancelled) return;
 
       if (result.status === 'ok') {
         setPhase('claimed');
         onReady({ credential: result.credential, chatToken: result.chatToken, pairingId });
-      } else if (result.status === 'gone') {
-        setPhase('declined');
+        return 'settled';
       }
-      // result.status === 'pending' is a rare activation/claim race — the
-      // next tick retries.
+      if (result.status === 'gone') {
+        setPhase(closedPhaseFor(Date.now()));
+        return 'settled';
+      }
+      // result.status === 'pending' — a rare activation/claim race.
+      return 'not-active';
+    } finally {
+      checkingRef.current = false;
+    }
+  }, [gatewayId, pairingId, controlPlaneClient, onReady, closedPhaseFor]);
+
+  // Countdown: independent of the poll loop, and stops updating once the
+  // screen has left the 'waiting' phase (declined/expired/claimed). On
+  // hitting zero, it does NOT declare 'expired' outright — an approval that
+  // lands in the last couple of poll-interval seconds must still win. It
+  // stops its own interval and runs exactly one authoritative `checkOnce`;
+  // only if that comes back `'not-active'` does it commit to 'expired'.
+  useEffect(() => {
+    if (phase !== 'waiting') return;
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+    let retryTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    let finalCheckStarted = false;
+
+    function clearTimers(): void {
+      if (intervalId !== undefined) clearInterval(intervalId);
+      if (retryTimeoutId !== undefined) clearTimeout(retryTimeoutId);
     }
 
-    const id = setInterval(() => void pollOnce(), POLL_INTERVAL_MS);
+    function runFinalCheck(): void {
+      finalCheckStarted = true;
+      clearTimers();
+      void checkOnce().then((outcome) => {
+        if (cancelled) return;
+        if (outcome === 'not-active') {
+          setPhase(closedPhaseFor(Date.now()));
+        } else if (outcome === 'busy') {
+          // The poll loop's own check was already mid-flight — its result
+          // (claim/decline/retry) will land shortly on its own, but in case
+          // it turns out to be a no-op retry, try the final check again
+          // ourselves shortly rather than getting stuck on the waiting
+          // screen forever.
+          finalCheckStarted = false;
+          retryTimeoutId = setTimeout(runFinalCheck, COUNTDOWN_TICK_MS);
+        }
+        // 'settled': checkOnce already committed a phase transition itself.
+      });
+    }
+
+    function tick(): void {
+      const remaining = approvalExpiresAt - Date.now();
+      setRemainingMs(remaining);
+      if (remaining > 0 || finalCheckStarted) return;
+      runFinalCheck();
+    }
+
+    tick();
+    if (!finalCheckStarted) intervalId = setInterval(tick, COUNTDOWN_TICK_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      clearTimers();
     };
-  }, [gatewayId, pairingId, controlPlaneClient, phase, onReady]);
+  }, [approvalExpiresAt, phase, checkOnce, closedPhaseFor]);
 
-  if (phase === 'declined' || phase === 'expired') {
-    return (
-      <div>
-        <p>{APPROVAL_CLOSED_COPY}</p>
-        <button type="button" onClick={onBack}>
-          Back to gateways
-        </button>
-      </div>
-    );
-  }
+  // Poll loop: a self-rescheduling `setTimeout` chain, not `setInterval` —
+  // the next check is only ever scheduled after the current one fully
+  // settles, so a slow `getPairingStatus`/`claimCredential` round (or a
+  // burst of catch-up timers after the tab was throttled) can never overlap
+  // with another one calling `claimCredential` a second time. Stops the
+  // moment `phase` leaves `'waiting'` (declined, expired, or claimed).
+  useEffect(() => {
+    if (phase !== 'waiting') return;
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    function scheduleNext(): void {
+      if (cancelled) return;
+      timeoutId = setTimeout(() => {
+        void tick();
+      }, POLL_INTERVAL_MS);
+    }
+
+    async function tick(): Promise<void> {
+      const outcome = await checkOnce();
+      if (cancelled) return;
+      if (outcome !== 'settled') scheduleNext();
+    }
+
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    };
+  }, [phase, checkOnce]);
 
   return (
     <div>
-      <p>{WAITING_FOR_APPROVAL_COPY}</p>
-      {qrDataUrl && <img src={qrDataUrl} alt="Approval code" />}
-      <p data-testid="approval-countdown">{formatCountdown(remainingMs)}</p>
-      {error && <p role="alert">{error}</p>}
+      <h2>{APPROVAL_HEADING}</h2>
+      {phase === 'declined' && <p>{APPROVAL_DECLINED_COPY}</p>}
+      {phase === 'expired' && <p>{APPROVAL_EXPIRED_COPY}</p>}
+      {(phase === 'waiting' || phase === 'claimed') && (
+        <>
+          <p>{WAITING_FOR_APPROVAL_COPY}</p>
+          {qrDataUrl && <img src={qrDataUrl} alt="Approval code" />}
+          <p data-testid="approval-countdown">{formatCountdown(remainingMs)}</p>
+          {error && <p role="alert">{error}</p>}
+        </>
+      )}
       <button type="button" onClick={onBack}>
         Back to gateways
       </button>

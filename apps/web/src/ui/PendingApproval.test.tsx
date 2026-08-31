@@ -1,7 +1,9 @@
 import { act, render, screen } from '@testing-library/react';
 import { toDataURL } from 'qrcode';
 import {
-  APPROVAL_CLOSED_COPY,
+  APPROVAL_DECLINED_COPY,
+  APPROVAL_EXPIRED_COPY,
+  APPROVAL_HEADING,
   PendingApproval,
   WAITING_FOR_APPROVAL_COPY,
 } from './PendingApproval.js';
@@ -61,9 +63,10 @@ describe('PendingApproval', () => {
     vi.useRealTimers();
   });
 
-  it('renders the QR payload (dash-approve:v1:<approvalId>) and the exact waiting copy', async () => {
+  it('renders the heading, the QR payload (dash-approve:v1:<approvalId>), and the exact waiting copy', async () => {
     renderPending();
 
+    expect(screen.getByRole('heading', { name: APPROVAL_HEADING })).toBeTruthy();
     expect(screen.getByText(WAITING_FOR_APPROVAL_COPY)).toBeTruthy();
 
     // The QR render is a microtask (mocked toDataURL), not a timer — flush it.
@@ -117,7 +120,81 @@ describe('PendingApproval', () => {
     expect(claimCredential).toHaveBeenCalledTimes(1);
   });
 
-  it('treats the pairing disappearing (denied) as declined: shows declined copy, never claims', async () => {
+  it('does not double-invoke claimCredential when a status check is slower than the poll interval', async () => {
+    // getPairingStatus never resolves until the test tells it to — models a
+    // slow request (or a burst of catch-up timers after tab throttling)
+    // outliving one or more 2s poll intervals.
+    let resolveStatus: (value: 'active') => void = () => {};
+    const getPairingStatus = vi.fn(
+      () =>
+        new Promise<'active'>((resolve) => {
+          resolveStatus = resolve;
+        }),
+    );
+    const claimCredential = vi.fn(async () => ({
+      status: 'ok' as const,
+      credential: 'relay-cred',
+      chatToken: 'chat-tok',
+    }));
+    const onReady = vi.fn();
+
+    renderPending({ getPairingStatus, claimCredential, onReady });
+
+    // First poll tick fires and starts awaiting getPairingStatus.
+    await advance(2_000);
+    expect(getPairingStatus).toHaveBeenCalledTimes(1);
+
+    // Several more poll intervals' worth of fake time pass while that first
+    // check is still in flight — the self-rescheduling chain must not start
+    // a second check (and therefore can't call claimCredential twice).
+    await advance(6_000);
+    expect(getPairingStatus).toHaveBeenCalledTimes(1);
+    expect(claimCredential).not.toHaveBeenCalled();
+
+    // Now let the slow check resolve — exactly one claim should follow.
+    resolveStatus('active');
+    await advance(0);
+
+    expect(claimCredential).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('does one final status check before committing to expired: activation exactly at the countdown deadline still reaches onReady', async () => {
+    // The approval activates exactly as the countdown hits zero — the poll
+    // loop's own next scheduled check isn't due until T+4s, so only the
+    // countdown's own final check (triggered at T+3s, the deadline) can
+    // catch this in time.
+    const getPairingStatus = vi.fn(async () => (Date.now() >= NOW + 3_000 ? 'active' : 'pending'));
+    const claimCredential = vi.fn(async () => ({
+      status: 'ok' as const,
+      credential: 'relay-cred',
+      chatToken: 'chat-tok',
+    }));
+    const onReady = vi.fn();
+
+    renderPending({ approvalExpiresAt: NOW + 3_000, getPairingStatus, claimCredential, onReady });
+
+    // Poll's own check at T+2s still sees 'pending' (before the deadline).
+    await advance(2_000);
+    expect(claimCredential).not.toHaveBeenCalled();
+
+    // The countdown reaches zero at T+3s, exactly when status flips.
+    await advance(1_000);
+
+    expect(claimCredential).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledWith({
+      credential: 'relay-cred',
+      chatToken: 'chat-tok',
+      pairingId: 'p-1',
+    });
+    expect(screen.queryByText(APPROVAL_EXPIRED_COPY)).toBeNull();
+
+    // No stray extra claim once settled.
+    await advance(6_000);
+    expect(claimCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats the pairing disappearing (denied, well before the deadline) as declined: shows declined copy, never claims', async () => {
     const getPairingStatus = vi.fn(async () => undefined);
     const claimCredential = vi.fn();
     const onBack = vi.fn();
@@ -126,20 +203,44 @@ describe('PendingApproval', () => {
 
     await advance(2_000);
 
-    expect(screen.getByText(APPROVAL_CLOSED_COPY)).toBeTruthy();
+    expect(screen.getByText(APPROVAL_DECLINED_COPY)).toBeTruthy();
     expect(claimCredential).not.toHaveBeenCalled();
 
     screen.getByRole('button', { name: /back/i }).click();
     expect(onBack).toHaveBeenCalled();
   });
 
-  it('shows expired copy once the countdown reaches zero, and stops polling', async () => {
+  it("maps claimCredential's 410 (gone) to declined when the local deadline hasn't passed yet", async () => {
+    const getPairingStatus = vi.fn(async () => 'active' as const);
+    const claimCredential = vi.fn(async () => ({ status: 'gone' as const }));
+
+    renderPending({ approvalExpiresAt: NOW + 120_000, getPairingStatus, claimCredential });
+
+    await advance(2_000);
+
+    expect(screen.getByText(APPROVAL_DECLINED_COPY)).toBeTruthy();
+    expect(screen.queryByText(APPROVAL_EXPIRED_COPY)).toBeNull();
+  });
+
+  it("maps claimCredential's 410 (gone) to expired when the local deadline has already passed", async () => {
+    const getPairingStatus = vi.fn(async () => 'active' as const);
+    const claimCredential = vi.fn(async () => ({ status: 'gone' as const }));
+
+    renderPending({ approvalExpiresAt: NOW + 1_000, getPairingStatus, claimCredential });
+
+    await advance(2_000);
+
+    expect(screen.getByText(APPROVAL_EXPIRED_COPY)).toBeTruthy();
+    expect(screen.queryByText(APPROVAL_DECLINED_COPY)).toBeNull();
+  });
+
+  it('shows expired copy once the countdown reaches zero with no verdict from the server, and stops polling', async () => {
     const getPairingStatus = vi.fn(async () => 'pending' as const);
     renderPending({ approvalExpiresAt: NOW + 3_000, getPairingStatus });
 
     await advance(3_100);
 
-    expect(screen.getByText(APPROVAL_CLOSED_COPY)).toBeTruthy();
+    expect(screen.getByText(APPROVAL_EXPIRED_COPY)).toBeTruthy();
     const callsAtExpiry = getPairingStatus.mock.calls.length;
 
     await advance(10_000);
