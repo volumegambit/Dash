@@ -14,6 +14,12 @@ const OTHER_PAIRING: PairingInfo = {
   clientKind: 'mobile',
   status: 'active',
 };
+const PENDING_PAIRING: PairingInfo = {
+  id: 'p-pending',
+  deviceLabel: 'Web · Firefox',
+  clientKind: 'web',
+  status: 'pending',
+};
 
 describe('Devices', () => {
   it('lists pairings with a clientKind badge', async () => {
@@ -176,6 +182,35 @@ describe('Devices', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
     expect(screen.getByText('iPhone 15')).toBeTruthy();
+  });
+
+  it('lists a pending row (signer-gated mint awaiting approval) but never shows a Revoke button for it', async () => {
+    // The control plane's own DELETE route for a still-pending pairing is
+    // harmless (it discards the pending row rather than mass-revoking the
+    // gateway) — but a pending row isn't a real device yet, so exposing
+    // Revoke on it here would be confusing at best.
+    const controlPlaneClient = {
+      listPairings: vi.fn(async () => [CURRENT_PAIRING, PENDING_PAIRING]),
+      deletePairing: vi.fn(),
+    };
+
+    render(
+      <Devices
+        gatewayId="gw-1"
+        currentPairingId="p-current"
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={{ delete: vi.fn() }}
+        onCurrentDeviceRevoked={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Web · Firefox')).toBeTruthy());
+    const pendingRow = screen.getByText('Web · Firefox').closest('li') as HTMLLIElement;
+    expect(within(pendingRow).queryByText('Revoke')).toBeNull();
+
+    // The active row right next to it keeps its Revoke button.
+    const activeRow = screen.getByText('Web · Chrome').closest('li') as HTMLLIElement;
+    expect(within(activeRow).getByText('Revoke')).toBeTruthy();
   });
 
   it('shows an empty state when there are no paired devices', async () => {

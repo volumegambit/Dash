@@ -102,13 +102,21 @@ export function Devices({
               <span>{pairing.deviceLabel ?? 'Unnamed device'}</span>
               <span data-testid="pairing-client-kind">{pairing.clientKind}</span>
               {pairing.id === currentPairingId && <span>This device</span>}
-              <button
-                type="button"
-                onClick={() => void revoke(pairing.id)}
-                disabled={revokingId === pairing.id}
-              >
-                Revoke
-              </button>
+              {/* A `'pending'` row (Task 4: signer-gated mint awaiting an iOS
+                  signer's decision) isn't a real device yet — the control
+                  plane's own DELETE route already treats it specially
+                  (discards the pending row rather than revoking a live
+                  credential), but a Revoke button here would still read as
+                  "revoke this device" for something that was never paired. */}
+              {pairing.status !== 'pending' && (
+                <button
+                  type="button"
+                  onClick={() => void revoke(pairing.id)}
+                  disabled={revokingId === pairing.id}
+                >
+                  Revoke
+                </button>
+              )}
             </li>
           ))}
         </ul>

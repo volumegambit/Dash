@@ -47,7 +47,12 @@ export function useWebAppStore(): WebAppStore {
 export interface ShellProps {
   controlPlaneClient: Pick<
     ControlPlaneClient,
-    'listGateways' | 'createWebPairing' | 'listPairings' | 'deletePairing'
+    | 'listGateways'
+    | 'createWebPairing'
+    | 'claimCredential'
+    | 'getPairingStatus'
+    | 'listPairings'
+    | 'deletePairing'
   >;
   credentialStore: Pick<CredentialStore, 'get' | 'set' | 'delete'>;
   /** Domain the relay is served under; combined with the gateway's

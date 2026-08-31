@@ -126,6 +126,115 @@ describe('ControlPlaneClient', () => {
         code: 'no web chat token registered for this gateway',
       });
     });
+
+    it('resolves the pending variant (no credential/chatToken) for a signer-gated account', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({
+          pairingId: 'p-1',
+          status: 'pending',
+          approvalId: 'appr-1',
+          approvalExpiresAt: 1_700_000_000_000,
+        }),
+      );
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.createWebPairing('acme', 'My Browser')).resolves.toEqual({
+        pairingId: 'p-1',
+        status: 'pending',
+        approvalId: 'appr-1',
+        approvalExpiresAt: 1_700_000_000_000,
+      });
+    });
+  });
+
+  describe('claimCredential', () => {
+    it('POSTs to the credential route and resolves { status: "ok", credential, chatToken } on success', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ credential: 'cred-1', chatToken: 'chat-1' }));
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.claimCredential('acme', 'p-1')).resolves.toEqual({
+        status: 'ok',
+        credential: 'cred-1',
+        chatToken: 'chat-1',
+      });
+
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(url).toBe('https://control.dash.example/v1/gateways/acme/pairings/p-1/credential');
+      expect(init?.method).toBe('POST');
+      expect(authHeader(init)).toBe(`Bearer ${TOKEN}`);
+    });
+
+    it('resolves { status: "pending" } on 409 without throwing — the poll-and-retry signal', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ status: 'pending' }, 409));
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.claimCredential('acme', 'p-1')).resolves.toEqual({ status: 'pending' });
+    });
+
+    it('resolves { status: "gone" } on 410 — covers claimed, expired, and revoked alike', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ error: 'credential already claimed' }, 410));
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.claimCredential('acme', 'p-1')).resolves.toEqual({ status: 'gone' });
+    });
+
+    it('rethrows other error statuses as ControlPlaneApiError', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ error: 'pairing not found' }, 404));
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.claimCredential('acme', 'missing')).rejects.toMatchObject({
+        status: 404,
+        code: 'pairing not found',
+      });
+    });
+  });
+
+  describe('getPairingStatus', () => {
+    it('returns the status of the matching pairing from the pairings list', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({
+          pairings: [{ id: 'p-1', deviceLabel: null, clientKind: 'web', status: 'pending' }],
+        }),
+      );
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.getPairingStatus('acme', 'p-1')).resolves.toBe('pending');
+    });
+
+    it('returns undefined when the pairing has disappeared (e.g. a denied approval)', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ pairings: [] }));
+      const client = new ControlPlaneClient(
+        'https://control.dash.example',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.getPairingStatus('acme', 'p-1')).resolves.toBeUndefined();
+    });
   });
 
   describe('listPairings', () => {

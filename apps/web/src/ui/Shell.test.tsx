@@ -73,6 +73,8 @@ function baseControlPlaneClient() {
   return {
     listGateways: vi.fn(async () => [GATEWAY]),
     createWebPairing: vi.fn(),
+    claimCredential: vi.fn(),
+    getPairingStatus: vi.fn(),
     listPairings: vi.fn(async () => []),
     deletePairing: vi.fn(),
   };
@@ -166,6 +168,8 @@ describe('Shell', () => {
     const controlPlaneClient = {
       listGateways: vi.fn(async () => []),
       createWebPairing: vi.fn(),
+      claimCredential: vi.fn(),
+      getPairingStatus: vi.fn(),
       listPairings: vi.fn(),
       deletePairing: vi.fn(),
     };
@@ -196,10 +200,13 @@ describe('Shell', () => {
     const controlPlaneClient = {
       listGateways: vi.fn(async () => [GATEWAY]),
       createWebPairing: vi.fn(async () => ({
+        status: 'active' as const,
         credential: 'fresh-relay-cred',
         pairingId: 'p-1',
         chatToken: 'fresh-chat-token',
       })),
+      claimCredential: vi.fn(),
+      getPairingStatus: vi.fn(),
       listPairings: vi.fn(async () => []),
       deletePairing: vi.fn(),
     };
@@ -232,6 +239,8 @@ describe('Shell', () => {
     const controlPlaneClient = {
       listGateways: vi.fn(async () => [GATEWAY]),
       createWebPairing: vi.fn(),
+      claimCredential: vi.fn(),
+      getPairingStatus: vi.fn(),
       listPairings: vi.fn(async () => [
         { id: 'p-1', deviceLabel: 'Web · Chrome', clientKind: 'web', status: 'active' as const },
       ]),
@@ -337,10 +346,13 @@ describe('Shell', () => {
     const controlPlaneClient = {
       listGateways: vi.fn(async () => [GATEWAY]),
       createWebPairing: vi.fn(async () => ({
+        status: 'active' as const,
         credential: 'fresh-relay-cred',
         pairingId: 'p-2',
         chatToken: 'fresh-chat-token',
       })),
+      claimCredential: vi.fn(),
+      getPairingStatus: vi.fn(),
       listPairings: vi.fn(async () => []),
       deletePairing: vi.fn(),
     };

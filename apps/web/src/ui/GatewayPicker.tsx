@@ -5,6 +5,7 @@ import {
   type GatewayInfo,
 } from '../auth/control-plane.js';
 import type { CredentialStore, StoredCredential } from '../auth/credential-store.js';
+import { PendingApproval } from './PendingApproval.js';
 
 /** Exact copy the brief mandates — points the user at Mission Control, since
  * gateways are enrolled there, not from the web client. */
@@ -39,9 +40,22 @@ export function buildWebDeviceLabel(userAgent: string): string {
 
 export interface GatewayPickerProps {
   gateways: GatewayInfo[];
-  controlPlaneClient: Pick<ControlPlaneClient, 'createWebPairing'>;
+  controlPlaneClient: Pick<
+    ControlPlaneClient,
+    'createWebPairing' | 'claimCredential' | 'getPairingStatus'
+  >;
   credentialStore: Pick<CredentialStore, 'set'>;
   onReady: (gateway: GatewayInfo, credential: StoredCredential) => void;
+}
+
+/** A signer-gated mint in progress — tracked separately from `pendingId`
+ * (the disabled-button state) since it also needs the gateway and approval
+ * details to render `PendingApproval`. */
+interface PendingApprovalState {
+  gateway: GatewayInfo;
+  pairingId: string;
+  approvalId: string;
+  approvalExpiresAt: number;
 }
 
 /**
@@ -50,6 +64,13 @@ export interface GatewayPickerProps {
  * web-client credential, persists it, then hands off to `onReady`. Gateway
  * *enrollment* itself happens in Mission Control, not here — an empty list
  * just points the user there.
+ *
+ * A signer-gated account (Task 3) makes `createWebPairing` resolve
+ * `status: 'pending'` instead of a credential — this component then swaps in
+ * `PendingApproval` (QR + countdown + poll + claim) rather than calling
+ * `onReady` immediately; `onReady` only fires once that screen's own claim
+ * succeeds. An immediate-active mint (the common case: zero-signer accounts,
+ * and every pairing before Task 3) never touches `PendingApproval` at all.
  */
 export function GatewayPicker({
   gateways,
@@ -59,21 +80,29 @@ export function GatewayPicker({
 }: GatewayPickerProps) {
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  if (gateways.length === 0) {
-    return <p>{GATEWAY_EMPTY_STATE_COPY}</p>;
-  }
+  const [pendingApproval, setPendingApproval] = useState<PendingApprovalState | null>(null);
 
   async function choose(gateway: GatewayInfo): Promise<void> {
     setError(null);
     setPendingId(gateway.gatewayId);
     try {
       const deviceLabel = buildWebDeviceLabel(navigator.userAgent);
-      const { credential, pairingId, chatToken } = await controlPlaneClient.createWebPairing(
-        gateway.gatewayId,
-        deviceLabel,
-      );
-      const stored: StoredCredential = { relayCredential: credential, chatToken, pairingId };
+      const result = await controlPlaneClient.createWebPairing(gateway.gatewayId, deviceLabel);
+      if (result.status === 'pending') {
+        setPendingApproval({
+          gateway,
+          pairingId: result.pairingId,
+          approvalId: result.approvalId,
+          approvalExpiresAt: result.approvalExpiresAt,
+        });
+        setPendingId(null);
+        return;
+      }
+      const stored: StoredCredential = {
+        relayCredential: result.credential,
+        chatToken: result.chatToken,
+        pairingId: result.pairingId,
+      };
       await credentialStore.set(gateway.gatewayId, stored);
       onReady(gateway, stored);
     } catch (err) {
@@ -84,6 +113,34 @@ export function GatewayPicker({
       }
       setPendingId(null);
     }
+  }
+
+  if (pendingApproval) {
+    const { gateway, pairingId, approvalId, approvalExpiresAt } = pendingApproval;
+    return (
+      <PendingApproval
+        gatewayId={gateway.gatewayId}
+        pairingId={pairingId}
+        approvalId={approvalId}
+        approvalExpiresAt={approvalExpiresAt}
+        controlPlaneClient={controlPlaneClient}
+        onReady={async ({ credential, chatToken, pairingId: claimedPairingId }) => {
+          const stored: StoredCredential = {
+            relayCredential: credential,
+            chatToken,
+            pairingId: claimedPairingId,
+          };
+          await credentialStore.set(gateway.gatewayId, stored);
+          setPendingApproval(null);
+          onReady(gateway, stored);
+        }}
+        onBack={() => setPendingApproval(null)}
+      />
+    );
+  }
+
+  if (gateways.length === 0) {
+    return <p>{GATEWAY_EMPTY_STATE_COPY}</p>;
   }
 
   return (
