@@ -377,7 +377,8 @@ extension AppDependenciesFactory {
         session: session,
         client: ControlPlaneClient(config: config, tokens: session),
         verifier: UITestPairingVerifier(),
-        installer: UITestPairingInstaller(keychain: keychain)
+        installer: UITestPairingInstaller(keychain: keychain),
+        signer: SignerIdentity(keychain: keychain)
       )
     }
 
@@ -486,7 +487,8 @@ extension AppDependenciesFactory {
         session: session,
         client: ControlPlaneClient(config: config, tokens: session, session: stubbedSession),
         verifier: UITestPairingVerifier(),
-        installer: UITestPairingInstaller(keychain: keychain)
+        installer: UITestPairingInstaller(keychain: keychain),
+        signer: SignerIdentity(keychain: keychain)
       )
     }
   }

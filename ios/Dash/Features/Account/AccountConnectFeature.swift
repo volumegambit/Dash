@@ -32,9 +32,16 @@ final class AccountConnectFeature {
   private let client: ControlPlaneClient
   private let verifier: any PairingVerifying
   private let installer: any PairingProfileInstalling
+  private let signer: SignerIdentity
   private let deviceLabel: String
   private let onGrantMinted: @MainActor @Sendable (String, String) -> Void
   private let onConnected: @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  /// Best-effort signer-registration failure hook — mirrors `onGrantMinted`'s
+  /// shape (an injectable, defaulted callback rather than a swallowed
+  /// `try?`) so tests can observe it, while the default just logs. Called
+  /// AFTER `onConnected` succeeds; never affects `connect(to:)`'s own
+  /// throw/return.
+  private let onSignerRegistrationFailed: @MainActor @Sendable (any Error) -> Void
   #if DEBUG
     /// See `ConnectionProfile.applyingDebugRelayPortOverride`. Re-applied here
     /// (defensively — `verifier` may or may not have been configured with the
@@ -48,17 +55,23 @@ final class AccountConnectFeature {
     client: ControlPlaneClient,
     verifier: any PairingVerifying,
     installer: any PairingProfileInstalling,
+    signer: SignerIdentity,
     deviceLabel: String,
     onGrantMinted: @escaping @MainActor @Sendable (String, String) -> Void = { _, _ in },
     onConnected: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) async throws -> Void,
+    onSignerRegistrationFailed: @escaping @MainActor @Sendable (any Error) -> Void = { error in
+      print("AccountConnectFeature: best-effort signer registration failed: \(error)")
+    },
     debugRelayPortOverride: Int? = nil
   ) {
     self.client = client
     self.verifier = verifier
     self.installer = installer
+    self.signer = signer
     self.deviceLabel = deviceLabel
     self.onGrantMinted = onGrantMinted
     self.onConnected = onConnected
+    self.onSignerRegistrationFailed = onSignerRegistrationFailed
     #if DEBUG
       self.debugRelayPortOverride = debugRelayPortOverride
     #else
@@ -141,5 +154,20 @@ final class AccountConnectFeature {
     }
 
     try await onConnected(installed)
+
+    // Best-effort: this device is a signer for the account as of ANY
+    // successful connect, not just when a browser needs approving — so it's
+    // ready to approve a future signer-gated web pairing without a separate
+    // enrollment step. Deliberately after `onConnected` and never allowed to
+    // fail the connect: an account with a working gateway connection but a
+    // still-unregistered signer is a strictly better outcome than losing the
+    // connection over a registration hiccup (offline, CP blip, etc.) — a
+    // later successful connect gets another chance to register.
+    do {
+      let publicKey = try await signer.publicKeyB64()
+      _ = try await client.registerSigner(publicKey: publicKey, label: deviceLabel)
+    } catch {
+      onSignerRegistrationFailed(error)
+    }
   }
 }

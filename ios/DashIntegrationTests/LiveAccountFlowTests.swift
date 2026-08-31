@@ -82,6 +82,7 @@ final class LiveAccountFlowTests: XCTestCase {
       client: client,
       verifier: pairingVerifier,
       installer: installer,
+      signer: SignerIdentity(keychain: keychain),
       deviceLabel: "Dash iOS live integration test",
       onGrantMinted: { gatewayId, pairingId in mintedPairing = (gatewayId, pairingId) },
       onConnected: { profile in installedProfile = profile },

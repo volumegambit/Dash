@@ -141,7 +141,14 @@ final class GatewayPickerViewModel {
         // in this exhaustive switch so a future refactor that bypasses that
         // early catch still gets a sane copy instead of a compiler error.
         return AccountCopy.cpUnreachable
-      case .unauthorized, .notEnrolled, .network, .decoding:
+      case .unauthorized, .notEnrolled, .network, .decoding, .forbidden, .expired:
+        // `.forbidden`/`.expired` are `POST /v1/approvals/:id/decision`-only
+        // outcomes (Task 3) — `connect(to:)`'s own control-plane calls
+        // (`listGateways`/`createPairing`) never produce them. Kept in this
+        // exhaustive switch for the same defense-in-depth reason as
+        // `.signInRequired` above; Task 6 owns the dedicated
+        // "expired"/"forbidden" copy for the approval-decision surface
+        // itself.
         return AccountCopy.cpUnreachable
       }
     }

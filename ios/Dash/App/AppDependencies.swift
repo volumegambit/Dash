@@ -57,6 +57,7 @@ struct AccountFeatureFactory: Sendable {
   let client: ControlPlaneClient
   let verifier: any PairingVerifying
   let installer: any PairingProfileInstalling
+  let signer: SignerIdentity
   let makeDeviceLabel: @Sendable () -> String
 
   init(
@@ -64,12 +65,14 @@ struct AccountFeatureFactory: Sendable {
     client: ControlPlaneClient,
     verifier: any PairingVerifying,
     installer: any PairingProfileInstalling,
+    signer: SignerIdentity,
     makeDeviceLabel: @escaping @Sendable () -> String = AccountFeatureFactory.defaultDeviceLabel
   ) {
     self.session = session
     self.client = client
     self.verifier = verifier
     self.installer = installer
+    self.signer = signer
     self.makeDeviceLabel = makeDeviceLabel
   }
 
@@ -104,6 +107,7 @@ struct AccountFeatureFactory: Sendable {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: signer,
       deviceLabel: makeDeviceLabel(),
       onGrantMinted: onGrantMinted,
       onConnected: onConnected
@@ -136,7 +140,8 @@ struct AccountFeatureFactory: Sendable {
       session: session,
       client: ControlPlaneClient(config: config, tokens: session),
       verifier: UnavailablePairingVerifier(),
-      installer: UnavailablePairingInstaller()
+      installer: UnavailablePairingInstaller(),
+      signer: SignerIdentity(keychain: SystemKeychainStore())
     )
   }()
 }
@@ -289,6 +294,11 @@ struct AppDependencies: Sendable {
       presenter: SystemWebAuthPresenter()
     )
     let controlPlaneClient = ControlPlaneClient(config: accountAuthConfig, tokens: accountSession)
+    // Shares `keychain` (the same `SystemKeychainStore` backing paired
+    // connections' secrets) — see `SignerIdentity`'s doc comment for why a
+    // dedicated fixed namespace on that same store can't collide with a real
+    // connection's `profileID`-keyed entry.
+    let signerIdentity = SignerIdentity(keychain: keychain)
 
     return AppDependencies(
       clock: clock,
@@ -414,7 +424,8 @@ struct AppDependencies: Sendable {
         session: accountSession,
         client: controlPlaneClient,
         verifier: pairingVerifier,
-        installer: pairingInstaller
+        installer: pairingInstaller,
+        signer: signerIdentity
       )
     )
   }

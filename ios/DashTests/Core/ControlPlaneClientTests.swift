@@ -212,6 +212,141 @@ struct ControlPlaneClientTests {
     #expect(await controlPlaneError { try await client.listGateways() } == .network)
   }
 
+  @Test("registerSigner posts the exact body and decodes signerId")
+  func registerSignerPostsExactBodyAndDecodesSignerId() async throws {
+    let session = try await signedInSession(idToken: "id-token-signer")
+    URLProtocolStub.enqueue(status: 201, data: Data(#"{"signerId":"signer-1"}"#.utf8))
+    let client = ControlPlaneClient(
+      config: try makeConfig(),
+      tokens: session,
+      session: testURLSession()
+    )
+
+    let signerId = try await client.registerSigner(publicKey: "pubkey-abc", label: "Gerry's iPhone")
+
+    #expect(signerId == "signer-1")
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "POST")
+    #expect(request.url?.absoluteString == "https://cp.dash.test/v1/signers")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-signer")
+    let body = try #require(request.httpBody)
+    let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+    #expect(json == ["publicKey": "pubkey-abc", "label": "Gerry's iPhone"])
+  }
+
+  @Test("fetchApproval GETs the exact URL and decodes the approval shape")
+  func fetchApprovalDecodesApproval() async throws {
+    let session = try await signedInSession(idToken: "id-token-approval")
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(
+        """
+        {
+          "approvalId": "approval-1",
+          "pairingId": "pairing-1",
+          "gatewayId": "gw-1",
+          "deviceLabel": "Chrome on Mac",
+          "expiresAt": "2026-01-01T00:02:00.000Z"
+        }
+        """.utf8
+      )
+    )
+    let client = ControlPlaneClient(
+      config: try makeConfig(),
+      tokens: session,
+      session: testURLSession()
+    )
+
+    let approval = try await client.fetchApproval(id: "approval-1")
+
+    #expect(
+      approval
+        == ApprovalRequestDTO(
+          approvalId: "approval-1",
+          pairingId: "pairing-1",
+          gatewayId: "gw-1",
+          deviceLabel: "Chrome on Mac",
+          expiresAt: "2026-01-01T00:02:00.000Z"
+        )
+    )
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "GET")
+    #expect(request.url?.absoluteString == "https://cp.dash.test/v1/approvals/approval-1")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-approval")
+  }
+
+  @Test("postDecision posts the exact decision body to the exact URL")
+  func postDecisionPostsExactBody() async throws {
+    let session = try await signedInSession(idToken: "id-token-decision")
+    URLProtocolStub.enqueue(status: 204, data: Data())
+    let client = ControlPlaneClient(
+      config: try makeConfig(),
+      tokens: session,
+      session: testURLSession()
+    )
+
+    try await client.postDecision(
+      approvalId: "approval-1",
+      decision: "approve",
+      signerId: "signer-1",
+      signature: "sig-abc"
+    )
+
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "POST")
+    #expect(
+      request.url?.absoluteString == "https://cp.dash.test/v1/approvals/approval-1/decision"
+    )
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-decision")
+    let body = try #require(request.httpBody)
+    let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+    #expect(json == ["decision": "approve", "signerId": "signer-1", "signature": "sig-abc"])
+  }
+
+  @Test("a 403 response from postDecision maps to .forbidden")
+  func postDecisionForbiddenMapping() async throws {
+    let session = try await signedInSession(idToken: "id-token-403")
+    URLProtocolStub.enqueue(status: 403, data: Data(#"{"error":"invalid signature"}"#.utf8))
+    let client = ControlPlaneClient(
+      config: try makeConfig(),
+      tokens: session,
+      session: testURLSession()
+    )
+
+    let error = await controlPlaneError {
+      try await client.postDecision(
+        approvalId: "approval-1",
+        decision: "approve",
+        signerId: "signer-1",
+        signature: "bad-sig"
+      )
+    }
+
+    #expect(error == .forbidden)
+  }
+
+  @Test("a 410 response from postDecision maps to .expired")
+  func postDecisionExpiredMapping() async throws {
+    let session = try await signedInSession(idToken: "id-token-410")
+    URLProtocolStub.enqueue(status: 410, data: Data(#"{"error":"expired"}"#.utf8))
+    let client = ControlPlaneClient(
+      config: try makeConfig(),
+      tokens: session,
+      session: testURLSession()
+    )
+
+    let error = await controlPlaneError {
+      try await client.postDecision(
+        approvalId: "approval-1",
+        decision: "deny",
+        signerId: "signer-1",
+        signature: "sig-abc"
+      )
+    }
+
+    #expect(error == .expired)
+  }
+
   @Test("an AccountSession in .signInRequired state surfaces .signInRequired without a request")
   func signInRequiredSurfacesWithoutRequest() async throws {
     let presenter = FakeWebAuthPresenter()

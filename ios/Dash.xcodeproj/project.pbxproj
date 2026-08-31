@@ -47,11 +47,13 @@
 		5403241B637660E5DE8681DD /* ConnectionEndpointTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B92A2E043D415EDF91976BDB /* ConnectionEndpointTests.swift */; };
 		55DAFDF8041FE49ED7D76600 /* PersistenceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378667B3C45A8B5CAA51A151 /* PersistenceStoreTests.swift */; };
 		5A185574926764E61B446F58 /* ConversationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2097A8BDBBFD9F47F93E2B7A /* ConversationUITests.swift */; };
+		5F0C639829D034AD75B6D07E /* SignerIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B75B6DEA88B01CA9F076ED9 /* SignerIdentityTests.swift */; };
 		5F2AF93FBF01709C0236E6B6 /* AccountSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00A28F9BF6053F3741B169C /* AccountSession.swift */; };
 		636080EB5173E7E0275D021D /* MessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3436D52686B6A2F61E80468E /* MessageViews.swift */; };
 		64CC95CC5BF41BE3CB609D3A /* ComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F62CDA91716DDDA8F5CBD1C /* ComposerView.swift */; };
 		64E8C456A78A1674C85030C1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8595E34F3DDA23930BA1A37 /* ChatView.swift */; };
 		659C3BDACE475612B04A2414 /* DashTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD11566894C3CCA12E94DE6 /* DashTheme.swift */; };
+		67266DDF994F01A8B74AB7BB /* SignerIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE855A3D49D0EA45859EF93E /* SignerIdentity.swift */; };
 		6EABFCC6BD281137847CA2D7 /* ChatFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0203D495290D5C03FE6AB2AB /* ChatFeatureTests.swift */; };
 		728D0D7250C62AE2A03CCB5B /* GatewayAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F485644FF2B5F2EE6D0554C4 /* GatewayAPI.swift */; };
 		737B5822B1DD2D5B46A78D89 /* GatewayPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A74A8FF922439B8122B7ED4E /* GatewayPickerView.swift */; };
@@ -159,6 +161,7 @@
 		0FE34FAE7BA109CC734D42A4 /* DashTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DashTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		157831053268782C34102FDF /* UITestScenarioSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestScenarioSupportTests.swift; sourceTree = "<group>"; };
 		1933C09A99FA757D33A9B12C /* AsyncStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncStateView.swift; sourceTree = "<group>"; };
+		1B75B6DEA88B01CA9F076ED9 /* SignerIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignerIdentityTests.swift; sourceTree = "<group>"; };
 		1D62912515DAA014B61D0634 /* ConversationSyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSyncEngine.swift; sourceTree = "<group>"; };
 		2097A8BDBBFD9F47F93E2B7A /* ConversationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationUITests.swift; sourceTree = "<group>"; };
 		21AFAE8B91CB5C301E9DE8CA /* ChatReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatReducer.swift; sourceTree = "<group>"; };
@@ -239,6 +242,7 @@
 		C5E07B25904F537DFD919A32 /* ControlPlaneClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlPlaneClient.swift; sourceTree = "<group>"; };
 		CB8B2BDE8BE9C3EB8A0C71F6 /* LiveAccountFlowEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAccountFlowEnvironment.swift; sourceTree = "<group>"; };
 		CC0DF34C0AB00CC7EE97C319 /* SystemWebAuthPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemWebAuthPresenter.swift; sourceTree = "<group>"; };
+		CE855A3D49D0EA45859EF93E /* SignerIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignerIdentity.swift; sourceTree = "<group>"; };
 		CF68BCD8217DED6A249CEBE7 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		D03FF993B29B9BD3E12AFD2C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D04890795A14A3900A409B70 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
@@ -509,6 +513,7 @@
 				40C319EEC75937C1BB5E6F70 /* KeychainStoreTests.swift */,
 				378667B3C45A8B5CAA51A151 /* PersistenceStoreTests.swift */,
 				98611F13566BC9C8A0C105F0 /* SequenceReconcilerTests.swift */,
+				1B75B6DEA88B01CA9F076ED9 /* SignerIdentityTests.swift */,
 				E8B199747A892317AF02FEE1 /* SSEClientTests.swift */,
 			);
 			path = Core;
@@ -589,6 +594,7 @@
 			children = (
 				F7BD28400270A1E5B8C07B2F /* AccountAuthConfig.swift */,
 				F00A28F9BF6053F3741B169C /* AccountSession.swift */,
+				CE855A3D49D0EA45859EF93E /* SignerIdentity.swift */,
 				CC0DF34C0AB00CC7EE97C319 /* SystemWebAuthPresenter.swift */,
 			);
 			path = Auth;
@@ -810,6 +816,7 @@
 				A33C7299E3F664C3B94EC96F /* SSEClientTests.swift in Sources */,
 				C93130D544958840EA56718A /* SequenceReconcilerTests.swift in Sources */,
 				9129F7BDF92C31E45EC0138D /* SettingsFeatureTests.swift in Sources */,
+				5F0C639829D034AD75B6D07E /* SignerIdentityTests.swift in Sources */,
 				738F643C11E8012A1E69A17A /* TestDoubles.swift in Sources */,
 				02A064E055D0040558D605B2 /* UITestScenarioSupportTests.swift in Sources */,
 			);
@@ -906,6 +913,7 @@
 				795B6020FEEF1A60DF0106EB /* SettingsFeature.swift in Sources */,
 				8D3449406FED12C615D58D73 /* SettingsView.swift in Sources */,
 				08F252972075538667CC937F /* SignInView.swift in Sources */,
+				67266DDF994F01A8B74AB7BB /* SignerIdentity.swift in Sources */,
 				4E0BA3181869A81ABE0382CA /* StatusBadge.swift in Sources */,
 				ADFC780FE4ABB9585E7CD725 /* SystemWebAuthPresenter.swift in Sources */,
 				08998E1B231821CDF5A759D8 /* UITestScenarioSupport.swift in Sources */,

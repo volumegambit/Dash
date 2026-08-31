@@ -28,12 +28,32 @@ struct PairingGrant: Decodable, Equatable, Sendable {
   let status: String
 }
 
+/// A pending (or already-decided/expired) signer-gated approval, as returned
+/// by `GET /v1/approvals/:id` (Task 3). `expiresAt` is an ISO-8601 string —
+/// this client doesn't parse it; the caller (Task 6) decides how to render or
+/// compare it.
+struct ApprovalRequestDTO: Decodable, Equatable, Sendable {
+  let approvalId: String
+  let pairingId: String
+  let gatewayId: String
+  let deviceLabel: String
+  let expiresAt: String
+}
+
 enum ControlPlaneError: Error, Equatable {
   case signInRequired
   case unauthorized
   case notEnrolled
   case network
   case decoding
+  /// `403` on `POST /v1/approvals/:id/decision`: the signature did not verify
+  /// or `signerId` isn't registered under this account (Task 3 deliberately
+  /// makes those indistinguishable). Task 6 shows "forbidden" copy for this.
+  case forbidden
+  /// `410` on `POST /v1/approvals/:id/decision`: the approval's TTL elapsed
+  /// or it already received a decision — "too late" either way. Task 6 shows
+  /// "expired" copy for this.
+  case expired
 }
 
 /// Talks to the Dash control plane on behalf of a signed-in account: listing
@@ -84,6 +104,52 @@ actor ControlPlaneClient {
     )
   }
 
+  /// `POST /v1/signers` with `{ publicKey, label }`, returning the resulting
+  /// `signerId`. Idempotent server-side (Task 3): registering the same
+  /// `publicKey` again returns the same `signerId` rather than erroring.
+  func registerSigner(publicKey: String, label: String) async throws -> String {
+    struct RegisterRequest: Encodable, Sendable {
+      let publicKey: String
+      let label: String
+    }
+    struct RegisterResponse: Decodable {
+      let signerId: String
+    }
+    let response: RegisterResponse = try await send(
+      method: "POST",
+      pathSegments: ["v1", "signers"],
+      body: RegisterRequest(publicKey: publicKey, label: label)
+    )
+    return response.signerId
+  }
+
+  /// `GET /v1/approvals/:id`.
+  func fetchApproval(id: String) async throws -> ApprovalRequestDTO {
+    try await send(method: "GET", pathSegments: ["v1", "approvals", id])
+  }
+
+  /// `POST /v1/approvals/:id/decision` with
+  /// `{ decision, signerId, signature }`. `204` on success (approve or deny
+  /// alike); see `performRequest`'s status mapping for the `403`/`410` typed
+  /// errors this can throw.
+  func postDecision(
+    approvalId: String,
+    decision: String,
+    signerId: String,
+    signature: String
+  ) async throws {
+    struct DecisionRequest: Encodable, Sendable {
+      let decision: String
+      let signerId: String
+      let signature: String
+    }
+    _ = try await performRequest(
+      method: "POST",
+      pathSegments: ["v1", "approvals", approvalId, "decision"],
+      body: DecisionRequest(decision: decision, signerId: signerId, signature: signature)
+    )
+  }
+
   private func send<Response: Decodable>(
     method: String,
     pathSegments: [String],
@@ -129,10 +195,16 @@ actor ControlPlaneClient {
       throw ControlPlaneError.network
     }
     guard (200..<300).contains(httpResponse.statusCode) else {
-      if httpResponse.statusCode == 401 {
+      switch httpResponse.statusCode {
+      case 401:
         throw ControlPlaneError.unauthorized
+      case 403:
+        throw ControlPlaneError.forbidden
+      case 410:
+        throw ControlPlaneError.expired
+      default:
+        throw ControlPlaneError.network
       }
-      throw ControlPlaneError.network
     }
     return data
   }

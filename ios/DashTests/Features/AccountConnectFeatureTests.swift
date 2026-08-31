@@ -65,6 +65,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Gerry's iPhone",
       onConnected: { connected.profiles.append($0) }
     )
@@ -103,6 +104,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: RecordingAccountInstaller(),
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in }
     )
@@ -144,6 +146,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in Issue.record("must not connect") }
     )
@@ -172,6 +175,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in Issue.record("must not connect") }
     )
@@ -200,6 +204,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in Issue.record("must not connect") }
     )
@@ -229,6 +234,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: CapturingAccountVerifier(),
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in }
     )
@@ -255,6 +261,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in Issue.record("must not connect") }
     )
@@ -283,6 +290,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { connected.profiles.append($0) }
     )
@@ -311,6 +319,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in },
       debugRelayPortOverride: 18443
@@ -340,6 +349,7 @@ struct AccountConnectFeatureTests {
       client: client,
       verifier: verifier,
       installer: installer,
+      signer: makeSigner(),
       deviceLabel: "Device",
       onConnected: { _ in }
     )
@@ -349,6 +359,69 @@ struct AccountConnectFeatureTests {
     let installed = try #require(await installer.installedPairings.first)
     #expect(installed.profile.profile.managementPort == 443)
     #expect(installed.profile.profile.chatPort == 443)
+  }
+
+  @Test("a successful connect registers this device's signer public key under the device label")
+  func successfulConnectRegistersSigner() async throws {
+    let client = try await stubbedClient(
+      grant: PairingGrant(
+        credential: "relay-cred-signer",
+        pairingId: "pairing-signer",
+        chatToken: "chat-signer",
+        status: "active"
+      )
+    )
+    URLProtocolStub.enqueue(status: 201, data: Data(#"{"signerId":"signer-1"}"#.utf8))
+    let signer = makeSigner()
+    let expectedPublicKey = try await signer.publicKeyB64()
+    let feature = AccountConnectFeature(
+      client: client,
+      verifier: CapturingAccountVerifier(),
+      installer: RecordingAccountInstaller(),
+      signer: signer,
+      deviceLabel: "Gerry's iPhone",
+      onConnected: { _ in }
+    )
+
+    try await feature.connect(to: gatewayFixture())
+
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "POST")
+    #expect(request.url?.path == "/v1/signers")
+    let body = try #require(request.httpBody)
+    let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+    #expect(json == ["publicKey": expectedPublicKey, "label": "Gerry's iPhone"])
+  }
+
+  @Test("a signer registration failure is swallowed and never fails connect")
+  func signerRegistrationFailureDoesNotFailConnect() async throws {
+    let client = try await stubbedClient(
+      grant: PairingGrant(
+        credential: "relay-cred-signer-fail",
+        pairingId: "pairing-signer-fail",
+        chatToken: "chat-signer-fail",
+        status: "active"
+      )
+    )
+    // Deliberately no third stubbed response: the registerSigner request
+    // finds an empty queue and fails with `.network` — this must not
+    // propagate out of `connect(to:)`.
+    let connected = ConnectedRecorder()
+    var reportedFailure: (any Error)?
+    let feature = AccountConnectFeature(
+      client: client,
+      verifier: CapturingAccountVerifier(),
+      installer: RecordingAccountInstaller(),
+      signer: makeSigner(),
+      deviceLabel: "Device",
+      onConnected: { connected.profiles.append($0) },
+      onSignerRegistrationFailed: { error in reportedFailure = error }
+    )
+
+    try await feature.connect(to: gatewayFixture())
+
+    #expect(connected.profiles.count == 1)
+    #expect(reportedFailure as? ControlPlaneError == .network)
   }
 }
 
@@ -408,7 +481,31 @@ private final class ConnectedRecorder {
   var profiles: [ConnectionProfileSnapshot] = []
 }
 
+/// Trivial in-memory `KeychainStoring`, dedicated to backing a throwaway
+/// `SignerIdentity` per test — none of these tests assert anything about the
+/// signer's own key material, they only need `AccountConnectFeature`'s
+/// `signer:` parameter satisfied.
+private actor FakeSignerKeychain: KeychainStoring {
+  private var storage: [UUID: ConnectionSecrets] = [:]
+
+  func save(_ secrets: ConnectionSecrets, for profileID: UUID) async throws {
+    storage[profileID] = secrets
+  }
+
+  func load(for profileID: UUID) async throws -> ConnectionSecrets? {
+    storage[profileID]
+  }
+
+  func delete(for profileID: UUID) async throws {
+    storage[profileID] = nil
+  }
+}
+
 // MARK: - Helpers
+
+private func makeSigner() -> SignerIdentity {
+  SignerIdentity(keychain: FakeSignerKeychain())
+}
 
 private func gatewayFixture(
   gatewayId: String = "gw-1",
