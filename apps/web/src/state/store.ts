@@ -60,6 +60,23 @@ export interface WebAppState {
   openConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
   /**
+   * Cancels the in-flight turn for `conversationId` by sending a WS `cancel`
+   * frame (`{ type: 'cancel', id: <turnId> }`) — the same gateway route
+   * Mission Control's `cancelMessage` and the iOS client's `ChatFeature.cancel`
+   * use (`apps/gateway/src/chat-ws.ts` handles `msg.type === 'cancel'` by
+   * aborting the turn keyed on `msg.id`, the turn id, not the conversation
+   * id). The turn id comes from `Transcript.pending.turnId`, set once the
+   * `accepted` frame lands (see `assemble.ts`) — so this is a no-op before a
+   * turn has been accepted, once it's already finished, or if `conversationId`
+   * isn't the conversation this store's live socket is currently attached to.
+   * A send failure (e.g. the socket having just dropped) is logged and
+   * swallowed rather than thrown: the caller (the composer's stop button)
+   * should stay visible until the turn actually ends via a `done`/`error`
+   * frame, not flip back to "send" just because the cancel request itself
+   * didn't make it out.
+   */
+  cancelTurn(conversationId: string): void;
+  /**
    * Tears down this store's live connection: closes the current socket (if
    * any), cancels any pending reconnect timer, and stops any reconnect
    * attempt already in flight from resurrecting a connection afterwards.
@@ -636,6 +653,18 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
             ),
           }));
           throw err;
+        }
+      },
+
+      cancelTurn(conversationId) {
+        if (!socket || conversationId !== currentConversationId) return;
+        const turnId = get().transcripts[conversationId]?.pending?.turnId;
+        if (!turnId) return;
+        const frame: MobileWsClientFrame = { type: 'cancel', id: turnId };
+        try {
+          socket.send(frame);
+        } catch (err) {
+          console.error('WebAppStore: failed to send cancel frame', err);
         }
       },
 

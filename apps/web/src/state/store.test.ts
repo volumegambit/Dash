@@ -572,6 +572,101 @@ describe('createWebAppStore', () => {
     });
   });
 
+  describe('cancelTurn (chat-ux Phase 2 Task 2, audit #3)', () => {
+    it('sends a cancel frame keyed on the accepted turn id', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-msg-id',
+        assistantMessageId: 'real-assistant-msg-id',
+        revision: 2,
+        seq: 1,
+      });
+
+      store.getState().cancelTurn(CONVERSATION_ID);
+
+      expect(sockets[0].sent).toContainEqual({ type: 'cancel', id: turnId });
+    });
+
+    it('is a no-op before any turn has been accepted (no pending turnId yet)', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().cancelTurn(CONVERSATION_ID);
+
+      expect(sockets[0].sent).toHaveLength(0);
+    });
+
+    it('is a no-op for a conversation id other than the one the live socket is attached to', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-msg-id',
+        assistantMessageId: 'real-assistant-msg-id',
+        revision: 2,
+        seq: 1,
+      });
+
+      const sentBefore = sockets[0].sent.length;
+      store.getState().cancelTurn('some-other-conversation');
+
+      expect(sockets[0].sent).toHaveLength(sentBefore);
+      expect(sockets[0].sent.some((frame) => frame.type === 'cancel')).toBe(false);
+    });
+
+    it('logs and swallows a cancel send failure instead of throwing (stop button stays until a real done/error frame lands)', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-msg-id',
+        assistantMessageId: 'real-assistant-msg-id',
+        revision: 2,
+        seq: 1,
+      });
+
+      socket.sendShouldThrow = true;
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(() => store.getState().cancelTurn(CONVERSATION_ID)).not.toThrow();
+
+      expect(consoleError).toHaveBeenCalled();
+      // The turn is still tracked as pending — nothing here finalized it;
+      // only a subsequent `done`/`error` frame does that (see `assemble.ts`).
+      expect(store.getState().transcripts[CONVERSATION_ID]?.pending?.turnId).toBe(turnId);
+      consoleError.mockRestore();
+    });
+  });
+
   describe('reconnect', () => {
     it("resets lastSeq on openConversation, so a switch-then-failed-replay reconnect resumes the NEW conversation at 0, never the previous one's cursor (regression: lastSeq is a single per-store variable, only ever set on successful replay)", async () => {
       const CONV_A = 'conv-a';
