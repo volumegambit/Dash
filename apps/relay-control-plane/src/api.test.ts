@@ -1209,6 +1209,110 @@ describe('signer-gated web approvals over HTTP (Task 3)', () => {
       status: 'active',
     });
   });
+
+  describe('security review fixes (post-Task-3), over HTTP', () => {
+    it('C1 (critical): DELETE on a PENDING pairing never mass-revokes the gateway — other pairings stay valid', async () => {
+      const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+
+      // A normal, already-live mobile pairing on the SAME gateway.
+      const mobile = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          deviceLabel: 'iPhone',
+        })
+      ).json()) as { credential: string };
+      expect(relayStore.isValid(gatewayId, mobile.credential)).toBe(true);
+
+      const { rawPub } = signerKeypair();
+      await registerSigner('a1', rawPub);
+      const pending = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          deviceLabel: 'Safari',
+          clientKind: 'web',
+        })
+      ).json()) as { pairingId: string };
+
+      const delRes = await req(
+        'DELETE',
+        `/v1/gateways/${gatewayId}/pairings/${pending.pairingId}`,
+        'a1',
+      );
+      expect(delRes.status).toBe(200);
+
+      // The pending row is gone...
+      const list = (await (
+        await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')
+      ).json()) as {
+        pairings: Array<{ id: string }>;
+      };
+      expect(list.pairings.some((p) => p.id === pending.pairingId)).toBe(false);
+      // ...and the OTHER (live) credential on this gateway is untouched.
+      expect(relayStore.isValid(gatewayId, mobile.credential)).toBe(true);
+    });
+
+    it('I2 (important): claim 410s once a pairing is revoked, before anyone claimed it — no secrets returned', async () => {
+      const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+      const { rawPub, priv } = signerKeypair();
+      const signerId = await registerSigner('a1', rawPub);
+
+      const minted = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          clientKind: 'web',
+        })
+      ).json()) as { pairingId: string; approvalId: string };
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+      await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+        decision: 'approve',
+        signerId,
+        signature,
+      });
+
+      const delRes = await req(
+        'DELETE',
+        `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}`,
+        'a1',
+      );
+      expect(delRes.status).toBe(200);
+
+      const claimRes = await req(
+        'POST',
+        `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+        'a1',
+      );
+      expect(claimRes.status).toBe(410);
+      const raw = await claimRes.text();
+      expect(raw).not.toContain('chat-1');
+    });
+
+    it('I3 (important): claim 410s once the claim deadline elapses, even though it was never revoked', async () => {
+      const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+      const { rawPub, priv } = signerKeypair();
+      const signerId = await registerSigner('a1', rawPub);
+
+      const minted = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          clientKind: 'web',
+        })
+      ).json()) as { pairingId: string; approvalId: string };
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+      const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+        decision: 'approve',
+        signerId,
+        signature,
+      });
+      expect(decisionRes.status).toBe(204);
+
+      clockMs += 120_001; // one ms past the default 120s claim deadline
+
+      const claimRes = await req(
+        'POST',
+        `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+        'a1',
+      );
+      expect(claimRes.status).toBe(410);
+      const raw = await claimRes.text();
+      expect(raw).not.toContain('chat-1');
+    });
+  });
 });
 
 describe('CORS', () => {

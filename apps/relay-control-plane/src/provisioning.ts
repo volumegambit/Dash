@@ -110,6 +110,18 @@ export type ApprovalDecision = 'approve' | 'deny';
 const DEFAULT_APPROVAL_TTL_MS = 120_000;
 
 /**
+ * Default deadline (from the moment of approval) to claim the resulting
+ * credential, before {@link ProvisioningService.claimCredential} scrubs it as
+ * expired. Security review fix (I3): without this, an approved-but-unclaimed
+ * credential (e.g. the user approved on their phone, then closed the web tab
+ * before the poll loop claimed it) sat in `pending_credential` at rest,
+ * un-swept, forever. Reuses the same 120s window as the approval TTL itself —
+ * plenty of time for the web app's poll loop to claim immediately after
+ * activation, since it isn't waiting on a human this time.
+ */
+const DEFAULT_CLAIM_TTL_MS = 120_000;
+
+/**
  * The exact UTF-8 message an approval decision is signed over. THIS is the
  * single documented source of truth both this control plane and the separate
  * iOS codebase (Tasks 5/6) must independently reproduce byte-for-byte — every
@@ -186,6 +198,12 @@ export interface ProvisioningDeps {
   now?: () => number;
   /** Approval TTL in milliseconds. Defaults to 120 000 (120s, per the signer-device design spec). */
   approvalTtlMs?: number;
+  /**
+   * Deadline (milliseconds, from the moment of approval) to claim the
+   * resulting credential before it is swept as expired. Defaults to 120 000
+   * (120s) — see {@link DEFAULT_CLAIM_TTL_MS}.
+   */
+  claimTtlMs?: number;
 }
 
 /**
@@ -202,6 +220,7 @@ export class ProvisioningService {
   readonly #relayZone: string;
   readonly #now: () => number;
   readonly #approvalTtlMs: number;
+  readonly #claimTtlMs: number;
 
   constructor(deps: ProvisioningDeps) {
     this.#store = deps.store;
@@ -210,6 +229,7 @@ export class ProvisioningService {
     this.#relayZone = deps.relayZone;
     this.#now = deps.now ?? Date.now;
     this.#approvalTtlMs = deps.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
+    this.#claimTtlMs = deps.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
   }
 
   /**
@@ -406,10 +426,11 @@ export class ProvisioningService {
    * Order of checks matters for security, not just correctness:
    *  1. Existence + account match (`ApprovalNotFoundError`, 404) — never
    *     disclose a cross-account approval id.
-   *  2. Still pending AND unexpired. An expired-but-still-pending approval is
-   *     swept right here (denied + its orphan pairing discarded) so no dead
-   *     PENDING row survives past its TTL even without a background sweep.
-   *     Either way: `ApprovalClosedError` (410).
+   *  2. Still pending AND unexpired (JS-level read). An expired-but-still-
+   *     pending approval is swept right here via {@link #sweepIfExpired}
+   *     (denied + its orphan pairing discarded) so no dead PENDING row
+   *     survives past its TTL even without a background sweep. Either way:
+   *     `ApprovalClosedError` (410).
    *  3. Signature verification — a signer that does not belong to
    *     `accountId`, OR a signature that does not verify over
    *     `approvalMessage(approvalId, pairingId, decision)`, throws
@@ -417,16 +438,27 @@ export class ProvisioningService {
    *     decided. A forged/garbage attempt must not be able to burn a
    *     legitimate approval out from under the real signer.
    *  4. Only once signed off does the transition to `'approved'`/`'denied'`
-   *     happen — atomically, via the store's `WHERE status = 'pending'`
-   *     guard, which is the actual race-closing single-decision enforcement
-   *     (step 2's read is just an optimization/early-exit).
+   *     happen — atomically, via the store's `WHERE status = 'pending' AND
+   *     expires_at > ?` guard (security review fold-in M1): the TTL is
+   *     re-checked INSIDE the same atomic write, not just by step 2's earlier
+   *     read, so a real race — another process deciding this approval, or
+   *     wall-clock time crossing the deadline, between step 2 and this write
+   *     — cannot sneak a decision through. A guard failure here is swept the
+   *     same way step 2 would have.
    *
    * On approval: mints the relay credential now (not at initial mint time —
-   * see the class-level Task 3 note on `createPairing`), flips the pairing to
-   * `'active'`, and stores the raw credential (+ the gateway's registered
-   * chat token) as a value awaiting exactly one claim via
-   * {@link claimCredential}. On denial: the pending pairing row is hard-deleted
-   * — there was never a live device to keep a record of.
+   * see the class-level Task 3 note on `createPairing`), then activates the
+   * pairing. SECURITY (review fix I1): `activatePairing` can itself fail
+   * (`false`) if the pairing stopped being PENDING between the mint-gate and
+   * this decision — e.g. its owner deleted the pending device from the web
+   * Devices list while a signer was mid-approval. Because the credential was
+   * already minted on the relay by that point, a failed activation rolls it
+   * back (`relay.revokePairing`) immediately, so it never becomes an orphan,
+   * unrevocable-by-id live secret — then reports the decision as closed
+   * (`ApprovalClosedError`, 410).
+   *
+   * On denial: the pending pairing row is hard-deleted — there was never a
+   * live device to keep a record of.
    */
   async decideApproval(
     accountId: string,
@@ -438,15 +470,8 @@ export class ProvisioningService {
       throw new ApprovalNotFoundError(`approval ${approvalId} not found for account ${accountId}`);
     }
 
-    const expired = approval.expiresAt <= this.#now();
-    if (approval.status !== 'pending' || expired) {
-      if (
-        approval.status === 'pending' &&
-        expired &&
-        this.#store.decideApproval(approvalId, 'denied')
-      ) {
-        this.#store.discardPendingPairing(approval.gatewayId, approval.pairingId);
-      }
+    if (approval.status !== 'pending' || approval.expiresAt <= this.#now()) {
+      this.#sweepIfExpired(approval);
       throw new ApprovalClosedError(`approval ${approvalId} is expired or already decided`);
     }
 
@@ -458,13 +483,19 @@ export class ProvisioningService {
       throw new InvalidApprovalSignatureError(`invalid signature for approval ${approvalId}`);
     }
 
-    // Atomic pending -> decided transition. Loses a same-instant race to a
-    // second decision request (including a concurrent expiry sweep above).
+    // Atomic pending -> decided transition, with the TTL re-checked INSIDE
+    // this same write (fold-in M1) — see the doc comment above.
+    const nowAtCommit = this.#now();
     const decided = this.#store.decideApproval(
       approvalId,
       opts.decision === 'approve' ? 'approved' : 'denied',
+      nowAtCommit,
     );
     if (!decided) {
+      // Lost the race — either someone else already decided it, or the clock
+      // crossed the deadline between the read above and this write. Sweep it
+      // exactly like the up-front check would have.
+      this.#sweepIfExpired(this.#store.getApproval(approvalId));
       throw new ApprovalClosedError(`approval ${approvalId} is expired or already decided`);
     }
 
@@ -474,12 +505,45 @@ export class ProvisioningService {
     }
 
     const credential = await this.#relay.provisionPairing(accountId, approval.gatewayId);
+    const credentialHash = sha256(credential);
     const chatToken = this.#store.getWebChatToken(approval.gatewayId);
-    this.#store.activatePairing(approval.gatewayId, approval.pairingId, {
-      credentialHash: sha256(credential),
+    const activated = this.#store.activatePairing(approval.gatewayId, approval.pairingId, {
+      credentialHash,
       credential,
       chatToken,
+      credentialExpiresAt: nowAtCommit + this.#claimTtlMs,
     });
+    if (!activated) {
+      // Security review fix I1: the pairing is no longer PENDING (revoked or
+      // deleted concurrently) even though the APPROVAL decision itself
+      // committed above — roll back the credential we just minted so it
+      // never becomes a live, unrevocable-by-id orphan, then report the
+      // decision as closed. (The approval row stays `'approved'` — it WAS
+      // validly decided; there is simply nothing left to activate. A repeat
+      // decision attempt already 410s via the `status !== 'pending'` check.)
+      await this.#relay.revokePairing(
+        accountId,
+        approval.gatewayId,
+        undefined,
+        hexToRelayHash(credentialHash),
+      );
+      throw new ApprovalClosedError(`pairing ${approval.pairingId} is no longer pending`);
+    }
+  }
+
+  /**
+   * If `approval` is still `'pending'` but past its TTL, sweep it: mark it
+   * `'denied'` (unconditionally — this IS the sweep, not a race-guarded
+   * transition) and discard its now-orphaned pending pairing. A no-op for
+   * `null`, an already-decided approval, or one that is not actually expired
+   * (e.g. the guarded transition in {@link decideApproval} failed because
+   * someone else raced it, not because of expiry).
+   */
+  #sweepIfExpired(approval: ApprovalRecord | null): void {
+    if (!approval || approval.status !== 'pending' || approval.expiresAt > this.#now()) return;
+    if (this.#store.decideApproval(approval.approvalId, 'denied')) {
+      this.#store.discardPendingPairing(approval.gatewayId, approval.pairingId);
+    }
   }
 
   /**
@@ -487,9 +551,18 @@ export class ProvisioningService {
    * holding. Ownership is checked via the gateway (cross-account or unknown
    * gateway/pairing → `'not-found'`). `'pending'` means the approval has not
    * been decided yet — the caller (the web app's poll loop) should keep
-   * waiting, not treat it as an error. `'claimed'` means activation happened
-   * but the one-time value is already gone — either a real double-claim or a
-   * pairing that was never routed through the approval flow at all.
+   * waiting, not treat it as an error.
+   *
+   * SECURITY (review fix I2): the claim is gated on `status === 'active'`
+   * specifically, not merely `!== 'pending'` — a REVOKED pairing must never
+   * reach the store's claim path. Before this fix a revoked-but-not-yet-
+   * claimed pairing still returned its held `{credential, chatToken}`: the
+   * gateway-wide `chatToken` bearer stays live after a single pairing's
+   * revocation, so that was a real secret leak, not just a stale credential.
+   * `'claimed'` (→ 410) now covers three cases uniformly: a real double-claim,
+   * a value that expired before anyone claimed it (store-level TTL sweep,
+   * review fix I3), and a pairing that is active but was never routed through
+   * the approval flow at all.
    */
   claimCredential(accountId: string, gatewayId: string, pairingId: string): ClaimResult {
     const gateway = this.#store.getGateway(gatewayId);
@@ -497,7 +570,8 @@ export class ProvisioningService {
     const pairing = this.#store.listPairings(gatewayId).find((p) => p.id === pairingId);
     if (!pairing) return { kind: 'not-found' };
     if (pairing.status === 'pending') return { kind: 'pending' };
-    const claimed = this.#store.claimCredential(gatewayId, pairingId);
+    if (pairing.status !== 'active') return { kind: 'claimed' };
+    const claimed = this.#store.claimCredential(gatewayId, pairingId, this.#now());
     if (!claimed) return { kind: 'claimed' };
     return claimed.chatToken === null
       ? { kind: 'ok', credential: claimed.credential }
@@ -514,6 +588,20 @@ export class ProvisioningService {
    * credential for the gateway. We hold only the hash (the raw secret was
    * returned once at provisioning and never persisted), so we pass it to the
    * relay's hash-keyed revoke path.
+   *
+   * SECURITY (post-Task-3 review, C1): a PENDING pairing (signer-gated web
+   * mint awaiting approval) never had a relay credential minted for it — its
+   * `credentialHash` is the `''` placeholder — so it is routed to a pure
+   * CP-side {@link Store.discardPendingPairing} instead, and the relay is
+   * never called at all. This is not just an optimization: `RelayAdminClient
+   * .revokePairing` treats an ABSENT `credentialHash` as "revoke every
+   * credential on this gateway" (see its doc comment), and `''` is falsy —
+   * `hexToRelayHash('')` round-trips to `''`, which the relay's admin route
+   * reads as "no hash supplied". Calling it with a pending pairing's hash
+   * would silently mass-revoke every OTHER live device on the same gateway.
+   * The web Devices UI lists pending rows with a Revoke button (it only
+   * filters out `'revoked'`), so this path is directly reachable by an
+   * account owner clicking "Revoke" on their own still-pending device.
    */
   async deletePairing(accountId: string, gatewayId: string, pairingId: string): Promise<boolean> {
     const gateway = this.#store.getGateway(gatewayId);
@@ -522,8 +610,19 @@ export class ProvisioningService {
     // device on the relay; a missing pairing means there is nothing to revoke.
     const pairing = this.#store.listPairings(gatewayId).find((p) => p.id === pairingId);
     if (!pairing) return false;
+
+    if (pairing.status === 'pending') {
+      return this.#store.discardPendingPairing(gatewayId, pairingId);
+    }
+
     const revoked = this.#store.revokePairing(gatewayId, pairingId);
     if (!revoked) return false;
+    // Defense in depth: even outside the pending path above, an empty hash
+    // must never reach the relay (see the class-level note on this method) —
+    // a non-pending row with `credentialHash === ''` would be a data bug
+    // elsewhere, not "nothing to revoke", so we refuse to call the relay
+    // rather than let it fall through to a gateway-wide revoke.
+    if (pairing.credentialHash === '') return true;
     await this.#relay.revokePairing(
       accountId,
       gatewayId,

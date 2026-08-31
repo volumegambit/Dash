@@ -159,22 +159,39 @@ export interface Store {
    * exactly one claim via {@link claimCredential} — the same documented
    * exception as `webChatToken` (see the class doc comment) and for the same
    * reason: nothing else can hand a browser this secret out of band. Returns
-   * `false` (no write) if the pairing is unknown or was not still pending.
+   * `false` (no write) if the pairing is unknown or was not still pending —
+   * callers MUST check this and roll back the just-minted relay credential
+   * before treating the decision as done (see
+   * `ProvisioningService.decideApproval`'s post-CVE-review handling).
+   * `credentialExpiresAt` (unix ms) is the deadline {@link claimCredential}
+   * enforces — an approved-but-never-claimed credential does not live at rest
+   * forever.
    */
   activatePairing(
     gatewayId: string,
     id: string,
-    v: { credentialHash: string; credential: string; chatToken: string | null },
+    v: {
+      credentialHash: string;
+      credential: string;
+      chatToken: string | null;
+      credentialExpiresAt: number;
+    },
   ): boolean;
   /**
-   * Read-then-scrub the pending-claim value {@link activatePairing} stored.
-   * Returns `null` when the pairing is unknown OR the value was already
-   * claimed (single-use) — callers distinguish "still pending" themselves via
-   * `listPairings`' `status` before calling this.
+   * Atomically read-then-scrub the pending-claim value {@link activatePairing}
+   * stored, in a single SQLite transaction (correct even across multiple
+   * processes sharing one DB file, not just within one Node process). Returns
+   * `null` when the pairing is unknown, the value was already claimed
+   * (single-use), OR `nowMs` is at/past the stored `credentialExpiresAt` — an
+   * expired-but-unclaimed value is scrubbed by this call regardless of which
+   * branch triggered it (a lazy sweep, same pattern as approval expiry).
+   * Callers distinguish "still pending" themselves via `listPairings`'
+   * `status` before calling this.
    */
   claimCredential(
     gatewayId: string,
     id: string,
+    nowMs: number,
   ): { credential: string; chatToken: string | null } | null;
   /** All signers registered for `accountId`, newest-agnostic (no ordering guarantee). */
   listSigners(accountId: string): SignerRecord[];
@@ -205,8 +222,20 @@ export interface Store {
    * Returns `false` (no write) when the approval is unknown or was already
    * decided — the `WHERE status = 'pending'` guard is what makes "exactly one
    * decision" a race-free store invariant rather than a caller convention.
+   *
+   * `notExpiredAsOf`, when supplied, adds `AND expires_at > ?` to the SAME
+   * atomic UPDATE — the TTL check happens INSIDE the transition, not as a
+   * separate read beforehand, so a real (cross-process) race between "read:
+   * not yet expired" and "write: mark decided" cannot sneak a decision past
+   * the deadline. Omit it for the lazy-sweep path, which deliberately marks
+   * an ALREADY-known-expired approval `'denied'` regardless of the current
+   * time (that IS the sweep).
    */
-  decideApproval(approvalId: string, decision: 'approved' | 'denied'): boolean;
+  decideApproval(
+    approvalId: string,
+    decision: 'approved' | 'denied',
+    notExpiredAsOf?: number,
+  ): boolean;
 }
 
 interface GatewayRow {
@@ -340,6 +369,15 @@ export class SqliteStore implements Store {
     if (!pairingCols.some((c) => c.name === 'pending_chat_token')) {
       this.db.exec('ALTER TABLE pairings ADD COLUMN pending_chat_token TEXT');
     }
+    // Guarded migration (security review fix, post-Task-3): the claim
+    // deadline for `pending_credential` — an approved-but-unclaimed secret
+    // must not live at rest forever just because nobody ever closed the tab.
+    // Nullable: rows written before this column existed (or that never went
+    // through the approval flow) have nothing pending, so there is nothing to
+    // expire.
+    if (!pairingCols.some((c) => c.name === 'pending_credential_expires_at')) {
+      this.db.exec('ALTER TABLE pairings ADD COLUMN pending_credential_expires_at INTEGER');
+    }
   }
 
   private readonly now: () => number;
@@ -466,39 +504,77 @@ export class SqliteStore implements Store {
   activatePairing(
     gatewayId: string,
     id: string,
-    v: { credentialHash: string; credential: string; chatToken: string | null },
+    v: {
+      credentialHash: string;
+      credential: string;
+      chatToken: string | null;
+      credentialExpiresAt: number;
+    },
   ): boolean {
     const result = this.db
       .prepare(
         `UPDATE pairings
-         SET status = 'active', credential_hash = ?, pending_credential = ?, pending_chat_token = ?
+         SET status = 'active', credential_hash = ?, pending_credential = ?, pending_chat_token = ?,
+             pending_credential_expires_at = ?
          WHERE id = ? AND gateway_id = ? AND status = 'pending'`,
       )
-      .run(v.credentialHash, v.credential, v.chatToken, id, gatewayId);
+      .run(v.credentialHash, v.credential, v.chatToken, v.credentialExpiresAt, id, gatewayId);
     return result.changes > 0;
   }
 
   claimCredential(
     gatewayId: string,
     id: string,
+    nowMs: number,
   ): { credential: string; chatToken: string | null } | null {
-    const row = this.db
-      .prepare(
-        'SELECT pending_credential, pending_chat_token FROM pairings WHERE id = ? AND gateway_id = ?',
-      )
-      .get(id, gatewayId) as
-      | { pending_credential: string | null; pending_chat_token: string | null }
-      | undefined;
-    if (!row || row.pending_credential === null) return null;
-    // Scrub immediately so a second call (or a concurrent one) sees nothing —
-    // this UPDATE, not a separate "mark claimed" flag, IS the single-use
-    // enforcement.
-    this.db
-      .prepare(
-        'UPDATE pairings SET pending_credential = NULL, pending_chat_token = NULL WHERE id = ? AND gateway_id = ?',
-      )
-      .run(id, gatewayId);
-    return { credential: row.pending_credential, chatToken: row.pending_chat_token };
+    // Read-then-scrub inside an explicit transaction: `BEGIN IMMEDIATE`
+    // acquires the write lock up front, so a second connection (a different
+    // process sharing this DB file, not just a second call from this one)
+    // cannot observe or claim the same value between our SELECT and UPDATE.
+    // (Plain UPDATE ... RETURNING was considered and rejected here: SQLite's
+    // RETURNING reflects the POST-update row, so `SET pending_credential =
+    // NULL ... RETURNING pending_credential` returns NULL, not the value we
+    // need to hand back — confirmed empirically, not just by inference.)
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db
+        .prepare(
+          'SELECT pending_credential, pending_chat_token, pending_credential_expires_at FROM pairings WHERE id = ? AND gateway_id = ?',
+        )
+        .get(id, gatewayId) as
+        | {
+            pending_credential: string | null;
+            pending_chat_token: string | null;
+            pending_credential_expires_at: number | null;
+          }
+        | undefined;
+      if (!row || row.pending_credential === null) {
+        this.db.exec('COMMIT');
+        return null;
+      }
+      // Scrub immediately (inside the same transaction) so a second call —
+      // concurrent, or after this returns — sees nothing. This UPDATE, not a
+      // separate "mark claimed" flag, IS the single-use enforcement. It runs
+      // unconditionally here, even for an expired value: an
+      // approved-but-never-claimed credential must not sit at rest forever,
+      // so "claim after the deadline" IS the sweep, not a separate job.
+      this.db
+        .prepare(
+          'UPDATE pairings SET pending_credential = NULL, pending_chat_token = NULL, pending_credential_expires_at = NULL WHERE id = ? AND gateway_id = ?',
+        )
+        .run(id, gatewayId);
+      this.db.exec('COMMIT');
+      if (
+        row.pending_credential_expires_at !== null &&
+        row.pending_credential_expires_at <= nowMs
+      ) {
+        return null;
+      }
+      return { credential: row.pending_credential, chatToken: row.pending_chat_token };
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   listSigners(accountId: string): SignerRecord[] {
@@ -582,10 +658,22 @@ export class SqliteStore implements Store {
     return row ? this.toApproval(row) : null;
   }
 
-  decideApproval(approvalId: string, decision: 'approved' | 'denied'): boolean {
+  decideApproval(
+    approvalId: string,
+    decision: 'approved' | 'denied',
+    notExpiredAsOf?: number,
+  ): boolean {
+    if (notExpiredAsOf === undefined) {
+      const result = this.db
+        .prepare("UPDATE approvals SET status = ? WHERE id = ? AND status = 'pending'")
+        .run(decision, approvalId);
+      return result.changes > 0;
+    }
     const result = this.db
-      .prepare("UPDATE approvals SET status = ? WHERE id = ? AND status = 'pending'")
-      .run(decision, approvalId);
+      .prepare(
+        "UPDATE approvals SET status = ? WHERE id = ? AND status = 'pending' AND expires_at > ?",
+      )
+      .run(decision, approvalId, notExpiredAsOf);
     return result.changes > 0;
   }
 

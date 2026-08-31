@@ -305,7 +305,11 @@ describe('ProvisioningService pairings', () => {
     await server.close();
   });
 
-  function makeRealService(now: () => number = () => 1000, approvalTtlMs?: number) {
+  function makeRealService(
+    now: () => number = () => 1000,
+    approvalTtlMs?: number,
+    claimTtlMs?: number,
+  ) {
     const store = new SqliteStore(':memory:');
     const signer = new DialTokenSigner(privateKey, 3600, () => 1000);
     const service = new ProvisioningService({
@@ -315,6 +319,7 @@ describe('ProvisioningService pairings', () => {
       relayZone: 'relay.example.com',
       now,
       approvalTtlMs,
+      claimTtlMs,
     });
     return { store, service };
   }
@@ -736,6 +741,267 @@ describe('ProvisioningService pairings', () => {
         status: 'active',
       });
       expect(store.listPairings(gw.gatewayId)[0].status).toBe('active');
+    });
+
+    describe('security review fixes (post-Task-3)', () => {
+      /** A spy relay: records calls, mints a fixed credential (no real server). */
+      function makeSpyService(
+        now: () => number,
+        opts?: { approvalTtlMs?: number; claimTtlMs?: number; credential?: string },
+      ) {
+        const store = new SqliteStore(':memory:');
+        const signer = new DialTokenSigner(privateKey, 3600, () => 1000);
+        const calls: {
+          provisionPairing: Array<[string, string]>;
+          revokePairing: Array<[string, string, string | undefined, string | undefined]>;
+        } = { provisionPairing: [], revokePairing: [] };
+        const credential = opts?.credential ?? 'spy-credential-1';
+        const relay = {
+          provisionPairing: async (tenantId: string, gatewayId: string) => {
+            calls.provisionPairing.push([tenantId, gatewayId]);
+            return credential;
+          },
+          revokePairing: async (
+            tenantId: string,
+            gatewayId: string,
+            cred?: string,
+            credentialHash?: string,
+          ) => {
+            calls.revokePairing.push([tenantId, gatewayId, cred, credentialHash]);
+          },
+        } as unknown as RelayAdminClient;
+        const service = new ProvisioningService({
+          store,
+          signer,
+          relay,
+          relayZone: 'relay.example.com',
+          now,
+          approvalTtlMs: opts?.approvalTtlMs,
+          claimTtlMs: opts?.claimTtlMs,
+        });
+        return { store, service, calls, credential };
+      }
+
+      /** The relay's base64url hash form for a raw credential (mirrors `hexToRelayHash(sha256(...))`). */
+      function relayHashOf(credential: string): string {
+        return Buffer.from(createHash('sha256').update(credential).digest('hex'), 'hex').toString(
+          'base64url',
+        );
+      }
+
+      it('C1 (critical): revoking a PENDING pairing never reaches the relay — other pairings on the gateway stay valid', async () => {
+        const { store, service } = makeRealService();
+        const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+        service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+
+        // A normal, already-live mobile pairing on the SAME gateway — this is
+        // what an empty-hash-triggered `revokeAll` would wrongly kill.
+        const mobile = asActive(
+          await service.createPairing('acct-1', gw.gatewayId, 'iPhone', 'mobile'),
+        );
+        expect(relayStore.isValid(gw.gatewayId, mobile.credential)).toBe(true);
+
+        const { rawPub } = signerKeypair();
+        service.registerSigner('acct-1', { publicKey: rawPub, label: 'iPhone (signer)' });
+        const pending = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+        if (pending.status !== 'pending') throw new Error('expected a pending approval');
+        expect(
+          store.listPairings(gw.gatewayId).find((p) => p.id === pending.pairingId)?.status,
+        ).toBe('pending');
+
+        const ok = await service.deletePairing('acct-1', gw.gatewayId, pending.pairingId);
+        expect(ok).toBe(true);
+
+        // The pending row is gone from the CP...
+        expect(
+          store.listPairings(gw.gatewayId).find((p) => p.id === pending.pairingId),
+        ).toBeUndefined();
+        // ...and, critically, the OTHER (real, live) credential on this
+        // gateway is untouched — an empty-hash `revokeAll` would have killed it.
+        expect(relayStore.isValid(gw.gatewayId, mobile.credential)).toBe(true);
+      });
+
+      it('C1 (defense in depth): a non-pending row with an empty credentialHash never reaches the relay either', async () => {
+        const store = new SqliteStore(':memory:');
+        const signer = new DialTokenSigner(privateKey, 3600, () => 1000);
+        const revokePairingCalls: Array<[string, string, string | undefined, string | undefined]> =
+          [];
+        const relay = {
+          revokePairing: async (
+            tenantId: string,
+            gatewayId: string,
+            cred?: string,
+            credentialHash?: string,
+          ) => {
+            revokePairingCalls.push([tenantId, gatewayId, cred, credentialHash]);
+          },
+        } as unknown as RelayAdminClient;
+        const service = new ProvisioningService({
+          store,
+          signer,
+          relay,
+          relayZone: 'relay.example.com',
+        });
+        const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+        // Contrived: an 'active' row with the pending-placeholder hash — this
+        // should never happen via the public API, but the fix must not trust
+        // "non-pending" alone to mean "safe to revoke by hash".
+        store.addPairing({
+          id: 'pr-weird-1',
+          gatewayId: gw.gatewayId,
+          credentialHash: '',
+          deviceLabel: null,
+          clientKind: 'mobile',
+        });
+
+        const ok = await service.deletePairing('acct-1', gw.gatewayId, 'pr-weird-1');
+        expect(ok).toBe(true);
+        expect(revokePairingCalls).toEqual([]);
+      });
+
+      it('I1 (important): rolls back the just-minted relay credential when the pairing evaporates before activation', async () => {
+        const { store, service, calls, credential } = makeSpyService(() => 1000);
+        const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+        service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+        const { rawPub, priv } = signerKeypair();
+        const signerRecord = service.registerSigner('acct-1', {
+          publicKey: rawPub,
+          label: 'iPhone',
+        });
+
+        const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+        if (minted.status !== 'pending') throw new Error('expected pending');
+
+        // Simulate the pairing evaporating concurrently (e.g. the owner
+        // deleted the pending device from the web Devices list) — bypass the
+        // approval flow and discard it directly.
+        expect(store.discardPendingPairing(gw.gatewayId, minted.pairingId)).toBe(true);
+
+        const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+        await expect(
+          service.decideApproval('acct-1', minted.approvalId, {
+            decision: 'approve',
+            signerId: signerRecord.signerId,
+            signature,
+          }),
+        ).rejects.toBeInstanceOf(ApprovalClosedError);
+
+        // A credential WAS minted (the relay call happens before the
+        // activation check)...
+        expect(calls.provisionPairing).toHaveLength(1);
+        // ...but it was immediately rolled back: no orphan, unrevocable secret.
+        expect(calls.revokePairing).toEqual([
+          ['acct-1', gw.gatewayId, undefined, relayHashOf(credential)],
+        ]);
+      });
+
+      it('I2 (important): claim 410s (no secrets) once the pairing has been revoked, even though it was never claimed', async () => {
+        const { store, service } = makeRealService();
+        const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+        service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+        const { rawPub, priv } = signerKeypair();
+        const signerRecord = service.registerSigner('acct-1', {
+          publicKey: rawPub,
+          label: 'iPhone',
+        });
+
+        const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+        if (minted.status !== 'pending') throw new Error('expected pending');
+        const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+        await service.decideApproval('acct-1', minted.approvalId, {
+          decision: 'approve',
+          signerId: signerRecord.signerId,
+          signature,
+        });
+        expect(
+          store.listPairings(gw.gatewayId).find((p) => p.id === minted.pairingId)?.status,
+        ).toBe('active');
+
+        // Revoked before anyone claimed it.
+        expect(await service.deletePairing('acct-1', gw.gatewayId, minted.pairingId)).toBe(true);
+        expect(
+          store.listPairings(gw.gatewayId).find((p) => p.id === minted.pairingId)?.status,
+        ).toBe('revoked');
+
+        const claimed = service.claimCredential('acct-1', gw.gatewayId, minted.pairingId);
+        expect(claimed).toEqual({ kind: 'claimed' });
+        expect('credential' in claimed).toBe(false);
+        expect('chatToken' in claimed).toBe(false);
+      });
+
+      it('I3 (important): claim 410s past the claim deadline, and the stored value is actually scrubbed (not just filtered)', async () => {
+        let clock = 1000;
+        const { store, service } = makeRealService(() => clock, undefined, 60_000);
+        const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+        service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+        const { rawPub, priv } = signerKeypair();
+        const signerRecord = service.registerSigner('acct-1', {
+          publicKey: rawPub,
+          label: 'iPhone',
+        });
+
+        const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+        if (minted.status !== 'pending') throw new Error('expected pending');
+        const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+        await service.decideApproval('acct-1', minted.approvalId, {
+          decision: 'approve',
+          signerId: signerRecord.signerId,
+          signature,
+        });
+
+        clock += 60_001; // one ms past the 60s claim deadline
+
+        expect(service.claimCredential('acct-1', gw.gatewayId, minted.pairingId)).toEqual({
+          kind: 'claimed',
+        });
+
+        // Prove it was actually scrubbed, not merely filtered on read: rewind
+        // the clock back to well within the ORIGINAL deadline and claim
+        // again — a read-time-only filter would wrongly succeed here.
+        clock = 1000;
+        expect(service.claimCredential('acct-1', gw.gatewayId, minted.pairingId)).toEqual({
+          kind: 'claimed',
+        });
+        expect(
+          store.listPairings(gw.gatewayId).find((p) => p.id === minted.pairingId)?.status,
+        ).toBe('active');
+      });
+
+      it('M1 (fold-in): the atomic decideApproval transition re-checks the TTL, closing a race the up-front read alone would miss', async () => {
+        const values = [1000, 1000, 999_999_999];
+        let i = 0;
+        const now = () => values[Math.min(i++, values.length - 1)];
+        const { store, service, calls } = makeSpyService(now);
+        const gw = service.createGateway('acct-1', { subdomain: 'alice', publicKey: 'pk-a' });
+        service.setWebChatToken('acct-1', gw.gatewayId, 'chat-1');
+        const { rawPub, priv } = signerKeypair();
+        const signerRecord = service.registerSigner('acct-1', {
+          publicKey: rawPub,
+          label: 'iPhone',
+        });
+
+        // now() call #1 — mint, computes approvalExpiresAt = 1000 + 120_000.
+        const minted = await service.createPairing('acct-1', gw.gatewayId, 'Safari', 'web');
+        if (minted.status !== 'pending') throw new Error('expected pending');
+
+        const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+        // now() call #2 (up-front check, still 1000: looks unexpired) then
+        // call #3 (the atomic commit's fresh read, jumped to 999_999_999:
+        // past the deadline) — the atomic guard is what actually closes this.
+        await expect(
+          service.decideApproval('acct-1', minted.approvalId, {
+            decision: 'approve',
+            signerId: signerRecord.signerId,
+            signature,
+          }),
+        ).rejects.toBeInstanceOf(ApprovalClosedError);
+
+        // Never reached the relay — the atomic write failed before any mint.
+        expect(calls.provisionPairing).toHaveLength(0);
+        // Swept: denied + its pending pairing discarded, same as an up-front-detected expiry.
+        expect(store.getApproval(minted.approvalId)?.status).toBe('denied');
+        expect(store.listPairings(gw.gatewayId)).toEqual([]);
+      });
     });
   });
 });

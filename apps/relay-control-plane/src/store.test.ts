@@ -544,6 +544,27 @@ describe('SqliteStore', () => {
       expect(store.decideApproval('ap-missing', 'denied')).toBe(false);
     });
 
+    it('decideApproval(notExpiredAsOf) succeeds when strictly before the deadline and fails at/after it', () => {
+      addPendingPairing();
+      store.createApproval({
+        approvalId: 'ap-1',
+        accountId: 'acct-1',
+        gatewayId: 'alice-mbp',
+        pairingId: 'pr-pending-1',
+        deviceLabel: 'Safari',
+        expiresAt: 5000,
+      });
+
+      // At/after the deadline: the atomic guard refuses the write outright,
+      // and does NOT decide the approval (still pending afterward).
+      expect(store.decideApproval('ap-1', 'approved', 5000)).toBe(false);
+      expect(store.getApproval('ap-1')?.status).toBe('pending');
+
+      // Strictly before the deadline: succeeds.
+      expect(store.decideApproval('ap-1', 'approved', 4999)).toBe(true);
+      expect(store.getApproval('ap-1')?.status).toBe('approved');
+    });
+
     it('discardPendingPairing hard-deletes a pending pairing row', () => {
       addPendingPairing();
       expect(store.listPairings('alice-mbp')).toHaveLength(1);
@@ -570,6 +591,10 @@ describe('SqliteStore', () => {
       expect(store.discardPendingPairing('alice-mbp', 'pr-missing')).toBe(false);
     });
 
+    // A claim deadline far past any test's clock — used by tests that don't
+    // care about TTL enforcement, so the credential is always claimable.
+    const FAR_FUTURE_MS = 9_999_999_999;
+
     it('activatePairing transitions a pending pairing to active and stores the pending-claim value', () => {
       addPendingPairing();
 
@@ -577,6 +602,7 @@ describe('SqliteStore', () => {
         credentialHash: 'hash-1',
         credential: 'raw-credential-1',
         chatToken: 'chat-1',
+        credentialExpiresAt: FAR_FUTURE_MS,
       });
       expect(ok).toBe(true);
 
@@ -599,6 +625,7 @@ describe('SqliteStore', () => {
         credentialHash: 'hash-1',
         credential: 'raw-credential-1',
         chatToken: null,
+        credentialExpiresAt: FAR_FUTURE_MS,
       });
       expect(ok).toBe(false);
       expect(store.listPairings('alice-mbp')[0].credentialHash).toBe('original-hash');
@@ -610,22 +637,23 @@ describe('SqliteStore', () => {
         credentialHash: 'hash-1',
         credential: 'raw-credential-1',
         chatToken: 'chat-1',
+        credentialExpiresAt: FAR_FUTURE_MS,
       });
 
-      const first = store.claimCredential('alice-mbp', 'pr-pending-1');
+      const first = store.claimCredential('alice-mbp', 'pr-pending-1', 1000);
       expect(first).toEqual({ credential: 'raw-credential-1', chatToken: 'chat-1' });
 
-      const second = store.claimCredential('alice-mbp', 'pr-pending-1');
+      const second = store.claimCredential('alice-mbp', 'pr-pending-1', 1000);
       expect(second).toBeNull();
     });
 
     it('claimCredential returns null for a pairing with no pending-claim value (never activated)', () => {
       addPendingPairing();
-      expect(store.claimCredential('alice-mbp', 'pr-pending-1')).toBeNull();
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1', 1000)).toBeNull();
     });
 
     it('claimCredential returns null for an unknown pairing', () => {
-      expect(store.claimCredential('alice-mbp', 'pr-missing')).toBeNull();
+      expect(store.claimCredential('alice-mbp', 'pr-missing', 1000)).toBeNull();
     });
 
     it('claimCredential tolerates a null chat token', () => {
@@ -634,11 +662,45 @@ describe('SqliteStore', () => {
         credentialHash: 'hash-1',
         credential: 'raw-credential-1',
         chatToken: null,
+        credentialExpiresAt: FAR_FUTURE_MS,
       });
 
-      expect(store.claimCredential('alice-mbp', 'pr-pending-1')).toEqual({
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1', 1000)).toEqual({
         credential: 'raw-credential-1',
         chatToken: null,
+      });
+    });
+
+    it('claimCredential (security fix I3): returns null AND scrubs the value once nowMs reaches the deadline', () => {
+      addPendingPairing();
+      store.activatePairing('alice-mbp', 'pr-pending-1', {
+        credentialHash: 'hash-1',
+        credential: 'raw-credential-1',
+        chatToken: 'chat-1',
+        credentialExpiresAt: 5000,
+      });
+
+      // At the deadline: too late.
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1', 5000)).toBeNull();
+
+      // Proves it was actually scrubbed (not just filtered on read): calling
+      // again with a `nowMs` that would have been WELL within the original
+      // deadline still gets nothing, because the value is already gone.
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1', 1)).toBeNull();
+    });
+
+    it('claimCredential: strictly before the deadline still succeeds', () => {
+      addPendingPairing();
+      store.activatePairing('alice-mbp', 'pr-pending-1', {
+        credentialHash: 'hash-1',
+        credential: 'raw-credential-1',
+        chatToken: 'chat-1',
+        credentialExpiresAt: 5000,
+      });
+
+      expect(store.claimCredential('alice-mbp', 'pr-pending-1', 4999)).toEqual({
+        credential: 'raw-credential-1',
+        chatToken: 'chat-1',
       });
     });
   });
