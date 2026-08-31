@@ -127,6 +127,9 @@ interface FakeRest {
   identity: ReturnType<typeof vi.fn>;
   createConversation: ReturnType<typeof vi.fn>;
   listAgents: ReturnType<typeof vi.fn>;
+  patchConversation: ReturnType<typeof vi.fn>;
+  deleteConversation: ReturnType<typeof vi.fn>;
+  getConversation: ReturnType<typeof vi.fn>;
 }
 
 function fakeRest(opts: {
@@ -151,6 +154,19 @@ function fakeRest(opts: {
   createConversationImpl?: (req: unknown) => Promise<ConversationSummary>;
   /** Override for `rest.listAgents()`. */
   listAgentsImpl?: () => Promise<unknown[]>;
+  /** Override for `rest.patchConversation()` — used by `renameConversation` tests. */
+  patchConversationImpl?: (
+    conversationId: string,
+    patch: unknown,
+    revision: number,
+  ) => Promise<ConversationSummary>;
+  /** Override for `rest.deleteConversation()` — used by `deleteConversation` tests. */
+  deleteConversationImpl?: (
+    conversationId: string,
+    revision: number,
+  ) => Promise<ConversationSummary>;
+  /** Override for `rest.getConversation()` — used by the auto-title-refresh tests. */
+  getConversationImpl?: (conversationId: string) => Promise<ConversationSummary>;
 }): FakeRest {
   const messagePages = opts.messagePages ?? [{ items: [], nextCursor: null, throughSeq: 0 }];
   let getMessagesCall = 0;
@@ -173,14 +189,40 @@ function fakeRest(opts: {
     opts.createConversationImpl ?? (async () => summary({ id: 'new-conv' })),
   );
   const listAgents = vi.fn(opts.listAgentsImpl ?? (async () => []));
+  const patchConversation = vi.fn(
+    opts.patchConversationImpl ??
+      (async (conversationId: string, patch: unknown, revision: number) =>
+        summary({ id: conversationId, ...(patch as object), revision: revision + 1 })),
+  );
+  const deleteConversation = vi.fn(
+    opts.deleteConversationImpl ??
+      (async (conversationId: string, revision: number) =>
+        summary({ id: conversationId, status: 'deleted', revision: revision + 1 })),
+  );
+  const getConversation = vi.fn(
+    opts.getConversationImpl ?? (async (conversationId: string) => summary({ id: conversationId })),
+  );
   const rest = {
     listConversations,
     getMessages,
     identity,
     createConversation,
     listAgents,
+    patchConversation,
+    deleteConversation,
+    getConversation,
   } as unknown as MobileRestClient;
-  return { rest, listConversations, getMessages, identity, createConversation, listAgents };
+  return {
+    rest,
+    listConversations,
+    getMessages,
+    identity,
+    createConversation,
+    listAgents,
+    patchConversation,
+    deleteConversation,
+    getConversation,
+  };
 }
 
 /** Drives a store through `openConversation`, resolving the scripted
@@ -783,6 +825,257 @@ describe('createWebAppStore', () => {
         code: 'conversation_busy',
         retryable: true,
       });
+    });
+
+    it('re-fetches the conversation summary when a turn completes on a conversation whose title is still the default (chat-ux Phase 3 Task 1, audit #8)', async () => {
+      const untitled = summary({ title: 'New Conversation', revision: 1 });
+      const retitled = { ...untitled, title: 'Trip to Lisbon', revision: 2 };
+      const { rest, getConversation } = fakeRest({
+        conversationPage: { items: [untitled], nextCursor: null },
+        getConversationImpl: async () => retitled,
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hi');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'u1',
+        assistantMessageId: 'a1',
+        revision: 1,
+        seq: 1,
+      });
+      onFrames[0]({
+        type: 'done',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        outcome: 'completed',
+      });
+
+      await vi.waitFor(() => expect(getConversation).toHaveBeenCalledWith(CONVERSATION_ID));
+      await vi.waitFor(() =>
+        expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+          'Trip to Lisbon',
+        ),
+      );
+    });
+
+    it('does not re-fetch when the conversation already has a non-default title', async () => {
+      const titled = summary({ title: 'Already named', revision: 1 });
+      const { rest, getConversation } = fakeRest({
+        conversationPage: { items: [titled], nextCursor: null },
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hi');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'u1',
+        assistantMessageId: 'a1',
+        revision: 1,
+        seq: 1,
+      });
+      onFrames[0]({
+        type: 'done',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        outcome: 'completed',
+      });
+
+      expect(getConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('renameConversation (chat-ux Phase 3 Task 1, audit #8)', () => {
+    it('optimistically updates the title before REST resolves, then reconciles with the server response', async () => {
+      const original = summary({ title: 'New Conversation', revision: 1 });
+      const { rest, patchConversation } = fakeRest({
+        conversationPage: { items: [original], nextCursor: null },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      const renaming = store.getState().renameConversation(CONVERSATION_ID, 'Renamed thread');
+      // The optimistic write happens synchronously, before the REST round-trip
+      // resolves — visible immediately, not just after `renaming` settles.
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+        'Renamed thread',
+      );
+
+      await renaming;
+      expect(patchConversation).toHaveBeenCalledWith(
+        CONVERSATION_ID,
+        { title: 'Renamed thread' },
+        1,
+      );
+      const updated = store.getState().conversations.find((c) => c.id === CONVERSATION_ID);
+      expect(updated?.title).toBe('Renamed thread');
+      expect(updated?.revision).toBe(2);
+    });
+
+    it('rolls back the optimistic title on a REST failure and rethrows', async () => {
+      const original = summary({ title: 'Original title', revision: 1 });
+      const { rest } = fakeRest({
+        conversationPage: { items: [original], nextCursor: null },
+        patchConversationImpl: async () => {
+          throw new Error('gateway rejected the rename');
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await expect(
+        store.getState().renameConversation(CONVERSATION_ID, 'Attempted rename'),
+      ).rejects.toThrow('gateway rejected the rename');
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+        'Original title',
+      );
+    });
+
+    it('is a no-op for an unknown conversation id', async () => {
+      const { rest, patchConversation } = fakeRest({
+        conversationPage: { items: [], nextCursor: null },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await store.getState().renameConversation('missing-conv', 'x');
+      expect(patchConversation).not.toHaveBeenCalled();
+    });
+
+    it('on a 401, rolls back the optimistic title and transitions to unauthorized instead of rethrowing', async () => {
+      const original = summary({ title: 'Original title', revision: 1 });
+      const { rest } = fakeRest({
+        conversationPage: { items: [original], nextCursor: null },
+        patchConversationImpl: async () => {
+          throw new MobileApiError(401, undefined);
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await store.getState().renameConversation(CONVERSATION_ID, 'Attempted rename');
+      expect(store.getState().connection).toBe('unauthorized');
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+        'Original title',
+      );
+    });
+  });
+
+  describe('deleteConversation (chat-ux Phase 3 Task 1, audit #8)', () => {
+    it('optimistically removes the conversation before REST resolves, then stays removed', async () => {
+      const target = summary({ id: 'conv-1', revision: 1 });
+      const other = summary({ id: 'conv-2', revision: 1 });
+      const { rest, deleteConversation } = fakeRest({
+        conversationPage: { items: [target, other], nextCursor: null },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      const deleting = store.getState().deleteConversation('conv-1');
+      expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-2']);
+
+      await deleting;
+      expect(deleteConversation).toHaveBeenCalledWith('conv-1', 1);
+      expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-2']);
+    });
+
+    it('rolls back on a REST failure and rethrows', async () => {
+      const target = summary({ id: 'conv-1', revision: 1 });
+      const { rest } = fakeRest({
+        conversationPage: { items: [target], nextCursor: null },
+        deleteConversationImpl: async () => {
+          throw new Error('gateway rejected the delete');
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await expect(store.getState().deleteConversation('conv-1')).rejects.toThrow(
+        'gateway rejected the delete',
+      );
+      expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-1']);
+    });
+
+    it('is a no-op for an unknown conversation id', async () => {
+      const { rest, deleteConversation } = fakeRest({
+        conversationPage: { items: [], nextCursor: null },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await store.getState().deleteConversation('missing-conv');
+      expect(deleteConversation).not.toHaveBeenCalled();
+    });
+
+    it('closes the live socket and clears connection back to idle when deleting the currently open conversation', async () => {
+      const target = summary({ id: CONVERSATION_ID, revision: 1 });
+      const { rest } = fakeRest({ conversationPage: { items: [target], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      expect(store.getState().connection).toBe('connected');
+
+      await store.getState().deleteConversation(CONVERSATION_ID);
+
+      expect(sockets[0].closed).toBe(true);
+      expect(store.getState().connection).toBe('idle');
+    });
+
+    it('leaves the live socket alone when deleting a conversation other than the currently open one', async () => {
+      const open = summary({ id: CONVERSATION_ID, revision: 1 });
+      const other = summary({ id: 'conv-other', revision: 1 });
+      const { rest, deleteConversation } = fakeRest({
+        conversationPage: { items: [open, other], nextCursor: null },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().deleteConversation('conv-other');
+
+      expect(deleteConversation).toHaveBeenCalledWith('conv-other', 1);
+      expect(sockets[0].closed).toBe(false);
+      expect(store.getState().connection).toBe('connected');
+    });
+
+    it('on a 401, rolls back and transitions to unauthorized instead of rethrowing', async () => {
+      const target = summary({ id: 'conv-1', revision: 1 });
+      const { rest } = fakeRest({
+        conversationPage: { items: [target], nextCursor: null },
+        deleteConversationImpl: async () => {
+          throw new MobileApiError(401, undefined);
+        },
+      });
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      await store.getState().deleteConversation('conv-1');
+      expect(store.getState().connection).toBe('unauthorized');
+      expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-1']);
     });
   });
 

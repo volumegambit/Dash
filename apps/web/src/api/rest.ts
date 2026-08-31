@@ -2,6 +2,7 @@ import type {
   ConversationCreateRequest,
   ConversationMessagePage,
   ConversationPage,
+  ConversationPatchRequest,
   ConversationSummary,
   GatewayIdentity,
   MobileAgent,
@@ -30,6 +31,13 @@ interface RequestOptions {
   auth?: boolean;
   body?: unknown;
   query?: Record<string, string | undefined>;
+  /** Optimistic-concurrency precondition (gateway `conversation-routes.ts`
+   * `parseIfMatch`, mirrored from `ios/Dash/Core/Networking/GatewayAPI.swift`'s
+   * `patchConversation`/`deleteConversation`): sent as `If-Match: "<revision>"`
+   * — quoted, matching the gateway's own `ETag` format — so a stale local
+   * revision surfaces as a `revision_conflict` (409) `MobileApiError` rather
+   * than silently clobbering a concurrent edit. */
+  ifMatch?: number;
 }
 
 /**
@@ -118,14 +126,56 @@ export class MobileRestClient {
     return this.request<ConversationSummary>('POST', '/conversations', { body: req });
   }
 
+  /** `GET /conversations/:id` — a single conversation's current summary.
+   * Mirrors iOS's `GatewayAPI.conversation(id:)`. Used by the store's
+   * auto-title refresh (chat-ux Phase 3 Task 1, audit #8): after a turn
+   * completes on a conversation whose local title is still the gateway's
+   * default, this re-fetches that one row rather than the whole list, so an
+   * unrelated concurrent edit elsewhere in `conversations` isn't clobbered. */
+  getConversation(conversationId: string): Promise<ConversationSummary> {
+    return this.request<ConversationSummary>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  }
+
+  /** `PATCH /conversations/:id` — renames (or otherwise patches) a
+   * conversation. Mirrors iOS's `GatewayAPI.patchConversation`
+   * (`ConversationListFeature.swift:502`'s `retryRename`): `revision` is
+   * sent as a quoted `If-Match` precondition, not in the body. */
+  patchConversation(
+    conversationId: string,
+    patch: ConversationPatchRequest,
+    revision: number,
+  ): Promise<ConversationSummary> {
+    return this.request<ConversationSummary>(
+      'PATCH',
+      `/conversations/${encodeURIComponent(conversationId)}`,
+      { body: patch, ifMatch: revision },
+    );
+  }
+
+  /** `DELETE /conversations/:id` — mirrors iOS's `GatewayAPI.deleteConversation`
+   * (`ConversationListFeature.swift:536`'s `retryDelete`): no body, `revision`
+   * sent as a quoted `If-Match` precondition. Resolves with the (now
+   * tombstoned) summary, same as the gateway route returns. */
+  deleteConversation(conversationId: string, revision: number): Promise<ConversationSummary> {
+    return this.request<ConversationSummary>(
+      'DELETE',
+      `/conversations/${encodeURIComponent(conversationId)}`,
+      { ifMatch: revision },
+    );
+  }
+
   createWsTicket(): Promise<WsTicketResponse> {
     return this.request<WsTicketResponse>('POST', '/ws-ticket');
   }
 
   private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
-    const { auth = true, body, query } = options;
+    const { auth = true, body, query, ifMatch } = options;
     const headers: Record<string, string> = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (ifMatch !== undefined) headers['If-Match'] = `"${ifMatch}"`;
     if (auth) {
       headers.Authorization = `Bearer ${await this.tokens.getToken()}`;
     }

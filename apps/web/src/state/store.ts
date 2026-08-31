@@ -125,6 +125,50 @@ export interface WebAppState {
    * frame, not flip back to "send" just because the cancel request itself
    * didn't make it out.
    */
+  /**
+   * Renames a conversation (chat-ux Phase 3 Task 1, audit #8): applies
+   * `title` to local state IMMEDIATELY (before the REST round-trip), then
+   * calls `rest.patchConversation` (the same `PATCH /mobile/v1/conversations/:id`
+   * route with a quoted `If-Match: revision` precondition iOS's
+   * `GatewayAPI.patchConversation` uses — see `ConversationListFeature.swift`'s
+   * `retryRename`), and reconciles with the server's authoritative summary
+   * (new `revision` included) on success.
+   *
+   * A no-op if `conversationId` isn't in `conversations` (nothing to
+   * optimistically rename). On REST failure, rolls the optimistic title back
+   * to its prior value; a 401 additionally routes to `enterUnauthorized()`
+   * (same "revoked credential" handling as every other REST call in this
+   * store) and is swallowed rather than rethrown, but any other failure
+   * (network error, 409 revision conflict, validation) propagates to the
+   * caller so the UI can show it — same "don't swallow an action the UI
+   * asked for" philosophy as `startConversation`.
+   */
+  renameConversation(conversationId: string, title: string): Promise<void>;
+  /**
+   * Deletes a conversation (chat-ux Phase 3 Task 1, audit #8): removes it
+   * from `conversations` IMMEDIATELY (before the REST round-trip), then
+   * calls `rest.deleteConversation` (the same `DELETE /mobile/v1/conversations/:id`
+   * route with a quoted `If-Match: revision` precondition iOS's
+   * `GatewayAPI.deleteConversation` uses — see `ConversationListFeature.swift`'s
+   * `retryDelete`).
+   *
+   * A no-op if `conversationId` isn't in `conversations`. On REST failure,
+   * restores the removed row and rethrows (except a 401, which routes to
+   * `enterUnauthorized()` instead, same as every other REST call here).
+   *
+   * If the deleted conversation is the one this store's live socket is
+   * currently attached to (`openConversation`'s target), the socket is torn
+   * down and `connection` resets to `'idle'` — there is nothing left to
+   * stream into. This only tears down the STORE's own connection state; it
+   * is the caller's job (`ConversationList`/`Shell`) to also clear whatever
+   * UI-level "selected conversation" state pointed at the now-deleted id, so
+   * `ChatView` stops being handed a dead `conversationId` — see `ChatView`'s
+   * `conversationId={null}` empty state, which this store's `connection:
+   * 'idle'` reset is deliberately compatible with (unlike `'offline'`, which
+   * `ChatView` renders as an unreachable-gateway banner regardless of
+   * `conversationId`).
+   */
+  deleteConversation(conversationId: string): Promise<void>;
   cancelTurn(conversationId: string): void;
   /**
    * Tears down this store's live connection: closes the current socket (if
@@ -192,6 +236,16 @@ function isAuthError(err: unknown): boolean {
 
 /** Channel identifier this browser client identifies itself with on outgoing frames. */
 const CHANNEL_ID = 'web';
+
+/**
+ * The gateway's own default conversation title (`apps/gateway/src/conversation-service.ts`'s
+ * `DEFAULT_CONVERSATION_TITLE`; Mission Control's `chat-service.ts` compares
+ * against the same literal) — never imported cross-package since it's a
+ * value contract, not a type. Used by the auto-title-refresh heuristic below:
+ * a conversation still carrying this title hasn't had its first-turn
+ * auto-title land locally yet.
+ */
+const DEFAULT_CONVERSATION_TITLE = 'New Conversation';
 
 function emptyTranscript(): Transcript {
   return { messages: [], streaming: null };
@@ -298,6 +352,41 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }));
     }
 
+    /**
+     * Auto-title refresh (chat-ux Phase 3 Task 1, audit #8): the gateway
+     * generates a conversation's title in the background starting from its
+     * FIRST accepted user message (`apps/gateway/src/resumable-chat-hub.ts`'s
+     * `autoTitle.schedule`, fired in parallel with the turn itself, not
+     * gated on it finishing) — there's no push notification of that title
+     * landing on this store's WS connection, so the simplest honest
+     * heuristic is: once a turn COMPLETES (`done` frame) for a conversation
+     * whose local title is still the gateway's default, re-fetch just that
+     * one summary. Best-effort and silent on failure (this isn't a
+     * user-initiated action, so nothing here shows an error) EXCEPT a 401,
+     * which still means "this credential is dead" and routes to
+     * `enterUnauthorized()` same as every other REST call in this store.
+     * Fetches a single conversation (`rest.getConversation`), not the whole
+     * list, so a concurrent optimistic rename/delete of some OTHER
+     * conversation in `conversations` can't be clobbered by a stale full-list
+     * refetch racing it.
+     */
+    function maybeRefreshAutoTitle(conversationId: string): void {
+      const conversation = get().conversations.find((c) => c.id === conversationId);
+      if (!conversation || conversation.title !== DEFAULT_CONVERSATION_TITLE) return;
+      rest
+        .getConversation(conversationId)
+        .then((updated) => {
+          set((state) => ({
+            conversations: state.conversations.map((c) => (c.id === conversationId ? updated : c)),
+          }));
+        })
+        .catch((err: unknown) => {
+          if (isAuthError(err)) {
+            enterUnauthorized();
+          }
+        });
+    }
+
     /** Looks up `agentId` for a conversation, refreshing the conversation
      * list once from REST if it isn't already loaded (so `openConversation`
      * never *requires* a prior `loadConversations()` call — see
@@ -369,6 +458,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
             : t;
         return applyServerFrame(reconciled, frame);
       });
+
+      // Auto-title refresh (chat-ux Phase 3 Task 1, audit #8): a turn just
+      // finished — see `maybeRefreshAutoTitle`'s doc comment for why `done`
+      // (not `accepted`, which fires before the gateway's title generation
+      // has had any time to run) is the trigger.
+      if (frame.type === 'done') {
+        maybeRefreshAutoTitle(conversationId);
+      }
     }
 
     /** Wraps a fresh `ChatSocket` so its `onClose` can tell a genuine drop
@@ -738,6 +835,51 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
         await get().sendMessage(conversationId, text);
         return true;
+      },
+
+      async renameConversation(conversationId, title) {
+        const previous = get().conversations;
+        const target = previous.find((c) => c.id === conversationId);
+        if (!target) return;
+
+        set({
+          conversations: previous.map((c) => (c.id === conversationId ? { ...c, title } : c)),
+        });
+        try {
+          const updated = await rest.patchConversation(conversationId, { title }, target.revision);
+          set((state) => ({
+            conversations: state.conversations.map((c) => (c.id === conversationId ? updated : c)),
+          }));
+        } catch (err) {
+          set({ conversations: previous });
+          if (isAuthError(err)) {
+            enterUnauthorized();
+            return;
+          }
+          throw err;
+        }
+      },
+
+      async deleteConversation(conversationId) {
+        const previous = get().conversations;
+        const target = previous.find((c) => c.id === conversationId);
+        if (!target) return;
+
+        set({ conversations: previous.filter((c) => c.id !== conversationId) });
+        try {
+          await rest.deleteConversation(conversationId, target.revision);
+        } catch (err) {
+          set({ conversations: previous });
+          if (isAuthError(err)) {
+            enterUnauthorized();
+            return;
+          }
+          throw err;
+        }
+        if (conversationId === currentConversationId) {
+          haltReconnectMachinery();
+          set({ connection: 'idle' });
+        }
       },
 
       cancelTurn(conversationId) {

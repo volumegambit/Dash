@@ -1,4 +1,4 @@
-import type { ConversationCreateRequest } from '@dash/mobile-contract';
+import type { ConversationCreateRequest, ConversationPatchRequest } from '@dash/mobile-contract';
 import { MobileApiError, MobileRestClient, type TokenSource } from './rest';
 
 const TOKEN = 'test-token-abc';
@@ -28,6 +28,11 @@ function authHeader(init: RequestInit | undefined): string | undefined {
 function relayCredentialHeader(init: RequestInit | undefined): string | undefined {
   const headers = init?.headers as Record<string, string> | undefined;
   return headers?.['x-dash-relay-credential'];
+}
+
+function ifMatchHeader(init: RequestInit | undefined): string | undefined {
+  const headers = init?.headers as Record<string, string> | undefined;
+  return headers?.['If-Match'];
 }
 
 /** Byte-for-byte what the relay returns when it rejects a revoked credential
@@ -157,6 +162,12 @@ describe('MobileRestClient', () => {
       ],
       ['createWsTicket', (c: MobileRestClient) => c.createWsTicket()],
       ['listAgents', (c: MobileRestClient) => c.listAgents()],
+      ['getConversation', (c: MobileRestClient) => c.getConversation('conv-1')],
+      [
+        'patchConversation',
+        (c: MobileRestClient) => c.patchConversation('conv-1', { title: 'New title' }, 1),
+      ],
+      ['deleteConversation', (c: MobileRestClient) => c.deleteConversation('conv-1', 1)],
     ])('sends Authorization: Bearer <token> for %s()', async (_name, call) => {
       const fetchImpl = fakeFetch(
         jsonResponse({
@@ -357,6 +368,103 @@ describe('MobileRestClient', () => {
       );
       await expect(client.createWsTicket()).resolves.toEqual(body);
       expect(fetchImpl.mock.calls[0][1]?.method).toBe('POST');
+    });
+  });
+
+  describe('conversation management (rename/delete, audit #8)', () => {
+    const conversationBody = {
+      id: 'conv-1',
+      agentId: 'a',
+      agentName: 'Agent',
+      title: 'New Conversation',
+      revision: 2,
+      status: 'idle' as const,
+      activeTurnId: null,
+      owningIssueId: null,
+      projectId: null,
+      lastSeq: 0,
+      lastMessagePreview: null,
+      createdAt: '2026-07-12T00:00:00.000Z',
+      updatedAt: '2026-07-12T00:00:00.000Z',
+    };
+
+    it('GETs /conversations/:id for getConversation() and resolves the typed summary', async () => {
+      const fetchImpl = fakeFetch(jsonResponse(conversationBody));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await expect(client.getConversation('conv-1')).resolves.toEqual(conversationBody);
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(new URL(url as string).pathname).toBe('/mobile/v1/conversations/conv-1');
+      expect(init?.method).toBe('GET');
+    });
+
+    it('PATCHes /conversations/:id with the title body and a quoted If-Match revision', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ ...conversationBody, title: 'Renamed' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      const patch: ConversationPatchRequest = { title: 'Renamed' };
+      await expect(client.patchConversation('conv-1', patch, 3)).resolves.toEqual({
+        ...conversationBody,
+        title: 'Renamed',
+      });
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(new URL(url as string).pathname).toBe('/mobile/v1/conversations/conv-1');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(init?.body as string)).toEqual(patch);
+      expect(ifMatchHeader(init)).toBe('"3"');
+    });
+
+    it('encodes the conversationId path segment for patchConversation', async () => {
+      const fetchImpl = fakeFetch(jsonResponse(conversationBody));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await client.patchConversation('conv/with/slash', { title: 'x' }, 1);
+      const url = new URL(fetchImpl.mock.calls[0][0] as string);
+      expect(url.pathname).toBe('/mobile/v1/conversations/conv%2Fwith%2Fslash');
+    });
+
+    it('DELETEs /conversations/:id with a quoted If-Match revision and no body', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({ ...conversationBody, status: 'deleted' as const }),
+      );
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await expect(client.deleteConversation('conv-1', 2)).resolves.toEqual({
+        ...conversationBody,
+        status: 'deleted',
+      });
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(new URL(url as string).pathname).toBe('/mobile/v1/conversations/conv-1');
+      expect(init?.method).toBe('DELETE');
+      expect(init?.body).toBeUndefined();
+      expect(ifMatchHeader(init)).toBe('"2"');
+    });
+
+    it('throws MobileApiError on a revision conflict (409) from patchConversation', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse({ code: 'revision_conflict', error: 'stale revision', retryable: false }, 409),
+      );
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+      await expect(client.patchConversation('conv-1', { title: 'x' }, 1)).rejects.toMatchObject({
+        status: 409,
+        code: 'revision_conflict',
+      });
     });
   });
 });

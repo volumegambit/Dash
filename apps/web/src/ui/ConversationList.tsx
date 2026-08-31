@@ -1,10 +1,20 @@
-import type { MobileAgent } from '@dash/mobile-contract';
-import { useEffect, useState } from 'react';
+import type { ConversationSummary, MobileAgent } from '@dash/mobile-contract';
+import { type KeyboardEvent, useEffect, useMemo, useState } from 'react';
 import { useWebAppStore } from './Shell.js';
 
 export interface ConversationListProps {
   selectedConversationId: string | null;
   onSelect: (conversationId: string) => void;
+  /**
+   * Fired once a delete actually succeeds (chat-ux Phase 3 Task 1, audit
+   * #8), with the deleted conversation's id. This component doesn't own
+   * `selectedConversationId` — `Shell` does — so clearing it when the
+   * deleted row was the open conversation is the caller's job; `ChatView`
+   * already renders a plain "Select a conversation" empty state for a
+   * `null` `conversationId`, so `Shell` doing that is safe. Optional so
+   * `ConversationList`'s own tests can render without it.
+   */
+  onConversationDeleted?: (conversationId: string) => void;
 }
 
 /** Exact copy shown when the store's `conversations` list is empty. */
@@ -24,8 +34,47 @@ export const NEW_CONVERSATION_TESTID = 'chat.new-conversation';
  * start a new conversation with — kept distinct from a REST failure. */
 export const NO_AGENTS_COPY = 'No agents available to start a conversation.';
 
+/** aria-label on the search input (chat-ux Phase 3 Task 1, audit #8). */
+export const SEARCH_INPUT_LABEL = 'Search conversations';
+
+/** Copy shown when a search query matches none of the loaded conversations
+ * — distinct from `NO_CONVERSATIONS_COPY` (an empty account, not a filter
+ * that happens to match nothing). */
+export const NO_SEARCH_RESULTS_COPY = 'No conversations match your search.';
+
+/** aria-label on the per-row rename affordance — exact copy per the task brief. */
+export const RENAME_ACTION_LABEL = 'Rename conversation';
+
+/** aria-label on the per-row delete affordance. */
+export const DELETE_ACTION_LABEL = 'Delete conversation';
+
+/** aria-label on the rename row's text input, once it replaces the title. */
+export const RENAME_INPUT_LABEL = 'Conversation title';
+
+/** Exact copy for the inline delete-confirm — never `window.confirm()` (not
+ * stylable, not reduce-motion-gated, and inconsistent with the rest of this
+ * app's dialogs), a small two-button inline confirm instead. */
+export const DELETE_CONFIRM_COPY = "Delete this conversation? This can't be undone.";
+
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : 'Failed to start a new conversation.';
+}
+
+function describeMutationError(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
+/** Local-only filter (chat-ux Phase 3 Task 1, audit #8): case-insensitive
+ * substring match against title (falling back to the agent name, same as
+ * what the row itself displays when there's no title) and the last-message
+ * preview. Never touches the store/REST — `conversations` is already
+ * loaded. */
+function matchesSearch(conversation: ConversationSummary, query: string): boolean {
+  if (!query) return true;
+  const haystack = `${conversation.title || conversation.agentName} ${
+    conversation.lastMessagePreview ?? ''
+  }`.toLowerCase();
+  return haystack.includes(query);
 }
 
 /**
@@ -41,18 +90,38 @@ function describeError(err: unknown): string {
  * chosen `agentId` to the store's `startConversation()` (which creates the
  * conversation via REST and opens it) and select the result. Any REST
  * failure along the way is surfaced inline rather than swallowed.
+ *
+ * Conversation management (chat-ux Phase 3 Task 1, audit #8): a local-only
+ * search box filters the rendered list by title/preview; each row reveals
+ * rename/delete affordances on hover or keyboard focus (`.conversation-row-wrap`'s
+ * `:hover`/`:focus-within` in `styles.css`, same reveal pattern as
+ * `ChatView`'s message-action toolbar) so they're reachable without a mouse.
+ * Rename replaces the row's title with an inline text input (Enter commits
+ * via the store's `renameConversation`, Escape cancels). Delete opens a
+ * small inline two-button confirm — never `window.confirm()` — and calls
+ * the store's `deleteConversation` on confirmation.
  */
-export function ConversationList({ selectedConversationId, onSelect }: ConversationListProps) {
+export function ConversationList({
+  selectedConversationId,
+  onSelect,
+  onConversationDeleted,
+}: ConversationListProps) {
   const useAppStore = useWebAppStore();
   const conversations = useAppStore((s) => s.conversations);
   const connection = useAppStore((s) => s.connection);
   const loadConversations = useAppStore((s) => s.loadConversations);
   const listAgents = useAppStore((s) => s.listAgents);
   const startConversation = useAppStore((s) => s.startConversation);
+  const renameConversation = useAppStore((s) => s.renameConversation);
+  const deleteConversation = useAppStore((s) => s.deleteConversation);
 
   const [agentChoices, setAgentChoices] = useState<MobileAgent[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     void loadConversations();
@@ -93,14 +162,76 @@ export function ConversationList({ selectedConversationId, onSelect }: Conversat
     }
   }
 
+  function startRename(conversation: ConversationSummary): void {
+    setConfirmingDeleteId(null);
+    setError(null);
+    setEditingId(conversation.id);
+    setEditValue(conversation.title || conversation.agentName);
+  }
+
+  function cancelRename(): void {
+    setEditingId(null);
+  }
+
+  async function commitRename(conversation: ConversationSummary): Promise<void> {
+    const title = editValue.trim();
+    setEditingId(null);
+    if (!title || title === conversation.title) return;
+    try {
+      await renameConversation(conversation.id, title);
+    } catch (err) {
+      setError(describeMutationError(err, 'Failed to rename conversation.'));
+    }
+  }
+
+  function handleRenameKeyDown(
+    event: KeyboardEvent<HTMLInputElement>,
+    conversation: ConversationSummary,
+  ): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void commitRename(conversation);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelRename();
+    }
+  }
+
+  async function confirmDelete(conversation: ConversationSummary): Promise<void> {
+    setConfirmingDeleteId(null);
+    try {
+      await deleteConversation(conversation.id);
+      onConversationDeleted?.(conversation.id);
+    } catch (err) {
+      setError(describeMutationError(err, 'Failed to delete conversation.'));
+    }
+  }
+
   // C4: when the connection is unreachable ('offline') or the credential was
   // rejected ('unauthorized'), ChatView's banner already owns the screen —
   // showing "No conversations yet." alongside it would misdescribe a
   // transport/credential problem as an empty account.
   const suppressEmptyCopy = connection === 'offline' || connection === 'unauthorized';
 
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleConversations = useMemo(
+    () => conversations.filter((c) => matchesSearch(c, normalizedQuery)),
+    [conversations, normalizedQuery],
+  );
+
   return (
     <nav aria-label="Conversations" className="conversation-list">
+      {conversations.length > 0 && (
+        <input
+          type="search"
+          aria-label={SEARCH_INPUT_LABEL}
+          placeholder={SEARCH_INPUT_LABEL}
+          className="conversation-search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      )}
+
       <button
         type="button"
         data-testid={NEW_CONVERSATION_TESTID}
@@ -134,27 +265,93 @@ export function ConversationList({ selectedConversationId, onSelect }: Conversat
         suppressEmptyCopy ? null : (
           <p className="conversation-empty">{NO_CONVERSATIONS_COPY}</p>
         )
+      ) : visibleConversations.length === 0 ? (
+        <p className="conversation-empty">{NO_SEARCH_RESULTS_COPY}</p>
       ) : (
         <ul className="conversation-items">
-          {conversations.map((conversation) => {
+          {visibleConversations.map((conversation) => {
             const isSelected = conversation.id === selectedConversationId;
+            const isEditing = editingId === conversation.id;
+            const isConfirmingDelete = confirmingDeleteId === conversation.id;
             return (
-              <li key={conversation.id}>
-                <button
-                  type="button"
-                  aria-current={isSelected ? 'true' : undefined}
-                  onClick={() => onSelect(conversation.id)}
-                  className="conversation-row"
-                >
-                  <div className="conversation-row-title">
-                    {conversation.title || conversation.agentName}
-                  </div>
-                  {conversation.lastMessagePreview && (
-                    <div className="conversation-row-preview">
-                      {conversation.lastMessagePreview}
+              <li key={conversation.id} className="conversation-row-wrap">
+                <div className="conversation-row-line">
+                  {isEditing ? (
+                    <input
+                      aria-label={RENAME_INPUT_LABEL}
+                      className="conversation-row conversation-row-rename-input"
+                      value={editValue}
+                      // biome-ignore lint/a11y/noAutofocus: entering rename mode should focus the input
+                      autoFocus
+                      onChange={(event) => setEditValue(event.target.value)}
+                      onKeyDown={(event) => handleRenameKeyDown(event, conversation)}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      aria-current={isSelected ? 'true' : undefined}
+                      onClick={() => onSelect(conversation.id)}
+                      className="conversation-row"
+                    >
+                      <div className="conversation-row-title">
+                        {conversation.title || conversation.agentName}
+                      </div>
+                      {conversation.lastMessagePreview && (
+                        <div className="conversation-row-preview">
+                          {conversation.lastMessagePreview}
+                        </div>
+                      )}
+                    </button>
+                  )}
+
+                  {!isEditing && (
+                    <div className="conversation-row-actions">
+                      <button
+                        type="button"
+                        aria-label={RENAME_ACTION_LABEL}
+                        className="conversation-row-action"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          startRename(conversation);
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={DELETE_ACTION_LABEL}
+                        className="conversation-row-action"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setEditingId(null);
+                          setConfirmingDeleteId(conversation.id);
+                        }}
+                      >
+                        Delete
+                      </button>
                     </div>
                   )}
-                </button>
+                </div>
+
+                {isConfirmingDelete && (
+                  <fieldset className="conversation-delete-confirm">
+                    <p>{DELETE_CONFIRM_COPY}</p>
+                    <button
+                      type="button"
+                      className="conversation-delete-confirm-delete"
+                      onClick={() => void confirmDelete(conversation)}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      type="button"
+                      className="conversation-delete-confirm-cancel"
+                      onClick={() => setConfirmingDeleteId(null)}
+                    >
+                      Cancel
+                    </button>
+                  </fieldset>
+                )}
               </li>
             );
           })}

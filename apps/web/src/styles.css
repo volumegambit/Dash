@@ -512,6 +512,31 @@ textarea:focus-visible {
   flex-direction: column;
 }
 
+/* Search (chat-ux Phase 3 Task 1, audit #8): local-only filter, styled like
+ * a plain bordered field rather than the browser's default `type="search"`
+ * chrome (hence the `appearance: none` + manual clear-icon suppression). */
+.conversation-search {
+  display: block;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  appearance: none;
+  cursor: text;
+  padding: 8px;
+}
+
+.conversation-search::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.conversation-search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .conversation-new-button {
   display: block;
   width: 100%;
@@ -552,9 +577,22 @@ textarea:focus-visible {
   padding: 0 8px;
 }
 
+/* `.conversation-row-wrap` is the `:hover`/`:focus-within` boundary for the
+ * per-row rename/delete actions (chat-ux Phase 3 Task 1, audit #8) — same
+ * reveal pattern as `.chat-message`/`.chat-message-toolbar` in `ChatView`. */
+.conversation-row-wrap {
+  position: relative;
+}
+
+.conversation-row-line {
+  display: flex;
+  align-items: stretch;
+}
+
 .conversation-row {
   display: block;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   border: none;
   background: transparent;
   color: inherit;
@@ -568,7 +606,10 @@ textarea:focus-visible {
 }
 
 .conversation-row-title {
+  overflow: hidden;
   font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conversation-row[aria-current="true"] .conversation-row-title {
@@ -576,8 +617,110 @@ textarea:focus-visible {
 }
 
 .conversation-row-preview {
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 0.8em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Rename (chat-ux Phase 3 Task 1, audit #8): the inline text input that
+ * replaces `.conversation-row` while editing — same box as the row it
+ * replaces so nothing reflows. */
+.conversation-row-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: var(--surface-raised);
+  color: inherit;
+  font: inherit;
+  padding: 8px;
+}
+
+.conversation-row-rename-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Rename/delete affordances: hidden until the row is hovered or has
+ * keyboard focus within it, same reveal pattern (and the same
+ * reduced-motion gate) as `.chat-message-action` in `ChatView`. */
+.conversation-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  opacity: 0;
+}
+
+.conversation-row-wrap:hover .conversation-row-actions,
+.conversation-row-wrap:focus-within .conversation-row-actions {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .conversation-row-actions {
+    transition: opacity 0.15s;
+  }
+}
+
+.conversation-row-action {
+  border: none;
+  background: none;
+  color: var(--text-muted-strong);
+  font-size: 0.78em;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.conversation-row-action:hover,
+.conversation-row-action:focus-visible {
+  color: var(--text);
+}
+
+/* Delete confirm (chat-ux Phase 3 Task 1, audit #8): a small inline
+ * two-button confirm, never `window.confirm()` — unstylable, not
+ * reduce-motion-gated, and inconsistent with the rest of this app's UI. */
+.conversation-delete-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: var(--surface-raised);
+  padding: 8px;
+}
+
+.conversation-delete-confirm p {
+  flex: 1 1 auto;
+  min-width: 12rem;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.85em;
+}
+
+.conversation-delete-confirm-delete,
+.conversation-delete-confirm-cancel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+.conversation-delete-confirm-delete {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.conversation-delete-confirm-delete:hover,
+.conversation-delete-confirm-delete:focus-visible {
+  background: var(--tool-red-bg);
 }
 
 /* ---------------------------------------------------------------------

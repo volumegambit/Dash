@@ -5,10 +5,15 @@ import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
 import {
   ConversationList,
+  DELETE_ACTION_LABEL,
+  DELETE_CONFIRM_COPY,
   NEW_CONVERSATION_LABEL,
   NEW_CONVERSATION_TESTID,
   NO_AGENTS_COPY,
   NO_CONVERSATIONS_COPY,
+  NO_SEARCH_RESULTS_COPY,
+  RENAME_ACTION_LABEL,
+  SEARCH_INPUT_LABEL,
 } from './ConversationList.js';
 import { WebAppStoreContext } from './Shell.js';
 
@@ -60,6 +65,15 @@ function buildStore(
     agents?: MobileAgent[];
     listAgentsImpl?: () => Promise<MobileAgent[]>;
     createConversationImpl?: (req: unknown) => Promise<ConversationSummary>;
+    patchConversationImpl?: (
+      conversationId: string,
+      patch: unknown,
+      revision: number,
+    ) => Promise<ConversationSummary>;
+    deleteConversationImpl?: (
+      conversationId: string,
+      revision: number,
+    ) => Promise<ConversationSummary>;
   } = {},
 ) {
   const rest = {
@@ -68,6 +82,16 @@ function buildStore(
     listAgents: vi.fn(opts.listAgentsImpl ?? (async () => opts.agents ?? [])),
     createConversation: vi.fn(
       opts.createConversationImpl ?? (async () => summary({ id: 'new-conv' })),
+    ),
+    patchConversation: vi.fn(
+      opts.patchConversationImpl ??
+        (async (conversationId: string, patch: unknown, revision: number) =>
+          summary({ id: conversationId, ...(patch as object), revision: revision + 1 })),
+    ),
+    deleteConversation: vi.fn(
+      opts.deleteConversationImpl ??
+        (async (conversationId: string, revision: number) =>
+          summary({ id: conversationId, status: 'deleted', revision: revision + 1 })),
     ),
   } as unknown as MobileRestClient;
   const factory = vi.fn((_onFrame: FrameHandler, _onClose: (reason: 'error' | 'closed') => void) =>
@@ -78,6 +102,8 @@ function buildStore(
     listConversations: rest.listConversations,
     listAgents: rest.listAgents,
     createConversation: rest.createConversation,
+    patchConversation: rest.patchConversation,
+    deleteConversation: rest.deleteConversation,
   };
 }
 
@@ -284,6 +310,211 @@ describe('ConversationList', () => {
       fireEvent.click(await screen.findByTestId(NEW_CONVERSATION_TESTID));
 
       await waitFor(() => expect(screen.getByText(NO_AGENTS_COPY)).toBeTruthy());
+    });
+  });
+
+  describe('search (chat-ux Phase 3 Task 1, audit #8)', () => {
+    it('filters by title, case-insensitively, without calling the store again', async () => {
+      const { store, listConversations } = buildStore([
+        summary({ id: 'conv-1', title: 'Mobile launch check', lastMessagePreview: 'Ready.' }),
+        summary({ id: 'conv-2', title: 'Trip to Lisbon', lastMessagePreview: 'Book flights.' }),
+      ]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Trip to Lisbon')).toBeTruthy());
+
+      fireEvent.change(screen.getByLabelText(SEARCH_INPUT_LABEL), {
+        target: { value: 'LISBON' },
+      });
+
+      expect(screen.queryByText('Mobile launch check')).toBeNull();
+      expect(screen.getByText('Trip to Lisbon')).toBeTruthy();
+      // Local filtering only — never re-fetches from the store/REST.
+      expect(listConversations).toHaveBeenCalledTimes(1);
+    });
+
+    it('filters by lastMessagePreview, case-insensitively', async () => {
+      const { store } = buildStore([
+        summary({ id: 'conv-1', title: 'Mobile launch check', lastMessagePreview: 'Ready.' }),
+        summary({ id: 'conv-2', title: 'Trip to Lisbon', lastMessagePreview: 'Book flights.' }),
+      ]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.change(screen.getByLabelText(SEARCH_INPUT_LABEL), {
+        target: { value: 'flights' },
+      });
+
+      expect(screen.queryByText('Mobile launch check')).toBeNull();
+      expect(screen.getByText('Trip to Lisbon')).toBeTruthy();
+    });
+
+    it('shows a no-results message when the search matches nothing', async () => {
+      const { store } = buildStore([summary({ title: 'Mobile launch check' })]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.change(screen.getByLabelText(SEARCH_INPUT_LABEL), {
+        target: { value: 'nonexistent' },
+      });
+
+      expect(screen.queryByText('Mobile launch check')).toBeNull();
+      expect(screen.getByText(NO_SEARCH_RESULTS_COPY)).toBeTruthy();
+    });
+  });
+
+  describe('rename (chat-ux Phase 3 Task 1, audit #8)', () => {
+    it('reveals an inline text input on the rename affordance, pre-filled with the current title', async () => {
+      const { store } = buildStore([summary({ title: 'Mobile launch check' })]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(RENAME_ACTION_LABEL));
+
+      const input = screen.getByDisplayValue('Mobile launch check') as HTMLInputElement;
+      expect(input).toBeTruthy();
+    });
+
+    it('Enter commits the rename via the store', async () => {
+      const { store, patchConversation } = buildStore([
+        summary({ id: 'conv-1', title: 'Mobile launch check', revision: 1 }),
+      ]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(RENAME_ACTION_LABEL));
+      const input = screen.getByDisplayValue('Mobile launch check');
+      fireEvent.change(input, { target: { value: 'Renamed thread' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() =>
+        expect(patchConversation).toHaveBeenCalledWith('conv-1', { title: 'Renamed thread' }, 1),
+      );
+      await waitFor(() => expect(screen.getByText('Renamed thread')).toBeTruthy());
+    });
+
+    it('Escape cancels without committing, reverting to the original title', async () => {
+      const { store, patchConversation } = buildStore([
+        summary({ id: 'conv-1', title: 'Mobile launch check', revision: 1 }),
+      ]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(RENAME_ACTION_LABEL));
+      const input = screen.getByDisplayValue('Mobile launch check');
+      fireEvent.change(input, { target: { value: 'Discarded edit' } });
+      fireEvent.keyDown(input, { key: 'Escape' });
+
+      expect(patchConversation).not.toHaveBeenCalled();
+      expect(screen.getByText('Mobile launch check')).toBeTruthy();
+      expect(screen.queryByText('Discarded edit')).toBeNull();
+    });
+  });
+
+  describe('delete (chat-ux Phase 3 Task 1, audit #8)', () => {
+    it('clicking the delete affordance shows an inline confirm with the exact copy, not window.confirm', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm');
+      const { store } = buildStore([summary({ title: 'Mobile launch check' })]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+
+      expect(screen.getByText(DELETE_CONFIRM_COPY)).toBeTruthy();
+      expect(confirmSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('Cancel dismisses the confirm without deleting', async () => {
+      const { store, deleteConversation } = buildStore([summary({ title: 'Mobile launch check' })]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+      fireEvent.click(screen.getByText('Cancel'));
+
+      expect(screen.queryByText(DELETE_CONFIRM_COPY)).toBeNull();
+      expect(deleteConversation).not.toHaveBeenCalled();
+      expect(screen.getByText('Mobile launch check')).toBeTruthy();
+    });
+
+    it('confirming Delete calls the store and removes the row', async () => {
+      const { store, deleteConversation } = buildStore([
+        summary({ id: 'conv-1', title: 'Mobile launch check', revision: 1 }),
+      ]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith('conv-1', 1));
+      await waitFor(() => expect(screen.queryByText('Mobile launch check')).toBeNull());
+    });
+
+    it('calls onConversationDeleted with the deleted id once the delete succeeds', async () => {
+      const { store } = buildStore([summary({ id: 'conv-1', title: 'Mobile launch check' })]);
+      const onConversationDeleted = vi.fn();
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList
+            selectedConversationId="conv-1"
+            onSelect={vi.fn()}
+            onConversationDeleted={onConversationDeleted}
+          />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => expect(onConversationDeleted).toHaveBeenCalledWith('conv-1'));
     });
   });
 });

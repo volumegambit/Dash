@@ -34,6 +34,8 @@ function fakeWebAppState() {
     openConversation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
     resendFromMessage: vi.fn(async () => true),
+    renameConversation: vi.fn(async () => undefined),
+    deleteConversation: vi.fn(async () => undefined),
     cancelTurn: vi.fn(),
     dispose: vi.fn(),
   }));

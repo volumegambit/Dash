@@ -320,6 +320,18 @@ function ChatWorkspace({
     setSidebarOpen(false);
   }
 
+  // Conversation management (chat-ux Phase 3 Task 1, audit #8): the store's
+  // own `deleteConversation` already removed the row from `conversations`
+  // and (if it was the socket's currently-open conversation) torn down the
+  // connection back to `'idle'` — but `selectedConversationId` is UI state
+  // this component owns, not the store's. Clearing it here when the deleted
+  // row was the one open drops `ChatView` back to its plain "Select a
+  // conversation" empty state (`conversationId={null}`) instead of leaving
+  // it pointed at a conversation that no longer exists.
+  function handleConversationDeleted(conversationId: string): void {
+    setSelectedConversationId((current) => (current === conversationId ? null : current));
+  }
+
   return (
     <div data-testid="chat-workspace" className="app-shell">
       <div className="app-topbar">
@@ -373,6 +385,7 @@ function ChatWorkspace({
               <ConversationList
                 selectedConversationId={selectedConversationId}
                 onSelect={selectConversation}
+                onConversationDeleted={handleConversationDeleted}
               />
             </aside>
             <ChatView conversationId={selectedConversationId} gatewayLabel={gateway.subdomain} />
