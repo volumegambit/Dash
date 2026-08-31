@@ -1,3 +1,5 @@
+import 'highlight.js/styles/github-dark-dimmed.min.css';
+import './styles.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { AppRoot } from './AppRoot.js';
