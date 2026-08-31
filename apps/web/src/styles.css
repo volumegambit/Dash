@@ -220,11 +220,48 @@ textarea:focus-visible {
   padding: 8px 16px 0;
 }
 
-.app-transcript {
+/* Non-scrolling positioned anchor for the jump-to-bottom pill (audit #4,
+ * Task 3) — `.app-transcript` itself is the scrolling element, so a pill
+ * positioned against IT would scroll away with the content instead of
+ * floating at a fixed viewport corner. */
+.app-transcript-wrap {
+  position: relative;
   min-height: 0;
+}
+
+.app-transcript {
+  position: absolute;
+  inset: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 16px;
+}
+
+/* Jump-to-bottom pill (audit #4, Task 3): shown by ChatView while
+ * `usePinnedScroll`'s `pinned` is false. Hard corners (`--radius`, 0 in this
+ * app's token set) per the app's existing flat/square control language —
+ * unlike iOS's native rounded floating-action-button idiom, this deliberately
+ * matches every OTHER control here (composer buttons, tool cards, rows). */
+.jump-to-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 14px;
+  font-size: 0.85em;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 18%);
+}
+
+.jump-to-bottom:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .app-message-column {

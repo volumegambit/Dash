@@ -5,8 +5,20 @@ struct ChatView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var isNearBottom = true
+  // iOS 17 fallback geometry (audit #4): the transcript scroll view's own
+  // visible-viewport height, kept fresh by `ScrollViewportHeightKey` below
+  // whenever the ScrollView's bounds change (rotation, keyboard, split-view
+  // resize). iOS 18+ gets an equivalent value for free from
+  // `onScrollGeometryChange`'s `GeometryProxy`, so this state only feeds the
+  // `#unavailable(iOS 18.0)` branch of `scrollView`.
+  @State private var legacyViewportHeight: CGFloat = 0
 
   private let bottomID = "chat-bottom"
+  /// Named coordinate space for the transcript ScrollView (iOS 17 fallback
+  /// only) — anchors `BottomSentinelOffsetKey`'s reported `minY` to the
+  /// ScrollView's own bounds rather than the screen, so it stays correct
+  /// regardless of where the ScrollView sits on screen.
+  private static let scrollSpace = "chatTranscriptScroll"
 
   var body: some View {
     VStack(spacing: 0) {
@@ -36,6 +48,17 @@ struct ChatView: View {
   private var transcript: some View {
     ScrollViewReader { proxy in
       scrollView
+        .overlay(alignment: .bottomTrailing) {
+          if isNearBottom == false {
+            JumpToBottomButton {
+              scrollToBottom(proxy, animated: true)
+            }
+            .padding(.trailing, 16)
+            .padding(.bottom, 16)
+            .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .bottomTrailing)))
+          }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isNearBottom)
         .onAppear {
           scrollToBottom(proxy, animated: false)
         }
@@ -46,17 +69,48 @@ struct ChatView: View {
     }
   }
 
+  /// Keeps `isNearBottom` accurate on every supported OS version (audit #4,
+  /// the iOS 17 bug fix). Previously this only had an iOS 18+ arm
+  /// (`onScrollGeometryChange`) — below 18.0 `isNearBottom` was never
+  /// touched after its `true` initializer, so it stayed permanently `true`
+  /// and every token delta force-scrolled to bottom even after the user
+  /// scrolled up. The `else` branch below is a genuine, version-independent
+  /// replacement for iOS 17.0 (the app's deployment target): a
+  /// `GeometryReader`-backed `PreferenceKey` on the `bottomID` sentinel (see
+  /// `transcriptScrollView`) reports that sentinel's offset within the
+  /// ScrollView's own named coordinate space, compared against the
+  /// ScrollView's own viewport height via `ChatScrollGeometry.isNearBottom`
+  /// — the same "sentinel within `threshold` points of the visible bottom
+  /// edge" concept `onScrollGeometryChange` expresses for 18+, just built
+  /// from primitives available since 17.0.
   @ViewBuilder
   private var scrollView: some View {
     if #available(iOS 18.0, *) {
       transcriptScrollView
         .onScrollGeometryChange(for: Bool.self) { geometry in
-          geometry.visibleRect.maxY >= geometry.contentSize.height - 100
+          geometry.visibleRect.maxY
+            >= geometry.contentSize.height - ChatScrollGeometry.nearBottomThreshold
         } action: { _, nearBottom in
           isNearBottom = nearBottom
         }
     } else {
       transcriptScrollView
+        .coordinateSpace(name: Self.scrollSpace)
+        .background(
+          GeometryReader { proxy in
+            Color.clear.preference(
+              key: ScrollViewportHeightKey.self,
+              value: proxy.size.height
+            )
+          }
+        )
+        .onPreferenceChange(ScrollViewportHeightKey.self) { legacyViewportHeight = $0 }
+        .onPreferenceChange(BottomSentinelOffsetKey.self) { sentinelMinY in
+          isNearBottom = ChatScrollGeometry.isNearBottom(
+            sentinelMinY: sentinelMinY,
+            viewportHeight: legacyViewportHeight
+          )
+        }
     }
   }
 
@@ -84,9 +138,24 @@ struct ChatView: View {
           }
         }
 
+        // Bottom-of-transcript sentinel: `bottomID` is the `scrollToBottom`
+        // target (unchanged behavior). It also reports its own position via
+        // `BottomSentinelOffsetKey`, which only the iOS 17 fallback above
+        // consumes — but the report itself (a single CGFloat preference
+        // write per layout pass) is cheap enough that leaving it active on
+        // iOS 18+ too, where it's simply unused, isn't worth an extra
+        // `#available` branch here.
         Color.clear
           .frame(height: 1)
           .id(bottomID)
+          .background(
+            GeometryReader { proxy in
+              Color.clear.preference(
+                key: BottomSentinelOffsetKey.self,
+                value: proxy.frame(in: .named(Self.scrollSpace)).minY
+              )
+            }
+          )
       }
       .frame(maxWidth: 760)
       .padding(.horizontal)
@@ -116,22 +185,8 @@ struct ChatView: View {
     }
   }
 
-  private var transcriptSignature: String {
-    var parts: [String] = []
-    parts.reserveCapacity(feature.state.messages.count)
-    for message in feature.state.messages {
-      let assistant = message.assistant
-      let status = String(describing: message.status)
-      let textCount = assistant?.text.count ?? 0
-      let thinkingCount = assistant?.thinking.count ?? 0
-      let toolCount = assistant?.toolCards.count ?? 0
-      let workerCount = assistant?.workerCards.count ?? 0
-      let rowCount = assistant?.statusRows.count ?? 0
-      parts.append(
-        "\(message.id):\(status):\(textCount):\(thinkingCount):\(toolCount):\(workerCount):\(rowCount)"
-      )
-    }
-    return parts.joined(separator: "|")
+  private var transcriptSignature: ChatTranscriptSignature {
+    ChatTranscriptSignature.of(feature.state.messages)
   }
 
   private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -143,6 +198,107 @@ struct ChatView: View {
       return
     }
     withAnimation(.easeOut(duration: 0.2), operation)
+  }
+}
+
+/// Cheap replacement for the old O(n) string-joined `transcriptSignature`
+/// (audit #4): auto-scroll-while-pinned only needs to detect "did the
+/// *last* message's identity, terminal status, or content shape change", not
+/// a fingerprint of the entire history — every mutation that matters for it
+/// (a new message arriving, a status transition, a streamed
+/// token/tool-card/thinking-delta) always touches `messages.last`. Internal
+/// (not `private`) so `DashTests` can exercise `of(_:)` directly via
+/// `@testable import Dash`, since the O(1)-vs-O(n) behavior is otherwise
+/// only observable indirectly through SwiftUI's `onChange`, which isn't
+/// unit-testable.
+struct ChatTranscriptSignature: Equatable {
+  let messageID: String?
+  let status: MessageStatus?
+  let contentCount: Int
+
+  static func of(_ messages: [ChatMessageState]) -> ChatTranscriptSignature {
+    guard let last = messages.last else {
+      return ChatTranscriptSignature(messageID: nil, status: nil, contentCount: 0)
+    }
+    let assistant = last.assistant
+    let contentCount =
+      (assistant?.text.count ?? 0)
+      + (assistant?.thinking.count ?? 0)
+      + (assistant?.toolCards.count ?? 0)
+      + (assistant?.workerCards.count ?? 0)
+      + (assistant?.statusRows.count ?? 0)
+    return ChatTranscriptSignature(
+      messageID: last.id,
+      status: last.status,
+      contentCount: contentCount
+    )
+  }
+}
+
+/// Pure "is the bottom sentinel within `threshold` points of the visible
+/// viewport's bottom edge" predicate (audit #4's iOS 17 fix), factored out
+/// of `scrollView` so it's unit-testable without rendering real SwiftUI
+/// geometry — the `PreferenceKey`/`GeometryReader` plumbing that produces
+/// its inputs can't run outside a live view hierarchy, but this is the
+/// actual decision that used to be permanently wrong (`isNearBottom` stuck
+/// `true`) on iOS 17, so it's the part worth pinning down with a test.
+/// Mirrors the iOS 18+ `onScrollGeometryChange` condition
+/// (`visibleRect.maxY >= contentSize.height - threshold`): `sentinelMinY` is
+/// the sentinel's offset from the top of the viewport, so "within threshold
+/// of the bottom edge" is `sentinelMinY <= viewportHeight + threshold`.
+enum ChatScrollGeometry {
+  static let nearBottomThreshold: CGFloat = 100
+
+  static func isNearBottom(
+    sentinelMinY: CGFloat,
+    viewportHeight: CGFloat,
+    threshold: CGFloat = nearBottomThreshold
+  ) -> Bool {
+    sentinelMinY <= viewportHeight + threshold
+  }
+}
+
+/// Sentinel-offset-within-viewport `PreferenceKey` feeding the iOS 17
+/// fallback in `scrollView` (audit #4).
+private struct BottomSentinelOffsetKey: PreferenceKey {
+  static let defaultValue: CGFloat = .infinity
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = nextValue()
+  }
+}
+
+/// Scroll-viewport-height `PreferenceKey` feeding the iOS 17 fallback in
+/// `scrollView` (audit #4).
+private struct ScrollViewportHeightKey: PreferenceKey {
+  static let defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = nextValue()
+  }
+}
+
+/// Floating "scroll to latest" affordance (audit #4): a bottom-trailing
+/// overlay shown while `isNearBottom == false`. Styled as a native circular
+/// floating-action button — matching the app's existing icon-only circular
+/// controls (`ComposerView`'s send/cancel buttons) — rather than porting the
+/// web pill verbatim, per the app's own rounded-native design language.
+private struct JumpToBottomButton: View {
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "arrow.down")
+        .font(.body.weight(.semibold))
+        .foregroundStyle(DashTheme.accent)
+        .frame(width: 40, height: 40)
+        .background(.regularMaterial, in: Circle())
+        .overlay(Circle().strokeBorder(Color.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .frame(minWidth: 44, minHeight: 44)
+    .accessibilityLabel("Jump to latest messages")
+    .accessibilityIdentifier("chat.jumpToBottom")
   }
 }
 

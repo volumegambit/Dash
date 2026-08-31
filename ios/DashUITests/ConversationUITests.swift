@@ -88,6 +88,51 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(message.label, "Assistant message, completed")
   }
 
+  /// Audit #4 / Task 3: minimal UI smoke test for the jump-to-bottom
+  /// affordance. An earlier version of this test seeded extra filler history
+  /// into the shared `streaming-reconnect` fixture so a real swipe-up
+  /// gesture would have something to scroll away from — that broke every
+  /// OTHER test built on this scenario two different ways: (1) SwiftUI's
+  /// `LazyVStack` doesn't materialize far-off-screen rows, so
+  /// `chat.message.assistant-ui-turn` stopped existing in the accessibility
+  /// tree for tests that don't scroll; (2) every extra *completed* assistant
+  /// filler message carries the same `chat.final.response` identifier as the
+  /// live turn's, so "the" final-response lookup started matching multiple
+  /// elements. Given that fragility, and this task's own guidance that UI
+  /// scroll assertions are flaky, this stays a state-transition smoke test
+  /// against the UNMODIFIED scenario: the pill must never appear during a
+  /// normal (still-pinned) streaming turn, and the turn must still complete
+  /// exactly once. The actual near-bottom threshold math (the iOS 17 fix
+  /// itself) and the cheap-signature behavior are covered directly and
+  /// deterministically by `ChatScrollGeometryTests`/`ChatTranscriptSignatureTests`
+  /// in `DashTests`.
+  func testJumpToBottomStaysHiddenThroughoutANormalPinnedStreamingTurn() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    let jumpButton = app.descendants(matching: .any)["chat.jumpToBottom"]
+    XCTAssertFalse(jumpButton.exists)
+
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Prepare the launch plan",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 3))
+    // Never shown while pinned — the transcript is short enough here that it
+    // shouldn't overflow the viewport, but this also guards against a
+    // regression that shows it unconditionally regardless of pin state.
+    XCTAssertFalse(jumpButton.exists)
+
+    let final = element("chat.final.response", in: app, timeout: 8)
+    XCTAssertEqual(final.label, "Recovered exactly once.")
+    XCTAssertFalse(jumpButton.exists)
+  }
+
   func testCancelReplacesSendAndProducesCancelledTerminalState() {
     let app = launch(scenario: "streaming-reconnect")
     openFirstConversation(in: app)

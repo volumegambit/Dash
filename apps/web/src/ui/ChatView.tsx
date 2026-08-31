@@ -1,7 +1,9 @@
 import type { ConversationMessage } from '@dash/mobile-contract';
 import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
+import type { Transcript } from '../state/assemble.js';
 import { useWebAppStore } from './Shell.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
+import { usePinnedScroll } from './hooks/usePinnedScroll.js';
 
 export interface ChatViewProps {
   conversationId: string | null;
@@ -42,6 +44,22 @@ function StopIcon(): ReactNode {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
       <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Jump-to-bottom pill icon (audit #4, chat-ux Phase 2 Task 3). */
+function ArrowDownIcon(): ReactNode {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 4v14m0 0-6-6m6 6 6-6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -132,6 +150,28 @@ const MessageRow = memo(function MessageRow({
 });
 
 /**
+ * Cheap "did new content arrive that scroll-follow should react to" signal
+ * for `usePinnedScroll` (audit #4, mirrors iOS's `ChatTranscriptSignature`
+ * fix): derived only from the LAST confirmed message's identity/status plus
+ * the live streaming content's event count — never from the full message
+ * history — so it's safe to recompute on every render regardless of how
+ * long the conversation is. `streaming.events` grows by exactly one element
+ * per `event` frame (`assemble.ts`'s `applyServerFrame`), so its `.length`
+ * is a cheap, monotonic proxy for "a token/tool/thinking delta arrived"
+ * without stringifying or measuring the content itself.
+ */
+function transcriptContentSignature(transcript: Transcript | undefined): string {
+  if (!transcript) return 'none';
+  const last = transcript.messages[transcript.messages.length - 1];
+  const lastPart = last ? `${last.id}:${last.status}` : 'none';
+  const streamingCount =
+    transcript.streaming && transcript.streaming.type === 'assistant'
+      ? transcript.streaming.events.length
+      : 0;
+  return `${lastPart}:${streamingCount}`;
+}
+
+/**
  * The main chat surface: renders the open conversation's transcript
  * (confirmed `messages` plus, mid-turn, the `streaming` assistant content —
  * both from the Task 11 store's `Transcript`, via `useWebAppStore()`) and a
@@ -150,6 +190,18 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const openConversation = useAppStore((s) => s.openConversation);
   const sendMessage = useAppStore((s) => s.sendMessage);
   const cancelTurn = useAppStore((s) => s.cancelTurn);
+
+  // Scroll pinning + jump-to-bottom (audit #4, Task 3): `resetKey` is the
+  // conversation id itself, so switching threads re-pins and snaps to the
+  // bottom of the newly-opened one; `contentSignature` drives auto-scroll
+  // ONLY while pinned. Called unconditionally, before the early returns
+  // below, per the Rules of Hooks — `containerRef`/`sentinelRef` simply
+  // won't attach to anything on the branches that don't render the
+  // transcript.
+  const { containerRef, sentinelRef, pinned, jumpToBottom } = usePinnedScroll({
+    resetKey: conversationId,
+    contentSignature: transcriptContentSignature(transcript),
+  });
 
   // Draft-per-conversation (audit #14): a component-level Map, keyed by
   // conversation id, outlives conversation switches (this component instance
@@ -270,21 +322,42 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
         {transcript?.error && <p role="alert">{transcript.error.message}</p>}
       </div>
 
-      {/* Stable class/testid for Task 3's scroll-pinning IntersectionObserver
-       * (audit #4) to target — this is the ONLY element that scrolls
-       * (overflow-y auto + overscroll-behavior contain), so the composer
-       * below never gets carried off-screen with it. */}
-      <div className="app-transcript" data-testid="chat-transcript">
-        <div className="app-message-column">
-          {messages.map((message) => (
-            <MessageRow key={message.id} message={message} />
-          ))}
-          {streaming && (
-            <div data-testid="chat-message-streaming" data-role="assistant">
-              <ContentBlocks content={streaming} />
-            </div>
-          )}
+      {/* `.app-transcript-wrap` doesn't itself scroll — it's the positioned
+       * anchor for the jump-to-bottom pill below, so the pill floats at a
+       * fixed corner of the viewport instead of scrolling away with
+       * `.app-transcript`'s content. Stable class/testid for Task 3's
+       * scroll-pinning IntersectionObserver (audit #4) to target —
+       * `.app-transcript` remains the ONLY element that scrolls (overflow-y
+       * auto + overscroll-behavior contain), so the composer below never
+       * gets carried off-screen with it. */}
+      <div className="app-transcript-wrap">
+        <div className="app-transcript" data-testid="chat-transcript" ref={containerRef}>
+          <div className="app-message-column">
+            {messages.map((message) => (
+              <MessageRow key={message.id} message={message} />
+            ))}
+            {streaming && (
+              <div data-testid="chat-message-streaming" data-role="assistant">
+                <ContentBlocks content={streaming} />
+              </div>
+            )}
+            {/* Zero-height bottom sentinel (audit #4): `usePinnedScroll`'s
+             * IntersectionObserver watches this, scoped to `.app-transcript`
+             * as `root`, to derive `pinned`. */}
+            <div ref={sentinelRef} data-testid="chat-transcript-sentinel" />
+          </div>
         </div>
+        {pinned === false && (
+          <button
+            type="button"
+            className="jump-to-bottom"
+            aria-label="Jump to latest"
+            onClick={jumpToBottom}
+          >
+            <ArrowDownIcon />
+            Jump to latest
+          </button>
+        )}
       </div>
 
       <div className="app-composer-row">

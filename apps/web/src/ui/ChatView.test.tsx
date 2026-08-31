@@ -413,6 +413,42 @@ describe('ChatView shell structure (chat-ux Phase 2 Task 1, audit #1)', () => {
   });
 });
 
+/**
+ * `usePinnedScroll`'s own test suite (`ui/hooks/usePinnedScroll.test.ts`)
+ * covers the pin/unpin/auto-scroll state machine directly via a mocked
+ * `IntersectionObserver` — jsdom/happy-dom's real one never fires a
+ * callback from actual layout, so that's the only place the state
+ * transitions are actually exercised. This is deliberately just the
+ * "sentinel wiring smoke" the task 3 brief calls for: proof `ChatView`
+ * mounts the sentinel in the right place and starts pinned (no pill), not a
+ * re-test of the hook's own logic.
+ */
+describe('ChatView scroll pinning wiring (chat-ux Phase 2 Task 3, audit #4)', () => {
+  it('mounts a bottom sentinel inside the transcript, after the last message', async () => {
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    const transcript = screen.getByTestId('chat-transcript');
+    const sentinel = within(transcript).getByTestId('chat-transcript-sentinel');
+    expect(sentinel).toBeTruthy();
+
+    // "After the last message": the sentinel is the transcript's last child,
+    // not interleaved before/between messages (which would make its
+    // intersection state lag behind newly-appended content).
+    const column = sentinel.parentElement;
+    expect(column?.lastElementChild).toBe(sentinel);
+  });
+
+  it('starts pinned — no jump-to-bottom pill on initial render', async () => {
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    expect(screen.queryByLabelText('Jump to latest')).toBeNull();
+  });
+});
+
 describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
   it('Enter sends the drafted message; Shift+Enter does not', async () => {
     const { sockets } = await renderConnected();
