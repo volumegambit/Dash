@@ -29,12 +29,12 @@ struct AssistantEventViews: View {
 
       if !projection.text.isEmpty {
         if exposesResponseToAccessibility {
-          Text(projection.text)
-            .textSelection(.enabled)
+          MarkdownTextView(text: projection.text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(projection.text)
             .accessibilityIdentifier("chat.final.response")
         } else {
-          Text(projection.text)
-            .textSelection(.enabled)
+          MarkdownTextView(text: projection.text)
             .accessibilityHidden(true)
         }
       }
@@ -74,6 +74,13 @@ struct AssistantEventViews: View {
   }
 }
 
+/// MC parity (design doc appendix §4): default collapsed, toggle copy exactly
+/// "Show thinking"/"Hide thinking", expanded body is plain muted text (not
+/// markdown, not italic). `isCollapsed` seeds the initial `isExpanded`
+/// @State once; unlike the pre-MC-parity version, streaming thinking deltas
+/// no longer force it open — MC's `ThinkingBlock` always starts collapsed
+/// and only the user's tap toggles it (see `ChatReducer.project`'s
+/// `.thinkingDelta` case, which no longer flips `isThinkingCollapsed`).
 struct ThinkingView: View {
   let thinking: String
   let isCollapsed: Bool
@@ -87,69 +94,172 @@ struct ThinkingView: View {
   }
 
   var body: some View {
-    DisclosureGroup(isExpanded: $isExpanded) {
-      Text(thinking)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .textSelection(.enabled)
-        .padding(.top, 4)
-    } label: {
-      Label("Thinking", systemImage: "brain.head.profile")
-        .font(.callout.weight(.semibold))
-    }
-    .onChange(of: isCollapsed) { _, collapsed in
-      isExpanded = !collapsed
+    VStack(alignment: .leading, spacing: 4) {
+      Button {
+        isExpanded.toggle()
+      } label: {
+        Text(isExpanded ? "Hide thinking" : "Show thinking")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+
+      if isExpanded {
+        Text(thinking)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .textSelection(.enabled)
+      }
     }
     .accessibilityElement(children: .contain)
   }
 }
 
+/// MC parity (design doc appendix §3): collapsed-by-default card with a
+/// status-glyph + mono tool label + inline summary header; expanded body
+/// shows `formatDetails` key/value rows followed by the result (error /
+/// empty / short-green / scrollable). Diff rendering, directory listings,
+/// numbered-source gutters, and rich write-content previews are explicitly
+/// out of iOS scope (design doc "Out of scope" + Platform Adaptation 1) —
+/// the result here only branches on error/empty/short/long.
 struct ToolCardView: View {
   let tool: ToolCardState
 
+  @State private var isExpanded = false
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(tool.status.title, systemImage: tool.status.systemImage)
-        .font(.callout.weight(.semibold))
-
-      Text(tool.name)
-        .font(.subheadline.monospaced())
-
-      if let input = tool.input {
-        LabeledContent("Input") {
-          Text(displayJSON(input))
-            .multilineTextAlignment(.trailing)
-            .textSelection(.enabled)
-        }
-        .font(.caption)
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        isExpanded.toggle()
+      } label: {
+        header
       }
+      .buttonStyle(.plain)
 
-      if !tool.partialJSON.isEmpty {
-        Text(tool.partialJSON)
-          .font(.caption.monospaced())
-          .foregroundStyle(.secondary)
-          .textSelection(.enabled)
-      }
-
-      if let content = tool.content, !content.isEmpty {
-        Text(content)
-          .font(.callout)
-          .textSelection(.enabled)
-      }
-
-      if let details = tool.details {
-        Text(displayJSON(details))
-          .font(.caption.monospaced())
-          .foregroundStyle(.secondary)
-          .textSelection(.enabled)
+      if isExpanded {
+        expandedBody
+          .padding(.top, 6)
       }
     }
     .padding(10)
-    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    .background(cardBackground, in: RoundedRectangle(cornerRadius: 8))
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Tool \(tool.name), \(tool.status.title)")
+    .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
     .accessibilityIdentifier("chat.tool.\(tool.id)")
   }
+
+  private var header: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      statusGlyph
+      Text(ToolPresentation.toolLabel(tool.name))
+        .font(.callout.monospaced())
+        .foregroundStyle(.primary)
+      if let summary = ToolPresentation.summarize(name: tool.name, input: tool.input) {
+        Text(summary)
+          .font(isBash ? .caption.monospaced() : .caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      Spacer(minLength: 0)
+    }
+  }
+
+  private var isBash: Bool {
+    ToolPresentation.normalizeTool(tool.name) == "bash"
+  }
+
+  @ViewBuilder
+  private var statusGlyph: some View {
+    switch tool.status {
+    case .running:
+      ProgressView()
+        .controlSize(.mini)
+        .frame(width: 12, height: 12)
+    case .succeeded:
+      Circle()
+        .fill(EventViewColors.green)
+        .frame(width: 8, height: 8)
+    case .failed:
+      Image(systemName: "xmark.circle")
+        .font(.system(size: 10))
+        .foregroundStyle(EventViewColors.red)
+    }
+  }
+
+  private var cardBackground: Color {
+    tool.status == .failed ? EventViewColors.red.opacity(0.08) : Color.secondary.opacity(0.08)
+  }
+
+  @ViewBuilder
+  private var expandedBody: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      let details = ToolPresentation.formatDetails(name: tool.name, input: tool.input)
+      ForEach(details, id: \.key) { detail in
+        Text("\(capitalizedFirstLetter(detail.key)): \(detail.value)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      resultView
+    }
+  }
+
+  @ViewBuilder
+  private var resultView: some View {
+    switch tool.status {
+    case .running:
+      EmptyView()
+
+    case .failed:
+      Text(tool.content ?? "")
+        .font(.caption.monospaced())
+        .foregroundStyle(EventViewColors.red)
+        .textSelection(.enabled)
+
+    case .succeeded:
+      let content = tool.content ?? ""
+      if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Text("No output")
+          .font(.caption)
+          .italic()
+          .foregroundStyle(.secondary)
+      } else if content.components(separatedBy: "\n").count <= 3 {
+        Text(content)
+          .font(.caption.monospaced())
+          .foregroundStyle(EventViewColors.green.opacity(0.8))
+          .textSelection(.enabled)
+      } else {
+        ScrollView {
+          Text(content)
+            .font(.caption.monospaced())
+            .foregroundStyle(.primary.opacity(0.8))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        }
+        .frame(maxHeight: 256)
+        .background(EventViewColors.codeBackground)
+      }
+    }
+  }
+}
+
+/// CSS `text-transform: capitalize`-equivalent for a single detail key:
+/// uppercase the first character only, leave the rest untouched. (Swift's
+/// `String.capitalized` also lowercases the remainder of the "word", which
+/// would mangle camelCase keys like `filePath` into `Filepath`.)
+private func capitalizedFirstLetter(_ s: String) -> String {
+  guard let first = s.first else { return s }
+  return first.uppercased() + s.dropFirst()
+}
+
+/// MC design tokens (design doc appendix §0) needed for tool-card chrome
+/// that has no existing Dash design-system token.
+private enum EventViewColors {
+  static let green = Color(red: 0x22 / 255, green: 0xc5 / 255, blue: 0x5e / 255)
+  static let red = Color(red: 0xf8 / 255, green: 0x71 / 255, blue: 0x71 / 255)
+  static let codeBackground = Color(red: 0x16 / 255, green: 0x1b / 255, blue: 0x22 / 255)
 }
 
 struct WorkerCardView: View {
@@ -425,14 +535,4 @@ extension ChatTerminalState {
     case .interrupted: "pause.circle"
     }
   }
-}
-
-private func displayJSON(_ value: JSONValue) -> String {
-  guard
-    let data = try? ContractCoding.encoder().encode(value),
-    let string = String(data: data, encoding: .utf8)
-  else {
-    return "JSON value"
-  }
-  return string
 }

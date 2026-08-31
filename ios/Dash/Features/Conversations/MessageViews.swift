@@ -45,20 +45,32 @@ struct ChatMessageView: View {
   }
 
   var body: some View {
-    HStack(alignment: .top) {
-      if message.role == .user {
+    HStack(alignment: .top, spacing: 0) {
+      switch message.role {
+      case .user:
+        // User keeps the bubble: right-aligned, accent-tinted background,
+        // rounded corners, held off the leading edge by a min-width spacer.
         Spacer(minLength: 44)
-      }
+        messageContent
+          .padding(12)
+          .background(DashTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
+          .accessibilityElement(children: .contain)
+          .accessibilityLabel(message.accessibilityStatusLabel)
+          .accessibilityIdentifier("chat.message.\(message.id)")
 
-      messageContent
-        .padding(12)
-        .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 16))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(message.accessibilityStatusLabel)
-        .accessibilityIdentifier("chat.message.\(message.id)")
-
-      if message.role == .assistant {
-        Spacer(minLength: 44)
+      case .assistant:
+        // De-bubbled (world-class UX audit ruling, binding for iOS): no
+        // background and no trailing spacer — the assistant's response
+        // renders full-bleed within the column instead of a bordered card.
+        // This is a deliberate iOS divergence from the MC web reference,
+        // whose ToolBlock/assistant bubble treatment (design doc appendix
+        // §6) keeps the `bg-[#141414] border-2` card.
+        messageContent
+          .padding(.vertical, 12)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityElement(children: .contain)
+          .accessibilityLabel(message.accessibilityStatusLabel)
+          .accessibilityIdentifier("chat.message.\(message.id)")
       }
     }
     .frame(maxWidth: .infinity)
@@ -81,10 +93,6 @@ struct ChatMessageView: View {
         )
       }
     }
-  }
-
-  private var bubbleBackground: Color {
-    message.role == .user ? DashTheme.accent.opacity(0.14) : Color.secondary.opacity(0.1)
   }
 }
 

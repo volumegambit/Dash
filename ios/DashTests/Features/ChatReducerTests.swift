@@ -325,14 +325,14 @@ struct ChatReducerTests {
     #expect(state.pendingGapFrame == eventFrame(seq: 3, event: .textDelta(text: "three")))
   }
 
-  @Test("thinking accumulates and collapses when a response arrives")
+  @Test("thinking accumulates but stays collapsed by default, MC-parity, even while streaming")
   func thinkingProjection() {
     var state = acceptedState(cursor: 1)
 
     _ = apply(.thinkingDelta(text: "Plan "), seq: 2, to: &state)
     _ = apply(.thinkingDelta(text: "carefully"), seq: 3, to: &state)
     #expect(state.messages.last?.assistant?.thinking == "Plan carefully")
-    #expect(state.messages.last?.assistant?.isThinkingCollapsed == false)
+    #expect(state.messages.last?.assistant?.isThinkingCollapsed == true)
 
     _ = apply(.response(content: "Done", usage: usage()), seq: 4, to: &state)
     #expect(state.messages.last?.assistant?.isThinkingCollapsed == true)

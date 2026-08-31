@@ -75,7 +75,7 @@ final class ConversationUITests: DashUITestCase {
 
     let message = element("chat.message.assistant-ui-turn", in: app)
     XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 3))
-    XCTAssertTrue(app.buttons["Thinking"].exists)
+    XCTAssertTrue(app.buttons["Show thinking"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.question.ui-question"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.tool.ui-tool"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.worker.ui-worker"].exists)

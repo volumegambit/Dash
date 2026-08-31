@@ -94,7 +94,7 @@ final class AccessibilityUITests: DashUITestCase {
     XCTAssertEqual(message.label, "Assistant message, streaming")
     XCTAssertFalse(app.descendants(matching: .any)["chat.final.response"].exists)
     XCTAssertTrue(element("chat.question.ui-question", in: app).buttons["Ship it"].isEnabled)
-    XCTAssertEqual(element("chat.tool.ui-tool", in: app).label, "Tool search, Tool succeeded")
+    XCTAssertEqual(element("chat.tool.ui-tool", in: app).label, "Tool Search, Tool succeeded")
     XCTAssertEqual(
       element("chat.worker.ui-worker", in: app).label, "Worker researcher, Worker running")
 

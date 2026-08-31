@@ -62,7 +62,11 @@ struct UserMessageProjection: Equatable, Sendable {
 struct AssistantMessageProjection: Equatable, Sendable {
   var text = ""
   var thinking = ""
-  var isThinkingCollapsed = false
+  // MC parity (design doc appendix §4): thinking is collapsed by default,
+  // and — unlike the pre-MC-parity behavior — never auto-expands while
+  // thinking streams in. Only an explicit user tap on the "Show
+  // thinking"/"Hide thinking" toggle (`ThinkingView`) changes visibility.
+  var isThinkingCollapsed = true
   var toolCards: [ToolCardState] = []
   var workerCards: [WorkerCardState] = []
   var statusRows: [StatusRowState] = []
@@ -469,7 +473,6 @@ enum ChatReducer {
 
     case let .thinkingDelta(text):
       assistant.thinking += text
-      assistant.isThinkingCollapsed = false
 
     case let .toolUseStart(id, name, input):
       if let index = assistant.toolCards.firstIndex(where: { $0.id == id }) {
