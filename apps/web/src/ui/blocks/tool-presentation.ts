@@ -174,6 +174,14 @@ export function formatDetails(input: Record<string, unknown> | undefined): ToolD
     }
     if (Array.isArray(val)) return { key, value: `[${val.length} items]` };
     if (typeof val === 'object' && val !== null) return { key, value: '{object}' };
+    // Numbers (including integral-but-huge ones, e.g. a 20-digit tool-input
+    // ID) go through native `String(val)`. Per ECMA-262 Number::toString,
+    // this stays in fixed notation (plain digits, zero-padded) for any
+    // magnitude below 1e21 and only switches to exponential at 1e21+ — the
+    // Swift port (ToolPresentation.swift's `formatIntegralNumber`) has to
+    // replicate this rule explicitly, since Swift's `String(Double)`
+    // defaults to exponential notation as soon as a value leaves `Int64`
+    // range. See rendering-fixtures.json's large-number `details` cases.
     return { key, value: String(val) };
   });
 }

@@ -281,4 +281,33 @@ struct MarkdownBlocksTests {
         ]
     )
   }
+
+  // MARK: - markdownPlainTextAccessibilityLabel
+
+  @Test("bold + inline code strip their markdown syntax for VoiceOver")
+  func plainTextAccessibilityLabelStripsInlineSyntax() {
+    #expect(markdownPlainTextAccessibilityLabel(for: "**Ship it** `now`") == "Ship it now")
+  }
+
+  @Test("multiple blocks become newline-separated lines")
+  func plainTextAccessibilityLabelJoinsBlocksWithNewlines() {
+    let input = "# Title\n\nIntro **bold** text.\n\n- one\n- two"
+    #expect(
+      markdownPlainTextAccessibilityLabel(for: input)
+        == "Title\nIntro bold text.\none\ntwo"
+    )
+  }
+
+  @Test("fenced code blocks use the raw code text, not markdown-parsed")
+  func plainTextAccessibilityLabelUsesRawCodeForFences() {
+    let input = "```swift\nlet x = **not bold**\n```"
+    #expect(
+      markdownPlainTextAccessibilityLabel(for: input) == "let x = **not bold**"
+    )
+  }
+
+  @Test("horizontal rules contribute no text")
+  func plainTextAccessibilityLabelDropsHorizontalRules() {
+    #expect(markdownPlainTextAccessibilityLabel(for: "one\n\n---\n\ntwo") == "one\ntwo")
+  }
 }

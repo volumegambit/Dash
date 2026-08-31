@@ -209,12 +209,66 @@ enum ToolPresentation {
       return "{object}"
     case let .number(n):
       return n.truncatingRemainder(dividingBy: 1) == 0
-        ? String(Int(n)) : String(n)
+        ? formatIntegralNumber(n) : String(n)
     case let .bool(b):
       return b ? "true" : "false"
     case .null:
       return "null"
     }
+  }
+
+  /// Formats an integral `Double` the way JavaScript's `String(n)` does.
+  ///
+  /// For values that fit in `Int` (`Int.min...Int.max`), this is just
+  /// `String(Int(n))` — `Int(exactly:)` never fails there. Outside that
+  /// range — e.g. a 20-digit tool-input ID that round-trips through JSON as
+  /// a `Number` — `Int(n)` (the previous implementation) traps, and even a
+  /// non-trapping conversion would diverge from web: ECMA-262's
+  /// `Number::toString` still prints plain fixed-notation digits (with
+  /// trailing zeros for precision the double doesn't have) as long as the
+  /// value's magnitude is below 1e21, only switching to exponential
+  /// notation at 1e21 and beyond. Swift's `String(Double)` always uses
+  /// exponential notation once the value leaves `Int64` range
+  /// (`"1.2345678901234567e+19"`), which would silently render a different
+  /// string than the web client for these edge-case IDs.
+  ///
+  /// So: for the below-1e21 range, we take Swift's shortest-round-trip
+  /// scientific-notation digits (`String(n)`) and reformat them into plain
+  /// digits + zero padding, replicating the ECMA-262 fixed-notation rule
+  /// (digit count `k` <= decimal-point position `n` <= 21). Both platforms'
+  /// `Double` use the same shortest-round-trip digit-selection algorithm,
+  /// so the digit *sequence* always matches — only the notation (fixed vs.
+  /// scientific) differs, which is what this function corrects. Beyond
+  /// 1e21 both platforms use exponential notation, but this function
+  /// doesn't attempt to pin the exact exponential formatting (unreachable
+  /// via realistic tool-input IDs); it falls back to Swift's own
+  /// `String(Double)` there.
+  static func formatIntegralNumber(_ n: Double) -> String {
+    if let i = Int(exactly: n) {
+      return String(i)
+    }
+    let description = String(n)  // e.g. "1.2345678901234567e+19"
+    guard
+      let eIndex = description.firstIndex(where: { $0 == "e" || $0 == "E" }),
+      let exponent = Int(description[description.index(after: eIndex)...])
+    else {
+      return description
+    }
+    let mantissa = description[description.startIndex..<eIndex]
+    let isNegative = mantissa.hasPrefix("-")
+    let unsignedMantissa = isNegative ? String(mantissa.dropFirst()) : String(mantissa)
+    let digits = unsignedMantissa.replacingOccurrences(of: ".", with: "")
+    // ECMA-262's "n": the digit sequence's decimal-point position, counted
+    // from the left (mantissa is d.ddd form, so this is exponent + 1).
+    let pointPosition = exponent + 1
+
+    guard digits.count <= pointPosition, pointPosition <= 21 else {
+      return description
+    }
+
+    let zerosToAppend = pointPosition - digits.count
+    let fixed = digits + String(repeating: "0", count: zerosToAppend)
+    return isNegative ? "-\(fixed)" : fixed
   }
 
   private static func rawJSONString(_ value: JSONValue) -> String {

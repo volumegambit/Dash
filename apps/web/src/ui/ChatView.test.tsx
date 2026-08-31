@@ -11,6 +11,17 @@ import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
 import { ChatView, RECONNECTING_COPY } from './ChatView.js';
 import { WebAppStoreContext } from './Shell.js';
+import { ContentBlocks } from './blocks/ContentBlocks.js';
+
+// Spies on ContentBlocks while preserving its real rendering, so the
+// memoization test below (`MessageRow` should not re-render confirmed
+// messages on every streaming token) can count calls without mocking away
+// actual markdown/tool-card output that every other test in this file
+// depends on.
+vi.mock('./blocks/ContentBlocks.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./blocks/ContentBlocks.js')>();
+  return { ...actual, ContentBlocks: vi.fn(actual.ContentBlocks) };
+});
 
 const CONVERSATION_ID = 'conv-1';
 
@@ -341,5 +352,97 @@ describe('ChatView message copy button', () => {
 
     expect(screen.getByTestId('tool-use-block')).toBeTruthy();
     expect(screen.queryByTitle('Copy message')).toBeNull();
+  });
+
+  it('does not throw when navigator.clipboard is undefined (insecure context)', async () => {
+    // happy-dom's `navigator.clipboard` is a getter with no setter, so
+    // `Object.assign` throws — redefine the property to simulate an
+    // insecure context, where the browser doesn't expose the Clipboard API
+    // at all (accessing `.writeText` on it would otherwise be a synchronous
+    // TypeError inside the click handler).
+    Object.defineProperty(navigator, 'clipboard', {
+      value: undefined,
+      configurable: true,
+    });
+
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    const copyButton = screen.getByTitle('Copy message');
+    expect(() => fireEvent.click(copyButton)).not.toThrow();
+    // No state change: still shows the copy icon, not the "copied" check.
+    expect(copyButton.querySelector('.copy-check')).toBeNull();
+  });
+});
+
+describe('ChatView message row memoization', () => {
+  beforeEach(() => {
+    vi.mocked(ContentBlocks).mockClear();
+  });
+
+  it('does not re-render a confirmed message row while the streaming message updates', async () => {
+    const { onFrames, sockets } = await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    function confirmedMessageRenderCount(): number {
+      // Filter specifically on the seeded 'Ping' message's text, not just
+      // `type: 'user'`: sending the "hello" draft below adds its own,
+      // legitimately-new optimistic `type: 'user'` message to the
+      // transcript, which would otherwise inflate this count for reasons
+      // unrelated to what's being tested here (the *unchanged* 'Ping'
+      // message re-rendering when it shouldn't).
+      return vi
+        .mocked(ContentBlocks)
+        .mock.calls.filter(
+          ([props]) => props.content.type === 'user' && props.content.text === 'Ping',
+        ).length;
+    }
+
+    await waitFor(() => expect(confirmedMessageRenderCount()).toBeGreaterThan(0));
+    const before = confirmedMessageRenderCount();
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    const turnId = sockets[0].sent[0].id;
+
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+      onFrames[0]({
+        type: 'event',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        event: { type: 'text_delta', text: 'Streaming reply' },
+      });
+    });
+    await waitFor(() => expect(screen.getByText('Streaming reply')).toBeTruthy());
+
+    act(() => {
+      onFrames[0]({
+        type: 'event',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 3,
+        event: { type: 'text_delta', text: ' continues' },
+      });
+    });
+    await waitFor(() => expect(screen.getByText('Streaming reply continues')).toBeTruthy());
+
+    // Two more `event` frames landed (each re-renders ChatView, per
+    // assemble.ts's `applyServerFrame`), but the confirmed 'Ping' message's
+    // reference never changed — a memoized row must not have re-rendered
+    // for it.
+    expect(confirmedMessageRenderCount()).toBe(before);
   });
 });

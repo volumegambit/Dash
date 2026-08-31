@@ -471,6 +471,34 @@
           "value": "/tmp"
         }
       ]
+    },
+    {
+      "name": "details: Number.MAX_SAFE_INTEGER formats as an exact integer",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "id": 9007199254740991
+      },
+      "expectedDetails": [
+        {
+          "key": "id",
+          "value": "9007199254740991"
+        }
+      ]
+    },
+    {
+      "name": "details: 20-digit integral number beyond Int64/Number.MAX_SAFE_INTEGER formats in fixed notation, matching JS's Number::toString (not Swift's default exponential notation)",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "id": 12345678901234567890
+      },
+      "expectedDetails": [
+        {
+          "key": "id",
+          "value": "12345678901234567000"
+        }
+      ]
     }
   ]
 }

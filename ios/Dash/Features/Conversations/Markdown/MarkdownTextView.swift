@@ -35,6 +35,46 @@ func attributedInlineMarkdown(_ raw: String) -> AttributedString {
   return attributed
 }
 
+/// Builds a VoiceOver-friendly plain-text accessibility label for markdown
+/// content — the a11y counterpart to `MarkdownTextView`'s visual rendering.
+///
+/// Reading raw markdown source aloud is bad UX (VoiceOver says "star star
+/// Ship it star star backtick now backtick" for `"**Ship it** \`now\`"`).
+/// This instead segments `text` with `segmentMarkdown` (the same
+/// segmentation `MarkdownTextView` renders from) and, per block, resolves
+/// the block's text through `attributedInlineMarkdown` — which parses
+/// `**bold**`, `` `code` ``, links, etc. into an `AttributedString` and
+/// discards the syntax — then takes its plain `.characters`. Fenced code
+/// blocks are the one exception: their content is literal code, not
+/// markdown, so the raw code text is used as-is rather than being run
+/// through markdown parsing. Horizontal rules carry no readable text and
+/// are dropped. Each block contributes one newline-separated line to the
+/// label, so structure (paragraph breaks, list items) still reads as
+/// distinct utterances rather than being smashed into one run-on sentence.
+func markdownPlainTextAccessibilityLabel(for text: String) -> String {
+  let blocks = segmentMarkdown(text)
+  let lines: [String] = blocks.compactMap { block -> String? in
+    switch block {
+    case .paragraph(let blockText), .heading(_, let blockText), .blockquote(let blockText):
+      return String(attributedInlineMarkdown(blockText).characters)
+    case .bullets(let items), .ordered(let items):
+      return
+        items
+        .map { item -> String in
+          let isNested = item.hasPrefix("  ")
+          let displayText = isNested ? String(item.dropFirst(2)) : item
+          return String(attributedInlineMarkdown(displayText).characters)
+        }
+        .joined(separator: "\n")
+    case .fencedCode(_, let code):
+      return code
+    case .horizontalRule:
+      return nil
+    }
+  }
+  return lines.joined(separator: "\n")
+}
+
 /// Renders a block-segmented markdown document (see `segmentMarkdown`) with
 /// MC-parity typography and spacing (design doc appendix §1).
 struct MarkdownTextView: View {

@@ -31,7 +31,7 @@ struct AssistantEventViews: View {
         if exposesResponseToAccessibility {
           MarkdownTextView(text: projection.text)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(projection.text)
+            .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: projection.text))
             .accessibilityIdentifier("chat.final.response")
         } else {
           MarkdownTextView(text: projection.text)

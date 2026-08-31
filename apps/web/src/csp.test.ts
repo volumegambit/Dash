@@ -45,9 +45,19 @@ describe('Content-Security-Policy', () => {
     const policy = metaPolicy();
     expect(directive(policy, 'script-src')).toContain('https://*.clerk.accounts.dev');
     expect(directive(policy, 'connect-src')).toContain('https://*.clerk.accounts.dev');
-    // Clerk renders user/organization avatars from its own image CDN.
-    expect(directive(policy, 'img-src')).toContain('https://img.clerk.com');
-    expect(directive(policy, 'img-src')).toContain('data:');
+  });
+
+  it('allows img-src from any https: origin plus data:, for model-generated markdown images', () => {
+    // Unlike connect-src/script-src, img-src is deliberately NOT pinned to a
+    // fixed allowlist: assistant replies can link to arbitrary remote image
+    // hosts. react-markdown's defaultUrlTransform strips javascript:/data:
+    // image *sources* from markdown before they reach the DOM, so this is
+    // safe to widen. Clerk's avatar CDN (https://img.clerk.com) is subsumed
+    // by the blanket https:, so it's no longer listed by name.
+    const img = directive(metaPolicy(), 'img-src');
+    expect(img).toContain("'self'");
+    expect(img).toContain('https:');
+    expect(img).toContain('data:');
   });
 
   it('keeps the baseline hardening directives', () => {

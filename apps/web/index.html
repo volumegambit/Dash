@@ -14,10 +14,20 @@
       as an invalid source expression — i.e. it fails closed, blocking the app
       rather than silently widening the policy. Build with all three set; Vite
       also warns at build time when one is absent.
+
+      img-src is intentionally the one directive widened to a blanket
+      `https:` rather than pinned like connect-src: assistant replies can
+      contain markdown image links pointing at arbitrary remote hosts (model
+      output isn't a fixed allowlist), and react-markdown's
+      `defaultUrlTransform` already strips `javascript:`/`data:` image
+      sources before they reach the DOM, so this doesn't reopen the XSS the
+      base policy guards against. `https://img.clerk.com` is now subsumed by
+      `https:`; `data:` stays for existing in-app image usage (e.g. pasted
+      images).
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'self' %VITE_CONTROL_PLANE_URL% https://*.%VITE_RELAY_DOMAIN% wss://*.%VITE_RELAY_DOMAIN% https://*.clerk.accounts.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' https://img.clerk.com data:; font-src 'self' data:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self'; object-src 'none'"
+      content="default-src 'self'; connect-src 'self' %VITE_CONTROL_PLANE_URL% https://*.%VITE_RELAY_DOMAIN% wss://*.%VITE_RELAY_DOMAIN% https://*.clerk.accounts.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self' data:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self'; object-src 'none'"
     />
     <title>Dash</title>
   </head>

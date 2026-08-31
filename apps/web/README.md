@@ -42,7 +42,7 @@ any static host works as long as:
   intermediary that only understands HTTP headers.
 
 ```
-Content-Security-Policy: default-src 'self'; connect-src 'self' %VITE_CONTROL_PLANE_URL% https://*.%VITE_RELAY_DOMAIN% wss://*.%VITE_RELAY_DOMAIN% https://*.clerk.accounts.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' https://img.clerk.com data:; font-src 'self' data:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self'; object-src 'none'
+Content-Security-Policy: default-src 'self'; connect-src 'self' %VITE_CONTROL_PLANE_URL% https://*.%VITE_RELAY_DOMAIN% wss://*.%VITE_RELAY_DOMAIN% https://*.clerk.accounts.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self' data:; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:; base-uri 'self'; form-action 'self'; object-src 'none'
 ```
 
 The `VITE_` placeholders are substituted by Vite at build time from the same
@@ -61,8 +61,14 @@ Notes on that policy:
 - `wss://*.<relay-domain>` is listed separately and is **load-bearing**: `connect-src`
   governs WebSockets too, but an `https://` source does not match a `wss://` URL,
   so without it the chat socket is blocked while REST keeps working.
-- `img-src` allows `https://img.clerk.com` (Clerk renders user avatars from it) and
-  `data:` (inline icons).
+- `img-src` allows any `https:` origin plus `data:` (inline icons/pasted images).
+  This is deliberately broader than the rest of the policy: assistant replies can
+  contain markdown image links pointing at arbitrary remote hosts, which isn't a
+  fixed allowlist the way the control plane/relay/Clerk origins are.
+  `react-markdown`'s `defaultUrlTransform` strips `javascript:`/`data:` image
+  sources before they reach the DOM, so this doesn't reopen the XSS the rest of
+  the policy guards against. `https://img.clerk.com` (Clerk's avatar CDN) is
+  subsumed by the blanket `https:`.
 - `script-src` allows only Clerk's own script origins in addition to `'self'` — no
   other third-party script origins are needed. `frame-src` and `worker-src` cover
   Clerk's sign-in widget internals.

@@ -1,4 +1,5 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from 'react';
+import type { ConversationMessage } from '@dash/mobile-contract';
+import { type FormEvent, type ReactNode, memo, useCallback, useEffect, useState } from 'react';
 import { useWebAppStore } from './Shell.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
 
@@ -59,10 +60,21 @@ function CopyButton({ text }: { text: string }): ReactNode {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    // `navigator.clipboard` is undefined in insecure contexts (plain HTTP,
+    // non-localhost) — calling `.writeText` on it would throw synchronously
+    // rather than reject, crashing the click handler. No-op silently there;
+    // there's no in-page fallback worth adding for a "copy message" button.
+    if (!navigator.clipboard) return;
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {
+        // Write failed (permission denied, etc.) — leave `copied` false
+        // rather than falsely showing the check icon.
+      });
   }, [text]);
 
   return (
@@ -71,6 +83,43 @@ function CopyButton({ text }: { text: string }): ReactNode {
     </button>
   );
 }
+
+/**
+ * One confirmed message's row: `ContentBlocks` (markdown/tool-card
+ * rendering) plus its copy button and failed-send indicator.
+ *
+ * Memoized (MC precedent: `memo(MessageBubble)` in
+ * `apps/mission-control/src/renderer/src/routes/chat.tsx`) so a token delta
+ * arriving for the *streaming* message — which re-renders `ChatView` on
+ * every `event` frame (`transcript` is a new object reference each time,
+ * even though `applyServerFrame` passes `t.messages`/its elements through
+ * unchanged for `accepted`/`event` frames, see `assemble.ts`) — doesn't
+ * re-run `ContentBlocks` for every *other*, unrelated confirmed message on
+ * every keystroke of the response. `message`'s reference only actually
+ * changes when that specific message is replaced (e.g. `done` finalizing
+ * it, or the optimistic-send/failed-send transitions in `store.ts`), so
+ * default shallow-prop memoization is correct here — the streaming message
+ * itself isn't rendered through this component (see the `streaming` block
+ * below), so it keeps updating on every delta as normal.
+ */
+const MessageRow = memo(function MessageRow({
+  message,
+}: {
+  message: ConversationMessage;
+}): ReactNode {
+  const copyText = getMessageCopyText(message.content);
+  return (
+    <div data-testid="chat-message" data-role={message.role} className="chat-message">
+      <ContentBlocks content={message.content} />
+      {copyText && <CopyButton text={copyText} />}
+      {message.status === 'failed' && (
+        <span role="alert" style={{ color: '#b00020', fontSize: '0.85em' }}>
+          Failed to send
+        </span>
+      )}
+    </div>
+  );
+});
 
 /**
  * The main chat surface: renders the open conversation's transcript
@@ -159,25 +208,9 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
       {transcript?.error && <p role="alert">{transcript.error.message}</p>}
 
       <div>
-        {messages.map((message) => {
-          const copyText = getMessageCopyText(message.content);
-          return (
-            <div
-              key={message.id}
-              data-testid="chat-message"
-              data-role={message.role}
-              className="chat-message"
-            >
-              <ContentBlocks content={message.content} />
-              {copyText && <CopyButton text={copyText} />}
-              {message.status === 'failed' && (
-                <span role="alert" style={{ color: '#b00020', fontSize: '0.85em' }}>
-                  Failed to send
-                </span>
-              )}
-            </div>
-          );
-        })}
+        {messages.map((message) => (
+          <MessageRow key={message.id} message={message} />
+        ))}
         {streaming && (
           <div data-testid="chat-message-streaming" data-role="assistant">
             <ContentBlocks content={streaming} />
