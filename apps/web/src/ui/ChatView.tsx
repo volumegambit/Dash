@@ -159,22 +159,25 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
       {transcript?.error && <p role="alert">{transcript.error.message}</p>}
 
       <div>
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            data-testid="chat-message"
-            data-role={message.role}
-            className="chat-message"
-          >
-            <ContentBlocks content={message.content} />
-            <CopyButton text={getMessageCopyText(message.content)} />
-            {message.status === 'failed' && (
-              <span role="alert" style={{ color: '#b00020', fontSize: '0.85em' }}>
-                Failed to send
-              </span>
-            )}
-          </div>
-        ))}
+        {messages.map((message) => {
+          const copyText = getMessageCopyText(message.content);
+          return (
+            <div
+              key={message.id}
+              data-testid="chat-message"
+              data-role={message.role}
+              className="chat-message"
+            >
+              <ContentBlocks content={message.content} />
+              {copyText && <CopyButton text={copyText} />}
+              {message.status === 'failed' && (
+                <span role="alert" style={{ color: '#b00020', fontSize: '0.85em' }}>
+                  Failed to send
+                </span>
+              )}
+            </div>
+          );
+        })}
         {streaming && (
           <div data-testid="chat-message-streaming" data-role="assistant">
             <ContentBlocks content={streaming} />

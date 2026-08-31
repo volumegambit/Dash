@@ -353,10 +353,6 @@
  * Message copy button (spec appendix §6)
  * ------------------------------------------------------------------- */
 
-.chat-message {
-  position: relative;
-}
-
 .copy-button {
   border: none;
   background: none;

@@ -322,4 +322,24 @@ describe('ChatView message copy button', () => {
 
     expect(writeText).toHaveBeenCalledWith('Done. All good.');
   });
+
+  it('renders no copy button for a tool-only turn (nothing to copy)', async () => {
+    await renderConnected({
+      messages: [
+        message({
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
+              { type: 'tool_result', id: 'call-1', name: 'bash', content: 'file1' },
+            ],
+          },
+        }),
+      ],
+    });
+
+    expect(screen.getByTestId('tool-use-block')).toBeTruthy();
+    expect(screen.queryByTitle('Copy message')).toBeNull();
+  });
 });
