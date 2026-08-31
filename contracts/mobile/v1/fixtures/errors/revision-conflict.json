@@ -1,0 +1,22 @@
+{
+  "code": "revision_conflict",
+  "error": "Conversation revision does not match If-Match",
+  "retryable": false,
+  "details": {
+    "current": {
+      "id": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "agentId": "agent-01",
+      "agentName": "Mobile Helper",
+      "title": "Mobile launch check",
+      "revision": 2,
+      "status": "idle",
+      "activeTurnId": null,
+      "owningIssueId": "issue-01",
+      "projectId": "project-01",
+      "lastSeq": 5,
+      "lastMessagePreview": "Ready from the gateway.",
+      "createdAt": "2026-07-12T00:00:00.000Z",
+      "updatedAt": "2026-07-12T00:00:05.000Z"
+    }
+  }
+}

@@ -1,0 +1,405 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "file": "pairing-lan-v1.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "pairing-lan-v3.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": true
+    },
+    {
+      "file": "pairing-relay-v2.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": true
+    },
+    {
+      "file": "health-capabilities.json",
+      "document": "openapi",
+      "schema": "MobileHealth",
+      "valid": true
+    },
+    {
+      "file": "identity.json",
+      "document": "openapi",
+      "schema": "GatewayIdentity",
+      "valid": true
+    },
+    {
+      "file": "agents-list.json",
+      "document": "openapi",
+      "schema": "MobileAgentList",
+      "valid": true
+    },
+    {
+      "file": "agent-create.json",
+      "document": "openapi",
+      "schema": "CreateMobileAgentRequest",
+      "valid": true
+    },
+    {
+      "file": "agent-update.json",
+      "document": "openapi",
+      "schema": "UpdateMobileAgentRequest",
+      "valid": true
+    },
+    {
+      "file": "agent-action-ok.json",
+      "document": "openapi",
+      "schema": "MobileActionResponse",
+      "valid": true
+    },
+    {
+      "file": "models-list.json",
+      "document": "openapi",
+      "schema": "MobileModelsResponse",
+      "valid": true
+    },
+    {
+      "file": "conversation-create.json",
+      "document": "openapi",
+      "schema": "ConversationCreateRequest",
+      "valid": true
+    },
+    {
+      "file": "conversation-patch.json",
+      "document": "openapi",
+      "schema": "ConversationPatchRequest",
+      "valid": true
+    },
+    {
+      "file": "conversation-summary.json",
+      "document": "openapi",
+      "schema": "ConversationSummary",
+      "valid": true
+    },
+    {
+      "file": "conversations-page.json",
+      "document": "openapi",
+      "schema": "ConversationPage",
+      "valid": true
+    },
+    {
+      "file": "conversation-messages-page.json",
+      "document": "openapi",
+      "schema": "ConversationMessagePage",
+      "valid": true
+    },
+    {
+      "file": "replay.json",
+      "document": "openapi",
+      "schema": "ReplayPage",
+      "valid": true
+    },
+    {
+      "file": "chat-send.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": true
+    },
+    {
+      "file": "chat-resume.json",
+      "document": "chat-ws",
+      "schema": "ChatResume",
+      "valid": true
+    },
+    {
+      "file": "chat-answer.json",
+      "document": "chat-ws",
+      "schema": "ChatAnswer",
+      "valid": true
+    },
+    {
+      "file": "chat-cancel.json",
+      "document": "chat-ws",
+      "schema": "ChatCancel",
+      "valid": true
+    },
+    {
+      "file": "chat-accepted.json",
+      "document": "chat-ws",
+      "schema": "ChatAccepted",
+      "valid": true
+    },
+    {
+      "file": "chat-event.json",
+      "document": "chat-ws",
+      "schema": "ChatEvent",
+      "valid": true
+    },
+    {
+      "file": "chat-done.json",
+      "document": "chat-ws",
+      "schema": "ChatDone",
+      "valid": true
+    },
+    {
+      "file": "chat-error.json",
+      "document": "chat-ws",
+      "schema": "ChatError",
+      "valid": true
+    },
+    {
+      "file": "chat-stream.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "chat-resume.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "sse-conversation-changed.txt",
+      "document": "openapi",
+      "schema": "ConversationChangedEvent",
+      "valid": true,
+      "format": "sse"
+    },
+    {
+      "file": "sse-conversation-deleted.txt",
+      "document": "openapi",
+      "schema": "ConversationDeletedEvent",
+      "valid": true,
+      "format": "sse"
+    },
+    {
+      "file": "ws-ticket/response.json",
+      "document": "openapi",
+      "schema": "WsTicketResponse",
+      "valid": true
+    },
+    {
+      "file": "ws-ticket/response-missing-ticket.json",
+      "document": "openapi",
+      "schema": "WsTicketResponse",
+      "valid": false
+    },
+    {
+      "file": "errors/unauthorized.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": true
+    },
+    {
+      "file": "errors/not-found.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": true
+    },
+    {
+      "file": "errors/validation-failed.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": true
+    },
+    {
+      "file": "errors/revision-conflict.json",
+      "document": "openapi",
+      "schema": "RevisionConflictError",
+      "valid": true
+    },
+    {
+      "file": "errors/conversation-busy.json",
+      "document": "openapi",
+      "schema": "ConversationBusyError",
+      "valid": true
+    },
+    {
+      "file": "errors/rate-limited.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": true
+    },
+    {
+      "file": "errors/gateway-offline.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": true
+    },
+    {
+      "file": "errors/capability-required.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": true
+    },
+    {
+      "file": "errors/unsupported-pairing-version.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "errors/missing-relay-credential.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-host-with-scheme.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-port-out-of-range.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-blank-secret.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-v2-mismatched-mobile-token.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-v3-mismatched-mobile-token.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/pairing-v3-mismatched-ports.json",
+      "document": "openapi",
+      "schema": "PairingPayload",
+      "valid": false
+    },
+    {
+      "file": "invalid/health-missing-api-version.json",
+      "document": "openapi",
+      "schema": "MobileHealth",
+      "valid": false
+    },
+    {
+      "file": "invalid/identity-missing-gateway-id.json",
+      "document": "openapi",
+      "schema": "GatewayIdentity",
+      "valid": false
+    },
+    {
+      "file": "invalid/agents-list-secret-leak.json",
+      "document": "openapi",
+      "schema": "MobileAgentList",
+      "valid": false
+    },
+    {
+      "file": "invalid/agent-action-not-ok.json",
+      "document": "openapi",
+      "schema": "MobileActionResponse",
+      "valid": false
+    },
+    {
+      "file": "invalid/models-list-missing-provider.json",
+      "document": "openapi",
+      "schema": "MobileModelsResponse",
+      "valid": false
+    },
+    {
+      "file": "invalid/conversation-create-missing-request-id.json",
+      "document": "openapi",
+      "schema": "ConversationCreateRequest",
+      "valid": false
+    },
+    {
+      "file": "invalid/conversation-patch-empty.json",
+      "document": "openapi",
+      "schema": "ConversationPatchRequest",
+      "valid": false
+    },
+    {
+      "file": "invalid/conversation-summary-bad-status.json",
+      "document": "openapi",
+      "schema": "ConversationSummary",
+      "valid": false
+    },
+    {
+      "file": "invalid/conversations-page-missing-items.json",
+      "document": "openapi",
+      "schema": "ConversationPage",
+      "valid": false
+    },
+    {
+      "file": "invalid/conversation-messages-page-bad-content.json",
+      "document": "openapi",
+      "schema": "ConversationMessagePage",
+      "valid": false
+    },
+    {
+      "file": "invalid/replay-out-of-order.json",
+      "document": "openapi",
+      "schema": "ReplayPage",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-send-missing-turn-id.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-resume-negative-seq.json",
+      "document": "chat-ws",
+      "schema": "ChatResume",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-answer-missing-question-id.json",
+      "document": "chat-ws",
+      "schema": "ChatAnswer",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-cancel-missing-id.json",
+      "document": "chat-ws",
+      "schema": "ChatCancel",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-accepted-missing-seq.json",
+      "document": "chat-ws",
+      "schema": "ChatAccepted",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-event-missing-conversation-id.json",
+      "document": "chat-ws",
+      "schema": "ChatEvent",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-done-missing-outcome.json",
+      "document": "chat-ws",
+      "schema": "ChatDone",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-error-missing-error.json",
+      "document": "chat-ws",
+      "schema": "ChatError",
+      "valid": false
+    },
+    {
+      "file": "invalid/structured-error-missing-code.json",
+      "document": "openapi",
+      "schema": "MobileApiError",
+      "valid": false
+    }
+  ]
+}

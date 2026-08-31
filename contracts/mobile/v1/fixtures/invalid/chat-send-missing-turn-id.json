@@ -1,0 +1,8 @@
+{
+  "type": "message",
+  "agentId": "agent-01",
+  "channelId": "mobile-ios",
+  "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "text": "Is the mobile connection ready?",
+  "resumable": true
+}

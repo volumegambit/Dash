@@ -19,6 +19,8 @@
             "pages": [
               "agents",
               "mission-control",
+              "ios",
+              "web",
               "projects",
               "messaging-apps",
               "remote-access",

@@ -1,10 +1,11 @@
+import type { ConversationRef } from '@dash/mc';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { ArrowLeft, ChevronDown, ChevronRight, ExternalLink, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { IssueComment, IssueEvent, IssueStatus } from '../../../../shared/projects-ipc.js';
 import { Markdown } from '../../components/Markdown.js';
 import { useAgentsStore } from '../../stores/agents.js';
-import { useChatStore } from '../../stores/chat.js';
+import { conversationKey, useChatStore } from '../../stores/chat.js';
 import { useProjectsStore } from '../../stores/projects.js';
 import { SessionPanel } from './-components/SessionPanel.js';
 import { SubStatusPill } from './-components/StatusPill.js';
@@ -144,7 +145,7 @@ export function TaskDetail(): JSX.Element {
   const agents = useAgentsStore((s) => s.agents);
   const loadAgents = useAgentsStore((s) => s.loadAgents);
   const conversations = useChatStore((s) => s.conversations);
-  const loadConversations = useChatStore((s) => s.loadConversations);
+  const ensureConversation = useChatStore((s) => s.ensureConversation);
   const chatSending = useChatStore((s) => s.sending);
   const sendChatMessage = useChatStore((s) => s.sendMessage);
 
@@ -156,20 +157,56 @@ export function TaskDetail(): JSX.Element {
   const [assignAgentId, setAssignAgentId] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [resolvedSessions, setResolvedSessions] = useState<Map<string, ConversationRef | null>>(
+    new Map(),
+  );
   // 'task' or an MC session id — which tab fills the main column.
   const [activeTab, setActiveTab] = useState<'task' | string>('task');
 
   useEffect(() => {
     loadProjects();
     loadIssueDetail(issueId);
-    // Agents feed the assign picker; conversations decide which linked-session
-    // tabs can show in the main column.
+    // Agents feed the assign picker. Linked conversations are resolved below
+    // by exact origin instead of relying on the first conversation page.
     loadAgents();
-    loadConversations();
     // A session picked on one task must not leak onto the next.
     setSelectedSessionId(null);
     setActiveTab('task');
-  }, [loadIssueDetail, loadProjects, loadAgents, loadConversations, issueId]);
+  }, [loadIssueDetail, loadProjects, loadAgents, issueId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const links = detail?.linked_sessions ?? [];
+    setResolvedSessions(new Map());
+    void Promise.all(
+      links.map(async (link): Promise<[string, ConversationRef | null] | null> => {
+        const gatewayRef = { id: link.session_id, origin: 'gateway' as const };
+        try {
+          const gateway = await ensureConversation(gatewayRef);
+          if (gateway?.owningIssueId === detail?.id) return [link.session_id, gatewayRef];
+        } catch {
+          return null;
+        }
+        const localRef = { id: link.session_id, origin: 'local' as const };
+        try {
+          const local = await ensureConversation(localRef);
+          return [link.session_id, local ? localRef : null];
+        } catch {
+          return null;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setResolvedSessions(
+        new Map(
+          entries.filter((entry): entry is [string, ConversationRef | null] => entry !== null),
+        ),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail, ensureConversation]);
 
   if (!detail) {
     return <div className="p-8 text-muted">Loading task…</div>;
@@ -184,8 +221,8 @@ export function TaskDetail(): JSX.Element {
 
   // Sessions that exist as MC chat conversations can render in the embedded
   // panel; the most recently referenced one is shown until a chip is picked.
-  const mcSessions = detail.linked_sessions.filter((l) =>
-    conversations.some((c) => c.id === l.session_id),
+  const mcSessions = detail.linked_sessions.filter((link) =>
+    Boolean(resolvedSessions.get(link.session_id)),
   );
   const latestMcSession = mcSessions.reduce<(typeof mcSessions)[number] | null>(
     (best, l) => (!best || l.last_referenced_at > best.last_referenced_at ? l : best),
@@ -217,7 +254,7 @@ export function TaskDetail(): JSX.Element {
   // Sessions from other channels can't open in MC — listed inert in metadata,
   // while MC sessions live in the main-column tabs.
   const otherSessions = detail.linked_sessions.filter(
-    (l) => !conversations.some((c) => c.id === l.session_id),
+    (link) => resolvedSessions.get(link.session_id) === null,
   );
 
   // session_linked events carry a raw session id; show the agent behind it.
@@ -232,7 +269,20 @@ export function TaskDetail(): JSX.Element {
     return `🤖 ${agent ?? 'Agent'} session linked`;
   };
 
-  const activeSessionBusy = activeSessionId ? (chatSending[activeSessionId] ?? false) : false;
+  const activeSessionRef = activeSessionId ? (resolvedSessions.get(activeSessionId) ?? null) : null;
+  const activeSessionKey = activeSessionRef ? conversationKey(activeSessionRef) : null;
+  const activeSessionConversation = activeSessionRef
+    ? conversations.find(
+        (conversation) =>
+          conversation.id === activeSessionRef.id &&
+          conversation.origin === activeSessionRef.origin,
+      )
+    : null;
+  const activeSessionBusy = Boolean(
+    (activeSessionKey && chatSending[activeSessionKey]) ||
+      activeSessionConversation?.status === 'running' ||
+      activeSessionConversation?.activeTurnId,
+  );
 
   const submitComment = async () => {
     const body = draft.trim();
@@ -243,9 +293,9 @@ export function TaskDetail(): JSX.Element {
     // without a manual nudge. Skipped while the agent is mid-run — the chat
     // service rejects concurrent streams, and the kickoff instructions already
     // tell agents to re-read task comments.
-    if (activeSessionId && !activeSessionBusy) {
+    if (activeSessionRef && !activeSessionBusy) {
       try {
-        await sendChatMessage(activeSessionId, `New comment on ${detail.key}:\n\n${body}`);
+        await sendChatMessage(activeSessionRef, `New comment on ${detail.key}:\n\n${body}`);
       } catch {
         // Best-effort: the comment is already on the task record.
       }
@@ -259,15 +309,22 @@ export function TaskDetail(): JSX.Element {
     const before = new Set(detail.linked_sessions.map((l) => l.session_id));
     try {
       await assignAgent(issueId, { id: agent.id, name: agent.name });
-      // Assign just created a NEW chat conversation; without a reload the
-      // mount-time conversations snapshot excludes it, the mcSessions filter
-      // drops the link, and the session tab never shows until a remount.
-      await loadConversations();
       setAssignAgentId('');
       // Jump to the freshly created session's tab — that's where the kickoff streams.
       const after = useProjectsStore.getState().detailById[issueId]?.linked_sessions ?? [];
       const fresh = after.find((l) => !before.has(l.session_id)) ?? after[0];
       if (fresh) {
+        const gatewayRef = { id: fresh.session_id, origin: 'gateway' as const };
+        const gateway = await ensureConversation(gatewayRef);
+        const resolvedRef =
+          gateway?.owningIssueId === issueId
+            ? gatewayRef
+            : (await ensureConversation({ id: fresh.session_id, origin: 'local' }))
+              ? ({ id: fresh.session_id, origin: 'local' } as const)
+              : null;
+        if (resolvedRef) {
+          setResolvedSessions((current) => new Map(current).set(fresh.session_id, resolvedRef));
+        }
         setActiveTab(fresh.session_id);
         setSelectedSessionId(fresh.session_id);
       }
@@ -417,7 +474,10 @@ export function TaskDetail(): JSX.Element {
                   }`}
                 >
                   {sessionTabLabel(link)}
-                  {chatSending[link.session_id] && (
+                  {(() => {
+                    const ref = resolvedSessions.get(link.session_id);
+                    return ref && chatSending[conversationKey(ref)];
+                  })() && (
                     <span
                       data-testid={`tab-dot-${link.session_id}`}
                       className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
@@ -433,12 +493,18 @@ export function TaskDetail(): JSX.Element {
               <div className="flex shrink-0 items-center justify-end">
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    const ref = resolvedSessions.get(activeSessionTab);
+                    if (!ref) return;
                     navigate({
                       to: '/chat',
-                      search: { agentId: '', conversationId: activeSessionTab },
-                    })
-                  }
+                      search: {
+                        agentId: '',
+                        conversationId: ref.id,
+                        origin: ref.origin,
+                      },
+                    });
+                  }}
                   title="Open in Chat"
                   aria-label="Open in Chat"
                   data-testid="session-open-chat"
@@ -448,7 +514,12 @@ export function TaskDetail(): JSX.Element {
                 </button>
               </div>
               {/* Keyed so draft/answered state resets when switching sessions. */}
-              <SessionPanel key={activeSessionTab} conversationId={activeSessionTab} />
+              {resolvedSessions.get(activeSessionTab) && (
+                <SessionPanel
+                  key={`${resolvedSessions.get(activeSessionTab)?.origin}:${activeSessionTab}`}
+                  conversationRef={resolvedSessions.get(activeSessionTab) as ConversationRef}
+                />
+              )}
             </div>
           ) : (
             <>

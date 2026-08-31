@@ -1,0 +1,267 @@
+import type { ConversationContent } from '@dash/mobile-contract';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { ContentBlocks, getMessageCopyText } from './ContentBlocks.js';
+
+describe('ContentBlocks', () => {
+  it('renders user content as text', () => {
+    const content: ConversationContent = { type: 'user', text: 'Is the mobile connection ready?' };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('Is the mobile connection ready?')).toBeTruthy();
+  });
+
+  it('renders assistant text_delta events as markdown', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'Ready ' },
+        { type: 'text_delta', text: 'from the gateway.' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('Ready from the gateway.')).toBeTruthy();
+  });
+
+  it('splits assistant text on blank lines into separate markdown paragraphs', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'First paragraph.\n\nSecond paragraph.' }],
+    };
+    const { container } = render(<ContentBlocks content={content} />);
+    const paragraphs = container.querySelectorAll('.md-p');
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].textContent).toBe('First paragraph.');
+    expect(paragraphs[1].textContent).toBe('Second paragraph.');
+  });
+
+  it('renders a collapsed tool card with a status glyph, tool label, and summary, opening on click to reveal details and result', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls -la' } },
+        { type: 'tool_use_delta', partial_json: '{}' },
+        { type: 'tool_result', id: 'call-1', name: 'bash', content: 'file1\nfile2' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+
+    const toolBlock = screen.getByTestId('tool-use-block');
+    expect(toolBlock.tagName).toBe('DIV');
+    expect(toolBlock.getAttribute('data-status')).toBe('succeeded');
+    expect(screen.getByText('Bash')).toBeTruthy();
+    expect(screen.getByText('ls -la')).toBeTruthy();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Bash/ }));
+
+    const result = screen.getByTestId('tool-result');
+    expect(toolBlock.contains(result)).toBe(true);
+    expect(result.textContent).toBe('file1\nfile2');
+    expect(result.className).toContain('tool-result-short');
+  });
+
+  it('renders an in-progress (running) tool card when no tool-result has arrived yet', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } }],
+    };
+    render(<ContentBlocks content={content} />);
+    const toolBlock = screen.getByTestId('tool-use-block');
+    expect(toolBlock.getAttribute('data-status')).toBe('running');
+    expect(toolBlock.textContent).toContain('Bash');
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+  });
+
+  it('tints a failed tool card red and renders the error result on open', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'false' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'bash',
+          content: 'command not found',
+          isError: true,
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    const toolBlock = screen.getByTestId('tool-use-block');
+    expect(toolBlock.getAttribute('data-status')).toBe('failed');
+    expect(toolBlock.className).toContain('tool-card-error');
+
+    fireEvent.click(screen.getByRole('button', { name: /Bash/ }));
+    const result = screen.getByTestId('tool-result');
+    expect(result.className).toContain('tool-result-error');
+    expect(result.textContent).toBe('command not found');
+  });
+
+  it('renders "No output" (muted italic) for an empty successful result', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'true' } },
+        { type: 'tool_result', id: 'call-1', name: 'bash', content: '   ' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    fireEvent.click(screen.getByRole('button', { name: /Bash/ }));
+    const result = screen.getByTestId('tool-result');
+    expect(result.className).toContain('tool-result-empty');
+    expect(result.textContent).toBe('No output');
+  });
+
+  it('caps a longer (>3 line) result to a scrollable 256px block', () => {
+    const longContent = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'read', input: { path: 'src/index.ts' } },
+        { type: 'tool_result', id: 'call-1', name: 'read', content: longContent },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    fireEvent.click(screen.getByRole('button', { name: /Read/ }));
+    const result = screen.getByTestId('tool-result');
+    expect(result.tagName).toBe('PRE');
+    expect(result.className).toContain('tool-result-long');
+    expect(result.textContent).toBe(longContent);
+  });
+
+  it("skips the read tool's path/offset/limit in the expanded details list (already shown in the summary)", () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        {
+          type: 'tool_use_start',
+          id: 'call-1',
+          name: 'read',
+          input: { path: 'src/index.ts', offset: 0, limit: 100 },
+        },
+        { type: 'tool_result', id: 'call-1', name: 'read', content: 'ok' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    fireEvent.click(screen.getByRole('button', { name: /Read/ }));
+    expect(screen.queryByText(/Offset:/)).toBeNull();
+    expect(screen.queryByText(/Limit:/)).toBeNull();
+    expect(screen.queryByText(/Path:/)).toBeNull();
+  });
+
+  it('renders a thinking block, collapsed by default with "Show thinking" copy, toggling to "Hide thinking" on click', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'thinking_delta', text: 'Considering the options...' }],
+    };
+    render(<ContentBlocks content={content} />);
+    const thinkingBlock = screen.getByTestId('thinking-block');
+    expect(thinkingBlock.tagName).toBe('DETAILS');
+    expect(thinkingBlock.hasAttribute('open')).toBe(false);
+    expect(screen.getByText('Show thinking')).toBeTruthy();
+    expect(thinkingBlock.textContent).toContain('Considering the options...');
+
+    fireEvent.click(screen.getByText('Show thinking'));
+    expect(screen.getByText('Hide thinking')).toBeTruthy();
+    expect(thinkingBlock.hasAttribute('open')).toBe(true);
+  });
+
+  it('renders a realistic turn (text_delta, text_delta, response) with no unknown-block, since response is a silent end-of-turn metadata event', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'All set. ' },
+        { type: 'text_delta', text: 'Mobile access is ready.' },
+        {
+          type: 'response',
+          content: 'All set. Mobile access is ready.',
+          usage: { inputTokens: 12, outputTokens: 6 },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('All set. Mobile access is ready.')).toBeTruthy();
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
+  });
+
+  it("renders a question event's prompt text as a plain paragraph, with no unknown-block", () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'One more thing — ' },
+        {
+          type: 'question',
+          id: 'question-01',
+          question: 'Confirm mobile access?',
+          options: ['Yes', 'No'],
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('One more thing —')).toBeTruthy();
+    expect(screen.getByText('Confirm mobile access?')).toBeTruthy();
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
+  });
+
+  it('renders a fallback unknown-block for an unrecognized event type, without throwing', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'agent_spawned', name: 'worker-1' }],
+    };
+    expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
+    expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
+  it('renders a fallback unknown-block for a malformed event (missing required field), without throwing', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'text_delta' } as unknown as { type: 'text_delta'; text: string }],
+    };
+    expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
+    expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
+  it('renders a fallback unknown-block for entirely malformed content, without throwing', () => {
+    const content = { type: 'bogus' } as unknown as ConversationContent;
+    expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
+    expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+});
+
+describe('paragraph keys', () => {
+  it('renders every paragraph when a block repeats identical text', () => {
+    // Regression check: an earlier custom paragraph-splitter derived React
+    // keys from paragraph content, so identical paragraphs collided and
+    // only the first rendered. Markdown (react-markdown) does its own
+    // virtual-dom diffing and has no such issue.
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'same\n\nsame\n\nsame' }],
+    };
+    const { container } = render(<ContentBlocks content={content} />);
+    expect(container.querySelectorAll('.md-p')).toHaveLength(3);
+  });
+});
+
+describe('getMessageCopyText', () => {
+  it("returns a user message's plain text", () => {
+    expect(getMessageCopyText({ type: 'user', text: 'hello there' })).toBe('hello there');
+  });
+
+  it("concatenates an assistant message's text_delta text only, excluding tool/thinking content", () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'thinking_delta', text: 'hmm...' },
+        { type: 'text_delta', text: 'Here is ' },
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
+        { type: 'tool_result', id: 'call-1', name: 'bash', content: 'file1' },
+        { type: 'text_delta', text: 'the answer.' },
+      ],
+    };
+    expect(getMessageCopyText(content)).toBe('Here is the answer.');
+  });
+
+  it('returns an empty string for malformed content', () => {
+    expect(getMessageCopyText({ type: 'bogus' } as unknown as ConversationContent)).toBe('');
+  });
+});

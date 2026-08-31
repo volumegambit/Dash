@@ -1,4 +1,4 @@
-import { createPublicKey, generateKeyPairSync } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import {
   DurableCredentialStore,
@@ -12,7 +12,7 @@ import { createApi } from './api.js';
 import { StubAuthenticator } from './auth.js';
 import { DialTokenSigner } from './dial-token-signer.js';
 import { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
-import { ProvisioningService } from './provisioning.js';
+import { ProvisioningService, approvalMessage } from './provisioning.js';
 import { RelayAdminClient } from './relay-admin-client.js';
 import { SqliteStore } from './store.js';
 
@@ -24,12 +24,22 @@ const { publicKey, privateKey } = generateKeyPairSync('ed25519');
 const gwKeys = generateKeyPairSync('ed25519');
 const gwPubB64 = (gwKeys.publicKey.export({ format: 'jwk' }) as { x: string }).x;
 
+/** A fresh, canonical unpadded-base64url-encoded 32-byte Ed25519-shaped key. */
+function freshSignerKey(): string {
+  return randomBytes(32).toString('base64url');
+}
+
 let relayServer: RelayServer;
 let relayStore: DurableCredentialStore;
 let store: SqliteStore;
 let app: ReturnType<typeof createApi>;
+// Mutable so approval-expiry tests can fast-forward the ProvisioningService's
+// clock without needing a whole separate app instance (the #now() injection
+// pattern used by DialTokenSigner/GatewayAssertionAuthenticator).
+let clockMs = 1000;
 
 beforeEach(async () => {
+  clockMs = 1000;
   relayStore = new DurableCredentialStore(':memory:');
   relayServer = createRelayServer(hostedRelayAuth({ publicKey, store: relayStore }), {
     admin: { secret: 'master', store: relayStore },
@@ -45,6 +55,7 @@ beforeEach(async () => {
     signer,
     relay,
     relayZone: 'relay.example.com',
+    now: () => clockMs,
   });
   const gatewayAssertionAuth = new GatewayAssertionAuthenticator({
     store,
@@ -73,10 +84,10 @@ function req(method: string, path: string, account?: string, body?: unknown): Pr
 }
 
 describe('GET /health', () => {
-  it('is open (no auth) and reports healthy', async () => {
+  it('is open and advertises pairing-id support before clients can mint', async () => {
     const res = await app.request('/health');
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'healthy' });
+    expect(await res.json()).toEqual({ status: 'healthy', capabilities: ['pairing-id-v1'] });
   });
 });
 
@@ -142,6 +153,27 @@ describe('POST /v1/gateways', () => {
     const res = await req('GET', '/v1/gateways', 'a1');
     const body = (await res.json()) as { gateways: Array<{ gatewayId: string }> };
     expect(body.gateways.map((g) => g.gatewayId)).toEqual(['alice']);
+  });
+
+  it('projects a deliberate gateway shape: publicKey in, accountId never echoed', async () => {
+    await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 });
+
+    const res = await req('GET', '/v1/gateways', 'a1');
+    const body = (await res.json()) as { gateways: Array<Record<string, unknown>> };
+    const [gateway] = body.gateways;
+
+    // The mobile client cross-checks the gateway's verified identity against
+    // this value, so it MUST be on the wire.
+    expect(gateway.publicKey).toBe(gwPubB64);
+    // A deliberate projection, not the raw record: the account id the caller
+    // already authenticated as is never echoed back.
+    expect(Object.keys(gateway as object).sort()).toEqual([
+      'createdAt',
+      'gatewayId',
+      'publicKey',
+      'status',
+      'subdomain',
+    ]);
   });
 });
 
@@ -285,12 +317,19 @@ describe('pairings', () => {
       gatewayId: string;
     };
 
-    const createRes = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
-      deviceLabel: 'iPhone',
-    });
+    const createRes = await req(
+      'POST',
+      `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`,
+      'a1',
+      { deviceLabel: 'iPhone' },
+    );
     expect(createRes.status).toBe(200);
-    const { credential } = (await createRes.json()) as { credential: string };
+    const { credential, pairingId } = (await createRes.json()) as {
+      credential: string;
+      pairingId: string;
+    };
     expect(typeof credential).toBe('string');
+    expect(typeof pairingId).toBe('string');
     // The relay's hot path accepts the minted credential under this gateway.
     expect(relayStore.isValid(a.gatewayId, credential)).toBe(true);
 
@@ -300,11 +339,10 @@ describe('pairings', () => {
       pairings: Array<{ id: string; credentialHash: string; deviceLabel: string | null }>;
     };
     expect(list.pairings).toHaveLength(1);
+    expect(list.pairings[0].id).toBe(pairingId);
     expect(list.pairings[0].deviceLabel).toBe('iPhone');
     // Only the hash is ever exposed — never the raw credential.
     expect(list.pairings[0].credentialHash).not.toBe(credential);
-    const pairingId = list.pairings[0].id;
-
     const delRes = await req('DELETE', `/v1/gateways/${a.gatewayId}/pairings/${pairingId}`, 'a1');
     expect(delRes.status).toBe(200);
     expect(relayStore.isValid(a.gatewayId, credential)).toBe(false);
@@ -317,7 +355,7 @@ describe('pairings', () => {
       gatewayId: string;
     };
 
-    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a2', {
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a2', {
       deviceLabel: 'iPhone',
     });
     expect(res.status).toBe(404);
@@ -337,7 +375,9 @@ describe('pairings', () => {
       gatewayId: string;
     };
     const { credential } = (await (
-      await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', { deviceLabel: 'iPhone' })
+      await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        deviceLabel: 'iPhone',
+      })
     ).json()) as { credential: string };
     const list = (await (
       await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
@@ -350,6 +390,1004 @@ describe('pairings', () => {
     expect(res.status).toBe(404);
     // The credential is still valid — the cross-account delete touched nothing.
     expect(relayStore.isValid(a.gatewayId, credential)).toBe(true);
+  });
+
+  it('keeps the legacy unversioned create route compatible without exposing the pairing id', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'legacy-client',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ credential: expect.any(String) });
+    expect(relayStore.isValid(a.gatewayId, body.credential as string)).toBe(true);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ id: string; deviceLabel: string | null }> };
+    expect(list.pairings).toEqual([
+      expect.objectContaining({ id: expect.any(String), deviceLabel: 'legacy-client' }),
+    ]);
+  });
+
+  it('projects pairing rows, exposing status and never the credential hash', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+    const created = (await (
+      await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        deviceLabel: 'iPhone',
+      })
+    ).json()) as { pairingId: string };
+
+    const listed = await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1');
+    const raw = await listed.text();
+    expect(JSON.parse(raw)).toEqual({
+      pairings: [
+        {
+          id: created.pairingId,
+          deviceLabel: 'iPhone',
+          clientKind: 'mobile',
+          status: 'active',
+          createdAt: expect.any(Number),
+        },
+      ],
+    });
+    // The stored digest must never reach a client.
+    expect(raw).not.toContain('credentialHash');
+    expect(raw).not.toContain('gatewayId');
+  });
+
+  it('reports a revoked pairing as revoked rather than dropping or faking it', async () => {
+    // Revoked rows are kept forever, so a client that assumed everything listed
+    // was live would show dead devices as active.
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+    const created = (await (
+      await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {})
+    ).json()) as { pairingId: string };
+
+    await req('DELETE', `/v1/gateways/${a.gatewayId}/pairings/${created.pairingId}`, 'a1');
+
+    const listed = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ status: string }> };
+    expect(listed.pairings).toEqual([expect.objectContaining({ status: 'revoked' })]);
+  });
+
+  it('creates a web pairing via the legacy route and lists it with clientKind web', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    await req('PUT', `/v1/gateways/${a.gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-tok',
+    });
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'Safari on iPhone',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ deviceLabel: string | null; clientKind: string }> };
+    expect(list.pairings).toEqual([
+      expect.objectContaining({ deviceLabel: 'Safari on iPhone', clientKind: 'web' }),
+    ]);
+  });
+
+  it('defaults clientKind to mobile when omitted', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', { deviceLabel: 'iPhone' });
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ clientKind: string }> };
+    expect(list.pairings).toEqual([expect.objectContaining({ clientKind: 'mobile' })]);
+  });
+
+  it('400s an invalid clientKind', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+      clientKind: 'desktop',
+    });
+    expect(res.status).toBe(400);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: unknown[] };
+    expect(list.pairings).toEqual([]);
+  });
+
+  it('also threads clientKind through the pairing-id-v1 create route', async () => {
+    const a = (await (
+      await req('POST', '/v1/gateways', 'a1', { subdomain: 'alice', publicKey: gwPubB64 })
+    ).json()) as { gatewayId: string };
+
+    await req('PUT', `/v1/gateways/${a.gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-tok',
+    });
+
+    const res = await req('POST', `/v1/gateways/${a.gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari on iPhone',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+
+    const list = (await (
+      await req('GET', `/v1/gateways/${a.gatewayId}/pairings`, 'a1')
+    ).json()) as { pairings: Array<{ clientKind: string }> };
+    expect(list.pairings).toEqual([expect.objectContaining({ clientKind: 'web' })]);
+  });
+});
+
+describe('PUT /v1/gateways/:id/web-chat-token', () => {
+  async function makeGateway(account: string, subdomain: string): Promise<string> {
+    const res = await req('POST', '/v1/gateways', account, { subdomain, publicKey: gwPubB64 });
+    return ((await res.json()) as { gatewayId: string }).gatewayId;
+  }
+
+  it('401s without authentication', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, undefined, {
+      chatToken: 'chat-tok',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('registers a token for the owning account', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-tok',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('is idempotent — re-registering overwrites', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-1' });
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'chat-2',
+    });
+    expect(res.status).toBe(200);
+
+    const pairing = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect((await pairing.json()) as { chatToken: string }).toMatchObject({ chatToken: 'chat-2' });
+  });
+
+  it('404s a cross-account registration without disclosing the gateway', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a2', {
+      chatToken: 'stolen',
+    });
+    expect(res.status).toBe(404);
+
+    // And the owner's gateway was untouched: a web pairing still 409s.
+    const pairing = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(pairing.status).toBe(409);
+  });
+
+  it('404s an unknown gateway', async () => {
+    const res = await req('PUT', '/v1/gateways/gw-missing/web-chat-token', 'a1', {
+      chatToken: 'chat-tok',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('400s a missing or non-string chatToken', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    expect((await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {})).status).toBe(
+      400,
+    );
+    expect(
+      (await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 42 }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: '' }))
+        .status,
+    ).toBe(400);
+  });
+
+  it('400s an oversized chatToken without persisting it', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    const res = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'x'.repeat(4097),
+    });
+    expect(res.status).toBe(400);
+
+    // Nothing was stored — a web pairing still reports "not registered".
+    const pairing = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(pairing.status).toBe(409);
+
+    // The boundary itself is accepted.
+    const atLimit = await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', {
+      chatToken: 'x'.repeat(4096),
+    });
+    expect(atLimit.status).toBe(200);
+  });
+
+  it('never leaks the token through GET /v1/gateways', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const body = await (await req('GET', '/v1/gateways', 'a1')).text();
+    expect(body).not.toContain('chat-tok');
+  });
+});
+
+describe('web pairings return the registered chat token', () => {
+  async function makeGateway(account: string, subdomain: string): Promise<string> {
+    const res = await req('POST', '/v1/gateways', account, { subdomain, publicKey: gwPubB64 });
+    return ((await res.json()) as { gatewayId: string }).gatewayId;
+  }
+
+  it('pairing-id-v1 returns { credential, pairingId, chatToken } for a web client', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-tok',
+      status: 'active',
+    });
+    // The credential is real: the relay's edge accepts it.
+    expect(relayStore.isValid(gatewayId, body.credential as string)).toBe(true);
+  });
+
+  it('the legacy route also returns the chat token for a web client', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      chatToken: 'chat-tok',
+    });
+  });
+
+  it('mobile pairing-id-v1 mint returns the chat token and status when one is registered', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-tok',
+      status: 'active',
+    });
+  });
+
+  it('mobile pairing-id-v1 mint never 409s and omits chatToken when none is registered (MC/Android compat)', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      status: 'active',
+    });
+    expect('chatToken' in body).toBe(false);
+  });
+
+  it('the legacy mobile mint also receives the chat token when one is registered (additive, backward compatible)', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, 'a1', { chatToken: 'chat-tok' });
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      chatToken: 'chat-tok',
+    });
+  });
+
+  it('the legacy mobile mint stays byte-compatible ({ credential } only) when no token is registered', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ credential: expect.any(String) });
+    expect('chatToken' in body).toBe(false);
+  });
+
+  it('409s a web pairing when no chat token is registered, minting nothing', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toMatchObject({
+      error: expect.stringContaining('web chat token'),
+    });
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: unknown[];
+    };
+    expect(list.pairings).toEqual([]);
+  });
+
+  it('409s (not 404) so a missing token is distinguishable from a missing gateway', async () => {
+    const gatewayId = await makeGateway('a1', 'alice');
+
+    const missingToken = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      clientKind: 'web',
+    });
+    expect(missingToken.status).toBe(409);
+
+    const crossAccount = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a2', {
+      clientKind: 'web',
+    });
+    expect(crossAccount.status).toBe(404);
+  });
+});
+
+describe('POST /v1/signers', () => {
+  it('registers a signer, returning 201 + an sg-<hex12> id', async () => {
+    const key = freshSignerKey();
+    const res = await req('POST', '/v1/signers', 'a1', { publicKey: key, label: 'iPhone 15' });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { signerId: string };
+    expect(body.signerId).toMatch(/^sg-[0-9a-f]{12}$/);
+    // The projection never echoes the key back.
+    expect(Object.keys(body)).toEqual(['signerId']);
+  });
+
+  it('is idempotent per (accountId, publicKey): re-registering returns the same id and updates the label', async () => {
+    const key = freshSignerKey();
+    const first = (await (
+      await req('POST', '/v1/signers', 'a1', { publicKey: key, label: 'iPhone 15' })
+    ).json()) as { signerId: string };
+
+    const second = (await (
+      await req('POST', '/v1/signers', 'a1', { publicKey: key, label: 'iPhone 15 Pro' })
+    ).json()) as { signerId: string };
+    expect(second.signerId).toBe(first.signerId);
+
+    const list = (await (await req('GET', '/v1/signers', 'a1')).json()) as {
+      signers: Array<{ signerId: string; label: string }>;
+    };
+    expect(list.signers).toHaveLength(1);
+    expect(list.signers[0]).toMatchObject({ signerId: first.signerId, label: 'iPhone 15 Pro' });
+  });
+
+  it('400s a key with the wrong byte length (31 bytes)', async () => {
+    const shortKey = randomBytes(31).toString('base64url');
+    const res = await req('POST', '/v1/signers', 'a1', { publicKey: shortKey, label: 'bad' });
+    expect(res.status).toBe(400);
+
+    const list = (await (await req('GET', '/v1/signers', 'a1')).json()) as { signers: unknown[] };
+    expect(list.signers).toEqual([]);
+  });
+
+  it('400s malformed base64url', async () => {
+    const res = await req('POST', '/v1/signers', 'a1', {
+      publicKey: 'not valid base64url!!',
+      label: 'bad',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('400s a non-canonical (padded) encoding even though it decodes to 32 bytes', async () => {
+    const padded = `${freshSignerKey()}==`;
+    const res = await req('POST', '/v1/signers', 'a1', { publicKey: padded, label: 'bad' });
+    expect(res.status).toBe(400);
+  });
+
+  it('401s an unauthenticated request', async () => {
+    const res = await req('POST', '/v1/signers', undefined, {
+      publicKey: freshSignerKey(),
+      label: 'iPhone',
+    });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /v1/signers', () => {
+  it('401s an unauthenticated request', async () => {
+    const res = await req('GET', '/v1/signers');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists only the calling account’s signers, projected without publicKey', async () => {
+    await req('POST', '/v1/signers', 'a1', { publicKey: freshSignerKey(), label: 'a1-phone' });
+    await req('POST', '/v1/signers', 'a2', { publicKey: freshSignerKey(), label: 'a2-phone' });
+
+    const res = await req('GET', '/v1/signers', 'a1');
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const body = JSON.parse(raw) as { signers: Array<Record<string, unknown>> };
+    expect(body.signers).toHaveLength(1);
+    expect(body.signers[0]).toMatchObject({ label: 'a1-phone', createdAt: expect.any(Number) });
+    expect(Object.keys(body.signers[0]).sort()).toEqual(['createdAt', 'label', 'signerId']);
+    // The raw key must never reach the wire through this route.
+    expect(raw).not.toContain('publicKey');
+  });
+
+  it('returns an empty list for an account with no signers', async () => {
+    const res = await req('GET', '/v1/signers', 'a1');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ signers: [] });
+  });
+});
+
+describe('signer-gated web approvals over HTTP (Task 3)', () => {
+  async function makeGatewayWithChatToken(account: string, subdomain: string): Promise<string> {
+    const res = await req('POST', '/v1/gateways', account, { subdomain, publicKey: gwPubB64 });
+    const gatewayId = ((await res.json()) as { gatewayId: string }).gatewayId;
+    await req('PUT', `/v1/gateways/${gatewayId}/web-chat-token`, account, { chatToken: 'chat-1' });
+    return gatewayId;
+  }
+
+  function signerKeypair() {
+    const { publicKey: pub, privateKey: priv } = generateKeyPairSync('ed25519');
+    const rawPub = (pub.export({ format: 'jwk' }) as { x: string }).x;
+    return { rawPub, priv };
+  }
+
+  async function registerSigner(account: string, rawPub: string): Promise<string> {
+    const res = await req('POST', '/v1/signers', account, { publicKey: rawPub, label: 'iPhone' });
+    return ((await res.json()) as { signerId: string }).signerId;
+  }
+
+  function signDecision(
+    priv: ReturnType<typeof generateKeyPairSync>['privateKey'],
+    approvalId: string,
+    pairingId: string,
+    decision: 'approve' | 'deny',
+  ): string {
+    return sign(
+      null,
+      Buffer.from(approvalMessage(approvalId, pairingId, decision), 'utf8'),
+      priv,
+    ).toString('base64url');
+  }
+
+  it('mints a pending approval (no secrets) for a signer-gated web pairing via pairing-id-v1', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      pairingId: expect.any(String),
+      status: 'pending',
+      approvalId: expect.any(String),
+      approvalExpiresAt: expect.any(Number),
+    });
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: Array<{ status: string }>;
+    };
+    expect(list.pairings).toEqual([expect.objectContaining({ status: 'pending' })]);
+  });
+
+  it('mints a pending approval via the legacy route too, never leaking a credential', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    expect(JSON.parse(raw)).toEqual({
+      pairingId: expect.any(String),
+      status: 'pending',
+      approvalId: expect.any(String),
+      approvalExpiresAt: expect.any(Number),
+    });
+    expect(raw).not.toContain('credential');
+    expect(raw).not.toContain('chatToken');
+  });
+
+  it('full happy path: register -> pending mint -> GET approval -> signed decision (204) -> claim once (200) -> 410 on second claim', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        deviceLabel: 'Safari',
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string; approvalExpiresAt: number };
+
+    const fetched = await req('GET', `/v1/approvals/${minted.approvalId}`, 'a1');
+    expect(fetched.status).toBe(200);
+    expect(await fetched.json()).toEqual({
+      approvalId: minted.approvalId,
+      pairingId: minted.pairingId,
+      gatewayId,
+      deviceLabel: 'Safari',
+      expiresAt: minted.approvalExpiresAt,
+    });
+
+    const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(204);
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: Array<{ status: string }>;
+    };
+    expect(list.pairings).toEqual([expect.objectContaining({ status: 'active' })]);
+
+    const claimRes = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(claimRes.status).toBe(200);
+    const claimed = (await claimRes.json()) as { credential: string; chatToken: string };
+    expect(claimed).toEqual({ credential: expect.any(String), chatToken: 'chat-1' });
+    expect(relayStore.isValid(gatewayId, claimed.credential)).toBe(true);
+
+    const secondClaim = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(secondClaim.status).toBe(410);
+  });
+
+  it('claim reports 409 { status: "pending" } before a decision is made', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string };
+
+    const res = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ status: 'pending' });
+  });
+
+  it('deny (204) deletes the pairing outright — it drops off the list, and claim 404s', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'deny');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'deny',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(204);
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: unknown[];
+    };
+    expect(list.pairings).toEqual([]);
+
+    const claimRes = await req(
+      'POST',
+      `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+      'a1',
+    );
+    expect(claimRes.status).toBe(404);
+  });
+
+  it('410s a decision made after the approval TTL elapses, removing the orphan pairing', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    clockMs += 120_001; // one ms past the 120s TTL
+
+    const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(410);
+
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: unknown[];
+    };
+    expect(list.pairings).toEqual([]);
+  });
+
+  it('403s a decision whose signature does not verify', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    const impostor = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    // Signed with a DIFFERENT key than the one registered as signerId.
+    const signature = signDecision(impostor.priv, minted.approvalId, minted.pairingId, 'approve');
+    const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature,
+    });
+    expect(decisionRes.status).toBe(403);
+
+    // Still pending — a rejected forgery doesn't burn the approval.
+    const list = (await (await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')).json()) as {
+      pairings: Array<{ status: string }>;
+    };
+    expect(list.pairings).toEqual([expect.objectContaining({ status: 'pending' })]);
+  });
+
+  it('410s a second decision on an already-decided approval', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub, priv } = signerKeypair();
+    const signerId = await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { pairingId: string; approvalId: string };
+
+    const approveSig = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+    await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+      signerId,
+      signature: approveSig,
+    });
+
+    const denySig = signDecision(priv, minted.approvalId, minted.pairingId, 'deny');
+    const secondDecision = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'deny',
+      signerId,
+      signature: denySig,
+    });
+    expect(secondDecision.status).toBe(410);
+  });
+
+  it('404s a GET of an approval fetched from the wrong account', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { approvalId: string };
+
+    const res = await req('GET', `/v1/approvals/${minted.approvalId}`, 'a2');
+    expect(res.status).toBe(404);
+  });
+
+  it('404s an unknown approval id', async () => {
+    const res = await req('GET', '/v1/approvals/ap-missing', 'a1');
+    expect(res.status).toBe(404);
+  });
+
+  it('400s a decision request missing required fields', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const minted = (await (
+      await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+        clientKind: 'web',
+      })
+    ).json()) as { approvalId: string };
+
+    const res = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+      decision: 'approve',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('401s all three new routes without authentication', async () => {
+    expect((await req('GET', '/v1/approvals/ap-x')).status).toBe(401);
+    expect((await req('POST', '/v1/approvals/ap-x/decision')).status).toBe(401);
+    expect((await req('POST', '/v1/gateways/gw-x/pairings/pr-x/credential')).status).toBe(401);
+  });
+
+  it('zero-signer accounts mint immediately via pairing-id-v1, byte-compatible with today', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-1',
+      status: 'active',
+    });
+  });
+
+  it('zero-signer accounts mint immediately via the legacy route, byte-compatible with today', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings`, 'a1', {
+      deviceLabel: 'Safari',
+      clientKind: 'web',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      credential: expect.any(String),
+      chatToken: 'chat-1',
+    });
+  });
+
+  it('mobile mints stay immediate and unaffected even when the account has registered signers', async () => {
+    const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+    const { rawPub } = signerKeypair();
+    await registerSigner('a1', rawPub);
+
+    const res = await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+      deviceLabel: 'iPhone',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      credential: expect.any(String),
+      pairingId: expect.any(String),
+      chatToken: 'chat-1',
+      status: 'active',
+    });
+  });
+
+  describe('security review fixes (post-Task-3), over HTTP', () => {
+    it('C1 (critical): DELETE on a PENDING pairing never mass-revokes the gateway — other pairings stay valid', async () => {
+      const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+
+      // A normal, already-live mobile pairing on the SAME gateway.
+      const mobile = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          deviceLabel: 'iPhone',
+        })
+      ).json()) as { credential: string };
+      expect(relayStore.isValid(gatewayId, mobile.credential)).toBe(true);
+
+      const { rawPub } = signerKeypair();
+      await registerSigner('a1', rawPub);
+      const pending = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          deviceLabel: 'Safari',
+          clientKind: 'web',
+        })
+      ).json()) as { pairingId: string };
+
+      const delRes = await req(
+        'DELETE',
+        `/v1/gateways/${gatewayId}/pairings/${pending.pairingId}`,
+        'a1',
+      );
+      expect(delRes.status).toBe(200);
+
+      // The pending row is gone...
+      const list = (await (
+        await req('GET', `/v1/gateways/${gatewayId}/pairings`, 'a1')
+      ).json()) as {
+        pairings: Array<{ id: string }>;
+      };
+      expect(list.pairings.some((p) => p.id === pending.pairingId)).toBe(false);
+      // ...and the OTHER (live) credential on this gateway is untouched.
+      expect(relayStore.isValid(gatewayId, mobile.credential)).toBe(true);
+    });
+
+    it('I2 (important): claim 410s once a pairing is revoked, before anyone claimed it — no secrets returned', async () => {
+      const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+      const { rawPub, priv } = signerKeypair();
+      const signerId = await registerSigner('a1', rawPub);
+
+      const minted = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          clientKind: 'web',
+        })
+      ).json()) as { pairingId: string; approvalId: string };
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+      await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+        decision: 'approve',
+        signerId,
+        signature,
+      });
+
+      const delRes = await req(
+        'DELETE',
+        `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}`,
+        'a1',
+      );
+      expect(delRes.status).toBe(200);
+
+      const claimRes = await req(
+        'POST',
+        `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+        'a1',
+      );
+      expect(claimRes.status).toBe(410);
+      const raw = await claimRes.text();
+      expect(raw).not.toContain('chat-1');
+    });
+
+    it('I3 (important): claim 410s once the claim deadline elapses, even though it was never revoked', async () => {
+      const gatewayId = await makeGatewayWithChatToken('a1', 'alice');
+      const { rawPub, priv } = signerKeypair();
+      const signerId = await registerSigner('a1', rawPub);
+
+      const minted = (await (
+        await req('POST', `/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, 'a1', {
+          clientKind: 'web',
+        })
+      ).json()) as { pairingId: string; approvalId: string };
+      const signature = signDecision(priv, minted.approvalId, minted.pairingId, 'approve');
+      const decisionRes = await req('POST', `/v1/approvals/${minted.approvalId}/decision`, 'a1', {
+        decision: 'approve',
+        signerId,
+        signature,
+      });
+      expect(decisionRes.status).toBe(204);
+
+      clockMs += 120_001; // one ms past the default 120s claim deadline
+
+      const claimRes = await req(
+        'POST',
+        `/v1/gateways/${gatewayId}/pairings/${minted.pairingId}/credential`,
+        'a1',
+      );
+      expect(claimRes.status).toBe(410);
+      const raw = await claimRes.text();
+      expect(raw).not.toContain('chat-1');
+    });
+  });
+});
+
+describe('CORS', () => {
+  function appWithOrigins(origins: string[]): ReturnType<typeof createApi> {
+    return createApi({
+      provisioning: new ProvisioningService({
+        store,
+        signer: new DialTokenSigner(privateKey, 3600, () => 1000),
+        relay: new RelayAdminClient('http://127.0.0.1:0', 'master'),
+        relayZone: 'relay.example.com',
+      }),
+      authenticator: new StubAuthenticator(),
+      gatewayAssertionAuth: new GatewayAssertionAuthenticator({
+        store,
+        signer: new DialTokenSigner(privateKey, 3600, () => 1000),
+        verifyPublicKey: (b64) =>
+          createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: b64 }, format: 'jwk' }),
+        now: () => 1000,
+      }),
+      webOrigins: origins,
+    });
+  }
+
+  it('answers a /v1/* preflight from an allowlisted origin with 204 and allows Authorization', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/v1/gateways', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-allow-headers')).toContain('Authorization');
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
+  it('sets no CORS headers for a non-allowlisted origin on /v1/*', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/v1/gateways', {
+      headers: { origin: 'https://evil.example.com', 'x-test-account': 'a1' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('is inert with an empty allowlist (default)', async () => {
+    const corsApp = appWithOrigins([]);
+    const res = await corsApp.request('/v1/gateways', {
+      headers: { origin: 'https://app.example.com', 'x-test-account': 'a1' },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('does not advertise /gw/dial-token to browsers at all', async () => {
+    // Gateway-to-control-plane only, authenticated by a holder-of-key
+    // assertion — no browser ever calls it, so it carries no CORS.
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/gw/dial-token', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization',
+      },
+    });
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('still serves /gw/dial-token itself to its real (non-browser) caller', async () => {
+    const corsApp = appWithOrigins(['https://app.example.com']);
+    const res = await corsApp.request('/gw/dial-token', { method: 'POST' });
+    // No assertion → 401, not a CORS-layer rejection: the route is untouched.
+    expect(res.status).toBe(401);
   });
 });
 

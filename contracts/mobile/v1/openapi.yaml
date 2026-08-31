@@ -1,0 +1,817 @@
+openapi: 3.1.0
+info:
+  title: Dash Mobile Conversation Sync API
+  version: 1.0.0
+  description: Frozen version 1 wire contract for Dash mobile clients.
+servers:
+  - url: /mobile/v1
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      operationId: getMobileHealth
+      security: []
+      responses:
+        '200':
+          description: Gateway health and mobile capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileHealth'
+  /identity:
+    get:
+      operationId: getGatewayIdentity
+      responses:
+        '200':
+          description: Stable gateway relay identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayIdentity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /agents:
+    get:
+      operationId: listMobileAgents
+      responses:
+        '200':
+          description: Secret-stripped registered agents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileAgentList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createMobileAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMobileAgentRequest'
+      responses:
+        '201':
+          description: Created agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileAgent'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /agents/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      operationId: getMobileAgent
+      responses:
+        '200':
+          description: Secret-stripped registered agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileAgent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateMobileAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMobileAgentRequest'
+      responses:
+        '200':
+          description: Updated agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileAgent'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteMobileAgent
+      responses:
+        '200':
+          description: Agent deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileActionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agents/{id}/enable:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    post:
+      operationId: enableMobileAgent
+      responses:
+        '200':
+          description: Agent enabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileActionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agents/{id}/disable:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    post:
+      operationId: disableMobileAgent
+      responses:
+        '200':
+          description: Agent disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileActionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /models:
+    get:
+      operationId: listMobileModels
+      responses:
+        '200':
+          description: Models available to mobile agent configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileModelsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /conversations:
+    get:
+      operationId: listConversations
+      parameters:
+        - $ref: '#/components/parameters/ConversationAgentId'
+        - $ref: '#/components/parameters/ConversationLimit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of conversation summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: createConversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationCreateRequest'
+      responses:
+        '201':
+          description: Created conversation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSummary'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /conversations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ConversationId'
+    get:
+      operationId: getConversation
+      responses:
+        '200':
+          description: Current conversation summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: patchConversation
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationPatchRequest'
+      responses:
+        '200':
+          description: Updated conversation summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSummary'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Revision conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevisionConflictError'
+        '410':
+          $ref: '#/components/responses/Gone'
+    delete:
+      operationId: deleteConversation
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: Revisioned conversation tombstone after content deletion.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Conversation has an active turn or the revision is stale.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/RevisionConflictError'
+                  - $ref: '#/components/schemas/ConversationBusyError'
+        '410':
+          $ref: '#/components/responses/Gone'
+  /conversations/{id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ConversationId'
+    get:
+      operationId: listConversationMessages
+      parameters:
+        - $ref: '#/components/parameters/MessageLimit'
+        - $ref: '#/components/parameters/BeforeCursor'
+      responses:
+        '200':
+          description: A stable page of persisted messages.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationMessagePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agents/{agentId}/conversations/{conversationId}/events:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1 }
+      - name: conversationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: replayConversationEvents
+      parameters:
+        - name: sinceSeq
+          in: query
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Replay entries strictly after sinceSeq.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /events:
+    get:
+      operationId: streamConversationChanges
+      responses:
+        '200':
+          description: Server-sent conversation cache invalidation events.
+          content:
+            text/event-stream:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ConversationChangedEvent'
+                  - $ref: '#/components/schemas/ConversationDeletedEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /ws-ticket:
+    post:
+      operationId: createWsTicket
+      summary: Mint a single-use, short-lived WebSocket upgrade ticket.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Ticket created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WsTicketResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    AgentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ConversationAgentId:
+      name: agentId
+      in: query
+      required: false
+      schema: { type: string, minLength: 1 }
+    ConversationLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    MessageLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string, minLength: 1 }
+    BeforeCursor:
+      name: before
+      in: query
+      required: false
+      schema: { type: string, minLength: 1 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string, pattern: '^"(0|[1-9][0-9]*)"$' }
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+    NotFound:
+      description: Requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+    Gone:
+      description: The conversation was previously deleted and cannot be mutated.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+    ValidationFailed:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MobileApiError'
+  schemas:
+    MobileHealth:
+      type: object
+      additionalProperties: false
+      required: [status, startedAt, pid, agents, channels, apiVersion, capabilities]
+      properties:
+        status: { const: healthy }
+        startedAt: { type: string, format: date-time }
+        pid: { type: integer, minimum: 1 }
+        agents: { type: integer, minimum: 0 }
+        channels: { type: integer, minimum: 0 }
+        apiVersion: { const: 1 }
+        capabilities:
+          type: array
+          uniqueItems: true
+          items: { enum: [conversation-sync-v1, chat-resume-v1] }
+    GatewayIdentity:
+      type: object
+      additionalProperties: false
+      required: [gatewayId, publicKey]
+      properties:
+        gatewayId: { type: string, minLength: 1 }
+        publicKey: { type: string, minLength: 1 }
+    PairingPayload:
+      oneOf:
+        - type: object
+          additionalProperties: true
+          $comment: Clients trim mgmtToken and chatToken before requiring equality and storing one phone-scoped capability.
+          required: [v, host, secure, mgmtToken, chatToken, relayCredential]
+          properties:
+            v: { const: 2 }
+            host:
+              type: string
+              minLength: 1
+              pattern: '^(?![A-Za-z][A-Za-z0-9+.-]*:)[^\s/\\?#@%]+$'
+            secure: { const: true }
+            mgmtToken: { type: string, minLength: 1, pattern: '.*\S.*' }
+            chatToken: { type: string, minLength: 1, pattern: '.*\S.*' }
+            relayCredential: { type: string, minLength: 1, pattern: '.*\S.*' }
+        - type: object
+          additionalProperties: true
+          $comment: Clients trim mgmtToken and chatToken before requiring equality; mgmtPort and chatPort are equal.
+          required:
+            [
+              v,
+              host,
+              secure,
+              mgmtToken,
+              chatToken,
+              mgmtPort,
+              chatPort,
+              tlsCertificateSha256,
+            ]
+          properties:
+            v: { const: 3 }
+            host:
+              type: string
+              minLength: 1
+              pattern: '^(?![A-Za-z][A-Za-z0-9+.-]*:)[^\s/\\?#@%]+$'
+            secure: { const: true }
+            mgmtToken: { type: string, minLength: 1, pattern: '.*\S.*' }
+            chatToken: { type: string, minLength: 1, pattern: '.*\S.*' }
+            mgmtPort: { type: integer, minimum: 1, maximum: 65535 }
+            chatPort: { type: integer, minimum: 1, maximum: 65535 }
+            tlsCertificateSha256:
+              type: string
+              pattern: '^[A-Fa-f0-9]{64}$'
+    MobileAgent:
+      type: object
+      additionalProperties: false
+      required: [id, name, config, status, registeredAt]
+      properties:
+        id: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        config:
+          $ref: '#/components/schemas/MobileAgentConfig'
+        status: { enum: [registered, active, disabled] }
+        registeredAt: { type: string, format: date-time }
+    MobileAgentConfig:
+      type: object
+      additionalProperties: false
+      required: [name, model, systemPrompt]
+      properties:
+        name: { type: string, minLength: 1 }
+        model: { type: string, minLength: 1 }
+        systemPrompt: { type: string }
+        fallbackModels:
+          type: array
+          items: { type: string, minLength: 1 }
+        tools:
+          type: array
+          items: { type: string, minLength: 1 }
+        skills:
+          type: object
+          additionalProperties: false
+          properties:
+            paths:
+              type: array
+              items: { type: string, minLength: 1 }
+            urls:
+              type: array
+              items: { type: string, minLength: 1 }
+        workspace: { type: string }
+        maxTokens: { type: integer, minimum: 1 }
+        mcpServers:
+          type: array
+          items: { type: string, minLength: 1 }
+        plugins:
+          type: array
+          items: { type: string, minLength: 1 }
+        providers:
+          type: array
+          items: { type: string, minLength: 1 }
+        swarm:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled: { type: boolean }
+            maxConcurrentWorkers: { type: integer, minimum: 1 }
+            maxWorkersPerRun: { type: integer, minimum: 1 }
+            maxSteersPerWorker: { type: integer, minimum: 0 }
+            maxRunSeconds: { type: integer, minimum: 1 }
+            allowedModels:
+              type: array
+              items: { type: string, minLength: 1 }
+    MobileAgentList:
+      type: array
+      items:
+        $ref: '#/components/schemas/MobileAgent'
+    CreateMobileAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [name, model, systemPrompt]
+      properties:
+        name: { type: string, minLength: 1 }
+        model: { type: string, minLength: 1 }
+        systemPrompt: { type: string }
+    UpdateMobileAgentRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        model: { type: string, minLength: 1 }
+        systemPrompt: { type: string }
+    MobileActionResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { const: true }
+    MobileModel:
+      type: object
+      additionalProperties: false
+      required: [value, label, provider]
+      properties:
+        value:
+          type: string
+          minLength: 3
+          pattern: '^[^/\s]+/[^\s]+$'
+        label: { type: string, minLength: 1 }
+        provider: { type: string, minLength: 1 }
+    MobileModelsResponse:
+      type: object
+      additionalProperties: false
+      required: [models, source, errors, fetchedAt, supportedModelsReviewedAt]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/MobileModel'
+        source: { enum: [live, bootstrap] }
+        errors:
+          type: object
+          additionalProperties: { type: string }
+        fetchedAt: { type: string, format: date-time }
+        supportedModelsReviewedAt:
+          anyOf:
+            - type: string
+              format: date
+            - const: unreviewed
+    MobileImage:
+      type: object
+      additionalProperties: false
+      required: [mediaType, data]
+      properties:
+        mediaType: { enum: [image/jpeg, image/png, image/gif, image/webp] }
+        data: { type: string, minLength: 1 }
+    MobileAgentEvent:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, minLength: 1 }
+      additionalProperties: true
+    ConversationContent:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, text]
+          properties:
+            type: { const: user }
+            text: { type: string }
+            images:
+              type: array
+              items:
+                $ref: '#/components/schemas/MobileImage'
+        - type: object
+          additionalProperties: false
+          required: [type, events]
+          properties:
+            type: { const: assistant }
+            events:
+              type: array
+              items:
+                $ref: '#/components/schemas/MobileAgentEvent'
+    ConversationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        agentId: { type: string, minLength: 1 }
+        agentName: { type: string, minLength: 1 }
+        title: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { enum: [idle, running, interrupted, archived, deleted] }
+        activeTurnId:
+          type: [string, 'null']
+          format: uuid
+        owningIssueId: { type: [string, 'null'] }
+        projectId: { type: [string, 'null'] }
+        lastSeq: { type: integer, minimum: 0 }
+        lastMessagePreview: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        deletedAt: { type: string, format: date-time }
+    ConversationMessage:
+      type: object
+      additionalProperties: false
+      required: [id, conversationId, turnId, ordinal, role, status, content, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        conversationId: { type: string, format: uuid }
+        turnId: { type: string, format: uuid }
+        ordinal: { type: integer, minimum: 1 }
+        role: { enum: [user, assistant] }
+        status: { enum: [accepted, streaming, completed, cancelled, failed, interrupted] }
+        content:
+          $ref: '#/components/schemas/ConversationContent'
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ConversationPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationSummary'
+        nextCursor: { type: [string, 'null'] }
+    ConversationMessagePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, throughSeq]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+        nextCursor: { type: [string, 'null'] }
+        throughSeq: { type: integer, minimum: 0 }
+    ConversationCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [agentId, requestId]
+      properties:
+        agentId: { type: string, minLength: 1 }
+        requestId: { type: string, minLength: 1 }
+        title: { type: string }
+        owningIssueId: { type: string, minLength: 1 }
+        projectId: { type: string, minLength: 1 }
+    ConversationPatchRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string }
+        owningIssueId: { type: [string, 'null'] }
+        projectId: { type: [string, 'null'] }
+    MobileApiError:
+      type: object
+      additionalProperties: false
+      required: [code, error, retryable]
+      properties:
+        code:
+          enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required]
+        error: { type: string, minLength: 1 }
+        retryable: { type: boolean }
+        details: { type: object, additionalProperties: true }
+    RevisionConflictError:
+      allOf:
+        - $ref: '#/components/schemas/MobileApiError'
+        - type: object
+          required: [code, details]
+          properties:
+            code: { const: revision_conflict }
+            details:
+              type: object
+              additionalProperties: false
+              required: [current]
+              properties:
+                current: { $ref: '#/components/schemas/ConversationSummary' }
+    ConversationBusyError:
+      allOf:
+        - $ref: '#/components/schemas/MobileApiError'
+        - type: object
+          required: [code, details]
+          properties:
+            code: { const: conversation_busy }
+            details:
+              type: object
+              additionalProperties: false
+              required: [activeTurnId]
+              properties:
+                activeTurnId: { type: string, minLength: 1 }
+    ReplayPayload:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, userMessageId, assistantMessageId, revision]
+          properties:
+            type: { const: accepted }
+            userMessageId: { type: string, format: uuid }
+            assistantMessageId: { type: string, format: uuid }
+            revision: { type: integer, minimum: 1 }
+        - type: object
+          additionalProperties: false
+          required: [type, event]
+          properties:
+            type: { const: event }
+            event:
+              $ref: '#/components/schemas/MobileAgentEvent'
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type: { const: done }
+            outcome: { enum: [completed, cancelled] }
+        - type: object
+          additionalProperties: false
+          required: [type, error]
+          properties:
+            type: { const: error }
+            error: { type: string, minLength: 1 }
+            code:
+              enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required]
+            retryable: { type: boolean }
+    ReplayEntry:
+      type: object
+      additionalProperties: false
+      required: [seq, msgId, agentId, conversationId, timestamp, payload]
+      properties:
+        seq: { type: integer, minimum: 1 }
+        msgId: { type: string, minLength: 1 }
+        agentId: { type: string, minLength: 1 }
+        conversationId: { type: string, format: uuid }
+        timestamp: { type: string, format: date-time }
+        payload:
+          $ref: '#/components/schemas/ReplayPayload'
+    ReplayPage:
+      type: object
+      additionalProperties: false
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReplayEntry'
+    ConversationChangedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, conversationId, revision]
+      properties:
+        type: { const: 'conversation:changed' }
+        conversationId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+    ConversationDeletedEvent:
+      type: object
+      additionalProperties: false
+      required: [type, conversationId, revision]
+      properties:
+        type: { const: 'conversation:deleted' }
+        conversationId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+    WsTicketResponse:
+      type: object
+      required: [ticket, expiresAt]
+      additionalProperties: false
+      properties:
+        ticket:
+          type: string
+          minLength: 32
+        expiresAt:
+          type: string
+          format: date-time

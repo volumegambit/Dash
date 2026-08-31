@@ -20,10 +20,14 @@ Something not working? Here are the most common issues and how to fix them.
     **Fix:** Make sure the gateway is running. If using Mission Control, check that the gateway process is healthy from the app. If running standalone, check the server logs for "Gateway channel server listening on port 9200".
   </Accordion>
 
-  <Accordion title="Chat unauthorized (4001)">
-    **Symptom:** WebSocket connection closes immediately with code `4001`.
+  <Accordion title="Desktop loopback chat unauthorized (4001)">
+    **Symptom:** A Mission Control or other loopback WebSocket connection closes immediately with
+    code `4001`.
 
-    **Fix:** Include the correct token as a query parameter: `ws://localhost:9200/ws/chat?token=your-chat-token`. Make sure you're using the chat token, not the management token — they are separate.
+    **Fix:** Include the desktop chat token as a query parameter:
+    `ws://localhost:9200/ws/chat?token=your-chat-token`. This loopback compatibility path uses the
+    chat token, not the administrative management bearer. Native apps use the Mobile bearer flow
+    described below instead.
   </Accordion>
 
   <Accordion title="Unknown agent error">
@@ -33,6 +37,129 @@ Something not working? Here are the most common issues and how to fix them.
     ```
 
     **Fix:** The message references an agent that doesn't exist. Open Mission Control's **Agents** page (or call `GET /agents` on the [Management API](/api-reference#agents)) and make sure the name matches a deployed agent.
+  </Accordion>
+</AccordionGroup>
+
+## Conversation sync and resumable chat
+
+<AccordionGroup>
+  <Accordion title="Conversation is busy">
+    **Symptom:** A mutation returns HTTP `409` with `conversation_busy`, or chat returns an error
+    frame with the same code and an `activeTurnId`.
+
+    **Fix:** Refresh `GET /mobile/v1/conversations/:id` and use its `activeTurnId`. Replay from
+    your last applied sequence, then either send `resume` for that same turn ID or send `cancel`
+    for it. Wait until a terminal frame is durable and the refreshed summary no longer has an
+    active turn before retrying the mutation or starting another turn. Do not work around the
+    lease by sending the prompt again with a new ID; that can duplicate model work.
+  </Accordion>
+
+  <Accordion title="Chat has a sequence gap after reconnecting">
+    **Symptom:** The next durable WebSocket frame has a higher `seq` than expected, or a socket
+    closed while a resumable turn was running.
+
+    **Fix:** Keep the highest sequence you applied. Request
+    `GET /mobile/v1/agents/:agentId/conversations/:conversationId/events?sinceSeq=<last-seq>` and
+    apply the returned entries in ascending sequence order. If the same turn is still active,
+    send this frame with the original turn ID:
+
+    ```json
+    {"type":"resume","id":"00000000-0000-4000-8000-000000000002","agentId":"agent-01","conversationId":"00000000-0000-4000-8000-000000000001","sinceSeq":12}
+    ```
+
+    Resume is idempotent. Do not resend the original `message` with a new turn ID.
+  </Accordion>
+
+  <Accordion title="Conversation revision conflict">
+    **Symptom:** `PATCH` or `DELETE` returns HTTP `409` with `revision_conflict` after another
+    client changed the conversation.
+
+    **Fix:** Replace your cached conversation summary with the complete summary in
+    `details.current`. Reapply the intended title or metadata change to that current value, then
+    retry with its revision in a quoted `If-Match` header. Do not automatically retry a delete
+    without first showing or checking the newer state.
+  </Accordion>
+
+  <Accordion title="Mobile request is unauthorized (401, 4001, or 4401)">
+    **Symptom:** A management request returns HTTP `401`, direct chat closes with WebSocket code
+    `4001`, or a relayed WebSocket closes with `4401`.
+
+    **Fix:** Both native routes use the same phone-scoped Mobile bearer. Send it in the
+    `Authorization` header for both `/mobile/v1` and `/ws/chat`; never put it in the URL. A hosted
+    relay additionally requires `x-dash-relay-credential`, but that credential does not replace the
+    Mobile bearer enforced by the gateway. Pair the phone again if either credential was revoked.
+    Never paste tokens into logs or support messages.
+  </Accordion>
+
+  <Accordion title="Mobile client is rate limited (429 or 4429)">
+    **Symptom:** HTTP returns `429`, a structured error reports `rate_limited`, or a relayed
+    WebSocket closes with code `4429`.
+
+    **Fix:** Stop reconnecting or retrying in a tight loop. Honor the HTTP `Retry-After` header or
+    the retry delay supplied by the relay, then reconnect once. If no delay is supplied, use
+    exponential backoff with jitter and reset it after a stable connection. Preserve your last
+    applied sequence so the eventual reconnect replays the gap instead of resending prompts.
+  </Accordion>
+
+  <Accordion title="Relay cannot reach the gateway (502 or gateway_offline)">
+    **Symptom:** The relay returns HTTP `502`, chat reports `gateway_offline`, or the phone can
+    reach Dash but not the paired gateway.
+
+    **Fix:** Bring the gateway machine online and make sure the Dash gateway is running, then let
+    its outbound relay connection re-establish. Until health succeeds, show cached conversation
+    history as read-only: do not queue metadata mutations, deletes, or prompts as though they were
+    accepted. Once connected, refresh summaries and replay from the last sequence. Re-pair only
+    if the device credential was actually revoked; an ordinary offline period does not require it.
+  </Accordion>
+
+  <Accordion title="My synced conversations are read-only">
+    **Fix:** Confirm that the saved gateway is reachable. Previously synced conversations stay
+    visible from cache while the gateway is offline, but cached history intentionally blocks
+    creating, sending, renaming, and deleting until that gateway reconnects.
+  </Accordion>
+
+  <Accordion title="Message saved for recovery">
+    **Symptom:** Dash for iOS shows **Message saved for recovery**, and that chat's composer is
+    unavailable.
+
+    **Fix:** Open **Needs Recovery** from Conversations and copy the exact message text. Preview or
+    share any readable attachments before discarding the item. If Dash could not read the saved
+    attachment data, the text remains available but those attachments cannot be previewed or
+    shared. If a newer draft exists, Dash keeps that draft separate and places the earlier message
+    here so neither payload is overwritten. The chat remains read-only until you explicitly discard
+    the recovery item. Do not clear the app's data or reinstall it before preserving anything you
+    need.
+  </Accordion>
+
+  <Accordion title="A conversation says Active on another device">
+    **Fix:** Another paired client owns the canonical active turn. Wait for it to finish, watch the
+    shared stream in Mission Control, or explicitly stop it. Sending a second turn, renaming, and
+    deleting are blocked until the active turn ends.
+  </Accordion>
+
+  <Accordion title="Older conversations appear under On this Mac">
+    **Fix:** This is intentional. These conversations were stored locally by an older Mission
+    Control version. No automatic upload exists, and reconnecting a gateway does not move them.
+    They remain readable on that computer under **On this Mac**.
+  </Accordion>
+
+  <Accordion title="Rename or delete says the conversation changed">
+    **Fix:** Mission Control refreshed a revision conflict because another client changed the
+    canonical conversation first. Review the current title and state, then retry your rename or
+    delete.
+  </Accordion>
+
+  <Accordion title="Update Dash appears in chat">
+    **Fix:** The gateway returned a required contract shape this desktop version cannot decode.
+    Update Mission Control rather than clearing history. Your canonical conversation remains on
+    the gateway.
+  </Accordion>
+
+  <Accordion title="A project session does not open">
+    **Fix:** Refresh the task and confirm its gateway is reachable. Mission Control fetches linked
+    sessions by their canonical ID, including sessions beyond the first conversation page. A
+    deleted canonical conversation stays deleted, and Mission Control will not create an empty
+    replacement.
   </Accordion>
 </AccordionGroup>
 
@@ -55,6 +182,61 @@ Something not working? Here are the most common issues and how to fix them.
 ## Remote access (relay)
 
 <AccordionGroup>
+  <Accordion title="Dash for iOS can't reach your Dash account service">
+    **Symptom:** The gateway picker on Dash for iOS shows:
+
+    > Couldn't reach your Dash account service. Check your connection and try again.
+
+    **Fix:** This means loading your enrolled gateways failed — the app never confuses this with
+    "no gateways enrolled," so seeing this message doesn't mean your account is empty. Check the
+    phone's connection and tap **Retry**. If it persists, confirm the machine that hosts your Dash
+    account service is reachable from the internet.
+  </Accordion>
+
+  <Accordion title="Dash for iOS shows no gateways linked to your account">
+    **Symptom:** The gateway picker on Dash for iOS shows:
+
+    > No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.
+
+    **Fix:** Open **Settings → Devices → Remote access** in Mission Control on the machine running
+    your gateway, sign in with the same Dash account, and click **Create gateway**. Then tap
+    **Refresh** on that same empty screen in the app — the new gateway appears without signing out
+    or restarting. (Once the list has gateways in it, pull down on the list to refresh instead.)
+  </Accordion>
+
+  <Accordion title="Dash for iOS says a gateway needs to be re-enrolled">
+    **Symptom:** Tapping a gateway in the picker shows:
+
+    > This gateway needs to be re-enrolled from Mission Control before app access works.
+
+    **Fix:** This gateway's Remote access setup on Mission Control predates this app's account
+    sign-in support, so it never registered the app's chat capability. Open Mission Control on
+    the machine that runs this gateway — it updates the gateway's app access automatically on
+    launch — then try the gateway again in Dash for iOS.
+  </Accordion>
+
+  <Accordion title="Mission Control cannot create a local pairing code">
+    **Symptom:** **Pair Device** shows **No usable LAN IPv4 address is available. Connect this Mac
+    to the same network as the phone and try again.** Or it shows **Could not determine which LAN
+    IPv4 address to use** when the computer has several active network connections.
+
+    **Fix:** Connect this Mac to a Wi-Fi or Ethernet network the phone can reach, then reopen
+    **Settings → Devices** to request a fresh code. If several networks are connected, make the
+    phone-reachable network the default route or disconnect the others. Dash will not guess an
+    address or put a loopback-only address in a phone pairing code. If a shared local network is
+    unavailable, configure **Remote access** and use its relay pairing code instead.
+  </Accordion>
+
+  <Accordion title="Pair Device asks to switch to the local gateway">
+    **Symptom:** **Pair Device** shows **Switch to the local gateway before pairing a device**
+    while Mission Control is connected to a gateway on another machine.
+
+    **Fix:** Open **Settings → General → Gateway** and click **Use this computer**. Wait for the
+    gateway row to show **This computer**, then return to **Settings → Devices** and request a fresh
+    pairing code. Mission Control only generates phone pairing codes for the local gateway it can
+    provision safely.
+  </Accordion>
+
   <Accordion title="Sign-in failed">
     **Symptom:** Clicking **Sign in to Dash** on **Settings → Devices → Remote access** opens the browser but Mission Control shows **Sign-in failed**.
 
@@ -88,15 +270,20 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="QR code still pairs over the local network">
-    **Symptom:** The **Pair Device** section on **Settings → Devices** says it connects over your **local network** even though you want remote access.
+    **Symptom:** The **Pair Device** section on **Settings → Devices** — used by the Dash Android
+    app — says it connects over your **local network** even though you want remote access.
 
     **Fix:** The QR code only switches to remote access after you've created a gateway. On **Settings → Devices**, confirm the **Remote access** section shows **Gateway ready at** with an address, then check the **Pair Device** section above it — the code now carries your relay address.
   </Accordion>
 
   <Accordion title="Phone can no longer connect after a revoke">
-    **Symptom:** A phone that used to work remotely now can't reach your agents.
+    **Symptom:** A phone or tablet that used to work remotely now can't reach your agents.
 
-    **Fix:** If that device was removed under **Settings → Devices → Paired devices** (by you or from another machine), its credential no longer works — this is expected. Pair it again: open **Settings → Devices**, scan a fresh QR code on the phone, and it gets a new credential.
+    **Fix:** If that device was removed under **Settings → Devices → Paired devices** (by you or
+    from another machine), its credential no longer works — this is expected. On Android, pair it
+    again: open **Settings → Devices**, scan a fresh QR code on the phone, and it gets a new
+    credential. On iOS, open **Settings** on the phone, choose **Disconnect & Forget**, then sign
+    back in and tap the gateway again in the picker — no QR code needed.
   </Accordion>
 
   <Accordion title="The address I want is already taken">
@@ -108,6 +295,36 @@ Something not working? Here are the most common issues and how to fix them.
     original gateway was later removed. Pick a different, more specific name (for example
     add your initials or your machine's name) and try again. The availability indicator
     in the picker tells you live whether a name is free before you commit to it.
+  </Accordion>
+
+  <Accordion title="Approving a new browser session times out or is declined">
+    **Symptom:** Signing in on a new browser shows **Approve this device** with
+    "Waiting for approval — scan this code with the Dash app on your phone." and a QR
+    code, then instead of continuing to chat it settles on one of:
+
+    > Approval declined. You can try again from the gateway list.
+
+    > The code expired. Try again from the gateway list.
+
+    **Fix:** This screen only appears on accounts that already have a Dash for iOS
+    device signed in — new browser sessions need one of those devices to approve them.
+    **Approval declined** means someone tapped **Deny** on the phone; **The code
+    expired** means nobody approved it within the time limit. Either way, go back to
+    the gateway list and sign in again to get a fresh code, then open Dash on the
+    phone, go to **Settings → Approve a device**, and scan it before it expires.
+  </Accordion>
+
+  <Accordion title="Dash for iOS says a browser's code has expired">
+    **Symptom:** Scanning a browser's approval code from **Settings → Approve a
+    device** shows:
+
+    > This code has expired. Ask the device to try again.
+
+    **Fix:** Approval codes expire a few minutes after they're generated. Ask whoever
+    is waiting on the browser to reload the gateway list (or sign in again) to get a
+    fresh code, then scan the new one right away. A code that's still valid instead
+    shows a confirm sheet reading `Allow "<device>" to access <gateway>?` — tap
+    **Approve** or **Deny** there.
   </Accordion>
 </AccordionGroup>
 
@@ -281,29 +498,36 @@ Something not working? Here are the most common issues and how to fix them.
 ## Session issues
 
 <AccordionGroup>
-  <Accordion title="Corrupt JSONL">
-    If a session file has invalid JSON on a line (e.g. from a crash during write), the session loader will throw a parse error. To recover:
+  <Accordion title="Provider session JSONL is corrupt">
+    Provider session JSONL stores the model's working context separately from the canonical
+    conversation that Mission Control and paired phones display. If a provider session file has an
+    invalid line after a crash, the agent may fail to restore model context even though canonical
+    history remains visible. To recover:
 
     1. Find the conversation's session directory: `~/.dash/gateway/sessions/{agent-name}/{conversationId}/` and open the `.jsonl` session file inside it
     2. Open it in a text editor
     3. Remove or fix the malformed line(s) — each line should be a valid JSON object
     4. Restart Dash
 
-    Since JSONL is append-only, you can safely delete lines from the end without losing earlier conversation history.
+    Since provider session JSONL is append-only, you can remove malformed lines from the end
+    without damaging earlier model context. This does not edit the canonical rendered messages.
   </Accordion>
 
-  <Accordion title="Starting fresh">
-    To reset a conversation, delete its session directory:
+  <Accordion title="Starting with fresh provider context">
+    To reset only the agent's provider session state, delete its session directory:
 
     ```bash
     rm -rf ~/.dash/gateway/sessions/{agent-name}/{conversationId}
     ```
 
-    To reset all sessions:
+    To reset all provider session state:
 
     ```bash
     rm -rf ~/.dash/gateway/sessions
     ```
+
+    These commands do not delete canonical conversations shown by Mission Control or paired phone
+    apps. To remove shared history, reconnect the gateway and delete the conversation in Dash.
   </Accordion>
 
   <Accordion title="My data moved after updating">

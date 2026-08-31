@@ -49,6 +49,21 @@ export type {
 } from './runtime/vps-gateway-deploy.js';
 export { ConversationStore } from './conversations.js';
 export type { McConversation, McMessage } from './conversations.js';
+export { ConversationRepositoryOfflineError } from './conversation-repository.js';
+export type {
+  ConversationAuthorityMode,
+  ConversationOrigin,
+  ConversationRef,
+  ConversationRepository,
+  McConversationListResult,
+  McConversationView,
+} from './conversation-repository.js';
+export {
+  LegacyConversationRepository,
+  toCanonicalLegacyContent,
+} from './legacy-conversation-repository.js';
+export { GatewayConversationCache } from './gateway-conversation-cache.js';
+export { GatewayConversationRepository } from './gateway-conversation-repository.js';
 export type { MessagingApp, RoutingRule, RoutingCondition } from './types.js';
 export { SettingsStore } from './settings-store.js';
 export type {
@@ -58,6 +73,15 @@ export type {
 } from './settings-store.js';
 export { getPlatformDataDir } from './platform-paths.js';
 export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
+export type {
+  ConversationMessagePage,
+  ConversationPage,
+  ConversationSummary,
+  GatewayIdentity,
+  MobileApiError,
+  MobileCapability,
+  ReplayPage,
+} from '@dash/mobile-contract';
 export type {
   GatewayAgent,
   AgentSwarmConfig,
@@ -72,6 +96,7 @@ export { GatewayStateStore } from './runtime/gateway-state.js';
 export type { GatewayState } from './runtime/gateway-state.js';
 export {
   DEFAULT_CHANNEL_PORT,
+  DEFAULT_LAN_PORT,
   DEFAULT_MANAGEMENT_PORT,
   resolveGatewayPorts,
 } from './runtime/ports.js';

@@ -3,6 +3,7 @@ import {
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
+  randomUUID,
 } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -17,6 +18,7 @@ export const ASSERTION_TTL_SEC = 60;
 
 /** Filename of the persisted Ed25519 private key (mirrors `relay-gateway-id`). */
 const KEY_FILENAME = 'relay-gateway-key';
+const ID_FILENAME = 'relay-gateway-id';
 
 /**
  * The gateway's always-on cryptographic identity. The Ed25519 private key is the
@@ -24,13 +26,34 @@ const KEY_FILENAME = 'relay-gateway-key';
  * control plane and relay hold only the public key. `signProof`/`signCpAssertion`
  * mint the short-lived holder-of-key assertions used on every server call.
  */
-export interface GatewayIdentity {
+export interface GatewaySigningIdentity {
   /** Raw 32-byte Ed25519 public key, base64url — the `cnf` the CP stores. */
   publicKeyB64: string;
   /** A fresh `relay-dial` assertion bound to `gatewayId` (X-Gateway-Proof header). */
   signProof(gatewayId: string): string;
   /** A fresh `cp-dial-token` assertion bound to `gatewayId` (CP refresh Bearer). */
   signCpAssertion(gatewayId: string): string;
+}
+
+/** @deprecated Use `GatewaySigningIdentity`; retained for source compatibility. */
+export type GatewayIdentity = GatewaySigningIdentity;
+
+export async function loadOrCreateGatewayId(
+  explicit: string | undefined,
+  dataDir: string,
+): Promise<string> {
+  if (explicit) return explicit;
+  const idPath = join(dataDir, ID_FILENAME);
+  try {
+    const existing = (await readFile(idPath, 'utf8')).trim();
+    if (existing) return existing;
+  } catch {
+    // First boot creates the stable id below.
+  }
+  const id = randomUUID();
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(idPath, id, { mode: 0o600 });
+  return id;
 }
 
 /** Raw base64url of an Ed25519 public key's 32-byte payload (the SPKI suffix). */
@@ -43,12 +66,12 @@ function rawPublicKeyB64(publicKey: KeyObject): string {
 /**
  * Load the persisted private key, or generate + persist one on first boot. The
  * key file is written 0600 under the gateway data dir (precedent:
- * `resolveGatewayId`, index.ts). Always runs — identity is transport-independent.
+ * `loadOrCreateGatewayId`). Always runs — identity is transport-independent.
  */
 export async function loadOrCreateGatewayIdentity(
   dataDir: string,
   now: () => number = () => Math.floor(Date.now() / 1000),
-): Promise<GatewayIdentity> {
+): Promise<GatewaySigningIdentity> {
   const keyPath = join(dataDir, KEY_FILENAME);
   let privateKey: KeyObject;
   try {

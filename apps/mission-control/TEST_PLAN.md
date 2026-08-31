@@ -342,6 +342,35 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 5. Click on conversation B
 6. **Verify:** Unread indicator clears
 
+### 6.8 Shared conversation history (capable gateway)
+1. Connect Mission Control and an iPhone/iPad test client to the same gateway.
+2. Create a conversation in Mission Control and send `desktop created this`.
+3. Refresh Conversations on iOS. **Verify:** one conversation appears with the same title, agent name, canonical user message, and assistant response.
+4. Rename it on iOS, then return to Mission Control. **Verify:** the SSE invalidation refreshes the existing row; no duplicate row appears.
+5. Delete it on Mission Control. **Verify:** it disappears on both clients and reopening its old deep link shows not found rather than an empty replacement.
+
+### 6.9 On this Mac legacy history
+1. Seed a local Mission Control conversation before connecting to a `conversation-sync-v1` gateway.
+2. Connect the capable gateway and open the conversation browser.
+3. **Verify:** gateway conversations are listed normally and the seeded item appears under **On this Mac**.
+4. Open the local item. **Verify:** its full transcript is readable; send, rename, and delete are disabled; no Move to gateway action exists.
+5. Inspect the gateway conversation list. **Verify:** the local conversation was not uploaded.
+
+### 6.10 Cached gateway history while offline
+1. Open a gateway conversation and fully load its transcript.
+2. Stop or disconnect the gateway without changing the saved profile.
+3. **Verify:** the cached list/transcript remain visible under the nonmodal banner **Gateway offline — cached conversations are read-only.**
+4. **Verify:** New conversation, send, attachment, rename, and delete are disabled; no local shadow conversation/file is created.
+5. Restore the same gateway. **Verify:** canonical state refreshes and mutations re-enable.
+
+### 6.11 Cross-device active turn, replay, and cancellation
+1. Start a slow turn on iOS while the same conversation is open in Mission Control.
+2. **Verify:** Mission Control shows **Active on another device**, streams/replays the same output, and disables a second send, rename, and delete.
+3. Disconnect Mission Control, let more output arrive, and reconnect it.
+4. **Verify:** missing output appears once, in order, and the final transcript matches iOS.
+5. Start another slow turn, click Stop in Mission Control, and watch iOS.
+6. **Verify:** both clients show the durable cancelled outcome and no swarm worker remains active.
+
 ---
 
 ## Section 7: Chat — Text & Markdown Rendering
@@ -530,7 +559,7 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ## Section 12: Chat — Questions & Interactive Elements
 
-### 23.1 Agent Question with Options
+### 12.1 Agent Question with Options
 1. If the agent asks a multiple-choice question during interaction:
 2. **Verify:** The question text is displayed with a ❓ prefix
 3. **Verify:** Options appear as clickable buttons
@@ -539,11 +568,17 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 6. **Verify:** The answer is sent
 7. **Verify:** The question switches to "answered" state: shows checkmark + selected answer in green
 
-### 23.2 Agent Question without Options
+### 12.2 Agent Question without Options
 1. If the agent asks an open-ended question:
 2. **Verify:** A text input field appears with a "Reply" button
 3. Type an answer and click Reply
 4. **Verify:** The answer is sent and the question shows as answered
+
+### 12.3 Answer an iOS-originated question
+1. Open the same capable-gateway conversation in Mission Control and iOS.
+2. From iOS, start a turn that asks a question and wait for the question card to appear in both clients.
+3. Answer the question in Mission Control.
+4. **Verify:** the answer appears once on both clients, the shared turn continues, and iOS cannot submit a second answer to the completed question.
 
 ---
 
@@ -627,6 +662,35 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 3. **Verify:** When the retry succeeds, the assistant's response streams in below the retry notice — the turn completes normally with usage/context updating
 4. **Verify:** The turn never freezes: no case where an error block sits above a perpetual spinner while nothing else arrives (regression guard — pi emits `agent_end` with `willRetry: true` between attempts; the backend must not end the stream there)
 5. If retries are exhausted (persistent failure), **Verify:** a red error block appears (Section 14.1 behavior) and the turn ends
+
+### 14.5 Conversation revision conflict
+1. Open the same gateway conversation in Mission Control and iOS.
+2. Rename it on iOS, then immediately try to rename or delete the stale row in Mission Control.
+3. **Verify:** the `revision_conflict` response refreshes the current canonical title/state and explains that the conversation changed.
+4. Review the refreshed state and retry. **Verify:** the mutation succeeds against the new revision without creating a duplicate row.
+
+### 14.6 Conversation already active
+1. Start a slow turn on iOS, then try to send a different turn in the same conversation from Mission Control.
+2. **Verify:** the `conversation_busy` response shows **Active on another device**, preserves the canonical active turn, and does not add a second optimistic user message.
+3. Wait for completion or explicitly stop the active turn. **Verify:** sending becomes available again.
+
+### 14.7 Chat rate limit
+1. Use a test gateway configured to return a chat rate-limit response with a retry delay.
+2. Send a message from Mission Control.
+3. **Verify:** the rate-limit notice is non-destructive, identifies that retry is allowed, and keeps the canonical transcript readable.
+4. Wait for the displayed retry period and retry. **Verify:** a successful send uses the same conversation rather than creating a replacement.
+
+### 14.8 Chat authorization and re-pair
+1. Pair Mission Control, then invalidate its chat credential on the test gateway.
+2. Open a gateway conversation or send a message.
+3. **Verify:** Mission Control explains that gateway authorization failed and requires reconnecting or re-pairing; it does not clear cached history or fall back to a local conversation.
+4. Reconnect/re-pair with a valid credential. **Verify:** the same canonical conversation refreshes and becomes writable.
+
+### 14.9 Update Dash required contract shape
+1. Connect this Mission Control build to a test gateway that returns a required chat frame shape this version cannot decode.
+2. Start or resume a turn.
+3. **Verify:** chat shows **Update Dash** instead of silently dropping the frame, corrupting the transcript, or clearing history.
+4. Update Mission Control and reopen the conversation. **Verify:** the canonical history is still present and can resume normally.
 
 ---
 
@@ -742,25 +806,32 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 
 **Precondition:** At least one agent created
 
-### 7.1 List View
+### 18.1 List View
 1. Navigate to Agents page
 2. Take a screenshot
 3. **Verify:** Table shows: status dot, agent name, model, tools count, registration time
 4. **Verify:** Status dot is green for the running agent
 5. **Verify:** Relative timestamps displayed (e.g., "5m ago")
 
-### 7.2 Search
+### 18.2 Search
 1. Type part of the agent name in the search bar
 2. **Verify:** List filters to matching agents
 3. Clear the search
 4. **Verify:** Full list restored
 
-### 7.3 Agent Removal
+### 18.3 Agent Removal
 1. Click the trash/remove icon on the agent row (or navigate to detail → Remove)
 2. **Verify:** A confirmation modal appears with the agent name
 3. **Verify:** Optional "Delete workspace" checkbox is present
 4. Click Cancel
 5. **Verify:** Modal closes, agent still in list
+
+### 18.4 Agent removal preserves archived conversation history
+1. Create a conversation with an agent, send a complete turn, and note the displayed agent name.
+2. Remove the agent and confirm the removal.
+3. Reopen the conversation browser and select the old conversation.
+4. **Verify:** the conversation remains with **Archived** and read-only treatment, its full transcript is readable, and the original agent-name snapshot is still shown.
+5. **Verify:** send, rename, and delete are disabled; no replacement agent or conversation is created.
 
 ---
 
@@ -983,6 +1054,9 @@ The Settings page has its own left sub-nav with seven sections: **General** (Gat
 14. **Verify:** Previous messages are still loaded (conversations survived the restart)
 15. Send a new message
 16. **Verify:** The agent responds successfully (gateway is fully operational)
+17. Start a slow response, wait until part of it is visible, then click "Restart Gateway".
+18. **Verify:** the partial transcript remains readable while Mission Control reconnects and is not replaced by an empty local conversation.
+19. After the health dot returns to green, reopen the conversation. **Verify:** durable replay restores any missing output once and in order, preserves the partial response, and shows the canonical terminal outcome.
 
 ### 22.2A Gateway Runtime Profile (General)
 **Precondition:** Gateway is healthy. For manual QA, use an isolated `MC_DATA_DIR`,
@@ -1086,18 +1160,64 @@ isolated MC profile. Do not run this against a personal gateway or production re
 5. Toggle it back on
 6. **Verify:** The companion widget reappears (full widget behavior is covered in Section 30)
 
-### 22.6 Pair Device (Devices)
+### 22.6 Pair Device (Devices) — Android
+
+Dash for iOS no longer uses this card — it connects by account sign-in instead (see 22.7).
+
 1. Navigate to Settings → Devices
 2. **Verify:** "Pair Device" card renders a QR code on a white tile
-3. **Verify:** The gateway host is shown below the QR with a mode badge reading "local network" or "relay"
-4. **Verify:** No tokens or credentials appear as plain text anywhere on the card
-5. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
-6. Claim a gateway in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
+3. **Verify:** The card says `Scan this code with the Dash mobile app for Android.` (no iOS mention) and its QR image has platform-neutral accessibility text.
+4. **Verify:** The gateway host is shown below the QR with a mode badge reading "local network" or "relay"
+5. **Verify:** No tokens or credentials appear as plain text anywhere on the card
+6. With the badge showing "local network", scan the QR in the Dash Android app on the same Wi-Fi network.
+7. **Verify:** Android connects to the same gateway and chat succeeds. (Android keeps a private, non-resumable history — it does not join Mission Control's canonical conversation list; that's 22.7's iOS/Mission Control check.)
+8. If a relay gateway is enrolled (see 22.7): **Verify:** the badge reads "relay" and the host is the relay address
+9. Claim a gateway in Remote access (22.7) without leaving the page: **Verify:** the QR re-renders in relay mode (no stale "local network" badge)
+10. On a computer with multiple physical network connections, leave local pairing active. **Verify:** the QR uses the address selected by the operating system's default route; if no active route identifies one connection, Pair Device shows an ambiguity error instead of choosing an arbitrary address.
+11. With relay mode active, make local network-interface discovery unavailable while preserving relay connectivity. **Verify:** Pair Device still renders the relay QR and does not show a LAN-address or certificate-fingerprint error.
 
 ### 22.7 Remote Access (Devices)
 1. On Settings → Devices, locate the "Remote access" section below Pair Device
 2. **Verify:** When signed out, a "Sign in to Dash" button is shown
 3. If signed in and enrolled: **Verify:** "Gateway ready at" shows the claimed subdomain and a "Paired devices" list (with Revoke buttons) is present
+4. On the Dash iOS app, tap **Sign In**, sign in with the same Dash account, and tap this gateway in the list. **Verify:** it appears in the "Paired devices" list above once connected — iOS never uses the Pair Device QR code.
+5. With the iOS device connected, move the phone off the LAN (for example, use cellular data). **Verify:** it keeps working — Dash for iOS is relay-only, so there's no LAN fallback to lose.
+6. Create a conversation on iOS and open it in Mission Control. **Verify:** both clients show the same canonical history and active turn through the relay.
+7. Rename the conversation in Mission Control and delete it on iOS. **Verify:** both changes propagate without a duplicate or empty replacement conversation.
+8. Click **Revoke** next to the iOS device, then reopen Dash on iOS. **Verify:** it shows "Re-pair required"; on the phone, open Settings → Disconnect & Forget, then sign back in and tap the gateway again in the picker — no QR code needed — to reconnect.
+9. Simulate a pre-web enrollment: enroll a gateway, then clear its chat capability on the control plane so only the relay address remains. Quit and relaunch Mission Control. **Verify:** the relaunch pushes the chat capability again (no user action beyond relaunching) — Dash for iOS can now connect to that gateway from the picker without showing "needs to be re-enrolled."
+
+### 22.8 Signer devices — approve a browser session
+**Precondition:** A Dash for iOS device is already signed in to the account (22.7) and
+has connected to a gateway at least once, so it's registered as a signer. Use a browser
+that has never signed in to the web client for this account before. This flow lives in
+the web client and Dash for iOS, not Mission Control itself — MC's own role is just
+enrolling the gateway both clients connect through.
+
+1. Open the web client and sign in with a passkey for this account
+2. Pick a gateway this account has already enrolled
+3. **Verify:** Instead of chatting immediately, the browser shows "Approve this
+   device" with "Waiting for approval — scan this code with the Dash app on your phone."
+   and a QR code with a live countdown
+4. On the iOS device, open **Settings** and tap **Approve a device**, then scan the QR
+   code
+5. **Verify:** Dash shows a confirm sheet reading `Allow "<device>" to access <gateway>?`
+   naming the browser and the gateway
+6. Tap **Approve**
+7. **Verify:** Within a couple of seconds, the browser continues past the QR screen
+   into the gateway's chat, with no further action needed there
+8. Repeat from step 1 with a second new browser, but tap **Deny** on the confirm sheet
+   instead
+9. **Verify:** The browser shows "Approval declined. You can try again from the gateway list."
+10. Repeat from step 1 with a third new browser, but let the countdown run out without
+    scanning
+11. **Verify:** The browser shows "The code expired. Try again from the gateway list."
+12. On the iOS device, scan an already-expired QR code (reuse the one from step 11, or
+    wait out its own approval window)
+13. **Verify:** Dash shows "This code has expired. Ask the device to try again."
+14. On an account with no signer device ever signed in, repeat step 1
+15. **Verify:** The browser connects immediately with no approval step — the old
+    behavior is unchanged.
 
 ---
 
@@ -1178,6 +1298,12 @@ Take screenshots of every page and evaluate against these criteria. This section
 4. **Verify:** No overlapping elements
 5. Resize to a larger window
 6. **Verify:** Content fills appropriately (no awkward whitespace)
+
+### 23.11 Conversation state indicators
+1. Compare a cached offline gateway conversation, an archived conversation, and a local legacy conversation in the browser and open tabs.
+2. **Verify:** **Cached**, **Archived**, and **On this Mac** badges use consistent compact sizing, typography, spacing, and muted/read-only treatment.
+3. Disconnect a saved capable gateway. **Verify:** the nonmodal **Gateway offline — cached conversations are read-only.** banner remains visible without covering the conversation list, transcript, or navigation.
+4. **Verify:** the banner and badges do not use destructive error styling, and disabled conversation actions look consistent in every state.
 
 ---
 
@@ -1338,7 +1464,10 @@ Take screenshots of every page and evaluate against these criteria. This section
 ### 27.12 Task detail — status & linked sessions
 1. On a task detail, change the header Status dropdown to "Review".
 2. **Verify:** The status pill/state updates and persists after navigating away and back.
-3. **Verify:** "Linked sessions" lists session chips (if the task has been touched by an agent in a session). The chips are display-only in v1 (muted, non-clickable, with an "Open-in-chat coming soon" tooltip on hover) — they do NOT navigate.
+3. **Verify:** Linked Mission Control sessions appear as agent-named tabs. Sessions from other channels remain muted, non-clickable rows under "Linked Sessions".
+4. Seed more than 50 gateway conversations so this task's linked Mission Control session is beyond the first conversation page.
+5. Open the linked session from the task detail.
+6. **Verify:** Mission Control fetches that exact canonical conversation by ID and opens its existing transcript; it does not create a replacement conversation or duplicate list row.
 
 ### 27.13 Reactivity (no polling)
 1. Open Projects → Kanban in MC.
@@ -1390,6 +1519,8 @@ Take screenshots of every page and evaluate against these criteria. This section
 17. **Verify:** The menu closes; the card moves to In Progress under "Agent working" without a refresh; the task detail shows the new linked session.
 18. Open Projects → All tasks (also check My work and a project's task table). **Verify:** The Assignee cell of each row has the same assign icon; clicking it opens the menu without opening the row, and Escape or an outside click closes it.
 19. With a task's detail page open, link a session WITHOUT using this window's UI — e.g. ask an agent in Chat to pick up the task via its projects tool, or assign an agent from a second MC window. **Verify:** The new "🤖 <agent>" session tab appears in the open task page's tab bar live (driven by the session.linked broadcast), without navigating away and back.
+20. With more than 50 gateway conversations, link the task to a Mission Control session outside the first conversation page and click its external-link icon.
+21. **Verify:** full Chat opens the same canonical conversation and transcript by ID, with no new conversation, empty replacement, or duplicate row.
 
 ---
 

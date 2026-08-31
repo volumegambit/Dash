@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import { createSocket } from 'node:dgram';
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -14,9 +17,12 @@ import type {
 import { ManagementClient } from '@dash/management';
 import {
   ConversationStore,
+  GatewayConversationCache,
+  GatewayConversationRepository,
   GatewayManagementClient,
   GatewayStateStore,
   GatewaySupervisor,
+  LegacyConversationRepository,
   SettingsStore,
   createDefaultKeychainStore,
   defaultProcessSpawner,
@@ -26,20 +32,28 @@ import {
 } from '@dash/mc';
 import type {
   ControlPlaneClient,
+  ConversationMessagePage,
+  ConversationRef,
+  ConversationRepository,
   CreateAgentRequest,
   GatewayChannel,
   GatewayConnectionSettings,
   GatewaySupervisorOptions,
   IssuedGateway,
+  McConversation,
+  McConversationView,
+  McMessage,
   ProcessSpawner,
   RemoteGatewaySecrets,
   VpsGatewayDeployRequest,
 } from '@dash/mc';
+import type { MobileCapability, MobileImage, MobileImageMediaType } from '@dash/mobile-contract';
 import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import type {
+  ChatConnectionIssue,
   CompanionAgentStatus,
   CompanionSelection,
   ControlPlaneStatus,
@@ -50,6 +64,7 @@ import type {
   PairingInfo,
   SetupStatus,
 } from '../shared/ipc.js';
+import { captureChatIpcResult } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
@@ -60,32 +75,441 @@ import {
   forwardStatuses,
 } from './companion-window.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
+import { ConversationController } from './conversation-controller.js';
 import {
   REMOTE_GATEWAY_TEST_FAILURE,
+  classifyConversationGatewayFailure,
   headersForRemoteGateway,
   localGatewayProfile,
   publicGatewayConnectionStatus,
   saveGatewayRelayConnection,
   testGatewayRelayConnection,
   trimTrailingSlash,
+  verifyConversationGateway,
   websocketBaseFromHttpBase,
 } from './gateway-connection.js';
 import { GatewayPoller } from './gateway-poller.js';
 import { buildPairingInfo } from './pairing.js';
+import { ResumableChatTransport } from './resumable-chat-transport.js';
 import { issuePatchForSessionStatus } from './session-status-sync.js';
 import { assignAgentToTask } from './task-dispatch.js';
 
 const DATA_DIR = process.env.MC_DATA_DIR || desktopDir();
+const legacyStore = new ConversationStore(DATA_DIR);
+const legacyRepository = new LegacyConversationRepository(legacyStore, () => '');
+const conversationController = new ConversationController(legacyRepository);
 
-/** Best-effort LAN IPv4 so a phone on the same Wi-Fi can reach the gateway. */
-function getLanIp(): string {
-  const ifaces = networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const net of ifaces[name] ?? []) {
-      if (net.family === 'IPv4' && !net.internal) return net.address;
+export interface ConversationInvalidation {
+  type: 'changed' | 'deleted';
+  conversation: ConversationRef;
+}
+
+export interface PendingConversationRuntime {
+  gatewayId: string;
+  repository: ConversationRepository;
+  transport: ResumableChatTransport | null;
+}
+
+export async function verifiedConversationContext(
+  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'>,
+): Promise<{ gatewayId: string | null; apiVersion: number; capabilities: MobileCapability[] }> {
+  const verified = await verifyConversationGateway(client);
+  return {
+    gatewayId: verified.identity?.gatewayId ?? null,
+    apiVersion: verified.apiVersion,
+    capabilities: verified.capabilities,
+  };
+}
+
+export function conversationContextFromOfflineProfile(profile: GatewayConnectionSettings): {
+  gatewayId: string | null;
+  online: false;
+  capabilities: MobileCapability[] | null;
+} {
+  return {
+    gatewayId: profile.gatewayId ?? null,
+    online: false,
+    capabilities: profile.capabilities ?? null,
+  };
+}
+
+export function configurePendingConversationRuntime(options: {
+  controller: ConversationController;
+  context: {
+    gatewayId: string | null;
+    online: boolean;
+    capabilities: MobileCapability[] | null;
+  };
+  existing: PendingConversationRuntime | null;
+  createRepository(): ConversationRepository;
+  createTransport(): ResumableChatTransport;
+}): PendingConversationRuntime | null {
+  const { controller, context, existing } = options;
+  const capable = context.capabilities?.includes('conversation-sync-v1') ?? false;
+  if (!capable || !context.gatewayId) {
+    existing?.transport?.closeAll();
+    controller.configure({
+      gatewayId: context.gatewayId,
+      online: context.online,
+      capabilities: context.capabilities,
+      repository: null,
+    });
+    return null;
+  }
+
+  const repository =
+    !context.online && existing?.gatewayId === context.gatewayId
+      ? existing.repository
+      : options.createRepository();
+  if (!context.online) {
+    existing?.transport?.closeAll();
+    controller.configure({ ...context, repository });
+    return { gatewayId: context.gatewayId, repository, transport: null };
+  }
+
+  existing?.transport?.closeAll();
+  const transport = options.createTransport();
+  controller.configure({ ...context, repository });
+  return { gatewayId: context.gatewayId, repository, transport };
+}
+
+export function disposePendingConversationRuntime(
+  runtime: PendingConversationRuntime | null,
+): null {
+  runtime?.transport?.closeAll();
+  return null;
+}
+
+export function activatePendingConversationRuntime(
+  service: Pick<ChatService, 'setResumableTransport'>,
+  runtime: PendingConversationRuntime | null,
+): void {
+  service.setResumableTransport(runtime?.transport ?? undefined);
+}
+
+export function createCanonicalChatHandlers(
+  chat: Pick<
+    ChatService,
+    | 'listConversations'
+    | 'createConversation'
+    | 'getMessages'
+    | 'sendMessage'
+    | 'renameConversation'
+    | 'deleteConversation'
+    | 'cancel'
+    | 'answerQuestion'
+  >,
+  controller: Pick<ConversationController, 'find'>,
+) {
+  return {
+    listConversations: (cursor?: string) => chat.listConversations(cursor),
+    getConversation: (conversation: ConversationRef) => controller.find(conversation),
+    createConversation: (agentId: string, requestId: string) =>
+      chat.createConversation(agentId, requestId),
+    getMessages: (conversation: ConversationRef, before?: string) =>
+      chat.getMessages(conversation, before),
+    sendMessage: (
+      conversation: ConversationRef,
+      turnId: string,
+      text: string,
+      images?: MobileImage[],
+    ) => chat.sendMessage(conversation, turnId, text, images),
+    renameConversation: (conversation: ConversationRef, revision: number, title: string) =>
+      chat.renameConversation(conversation, revision, title),
+    deleteConversation: (conversation: ConversationRef, revision: number) =>
+      chat.deleteConversation(conversation, revision),
+    cancel: (conversation: ConversationRef, turnId: string) => chat.cancel(conversation, turnId),
+    answerQuestion: (
+      conversation: ConversationRef,
+      turnId: string,
+      questionId: string,
+      answer: string,
+    ) => chat.answerQuestion(conversation, turnId, questionId, answer),
+  };
+}
+
+export function parseConversationInvalidations(value: string): ConversationInvalidation[] {
+  const invalidations: ConversationInvalidation[] = [];
+  for (const block of value.split(/\r?\n\r?\n+/)) {
+    let eventType = '';
+    let data = '';
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) eventType = line.slice(6).trim();
+      if (line.startsWith('data:')) data = line.slice(5).trim();
+    }
+    if (!['conversation:changed', 'conversation:deleted'].includes(eventType) || !data) {
+      continue;
+    }
+    try {
+      const payload = JSON.parse(data) as { conversationId?: unknown };
+      if (typeof payload.conversationId !== 'string') continue;
+      invalidations.push({
+        type: eventType === 'conversation:deleted' ? 'deleted' : 'changed',
+        conversation: { id: payload.conversationId, origin: 'gateway' },
+      });
+    } catch {
+      // Ignore malformed hints; REST remains authoritative.
     }
   }
-  return '127.0.0.1';
+  return invalidations;
+}
+
+export class ConversationLifecycleEpoch {
+  private epoch = 0;
+
+  begin(): () => boolean {
+    const current = ++this.epoch;
+    return () => current === this.epoch;
+  }
+
+  invalidate(): void {
+    this.epoch++;
+  }
+}
+
+interface GatewayEventEndpoint {
+  managementBaseUrl: string;
+  managementToken: string;
+  headers: Record<string, string>;
+}
+
+interface GatewayEventReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+interface GatewayEventResponse {
+  ok: boolean;
+  body: { getReader(): GatewayEventReader } | null;
+}
+
+export interface GatewayEventStreamManagerOptions {
+  getEndpoint(): Promise<GatewayEventEndpoint | null>;
+  fetchStream(url: string, init: RequestInit): Promise<GatewayEventResponse>;
+  retryMs: number;
+  onEvent(eventType: string, data: string): void | Promise<void>;
+  onWarning?(error: unknown): void;
+}
+
+export class GatewayEventStreamManager {
+  private abort: AbortController | null = null;
+  private retry: ReturnType<typeof setTimeout> | null = null;
+  private generation = 0;
+  private stopped = true;
+
+  constructor(private readonly options: GatewayEventStreamManagerOptions) {}
+
+  start(): void {
+    this.restart();
+  }
+
+  restart(): void {
+    this.stopped = false;
+    this.cancelCurrent();
+    this.open(this.generation);
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.cancelCurrent();
+  }
+
+  private cancelCurrent(): void {
+    this.generation++;
+    this.abort?.abort();
+    this.abort = null;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
+  }
+
+  private isCurrent(generation: number): boolean {
+    return !this.stopped && generation === this.generation;
+  }
+
+  private scheduleRetry(generation: number): void {
+    if (!this.isCurrent(generation) || this.retry) return;
+    this.retry = setTimeout(() => {
+      this.retry = null;
+      if (!this.isCurrent(generation)) return;
+      const nextGeneration = ++this.generation;
+      this.open(nextGeneration);
+    }, this.options.retryMs);
+  }
+
+  private open(generation: number): void {
+    void this.read(generation);
+  }
+
+  private async read(generation: number): Promise<void> {
+    let abort: AbortController | null = null;
+    try {
+      const endpoint = await this.options.getEndpoint();
+      if (!this.isCurrent(generation) || !endpoint) return;
+
+      abort = new AbortController();
+      this.abort = abort;
+      const response = await this.options.fetchStream(
+        `${trimTrailingSlash(endpoint.managementBaseUrl)}/events`,
+        {
+          headers: {
+            ...endpoint.headers,
+            Authorization: `Bearer ${endpoint.managementToken}`,
+          },
+          signal: abort.signal,
+        },
+      );
+      if (!this.isCurrent(generation)) return;
+      if (!response.ok || !response.body) {
+        this.scheduleRetry(generation);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let eventType = '';
+      while (this.isCurrent(generation)) {
+        const { done, value } = await reader.read();
+        if (!this.isCurrent(generation)) return;
+        if (done) {
+          this.scheduleRetry(generation);
+          return;
+        }
+        if (!value) continue;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith('data:') && eventType) {
+            const data = line.slice(5).trimStart();
+            await this.options.onEvent(eventType, data);
+            if (!this.isCurrent(generation)) return;
+            eventType = '';
+          }
+        }
+      }
+    } catch (error) {
+      if (!this.isCurrent(generation)) return;
+      this.options.onWarning?.(error);
+      this.scheduleRetry(generation);
+    } finally {
+      if (abort && this.isCurrent(generation) && this.abort === abort) this.abort = null;
+    }
+  }
+}
+
+export function createGatewaySubscriptionLifecycle(controls: {
+  startEvents(): void;
+  stopEvents(): void;
+  connectProjects(): void;
+  disconnectProjects(): void;
+}): { restart(): void; stop(): void } {
+  return {
+    restart(): void {
+      controls.stopEvents();
+      controls.disconnectProjects();
+      controls.startEvents();
+      controls.connectProjects();
+    },
+    stop(): void {
+      controls.stopEvents();
+      controls.disconnectProjects();
+    },
+  };
+}
+
+function isVirtualOrTunnelInterface(name: string): boolean {
+  return /^(awdl|br(?:idge)?|docker|llw|tap|tailscale|tun|utun|veth|virbr|vmnet|wg)/i.test(name);
+}
+
+function isUsableLanIpv4(address: string): boolean {
+  if (isIP(address) !== 4) return false;
+  const [first, second] = address.split('.').map(Number);
+  return first !== 0 && first !== 127 && first < 224 && !(first === 169 && second === 254);
+}
+
+type LanRouteResolver = () => Promise<string | undefined>;
+
+function resolveDefaultRouteIpv4(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const socket = createSocket('udp4');
+    let settled = false;
+    const finish = (address: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      socket.removeAllListeners();
+      try {
+        socket.close();
+      } catch {
+        // The socket may already be closed after an asynchronous error.
+      }
+      resolve(address);
+    };
+
+    socket.once('error', () => finish(undefined));
+    try {
+      // Connecting a UDP socket selects the OS route without sending a packet.
+      // A numeric destination also avoids making LAN pairing depend on DNS.
+      socket.connect(53, '1.1.1.1', () => {
+        try {
+          const selected = socket.address();
+          finish(typeof selected === 'string' ? undefined : selected.address);
+        } catch {
+          finish(undefined);
+        }
+      });
+    } catch {
+      finish(undefined);
+    }
+  });
+}
+
+export async function selectLanIpv4(
+  ifaces: ReturnType<typeof networkInterfaces>,
+  resolveRoute: LanRouteResolver = resolveDefaultRouteIpv4,
+): Promise<string> {
+  const candidates = Object.entries(ifaces).flatMap(([name, addresses]) => {
+    if (isVirtualOrTunnelInterface(name)) return [];
+    return (addresses ?? [])
+      .filter(
+        (address) =>
+          String(address.family) === 'IPv4' &&
+          address.internal === false &&
+          isUsableLanIpv4(address.address),
+      )
+      .map((address) => address.address);
+  });
+  const uniqueCandidates = [...new Set(candidates)];
+  if (uniqueCandidates.length === 0) {
+    throw new Error(
+      'No usable LAN IPv4 address is available. Connect this Mac to the same network as the phone and try again.',
+    );
+  }
+  if (uniqueCandidates.length === 1) return uniqueCandidates[0];
+
+  let routedAddress: string | undefined;
+  try {
+    routedAddress = await resolveRoute();
+  } catch {
+    // Route discovery is best-effort; ambiguity is handled fail-closed below.
+  }
+  if (routedAddress && uniqueCandidates.includes(routedAddress)) return routedAddress;
+
+  throw new Error(
+    'Could not determine which LAN IPv4 address to use. Make the phone-reachable network the default route or disconnect extra networks, then try again.',
+  );
+}
+
+/** Select a stable, phone-reachable LAN address without ever advertising loopback. */
+function getLanIp(): Promise<string> {
+  return selectLanIpv4(networkInterfaces());
+}
+
+export function assertLocalPairingSource(profile: Pick<GatewayConnectionSettings, 'mode'>): void {
+  if (profile.mode !== 'local') {
+    throw new Error('Switch to the local gateway before pairing a device');
+  }
 }
 
 // Capture MC main process logs to a file (shared ~/.dash/logs)
@@ -124,6 +548,7 @@ function initMcLogging(): void {
 let chatService: ChatService | undefined;
 let gatewayPoller: GatewayPoller | undefined;
 let gatewaySupervisor: GatewaySupervisor | undefined;
+let pendingConversationRuntime: PendingConversationRuntime | null = null;
 // Long-lived WebSocket to the gateway's /projects/ws. Re-broadcasts each
 // { topic, payload } frame to the renderer over the `projects:event` IPC
 // channel. Reconnected from the gateway health poller's `healthy` branch
@@ -157,14 +582,21 @@ function getGatewaySupervisor(
  *   2. claim the label and bind the pubkey; the CP returns the full subdomain
  *      `<gatewayId>.<zone>`, so we derive the bare `host` zone for the dial URL,
  *   3. cache the non-secret issued record (NO gateway secret/key),
- *   4. restart so the supervisor's relay block picks up the cached record.
+ *   4. register the chat capability for browser pairings (best-effort),
+ *   5. restart so the supervisor's relay block picks up the cached record.
  */
 export async function enrollGateway(deps: {
   subdomain: string;
   ensureRunning: () => Promise<GatewayManagementClient>;
   restart: () => Promise<unknown>;
   keychain: { setIssuedGateway: (value: IssuedGateway) => Promise<void> };
-  controlPlaneClient: Pick<ControlPlaneClient, 'createGateway'>;
+  /**
+   * Reads the gateway's chat-scoped capability — the SAME value
+   * `pairing:getInfo` passes as `inputs.mobileToken`, never the administrative
+   * management bearer.
+   */
+  getChatToken: () => Promise<string | null>;
+  controlPlaneClient: Pick<ControlPlaneClient, 'createGateway' | 'setWebChatToken'>;
 }): Promise<void> {
   const client = await deps.ensureRunning();
   const { publicKey } = await client.getRelayIdentity();
@@ -179,7 +611,55 @@ export async function enrollGateway(deps: {
     host,
     dialToken: provision.dialToken,
   });
+  // Browser clients have no QR channel, so the control plane hands them this
+  // capability when they pair. Best-effort and idempotent: enrollment is the
+  // user-visible action and must not fail because web pairing isn't ready, and
+  // every enroll refresh re-uploads (last value wins).
+  await registerWebChatToken(deps, provision.gatewayId);
   await deps.restart();
+}
+
+/**
+ * Heals a "pre-web enrollment" on every local-gateway launch: if this machine
+ * already has an issued (control-plane-enrolled) gateway, re-push its current
+ * chat token. A gateway enrolled before app chat-token registration existed —
+ * or whose enroll crashed between `setIssuedGateway` and the original
+ * `registerWebChatToken` call — has a relay address but no chat capability,
+ * which is what makes Dash for iOS show `.notEnrolled` when a user taps it in
+ * the gateway picker. `registerWebChatToken` is idempotent (last value wins)
+ * and best-effort (never throws), so calling it unconditionally on every
+ * launch is safe. No-ops when nothing is enrolled on this machine yet.
+ */
+export async function healEnrolledGatewayChatToken(deps: {
+  getIssuedGateway: () => Promise<{ gatewayId: string } | null>;
+  getChatToken: () => Promise<string | null>;
+  controlPlaneClient: Pick<ControlPlaneClient, 'setWebChatToken'>;
+}): Promise<void> {
+  const issued = await deps.getIssuedGateway();
+  if (!issued) return;
+  await registerWebChatToken(deps, issued.gatewayId);
+}
+
+/** Upload the gateway's chat capability for web pairings. Never throws. */
+async function registerWebChatToken(
+  deps: {
+    getChatToken: () => Promise<string | null>;
+    controlPlaneClient: Pick<ControlPlaneClient, 'setWebChatToken'>;
+  },
+  gatewayId: string,
+): Promise<void> {
+  try {
+    const chatToken = await deps.getChatToken();
+    if (!chatToken) return; // nothing minted yet — a later enroll re-uploads
+    await deps.controlPlaneClient.setWebChatToken(gatewayId, chatToken);
+  } catch (err) {
+    console.warn(
+      `[mc] could not register the web chat token for ${gatewayId}; ` +
+        `browser pairing will be unavailable until the next enroll: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+  }
 }
 
 async function getClient(gw: GatewaySupervisor): Promise<GatewayManagementClient> {
@@ -228,10 +708,146 @@ interface ActiveGatewayEndpoint {
   headers: Record<string, string>;
 }
 
+type LegacyWireChatPort = Pick<
+  ChatService,
+  | 'listConversations'
+  | 'createConversation'
+  | 'getMessages'
+  | 'renameConversation'
+  | 'deleteConversation'
+  | 'sendMessage'
+  | 'cancel'
+  | 'answerQuestion'
+>;
+
+const MOBILE_IMAGE_TYPES = new Set<MobileImageMediaType>([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
+
+function legacyWireConversation(conversation: McConversationView): McConversation {
+  return {
+    id: conversation.id,
+    agentId: conversation.agentId,
+    title: conversation.title,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    ...(conversation.owningIssueId ? { issueId: conversation.owningIssueId } : {}),
+  };
+}
+
+function legacyWireMessages(page: ConversationMessagePage): McMessage[] {
+  return page.items.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content:
+      message.content.type === 'user'
+        ? {
+            type: 'user',
+            text: message.content.text,
+            ...(message.content.images?.length ? { images: message.content.images } : {}),
+          }
+        : { type: 'assistant', events: message.content.events },
+    timestamp: message.createdAt,
+  }));
+}
+
+function canonicalLegacyImages(
+  images?: Array<{ mediaType: string; data: string }>,
+): MobileImage[] | undefined {
+  if (!images) return undefined;
+  const canonical = images.flatMap((image): MobileImage[] =>
+    MOBILE_IMAGE_TYPES.has(image.mediaType as MobileImageMediaType)
+      ? [{ mediaType: image.mediaType as MobileImageMediaType, data: image.data }]
+      : [],
+  );
+  return canonical.length > 0 ? canonical : undefined;
+}
+
+export function createLegacyWireChatAdapter(
+  chat: LegacyWireChatPort,
+  createId: () => string = randomUUID,
+) {
+  const ref = (id: string): ConversationRef => ({ id, origin: 'local' });
+  return {
+    async listConversations(): Promise<McConversation[]> {
+      return (await chat.listConversations()).items.map(legacyWireConversation);
+    },
+    async createConversation(agentId: string): Promise<McConversation> {
+      return legacyWireConversation(await chat.createConversation(agentId, createId()));
+    },
+    async getMessages(conversationId: string): Promise<McMessage[]> {
+      return legacyWireMessages(await chat.getMessages(ref(conversationId)));
+    },
+    renameConversation(conversationId: string, title: string) {
+      return chat.renameConversation(ref(conversationId), 0, title);
+    },
+    deleteConversation(conversationId: string) {
+      return chat.deleteConversation(ref(conversationId), 0);
+    },
+    sendMessage(
+      conversationId: string,
+      text: string,
+      images?: Array<{ mediaType: string; data: string }>,
+    ) {
+      return chat.sendMessage(ref(conversationId), createId(), text, canonicalLegacyImages(images));
+    },
+    cancel(conversationId: string) {
+      return chat.cancel(ref(conversationId), undefined);
+    },
+    answerQuestion(conversationId: string, questionId: string, answer: string) {
+      return chat.answerQuestion(ref(conversationId), undefined, questionId, answer);
+    },
+  };
+}
+
+export async function projectsAssignAgentHandler(
+  client: {
+    getIssue(
+      idOrKey: string,
+    ): Promise<{ id: string; key: string; title: string; project_id: string | null }>;
+    linkSession(issueId: string, sessionId: string, agentName: string): Promise<unknown>;
+    patchIssue(
+      issueId: string,
+      patch: { status: 'in_progress'; sub_status: 'agent_working' },
+    ): Promise<unknown>;
+  },
+  chat: Pick<ChatService, 'createConversation' | 'sendMessage'>,
+  issueId: string,
+  agentId: string,
+  agentName: string,
+  createId: () => string = randomUUID,
+): Promise<string> {
+  const requestId = createId();
+  const turnId = createId();
+  const conversation = await assignAgentToTask(
+    {
+      getIssue: (idOrKey) => client.getIssue(idOrKey),
+      createConversation: async (id, request, metadata) => {
+        const created = await chat.createConversation(id, request, metadata);
+        return { id: created.id, origin: created.origin };
+      },
+      linkSession: (iid, ref, name) => client.linkSession(iid, ref.id, name),
+      patchIssue: (iid, patch) => client.patchIssue(iid, patch),
+      sendMessage: async (ref, turn, text) => {
+        await chat.sendMessage(ref, turn, text);
+      },
+    },
+    issueId,
+    agentId,
+    agentName,
+    requestId,
+    turnId,
+  );
+  return conversation.id;
+}
+
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
   if (!chatService) {
     chatService = new ChatService(
-      new ConversationStore(DATA_DIR),
+      legacyStore,
       (conversationId, event) => {
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send('chat:event', conversationId, event);
@@ -245,11 +861,13 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
         if (win && !win.isDestroyed()) win.webContents.send('chat:error', conversationId, error);
       },
       undefined,
-      (conversationId, title) => {
+      (conversation, title) => {
         const win = getWindow();
         if (win && !win.isDestroyed())
-          win.webContents.send('chat:conversationRenamed', conversationId, title);
+          win.webContents.send('chat:conversationRenamed', conversation.id, title);
       },
+      conversationController,
+      pendingConversationRuntime?.transport ?? undefined,
     );
   }
   return chatService;
@@ -277,8 +895,9 @@ export async function registerIpcHandlers(
   initMcLogging();
 
   const controlPlaneConfig = readControlPlaneConfig();
-  // Gateway ports are fixed (9300/9200) unless overridden via
-  // MC_GATEWAY_MANAGEMENT_PORT / MC_GATEWAY_CHANNEL_PORT — set by QA runs
+  // Gateway ports are fixed (9300/9200/9400) unless overridden via
+  // MC_GATEWAY_MANAGEMENT_PORT / MC_GATEWAY_CHANNEL_PORT /
+  // MC_GATEWAY_LAN_PORT — set by QA runs
   // and secondary profiles so they don't collide with a personal MC's
   // gateway. Resolved once here; every downstream URL follows via
   // gateway-state.json, which the supervisor writes with the real ports.
@@ -291,6 +910,7 @@ export async function registerIpcHandlers(
     controlPlaneUrl: controlPlaneConfig.baseUrl,
     managementPort: gatewayPorts.managementPort,
     channelPort: gatewayPorts.channelPort,
+    lanPort: gatewayPorts.lanPort,
   };
 
   // Hosted control plane wiring. A single shared keychain backs both the
@@ -383,16 +1003,18 @@ export async function registerIpcHandlers(
     const profile = await getGatewayConnectionProfile();
     const hasRemoteSecrets = Boolean(await keychain.getRemoteGatewaySecrets());
     let health: GatewayConnectionStatus['health'] = 'unknown';
+    let issue: GatewayConnectionStatus['issue'];
     try {
       const client = await getGatewayManagementClient(false);
       if (client) {
-        await client.health();
+        await verifyConversationGateway(client);
         health = 'healthy';
       }
-    } catch {
+    } catch (error) {
       health = 'unhealthy';
+      issue = classifyConversationGatewayFailure(error);
     }
-    return publicGatewayConnectionStatus(profile, hasRemoteSecrets, health);
+    return publicGatewayConnectionStatus(profile, hasRemoteSecrets, health, issue);
   };
 
   // First-run detection: if there's no gateway-state.json yet, we
@@ -429,6 +1051,129 @@ export async function registerIpcHandlers(
   };
 
   const getSkillsClient = (): Promise<ManagementClient> => getDirectManagementClient('Skills API');
+  const conversationLifecycle = new ConversationLifecycleEpoch();
+
+  const sendConversationInvalidation = (invalidation: ConversationInvalidation): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('chat:conversationInvalidated', invalidation);
+    }
+  };
+
+  const sendChatConnectionIssue = (issue: ChatConnectionIssue): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('chat:connectionError', issue);
+  };
+
+  const gatewayConversationRepository = (): GatewayConversationRepository | null =>
+    pendingConversationRuntime?.repository instanceof GatewayConversationRepository
+      ? pendingConversationRuntime.repository
+      : null;
+
+  const chatUrl = (endpoint: ActiveGatewayEndpoint): string =>
+    `${trimTrailingSlash(endpoint.chatBaseUrl)}/ws/chat?token=${encodeURIComponent(endpoint.chatToken)}`;
+
+  const configureConversationRuntime = (
+    context: {
+      gatewayId: string | null;
+      online: boolean;
+      capabilities: MobileCapability[] | null;
+    },
+    client: GatewayManagementClient,
+    endpoint: ActiveGatewayEndpoint,
+  ): void => {
+    const gatewayId = context.gatewayId;
+    pendingConversationRuntime = configurePendingConversationRuntime({
+      controller: conversationController,
+      context,
+      existing: pendingConversationRuntime,
+      createRepository: () => {
+        if (!gatewayId) throw new Error('Verified gateway identity is missing');
+        return new GatewayConversationRepository(
+          gatewayId,
+          client,
+          new GatewayConversationCache(DATA_DIR, gatewayId),
+          (conversation) => sendConversationInvalidation({ type: 'deleted', conversation }),
+        );
+      },
+      createTransport: () =>
+        new ResumableChatTransport({
+          connection: { url: chatUrl(endpoint), headers: endpoint.headers },
+          channelId: 'mission-control',
+          replay: (ref, agentId, sinceSeq) => conversationController.replay(ref, agentId, sinceSeq),
+          onFrame: (frame) => {
+            const win = getWindow();
+            if (win && !win.isDestroyed()) win.webContents.send('chat:frame', frame);
+          },
+          onConnectionError: (conversationId, error) => {
+            sendChatConnectionIssue({
+              conversation: { id: conversationId, origin: 'gateway' },
+              kind: error.kind,
+              message: error.message,
+              retryable: error.retryable ?? false,
+              ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+              ...(error.closeCode !== undefined ? { closeCode: error.closeCode } : {}),
+            });
+          },
+          onProtocolError: (conversationId, message) => {
+            const win = getWindow();
+            if (win && !win.isDestroyed())
+              win.webContents.send('chat:error', conversationId, message);
+          },
+        }),
+    });
+    if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
+  };
+
+  const restoreOfflineConversationRuntime = async (
+    isCurrent: () => boolean = () => true,
+  ): Promise<boolean> => {
+    const profile = await getGatewayConnectionProfile();
+    if (!isCurrent()) return false;
+    const context = conversationContextFromOfflineProfile(profile);
+    const endpoint = await getActiveGatewayEndpoint().catch(() => null);
+    if (!isCurrent()) return false;
+    if (endpoint && context.gatewayId && context.capabilities?.includes('conversation-sync-v1')) {
+      const client = new GatewayManagementClient(
+        endpoint.managementBaseUrl,
+        endpoint.managementToken,
+        endpoint.headers,
+      );
+      configureConversationRuntime(context, client, endpoint);
+    } else {
+      pendingConversationRuntime = configurePendingConversationRuntime({
+        controller: conversationController,
+        context,
+        existing: pendingConversationRuntime,
+        createRepository: () => {
+          if (!context.gatewayId) throw new Error('Gateway identity unavailable');
+          const offline = async (): Promise<never> => {
+            throw new TypeError('Gateway connection unavailable');
+          };
+          const client = {
+            listConversations: offline,
+            getConversation: offline,
+            createConversation: offline,
+            getConversationMessages: offline,
+            patchConversation: offline,
+            deleteConversation: offline,
+            replayConversationEvents: offline,
+          } as unknown as GatewayManagementClient;
+          return new GatewayConversationRepository(
+            context.gatewayId,
+            client,
+            new GatewayConversationCache(DATA_DIR, context.gatewayId),
+            (conversation) => sendConversationInvalidation({ type: 'deleted', conversation }),
+          );
+        },
+        createTransport: () => {
+          throw new Error('Gateway connection unavailable');
+        },
+      });
+      if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
+    }
+    return true;
+  };
 
   // Read gateway state and pass connection to ChatService. The chat
   // token lives in the OS keychain (not gateway-state.json), so pull
@@ -436,36 +1181,70 @@ export async function registerIpcHandlers(
   // Also forward the management API base URL + token — ChatService
   // uses them to call the gateway's event-log replay endpoint after
   // a dropped WebSocket.
-  const refreshChatServiceConnection = async () => {
-    const endpoint = await getActiveGatewayEndpoint();
-    if (endpoint) {
-      const svc = getChatService(getWindow);
-      svc.setGatewayConnection({
-        chatBaseUrl: endpoint.chatBaseUrl,
-        chatToken: endpoint.chatToken,
-        managementBaseUrl: endpoint.managementBaseUrl,
-        managementToken: endpoint.managementToken,
-        headers: endpoint.headers,
-      });
-      // Fire-and-forget startup reconciliation: scan every
-      // conversation for incomplete turns (user message with no
-      // reply, or an assistant message missing a `response` event)
-      // and fetch whatever the gateway logged while MC was down.
-      // Catches the case where MC crashed or was force-quit before
-      // the WebSocket close handler's own reconciliation could run.
-      svc.reconcileAllConversations().catch((err) => {
-        console.error(
-          '[ChatService] Startup reconciliation failed:',
-          err instanceof Error ? err.message : err,
-        );
-      });
+  const refreshChatServiceConnection = async (
+    isCurrent: () => boolean = conversationLifecycle.begin(),
+  ): Promise<boolean> => {
+    const endpoint = await getActiveGatewayEndpoint().catch(() => null);
+    if (!isCurrent()) return false;
+    if (!endpoint) {
+      await restoreOfflineConversationRuntime(isCurrent);
+      return false;
     }
+    const svc = getChatService(getWindow);
+    svc.setGatewayConnection({
+      chatBaseUrl: endpoint.chatBaseUrl,
+      chatToken: endpoint.chatToken,
+      managementBaseUrl: endpoint.managementBaseUrl,
+      managementToken: endpoint.managementToken,
+      headers: endpoint.headers,
+    });
+    const client = new GatewayManagementClient(
+      endpoint.managementBaseUrl,
+      endpoint.managementToken,
+      endpoint.headers,
+    );
+    try {
+      const verified = await verifiedConversationContext(client);
+      if (!isCurrent()) return false;
+      const current = await getGatewayConnectionProfile();
+      if (!isCurrent()) return false;
+      const { gatewayId: _previousGatewayId, ...profileWithoutGatewayId } = current;
+      await getSettingsStore().set({
+        gatewayConnection: {
+          ...profileWithoutGatewayId,
+          ...(verified.gatewayId ? { gatewayId: verified.gatewayId } : {}),
+          apiVersion: verified.apiVersion,
+          capabilities: verified.capabilities,
+        },
+      });
+      if (!isCurrent()) return false;
+      configureConversationRuntime({ ...verified, online: true }, client, endpoint);
+    } catch (error) {
+      const issue = classifyConversationGatewayFailure(error);
+      await restoreOfflineConversationRuntime(isCurrent);
+      if (isCurrent()) {
+        sendChatConnectionIssue({
+          conversation: { id: '*', origin: 'gateway' },
+          ...issue,
+        });
+      }
+      return false;
+    }
+    // The renderer still uses the legacy wire until Tasks 8-9, so the
+    // pending capable runtime is deliberately not installed on ChatService.
+    svc.reconcileAllConversations().catch((err) => {
+      console.error(
+        '[ChatService] Startup reconciliation failed:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+    return true;
   };
 
   const checkRemoteGateway = async (
     profile: GatewayConnectionSettings,
     secrets: RemoteGatewaySecrets,
-  ): Promise<void> => {
+  ) => {
     if (!profile.managementBaseUrl) {
       throw new Error('Remote gateway profile is missing its management URL');
     }
@@ -474,7 +1253,7 @@ export async function registerIpcHandlers(
       secrets.managementToken,
       headersForRemoteGateway(secrets),
     );
-    await client.health();
+    return verifyConversationGateway(client);
   };
 
   // Idempotently record that onboarding is complete. Monotonic: written
@@ -509,6 +1288,14 @@ export async function registerIpcHandlers(
     if (launchProfile.mode === 'local') {
       try {
         await gw.ensureRunning();
+        // See `healEnrolledGatewayChatToken` — heals a gateway enrolled
+        // before app chat-token registration existed, or an enroll that
+        // crashed mid-way, on every local-gateway launch.
+        await healEnrolledGatewayChatToken({
+          getIssuedGateway: () => gw.getIssuedGateway(),
+          getChatToken: () => gw.getChatToken(),
+          controlPlaneClient,
+        });
       } catch (err) {
         console.error('Gateway startup failed on MC launch:', err);
       }
@@ -536,61 +1323,32 @@ export async function registerIpcHandlers(
   };
   gatewayPoller = new GatewayPoller(async () => getGatewayManagementClient(false));
 
-  // SSE subscription to gateway events
-  let sseAbort: AbortController | null = null;
-
-  async function connectToGatewayEvents(): Promise<void> {
-    sseAbort?.abort();
-    const endpoint = await getActiveGatewayEndpoint();
-    if (!endpoint) return;
-
-    const abort = new AbortController();
-    sseAbort = abort;
-
-    try {
-      const res = await fetch(`${endpoint.managementBaseUrl}/events`, {
-        headers: {
-          ...endpoint.headers,
-          Authorization: `Bearer ${endpoint.managementToken}`,
-        },
-        signal: abort.signal,
-      });
-      if (!res.ok || !res.body) return;
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        let eventType = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith('data: ') && eventType) {
-            const data = line.slice(6);
-            const win = getWindow();
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('gateway:event', eventType, data);
-            }
-            eventType = '';
-          }
-        }
+  let shuttingDown = false;
+  const gatewayEventStream = new GatewayEventStreamManager({
+    getEndpoint: getActiveGatewayEndpoint,
+    fetchStream: (url, init) => fetch(url, init),
+    retryMs: 5_000,
+    onEvent: async (eventType, data) => {
+      const win = getWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('gateway:event', eventType, data);
       }
-    } catch (err) {
-      if (!abort.signal.aborted) {
-        console.warn(
-          '[sse] Gateway event stream disconnected:',
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-  }
+      if (eventType !== 'conversation:changed' && eventType !== 'conversation:deleted') return;
+      const [invalidation] = parseConversationInvalidations(`event: ${eventType}\ndata: ${data}\n`);
+      if (!invalidation) return;
+      await gatewayConversationRepository()?.invalidate(
+        invalidation.conversation.id,
+        invalidation.type === 'deleted',
+      );
+      sendConversationInvalidation(invalidation);
+    },
+    onWarning: (error) => {
+      console.warn(
+        '[sse] Gateway event stream disconnected:',
+        error instanceof Error ? error.message : error,
+      );
+    },
+  });
 
   // Long-lived WebSocket subscription to the gateway's /projects/ws. Each
   // frame is `{ topic, payload }` where `payload` is already normalized by the
@@ -602,28 +1360,43 @@ export async function registerIpcHandlers(
   // that fails) while the gateway stays healthy would never be retried —
   // scheduleProjectsWsReconnect() self-heals those cases.
   let projectsWsRetry: NodeJS.Timeout | null = null;
-  function scheduleProjectsWsReconnect(): void {
-    if (projectsWsRetry) return;
+  let projectsSubscriptionGeneration = 0;
+
+  function scheduleProjectsWsReconnect(generation: number): void {
+    if (shuttingDown || generation !== projectsSubscriptionGeneration || projectsWsRetry) return;
     projectsWsRetry = setTimeout(() => {
       projectsWsRetry = null;
-      if (!projectsWs) connectToProjectsWs();
+      if (!shuttingDown && generation === projectsSubscriptionGeneration && !projectsWs) {
+        connectToProjectsWs();
+      }
     }, 5_000);
     projectsWsRetry.unref();
   }
-  function connectToProjectsWs(): void {
-    projectsWs?.close();
+
+  function disconnectProjectsWs(): void {
+    projectsSubscriptionGeneration++;
+    if (projectsWsRetry) clearTimeout(projectsWsRetry);
+    projectsWsRetry = null;
+    const ws = projectsWs;
     projectsWs = null;
+    ws?.close();
+  }
+
+  function connectToProjectsWs(): void {
+    const generation = ++projectsSubscriptionGeneration;
     void (async () => {
       const endpoint = await getActiveGatewayEndpoint();
+      if (shuttingDown || generation !== projectsSubscriptionGeneration) return;
       if (!endpoint) {
         // State/token not readable yet (e.g. first boot race) — retry.
-        scheduleProjectsWsReconnect();
+        scheduleProjectsWsReconnect(generation);
         return;
       }
       const url = `${websocketBaseFromHttpBase(endpoint.managementBaseUrl)}/projects/ws?token=${encodeURIComponent(endpoint.managementToken)}`;
       const ws = new WebSocket(url, { headers: endpoint.headers });
       projectsWs = ws;
       ws.addEventListener('message', (event) => {
+        if (generation !== projectsSubscriptionGeneration) return;
         let frame: { topic?: string; payload?: unknown };
         try {
           frame = JSON.parse(String(event.data));
@@ -640,9 +1413,9 @@ export async function registerIpcHandlers(
         }
       });
       ws.addEventListener('close', () => {
-        if (projectsWs === ws) {
+        if (generation === projectsSubscriptionGeneration && projectsWs === ws) {
           projectsWs = null;
-          scheduleProjectsWsReconnect();
+          scheduleProjectsWsReconnect(generation);
         }
       });
       ws.addEventListener('error', () => {
@@ -651,12 +1424,53 @@ export async function registerIpcHandlers(
     })();
   }
 
+  const gatewaySubscriptions = createGatewaySubscriptionLifecycle({
+    startEvents: () => gatewayEventStream.start(),
+    stopEvents: () => gatewayEventStream.stop(),
+    connectProjects: connectToProjectsWs,
+    disconnectProjects: disconnectProjectsWs,
+  });
+
+  const refreshGatewayConnection = async (): Promise<void> => {
+    gatewaySubscriptions.stop();
+    const isCurrent = conversationLifecycle.begin();
+    const online = await refreshChatServiceConnection(isCurrent);
+    if (online && isCurrent() && !shuttingDown) {
+      gatewaySubscriptions.restart();
+      sendConversationInvalidation({
+        type: 'changed',
+        conversation: { id: '*', origin: 'gateway' },
+      });
+    }
+  };
+
   gatewayPoller.start(
     (status: string) => {
       sendGatewayStatus(status);
       if (status === 'healthy') {
-        connectToGatewayEvents().catch(() => {});
-        if (!projectsWs) connectToProjectsWs();
+        void refreshGatewayConnection().catch((error) => {
+          console.warn(
+            '[chat] failed to refresh healthy gateway conversation context:',
+            error instanceof Error ? error.message : error,
+          );
+        });
+      } else if (status === 'unhealthy') {
+        gatewaySubscriptions.stop();
+        const isCurrent = conversationLifecycle.begin();
+        void restoreOfflineConversationRuntime(isCurrent)
+          .then((applied) => {
+            if (!applied || !isCurrent()) return;
+            sendConversationInvalidation({
+              type: 'changed',
+              conversation: { id: '*', origin: 'gateway' },
+            });
+          })
+          .catch((error) => {
+            console.warn(
+              '[chat] failed to restore offline conversation context:',
+              error instanceof Error ? error.message : error,
+            );
+          });
       }
     },
     (serverName: string, mcpStatus: string) => {
@@ -722,10 +1536,9 @@ export async function registerIpcHandlers(
   });
 
   ipcMain.handle('pairing:getInfo', async (): Promise<PairingInfo> => {
-    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    assertLocalPairingSource(await getGatewayConnectionProfile());
     const chatToken = await gw.getChatToken();
-    const managementToken = await gw.getGatewayToken();
-    if (!managementToken || !chatToken) {
+    if (!chatToken) {
       throw new Error('Gateway not running — start it before pairing a device');
     }
     // Relay mode is available once the gateway is enrolled with the control
@@ -733,18 +1546,43 @@ export async function registerIpcHandlers(
     // LAN pairing. The per-device credential is provisioned by the control
     // plane server-side — MC never holds the relay master secret.
     const issued = await gw.getIssuedGateway();
+    if (issued) {
+      return buildPairingInfo(
+        {
+          mode: 'relay',
+          // The frozen pairing wire name is `mgmtToken`, but the value is the
+          // phone-scoped mobile capability. Never disclose the administrative
+          // management bearer to a paired device.
+          mobileToken: chatToken,
+          relay: { gatewayId: issued.gatewayId, host: issued.host },
+        },
+        (gatewayId) => controlPlaneClient.createPairing(gatewayId),
+      );
+    }
+
+    // LAN pairing resolves its fingerprint from the same local supervisor that
+    // supplied the phone capability, even if the active connection profile
+    // changes while this handler is in flight.
+    const gatewayState = await new GatewayStateStore(DATA_DIR).read();
+    const managementClient = await gw.ensureRunning();
+    const [lanTlsFingerprint, lanHost] = await Promise.all([
+      managementClient.getLanTlsFingerprint(),
+      getLanIp(),
+    ]);
     return buildPairingInfo(
       {
-        mgmtToken: managementToken,
-        chatToken,
+        mode: 'lan',
+        // The frozen pairing wire name is `mgmtToken`, but the value is the
+        // phone-scoped mobile capability. Never disclose the administrative
+        // management bearer to a paired device.
+        mobileToken: chatToken,
         lan: {
-          host: getLanIp(),
-          mgmtPort: gatewayState?.port ?? gatewayPorts.managementPort,
-          chatPort: gatewayState?.channelPort ?? gatewayPorts.channelPort,
+          host: lanHost,
+          port: gatewayState?.lanPort ?? gatewayPorts.lanPort,
+          tlsCertificateSha256: lanTlsFingerprint,
         },
-        relay: issued ? { gatewayId: issued.gatewayId, host: issued.host } : undefined,
       },
-      async (gatewayId) => (await controlPlaneClient.createPairing(gatewayId)).credential,
+      (gatewayId) => controlPlaneClient.createPairing(gatewayId),
     );
   });
 
@@ -793,9 +1631,12 @@ export async function registerIpcHandlers(
       ensureRunning: () => gw.ensureRunning(),
       restart: () => gw.restart(),
       keychain,
+      // The phone-scoped chat capability — the same one `pairing:getInfo`
+      // sends as `mobileToken`. Never the administrative management bearer.
+      getChatToken: () => gw.getChatToken(),
       controlPlaneClient,
     });
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
   });
 
   ipcMain.handle('devices:list', async (): Promise<DeviceInfo[]> => {
@@ -1006,49 +1847,60 @@ export async function registerIpcHandlers(
 
   // Migrate legacy conversations (deploymentId+agentName → agentId) on first list
   let conversationsMigrated = false;
-  ipcMain.handle('chat:listConversations', async () => {
-    if (!conversationsMigrated) {
-      conversationsMigrated = true;
-      try {
-        const client = await getRequiredGatewayManagementClient();
-        const agents = await client.listAgents();
-        const convStore = new ConversationStore(DATA_DIR);
-        await convStore.migrate((agentName) => {
-          const match = agents.find((a) => a.name === agentName);
-          return match?.id ?? null;
-        });
-      } catch {
-        // Gateway not ready — migration will retry next time
-        conversationsMigrated = false;
+  const getCanonicalChat = () =>
+    createCanonicalChatHandlers(getChatService(getWindow), conversationController);
+  ipcMain.handle('chat:listConversations', async (_event, cursor?: string) => {
+    return captureChatIpcResult(async () => {
+      if (!conversationsMigrated) {
+        conversationsMigrated = true;
+        try {
+          const client = await getRequiredGatewayManagementClient();
+          const agents = await client.listAgents();
+          await legacyStore.migrate((agentName) => {
+            const match = agents.find((a) => a.name === agentName);
+            return match?.id ?? null;
+          });
+        } catch {
+          // Gateway not ready — migration will retry next time
+          conversationsMigrated = false;
+        }
       }
-    }
-    return getChatService(getWindow).listConversations();
+      return getCanonicalChat().listConversations(cursor);
+    });
   });
 
-  ipcMain.handle('chat:createConversation', (_event, agentId: string) =>
-    getChatService(getWindow).createConversation(agentId),
+  ipcMain.handle('chat:getConversation', (_event, conversation: ConversationRef) =>
+    captureChatIpcResult(() => getCanonicalChat().getConversation(conversation)),
   );
 
-  ipcMain.handle('chat:getMessages', (_event, conversationId: string) =>
-    getChatService(getWindow).getMessages(conversationId),
+  ipcMain.handle('chat:createConversation', (_event, agentId: string, requestId: string) =>
+    captureChatIpcResult(() => getCanonicalChat().createConversation(agentId, requestId)),
   );
 
-  ipcMain.handle('chat:renameConversation', (_event, conversationId: string, title: string) =>
-    getChatService(getWindow).renameConversation(conversationId, title),
+  ipcMain.handle('chat:getMessages', (_event, conversation: ConversationRef, before?: string) =>
+    captureChatIpcResult(() => getCanonicalChat().getMessages(conversation, before)),
   );
 
-  ipcMain.handle('chat:deleteConversation', (_event, conversationId: string) =>
-    getChatService(getWindow).deleteConversation(conversationId),
+  ipcMain.handle(
+    'chat:renameConversation',
+    (_event, conversation: ConversationRef, revision: number, title: string) =>
+      captureChatIpcResult(() =>
+        getCanonicalChat().renameConversation(conversation, revision, title),
+      ),
+  );
+
+  ipcMain.handle(
+    'chat:deleteConversation',
+    (_event, conversation: ConversationRef, revision: number) =>
+      captureChatIpcResult(() => getCanonicalChat().deleteConversation(conversation, revision)),
   );
 
   ipcMain.handle(
     'chat:sendMessage',
-    (
-      _event,
-      conversationId: string,
-      text: string,
-      images?: { mediaType: string; data: string }[],
-    ) => getChatService(getWindow).sendMessage(conversationId, text, images),
+    (_event, conversation: ConversationRef, turnId: string, text: string, images?: MobileImage[]) =>
+      captureChatIpcResult(() =>
+        getCanonicalChat().sendMessage(conversation, turnId, text, images),
+      ),
   );
 
   // NOTE: these two are fired from the preload with `ipcRenderer.send`
@@ -1057,14 +1909,14 @@ export async function registerIpcHandlers(
   // answers `invoke` and silently drops `send` messages. That mismatch made
   // the chat stop button a renderer-side no-op (swarm workers kept running
   // after "stop"; see TEST_PLAN 31.9).
-  ipcMain.on('chat:cancel', (_event, conversationId: string) => {
-    getChatService(getWindow).cancel(conversationId);
+  ipcMain.on('chat:cancel', (_event, conversation: ConversationRef, turnId: string) => {
+    void getCanonicalChat().cancel(conversation, turnId);
   });
 
   ipcMain.on(
     'chat:answer-question',
-    (_event, conversationId: string, questionId: string, answer: string) => {
-      getChatService(getWindow).answerQuestion(conversationId, questionId, answer);
+    (_event, conversation: ConversationRef, turnId: string, questionId: string, answer: string) => {
+      void getCanonicalChat().answerQuestion(conversation, turnId, questionId, answer);
     },
   );
 
@@ -1200,7 +2052,7 @@ export async function registerIpcHandlers(
       gatewayConnection: { mode: 'local', updatedAt: new Date().toISOString() },
     });
     await gw.ensureRunning();
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
     return getGatewayConnectionStatus();
   });
 
@@ -1219,7 +2071,7 @@ export async function registerIpcHandlers(
         checkRemoteGateway,
         setRemoteGatewaySecrets: (secrets) => keychain.setRemoteGatewaySecrets(secrets),
         setGatewayConnection: (profile) => getSettingsStore().set({ gatewayConnection: profile }),
-        refreshChatServiceConnection,
+        refreshChatServiceConnection: refreshGatewayConnection,
         getGatewayConnectionStatus,
       });
     },
@@ -1255,7 +2107,7 @@ export async function registerIpcHandlers(
       }
       await keychain.setRemoteGatewaySecrets(secrets);
       await getSettingsStore().set({ gatewayConnection: profile });
-      await refreshChatServiceConnection();
+      await refreshGatewayConnection();
       return getGatewayConnectionStatus();
     },
   );
@@ -1265,7 +2117,7 @@ export async function registerIpcHandlers(
       throw new Error('Restart from Mission Control is only available for the local gateway');
     }
     await gw.restart();
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
   });
 
   ipcMain.handle('gateway:status', async () => {
@@ -1310,7 +2162,7 @@ export async function registerIpcHandlers(
     // Now that the keychain has been touched (and on first run,
     // approved by the user), wire up the chat service connection
     // that was deferred at startup.
-    await refreshChatServiceConnection();
+    await refreshGatewayConnection();
   });
 
   ipcMain.handle('app:quit', () => {
@@ -1430,7 +2282,7 @@ export async function registerIpcHandlers(
     void (async () => {
       try {
         const chat = getChatService(getWindow);
-        const issueId = await chat.getConversationIssueId(conversationId);
+        const issueId = await chat.getConversationIssueId({ id: conversationId, origin: 'local' });
         if (!issueId) return;
         const client = await getProjectsClient();
         const issue = await client.getIssue(issueId);
@@ -1478,20 +2330,7 @@ export async function registerIpcHandlers(
     async (_e, issueId: string, agentId: string, agentName: string) => {
       const client = await getProjectsClient();
       const chat = getChatService(getWindow);
-      return assignAgentToTask(
-        {
-          getIssue: (idOrKey) => client.getIssue(idOrKey),
-          createConversation: (id) => chat.createConversation(id),
-          linkSession: (iid, sid, name) => client.linkSession(iid, sid, name),
-          setIssueId: (sid, iid) => chat.setConversationIssueId(sid, iid),
-          patchIssue: (iid, patch) => client.patchIssue(iid, patch),
-          renameConversation: (cid, title) => chat.renameConversation(cid, title),
-          sendMessage: (cid, text) => chat.sendMessage(cid, text),
-        },
-        issueId,
-        agentId,
-        agentName,
-      );
+      return projectsAssignAgentHandler(client, chat, issueId, agentId, agentName);
     },
   );
   ipcMain.handle('projects:addComment', async (_e, issueId: string, body: string) =>
@@ -1591,12 +2430,12 @@ export async function registerIpcHandlers(
   // -----------------------------------------------------------------------
 
   app.on('before-quit', async () => {
-    if (projectsWsRetry) clearTimeout(projectsWsRetry);
-    // Detach before close so the close handler doesn't schedule a reconnect.
-    const ws = projectsWs;
-    projectsWs = null;
-    ws?.close();
+    shuttingDown = true;
+    conversationLifecycle.invalidate();
+    gatewaySubscriptions.stop();
+    pendingConversationRuntime = disposePendingConversationRuntime(pendingConversationRuntime);
     gatewayPoller?.stop();
+    await chatService?.drainBackgroundTasks();
     await shutdownGatewayOnQuit(DATA_DIR);
   });
 }

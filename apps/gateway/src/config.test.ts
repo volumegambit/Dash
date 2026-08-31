@@ -3,7 +3,10 @@ import {
   DEFAULT_SWARM_CONFIG,
   parseFlags,
   resolveSwarmConfig,
+  resolveWebOrigins,
   swarmOverridesFromEnv,
+  validateGatewayStartupOptions,
+  webOriginsFromEnv,
 } from './config.js';
 
 describe('parseFlags', () => {
@@ -27,6 +30,10 @@ describe('parseFlags', () => {
 
   it('parses --channel-port flag', () => {
     expect(parseFlags(['--channel-port', '9201'])).toEqual({ channelPort: 9201 });
+  });
+
+  it('parses --lan-port flag', () => {
+    expect(parseFlags(['--lan-port', '9401'])).toEqual({ lanPort: 9401 });
   });
 
   it('parses --chat-token flag', () => {
@@ -82,6 +89,81 @@ describe('parseFlags', () => {
 
   it('ignores flags without values', () => {
     expect(parseFlags(['--token'])).toEqual({});
+  });
+});
+
+describe('validateGatewayStartupOptions', () => {
+  const relayUrl = 'wss://relay.example.com';
+  const expectedError =
+    'Relay mode requires non-empty --token and --chat-token values to secure the management and chat servers';
+  const distinctTokenError =
+    'Management and mobile/chat tokens must be distinct when both are configured';
+
+  it.each([
+    ['both tokens are absent', {}],
+    ['the management token is blank', { token: '', chatToken: 'chat-secret' }],
+    ['the management token is whitespace', { token: '   ', chatToken: 'chat-secret' }],
+    ['the chat token is blank', { token: 'management-secret', chatToken: '' }],
+    ['the chat token is whitespace', { token: 'management-secret', chatToken: '\t\n' }],
+    ['only the management token is supplied', { token: 'management-secret' }],
+    ['only the chat token is supplied', { chatToken: 'chat-secret' }],
+  ])('rejects relay mode when %s', (_description, tokenOptions) => {
+    expect(() => validateGatewayStartupOptions({ relayUrl, ...tokenOptions })).toThrow(
+      expectedError,
+    );
+  });
+
+  it('accepts relay mode when both tokens are nonblank', () => {
+    expect(() =>
+      validateGatewayStartupOptions({
+        relayUrl,
+        token: '  management-secret  ',
+        chatToken: '  chat-secret  ',
+      }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['local LAN mode', {}],
+    ['relay mode', { relayUrl }],
+  ])('rejects equal management and mobile tokens in %s', (_description, mode) => {
+    expect(() =>
+      validateGatewayStartupOptions({
+        ...mode,
+        token: ' shared-secret ',
+        chatToken: 'shared-secret',
+      }),
+    ).toThrow(distinctTokenError);
+  });
+
+  it('does not echo an equal token in the distinct-token error', () => {
+    const privateToken = 'do-not-echo-shared-token';
+    try {
+      validateGatewayStartupOptions({ token: privateToken, chatToken: privateToken });
+      throw new Error('expected token validation to fail');
+    } catch (error) {
+      expect((error as Error).message).toBe(distinctTokenError);
+      expect((error as Error).message).not.toContain(privateToken);
+    }
+  });
+
+  it('keeps tokens optional in local-only mode', () => {
+    expect(() => validateGatewayStartupOptions({})).not.toThrow();
+    expect(() => validateGatewayStartupOptions({ token: '   ', chatToken: '' })).not.toThrow();
+  });
+
+  it('never includes a supplied token value in the error', () => {
+    const managementToken = 'do-not-echo-management-token';
+
+    expect(() =>
+      validateGatewayStartupOptions({ relayUrl, token: managementToken, chatToken: '   ' }),
+    ).toThrow(expectedError);
+
+    try {
+      validateGatewayStartupOptions({ relayUrl, token: managementToken, chatToken: '   ' });
+    } catch (error) {
+      expect((error as Error).message).not.toContain(managementToken);
+    }
   });
 });
 
@@ -165,5 +247,85 @@ describe('swarmOverridesFromEnv', () => {
       overrides: {},
       warnings: [],
     });
+  });
+});
+
+describe('webOriginsFromEnv', () => {
+  it('returns an empty array when DASH_WEB_ORIGINS is unset', () => {
+    expect(webOriginsFromEnv({})).toEqual([]);
+  });
+
+  it('returns an empty array when DASH_WEB_ORIGINS is an empty string', () => {
+    expect(webOriginsFromEnv({ DASH_WEB_ORIGINS: '' })).toEqual([]);
+  });
+
+  it('splits a comma-separated list and trims whitespace around each entry', () => {
+    expect(
+      webOriginsFromEnv({
+        DASH_WEB_ORIGINS: ' https://app.example.com , https://other.example.com ',
+      }),
+    ).toEqual(['https://app.example.com', 'https://other.example.com']);
+  });
+
+  it('drops blank entries left by a trailing or doubled comma', () => {
+    expect(webOriginsFromEnv({ DASH_WEB_ORIGINS: 'https://app.example.com,,' })).toEqual([
+      'https://app.example.com',
+    ]);
+  });
+});
+
+describe('resolveWebOrigins', () => {
+  const RELAY = 'wss://alice-mbp.relay.example.com';
+
+  it('derives https://app.<relay zone> when relay-enrolled and the env is unset', () => {
+    expect(resolveWebOrigins({ relayUrl: RELAY, gatewayId: 'alice-mbp' }, {})).toEqual([
+      'https://app.relay.example.com',
+    ]);
+  });
+
+  it('strips only the gateway label, never a real zone label', () => {
+    // The relay URL is `wss://<gatewayId>.<zone>`; without the gatewayId we
+    // must not guess which leading label to drop.
+    expect(resolveWebOrigins({ relayUrl: RELAY }, {})).toEqual([
+      'https://app.alice-mbp.relay.example.com',
+    ]);
+    expect(
+      resolveWebOrigins({ relayUrl: 'wss://relay.example.com', gatewayId: 'alice-mbp' }, {}),
+    ).toEqual(['https://app.relay.example.com']);
+  });
+
+  it('is empty when the gateway is not relay-enrolled', () => {
+    expect(resolveWebOrigins({}, {})).toEqual([]);
+  });
+
+  it('lets DASH_WEB_ORIGINS override the derived default', () => {
+    expect(
+      resolveWebOrigins(
+        { relayUrl: RELAY, gatewayId: 'alice-mbp' },
+        { DASH_WEB_ORIGINS: 'https://staging.example.com' },
+      ),
+    ).toEqual(['https://staging.example.com']);
+  });
+
+  it('lets DASH_WEB_ORIGINS extend by listing the default alongside its own', () => {
+    expect(
+      resolveWebOrigins(
+        { relayUrl: RELAY, gatewayId: 'alice-mbp' },
+        { DASH_WEB_ORIGINS: 'https://app.relay.example.com, https://staging.example.com' },
+      ),
+    ).toEqual(['https://app.relay.example.com', 'https://staging.example.com']);
+  });
+
+  it('treats an explicitly empty DASH_WEB_ORIGINS as "no browser access at all"', () => {
+    // Distinct from unset: this is how an operator who does not want the hosted
+    // web client reaching this gateway turns CORS off entirely.
+    expect(
+      resolveWebOrigins({ relayUrl: RELAY, gatewayId: 'alice-mbp' }, { DASH_WEB_ORIGINS: '' }),
+    ).toEqual([]);
+  });
+
+  it('derives nothing from a relay URL with no real domain', () => {
+    expect(resolveWebOrigins({ relayUrl: 'wss://localhost:8080' }, {})).toEqual([]);
+    expect(resolveWebOrigins({ relayUrl: 'not a url' }, {})).toEqual([]);
   });
 });

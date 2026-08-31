@@ -15,7 +15,7 @@ import okhttp3.WebSocketListener
 
 /**
  * Raised when the connection is rejected as unauthorized: the gateway's 4001
- * (bad chat token) or the relay's 4401 (bad/missing pairing credential).
+ * (bad mobile token) or the relay's 4401 (bad/missing pairing credential).
  */
 class GatewayAuthError(message: String = "Unauthorized") : RuntimeException(message)
 
@@ -26,15 +26,16 @@ class GatewayRateLimitError(message: String = "Too Many Requests") : RuntimeExce
 class GatewayStreamError(message: String) : RuntimeException(message)
 
 /**
- * Streams a single agent turn over the gateway chat WebSocket
- * (default port 9200, `/ws/chat?token=<chatToken>`). Protocol:
+ * Streams a single agent turn over the profile's gateway chat WebSocket
+ * (`/ws/chat`, authenticated with `Authorization: Bearer <mobileToken>`). Protocol:
  * apps/gateway/src/chat-ws.ts.
  */
 class ChatSocket(
     private val chatUrl: String,
+    private val mobileToken: String,
     private val client: OkHttpClient = OkHttpClient(),
     /** Per-device relay credential; when set, sent on the upgrade so the relay
-     *  admits this device. Null for LAN/adb connections. */
+     *  admits this device. Null for pinned LAN connections. */
     private val relayCredential: String? = null,
 ) {
     private val json = DashJson.instance
@@ -46,6 +47,7 @@ class ChatSocket(
      */
     fun stream(message: WsClientMessage.Message): Flow<AgentEvent> = callbackFlow {
         val request = Request.Builder().url(chatUrl)
+            .header("Authorization", "Bearer $mobileToken")
             .apply { relayCredential?.let { header(RELAY_CREDENTIAL_HEADER, it) } }
             .build()
         val socket = client.newWebSocket(
@@ -70,7 +72,7 @@ class ChatSocket(
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                    // 4001 gateway bad token, 4401 relay bad pairing credential → auth.
+                    // 4001 gateway bad mobile token, 4401 relay bad pairing credential → auth.
                     // 4429 relay rate limit. Other codes are a normal end of turn.
                     when (code) {
                         4001, 4401 -> close(GatewayAuthError(reason.ifBlank { "Unauthorized" }))

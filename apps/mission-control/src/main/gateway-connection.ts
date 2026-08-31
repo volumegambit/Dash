@@ -1,5 +1,12 @@
-import type { GatewayConnectionSettings, RemoteGatewaySecrets } from '@dash/mc';
+import {
+  type GatewayConnectionSettings,
+  GatewayHttpError,
+  type GatewayManagementClient,
+  type RemoteGatewaySecrets,
+} from '@dash/mc';
+import type { GatewayIdentity, MobileCapability } from '@dash/mobile-contract';
 import type {
+  GatewayConnectionIssue,
   GatewayConnectionStatus,
   GatewayConnectionTestResult,
   GatewayRelayConnectionInput,
@@ -15,12 +22,86 @@ export interface NormalizedGatewayRelayConnection {
   secrets: RemoteGatewaySecrets;
 }
 
+export interface VerifiedGatewayMetadata {
+  identity: GatewayIdentity | null;
+  apiVersion: number;
+  capabilities: MobileCapability[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function retryAfterFromGatewayError(error: GatewayHttpError): number | undefined {
+  const details = error.apiError?.details;
+  if (!isRecord(details)) return undefined;
+  if (typeof details.retryAfterMs === 'number' && details.retryAfterMs >= 0) {
+    return details.retryAfterMs;
+  }
+  if (typeof details.retryAfterSeconds === 'number' && details.retryAfterSeconds >= 0) {
+    return details.retryAfterSeconds * 1_000;
+  }
+  return undefined;
+}
+
+export function classifyConversationGatewayFailure(error: unknown): GatewayConnectionIssue {
+  if (error instanceof GatewayHttpError) {
+    const code = error.apiError?.code;
+    if (error.status === 401 || code === 'unauthorized') {
+      return {
+        kind: 'repair_required',
+        message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+        retryable: false,
+      };
+    }
+    if (error.status === 429 || code === 'rate_limited') {
+      return {
+        kind: 'rate_limited',
+        message: error.apiError?.error ?? 'Gateway rate limit reached. Try again shortly.',
+        retryable: error.apiError?.retryable ?? true,
+        ...(retryAfterFromGatewayError(error) !== undefined
+          ? { retryAfterMs: retryAfterFromGatewayError(error) }
+          : {}),
+      };
+    }
+    if (error.status === 426 || code === 'capability_required') {
+      return {
+        kind: 'update_required',
+        message: `Update Dash: ${error.apiError?.error ?? 'the gateway requires a newer client'}`,
+        retryable: error.apiError?.retryable ?? false,
+      };
+    }
+    if (error.status >= 500 || code === 'gateway_offline') {
+      return {
+        kind: 'gateway_offline',
+        message: 'Gateway offline — cached conversations are read-only.',
+        retryable: true,
+      };
+    }
+  }
+  if (
+    error instanceof TypeError ||
+    (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name))
+  ) {
+    return {
+      kind: 'gateway_offline',
+      message: 'Gateway offline — cached conversations are read-only.',
+      retryable: true,
+    };
+  }
+  return {
+    kind: 'update_required',
+    message: `Update Dash: ${error instanceof Error ? error.message : String(error)}`,
+    retryable: false,
+  };
+}
+
 export interface GatewayRelayConnectionDeps {
   now(): string;
   checkRemoteGateway(
     profile: GatewayConnectionSettings,
     secrets: RemoteGatewaySecrets,
-  ): Promise<void>;
+  ): Promise<VerifiedGatewayMetadata>;
   setRemoteGatewaySecrets(secrets: RemoteGatewaySecrets): Promise<void>;
   setGatewayConnection(profile: GatewayConnectionSettings): Promise<void>;
   refreshChatServiceConnection(): Promise<void>;
@@ -52,8 +133,22 @@ export function publicGatewayConnectionStatus(
   profile: GatewayConnectionSettings,
   hasRemoteSecrets: boolean,
   health: GatewayConnectionStatus['health'] = 'unknown',
+  issue?: GatewayConnectionIssue,
 ): GatewayConnectionStatus {
-  return { profile, hasRemoteSecrets, health };
+  return { profile, hasRemoteSecrets, health, ...(issue ? { issue } : {}) };
+}
+
+export async function verifyConversationGateway(
+  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'>,
+): Promise<VerifiedGatewayMetadata> {
+  const health = await client.health();
+  const apiVersion = health.apiVersion ?? 0;
+  const capabilities = health.capabilities ?? [];
+  if (!capabilities.includes('conversation-sync-v1')) {
+    return { identity: null, apiVersion, capabilities };
+  }
+  const identity = await client.getIdentity();
+  return { identity, apiVersion, capabilities };
 }
 
 export function normalizeGatewayRelayInput(
@@ -132,14 +227,20 @@ export async function saveGatewayRelayConnection(
   deps: GatewayRelayConnectionDeps,
 ): Promise<GatewayConnectionStatus> {
   const normalized = normalizeGatewayRelayInput(input, deps.now());
-  try {
-    await deps.checkRemoteGateway(normalized.profile, normalized.secrets);
-  } catch {
-    throw new Error(REMOTE_GATEWAY_TEST_FAILURE);
-  }
+  const verified = await deps
+    .checkRemoteGateway(normalized.profile, normalized.secrets)
+    .catch(() => {
+      throw new Error(REMOTE_GATEWAY_TEST_FAILURE);
+    });
+  const profile: GatewayConnectionSettings = {
+    ...normalized.profile,
+    ...(verified.identity ? { gatewayId: verified.identity.gatewayId } : {}),
+    apiVersion: verified.apiVersion,
+    capabilities: verified.capabilities,
+  };
 
   await deps.setRemoteGatewaySecrets(normalized.secrets);
-  await deps.setGatewayConnection(normalized.profile);
+  await deps.setGatewayConnection(profile);
   await deps.refreshChatServiceConnection();
   return deps.getGatewayConnectionStatus();
 }

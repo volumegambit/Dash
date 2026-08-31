@@ -197,6 +197,46 @@ function makeEventLogSink() {
 }
 
 describe('AgentChatCoordinator', () => {
+  it('answers questions and hard-cancels through an existing warm conversation', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'control-agent',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'You are helpful.',
+    });
+    const answerQuestion = vi.fn().mockResolvedValue(undefined);
+    const abort = vi.fn();
+    const backend: AgentBackend = {
+      name: 'control-backend',
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      abort,
+      answerQuestion,
+      async *run(): AsyncGenerator<AgentEvent> {
+        yield { type: 'text_delta', text: 'warm' };
+      },
+    };
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+    await drain(
+      agents.chat({ agentId: id, conversationId: 'conversation-01', text: 'Warm the pool' }),
+    );
+
+    await agents.answerQuestion(id, 'conversation-01', 'question-01', 'Blue');
+    expect(answerQuestion).toHaveBeenCalledWith('question-01', [['Blue']]);
+    expect(agents.cancel(id, 'conversation-01')).toBe(true);
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(agents.cancel(id, 'missing-conversation')).toBe(false);
+    await expect(
+      agents.answerQuestion(id, 'missing-conversation', 'question-02', 'No'),
+    ).rejects.toThrow('No active conversation to answer');
+
+    await agents.stop();
+  });
+
   it('routes a message to the correct agent and streams events', async () => {
     const registry = new AgentRegistry();
     const { id } = registry.register({

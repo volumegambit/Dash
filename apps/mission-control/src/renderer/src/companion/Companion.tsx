@@ -19,17 +19,20 @@ export function Companion(): null {
   const companionVisible = useUIStore((s) => s.companionVisible);
   const companionSelection = useUIStore((s) => s.companionSelection);
 
-  const statuses: CompanionAgentStatus[] = selectCompanionSessions(buildSnapshot(chat, agents)).map(
-    (s) => ({
-      agentId: s.agentId,
-      agentName: s.agentName,
-      status: s.status,
-      preview: s.preview,
-    }),
-  );
+  const sessions = selectCompanionSessions(buildSnapshot(chat, agents));
+  const statuses: CompanionAgentStatus[] = sessions.map((s) => ({
+    agentId: s.agentId,
+    agentName: s.agentName,
+    status: s.status,
+    preview: s.preview,
+  }));
   // Content hash: any change to an entry's identity, status, or preview must
   // re-publish, so the widget reflects live tool activity in its bubbles.
-  const key = statuses.map((s) => `${s.agentId}:${s.status}:${s.preview}`).join('|');
+  const key = sessions
+    .map((session) =>
+      [session.conversationKey, session.agentId, session.status, session.preview].join(':'),
+    )
+    .join('|');
 
   // Keep the widget window's existence in sync with the persisted preference.
   useEffect(() => {

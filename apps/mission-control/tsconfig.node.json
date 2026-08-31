@@ -13,6 +13,12 @@
     "lib": ["ES2024"],
     "types": ["electron-vite/node"]
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "electron.vite.config.ts"],
+  "include": [
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/**/*",
+    "src/renderer/src/stores/chat-sync.ts",
+    "electron.vite.config.ts"
+  ],
   "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

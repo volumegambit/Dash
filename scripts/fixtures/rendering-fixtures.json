@@ -1,0 +1,504 @@
+{
+  "$schema": "rendering-parity fixture — shared by apps/web/src/ui/blocks/rendering-parity.test.ts and ios/DashTests/Features/RenderingParityTests.swift. One source of truth for tool-presentation.ts / ToolPresentation.swift parity (design doc appendix §3). Do not edit either consumer's expectations without updating this file.",
+  "cases": [
+    {
+      "name": "label: bash maps to Bash",
+      "kind": "label",
+      "toolName": "bash",
+      "expectedLabel": "Bash"
+    },
+    {
+      "name": "label: read maps to Read",
+      "kind": "label",
+      "toolName": "read",
+      "expectedLabel": "Read"
+    },
+    {
+      "name": "label: write maps to Write",
+      "kind": "label",
+      "toolName": "write",
+      "expectedLabel": "Write"
+    },
+    {
+      "name": "label: edit maps to Edit",
+      "kind": "label",
+      "toolName": "edit",
+      "expectedLabel": "Edit"
+    },
+    {
+      "name": "label: find maps to Find",
+      "kind": "label",
+      "toolName": "find",
+      "expectedLabel": "Find"
+    },
+    {
+      "name": "label: grep maps to Grep",
+      "kind": "label",
+      "toolName": "grep",
+      "expectedLabel": "Grep"
+    },
+    {
+      "name": "label: ls maps to List Directory",
+      "kind": "label",
+      "toolName": "ls",
+      "expectedLabel": "List Directory"
+    },
+    {
+      "name": "label: web_search maps to Web Search",
+      "kind": "label",
+      "toolName": "web_search",
+      "expectedLabel": "Web Search"
+    },
+    {
+      "name": "label: web_fetch maps to Web Fetch",
+      "kind": "label",
+      "toolName": "web_fetch",
+      "expectedLabel": "Web Fetch"
+    },
+    {
+      "name": "label: task maps to Task",
+      "kind": "label",
+      "toolName": "task",
+      "expectedLabel": "Task"
+    },
+    {
+      "name": "label: load_skill maps to Load Skill",
+      "kind": "label",
+      "toolName": "load_skill",
+      "expectedLabel": "Load Skill"
+    },
+    {
+      "name": "label: create_skill maps to Create Skill",
+      "kind": "label",
+      "toolName": "create_skill",
+      "expectedLabel": "Create Skill"
+    },
+    {
+      "name": "label: legacy name read_file normalizes to Read",
+      "kind": "label",
+      "toolName": "read_file",
+      "expectedLabel": "Read"
+    },
+    {
+      "name": "label: legacy name write_file normalizes to Write",
+      "kind": "label",
+      "toolName": "write_file",
+      "expectedLabel": "Write"
+    },
+    {
+      "name": "label: legacy name list_directory normalizes to List Directory",
+      "kind": "label",
+      "toolName": "list_directory",
+      "expectedLabel": "List Directory"
+    },
+    {
+      "name": "label: legacy name execute_command normalizes to Bash",
+      "kind": "label",
+      "toolName": "execute_command",
+      "expectedLabel": "Bash"
+    },
+    {
+      "name": "label: fallback capitalization for search",
+      "kind": "label",
+      "toolName": "search",
+      "expectedLabel": "Search"
+    },
+    {
+      "name": "label: fallback capitalization for custom_thing",
+      "kind": "label",
+      "toolName": "custom_thing",
+      "expectedLabel": "Custom_thing"
+    },
+    {
+      "name": "label: fallback capitalization for TodoWrite",
+      "kind": "label",
+      "toolName": "TodoWrite",
+      "expectedLabel": "TodoWrite"
+    },
+    {
+      "name": "summarize: bash primary key ({\"command\": \"ls -la\"})",
+      "kind": "summarize",
+      "toolName": "bash",
+      "input": {
+        "command": "ls -la"
+      },
+      "expectedSummary": "ls -la"
+    },
+    {
+      "name": "summarize: read primary key ({\"path\": \"package.json\"})",
+      "kind": "summarize",
+      "toolName": "read",
+      "input": {
+        "path": "package.json"
+      },
+      "expectedSummary": "package.json"
+    },
+    {
+      "name": "summarize: write primary key ({\"path\": \"src/index.ts\", \"content\": \"hello\"})",
+      "kind": "summarize",
+      "toolName": "write",
+      "input": {
+        "path": "src/index.ts",
+        "content": "hello"
+      },
+      "expectedSummary": "src/index.ts"
+    },
+    {
+      "name": "summarize: edit primary key ({\"path\": \"src/index.ts\"})",
+      "kind": "summarize",
+      "toolName": "edit",
+      "input": {
+        "path": "src/index.ts"
+      },
+      "expectedSummary": "src/index.ts"
+    },
+    {
+      "name": "summarize: find primary key ({\"pattern\": \"*.ts\"})",
+      "kind": "summarize",
+      "toolName": "find",
+      "input": {
+        "pattern": "*.ts"
+      },
+      "expectedSummary": "*.ts"
+    },
+    {
+      "name": "summarize: grep primary key ({\"pattern\": \"foo\", \"query\": \"bar\"})",
+      "kind": "summarize",
+      "toolName": "grep",
+      "input": {
+        "pattern": "foo",
+        "query": "bar"
+      },
+      "expectedSummary": "foo"
+    },
+    {
+      "name": "summarize: grep primary key ({\"query\": \"bar\"})",
+      "kind": "summarize",
+      "toolName": "grep",
+      "input": {
+        "query": "bar"
+      },
+      "expectedSummary": "bar"
+    },
+    {
+      "name": "summarize: ls primary key ({\"path\": \"/tmp\", \"directory\": \"/var\"})",
+      "kind": "summarize",
+      "toolName": "ls",
+      "input": {
+        "path": "/tmp",
+        "directory": "/var"
+      },
+      "expectedSummary": "/tmp"
+    },
+    {
+      "name": "summarize: ls primary key ({\"directory\": \"/var\"})",
+      "kind": "summarize",
+      "toolName": "ls",
+      "input": {
+        "directory": "/var"
+      },
+      "expectedSummary": "/var"
+    },
+    {
+      "name": "summarize: web_search primary key ({\"query\": \"TypeScript generics\"})",
+      "kind": "summarize",
+      "toolName": "web_search",
+      "input": {
+        "query": "TypeScript generics"
+      },
+      "expectedSummary": "TypeScript generics"
+    },
+    {
+      "name": "summarize: web_fetch primary key ({\"url\": \"https://example.com\"})",
+      "kind": "summarize",
+      "toolName": "web_fetch",
+      "input": {
+        "url": "https://example.com"
+      },
+      "expectedSummary": "https://example.com"
+    },
+    {
+      "name": "summarize: load_skill primary key ({\"name\": \"greet\"})",
+      "kind": "summarize",
+      "toolName": "load_skill",
+      "input": {
+        "name": "greet"
+      },
+      "expectedSummary": "greet"
+    },
+    {
+      "name": "summarize: create_skill primary key ({\"name\": \"custom\"})",
+      "kind": "summarize",
+      "toolName": "create_skill",
+      "input": {
+        "name": "custom"
+      },
+      "expectedSummary": "custom"
+    },
+    {
+      "name": "summarize: TodoWrite reports 2/5 done",
+      "kind": "summarize",
+      "toolName": "task",
+      "input": {
+        "todos": [
+          {
+            "content": "a",
+            "status": "completed"
+          },
+          {
+            "content": "b",
+            "status": "pending"
+          },
+          {
+            "content": "c",
+            "status": "completed"
+          },
+          {
+            "content": "d",
+            "status": "pending"
+          },
+          {
+            "content": "e",
+            "status": "pending"
+          }
+        ]
+      },
+      "expectedSummary": "2/5 done"
+    },
+    {
+      "name": "summarize: falls back to first string value for unknown tool",
+      "kind": "summarize",
+      "toolName": "unknown_tool",
+      "input": {
+        "alpha": "first",
+        "zebra": "second"
+      },
+      "expectedSummary": "first"
+    },
+    {
+      "name": "summarize: returns empty when no matching key is found",
+      "kind": "summarize",
+      "toolName": "ls",
+      "input": {},
+      "expectedSummary": null
+    },
+    {
+      "name": "truncate: 70-char path preserves filename with middle ellipsis",
+      "kind": "truncate",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/deploy.tsx",
+      "expectedTruncated": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…/deploy.tsx"
+    },
+    {
+      "name": "truncate: 70-char non-path string gets a trailing ellipsis",
+      "kind": "truncate",
+      "input": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expectedTruncated": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb…"
+    },
+    {
+      "name": "truncate: exactly-60-char string is left untouched",
+      "kind": "truncate",
+      "input": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "expectedTruncated": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "name": "truncate: 61-char string crosses the boundary and is truncated",
+      "kind": "truncate",
+      "input": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "expectedTruncated": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd…"
+    },
+    {
+      "name": "details: 81-char string gets prefix + char count",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "note": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expectedDetails": [
+        {
+          "key": "note",
+          "value": "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\" (81 chars)"
+        }
+      ]
+    },
+    {
+      "name": "details: 5-item array formats as [5 items]",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "files": ["a", "b", "c", "d", "e"]
+      },
+      "expectedDetails": [
+        {
+          "key": "files",
+          "value": "[5 items]"
+        }
+      ]
+    },
+    {
+      "name": "details: nested object formats as {object}",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "opts": {
+          "a": 1,
+          "b": 2
+        }
+      },
+      "expectedDetails": [
+        {
+          "key": "opts",
+          "value": "{object}"
+        }
+      ]
+    },
+    {
+      "name": "details: integer formats without decimal",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "count": 10
+      },
+      "expectedDetails": [
+        {
+          "key": "count",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "name": "details: fractional number formats with decimal",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "ratio": 2.5
+      },
+      "expectedDetails": [
+        {
+          "key": "ratio",
+          "value": "2.5"
+        }
+      ]
+    },
+    {
+      "name": "details: boolean true formats as \"true\"",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "flag": true
+      },
+      "expectedDetails": [
+        {
+          "key": "flag",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "name": "details: boolean false formats as \"false\"",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "flag": false
+      },
+      "expectedDetails": [
+        {
+          "key": "flag",
+          "value": "false"
+        }
+      ]
+    },
+    {
+      "name": "details: null formats as \"null\"",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "value": null
+      },
+      "expectedDetails": [
+        {
+          "key": "value",
+          "value": "null"
+        }
+      ]
+    },
+    {
+      "name": "details: read skips path/offset/limit, keeps other keys",
+      "kind": "details",
+      "toolName": "read",
+      "input": {
+        "path": "a.txt",
+        "offset": 10,
+        "limit": 20,
+        "reason": "checking contents"
+      },
+      "expectedDetails": [
+        {
+          "key": "reason",
+          "value": "checking contents"
+        }
+      ]
+    },
+    {
+      "name": "details: write skips content, keeps other keys",
+      "kind": "details",
+      "toolName": "write",
+      "input": {
+        "path": "a.txt",
+        "content": "hello world"
+      },
+      "expectedDetails": [
+        {
+          "key": "path",
+          "value": "a.txt"
+        }
+      ]
+    },
+    {
+      "name": "details: non-read/write tools are not filtered",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "command": "ls",
+        "path": "/tmp"
+      },
+      "expectedDetails": [
+        {
+          "key": "command",
+          "value": "ls"
+        },
+        {
+          "key": "path",
+          "value": "/tmp"
+        }
+      ]
+    },
+    {
+      "name": "details: Number.MAX_SAFE_INTEGER formats as an exact integer",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "id": 9007199254740991
+      },
+      "expectedDetails": [
+        {
+          "key": "id",
+          "value": "9007199254740991"
+        }
+      ]
+    },
+    {
+      "name": "details: 20-digit integral number beyond Int64/Number.MAX_SAFE_INTEGER formats in fixed notation, matching JS's Number::toString (not Swift's default exponential notation)",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "id": 12345678901234567890
+      },
+      "expectedDetails": [
+        {
+          "key": "id",
+          "value": "12345678901234567000"
+        }
+      ]
+    }
+  ]
+}

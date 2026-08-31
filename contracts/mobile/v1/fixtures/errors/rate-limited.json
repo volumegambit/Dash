@@ -1,0 +1,8 @@
+{
+  "code": "rate_limited",
+  "error": "Too many mobile requests",
+  "retryable": true,
+  "details": {
+    "retryAfterSeconds": 30
+  }
+}

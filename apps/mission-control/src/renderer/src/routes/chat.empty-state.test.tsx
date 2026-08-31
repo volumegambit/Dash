@@ -19,18 +19,21 @@ const agents: EmptyStateAgent[] = [
 const recents: RecentConversationItem[] = [
   {
     id: 'conv-1',
+    origin: 'gateway',
     title: 'Debugging auth flow',
     agentName: 'Developer',
     updatedAt: '2026-04-14T10:00:00.000Z',
   },
   {
     id: 'conv-2',
+    origin: 'local',
     title: 'Draft announcement',
     agentName: 'Writer',
     updatedAt: '2026-04-13T12:00:00.000Z',
   },
   {
     id: 'conv-3',
+    origin: 'gateway',
     title: '',
     agentName: 'Researcher',
     updatedAt: '2026-04-11T12:00:00.000Z',
@@ -123,7 +126,7 @@ describe('EmptyChatState', () => {
       expect(row.textContent).toContain('Untitled');
     });
 
-    it('clicking a recent conversation fires onSelectConversation with its id', () => {
+    it('clicking a recent conversation fires onSelectConversation with its exact origin ref', () => {
       const onSelectConversation = vi.fn();
       render(
         <EmptyChatState
@@ -135,7 +138,7 @@ describe('EmptyChatState', () => {
         />,
       );
       fireEvent.click(screen.getByTestId('empty-chat-recent-conv-2'));
-      expect(onSelectConversation).toHaveBeenCalledWith('conv-2');
+      expect(onSelectConversation).toHaveBeenCalledWith({ id: 'conv-2', origin: 'local' });
     });
 
     it('renders every agent with its model subtitle', () => {

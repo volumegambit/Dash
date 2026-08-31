@@ -1,0 +1,5 @@
+{
+  "code": "unauthorized",
+  "error": "Bearer token is missing or invalid",
+  "retryable": false
+}

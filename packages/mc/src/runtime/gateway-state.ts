@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { DEFAULT_LAN_PORT } from './ports.js';
 
 /**
  * Non-secret metadata about the running gateway process.
@@ -15,6 +16,7 @@ export interface GatewayState {
   startedAt: string;
   port: number;
   channelPort: number;
+  lanPort: number;
 }
 
 export class GatewayStateStore {
@@ -30,7 +32,7 @@ export class GatewayStateStore {
       const raw = await readFile(this.filePath, 'utf-8');
       const parsed = JSON.parse(raw);
       if (typeof parsed !== 'object' || parsed === null) return null;
-      const { pid, startedAt, port, channelPort } = parsed as Record<string, unknown>;
+      const { pid, startedAt, port, channelPort, lanPort } = parsed as Record<string, unknown>;
       if (
         typeof pid !== 'number' ||
         typeof startedAt !== 'string' ||
@@ -39,13 +41,19 @@ export class GatewayStateStore {
       ) {
         return null;
       }
-      return { pid, startedAt, port, channelPort };
+      return {
+        pid,
+        startedAt,
+        port,
+        channelPort,
+        lanPort: typeof lanPort === 'number' ? lanPort : DEFAULT_LAN_PORT,
+      };
     } catch {
       return null;
     }
   }
 
-  async write(state: GatewayState): Promise<void> {
+  async write(state: Omit<GatewayState, 'lanPort'> & { lanPort?: number }): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     // Explicit destructure so `write` is the one place that decides
     // what lands on disk. Any caller passing extra fields has them
@@ -55,6 +63,7 @@ export class GatewayStateStore {
       startedAt: state.startedAt,
       port: state.port,
       channelPort: state.channelPort,
+      lanPort: state.lanPort ?? DEFAULT_LAN_PORT,
     };
     await writeFile(this.filePath, JSON.stringify(toWrite, null, 2));
   }

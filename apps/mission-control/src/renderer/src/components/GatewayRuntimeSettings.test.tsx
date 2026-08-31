@@ -29,6 +29,30 @@ describe('GatewayRuntimeSettings', () => {
     expect(screen.queryByText(/hosted dash gateway/i)).not.toBeInTheDocument();
   });
 
+  it('shows an authenticated identity failure as reconnect-required', async () => {
+    mockApi.gatewayConnectionGet.mockResolvedValue({
+      profile: {
+        mode: 'relay',
+        name: 'prod',
+        managementBaseUrl: 'https://gw.relay.example.com',
+      },
+      hasRemoteSecrets: true,
+      health: 'unhealthy',
+      issue: {
+        kind: 'repair_required',
+        message: 'Gateway authorization failed. Reconnect this gateway to continue.',
+        retryable: false,
+      },
+    });
+
+    render(<GatewayRuntimeSettings />);
+
+    expect(await screen.findByText(/gateway authorization failed/i)).toBeInTheDocument();
+    expect(screen.getByTestId('gateway-runtime-status')).toHaveTextContent(
+      'prod - reconnect required',
+    );
+  });
+
   it('tests an existing gateway before enabling activation', async () => {
     const user = userEvent.setup();
     mockApi.gatewayConnectionTest.mockResolvedValueOnce({

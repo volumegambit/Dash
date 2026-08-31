@@ -2,11 +2,26 @@ import { Hono } from 'hono';
 import type { Authenticator } from './auth.js';
 import type { GatewayAssertionAuthenticator } from './gateway-assertion-auth.js';
 import {
+  ApprovalClosedError,
+  type ApprovalDecision,
+  ApprovalNotFoundError,
+  InvalidApprovalSignatureError,
   InvalidPublicKeyError,
   InvalidSubdomainError,
   type ProvisioningService,
   SubdomainTakenError,
+  WebChatTokenMissingError,
 } from './provisioning.js';
+import type { ClientKind } from './store.js';
+import { webCors } from './web-cors.js';
+
+const PAIRING_ID_CAPABILITY = 'pairing-id-v1' as const;
+const CONTROL_PLANE_CAPABILITIES = [PAIRING_ID_CAPABILITY] as const;
+
+const CLIENT_KINDS: readonly ClientKind[] = ['mobile', 'web'];
+
+/** Upper bound on a registered web chat token (see the PUT route below). */
+const MAX_WEB_CHAT_TOKEN_LENGTH = 4096;
 
 /** Collaborators the HTTP API binds its routes to. */
 export interface ApiDeps {
@@ -14,6 +29,9 @@ export interface ApiDeps {
   authenticator: Authenticator;
   /** Authenticates the gateway-driven `/gw/dial-token` refresh (non-Clerk). */
   gatewayAssertionAuth: GatewayAssertionAuthenticator;
+  /** Browser origins allowed to call `/v1/*` and `/gw/dial-token` cross-origin
+   *  (exact match only). Empty/unset (the default) disables CORS entirely. */
+  webOrigins?: readonly string[];
 }
 
 /**
@@ -34,11 +52,24 @@ type ApiEnv = { Variables: { accountId: string } };
  * under another account.
  */
 export function createApi(deps: ApiDeps): Hono<ApiEnv> {
-  const { provisioning, authenticator, gatewayAssertionAuth } = deps;
+  const { provisioning, authenticator, gatewayAssertionAuth, webOrigins = [] } = deps;
   const app = new Hono<ApiEnv>();
 
   // --- Health (open) ---
-  app.get('/health', (c) => c.json({ status: 'healthy' }));
+  app.get('/health', (c) =>
+    c.json({ status: 'healthy', capabilities: CONTROL_PLANE_CAPABILITIES }),
+  );
+
+  // --- CORS for the browser-reachable surface ---
+  // Registered before the /v1 auth middleware so a preflight OPTIONS request is
+  // answered (and short-circuited) here first, never reaching auth. See
+  // web-cors.ts for the exact-origin/no-credentials ruleset (mirrors
+  // apps/gateway/src/mobile-cors.ts).
+  //
+  // `/gw/dial-token` is deliberately NOT covered: it is a gateway-to-control-
+  // plane call authenticated by a holder-of-key assertion, never made from a
+  // browser. Advertising it to browser origins only widened the surface.
+  app.use('/v1/*', webCors(webOrigins));
 
   // --- Gateway-driven dial-token refresh (open path, gateway-assertion auth) ---
   // Sibling to /health — NOT under the Clerk-gated /v1/* middleware. The gateway
@@ -85,14 +116,53 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     }
   });
 
+  /**
+   * A DELIBERATE projection of `GatewayRecord`, never the raw row. `publicKey`
+   * is part of the contract on purpose: the iOS client cross-checks the
+   * gateway's relay-verified identity against this enrolled value before it
+   * installs a pairing (`AccountConnectFeature.connect`), so dropping it would
+   * silently disarm that check. `accountId` is deliberately NOT echoed — the
+   * caller already authenticated as it, and listing it back only widens what a
+   * leaked response discloses.
+   */
   app.get('/v1/gateways', (c) => {
     const accountId = c.get('accountId');
-    return c.json({ gateways: provisioning.listGateways(accountId) });
+    const gateways = provisioning.listGateways(accountId).map((gateway) => ({
+      gatewayId: gateway.gatewayId,
+      subdomain: gateway.subdomain,
+      status: gateway.status,
+      createdAt: gateway.createdAt,
+      publicKey: gateway.publicKey,
+    }));
+    return c.json({ gateways });
   });
 
   app.get('/v1/subdomains/:label', (c) => {
     const label = c.req.param('label');
     return c.json({ available: provisioning.isSubdomainAvailable(label) });
+  });
+
+  /**
+   * Register the chat-scoped bearer that this gateway's browser pairings
+   * receive. Mission Control PUTs it during the Remote-access enroll flow — it
+   * is the same phone capability the pairing QR already carries, never the
+   * administrative management bearer. Account-scoped like every other `/v1`
+   * route: a cross-account or unknown gateway is a 404 that discloses nothing.
+   */
+  app.put('/v1/gateways/:id/web-chat-token', async (c) => {
+    const accountId = c.get('accountId');
+    const body = (await c.req.json().catch(() => ({}))) as { chatToken?: unknown };
+    const chatToken = typeof body.chatToken === 'string' ? body.chatToken : '';
+    if (!chatToken) return c.json({ error: 'chatToken required' }, 400);
+    // A gateway bearer is a 256-bit token; this ceiling is orders of magnitude
+    // above any legitimate value and just stops an authenticated caller from
+    // parking megabytes of arbitrary text in the gateways table.
+    if (chatToken.length > MAX_WEB_CHAT_TOKEN_LENGTH) {
+      return c.json({ error: 'chatToken too long' }, 400);
+    }
+    const ok = provisioning.setWebChatToken(accountId, c.req.param('id'), chatToken);
+    if (!ok) return c.json({ error: 'gateway not found' }, 404);
+    return c.json({ ok: true });
   });
 
   app.delete('/v1/gateways/:id', async (c) => {
@@ -104,14 +174,68 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
 
   // --- Pairings ---
 
+  // Backward compatibility for already-deployed Mission Control clients. They
+  // understand only the credential, while the control plane still persists the
+  // pairing id so the device remains listable and revocable.
   app.post('/v1/gateways/:id/pairings', async (c) => {
     const accountId = c.get('accountId');
     const gatewayId = c.req.param('id');
-    const deviceLabel = await readDeviceLabel(c);
+    const parsed = await readPairingRequest(c);
+    if (!parsed.ok) return c.json({ error: 'invalid clientKind' }, 400);
     try {
-      const { credential } = await provisioning.createPairing(accountId, gatewayId, deviceLabel);
-      return c.json({ credential });
-    } catch {
+      const created = await provisioning.createPairing(
+        accountId,
+        gatewayId,
+        parsed.deviceLabel,
+        parsed.clientKind,
+      );
+      // Task 3: a signer-gated web mint returns a pending approval instead of
+      // a credential — surfaced here too (this legacy route also accepts
+      // `clientKind: 'web'`), since withholding the credential is a security
+      // requirement, not a shape nicety limited to the newer route.
+      if (created.status === 'pending') {
+        return c.json({
+          pairingId: created.pairingId,
+          status: created.status,
+          approvalId: created.approvalId,
+          approvalExpiresAt: created.approvalExpiresAt,
+        });
+      }
+      const { credential, chatToken } = created;
+      // Any client whose gateway has a registered chat token gets it back
+      // additively; a mobile pairing with none registered keeps the exact
+      // historical `{ credential }` body (never a 409 — MC/Android compat).
+      // `status` is intentionally NOT surfaced on this legacy route.
+      return c.json(chatToken === undefined ? { credential } : { credential, chatToken });
+    } catch (err) {
+      if (err instanceof WebChatTokenMissingError) {
+        return c.json({ error: 'no web chat token registered for this gateway' }, 409);
+      }
+      // Cross-account or unknown gateway — don't disclose existence.
+      return c.json({ error: 'gateway not found' }, 404);
+    }
+  });
+
+  // The capability is also part of the mutation path. During a rolling deploy,
+  // an old server can never mistake this request for its legacy unversioned
+  // `{ credential }` mint route, even if /health was served by a new instance.
+  app.post(`/v1/gateways/:id/pairings/${PAIRING_ID_CAPABILITY}`, async (c) => {
+    const accountId = c.get('accountId');
+    const gatewayId = c.req.param('id');
+    const parsed = await readPairingRequest(c);
+    if (!parsed.ok) return c.json({ error: 'invalid clientKind' }, 400);
+    try {
+      const created = await provisioning.createPairing(
+        accountId,
+        gatewayId,
+        parsed.deviceLabel,
+        parsed.clientKind,
+      );
+      return c.json(created);
+    } catch (err) {
+      if (err instanceof WebChatTokenMissingError) {
+        return c.json({ error: 'no web chat token registered for this gateway' }, 409);
+      }
       // Cross-account or unknown gateway — don't disclose existence.
       return c.json({ error: 'gateway not found' }, 404);
     }
@@ -122,7 +246,20 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const gatewayId = c.req.param('id');
     const pairings = provisioning.listPairings(accountId, gatewayId);
     if (pairings === null) return c.json({ error: 'gateway not found' }, 404);
-    return c.json({ pairings });
+    // Projected, not the raw record: `credentialHash` has no business reaching
+    // a browser (or any client), and shipping the whole row means every future
+    // column is published by accident. `status` IS included — revoked rows are
+    // kept forever, so a client that filtered nothing would show dead devices
+    // as live; now it can label or hide them deliberately.
+    return c.json({
+      pairings: pairings.map((pairing) => ({
+        id: pairing.id,
+        deviceLabel: pairing.deviceLabel,
+        clientKind: pairing.clientKind,
+        status: pairing.status,
+        createdAt: pairing.createdAt,
+      })),
+    });
   });
 
   app.delete('/v1/gateways/:id/pairings/:pid', async (c) => {
@@ -130,6 +267,126 @@ export function createApi(deps: ApiDeps): Hono<ApiEnv> {
     const ok = await provisioning.deletePairing(accountId, c.req.param('id'), c.req.param('pid'));
     if (!ok) return c.json({ error: 'pairing not found' }, 404);
     return c.json({ ok: true });
+  });
+
+  // --- Signers (Tasks 3/5/7 depend on this registration surface) ---
+
+  app.post('/v1/signers', async (c) => {
+    const accountId = c.get('accountId');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      publicKey?: unknown;
+      label?: unknown;
+    };
+    const publicKey = typeof body.publicKey === 'string' ? body.publicKey : '';
+    const label = typeof body.label === 'string' ? body.label : '';
+    try {
+      const signer = provisioning.registerSigner(accountId, { publicKey, label });
+      return c.json({ signerId: signer.signerId }, 201);
+    } catch (err) {
+      if (err instanceof InvalidPublicKeyError) {
+        return c.json({ error: 'invalid public key' }, 400);
+      }
+      throw err;
+    }
+  });
+
+  /**
+   * A DELIBERATE projection: `publicKey` is never echoed back once
+   * registered — unlike a gateway's pubkey (which the iOS client must
+   * cross-check), nothing downstream needs a signer's key returned through
+   * this listing route, so it stays off the wire.
+   */
+  app.get('/v1/signers', (c) => {
+    const accountId = c.get('accountId');
+    const signers = provisioning.listSigners(accountId).map((signer) => ({
+      signerId: signer.signerId,
+      label: signer.label,
+      createdAt: signer.createdAt,
+    }));
+    return c.json({ signers });
+  });
+
+  // --- Approvals (Task 3: signer-gated web pairings) ---
+
+  /**
+   * Fetch a pending (or already-decided/expired) approval. 404s unless the
+   * approval belongs to the caller's account — never disclosing whether an id
+   * exists under someone else's account. Returned regardless of status; the
+   * signer client learns "too late" from the decision route's 410, not from
+   * this GET.
+   */
+  app.get('/v1/approvals/:id', (c) => {
+    const accountId = c.get('accountId');
+    const approval = provisioning.getApproval(accountId, c.req.param('id'));
+    if (!approval) return c.json({ error: 'approval not found' }, 404);
+    return c.json({
+      approvalId: approval.approvalId,
+      pairingId: approval.pairingId,
+      gatewayId: approval.gatewayId,
+      deviceLabel: approval.deviceLabel,
+      expiresAt: approval.expiresAt,
+    });
+  });
+
+  /**
+   * Record a signer's Ed25519-signed decision on a pending approval. See
+   * `ProvisioningService.decideApproval` for the full security-ordering
+   * rationale (existence/ownership → TTL/decided → signature → atomic
+   * transition). `204` on success (approve or deny alike — the caller learns
+   * the outcome by polling `GET .../pairings`' `status`, not from this
+   * response body).
+   */
+  app.post('/v1/approvals/:id/decision', async (c) => {
+    const accountId = c.get('accountId');
+    const approvalId = c.req.param('id');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      decision?: unknown;
+      signerId?: unknown;
+      signature?: unknown;
+    };
+    const decision: ApprovalDecision | undefined =
+      body.decision === 'approve' || body.decision === 'deny' ? body.decision : undefined;
+    const signerId = typeof body.signerId === 'string' ? body.signerId : '';
+    const signature = typeof body.signature === 'string' ? body.signature : '';
+    if (!decision || !signerId || !signature) {
+      return c.json({ error: 'invalid request' }, 400);
+    }
+    try {
+      await provisioning.decideApproval(accountId, approvalId, { decision, signerId, signature });
+      return c.body(null, 204);
+    } catch (err) {
+      if (err instanceof ApprovalNotFoundError) {
+        return c.json({ error: 'approval not found' }, 404);
+      }
+      if (err instanceof ApprovalClosedError) {
+        return c.json({ error: 'approval expired or already decided' }, 410);
+      }
+      if (err instanceof InvalidApprovalSignatureError) {
+        return c.json({ error: 'invalid signature' }, 403);
+      }
+      throw err;
+    }
+  });
+
+  /**
+   * Claim the single-use credential (+ chat token) an approved pairing is
+   * holding. `409 { status: 'pending' }` is the poll-and-retry signal for a
+   * not-yet-decided approval — deliberately not an error shape, since the web
+   * app is expected to see this repeatedly while waiting. `410` covers both a
+   * genuine double-claim and (harmlessly) a pairing that never went through
+   * the approval flow at all.
+   */
+  app.post('/v1/gateways/:id/pairings/:pid/credential', (c) => {
+    const accountId = c.get('accountId');
+    const result = provisioning.claimCredential(accountId, c.req.param('id'), c.req.param('pid'));
+    if (result.kind === 'not-found') return c.json({ error: 'pairing not found' }, 404);
+    if (result.kind === 'pending') return c.json({ status: 'pending' }, 409);
+    if (result.kind === 'claimed') return c.json({ error: 'credential already claimed' }, 410);
+    return c.json(
+      result.chatToken === undefined
+        ? { credential: result.credential }
+        : { credential: result.credential, chatToken: result.chatToken },
+    );
   });
 
   return app;
@@ -144,18 +401,37 @@ function headerRecord(headers: Headers): Record<string, string | undefined> {
   return out;
 }
 
+/** A parsed, valid pairing-create request body. */
+interface ParsedPairingRequest {
+  ok: true;
+  deviceLabel?: string;
+  clientKind?: ClientKind;
+}
+
 /**
- * Pull an optional `deviceLabel` from a (possibly absent or non-JSON) body.
- * Pairing creation must work with no body at all, so a parse failure is treated
- * as "no label" rather than a 400.
+ * Pull the optional `deviceLabel` and `clientKind` from a (possibly absent or
+ * non-JSON) pairing-create body. Pairing creation must work with no body at
+ * all, so a parse failure or a missing/non-string `deviceLabel` is treated as
+ * "no label" rather than a 400 — but a `clientKind` present and not one of the
+ * two known values is rejected (`{ ok: false }`) so the route can 400 rather
+ * than silently mis-classing the device.
  */
-async function readDeviceLabel(c: {
+async function readPairingRequest(c: {
   req: { json: () => Promise<unknown> };
-}): Promise<string | undefined> {
+}): Promise<ParsedPairingRequest | { ok: false }> {
+  let raw: unknown;
   try {
-    const body = (await c.req.json()) as { deviceLabel?: unknown };
-    return typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
+    raw = await c.req.json();
   } catch {
-    return undefined;
+    return { ok: true };
   }
+  const body = raw as { deviceLabel?: unknown; clientKind?: unknown };
+  const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
+  if (body?.clientKind === undefined) {
+    return { ok: true, deviceLabel };
+  }
+  if (typeof body.clientKind === 'string' && CLIENT_KINDS.includes(body.clientKind as ClientKind)) {
+    return { ok: true, deviceLabel, clientKind: body.clientKind as ClientKind };
+  }
+  return { ok: false };
 }

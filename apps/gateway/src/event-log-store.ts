@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@dash/agent';
+import type { MobileAgentEvent, MobileApiError } from '@dash/mobile-contract';
 
 /**
  * Durable per-conversation event log used to recover events that MC
@@ -34,9 +34,20 @@ export interface EventLogEntry {
  * markers appended when the stream ends.
  */
 export type EventLogPayload =
-  | { type: 'event'; event: AgentEvent }
-  | { type: 'done' }
-  | { type: 'error'; error: string };
+  | {
+      type: 'accepted';
+      userMessageId: string;
+      assistantMessageId: string;
+      revision: number;
+    }
+  | { type: 'event'; event: MobileAgentEvent }
+  | { type: 'done'; outcome?: 'completed' | 'cancelled' }
+  | {
+      type: 'error';
+      error: string;
+      code?: MobileApiError['code'];
+      retryable?: boolean;
+    };
 
 /**
  * A conversation whose newest log entry is a non-terminal payload —

@@ -55,6 +55,7 @@ All configuration lives inside Mission Control. There are no config files to han
 - **Tools + MCP** — Built-in tools (files, shell, fetch, web search) plus any MCP server you plug in.
 - **Messaging channels** — Agents can listen on Telegram, WhatsApp, or the built-in chat WebSocket.
 - **Gateway supervisor** — MC automatically restarts a crashed gateway and never silently kills processes it didn't spawn.
+- **Use Dash from the web** — Sign in with a passkey and chat with your agents from any browser, no install required, over the same hosted relay your phone uses for remote access. See [`apps/web/README.md`](apps/web/README.md) to deploy it and [docs/web.mdx](docs/web.mdx) for the end-user guide.
 
 ## Architecture
 
@@ -118,14 +119,22 @@ For the full development guide — coding conventions, testing strategy, git wor
 | `apps/mission-control` | Electron desktop app (main + renderer + preload) |
 | `apps/mc-cli` | Command-line companion for scripted operations |
 | `apps/relay` | Self-hosted reverse-tunnel relay for reaching a gateway remotely — see [`apps/relay/README.md`](apps/relay/README.md) |
+| `apps/web` | Browser-based chat client (passkey sign-in, no install) — see [`apps/web/README.md`](apps/web/README.md) |
+| `ios/` | Native iPhone and iPad client with shared, resumable conversation history — see [`ios/README.md`](ios/README.md) |
 | `android/` | Native Android client (chat + agent monitoring) — see [`android/README.md`](android/README.md) |
 
-### Android app
+### Phone apps
 
-`android/` is a native Kotlin/Jetpack Compose app — a thin remote client to a running
-gateway for chatting with and monitoring your agents from a phone. It's a separate Gradle
-project (not part of the npm workspace). Pair it from Mission Control's **Settings →
-Devices** tab. See [`android/README.md`](android/README.md) for build/test/pairing instructions.
+Pair either native client from Mission Control's **Settings → Devices** tab:
+
+- [`ios/`](ios/README.md) is the SwiftUI iPhone and iPad app. It shares the gateway's canonical,
+  resumable conversation history with Mission Control and can administer agents.
+- [`android/`](android/README.md) is the Kotlin/Jetpack Compose app for chat and agent monitoring.
+  Android remains a legacy, non-resumable client in this release, so its private chat sessions do
+  not appear in the shared Mission Control/iOS conversation list.
+
+Both are thin remote clients to a running gateway and are separate from the npm workspace. They
+can connect over the local network or through Dash remote access.
 
 ### Relay (remote access)
 

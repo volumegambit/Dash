@@ -1,0 +1,5 @@
+{"type":"accepted","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","userMessageId":"018f0f4a-5c42-7a8b-9c01-3234567890ab","assistantMessageId":"018f0f4a-5c42-7a8b-9c01-4234567890ab","revision":2,"seq":1}
+{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","seq":2,"event":{"type":"text_delta","text":"Ready "}}
+{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","seq":3,"event":{"type":"question","id":"question-01","question":"Confirm mobile access?","options":["Yes","No"]}}
+{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","seq":4,"event":{"type":"response","content":"Ready from the gateway.","usage":{"inputTokens":12,"outputTokens":6}}}
+{"type":"done","id":"018f0f4a-5c42-7a8b-9c01-2234567890ab","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab","seq":5,"outcome":"completed"}

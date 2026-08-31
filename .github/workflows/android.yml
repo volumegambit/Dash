@@ -3,16 +3,36 @@ name: Android CI
 # Separate from the Node CI workflow so it only runs when the Android app
 # changes (job-level path filters aren't native). The Android app is a hermetic
 # Gradle project — see android/README.md.
+#
+# PairDeviceCard.tsx and its main-process pairing wiring (main/ipc.ts,
+# main/pairing.ts) produce the QR code the Dash Android app scans to pair —
+# Dash for iOS no longer uses QR pairing (it connects by signing in to a Dash
+# account instead, see docs/ios.mdx), so these paths only need to gate
+# Android CI, not an iOS one.
 on:
   push:
     branches: [main]
     paths:
       - 'android/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/gateway/**'
+      - 'apps/mission-control/src/main/ipc.ts'
+      - 'apps/mission-control/src/main/pairing.ts'
+      - 'apps/mission-control/src/renderer/src/components/PairDeviceCard.tsx'
+      - 'apps/mission-control/src/shared/ipc.ts'
+      - 'packages/agent/**'
       - '.github/workflows/android.yml'
   pull_request:
-    branches: [main]
+    branches: [main, codex/mc-vps-gateway-relay]
     paths:
       - 'android/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/gateway/**'
+      - 'apps/mission-control/src/main/ipc.ts'
+      - 'apps/mission-control/src/main/pairing.ts'
+      - 'apps/mission-control/src/renderer/src/components/PairDeviceCard.tsx'
+      - 'apps/mission-control/src/shared/ipc.ts'
+      - 'packages/agent/**'
       - '.github/workflows/android.yml'
 
 jobs:

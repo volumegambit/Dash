@@ -1,0 +1,198 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/website/app/icon.svg'
+      - 'apps/gateway/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    branches: [main, codex/mc-vps-gateway-relay]
+    paths:
+      - 'ios/**'
+      - 'contracts/mobile/v1/**'
+      - 'apps/website/app/icon.svg'
+      - 'apps/gateway/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ios.yml'
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.3'
+
+      - run: npm ci
+
+      - name: Build Node workspaces
+        run: npm run build
+
+      - name: Verify shared mobile contract
+        run: |
+          npm run mobile:contract-check
+
+      - name: Verify model catalog freshness
+        run: npm run models:check
+
+      - name: Verify Apple and generator toolchains
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          ios/scripts/bootstrap-xcodegen.sh
+
+      - name: Verify iOS setup scripts
+        run: |
+          ios/scripts/tests/bootstrap-xcodegen.test.sh
+          ios/scripts/tests/ensure-simulators.test.sh
+          ios/scripts/tests/check-project.test.sh
+          ios/scripts/tests/verify-built-app.test.sh
+          node ios/scripts/tests/ios-workflow.test.mjs
+          node ios/scripts/tests/ios-readme.test.mjs
+          npx vitest run ios/scripts/run-live-gateway-tests.test.ts scripts/mobile-ci-config.test.ts
+
+      - name: Verify deterministic AppIcon
+        run: |
+          ios/scripts/generate-app-icon.sh
+          git diff --exit-code -- ios/Dash/Resources/Assets.xcassets/AppIcon.appiconset
+          test -z "$(git status --porcelain --untracked-files=all -- \
+            ios/Dash/Resources/Assets.xcassets/AppIcon.appiconset)"
+
+      - name: Ensure pinned simulator runtime and devices
+        run: |
+          iphone_udid="$(ios/scripts/ensure-simulators.sh --iphone-udid)"
+          ipad_udid="$(ios/scripts/ensure-simulators.sh --ipad-udid)"
+          printf 'IOS_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
+            "$iphone_udid" >> "$GITHUB_ENV"
+          printf 'IPHONE_UDID=%s\n' "$iphone_udid" >> "$GITHUB_ENV"
+          printf 'IOS_IPAD_TEST_DESTINATION=platform=iOS Simulator,id=%s\n' \
+            "$ipad_udid" >> "$GITHUB_ENV"
+          printf 'IPAD_UDID=%s\n' "$ipad_udid" >> "$GITHUB_ENV"
+
+      - name: Verify generated project is committed
+        run: ios/scripts/check-project.sh
+
+      - name: Build Release simulator app and verify bundle metadata
+        run: |
+          set -o pipefail
+          simulator_derived_data="$RUNNER_TEMP/DashSimulatorDerivedData"
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$simulator_derived_data" \
+            build CODE_SIGNING_ALLOWED=NO 2>&1 | tee ios/SimulatorBuild.log
+          test -z "$(rg -ni 'warning:.*(app ?icon|AppIcon)|AppIcon.*warning' \
+            ios/SimulatorBuild.log || true)"
+          ios/scripts/verify-built-app.sh \
+            "$simulator_derived_data/Build/Products/Release-iphonesimulator/Dash.app"
+
+      - name: Unit and contract tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash
+          -destination "$IOS_TEST_DESTINATION"
+          -resultBundlePath ios/UnitContract.xcresult
+          test CODE_SIGNING_ALLOWED=NO
+
+      - name: iPad unit and contract tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash
+          -destination "$IOS_IPAD_TEST_DESTINATION"
+          -resultBundlePath ios/iPadUnitContract.xcresult
+          test CODE_SIGNING_ALLOWED=NO
+
+      - name: iPhone UI tests
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "$IPHONE_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$IPHONE_UDID" -b
+          xcrun simctl ui "$IPHONE_UDID" appearance light
+          xcrun simctl ui "$IPHONE_UDID" increase_contrast disabled
+          test "$(xcrun simctl ui "$IPHONE_UDID" appearance)" = "light"
+          test "$(xcrun simctl ui "$IPHONE_UDID" increase_contrast)" = "disabled"
+          xcrun simctl privacy "$IPHONE_UDID" reset camera app.dash.ios 2>/dev/null || true
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
+            -destination "$IOS_TEST_DESTINATION" \
+            -resultBundlePath ios/iPhoneUI.xcresult \
+            test CODE_SIGNING_ALLOWED=NO
+
+      - name: Dark increased-contrast core-flow UI test
+        run: |
+          set -euo pipefail
+          xcrun simctl boot "$IPHONE_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$IPHONE_UDID" -b
+          original_appearance="$(xcrun simctl ui "$IPHONE_UDID" appearance)"
+          original_contrast="$(xcrun simctl ui "$IPHONE_UDID" increase_contrast)"
+          restore_simulator_ui_state() {
+            xcrun simctl ui "$IPHONE_UDID" appearance "$original_appearance" || true
+            xcrun simctl ui "$IPHONE_UDID" increase_contrast "$original_contrast" || true
+          }
+          trap restore_simulator_ui_state EXIT
+
+          xcrun simctl ui "$IPHONE_UDID" appearance dark
+          xcrun simctl ui "$IPHONE_UDID" increase_contrast enabled
+          test "$(xcrun simctl ui "$IPHONE_UDID" appearance)" = "dark"
+          test "$(xcrun simctl ui "$IPHONE_UDID" increase_contrast)" = "enabled"
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
+            -destination "$IOS_TEST_DESTINATION" \
+            -resultBundlePath ios/iPhoneDarkContrastUI.xcresult \
+            -only-testing:DashUITests/AccessibilityUITests/testCoreFlowsInCurrentAppearance \
+            test CODE_SIGNING_ALLOWED=NO
+
+      - name: iPad adaptive UI tests
+        run: |
+          xcrun simctl boot "$IPAD_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$IPAD_UDID" -b
+          xcrun simctl privacy "$IPAD_UDID" reset camera app.dash.ios 2>/dev/null || true
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
+            -destination "$IOS_IPAD_TEST_DESTINATION" \
+            -resultBundlePath ios/iPadUI.xcresult \
+            test CODE_SIGNING_ALLOWED=NO
+
+      - name: Integration support tests
+        run: >-
+          xcodebuild -project ios/Dash.xcodeproj -scheme DashIntegration
+          -destination "$IOS_TEST_DESTINATION"
+          -resultBundlePath ios/IntegrationSupport.xcresult
+          -only-testing:DashIntegrationTests/LiveGatewayEnvironmentTests
+          test CODE_SIGNING_ALLOWED=NO
+
+      - name: Real gateway integration matrix
+        run: node ios/scripts/run-live-gateway-tests.mjs
+
+      - name: Generic Release iOS build without signing
+        run: |
+          device_derived_data="$RUNNER_TEMP/DashDeviceDerivedData"
+          xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$device_derived_data" \
+            build CODE_SIGNING_ALLOWED=NO
+          ios/scripts/verify-built-app.sh \
+            "$device_derived_data/Build/Products/Release-iphoneos/Dash.app"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ios-xcresults
+          path: ios/*.xcresult

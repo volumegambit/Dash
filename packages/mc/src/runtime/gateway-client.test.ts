@@ -1,11 +1,34 @@
+import { readFile } from 'node:fs/promises';
+import type {
+  ConversationMessagePage,
+  ConversationPage,
+  ConversationSummary,
+  GatewayIdentity,
+  MobileApiError,
+  ReplayPage,
+} from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CreateAgentRequest, GatewayAgent, GatewayChannel } from './gateway-client.js';
-import { GatewayManagementClient } from './gateway-client.js';
+import type {
+  CreateAgentRequest,
+  GatewayAgent,
+  GatewayChannel,
+  GatewayHealthResponse,
+} from './gateway-client.js';
+import {
+  GatewayHttpError,
+  GatewayManagementClient,
+  InvalidGatewayLanTlsFingerprintError,
+} from './gateway-client.js';
 
 const BASE_URL = 'http://localhost:9300';
 const TOKEN = 'test-token';
 
 const AUTH_HEADER = { Authorization: `Bearer ${TOKEN}` };
+
+async function fixture<T>(name: string): Promise<T> {
+  const url = new URL(`../../../../contracts/mobile/v1/fixtures/${name}`, import.meta.url);
+  return JSON.parse(await readFile(url, 'utf8')) as T;
+}
 
 function makeAgent(overrides?: Partial<GatewayAgent>): GatewayAgent {
   return {
@@ -57,11 +80,7 @@ describe('GatewayManagementClient', () => {
   }
 
   function mockError(status: number, body = '') {
-    fetchSpy.mockResolvedValueOnce({
-      ok: false,
-      status,
-      text: async () => body,
-    });
+    fetchSpy.mockResolvedValueOnce(new Response(body, { status }));
   }
 
   // ---- Health ----
@@ -134,6 +153,61 @@ describe('GatewayManagementClient', () => {
 
       const client = new GatewayManagementClient(BASE_URL, TOKEN);
       await expect(client.getRelayIdentity()).rejects.toBeInstanceOf(GatewayHttpError);
+    });
+  });
+
+  describe('getLanTlsFingerprint()', () => {
+    it('calls the admin-only LAN TLS route and returns the certificate fingerprint', async () => {
+      mockOk({ certificateSha256: 'b'.repeat(64) });
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      const result = await client.getLanTlsFingerprint();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/lan-tls`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+      expect(result).toBe('b'.repeat(64));
+    });
+
+    it('rejects a malformed fingerprint as an explicit capability error', async () => {
+      mockOk({ certificateSha256: 'not-a-sha256-fingerprint' });
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getLanTlsFingerprint()).rejects.toBeInstanceOf(
+        InvalidGatewayLanTlsFingerprintError,
+      );
+    });
+
+    it('rejects a non-JSON capability response as the same explicit error', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('legacy route response', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain' },
+        }),
+      );
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getLanTlsFingerprint()).rejects.toBeInstanceOf(
+        InvalidGatewayLanTlsFingerprintError,
+      );
+    });
+
+    it('rejects a null JSON capability response as the same explicit error', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('null', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getLanTlsFingerprint()).rejects.toBeInstanceOf(
+        InvalidGatewayLanTlsFingerprintError,
+      );
     });
   });
 
@@ -579,6 +653,202 @@ describe('GatewayManagementClient', () => {
       await expect(client.removeCredential('missing')).rejects.toThrow(
         'Gateway removeCredential failed: 404',
       );
+    });
+  });
+
+  describe('mobile v1 conversation contract', () => {
+    it('decodes capabilities and stable identity from the frozen fixtures', async () => {
+      const health = await fixture<GatewayHealthResponse>('health-capabilities.json');
+      const identity = await fixture<GatewayIdentity>('identity.json');
+      fetchSpy
+        .mockResolvedValueOnce(new Response(JSON.stringify(health), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(identity), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(client.health()).resolves.toEqual(health);
+      await expect(client.getIdentity()).resolves.toEqual(identity);
+      expect(health.capabilities).toContain('conversation-sync-v1');
+      expect(fetchSpy.mock.calls[0][0]).toBe(`${BASE_URL}/health`);
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/identity`);
+      expect(fetchSpy.mock.calls[1][1]).toEqual(
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+    });
+
+    it('preserves the public-key-only relay identity compatibility method', async () => {
+      const identity = await fixture<GatewayIdentity>('identity.json');
+      fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(identity), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(client.getRelayIdentity()).resolves.toEqual({ publicKey: identity.publicKey });
+    });
+
+    it('lists conversations and messages with frozen page shapes', async () => {
+      const conversations = await fixture<ConversationPage>('conversations-page.json');
+      const messages = await fixture<ConversationMessagePage>('conversation-messages-page.json');
+      fetchSpy
+        .mockResolvedValueOnce(new Response(JSON.stringify(conversations), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(messages), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN, {
+        'x-dash-relay-credential': 'relay-cred',
+      });
+      await expect(client.listConversations({ agentId: 'agent-1', limit: 50 })).resolves.toEqual(
+        conversations,
+      );
+      await expect(
+        client.getConversationMessages('conv-1', { limit: 100, before: 'cursor-1' }),
+      ).resolves.toEqual(messages);
+      expect(String(fetchSpy.mock.calls[0][0])).toContain(
+        '/conversations?agentId=agent-1&limit=50',
+      );
+      expect(String(fetchSpy.mock.calls[1][0])).toContain(
+        '/conversations/conv-1/messages?limit=100&before=cursor-1',
+      );
+      expect(fetchSpy.mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          headers: expect.objectContaining({ 'x-dash-relay-credential': 'relay-cred' }),
+        }),
+      );
+    });
+
+    it('creates and gets conversations with canonical summaries', async () => {
+      const summary = await fixture<ConversationSummary>('conversation-summary.json');
+      fetchSpy
+        .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 201 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(
+        client.createConversation('agent-01', 'request-01', {
+          title: 'Mobile launch check',
+          owningIssueId: 'issue-01',
+          projectId: 'project-01',
+        }),
+      ).resolves.toEqual(summary);
+      await expect(client.getConversation('conv/1')).resolves.toEqual(summary);
+      expect(fetchSpy.mock.calls[0]).toEqual([
+        `${BASE_URL}/conversations`,
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining(AUTH_HEADER),
+          body: JSON.stringify({
+            agentId: 'agent-01',
+            requestId: 'request-01',
+            title: 'Mobile launch check',
+            owningIssueId: 'issue-01',
+            projectId: 'project-01',
+          }),
+        }),
+      ]);
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${BASE_URL}/conversations/conv%2F1`);
+    });
+
+    it('patches and deletes conversations with quoted revision preconditions', async () => {
+      const summary = await fixture<ConversationSummary>('conversation-summary.json');
+      const tombstone: ConversationSummary = {
+        ...summary,
+        revision: 4,
+        status: 'deleted',
+        deletedAt: '2026-07-12T00:01:00.000Z',
+      };
+      fetchSpy
+        .mockResolvedValueOnce(new Response(JSON.stringify(summary), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(tombstone), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(
+        client.patchConversation('conv/1', 2, { title: 'Manual title' }),
+      ).resolves.toEqual(summary);
+      await expect(client.deleteConversation('conv/1', 3)).resolves.toEqual(tombstone);
+      expect(fetchSpy.mock.calls[0]).toEqual([
+        `${BASE_URL}/conversations/conv%2F1`,
+        expect.objectContaining({
+          method: 'PATCH',
+          headers: expect.objectContaining({ 'If-Match': '"2"' }),
+          body: JSON.stringify({ title: 'Manual title' }),
+        }),
+      ]);
+      expect(fetchSpy.mock.calls[1]).toEqual([
+        `${BASE_URL}/conversations/conv%2F1`,
+        expect.objectContaining({
+          method: 'DELETE',
+          headers: expect.objectContaining({ 'If-Match': '"3"' }),
+        }),
+      ]);
+    });
+
+    it('replays persisted events after the requested sequence', async () => {
+      const replay = await fixture<ReplayPage>('replay.json');
+      fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(replay), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await expect(client.replayConversationEvents('agent/1', 'conv/1', 2)).resolves.toEqual(
+        replay,
+      );
+      expect(fetchSpy.mock.calls[0]).toEqual([
+        `${BASE_URL}/agents/agent%2F1/conversations/conv%2F1/events?sinceSeq=2`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      ]);
+    });
+
+    it('omits absent optional conversation query values', async () => {
+      const conversations = await fixture<ConversationPage>('conversations-page.json');
+      const messages = await fixture<ConversationMessagePage>('conversation-messages-page.json');
+      fetchSpy
+        .mockResolvedValueOnce(new Response(JSON.stringify(conversations), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(messages), { status: 200 }));
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      await client.listConversations();
+      await client.getConversationMessages('conv-1');
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(`${BASE_URL}/conversations`);
+      expect(String(fetchSpy.mock.calls[1][0])).toBe(`${BASE_URL}/conversations/conv-1/messages`);
+    });
+
+    it('sends If-Match and exposes a frozen revision conflict', async () => {
+      const conflict = await fixture<MobileApiError>('errors/revision-conflict.json');
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify(conflict), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      const error = await client
+        .patchConversation('conv-1', 7, { title: 'Manual title' })
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GatewayHttpError);
+      expect((error as GatewayHttpError).apiError).toEqual(conflict);
+      expect(fetchSpy.mock.calls[0][1]).toEqual(
+        expect.objectContaining({
+          method: 'PATCH',
+          headers: expect.objectContaining({ 'If-Match': '"7"' }),
+        }),
+      );
+    });
+
+    it('retains plain and malformed error bodies without inventing structured errors', async () => {
+      fetchSpy
+        .mockResolvedValueOnce(new Response('upstream unavailable', { status: 502 }))
+        .mockResolvedValueOnce(
+          new Response('{broken', {
+            status: 500,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+      const plain = await client.getConversation('conv-1').catch((caught: unknown) => caught);
+      const malformed = await client.getConversation('conv-1').catch((caught: unknown) => caught);
+      expect(plain).toBeInstanceOf(GatewayHttpError);
+      expect((plain as GatewayHttpError).apiError).toBeUndefined();
+      expect((plain as Error).message).toBe(
+        'Gateway getConversation failed: 502 upstream unavailable',
+      );
+      expect(malformed).toBeInstanceOf(GatewayHttpError);
+      expect((malformed as GatewayHttpError).apiError).toBeUndefined();
     });
   });
 });

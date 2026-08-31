@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildPairingInfo } from './pairing.js';
 
-const lan = { host: '192.168.1.50', mgmtPort: 9300, chatPort: 9200 };
-const base = { mgmtToken: 'm-tok', chatToken: 'c-tok', lan };
+const lan = {
+  host: '192.168.1.50',
+  port: 9400,
+  tlsCertificateSha256: 'a'.repeat(64),
+};
+const base = { mode: 'lan' as const, mobileToken: 'mobile-tok', lan };
 
 /**
  * Mirror of the renderer's `qrPayload` for relay mode (PairDeviceCard.tsx). Kept
@@ -33,27 +37,37 @@ describe('buildPairingInfo', () => {
     expect(info).toEqual({
       mode: 'lan',
       host: '192.168.1.50',
-      mgmtPort: 9300,
-      chatPort: 9200,
-      mgmtToken: 'm-tok',
-      chatToken: 'c-tok',
+      secure: true,
+      mgmtPort: 9400,
+      chatPort: 9400,
+      mgmtToken: 'mobile-tok',
+      chatToken: 'mobile-tok',
+      tlsCertificateSha256: 'a'.repeat(64),
     });
     expect(provision).not.toHaveBeenCalled();
   });
 
   it('provisions a credential through the control plane and returns a relay payload', async () => {
-    const provision = vi.fn().mockResolvedValue('minted-cred');
+    const provision = vi.fn().mockResolvedValue({
+      credential: 'minted-cred',
+      pairingId: 'pr-current',
+    });
     const info = await buildPairingInfo(
-      { ...base, relay: { gatewayId: 'gw-1', host: 'relay.example.com' } },
+      {
+        mode: 'relay',
+        mobileToken: 'mobile-tok',
+        relay: { gatewayId: 'gw-1', host: 'relay.example.com' },
+      },
       provision,
     );
     expect(info).toEqual({
       mode: 'relay',
       host: 'gw-1.relay.example.com',
       secure: true,
-      mgmtToken: 'm-tok',
-      chatToken: 'c-tok',
+      mgmtToken: 'mobile-tok',
+      chatToken: 'mobile-tok',
       relayCredential: 'minted-cred',
+      pairingId: 'pr-current',
     });
     // Provisioned via the control plane with only the gateway id — MC never
     // holds the relay admin secret anymore.
@@ -61,9 +75,16 @@ describe('buildPairingInfo', () => {
   });
 
   it('produces the fixed v2 QR payload the Android app depends on', async () => {
-    const provision = vi.fn().mockResolvedValue('minted-cred');
+    const provision = vi.fn().mockResolvedValue({
+      credential: 'minted-cred',
+      pairingId: 'pr-current',
+    });
     const info = await buildPairingInfo(
-      { ...base, relay: { gatewayId: 'gw-1', host: 'relay.example.com' } },
+      {
+        mode: 'relay',
+        mobileToken: 'mobile-tok',
+        relay: { gatewayId: 'gw-1', host: 'relay.example.com' },
+      },
       provision,
     );
     if (info.mode !== 'relay') throw new Error('expected relay mode');
@@ -71,8 +92,8 @@ describe('buildPairingInfo', () => {
       v: 2,
       host: 'gw-1.relay.example.com',
       secure: true,
-      mgmtToken: 'm-tok',
-      chatToken: 'c-tok',
+      mgmtToken: 'mobile-tok',
+      chatToken: 'mobile-tok',
       relayCredential: 'minted-cred',
     });
   });
@@ -81,20 +102,28 @@ describe('buildPairingInfo', () => {
     const provision = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(
       buildPairingInfo(
-        { ...base, relay: { gatewayId: 'gw-1', host: 'relay.example.com' } },
+        {
+          mode: 'relay',
+          mobileToken: 'mobile-tok',
+          relay: { gatewayId: 'gw-1', host: 'relay.example.com' },
+        },
         provision,
       ),
     ).rejects.toThrow(/Could not reach the relay.*ECONNREFUSED/);
   });
 
-  it('falls back to LAN when relay config is incomplete', async () => {
+  it('fails closed when explicit relay inputs are incomplete', async () => {
     const provision = vi.fn();
-    // Missing gatewayId → not fully configured.
-    const info = await buildPairingInfo(
-      { ...base, relay: { gatewayId: '', host: 'relay.example.com' } },
-      provision,
-    );
-    expect(info.mode).toBe('lan');
+    await expect(
+      buildPairingInfo(
+        {
+          mode: 'relay',
+          mobileToken: 'mobile-tok',
+          relay: { gatewayId: '', host: 'relay.example.com' },
+        },
+        provision,
+      ),
+    ).rejects.toThrow('Relay pairing requires an enrolled gateway and relay host');
     expect(provision).not.toHaveBeenCalled();
   });
 });

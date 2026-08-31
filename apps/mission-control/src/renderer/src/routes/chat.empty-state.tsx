@@ -14,11 +14,13 @@
  * tested without mocking the whole chat route.
  */
 
+import type { ConversationOrigin, ConversationRef } from '@dash/mc';
 import { ArrowRight, MessageSquare, Plus } from 'lucide-react';
 
 /** Minimal shape needed to render the recent list — matches what chat.tsx already computes. */
 export interface RecentConversationItem {
   id: string;
+  origin: ConversationOrigin;
   title: string;
   agentName: string;
   updatedAt: string;
@@ -34,7 +36,7 @@ export interface EmptyStateAgent {
 export interface EmptyChatStateProps {
   recentConversations: RecentConversationItem[];
   agents: EmptyStateAgent[];
-  onSelectConversation: (id: string) => void;
+  onSelectConversation: (ref: ConversationRef) => void;
   onStartWithAgent: (agentId: string) => void;
   onNavigateToAgents: () => void;
 }
@@ -153,16 +155,16 @@ function RecentList({
   onSelectConversation,
 }: {
   items: RecentConversationItem[];
-  onSelectConversation: (id: string) => void;
+  onSelectConversation: (ref: ConversationRef) => void;
 }): JSX.Element {
   return (
     <ul className="flex flex-col">
       {items.map((conv) => (
-        <li key={conv.id}>
+        <li key={`${conv.origin}:${conv.id}`}>
           <button
             type="button"
             data-testid={`empty-chat-recent-${conv.id}`}
-            onClick={() => onSelectConversation(conv.id)}
+            onClick={() => onSelectConversation({ id: conv.id, origin: conv.origin })}
             className="group flex w-full items-start gap-3 border-l-2 border-transparent px-3 py-2 text-left transition-colors hover:border-accent hover:bg-white/[0.02]"
           >
             <MessageSquare size={14} className="mt-0.5 shrink-0 text-muted" />

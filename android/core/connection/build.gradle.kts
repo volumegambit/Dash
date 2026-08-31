@@ -27,6 +27,12 @@ android {
             isReturnDefaultValues = true
         }
     }
+
+    sourceSets {
+        getByName("test") {
+            resources.srcDir("../../../contracts/mobile/v1/fixtures")
+        }
+    }
 }
 
 dependencies {
