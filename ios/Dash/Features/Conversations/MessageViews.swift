@@ -124,6 +124,7 @@ struct ChatMessageView: View {
           VStack(alignment: .leading, spacing: 8) {
             AssistantEventViews(
               projection: assistant,
+              status: message.status,
               isAnsweringEnabled: isAnsweringEnabled,
               onAnswer: onAnswer,
               exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility
@@ -144,6 +145,17 @@ struct ChatMessageView: View {
           .accessibilityElement(children: .contain)
           .accessibilityLabel(message.accessibilityStatusLabel)
           .accessibilityIdentifier("chat.message.\(message.id)")
+          // Haptics (chat-ux Phase 2, audit #7): success/error on this
+          // message's own terminal transition — nil→cancelled/interrupted
+          // deliberately fire nothing, matching the chrome-trim principle
+          // (audit #17) that only completed/failed need a reaction.
+          .sensoryFeedback(trigger: assistant.terminal) { _, newValue in
+            switch newValue {
+            case .completed: .success
+            case .failed: .error
+            case .cancelled, .interrupted, nil: nil
+            }
+          }
         }
       }
     }

@@ -8,6 +8,12 @@ struct ComposerView: View {
 
   @State private var selectedItems: [PhotosPickerItem] = []
   @State private var pickerError: String?
+  // Haptics (chat-ux Phase 2, audit #7): bumped synchronously inside the
+  // send/cancel button actions (and the composer's Return-key submit),
+  // before the `Task { await ... }` kicks off — the tap itself earns the
+  // tick regardless of how the async call resolves, matching a physical
+  // button's immediate feedback.
+  @State private var actionFeedbackTick = 0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -31,6 +37,7 @@ struct ComposerView: View {
           .submitLabel(.send)
           .onSubmit {
             guard feature.canSend else { return }
+            actionFeedbackTick += 1
             Task { await feature.send() }
           }
 
@@ -54,6 +61,7 @@ struct ComposerView: View {
       guard items.isEmpty == false else { return }
       Task { await load(items) }
     }
+    .sensoryFeedback(.impact(weight: .light), trigger: actionFeedbackTick)
   }
 
   private var draftBinding: Binding<String> {
@@ -104,6 +112,7 @@ struct ComposerView: View {
   private var primaryAction: some View {
     if feature.state.activeTurnID != nil, feature.state.composerBlock == nil {
       Button {
+        actionFeedbackTick += 1
         Task { await feature.cancel() }
       } label: {
         if feature.isCancelling {
@@ -121,6 +130,7 @@ struct ComposerView: View {
       .accessibilityIdentifier("chat.cancel")
     } else {
       Button {
+        actionFeedbackTick += 1
         Task { await feature.send() }
       } label: {
         Image(systemName: "arrow.up.circle.fill")
@@ -135,13 +145,18 @@ struct ComposerView: View {
     }
   }
 
+  // Chrome trim (chat-ux Phase 2, audit #17): a persistent "Draft saved"
+  // chip nags on every keystroke's debounced autosave, competing with the
+  // composer for attention over something the user never asked to be told.
+  // Simpler honest behavior, same "silence on success" principle as
+  // `TerminalView`'s trim above: only show the chip while there's something
+  // actionable to communicate — a save in flight, or one that failed — and
+  // say nothing once it's `.saved`.
   @ViewBuilder
   private var draftStatus: some View {
     switch feature.draftStatus {
     case .saved:
-      Label("Draft saved", systemImage: "checkmark.circle")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      EmptyView()
     case .saving:
       Label("Saving draft", systemImage: "arrow.triangle.2.circlepath")
         .font(.caption)

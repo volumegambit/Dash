@@ -895,6 +895,55 @@ struct ChatReducerTests {
     #expect(update.composerBlock == .updateRequired)
   }
 
+  // MARK: - Streaming presence / chrome trim (chat-ux Phase 2, Task 5,
+  // audit #6 / #17): `AssistantMessageProjection.isEmpty` drives
+  // `TypingIndicatorView` (EventViews.swift) and `ChatTerminalState
+  // .isChromeWorthy` drives `TerminalView`'s render gate. Both are pure,
+  // view-independent — same rationale `MessageViewsTests.swift` gives for
+  // testing `failedTurnIDs`/`userMessageID` directly.
+
+  @Test("a freshly-accepted projection (no events yet) is empty")
+  func freshlyAcceptedProjectionIsEmpty() {
+    let state = acceptedState(cursor: 1)
+    #expect(state.messages.last?.assistant?.isEmpty == true)
+  }
+
+  @Test("a text delta makes the projection non-empty")
+  func textDeltaEndsEmptiness() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Hi"), seq: 2, to: &state)
+    #expect(state.messages.last?.assistant?.isEmpty == false)
+  }
+
+  @Test("a tool-use-only projection (no text yet) is also non-empty")
+  func toolUseOnlyProjectionIsNonEmpty() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.toolUseStart(id: "tool-1", name: "Bash", input: nil), seq: 2, to: &state)
+    #expect(state.messages.last?.assistant?.isEmpty == false)
+  }
+
+  @Test("usage alone (no other content) does not count as non-empty — it's no longer rendered")
+  func usageAloneDoesNotCountAsContent() {
+    var projection = AssistantMessageProjection()
+    projection.usage = usage()
+    #expect(projection.isEmpty == true)
+  }
+
+  @Test("terminal state alone counts as non-empty content")
+  func terminalStateCountsAsContent() {
+    var projection = AssistantMessageProjection()
+    projection.terminal = .completed
+    #expect(projection.isEmpty == false)
+  }
+
+  @Test("only a completed terminal is chrome-free; cancelled/failed/interrupted are chrome-worthy")
+  func terminalChromeWorthiness() {
+    #expect(ChatTerminalState.completed.isChromeWorthy == false)
+    #expect(ChatTerminalState.cancelled.isChromeWorthy == true)
+    #expect(ChatTerminalState.failed("boom").isChromeWorthy == true)
+    #expect(ChatTerminalState.interrupted.isChromeWorthy == true)
+  }
+
   private func apply(
     _ event: AgentEvent,
     seq: Int,

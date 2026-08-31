@@ -74,6 +74,19 @@ struct AssistantMessageProjection: Equatable, Sendable {
   var usage: UsageDTO?
   var terminal: ChatTerminalState?
   var hasAnnouncedTerminal = false
+
+  /// True when nothing in this projection would render any visible content
+  /// — the window between the `.accepted` frame (which creates an empty
+  /// projection, `ChatReducer.reconcileAccepted`) and the first populating
+  /// `.event` frame. Today that window renders as an empty area (chat-ux
+  /// Phase 2, audit #6); `EventViews.swift`'s `TypingIndicatorView` uses this
+  /// to fill it with a 3-dot pulse instead. `usage` is deliberately excluded
+  /// — chrome trim (audit #17) stopped rendering it per-turn, so its
+  /// presence no longer corresponds to anything visible.
+  var isEmpty: Bool {
+    thinking.isEmpty && text.isEmpty && toolCards.isEmpty && workerCards.isEmpty
+      && statusRows.isEmpty && pendingQuestion == nil && terminal == nil
+  }
 }
 
 enum ToolCardStatus: Equatable, Sendable {
@@ -151,6 +164,16 @@ enum ChatTerminalState: Equatable, Sendable {
   case cancelled
   case failed(String)
   case interrupted
+}
+
+extension ChatTerminalState {
+  /// Chrome trim (chat-ux Phase 2, audit #17): a successful turn needs no
+  /// explaining — `TerminalView` is noise on every ordinary reply. Only the
+  /// outcomes a user wouldn't otherwise notice (cancelled/failed/
+  /// interrupted) are worth a row.
+  var isChromeWorthy: Bool {
+    self != .completed
+  }
 }
 
 enum ChatReducer {

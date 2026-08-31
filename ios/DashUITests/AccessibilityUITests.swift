@@ -101,7 +101,11 @@ final class AccessibilityUITests: DashUITestCase {
     let final = element("chat.final.response", in: app, timeout: 8)
     XCTAssertEqual(final.label, "Recovered exactly once.")
     XCTAssertEqual(message.label, "Assistant message, completed")
-    XCTAssertTrue(app.staticTexts["Response completed"].exists)
+    // Chrome trim (chat-ux Phase 2, audit #17): `TerminalView` no longer
+    // renders for a successful turn — "silence on success" — so there's no
+    // "Response completed" row to find here anymore. The message's own
+    // accessibility label above already conveys the completed state.
+    XCTAssertFalse(app.staticTexts["Response completed"].exists)
   }
 
   private func scrollSettingsToElement(

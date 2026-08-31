@@ -2,17 +2,20 @@ import SwiftUI
 
 struct AssistantEventViews: View {
   let projection: AssistantMessageProjection
+  let status: MessageStatus
   let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
   let exposesResponseToAccessibility: Bool
 
   init(
     projection: AssistantMessageProjection,
+    status: MessageStatus,
     isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     exposesResponseToAccessibility: Bool
   ) {
     self.projection = projection
+    self.status = status
     self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     self.exposesResponseToAccessibility = exposesResponseToAccessibility
@@ -20,6 +23,13 @@ struct AssistantEventViews: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
+      // Streaming presence (chat-ux Phase 2, audit #6): the window between
+      // `.accepted` and the first populating event frame rendered nothing —
+      // an empty area with no affordance that a reply is coming.
+      if status == .accepted, projection.isEmpty {
+        TypingIndicatorView()
+      }
+
       if !projection.thinking.isEmpty {
         ThinkingView(
           thinking: projection.thinking,
@@ -28,14 +38,25 @@ struct AssistantEventViews: View {
       }
 
       if !projection.text.isEmpty {
-        if exposesResponseToAccessibility {
-          MarkdownTextView(text: projection.text)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: projection.text))
-            .accessibilityIdentifier("chat.final.response")
-        } else {
-          MarkdownTextView(text: projection.text)
-            .accessibilityHidden(true)
+        HStack(alignment: .bottom, spacing: 2) {
+          if exposesResponseToAccessibility {
+            MarkdownTextView(text: projection.text)
+              .accessibilityElement(children: .combine)
+              .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: projection.text))
+              .accessibilityIdentifier("chat.final.response")
+          } else {
+            MarkdownTextView(text: projection.text)
+              .accessibilityHidden(true)
+          }
+
+          // Trailing caret (audit #6): a render-time-only adornment, never
+          // written into `projection.text` — that string also backs the
+          // a11y label above, `assistantContextMenuItems`' Copy/Share text
+          // in `MessageViews.swift`, and markdown re-parsing on every
+          // render, so mutating it would corrupt all three.
+          if status == .streaming {
+            StreamingCaretView()
+          }
         }
       }
 
@@ -63,14 +84,72 @@ struct AssistantEventViews: View {
         )
       }
 
-      if let usage = projection.usage {
-        UsageView(usage: usage)
-      }
+      // Chrome trim (audit #17): usage is no longer rendered per-turn.
+      // `UsageView` itself stays — `WorkerCardView` still shows it for a
+      // completed worker's own usage, a different (non-noisy) context.
 
-      if let terminal = projection.terminal {
+      if let terminal = projection.terminal, terminal.isChromeWorthy {
         TerminalView(terminal: terminal)
       }
     }
+  }
+}
+
+/// 3-dot pulse (chat-ux Phase 2, audit #6). Hidden from accessibility like
+/// `StreamingCaretView` below — the message's own container already carries
+/// `message.accessibilityStatusLabel` ("Assistant message, accepted"), so
+/// this transient visual filler has nothing more useful to announce.
+private struct TypingIndicatorView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isAnimating = false
+
+  var body: some View {
+    HStack(spacing: 4) {
+      ForEach(0..<3, id: \.self) { index in
+        Circle()
+          .fill(Color.secondary)
+          .frame(width: 6, height: 6)
+          .opacity(reduceMotion ? 0.6 : (isAnimating ? 1 : 0.3))
+          .animation(
+            reduceMotion
+              ? nil
+              : .easeInOut(duration: 0.6).repeatForever(autoreverses: true)
+                .delay(Double(index) * 0.15),
+            value: isAnimating
+          )
+      }
+    }
+    .onAppear {
+      if !reduceMotion { isAnimating = true }
+    }
+    .accessibilityHidden(true)
+    .accessibilityIdentifier("chat.typingIndicator")
+  }
+}
+
+/// Trailing streaming caret (chat-ux Phase 2, audit #6): blinks via a
+/// repeating opacity animation while `status == .streaming`; reduce-motion
+/// swaps that for a static half-opacity glyph rather than disabling it
+/// outright, so the affordance ("a reply is actively streaming") survives
+/// without the motion. See `AssistantEventViews.body` for why this is a
+/// sibling view next to `MarkdownTextView`, not text fused into it.
+private struct StreamingCaretView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isVisible = true
+
+  var body: some View {
+    Text("▍")
+      .foregroundStyle(.secondary)
+      .opacity(reduceMotion ? 0.6 : (isVisible ? 1 : 0.15))
+      .animation(
+        reduceMotion ? nil : .easeInOut(duration: 0.6).repeatForever(autoreverses: true),
+        value: isVisible
+      )
+      .onAppear {
+        if !reduceMotion { isVisible.toggle() }
+      }
+      .accessibilityHidden(true)
+      .accessibilityIdentifier("chat.streamingCaret")
   }
 }
 
@@ -112,6 +191,10 @@ struct ThinkingView: View {
       }
     }
     .accessibilityElement(children: .contain)
+    // Haptics (chat-ux Phase 2, audit #7): a light tick on every
+    // show/hide toggle, matching the `.selection` feedback iOS uses for
+    // picker-style state changes.
+    .sensoryFeedback(.selection, trigger: isExpanded)
   }
 }
 
@@ -146,6 +229,9 @@ struct ToolCardView: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
     .accessibilityIdentifier("chat.tool.\(tool.id)")
+    // Haptics (chat-ux Phase 2, audit #7): matches `ThinkingView`'s
+    // disclosure-toggle feedback.
+    .sensoryFeedback(.selection, trigger: isExpanded)
   }
 
   private var header: some View {
