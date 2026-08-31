@@ -35,8 +35,17 @@ enum MarkdownBlock: Equatable, Sendable {
 /// Streaming-safe: an unclosed ``` fence at end-of-input still yields a
 /// `.fencedCode` block (rather than being swallowed into a paragraph), so a
 /// message mid-stream still renders sanely before the closing fence arrives.
+///
+/// Line endings are normalized to `\n` up front (CRLF, then lone CR) —
+/// `CharacterSet.whitespaces` used throughout this scan does NOT include
+/// `\r`, so unnormalized CRLF input would leave a trailing `\r` on fence
+/// language tags, heading text, and would break hr/bullet/ordered detection
+/// (e.g. `"---\r\n"` would otherwise segment as a paragraph, not an hr).
 func segmentMarkdown(_ text: String) -> [MarkdownBlock] {
-  let lines = text.components(separatedBy: "\n")
+  let normalized = text
+    .replacingOccurrences(of: "\r\n", with: "\n")
+    .replacingOccurrences(of: "\r", with: "\n")
+  let lines = normalized.components(separatedBy: "\n")
   var blocks: [MarkdownBlock] = []
   var paragraphLines: [String] = []
   var index = 0

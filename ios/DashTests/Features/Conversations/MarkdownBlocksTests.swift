@@ -211,6 +211,36 @@ struct MarkdownBlocksTests {
     #expect(segmentMarkdown(input) == [.horizontalRule])
   }
 
+  // MARK: - Line ending normalization
+
+  @Test("a CRLF document segments identically to its LF twin")
+  func crlfDocumentMatchesLFTwin() {
+    let lfInput = """
+      # Title
+
+      ```swift
+      let x = 1
+      ```
+
+      ---
+
+      - bullet one
+      - bullet two
+      """
+    let crlfInput = lfInput.replacingOccurrences(of: "\n", with: "\r\n")
+
+    #expect(segmentMarkdown(crlfInput) == segmentMarkdown(lfInput))
+    #expect(
+      segmentMarkdown(crlfInput)
+        == [
+          .heading(level: 1, text: "Title"),
+          .fencedCode(language: "swift", code: "let x = 1"),
+          .horizontalRule,
+          .bullets(["bullet one", "bullet two"]),
+        ]
+    )
+  }
+
   // MARK: - Interleaving
 
   @Test("a document mixing every block type segments in source order")
