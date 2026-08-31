@@ -446,8 +446,24 @@ final class LiveSignerFlowTests: XCTestCase {
       pairingId: tamperedApproval.pairingId,
       decision: "approve"
     )
-    let tamperedSignature = tampered(genuineSignature)
+    let tamperedSignature = try XCTUnwrap(
+      tampered(genuineSignature),
+      "Expected the genuine signature to be valid base64url"
+    )
     XCTAssertNotEqual(tamperedSignature, genuineSignature)
+    // Belt-and-suspenders over the string comparison above: prove the DECODED
+    // bytes actually differ, not just their base64url spelling. A signature's
+    // base64url encoding has an unavoidable padding-alignment quirk (a 64-byte
+    // value's last character only carries 2 real data bits; the rest is zero
+    // padding) — corrupting only that last character is a NO-OP roughly 1 in
+    // 4 times (whenever the real bits happen to already be `00`), which would
+    // make this whole negative path vacuous/flaky. `tampered` avoids that by
+    // flipping a bit in the first (fully data-bearing) byte instead, and this
+    // assertion is the regression guard if that ever changes.
+    let genuineBytes = try XCTUnwrap(base64URLDecode(genuineSignature))
+    let tamperedBytes = try XCTUnwrap(base64URLDecode(tamperedSignature))
+    XCTAssertEqual(tamperedBytes.count, genuineBytes.count)
+    XCTAssertNotEqual(tamperedBytes, genuineBytes)
 
     do {
       try await client.postDecision(
@@ -476,13 +492,47 @@ final class LiveSignerFlowTests: XCTestCase {
   }
 }
 
-/// Flips the trailing character of a base64url signature to a DIFFERENT
-/// base64url character, corrupting the low-order bits of the real Ed25519
-/// signature it encodes while staying syntactically valid base64url (so the
-/// control plane's `Buffer.from(signature, 'base64url')` still decodes it —
-/// this must fail SIGNATURE verification, not request parsing).
-private func tampered(_ signature: String) -> String {
-  guard let last = signature.last else { return "AA" }
-  let replacement: Character = last == "A" ? "B" : "A"
-  return String(signature.dropLast()) + String(replacement)
+/// Decodes an unpadded base64url string (the exact wire form
+/// `SignerIdentity` produces: `-`/`_` alphabet, no `=` padding) to raw bytes.
+/// `Foundation`'s `Data(base64Encoded:)` only understands the standard
+/// alphabet with padding, so this restores both before decoding.
+private func base64URLDecode(_ value: String) -> Data? {
+  var base64 = value
+    .replacingOccurrences(of: "-", with: "+")
+    .replacingOccurrences(of: "_", with: "/")
+  let remainder = base64.count % 4
+  if remainder > 0 {
+    base64 += String(repeating: "=", count: 4 - remainder)
+  }
+  return Data(base64Encoded: base64)
+}
+
+/// The inverse of `base64URLDecode` — matches `SignerIdentity`'s own
+/// unpadded base64url encoding exactly, so a tampered signature is
+/// indistinguishable in FORM from a genuine one (only its decoded bytes
+/// differ).
+private func base64URLEncode(_ data: Data) -> String {
+  data.base64EncodedString()
+    .replacingOccurrences(of: "+", with: "-")
+    .replacingOccurrences(of: "/", with: "_")
+    .replacingOccurrences(of: "=", with: "")
+}
+
+/// Corrupts a real Ed25519 signature by flipping one bit of its FIRST decoded
+/// byte, then re-encoding to unpadded base64url. Operating on decoded bytes
+/// (rather than the base64url text directly) sidesteps a padding-alignment
+/// trap: a 64-byte signature's base64url encoding has 86 characters, and the
+/// LAST one carries only 2 real data bits (the rest is zero padding) — a
+/// character-level tamper of just that last character is a silent no-op
+/// whenever those 2 bits are already `00`, which happens ~1 in 4 signatures.
+/// Byte 0 has no such ambiguity: every one of its 8 bits is real signature
+/// data, so XOR-ing it always changes the decoded value (and the caller
+/// double-checks this — see the byte-equality assertion at the call site).
+/// Returns `nil` only if `signature` is not valid base64url at all, which
+/// would indicate a bug in `SignerIdentity.sign` itself.
+private func tampered(_ signature: String) -> String? {
+  guard var bytes = base64URLDecode(signature), bytes.isEmpty == false else { return nil }
+  let firstIndex = bytes.startIndex
+  bytes[firstIndex] ^= 0x01
+  return base64URLEncode(bytes)
 }
