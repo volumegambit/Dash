@@ -1,6 +1,6 @@
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from 'react';
 import { useWebAppStore } from './Shell.js';
-import { ContentBlocks } from './blocks/ContentBlocks.js';
+import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
 
 export interface ChatViewProps {
   conversationId: string | null;
@@ -15,6 +15,61 @@ export const RECONNECTING_COPY = 'Reconnecting…';
 
 function unreachableCopy(gatewayLabel: string): string {
   return `Your gateway '${gatewayLabel}' is unreachable.`;
+}
+
+function CopyIcon(): ReactNode {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <rect
+        x="9"
+        y="9"
+        width="12"
+        height="12"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function CheckIcon(): ReactNode {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" className="copy-check">
+      <polyline
+        points="4 12 9 17 20 6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** MC parity (spec appendix §6): "Copy/Check 14px, muted/50→foreground
+ * hover, green check 1.5s after copy." Copies `text` (already reduced to
+ * the message's concatenated reply/prompt text by `getMessageCopyText` —
+ * tool output, thinking, and question text are excluded, matching MC's
+ * `extractTextFromEvents`). */
+function CopyButton({ text }: { text: string }): ReactNode {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [text]);
+
+  return (
+    <button type="button" onClick={handleCopy} className="copy-button" title="Copy message">
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  );
 }
 
 /**
@@ -105,8 +160,14 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
       <div>
         {messages.map((message) => (
-          <div key={message.id} data-testid="chat-message" data-role={message.role}>
+          <div
+            key={message.id}
+            data-testid="chat-message"
+            data-role={message.role}
+            className="chat-message"
+          >
             <ContentBlocks content={message.content} />
+            <CopyButton text={getMessageCopyText(message.content)} />
             {message.status === 'failed' && (
               <span role="alert" style={{ color: '#b00020', fontSize: '0.85em' }}>
                 Failed to send

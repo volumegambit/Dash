@@ -31,6 +31,25 @@
   --md-sidebar-hover: #141414;
   --md-foreground: #f8fafc;
   --md-orange: #fdba74;
+
+  /* Tool card / thinking / copy button tokens (spec appendix §§3-6).
+   * ADAPTATION (flagged in task-4 report): `--tool-card-bg` is a LIGHT
+   * equivalent of MC's bg-sidebar-hover / card-bg (#141414) — apps/web has
+   * no dark page background yet (see the file-level comment above), so a
+   * black card on a white page would look broken. Structure and behavior
+   * (border, spacing, collapse mechanics) port from MC unchanged;
+   * `--md-border` above is reused as-is ("MC structural values elsewhere").
+   * `--tool-green-readable` is a second flagged adaptation: MC's green
+   * (#22c55e, used here for the small status dot) is a ~2:1 contrast ratio
+   * as *text* on a white page, so result text uses a darkened AA-legible
+   * green instead. Result/code surfaces (`--md-code-bg`) are the explicit
+   * exception that stays dark, matching the fenced-code chip. */
+  --tool-card-bg: #f4f4f5;
+  --tool-green: #22c55e;
+  --tool-green-readable: #15803d;
+  --tool-red: #f87171;
+  --tool-red-bg: rgb(248 113 113 / 12%);
+  --tool-red-border: rgb(248 113 113 / 50%);
 }
 
 /* Headings */
@@ -173,4 +192,190 @@
 /* Images */
 .md-img {
   max-width: 100%;
+}
+
+/* ---------------------------------------------------------------------
+ * Tool cards (spec appendix §3, MC ToolBlock/ToolResult parity)
+ * ------------------------------------------------------------------- */
+
+.tool-card {
+  margin: 12px 0;
+  border: 1px solid var(--md-border);
+  background: var(--tool-card-bg);
+  font-size: 12px;
+}
+
+.tool-card-error {
+  background: var(--tool-red-bg);
+  border-color: var(--tool-red-border);
+}
+
+.tool-card-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  border: none;
+  background: none;
+  padding: 6px 12px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-card-header:hover {
+  color: #111;
+}
+
+.tool-card-label {
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+.tool-card-summary {
+  color: var(--md-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tool-card-summary-mono {
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+.tool-card-body {
+  border-top: 1px solid var(--md-border);
+  padding: 6px 12px 8px;
+}
+
+.tool-card-details {
+  margin: 0 0 4px;
+}
+
+.tool-card-detail {
+  margin: 2px 0;
+  color: var(--md-muted);
+}
+
+.tool-card-detail-key {
+  text-transform: capitalize;
+}
+
+.tool-status-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tool-green);
+}
+
+.tool-status-glyph-error {
+  flex-shrink: 0;
+  color: var(--tool-red);
+}
+
+.tool-status-spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--md-border);
+  border-top-color: var(--md-muted);
+  border-radius: 50%;
+  animation: tool-spin 0.8s linear infinite;
+}
+
+@keyframes tool-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tool-result {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.tool-result-error {
+  color: var(--tool-red);
+}
+
+.tool-result-empty {
+  color: var(--md-muted);
+  font-style: italic;
+}
+
+.tool-result-short {
+  color: var(--tool-green-readable);
+}
+
+.tool-result-long {
+  max-height: 256px;
+  overflow: auto;
+  margin: 4px 0 0;
+  background: var(--md-code-bg);
+  padding: 8px;
+  color: rgb(248 250 252 / 80%);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------------
+ * Thinking block (spec appendix §4, MC ThinkingBlock parity)
+ * ------------------------------------------------------------------- */
+
+.thinking-block {
+  margin: 8px 0;
+  border: 1px solid var(--md-border);
+  background: var(--tool-card-bg);
+  font-size: 12px;
+}
+
+.thinking-summary {
+  padding: 6px 12px;
+  color: var(--md-muted);
+  cursor: pointer;
+}
+
+.thinking-summary:hover {
+  color: #111;
+}
+
+.thinking-body {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--md-muted);
+  white-space: pre-wrap;
+}
+
+/* ---------------------------------------------------------------------
+ * Message copy button (spec appendix §6)
+ * ------------------------------------------------------------------- */
+
+.chat-message {
+  position: relative;
+}
+
+.copy-button {
+  border: none;
+  background: none;
+  padding: 4px;
+  color: rgb(148 163 184 / 50%);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.chat-message:hover .copy-button,
+.copy-button:focus-visible {
+  opacity: 1;
+}
+
+.copy-button:hover {
+  color: #111;
+}
+
+.copy-button:has(.copy-check) {
+  color: var(--tool-green-readable);
 }

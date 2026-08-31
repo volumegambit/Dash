@@ -1,5 +1,7 @@
 import type { ConversationContent, MobileAgentEvent } from '@dash/mobile-contract';
-import type { ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
+import { Markdown } from './Markdown.js';
+import { formatVisibleDetails, normalizeTool, summarize, toolLabel } from './tool-presentation.js';
 
 export interface ContentBlocksProps {
   content: ConversationContent;
@@ -27,7 +29,12 @@ function UnknownBlock(): ReactNode {
  * paragraph, preserving single newlines within a paragraph. `keyPrefix` is
  * already unique per call site (built from an ever-incrementing counter in
  * `renderAssistantEvents`), so each paragraph's key mixes in its own text
- * rather than its array index — content, not position, identifies it. */
+ * rather than its array index — content, not position, identifies it.
+ *
+ * Used only for plain (non-markdown) text: user messages (spec appendix §6 —
+ * user text stays plain) and question prompts (MC's `QuestionBlock` renders
+ * the question as a plain paragraph, not through `Markdown`). Assistant
+ * reply text uses `<Markdown>` instead — see `flushText` below. */
 function renderParagraphs(text: string, keyPrefix: string): ReactNode[] {
   return text
     .split(/\n{2,}/)
@@ -53,6 +60,80 @@ interface PendingTool {
   input?: Record<string, unknown>;
 }
 
+type ToolStatus = 'running' | 'succeeded' | 'failed';
+
+/** Status glyph (spec appendix §3): success = 8px filled green circle,
+ * error = 10px red XCircle (drawn inline — apps/web has no icon library
+ * dependency, so these stand in for MC's lucide `Circle`/`XCircle`, the same
+ * way iOS Task 2 stands SF Symbols in for lucide — see design doc Platform
+ * Adaptation 3). `running` has no MC equivalent in ToolBlock itself (MC
+ * renders an unresolved tool_use via a separate `tool-progress` element
+ * outside ToolBlock); this renderer folds pending tools into the same
+ * component (no separate pending/resolved render path), so it needs a third
+ * visual state — a spinner, matching the iOS twin's `ProgressView`. */
+function ToolStatusGlyph({ status }: { status: ToolStatus }): ReactNode {
+  if (status === 'running') {
+    return <span className="tool-status-spinner" aria-hidden="true" />;
+  }
+  if (status === 'failed') {
+    return (
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        className="tool-status-glyph-error"
+      >
+        <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2.5" />
+        <line x1="8.5" y1="8.5" x2="15.5" y2="15.5" stroke="currentColor" strokeWidth="2.5" />
+        <line x1="15.5" y1="8.5" x2="8.5" y2="15.5" stroke="currentColor" strokeWidth="2.5" />
+      </svg>
+    );
+  }
+  return <span className="tool-status-dot" aria-hidden="true" />;
+}
+
+/** Tool result branching (spec appendix §3, ToolResult): error → red
+ * pre-wrap text; empty → muted italic "No output"; ≤3 lines → green
+ * pre-wrap text; longer → 256px-capped scrollable block on the dark code
+ * surface. Diff rendering, directory-listing/numbered-source detection, and
+ * TodoWrite's checklist body are out of scope here — same reduced scope as
+ * the iOS twin's `resultView` (design doc "Out of scope" + iOS Task 2
+ * precedent: brief authoritative over MC's fuller ToolResult.tsx). */
+function ToolResultView({ content, isError }: { content: string; isError?: boolean }): ReactNode {
+  if (isError) {
+    return (
+      <p data-testid="tool-result" className="tool-result tool-result-error">
+        {content}
+      </p>
+    );
+  }
+  if (!content.trim()) {
+    return (
+      <p data-testid="tool-result" className="tool-result tool-result-empty">
+        No output
+      </p>
+    );
+  }
+  const lineCount = content.split('\n').length;
+  if (lineCount <= 3) {
+    return (
+      <p data-testid="tool-result" className="tool-result tool-result-short">
+        {content}
+      </p>
+    );
+  }
+  return (
+    <pre data-testid="tool-result" className="tool-result tool-result-long">
+      {content}
+    </pre>
+  );
+}
+
+/** MC `ToolBlock` treatment (spec appendix §3): collapsed-by-default card
+ * with a status-glyph + mono tool label + inline `summarize()` summary in
+ * the header; expanded body shows `formatVisibleDetails` key/value rows
+ * followed by the branching result. */
 function ToolUseBlock({
   tool,
   result,
@@ -60,50 +141,68 @@ function ToolUseBlock({
   tool: PendingTool;
   result?: { content: string; isError?: boolean };
 }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const status: ToolStatus = !result ? 'running' : result.isError ? 'failed' : 'succeeded';
+  const summary = summarize(tool.name, tool.input);
+  const details = formatVisibleDetails(tool.name, tool.input);
+  const isBash = normalizeTool(tool.name) === 'bash';
+
   return (
-    <details
+    <div
       data-testid="tool-use-block"
-      style={{
-        border: '1px solid #ddd',
-        borderRadius: 4,
-        padding: '4px 8px',
-        margin: '4px 0',
-        fontSize: '0.85em',
-      }}
+      data-status={status}
+      className={`tool-card${status === 'failed' ? ' tool-card-error' : ''}`}
     >
-      <summary style={{ cursor: 'pointer', fontFamily: 'monospace' }}>
-        {tool.name}
-        {!result && ' (running…)'}
-      </summary>
-      {tool.input && Object.keys(tool.input).length > 0 && (
-        <pre style={{ whiteSpace: 'pre-wrap', margin: '4px 0' }}>
-          {JSON.stringify(tool.input, null, 2)}
-        </pre>
-      )}
-      {result && (
-        <div
-          data-testid="tool-result"
-          style={{
-            whiteSpace: 'pre-wrap',
-            margin: '4px 0',
-            color: result.isError ? '#b00020' : undefined,
-          }}
-        >
-          {result.content}
+      <button
+        type="button"
+        className="tool-card-header"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        <ToolStatusGlyph status={status} />
+        <span className="tool-card-label">{toolLabel(tool.name)}</span>
+        {summary && (
+          <span className={`tool-card-summary${isBash ? ' tool-card-summary-mono' : ''}`}>
+            {summary}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="tool-card-body">
+          {details.length > 0 && (
+            <div className="tool-card-details">
+              {details.map(({ key, value }) => (
+                <p key={key} className="tool-card-detail">
+                  <span className="tool-card-detail-key">{key}</span>: {value}
+                </p>
+              ))}
+            </div>
+          )}
+          {result && <ToolResultView content={result.content} isError={result.isError} />}
         </div>
       )}
-    </details>
+    </div>
   );
 }
 
+/** MC `ThinkingBlock` treatment (spec appendix §4): default collapsed,
+ * toggle copy exactly "Show thinking"/"Hide thinking", expanded body is
+ * plain muted text (not markdown, not italic). Keeps this renderer's
+ * existing `<details>`/`<summary>` mechanics (native disclosure, keyboard
+ * accessible) rather than switching to MC's own div+button — the native
+ * `open` attribute is mirrored into `useState` via `onToggle` so the summary
+ * text can react to it. */
 function ThinkingBlock({ text }: { text: string }): ReactNode {
+  const [open, setOpen] = useState(false);
   return (
     <details
       data-testid="thinking-block"
-      style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85em', margin: '4px 0' }}
+      className="thinking-block"
+      open={open}
+      onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}
     >
-      <summary style={{ cursor: 'pointer' }}>Thinking</summary>
-      <p style={{ whiteSpace: 'pre-wrap' }}>{text}</p>
+      <summary className="thinking-summary">{open ? 'Hide thinking' : 'Show thinking'}</summary>
+      <p className="thinking-body">{text}</p>
     </details>
   );
 }
@@ -113,14 +212,15 @@ function ThinkingBlock({ text }: { text: string }): ReactNode {
  * `thinking_delta` / `tool_use_start` / `tool_use_delta` / `tool_result` /
  * `response` / `question` — see `packages/agent/src/types.ts` `AgentEvent`
  * and `contracts/mobile/v1/fixtures/chat-stream.jsonl`) into four renderable
- * block kinds: text (paragraphs), tool-use (collapsed `<details>` with the
- * tool name), tool-result (nested inside its tool-use's `<details>`), and
- * thinking (muted/italic, collapsed by default). `tool_use_delta` and
- * `response` are deliberate no-ops (streamed partial input, and an
- * end-of-turn metadata summary that duplicates already-streamed text,
- * respectively — `response` in particular ends *every* real turn, so
- * treating it as unknown would badge every ordinary reply). `question`
- * renders its prompt text as a paragraph (no answer affordance here yet).
+ * block kinds: text (rendered via `<Markdown>`), tool-use (collapsed
+ * MC-parity tool card), tool-result (nested inside its tool-use card), and
+ * thinking (muted, collapsed by default). `tool_use_delta` and `response`
+ * are deliberate no-ops (streamed partial input, and an end-of-turn
+ * metadata summary that duplicates already-streamed text, respectively —
+ * `response` in particular ends *every* real turn, so treating it as
+ * unknown would badge every ordinary reply). `question` renders its prompt
+ * text as a plain paragraph (no answer affordance here yet, and MC's own
+ * `QuestionBlock` doesn't run the question text through markdown either).
  * Anything else — an event type this renderer doesn't know, or a known type
  * with a malformed shape — degrades to `UnknownBlock` rather than throwing.
  */
@@ -133,7 +233,7 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
 
   const flushText = (): void => {
     if (!textBuffer) return;
-    nodes.push(...renderParagraphs(textBuffer, `text-${key++}`));
+    nodes.push(<Markdown key={`text-${key++}`} text={textBuffer} />);
     textBuffer = '';
   };
   const flushThinking = (): void => {
@@ -266,11 +366,35 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
   return nodes;
 }
 
+/** Concatenates an assistant message's `text_delta` text (mirrors MC's
+ * `extractTextFromEvents`) or a user message's plain text, for the
+ * message-level `CopyButton` in `ChatView.tsx`. Deliberately excludes tool
+ * output, thinking, and question text — MC's copy button copies "concatenated
+ * text only" (spec appendix §6). */
+export function getMessageCopyText(content: ConversationContent): string {
+  if (!isRecord(content)) return '';
+  if (content.type === 'user') {
+    return typeof content.text === 'string' ? content.text : '';
+  }
+  if (content.type === 'assistant') {
+    const events = Array.isArray(content.events) ? content.events : [];
+    let text = '';
+    for (const event of events) {
+      if (isRecord(event) && event.type === 'text_delta' && typeof event.text === 'string') {
+        text += event.text;
+      }
+    }
+    return text;
+  }
+  return '';
+}
+
 /**
  * Renders one message's `ConversationContent` — `'user'` content as plain
- * text paragraphs, `'assistant'` content by walking its raw agent `events`
- * (see `renderAssistantEvents`). Any content that isn't one of those two
- * shapes (e.g. a corrupted payload) degrades to `UnknownBlock` rather than
+ * text paragraphs (spec appendix §6: user text stays plain, no markdown),
+ * `'assistant'` content by walking its raw agent `events` (see
+ * `renderAssistantEvents`). Any content that isn't one of those two shapes
+ * (e.g. a corrupted payload) degrades to `UnknownBlock` rather than
  * throwing.
  */
 export function ContentBlocks({ content }: ContentBlocksProps): ReactNode {

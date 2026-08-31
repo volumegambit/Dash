@@ -248,3 +248,78 @@ describe('ChatView', () => {
     expect(screen.queryByText("Your gateway 'acme' is unreachable.")).toBeNull();
   });
 });
+
+describe('ChatView message copy button', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function stubClipboard() {
+    const writeText = vi.fn(() => Promise.resolve());
+    // happy-dom's `navigator.clipboard` is a getter with no setter, so a
+    // plain `Object.assign(navigator, { clipboard })` throws — redefine the
+    // property instead.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    return writeText;
+  }
+
+  it('copies the message text to the clipboard and reverts the icon after 1.5s', async () => {
+    const writeText = stubClipboard();
+    // renderConnected's socket handshake polls via testing-library's
+    // waitFor (real timers), so fake timers are switched on only after the
+    // connection is established — otherwise waitFor's own polling never
+    // fires and the setup hangs.
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+    vi.useFakeTimers();
+
+    const copyButton = screen.getByTitle('Copy message');
+    fireEvent.click(copyButton);
+
+    // The clipboard write is a resolved promise; let its .then() run before
+    // asserting the "copied" (check icon) state. Promise microtasks aren't
+    // gated by fake timers, so a plain await is enough.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith('Ping');
+    expect(copyButton.querySelector('.copy-check')).toBeTruthy();
+
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(copyButton.querySelector('.copy-check')).toBeNull();
+  });
+
+  it("copies only an assistant message's concatenated text_delta text, excluding tool output", async () => {
+    const writeText = stubClipboard();
+    await renderConnected({
+      messages: [
+        message({
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              { type: 'text_delta', text: 'Done. ' },
+              { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
+              { type: 'tool_result', id: 'call-1', name: 'bash', content: 'file1' },
+              { type: 'text_delta', text: 'All good.' },
+            ],
+          },
+        }),
+      ],
+    });
+
+    fireEvent.click(screen.getByTitle('Copy message'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith('Done. All good.');
+  });
+});
