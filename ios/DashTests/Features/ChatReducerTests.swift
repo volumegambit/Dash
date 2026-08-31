@@ -908,6 +908,43 @@ struct ChatReducerTests {
     #expect(state.messages.last?.assistant?.isEmpty == true)
   }
 
+  /// Regression for chat-ux Phase 2, Task 5 fix round 1: the first cut of
+  /// `TypingIndicatorView`'s gate checked `status == .accepted`, which is
+  /// dead code — `ChatReducer.reconcileAccepted` never assigns `.accepted`
+  /// to the assistant message, only `.streaming` (`.accepted` is exclusively
+  /// the USER message's status; see `reconcileAccepted`'s two branches at
+  /// `ChatReducer.swift` — the assistant branch a few lines below always
+  /// sets `.streaming`). This drives the reducer through the real `accepted`
+  /// → `event` sequence and asserts against `shouldShowTypingIndicator`
+  /// itself — the exact composed predicate `AssistantEventViews.body`
+  /// calls — not a hand-rolled boolean expression that could itself drift
+  /// from what the view does.
+  @Test(
+    "shouldShowTypingIndicator is true immediately after accept (status .streaming, empty projection) and flips false on the first text delta"
+  )
+  func typingIndicatorGateTracksAcceptToFirstTokenWindow() {
+    var state = acceptedState(cursor: 1)
+    let assistantAfterAccept = state.messages.last
+    #expect(assistantAfterAccept?.role == .assistant)
+    #expect(assistantAfterAccept?.status == .streaming)
+    #expect(
+      shouldShowTypingIndicator(
+        status: assistantAfterAccept!.status,
+        projection: assistantAfterAccept!.assistant!
+      ) == true
+    )
+
+    _ = apply(.textDelta(text: "Hi"), seq: 2, to: &state)
+    let assistantAfterDelta = state.messages.last
+    #expect(assistantAfterDelta?.status == .streaming)
+    #expect(
+      shouldShowTypingIndicator(
+        status: assistantAfterDelta!.status,
+        projection: assistantAfterDelta!.assistant!
+      ) == false
+    )
+  }
+
   @Test("a text delta makes the projection non-empty")
   func textDeltaEndsEmptiness() {
     var state = acceptedState(cursor: 1)

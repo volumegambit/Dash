@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// The exact gate `AssistantEventViews.body` uses to decide whether
+/// `TypingIndicatorView` renders — pulled out as a named, directly-testable
+/// predicate (chat-ux Phase 2, Task 5 fix round 1) so the view and its
+/// regression coverage in `ChatReducerTests.swift` can't silently drift
+/// apart the way they did the first time: the original inline condition
+/// gated on `status == .accepted`, which is dead code — an assistant
+/// `ChatMessageState.status` is never `.accepted` at all (`ChatReducer
+/// .reconcileAccepted` sets it straight to `.streaming` the instant the
+/// `accepted` WS frame lands; `.accepted` only ever describes the USER
+/// message). `status == .streaming && projection.isEmpty` is the real
+/// accept-to-first-token window: subsequent `event` frames keep `status ==
+/// .streaming` and only flip `isEmpty` once something renderable arrives.
+func shouldShowTypingIndicator(status: MessageStatus, projection: AssistantMessageProjection)
+  -> Bool
+{
+  status == .streaming && projection.isEmpty
+}
+
 struct AssistantEventViews: View {
   let projection: AssistantMessageProjection
   let status: MessageStatus
@@ -24,9 +42,11 @@ struct AssistantEventViews: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       // Streaming presence (chat-ux Phase 2, audit #6): the window between
-      // `.accepted` and the first populating event frame rendered nothing —
-      // an empty area with no affordance that a reply is coming.
-      if status == .accepted, projection.isEmpty {
+      // the `accepted` WS frame and the first populating `event` frame
+      // rendered nothing — an empty area with no affordance that a reply is
+      // coming. See `shouldShowTypingIndicator`'s doc comment for why this
+      // gates on `status == .streaming`, not `.accepted`.
+      if shouldShowTypingIndicator(status: status, projection: projection) {
         TypingIndicatorView()
       }
 

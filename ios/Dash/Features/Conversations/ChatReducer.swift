@@ -76,13 +76,18 @@ struct AssistantMessageProjection: Equatable, Sendable {
   var hasAnnouncedTerminal = false
 
   /// True when nothing in this projection would render any visible content
-  /// — the window between the `.accepted` frame (which creates an empty
+  /// — the window between the `accepted` WS FRAME (which creates an empty
   /// projection, `ChatReducer.reconcileAccepted`) and the first populating
-  /// `.event` frame. Today that window renders as an empty area (chat-ux
+  /// `event` frame. Today that window renders as an empty area (chat-ux
   /// Phase 2, audit #6); `EventViews.swift`'s `TypingIndicatorView` uses this
-  /// to fill it with a 3-dot pulse instead. `usage` is deliberately excluded
-  /// — chrome trim (audit #17) stopped rendering it per-turn, so its
-  /// presence no longer corresponds to anything visible.
+  /// — together with `status == .streaming`, NOT `.accepted` — to fill it
+  /// with a 3-dot pulse instead. `.accepted` the `MessageStatus` is never
+  /// assigned to an assistant message at all: `reconcileAccepted` sets the
+  /// assistant row straight to `.streaming` the instant the `accepted` frame
+  /// lands (`.accepted` only ever describes the USER message). `usage` is
+  /// deliberately excluded from this check — chrome trim (audit #17) stopped
+  /// rendering it per-turn, so its presence no longer corresponds to
+  /// anything visible.
   var isEmpty: Bool {
     thinking.isEmpty && text.isEmpty && toolCards.isEmpty && workerCards.isEmpty
       && statusRows.isEmpty && pendingQuestion == nil && terminal == nil
