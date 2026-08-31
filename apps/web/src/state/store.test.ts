@@ -472,6 +472,140 @@ describe('createWebAppStore', () => {
     });
   });
 
+  describe('resendFromMessage (chat-ux Phase 2 Task 4, audit #5)', () => {
+    it('retries a failed turn: truncates the target user message and everything after it, then resends its own text', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const kept = message({
+        id: 'kept',
+        turnId: 'turn-0',
+        ordinal: 1,
+        content: { type: 'user', text: 'Earlier' },
+      });
+      const target = message({
+        id: 'u1',
+        turnId: 'turn-1',
+        ordinal: 2,
+        content: { type: 'user', text: 'Hello' },
+      });
+      const failedReply = message({
+        id: 'a1',
+        turnId: 'turn-1',
+        ordinal: 3,
+        role: 'assistant',
+        status: 'failed',
+        content: { type: 'assistant', events: [] },
+      });
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: {
+            messages: [kept, target, failedReply],
+            streaming: null,
+          },
+        },
+      }));
+
+      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1');
+
+      const messages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
+      // The failed turn (u1 + a1) is gone; the earlier turn survives; a
+      // fresh optimistic message (same text) replaces it.
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toBe(kept);
+      expect(messages[1]).toMatchObject({ role: 'user', content: { type: 'user', text: 'Hello' } });
+      expect(sockets[0].sent).toHaveLength(1);
+      expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Hello' });
+    });
+
+    it('sends editedText instead of the original when provided (edit & resend)', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const target = message({
+        id: 'u1',
+        turnId: 'turn-1',
+        ordinal: 1,
+        content: { type: 'user', text: 'Original text' },
+      });
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: { messages: [target], streaming: null },
+        },
+      }));
+
+      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1', 'Edited text');
+
+      const messages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ content: { type: 'user', text: 'Edited text' } });
+      expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Edited text' });
+    });
+
+    it('is a no-op for an id that is not a user message in the transcript', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const assistantOnly = message({
+        id: 'a1',
+        turnId: 'turn-1',
+        ordinal: 1,
+        role: 'assistant',
+        content: { type: 'assistant', events: [] },
+      });
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: { messages: [assistantOnly], streaming: null },
+        },
+      }));
+
+      await store.getState().resendFromMessage(CONVERSATION_ID, 'a1');
+      await store.getState().resendFromMessage(CONVERSATION_ID, 'does-not-exist');
+
+      expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toEqual([assistantOnly]);
+      expect(sockets[0].sent).toHaveLength(0);
+    });
+
+    it('throws and truncates nothing when not connected', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const target = message({
+        id: 'u1',
+        turnId: 'turn-1',
+        ordinal: 1,
+        content: { type: 'user', text: 'Hello' },
+      });
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: { messages: [target], streaming: null },
+        },
+      }));
+
+      onCloses[0]('error');
+      expect(store.getState().connection).toBe('reconnecting');
+
+      await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).rejects.toThrow();
+      expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toEqual([target]);
+    });
+  });
+
   describe('frame handling', () => {
     it('reconciles the optimistic user message id and assembles the streaming assistant reply', async () => {
       const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });

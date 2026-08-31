@@ -319,6 +319,169 @@ struct ChatFeatureTests {
     #expect(connect < send)
   }
 
+  @Test(
+    """
+    resendFromMessage retries a failed turn: truncates the target user message and everything \
+    after it, then resends the original text through the normal send path (chat-ux Phase 2 \
+    Task 4, audit #5)
+    """
+  )
+  func resendFromMessageRetriesFailedTurn() async throws {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(id: "kept-user", turnID: "turn-0", text: "Earlier turn", ordinal: 1),
+            message(
+              id: "kept-assistant",
+              turnID: "turn-0",
+              role: .assistant,
+              ordinal: 2
+            ),
+            message(id: "u1", turnID: "turn-orig", text: "Hello", ordinal: 3),
+            message(id: "a1", turnID: "turn-orig", role: .assistant, status: .failed, ordinal: 4),
+          ],
+          throughSeq: 4
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let turnID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let localID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let feature = makeFeature(
+      sync: sync,
+      chat: chat,
+      ids: [turnID.uuidString.lowercased(), localID.uuidString.lowercased()]
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(featureMessageIDs(feature) == ["kept-user", "kept-assistant", "u1", "a1"])
+
+    await feature.resendFromMessage(id: "u1")
+
+    // The failed turn (u1 + a1) is gone; the earlier, unrelated turn is
+    // untouched; a fresh optimistic user message replaces it.
+    #expect(
+      featureMessageIDs(feature) == [
+        "kept-user", "kept-assistant", localID.uuidString.lowercased(),
+      ])
+    #expect(feature.state.messages.last?.turnID == turnID.uuidString.lowercased())
+    #expect(feature.state.messages.last?.user?.text == "Hello")
+    let calls = await chat.calls
+    #expect(
+      calls == [
+        .connect,
+        .send(
+          turnID: turnID.uuidString.lowercased(),
+          agentID: "agent-1",
+          conversationID: "conv-1",
+          text: "Hello",
+          images: []
+        ),
+      ])
+  }
+
+  @Test(
+    """
+    resendFromMessage with editedText sends the edited text, not the original, and still \
+    truncates from the target message (chat-ux Phase 2 Task 4, audit #5)
+    """
+  )
+  func resendFromMessageEditAndResendUsesEditedText() async throws {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(id: "u1", turnID: "turn-orig", text: "Original text", ordinal: 1),
+            message(id: "a1", turnID: "turn-orig", role: .assistant, status: .failed, ordinal: 2),
+          ],
+          throughSeq: 2
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let turnID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let localID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let feature = makeFeature(
+      sync: sync,
+      chat: chat,
+      ids: [turnID.uuidString.lowercased(), localID.uuidString.lowercased()]
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.resendFromMessage(id: "u1", editedText: "Edited text")
+
+    #expect(feature.state.messages.map(\.id) == [localID.uuidString.lowercased()])
+    #expect(feature.state.messages.last?.user?.text == "Edited text")
+    let calls = await chat.calls
+    #expect(
+      calls.compactMap(\.sentPayload).map(\.text) == ["Edited text"]
+    )
+  }
+
+  @Test("resendFromMessage is a no-op for an id that isn't a user message in the transcript")
+  func resendFromMessageIgnoresUnknownID() async throws {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(id: "u1", turnID: "turn-orig", text: "Hello", ordinal: 1)
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.resendFromMessage(id: "does-not-exist")
+
+    #expect(featureMessageIDs(feature) == ["u1"])
+    let calls = await chat.calls
+    #expect(calls.isEmpty)
+  }
+
+  @Test("resendFromMessage is blocked while another turn is active, same as a plain send")
+  func resendFromMessageBlockedDuringActiveTurn() async throws {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          summary: summary(revision: 2, status: .running, activeTurnID: "turn-active", lastSeq: 2),
+          messages: [
+            message(id: "u1", turnID: "turn-orig", text: "Hello", ordinal: 1),
+            message(id: "a1", turnID: "turn-orig", role: .assistant, status: .failed, ordinal: 2),
+          ],
+          throughSeq: 2
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(feature.state.activeTurnID == "turn-active")
+    // `appear()` legitimately issues `.connect`/`.resume` to reattach to the
+    // remote turn — capture that baseline so the assertion below is
+    // specifically "resendFromMessage sent nothing", not "nothing happened
+    // all session".
+    let callsBeforeResend = await chat.calls
+
+    await feature.resendFromMessage(id: "u1")
+
+    #expect(featureMessageIDs(feature) == ["u1", "a1"])
+    let calls = await chat.calls
+    #expect(calls == callsBeforeResend)
+    #expect(calls.contains { $0.sendCall != nil } == false)
+  }
+
   @Test("an ambiguous send that was admitted reconciles and resumes the same turn ID")
   func ambiguousAdmittedSendResumesSameTurn() async throws {
     let persistence = FakeChatPersistence()

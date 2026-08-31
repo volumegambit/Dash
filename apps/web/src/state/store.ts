@@ -60,6 +60,30 @@ export interface WebAppState {
   openConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string): Promise<void>;
   /**
+   * Message actions (chat-ux Phase 2 Task 4, audit #5): retry-failed and
+   * edit-and-resend both funnel through here — retry is a call with no
+   * `editedText`. Semantics (binding across web and iOS, see
+   * `ios/Dash/Features/Conversations/ChatFeature.swift`'s
+   * `resendFromMessage`): truncate the LOCAL transcript to everything
+   * BEFORE the target user message (dropping it and everything after —
+   * including whatever assistant reply, failed or not, followed it), then
+   * send `editedText ?? that message's own text` through the existing
+   * `sendMessage` path. `messageId` must belong to a `role: 'user'` message
+   * currently in `transcripts[conversationId].messages`; anything else
+   * (unknown id, an assistant message id) is a no-op.
+   *
+   * KNOWN DIVERGENCE: this only ever truncates the LOCAL projection. The
+   * gateway has no branch-truncation API — resending appends a brand-new
+   * turn server-side, so the previously-sent (now locally-hidden) turn
+   * still exists in the server's history and would reappear on a future
+   * REST replay that starts before this edit (e.g. reopening the
+   * conversation from scratch, or another device). Full server-side branch
+   * truncation, and regenerating an assistant turn in place (as opposed to
+   * resending the user turn that produced it), are both out of scope for
+   * this task — the latter needs server support this gateway doesn't have.
+   */
+  resendFromMessage(conversationId: string, messageId: string, editedText?: string): Promise<void>;
+  /**
    * Cancels the in-flight turn for `conversationId` by sending a WS `cancel`
    * frame (`{ type: 'cancel', id: <turnId> }`) — the same gateway route
    * Mission Control's `cancelMessage` and the iOS client's `ChatFeature.cancel`
@@ -654,6 +678,32 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           }));
           throw err;
         }
+      },
+
+      async resendFromMessage(conversationId, messageId, editedText) {
+        // Same connected-socket precondition `sendMessage` itself enforces
+        // (and the composer's `canSend` gate already keeps the UI from
+        // reaching this button while disconnected) — checked BEFORE
+        // truncating so a resend attempted while offline throws without
+        // discarding any local history.
+        if (!socket || get().connection !== 'connected') {
+          throw new Error(
+            'Cannot resend: no connected chat socket (call openConversation() and wait for it to connect)',
+          );
+        }
+        const transcript = get().transcripts[conversationId];
+        const index =
+          transcript?.messages.findIndex((m) => m.id === messageId && m.role === 'user') ?? -1;
+        if (!transcript || index === -1) return;
+        const target = transcript.messages[index];
+        const text = editedText ?? (target.content.type === 'user' ? target.content.text : '');
+
+        updateTranscript(conversationId, (t) => ({
+          ...t,
+          messages: t.messages.slice(0, index),
+        }));
+
+        await get().sendMessage(conversationId, text);
       },
 
       cancelTurn(conversationId) {

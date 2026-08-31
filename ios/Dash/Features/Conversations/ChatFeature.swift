@@ -1001,6 +1001,53 @@ final class ChatFeature {
     }
   }
 
+  /// Message actions (chat-ux Phase 2, Task 4 / audit #5): retry-failed and
+  /// edit-and-resend both funnel through here. Semantics (binding across iOS
+  /// and web): truncate the LOCAL transcript after and including the target
+  /// user message, then send `editedText ?? original text` through the
+  /// EXISTING `send()` path — this is deliberately a thin wrapper, not a new
+  /// transport code path, so every guard/staging/reconciliation behavior
+  /// `send()` already has (offline handling, pending-send durability, draft
+  /// clearing) applies to a resend for free.
+  ///
+  /// Retry on a failed message is `resendFromMessage(id)` with no edit.
+  /// "Failed" is never recorded on the user message itself — only the
+  /// assistant/turn side ever gets `.failed` (`ChatReducer`'s `.error` case,
+  /// mirrored server-side in `finishTurn`) — so `MessageViews.swift` derives
+  /// "this user bubble's turn failed" by checking for a sibling assistant
+  /// message with the same `turnID` and `.failed` status before offering
+  /// Retry; this method itself doesn't need to re-derive that, it just
+  /// truncates from whichever user message id it's given.
+  ///
+  /// KNOWN DIVERGENCE FROM A "REAL" EDIT/REGENERATE: this only ever
+  /// truncates the LOCAL projection. The gateway has no branch-truncation
+  /// API — resending appends a brand-new turn server-side, so the
+  /// previously-sent (now locally-hidden) turn still exists in the server's
+  /// history and would reappear if the transcript were ever re-fetched from
+  /// a point before this edit (e.g. a second device open on the same
+  /// conversation, or a future `refresh()` that doesn't preserve the live
+  /// projection). Full server-side branch truncation is out of scope for
+  /// this task; regenerating an assistant turn in place (as opposed to
+  /// resending the user turn that produced it) is also out of scope — it
+  /// needs server support Dash doesn't have yet.
+  func resendFromMessage(id: String, editedText: String? = nil) async {
+    guard rejectIfShutdown() == false else { return }
+    guard
+      let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
+      let user = state.messages[index].user
+    else { return }
+    guard composerMutationAllowed, sendAuthorityIsAvailable else { return }
+
+    let attachments: [PreparedAttachment] = user.images.compactMap { image in
+      guard let data = Data(base64Encoded: image.data) else { return nil }
+      return PreparedAttachment(id: UUID(), mediaType: image.mediaType.rawValue, data: data)
+    }
+    state.messages.removeSubrange(index...)
+    state.draft = editedText ?? user.text
+    state.attachments = attachments
+    await send()
+  }
+
   func answer(questionID: String, answer: String) async {
     guard rejectIfShutdown() == false else { return }
     guard canAnswerQuestions else { return }

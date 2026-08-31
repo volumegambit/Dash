@@ -113,8 +113,122 @@ function CopyButton({ text }: { text: string }): ReactNode {
 }
 
 /**
+ * Message actions toolbar row (chat-ux Phase 2 Task 4, audit #5): Copy
+ * (existing), plus Retry (failed user turns) and Edit & resend (any user
+ * message) — real `<button>`s with `aria-label`s so they're reachable by
+ * keyboard/AT, revealed via CSS on `:hover`/`:focus-within` of the parent
+ * `.chat-message` (see `styles.css`) rather than being removed from the DOM,
+ * so tabbing to them still works even without hovering.
+ */
+function MessageToolbar({
+  message,
+  copyText,
+  canAct,
+  isRetryable,
+  onRetry,
+  onStartEdit,
+}: {
+  message: ConversationMessage;
+  copyText: string;
+  canAct: boolean;
+  isRetryable: boolean;
+  onRetry: (messageId: string) => void;
+  onStartEdit: (messageId: string) => void;
+}): ReactNode {
+  return (
+    <div className="chat-message-toolbar">
+      {copyText && <CopyButton text={copyText} />}
+      {message.role === 'user' && canAct && (
+        <button
+          type="button"
+          className="chat-message-action"
+          onClick={() => onStartEdit(message.id)}
+          aria-label="Edit and resend this message"
+        >
+          Edit &amp; resend
+        </button>
+      )}
+      {message.role === 'user' && isRetryable && canAct && (
+        <button
+          type="button"
+          className="chat-message-action"
+          onClick={() => onRetry(message.id)}
+          aria-label="Retry sending this message"
+        >
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Inline edit-and-resend textarea (chat-ux Phase 2 Task 4, audit #5):
+ * replaces a user bubble's rendered content while editing. Enter (without
+ * Shift, and not mid IME-composition — same guard as the composer) submits
+ * via `onSubmit`; Escape cancels via `onCancel`. Autofocused so entering
+ * edit mode drops the caret straight into the field.
+ */
+function MessageEditor({
+  initialText,
+  onSubmit,
+  onCancel,
+}: {
+  initialText: string;
+  onSubmit: (text: string) => void;
+  onCancel: () => void;
+}): ReactNode {
+  const [text, setText] = useState(initialText);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+    textareaRef.current?.select();
+  }, []);
+
+  const trimmed = text.trim();
+
+  return (
+    <div className="chat-message-edit">
+      <textarea
+        ref={textareaRef}
+        aria-label="Edit message"
+        className="chat-message-edit-textarea"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+            return;
+          }
+          if (event.key !== 'Enter' || event.shiftKey) return;
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+          event.preventDefault();
+          if (trimmed) onSubmit(trimmed);
+        }}
+      />
+      <div className="chat-message-edit-actions">
+        <button
+          type="button"
+          className="chat-message-edit-resend"
+          disabled={!trimmed}
+          onClick={() => onSubmit(trimmed)}
+        >
+          Resend
+        </button>
+        <button type="button" className="chat-message-edit-cancel" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * One confirmed message's row: `ContentBlocks` (markdown/tool-card
- * rendering) plus its copy button and failed-send indicator.
+ * rendering) plus its message-actions toolbar (copy/retry/edit & resend) and
+ * failed-send indicator.
  *
  * Memoized (MC precedent: `memo(MessageBubble)` in
  * `apps/mission-control/src/renderer/src/routes/chat.tsx`) so a token delta
@@ -128,18 +242,54 @@ function CopyButton({ text }: { text: string }): ReactNode {
  * it, or the optimistic-send/failed-send transitions in `store.ts`), so
  * default shallow-prop memoization is correct here — the streaming message
  * itself isn't rendered through this component (see the `streaming` block
- * below), so it keeps updating on every delta as normal.
+ * below), so it keeps updating on every delta as normal. `canAct`/
+ * `isRetryable` are booleans and `onRetry`/`onEditResend` are stabilized via
+ * `useCallback` in `ChatView`, so none of the new props defeat this
+ * memoization — they're referentially/value-stable across a streaming
+ * token's re-render, same as `message` itself being unchanged.
  */
 const MessageRow = memo(function MessageRow({
   message,
+  canAct,
+  isRetryable,
+  onRetry,
+  onEditResend,
 }: {
   message: ConversationMessage;
+  canAct: boolean;
+  isRetryable: boolean;
+  onRetry: (messageId: string) => void;
+  onEditResend: (messageId: string, editedText: string) => void;
 }): ReactNode {
   const copyText = getMessageCopyText(message.content);
+  const [isEditing, setIsEditing] = useState(false);
+
+  if (isEditing) {
+    return (
+      <div data-testid="chat-message" data-role={message.role} className="chat-message">
+        <MessageEditor
+          initialText={copyText}
+          onSubmit={(text) => {
+            setIsEditing(false);
+            onEditResend(message.id, text);
+          }}
+          onCancel={() => setIsEditing(false)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div data-testid="chat-message" data-role={message.role} className="chat-message">
       <ContentBlocks content={message.content} />
-      {copyText && <CopyButton text={copyText} />}
+      <MessageToolbar
+        message={message}
+        copyText={copyText}
+        canAct={canAct}
+        isRetryable={isRetryable}
+        onRetry={onRetry}
+        onStartEdit={() => setIsEditing(true)}
+      />
       {message.status === 'failed' && (
         <span role="alert" className="chat-message-failed">
           Failed to send
@@ -190,6 +340,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const openConversation = useAppStore((s) => s.openConversation);
   const sendMessage = useAppStore((s) => s.sendMessage);
   const cancelTurn = useAppStore((s) => s.cancelTurn);
+  const resendFromMessage = useAppStore((s) => s.resendFromMessage);
 
   // Scroll pinning + jump-to-bottom (audit #4, Task 3): `resetKey` is the
   // conversation id itself, so switching threads re-pins and snaps to the
@@ -223,6 +374,33 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
       if (conversationId) draftsRef.current.set(conversationId, text);
     },
     [conversationId],
+  );
+
+  // Message actions (chat-ux Phase 2 Task 4, audit #5): stabilized via
+  // `useCallback` so `MessageRow`'s `memo` isn't defeated by a fresh
+  // function identity on every streaming-token re-render (see `MessageRow`'s
+  // doc comment). Both swallow a rejected `resendFromMessage` (a dropped
+  // connection, same failure `sendMessage` itself surfaces) into the same
+  // `sendError` banner `handleSend` already uses, rather than throwing
+  // inside a click handler.
+  const handleRetry = useCallback(
+    (messageId: string) => {
+      if (!conversationId) return;
+      resendFromMessage(conversationId, messageId).catch((err: unknown) => {
+        setSendError(err instanceof Error ? err.message : 'Failed to resend message.');
+      });
+    },
+    [conversationId, resendFromMessage],
+  );
+
+  const handleEditResend = useCallback(
+    (messageId: string, editedText: string) => {
+      if (!conversationId) return;
+      resendFromMessage(conversationId, messageId, editedText).catch((err: unknown) => {
+        setSendError(err instanceof Error ? err.message : 'Failed to resend message.');
+      });
+    },
+    [conversationId, resendFromMessage],
   );
 
   useEffect(() => {
@@ -295,6 +473,15 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const messages = transcript?.messages ?? [];
   const streaming = transcript?.streaming ?? null;
   const canSend = connection === 'connected';
+  // Retry eligibility (chat-ux Phase 2 Task 4, audit #5): a turn counts as
+  // failed if EITHER its user message failed to send in the first place
+  // (`sendMessage`'s synchronous `socket.send()` throw path marks the
+  // optimistic message itself `'failed'`) OR the turn's assistant reply
+  // failed server-side (the gateway's `finishTurn` marks the ASSISTANT
+  // message `'failed'`, never the user one — see `resendFromMessage`'s doc
+  // comment in `state/store.ts`). Collecting every failed message's
+  // `turnId` — regardless of role — covers both in one pass.
+  const failedTurnIds = new Set(messages.filter((m) => m.status === 'failed').map((m) => m.turnId));
   // Non-null once the `accepted` frame lands and stays that way (even
   // through empty-events right after accept) until `done`/`error` clears it
   // — see `assemble.ts`. Drives the composer's send↔stop morph (MC parity,
@@ -334,7 +521,17 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
         <div className="app-transcript" data-testid="chat-transcript" ref={containerRef}>
           <div className="app-message-column">
             {messages.map((message) => (
-              <MessageRow key={message.id} message={message} />
+              <MessageRow
+                key={message.id}
+                message={message}
+                canAct={canSend}
+                isRetryable={
+                  message.role === 'user' &&
+                  (message.status === 'failed' || failedTurnIds.has(message.turnId))
+                }
+                onRetry={handleRetry}
+                onEditResend={handleEditResend}
+              />
             ))}
             {streaming && (
               <div data-testid="chat-message-streaming" data-role="assistant">

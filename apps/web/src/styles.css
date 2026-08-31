@@ -842,6 +842,7 @@ textarea:focus-visible {
 }
 
 .chat-message:hover .copy-button,
+.chat-message:focus-within .copy-button,
 .copy-button:focus-visible {
   opacity: 1;
 }
@@ -852,4 +853,83 @@ textarea:focus-visible {
 
 .copy-button:has(.copy-check) {
   color: var(--tool-green-readable);
+}
+
+/* ---------------------------------------------------------------------
+ * Message actions toolbar: retry / edit & resend (chat-ux Phase 2 Task 4,
+ * audit #5) — shares the copy button's hover/focus-within reveal pattern.
+ * ------------------------------------------------------------------- */
+
+.chat-message-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-message-action {
+  border: none;
+  background: none;
+  padding: 4px 6px;
+  color: color-mix(in srgb, var(--text-muted) 50%, transparent);
+  font-size: 0.8em;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.chat-message:hover .chat-message-action,
+.chat-message:focus-within .chat-message-action,
+.chat-message-action:focus-visible {
+  opacity: 1;
+}
+
+.chat-message-action:hover {
+  color: var(--text);
+}
+
+/* Inline edit-and-resend (chat-ux Phase 2 Task 4, audit #5): swaps a user
+ * bubble's rendered content for a small textarea + Resend/Cancel pair. */
+.chat-message-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-inline-size: 46rem;
+}
+
+.chat-message-edit-textarea {
+  resize: vertical;
+  min-height: 3em;
+  max-height: 40dvh;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  padding: 8px 10px;
+  font: inherit;
+  line-height: 1.4;
+}
+
+.chat-message-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-message-edit-resend,
+.chat-message-edit-cancel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 4px 12px;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.chat-message-edit-resend {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chat-message-edit-resend:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }

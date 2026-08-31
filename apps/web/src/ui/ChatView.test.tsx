@@ -634,6 +634,145 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
   });
 });
 
+describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
+  it('shows Copy and Edit & resend, but not Retry, on a user message whose turn did not fail', async () => {
+    await renderConnected({
+      messages: [message({ id: 'u1', turnId: 'turn-1', content: { type: 'user', text: 'Ping' } })],
+    });
+
+    expect(screen.getByLabelText('Edit and resend this message')).toBeTruthy();
+    expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+
+  it('shows Retry on a user message whose own status is failed', async () => {
+    await renderConnected({
+      messages: [
+        message({
+          id: 'u1',
+          turnId: 'turn-1',
+          status: 'failed',
+          content: { type: 'user', text: 'Ping' },
+        }),
+      ],
+    });
+
+    expect(screen.getByLabelText('Retry sending this message')).toBeTruthy();
+  });
+
+  it("shows Retry on a user message whose turn's ASSISTANT reply failed server-side (the user message's own status is untouched)", async () => {
+    await renderConnected({
+      messages: [
+        message({
+          id: 'u1',
+          turnId: 'turn-1',
+          ordinal: 1,
+          content: { type: 'user', text: 'Ping' },
+        }),
+        message({
+          id: 'a1',
+          turnId: 'turn-1',
+          ordinal: 2,
+          role: 'assistant',
+          status: 'failed',
+          content: { type: 'assistant', events: [] },
+        }),
+      ],
+    });
+
+    expect(screen.getByLabelText('Retry sending this message')).toBeTruthy();
+  });
+
+  it('does not offer Edit & resend or Retry on an assistant message', async () => {
+    await renderConnected({
+      messages: [
+        message({
+          id: 'a1',
+          turnId: 'turn-1',
+          role: 'assistant',
+          status: 'failed',
+          content: { type: 'assistant', events: [{ type: 'text_delta', text: 'Oops' }] },
+        }),
+      ],
+    });
+
+    expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
+    expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+
+  it('Retry re-sends the failed message text through a fresh send', async () => {
+    const { sockets } = await renderConnected({
+      messages: [
+        message({
+          id: 'u1',
+          turnId: 'turn-1',
+          status: 'failed',
+          content: { type: 'user', text: 'Retry me' },
+        }),
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText('Retry sending this message'));
+
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Retry me' });
+    // The failed message is gone, replaced by the fresh optimistic send.
+    await waitFor(() => expect(screen.queryByText('Failed to send')).toBeNull());
+  });
+
+  it('Edit & resend swaps the bubble to a prefilled textarea; Enter resends the edited text', async () => {
+    const { sockets } = await renderConnected({
+      messages: [
+        message({ id: 'u1', turnId: 'turn-1', content: { type: 'user', text: 'Original' } }),
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText('Edit and resend this message'));
+
+    const editor = screen.getByLabelText('Edit message') as HTMLTextAreaElement;
+    expect(editor.value).toBe('Original');
+
+    fireEvent.change(editor, { target: { value: 'Edited version' } });
+    fireEvent.keyDown(editor, { key: 'Enter' });
+
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Edited version' });
+  });
+
+  it('Edit & resend: Shift+Enter does not submit, Escape cancels back to the rendered bubble', async () => {
+    const { sockets } = await renderConnected({
+      messages: [
+        message({ id: 'u1', turnId: 'turn-1', content: { type: 'user', text: 'Original' } }),
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText('Edit and resend this message'));
+    const editor = screen.getByLabelText('Edit message') as HTMLTextAreaElement;
+
+    fireEvent.change(editor, { target: { value: 'Original\nmore' } });
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true });
+    expect(sockets[0].sent).toHaveLength(0);
+
+    fireEvent.keyDown(editor, { key: 'Escape' });
+    expect(screen.queryByLabelText('Edit message')).toBeNull();
+    expect(screen.getByText('Original')).toBeTruthy();
+    expect(sockets[0].sent).toHaveLength(0);
+  });
+
+  it('Edit & resend: the Resend button is disabled for empty/whitespace-only text', async () => {
+    await renderConnected({
+      messages: [
+        message({ id: 'u1', turnId: 'turn-1', content: { type: 'user', text: 'Original' } }),
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText('Edit and resend this message'));
+    const editor = screen.getByLabelText('Edit message') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: '   ' } });
+
+    expect(screen.getByText('Resend')).toHaveProperty('disabled', true);
+  });
+});
+
 describe('ChatView message row memoization', () => {
   beforeEach(() => {
     vi.mocked(ContentBlocks).mockClear();

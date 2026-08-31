@@ -20,6 +20,21 @@ struct ChatView: View {
   /// regardless of where the ScrollView sits on screen.
   private static let scrollSpace = "chatTranscriptScroll"
 
+  /// Edit & Resend UX choice (chat-ux Phase 2, Task 4 / audit #5): a
+  /// dedicated sheet rather than prefilling the composer + arming a
+  /// pending-truncation flag. `ChatFeature`'s composer state
+  /// (`state.draft`/`state.attachments`) is already load-bearing for a
+  /// fairly intricate staging/durability/recovery pipeline (see
+  /// `composerMutationAllowed`, `draftEditingAllowed`,
+  /// `pendingSendRecovery` in `ChatFeature.swift`) — routing "the user is
+  /// editing an old message" through that same state would mean either a
+  /// new composer mode threaded through all of it, or risking clobbering an
+  /// in-progress draft for a NEW message the user hadn't sent yet. An
+  /// isolated, disposable `editingMessage` sheet keeps this feature
+  /// self-contained: it owns its own text, and on submit calls the exact
+  /// same `resendFromMessage(id:editedText:)` a Retry does.
+  @State private var editingMessage: EditingMessage?
+
   var body: some View {
     VStack(spacing: 0) {
       if let presentation = feature.statusPresentation {
@@ -42,6 +57,16 @@ struct ChatView: View {
     }
     .onDisappear {
       Task { await feature.disappear() }
+    }
+    .sheet(item: $editingMessage) { editing in
+      EditAndResendSheet(
+        text: editing.text,
+        onResend: { editedText in
+          editingMessage = nil
+          Task { await feature.resendFromMessage(id: editing.id, editedText: editedText) }
+        },
+        onCancel: { editingMessage = nil }
+      )
     }
   }
 
@@ -132,10 +157,19 @@ struct ChatView: View {
         } else {
           MessageListView(
             messages: feature.state.messages,
-            isAnsweringEnabled: feature.canAnswerQuestions
-          ) { questionID, answer in
-            Task { await feature.answer(questionID: questionID, answer: answer) }
-          }
+            isAnsweringEnabled: feature.canAnswerQuestions,
+            onAnswer: { questionID, answer in
+              Task { await feature.answer(questionID: questionID, answer: answer) }
+            },
+            onRetry: { id in
+              Task { await feature.resendFromMessage(id: id) }
+            },
+            onEditAndResend: { id in
+              guard let text = feature.state.messages.first(where: { $0.id == id })?.user?.text
+              else { return }
+              editingMessage = EditingMessage(id: id, text: text)
+            }
+          )
         }
 
         // Bottom-of-transcript sentinel: `bottomID` is the `scrollToBottom`
@@ -299,6 +333,57 @@ private struct JumpToBottomButton: View {
     .frame(minWidth: 44, minHeight: 44)
     .accessibilityLabel("Jump to latest messages")
     .accessibilityIdentifier("chat.jumpToBottom")
+  }
+}
+
+/// Sheet payload for `ChatView`'s Edit & Resend flow (chat-ux Phase 2, Task
+/// 4 / audit #5) — `Identifiable` so `.sheet(item:)` can drive presentation
+/// off of it directly instead of a separate `Bool` flag plus stored id/text.
+private struct EditingMessage: Identifiable, Equatable {
+  let id: String
+  let text: String
+}
+
+/// Edit & Resend sheet (chat-ux Phase 2, Task 4 / audit #5): prefilled with
+/// the original message text; "Resend" hands the edited text back to
+/// `ChatView`, which calls `ChatFeature.resendFromMessage(id:editedText:)` —
+/// the exact same call a plain Retry makes, just with `editedText` set. See
+/// `ChatView.editingMessage`'s doc comment for why this is a sheet rather
+/// than a composer-prefill.
+private struct EditAndResendSheet: View {
+  @State private var text: String
+  let onResend: (String) -> Void
+  let onCancel: () -> Void
+
+  init(text: String, onResend: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    _text = State(initialValue: text)
+    self.onResend = onResend
+    self.onCancel = onCancel
+  }
+
+  private var trimmedText: String {
+    text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  var body: some View {
+    NavigationStack {
+      TextEditor(text: $text)
+        .padding()
+        .navigationTitle("Edit & Resend")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel", action: onCancel)
+          }
+          ToolbarItem(placement: .confirmationAction) {
+            Button("Resend") {
+              onResend(trimmedText)
+            }
+            .disabled(trimmedText.isEmpty)
+          }
+        }
+    }
+    .accessibilityIdentifier("chat.editAndResend.sheet")
   }
 }
 
