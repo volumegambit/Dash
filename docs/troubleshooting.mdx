@@ -296,6 +296,36 @@ Something not working? Here are the most common issues and how to fix them.
     add your initials or your machine's name) and try again. The availability indicator
     in the picker tells you live whether a name is free before you commit to it.
   </Accordion>
+
+  <Accordion title="Approving a new browser session times out or is declined">
+    **Symptom:** Signing in on a new browser shows **Approve this device** with
+    "Waiting for approval — scan this code with the Dash app on your phone." and a QR
+    code, then instead of continuing to chat it settles on one of:
+
+    > Approval declined. You can try again from the gateway list.
+
+    > The code expired. Try again from the gateway list.
+
+    **Fix:** This screen only appears on accounts that already have a Dash for iOS
+    device signed in — new browser sessions need one of those devices to approve them.
+    **Approval declined** means someone tapped **Deny** on the phone; **The code
+    expired** means nobody approved it within the time limit. Either way, go back to
+    the gateway list and sign in again to get a fresh code, then open Dash on the
+    phone, go to **Settings → Approve a device**, and scan it before it expires.
+  </Accordion>
+
+  <Accordion title="Dash for iOS says a device's code has expired">
+    **Symptom:** Scanning another device's approval code from **Settings → Approve a
+    device** shows:
+
+    > This code has expired. Ask the device to try again.
+
+    **Fix:** Approval codes expire a few minutes after they're generated. Ask whoever
+    is waiting — on the browser or other device — to reload the gateway list (or try
+    signing in again) to get a fresh code, then scan the new one right away. A code
+    that's still valid instead shows a confirm sheet reading
+    `Allow "<device>" to access <gateway>?` — tap **Approve** or **Deny** there.
+  </Accordion>
 </AccordionGroup>
 
 ## Remote gateways

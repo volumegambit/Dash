@@ -26,6 +26,17 @@ replace Keychain, cellular relay, or background execution evidence.
 - [ ] Uninstall/reinstall -> app starts signed out and never reconnects from Keychain material alone
 - [ ] Disconnect & Forget -> Keychain item and gateway cache are removed; account sign-in state is unaffected
 
+## Signer devices
+
+- [ ] Sign in on a fresh device with no other signer on the account -> connecting to a gateway succeeds immediately, no approval needed
+- [ ] Sign in to the web client on a browser while the account already has a signer device -> web shows "Approve this device" with "Waiting for approval — scan this code with the Dash app on your phone." and a QR code with a live countdown
+- [ ] On the signed-in device, open Settings and tap "Approve a device" -> camera opens
+- [ ] Scan the web client's QR code -> confirm sheet shows `Allow "<device>" to access <gateway>?` naming the browser and gateway; tapping Approve lets the browser through within a couple of seconds
+- [ ] Tap Deny on the confirm sheet instead -> web shows "Approval declined. You can try again from the gateway list."
+- [ ] Let the web countdown reach zero without scanning -> web shows "The code expired. Try again from the gateway list."
+- [ ] Scan an already-expired code from "Approve a device" -> shows "This code has expired. Ask the device to try again."
+- [ ] Scan a non-Dash QR code from "Approve a device" -> shows "That's not a Dash approval code." and lets you try again without dismissing the screen
+
 ## Conversation synchronization
 
 - [ ] Start on iOS -> appears in Mission Control with identical transcript

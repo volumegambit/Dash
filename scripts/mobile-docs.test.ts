@@ -56,7 +56,7 @@ describe('mobile documentation', () => {
     );
     expect(ios).toContain('run-live-gateway-tests.mjs');
     expect(ios).toContain('run-live-account-flow-test.mjs');
-    expect(ios).toContain('fails 7 tests');
+    expect(ios).toContain('fails 8 tests');
     expect(qa).toContain('## Sign-in and security');
     expect(qa).toContain('## Conversation synchronization');
     expect(qa).toContain('## Device quality');
@@ -161,11 +161,6 @@ describe('mobile documentation', () => {
         'This gateway needs to be re-enrolled from Mission Control before app access works.',
       );
     }
-    // The signer-device-approval feature this copy is reserved for has not shipped.
-    for (const document of [guide, readme, qa]) {
-      expect(document).not.toContain('signer device');
-    }
-
     expect(guide).toContain('gateway picker');
     expect(guide).not.toContain('Scan the displayed QR code');
     expect(readme).toContain('run-live-account-flow-test.mjs');
@@ -193,5 +188,52 @@ describe('mobile documentation', () => {
     expect(pairDeviceCard).toContain('Scan this code with the Dash mobile app for Android.');
     expect(pairDeviceCard).not.toContain('for Android or iOS');
     expect(pairDeviceCardTest).toContain('Scan this code with the Dash mobile app for Android.');
+  });
+
+  it('documents signer devices approving new browser sessions with verbatim binding copy', async () => {
+    const [web, guide, readme, qa, troubleshooting, mcQA] = await Promise.all([
+      readFile('docs/web.mdx', 'utf8'),
+      readFile('docs/ios.mdx', 'utf8'),
+      readFile('ios/README.md', 'utf8'),
+      readFile('ios/QA_CHECKLIST.md', 'utf8'),
+      readFile('docs/troubleshooting.mdx', 'utf8'),
+      readFile('apps/mission-control/TEST_PLAN.md', 'utf8'),
+    ]);
+
+    // Exact copy from apps/web/src/ui/PendingApproval.tsx — binding, verbatim.
+    for (const document of [web, troubleshooting, mcQA]) {
+      expect(document).toContain(
+        'Waiting for approval — scan this code with the Dash app on your phone.',
+      );
+      expect(document).toContain('Approval declined. You can try again from the gateway list.');
+      expect(document).toContain('The code expired. Try again from the gateway list.');
+    }
+    expect(web).toContain('Approve this device');
+    expect(web).toContain('Approve a device');
+
+    // Exact copy from ios/Dash/Features/Account/ApproveDeviceView.swift — binding, verbatim.
+    for (const document of [guide, readme, qa, troubleshooting, mcQA]) {
+      expect(document).toContain('Allow "<device>" to access <gateway>?');
+    }
+    for (const document of [guide, readme, qa, troubleshooting]) {
+      expect(document).toContain('This code has expired. Ask the device to try again.');
+    }
+
+    expect(guide).toContain('## Approve a device');
+    expect(guide).toContain('signer');
+    expect(guide).toContain('Settings');
+
+    expect(readme).toContain('registerSigner');
+    expect(readme).toContain('ApproveDeviceCopy');
+
+    expect(qa).toMatch(/## Signer devices/);
+
+    expect(mcQA).toContain('Signer devices');
+
+    // Zero-signer accounts keep the pre-existing immediate-access behavior — every
+    // surface that documents the gated flow must also say so explicitly.
+    for (const document of [web, guide]) {
+      expect(document).toMatch(/no (signer device|iPhone or iPad)/i);
+    }
   });
 });

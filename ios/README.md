@@ -281,6 +281,42 @@ identity, and requires the mobile capabilities above. Connection secrets are the
 Keychain. SwiftData stores gateway-scoped profiles, conversations, messages, cursors, agents,
 drafts, and attachment metadata without those secrets.
 
+## Approve a device
+
+Signing in registers this device as a signer for the account: `AccountConnectFeature.
+connect(to:)` best-effort calls `ControlPlaneClient.registerSigner` after every mint
+attempt (active or pending, enrolled or not) and persists the returned `signerId` via
+`SignerIdentity.persistSignerId` — so the very first successful connect on a device is
+enough, with no separate setup step. A failed registration never blocks the connect
+itself; `onSignerRegistrationFailed` just logs it (`AccountConnectFeature` `init`'s
+default).
+
+Once an account has at least one signer, every subsequent pairing mint (from a
+browser, or from another device's own `AccountConnectFeature.connect(to:)`) comes back
+`status: "pending"` instead of `"active"`. On iOS, `connect(to:)` surfaces that as
+`AccountConnectError.pendingApproval`, shown verbatim as `AccountCopy.pendingApproval`
+("This device is waiting for approval from one of your signer devices.") with no
+automatic retry.
+
+`Features/Account/ApproveDeviceView.swift` is the other half: presented from
+`SettingsView`'s **Approve a device** row, it scans a `dash-approve:v1:<approvalId>`
+QR (the same string `apps/web/src/ui/PendingApproval.tsx` encodes), fetches the
+pending approval, and lets the user approve or deny it. `ApproveDeviceCopy`'s
+constants are exact, binding UI copy — do not paraphrase them elsewhere:
+
+| State | Exact copy |
+| --- | --- |
+| Confirm sheet | Allow "<device>" to access <gateway>? |
+| Scanned code isn't a Dash approval code | That's not a Dash approval code. |
+| Approval expired | This code has expired. Ask the device to try again. |
+| Signature/signer rejected (`403`) | Dash couldn't confirm this device is allowed to approve requests. Try again, or reconnect a gateway from Settings. |
+| Approved | Device approved. |
+| Denied | Device request denied. |
+
+A `403` on posting the decision is retried exactly once after re-registering the
+signer (`registerSigner`), self-healing a stale `signerId` left over from before
+`AppModel.signOutOfAccount()` started wiping it on sign-out.
+
 ## Local architecture
 
 | Area | Responsibility |
@@ -290,11 +326,11 @@ drafts, and attachment metadata without those secrets.
 | `Core/Security` | Device-only Keychain storage for the Mobile bearer and optional relay credential. |
 | `Core/Persistence` | Gateway-scoped SwiftData cache, replay cursors, drafts, insert-only pending sends, durable deletion revision floors, and external attachment data. |
 | `Core/Sync` | Cache-first bootstrap, canonical reconciliation, tombstones, replay gaps, and reconnect backoff. |
-| `Features/Account` | Account sign-in (Clerk-hosted browser flow) and the gateway picker that lists enrolled gateways. |
+| `Features/Account` | Account sign-in (Clerk-hosted browser flow), signer self-registration, and the gateway picker that lists enrolled gateways. |
 | `Features/Pairing` | Shared verify + install machinery reused by account sign-in's connect flow; the QR/paste/manual entry UI is no longer reachable from the app. |
 | `Features/Conversations` | Canonical list mutations, transcript projection, resumable chat, recovery, answers, cancel, and images. |
 | `Features/Agents` | Cache-first agent list, safe owned-field edits, enable/disable/delete, and Start Chat. |
-| `Features/Settings` | Sanitized gateway status, reconnect, and secure Disconnect & Forget. |
+| `Features/Settings` | Sanitized gateway status, reconnect, secure Disconnect & Forget, and approving other devices as a signer. |
 
 The gateway is the source of truth. Cached rows remain readable during an outage, while canonical
 writes are disabled. A foreground transition refreshes canonical state and restarts invalidation

@@ -1187,6 +1187,38 @@ Dash for iOS no longer uses this card — it connects by account sign-in instead
 8. Click **Revoke** next to the iOS device, then reopen Dash on iOS. **Verify:** it shows "Re-pair required"; on the phone, open Settings → Disconnect & Forget, then sign back in and tap the gateway again in the picker — no QR code needed — to reconnect.
 9. Simulate a pre-web enrollment: enroll a gateway, then clear its chat capability on the control plane so only the relay address remains. Quit and relaunch Mission Control. **Verify:** the relaunch pushes the chat capability again (no user action beyond relaunching) — Dash for iOS can now connect to that gateway from the picker without showing "needs to be re-enrolled."
 
+### 22.8 Signer devices — approve a browser session
+**Precondition:** A Dash for iOS device is already signed in to the account (22.7) and
+has connected to a gateway at least once, so it's registered as a signer. Use a browser
+that has never signed in to the web client for this account before. This flow lives in
+the web client and Dash for iOS, not Mission Control itself — MC's own role is just
+enrolling the gateway both clients connect through.
+
+1. Open the web client and sign in with a passkey for this account
+2. Pick a gateway this account has already enrolled
+3. **Verify:** Instead of chatting immediately, the browser shows "Approve this
+   device" with "Waiting for approval — scan this code with the Dash app on your phone."
+   and a QR code with a live countdown
+4. On the iOS device, open **Settings** and tap **Approve a device**, then scan the QR
+   code
+5. **Verify:** Dash shows a confirm sheet reading `Allow "<device>" to access <gateway>?`
+   naming the browser and the gateway
+6. Tap **Approve**
+7. **Verify:** Within a couple of seconds, the browser continues past the QR screen
+   into the gateway's chat, with no further action needed there
+8. Repeat from step 1 with a second new browser, but tap **Deny** on the confirm sheet
+   instead
+9. **Verify:** The browser shows "Approval declined. You can try again from the gateway list."
+10. Repeat from step 1 with a third new browser, but let the countdown run out without
+    scanning
+11. **Verify:** The browser shows "The code expired. Try again from the gateway list."
+12. On the iOS device, scan an already-expired QR code (reuse the one from step 11, or
+    wait out its own approval window)
+13. **Verify:** Dash shows "This code has expired. Ask the device to try again."
+14. On an account with no signer device ever signed in, repeat step 1
+15. **Verify:** The browser connects immediately with no approval step — the old
+    behavior is unchanged.
+
 ---
 
 ## Section 23: UI Consistency Audit

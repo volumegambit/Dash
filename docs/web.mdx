@@ -47,6 +47,31 @@ Conversations you have here are the same ones you see in Mission Control and on
 your phone. Anything you send from the web client shows up everywhere else too.
 </Tip>
 
+## Approve this device
+
+If your account already has an iPhone or iPad signed in to Dash, a new browser needs
+that device's approval before it can chat — this keeps someone who only has your
+passkey from reaching your agents without you noticing. Instead of chatting right
+away, you'll land on a screen headed **Approve this device**, with the message:
+
+> Waiting for approval — scan this code with the Dash app on your phone.
+
+Open Dash on your phone, go to **Settings**, tap **Approve a device**, and scan the
+QR code shown here. A confirmation screen on the phone names this browser and
+gateway — tap **Approve**, and this page continues automatically within a few
+seconds.
+
+Accounts with no iPhone or iPad signed in yet skip this step entirely: sign-in goes
+straight to your gateway list, exactly as before. The moment your first Dash for iOS
+device signs in, every new browser session after that needs approval.
+
+If the request times out or is turned down instead, you'll see one of:
+
+| What you see | What it means |
+|---|---|
+| Approval declined. You can try again from the gateway list. | Someone tapped Deny on the phone. If that wasn't you, check who else has access before trying again. |
+| The code expired. Try again from the gateway list. | Nobody approved it in time. Go back to the gateway list to get a fresh code. |
+
 ## Manage your devices
 
 Open **Devices** in the web client to see every browser that's signed in and

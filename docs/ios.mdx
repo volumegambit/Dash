@@ -40,6 +40,40 @@ If something goes wrong, the gateway picker tells you exactly what:
 - **No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.** — open Remote access in Mission Control and enroll this machine.
 - **This gateway needs to be re-enrolled from Mission Control before app access works.** — its Remote access setup predates this app's sign-in support; open Mission Control on that computer once and it updates the gateway's app access automatically.
 
+## Approve a device
+
+As soon as you sign in, this iPhone or iPad becomes a signer for your account
+automatically — there's nothing to turn on. From then on, whenever a new browser
+session (or another device) tries to reach one of your gateways for the first time,
+it waits for one of your signer devices to approve it instead of connecting right
+away.
+
+To approve one:
+
+<Steps>
+  <Step title="Get the code">
+    On the device asking for access — the web client, for example — a QR code appears
+    under **Approve this device**.
+  </Step>
+  <Step title="Scan it">
+    On this phone, open **Settings** and tap **Approve a device**, then scan that code
+    with the camera.
+  </Step>
+  <Step title="Confirm">
+    Dash shows `Allow "<device>" to access <gateway>?`. Tap **Approve** to let it in,
+    or **Deny** to turn it away.
+  </Step>
+</Steps>
+
+If you take too long to scan or confirm, the code expires and Dash shows
+**This code has expired. Ask the device to try again.** — go back to the device
+that's waiting and have it request a fresh one.
+
+Accounts with no signer device yet skip this entirely: browsers and other clients
+connect immediately, just like before. The moment your first Dash for iOS device
+signs in, every new session after that needs approval from one of your signer
+devices.
+
 ## Use shared conversations
 
 The **Conversations** tab shows the gateway's canonical conversation list. Changes made here also
