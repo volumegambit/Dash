@@ -81,6 +81,17 @@ export interface WebAppState {
    * truncation, and regenerating an assistant turn in place (as opposed to
    * resending the user turn that produced it), are both out of scope for
    * this task — the latter needs server support this gateway doesn't have.
+   *
+   * ALSO a no-op while a turn is actively in flight for this conversation
+   * (`transcripts[conversationId].pending` or `.streaming` set) — same
+   * precondition iOS's `sendAuthorityIsAvailable` enforces before a resend
+   * there (`state.activeTurnID == nil`). `messageId` can belong to a turn
+   * EARLIER than the in-flight one (e.g. retrying an older failed message
+   * while a newer turn streams); truncating in that case would delete the
+   * in-flight turn's own optimistic message out from under it and fire a
+   * second, orphaned `sendMessage`. `ChatView`'s toolbar already disables
+   * these buttons while streaming, but this guard is enforced here too so
+   * it holds regardless of caller — not just the one first-party UI.
    */
   resendFromMessage(conversationId: string, messageId: string, editedText?: string): Promise<void>;
   /**
@@ -692,6 +703,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           );
         }
         const transcript = get().transcripts[conversationId];
+        // A turn is in flight for this conversation (accepted, mid-stream,
+        // or awaiting its first event) — never truncate/resend underneath
+        // it, regardless of which message `messageId` names. See the doc
+        // comment on this method for why.
+        if (transcript?.pending || transcript?.streaming) return;
         const index =
           transcript?.messages.findIndex((m) => m.id === messageId && m.role === 'user') ?? -1;
         if (!transcript || index === -1) return;

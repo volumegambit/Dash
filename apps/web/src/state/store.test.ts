@@ -604,6 +604,78 @@ describe('createWebAppStore', () => {
       await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).rejects.toThrow();
       expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toEqual([target]);
     });
+
+    it("is a no-op while a LATER turn is actively streaming — even when messageId names an earlier, already-failed message (regression: used to truncate the in-flight turn's own optimistic message and fire a second, orphaned send)", async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const failedEarlier = message({
+        id: 'u1',
+        turnId: 'turn-1',
+        ordinal: 1,
+        status: 'failed',
+        content: { type: 'user', text: 'Earlier failed message' },
+      });
+      const inFlightUser = message({
+        id: 'u2',
+        turnId: 'turn-2',
+        ordinal: 2,
+        content: { type: 'user', text: 'Newer message, still streaming' },
+      });
+      const transcriptBefore = {
+        messages: [failedEarlier, inFlightUser],
+        streaming: { type: 'assistant' as const, events: [] },
+        pending: {
+          turnId: 'turn-2',
+          conversationId: CONVERSATION_ID,
+          assistantMessageId: 'assistant-2',
+        },
+      };
+      store.setState((state) => ({
+        transcripts: { ...state.transcripts, [CONVERSATION_ID]: transcriptBefore },
+      }));
+
+      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1');
+
+      expect(store.getState().transcripts[CONVERSATION_ID]).toEqual(transcriptBefore);
+      expect(sockets[0].sent).toHaveLength(0);
+    });
+
+    it('is a no-op while a turn is merely pending (accepted but no event yet), not just while actively streaming', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const failedEarlier = message({
+        id: 'u1',
+        turnId: 'turn-1',
+        ordinal: 1,
+        status: 'failed',
+        content: { type: 'user', text: 'Earlier failed message' },
+      });
+      const transcriptBefore = {
+        messages: [failedEarlier],
+        streaming: null,
+        pending: {
+          turnId: 'turn-2',
+          conversationId: CONVERSATION_ID,
+          assistantMessageId: 'assistant-2',
+        },
+      };
+      store.setState((state) => ({
+        transcripts: { ...state.transcripts, [CONVERSATION_ID]: transcriptBefore },
+      }));
+
+      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1');
+
+      expect(store.getState().transcripts[CONVERSATION_ID]).toEqual(transcriptBefore);
+      expect(sockets[0].sent).toHaveLength(0);
+    });
   });
 
   describe('frame handling', () => {

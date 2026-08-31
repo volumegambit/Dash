@@ -771,6 +771,70 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     expect(screen.getByText('Resend')).toHaveProperty('disabled', true);
   });
+
+  it('regression: Retry/Edit & resend on an EARLIER failed message are removed from the DOM ' +
+    'while a LATER turn is actively streaming, and come back once it finishes — activating ' +
+    "either mid-stream would truncate the in-flight turn's own optimistic message out from " +
+    'under it and fire a second, orphaned send (canAct = canSend && !isStreaming)', async () => {
+    const { sockets, onFrames } = await renderConnected({
+      messages: [
+        message({
+          id: 'u1',
+          turnId: 'turn-1',
+          ordinal: 1,
+          status: 'failed',
+          content: { type: 'user', text: 'Earlier failed message' },
+        }),
+      ],
+    });
+
+    // Buttons are present (and inactive) before any later turn starts.
+    expect(screen.getByLabelText('Retry sending this message')).toBeTruthy();
+    expect(screen.getByLabelText('Edit and resend this message')).toBeTruthy();
+
+    // Start a new, later turn — this is what used to leave the earlier
+    // message's buttons real/focusable (opacity: 0 but in the DOM and
+    // reachable via :focus-within) throughout the whole stream.
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'newer message' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    const turnId = sockets[0].sent[0].id;
+
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByLabelText('Retry sending this message')).toBeNull());
+    expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
+
+    // A stray click can't reach a button that isn't rendered — the
+    // regression this guards against.
+    expect(sockets[0].sent).toHaveLength(1);
+
+    act(() => {
+      onFrames[0]({
+        type: 'done',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        outcome: 'completed',
+      });
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('Retry sending this message')).toBeTruthy());
+    // Both the earlier (failed) message and the now-completed newer one
+    // are user messages with `canAct` true again, so `getAllBy` (not
+    // `getBy`) — only 'Retry' stays unique to the failed one.
+    expect(screen.getAllByLabelText('Edit and resend this message').length).toBe(2);
+  });
 });
 
 describe('ChatView message row memoization', () => {
@@ -798,7 +862,6 @@ describe('ChatView message row memoization', () => {
     }
 
     await waitFor(() => expect(confirmedMessageRenderCount()).toBeGreaterThan(0));
-    const before = confirmedMessageRenderCount();
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
@@ -824,6 +887,16 @@ describe('ChatView message row memoization', () => {
       });
     });
     await waitFor(() => expect(screen.getByText('Streaming reply')).toBeTruthy());
+
+    // Baseline captured AFTER the turn has started, not before: accepting
+    // a turn flips `isStreaming` (and so every row's `canAct` prop —
+    // chat-ux Phase 2 Task 4 fix wave, audit #5 mid-stream-resend
+    // regression) for the WHOLE conversation, which is a real, one-time
+    // prop change on the confirmed 'Ping' row too — memo correctly lets
+    // that one through. What this test actually guards is that further
+    // per-TOKEN `event` frames (below) don't cause additional re-renders
+    // of unrelated confirmed rows once `isStreaming` has already settled.
+    const before = confirmedMessageRenderCount();
 
     act(() => {
       onFrames[0]({

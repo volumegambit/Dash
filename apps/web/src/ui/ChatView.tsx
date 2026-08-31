@@ -119,6 +119,16 @@ function CopyButton({ text }: { text: string }): ReactNode {
  * keyboard/AT, revealed via CSS on `:hover`/`:focus-within` of the parent
  * `.chat-message` (see `styles.css`) rather than being removed from the DOM,
  * so tabbing to them still works even without hovering.
+ *
+ * `canAct` (`ChatView` passes `canSend && !isStreaming`) gates Retry/Edit &
+ * resend specifically — NOT the Copy button, which stays available
+ * regardless — because both fire `resendFromMessage`, which truncates the
+ * transcript from an EARLIER message onward. Doing that while a LATER turn
+ * is actively streaming would delete that live turn's optimistic message
+ * out from under it and fire a second, orphaned send (regression fix:
+ * `store.ts`'s `resendFromMessage` also independently refuses to act while
+ * `transcript.pending`/`.streaming` is set, so this isn't relying on the
+ * button being disabled alone — see its doc comment).
  */
 function MessageToolbar({
   message,
@@ -524,7 +534,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
               <MessageRow
                 key={message.id}
                 message={message}
-                canAct={canSend}
+                canAct={canSend && !isStreaming}
                 isRetryable={
                   message.role === 'user' &&
                   (message.status === 'failed' || failedTurnIds.has(message.turnId))
