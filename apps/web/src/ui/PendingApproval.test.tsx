@@ -38,7 +38,7 @@ function renderPending(
   const onReady = overrides.onReady ?? vi.fn();
   const onBack = overrides.onBack ?? vi.fn();
 
-  render(
+  const { unmount } = render(
     <PendingApproval
       gatewayId="gw-1"
       pairingId="p-1"
@@ -50,7 +50,7 @@ function renderPending(
     />,
   );
 
-  return { getPairingStatus, claimCredential, onReady, onBack };
+  return { getPairingStatus, claimCredential, onReady, onBack, unmount };
 }
 
 describe('PendingApproval', () => {
@@ -157,6 +157,45 @@ describe('PendingApproval', () => {
 
     expect(claimCredential).toHaveBeenCalledTimes(1);
     expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an in-flight check on unmount: a stalled getPairingStatus resolving to active AFTER Back must not claim or fire onReady', async () => {
+    // getPairingStatus stalls until the test releases it — models the user
+    // clicking Back while a check is mid-flight (GatewayPicker responds to
+    // Back by unmounting PendingApproval).
+    let resolveStatus: (value: 'active') => void = () => {};
+    const getPairingStatus = vi.fn(
+      () =>
+        new Promise<'active'>((resolve) => {
+          resolveStatus = resolve;
+        }),
+    );
+    const claimCredential = vi.fn(async () => ({
+      status: 'ok' as const,
+      credential: 'relay-cred',
+      chatToken: 'chat-tok',
+    }));
+    const onReady = vi.fn();
+
+    const { unmount } = renderPending({ getPairingStatus, claimCredential, onReady });
+
+    // First poll tick fires and starts awaiting getPairingStatus.
+    await advance(2_000);
+    expect(getPairingStatus).toHaveBeenCalledTimes(1);
+
+    // The user clicks Back — the parent (GatewayPicker) unmounts this
+    // component in response.
+    act(() => {
+      unmount();
+    });
+
+    // The stalled check now resolves to 'active', well after unmount — it
+    // must not claim the credential or navigate the user forward.
+    resolveStatus('active');
+    await advance(0);
+
+    expect(claimCredential).not.toHaveBeenCalled();
+    expect(onReady).not.toHaveBeenCalled();
   });
 
   it('does one final status check before committing to expired: activation exactly at the countdown deadline still reaches onReady', async () => {

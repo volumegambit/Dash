@@ -88,6 +88,20 @@ export function PendingApproval({
   // countdown's zero-crossing check) could call `claimCredential` twice for
   // the same pairing.
   const checkingRef = useRef(false);
+  // Flips true on unmount (e.g. the user clicks Back, which the parent
+  // responds to by unmounting this component). Review fix: an in-flight
+  // `checkOnce` doesn't stop just because its *caller* effect cleaned up —
+  // `checkOnce` itself must re-check this after every `await` and bail
+  // before any further side effect (another network call, `setPhase`,
+  // `onReady`), or a slow `getPairingStatus` resolving after Back was
+  // clicked can still claim the credential and fire `onReady` against the
+  // user's explicit choice to back out.
+  const cancelledRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,9 +142,14 @@ export function PendingApproval({
       try {
         status = await controlPlaneClient.getPairingStatus(gatewayId, pairingId);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to check the approval status.');
+        if (!cancelledRef.current) {
+          setError(err instanceof Error ? err.message : 'Failed to check the approval status.');
+        }
         return 'not-active';
       }
+      // Mirror pollOnce's original after-every-await pattern: re-check
+      // cancellation before acting on ANYTHING this await produced.
+      if (cancelledRef.current) return 'not-active';
 
       if (status === undefined) {
         setPhase(closedPhaseFor(Date.now()));
@@ -138,13 +157,20 @@ export function PendingApproval({
       }
       if (status !== 'active') return 'not-active';
 
+      // Bail before initiating the claim itself, not just before consuming
+      // its result — Back means "don't claim this credential on my behalf".
+      if (cancelledRef.current) return 'not-active';
+
       let result: ClaimCredentialResult;
       try {
         result = await controlPlaneClient.claimCredential(gatewayId, pairingId);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to claim the credential.');
+        if (!cancelledRef.current) {
+          setError(err instanceof Error ? err.message : 'Failed to claim the credential.');
+        }
         return 'not-active';
       }
+      if (cancelledRef.current) return 'not-active';
 
       if (result.status === 'ok') {
         setPhase('claimed');
