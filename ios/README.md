@@ -119,11 +119,25 @@ node ios/scripts/run-live-account-flow-test.mjs
 
 It targets whatever `iPhone 17 Pro` simulator is already available on the host (no
 Xcode-16.3-pinned preflight) and runs exactly
-`DashIntegrationTests/LiveAccountFlowTests/testAccountSignInMintAndChat`. Running the
-`DashIntegration` scheme directly, without either harness script, fails 7 tests — the 6
-pre-existing LAN/relay pairing cases `run-live-gateway-tests.mjs` drives plus this account-flow
-test — each with a precise "missing environment variable" error instead of a silent skip. That
-7-test baseline is expected and honest, not a regression.
+`DashIntegrationTests/LiveAccountFlowTests/testAccountSignInMintAndChat`.
+
+The same script's `--flow signer` mode reuses every line of that boot rig (relay, control plane,
+scripted gateway, auth shim, TLS terminator) for the signer-device approval loop instead: this
+device registers itself as a signer, a plain-fetch `clientKind: "web"` mint on the now
+signer-gated account returns a pending approval, `ControlPlaneClient.fetchApproval` +
+`SignerIdentity`'s real CryptoKit signature + `postDecision` approve it, a plain-fetch claim
+returns the activated credential, and one relay chat round-trip proves it works — plus a negative
+case (a tampered signature is rejected with 403 and the pairing never activates):
+
+```bash
+node ios/scripts/run-live-account-flow-test.mjs --flow signer
+```
+
+It runs exactly `DashIntegrationTests/LiveSignerFlowTests/testSignerApprovalLoop`. Running the
+`DashIntegration` scheme directly, without any of these harness scripts, fails 8 tests — the 6
+pre-existing LAN/relay pairing cases `run-live-gateway-tests.mjs` drives, plus the account-flow and
+signer-flow tests above — each with a precise "missing environment variable" error instead of a
+silent skip. That 8-test baseline is expected and honest, not a regression.
 
 ## Run on a physical iPhone
 

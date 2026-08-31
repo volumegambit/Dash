@@ -62,14 +62,47 @@ const DEVICE_NAME = 'iPhone 17 Pro';
 const XCODEBUILD_TIMEOUT_MS = 10 * 60_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 const READINESS_TIMEOUT_MS = 30_000;
-const TEST_TARGET = 'DashIntegrationTests/LiveAccountFlowTests/testAccountSignInMintAndChat';
+
+/**
+ * Task 7 (signer-device plan): this same CP+relay+gateway boot rig now serves
+ * TWO xcodebuild phases -- the original account sign-in mint (`account`) and
+ * the signer-gated web-approval loop (`signer`) -- selected via `--flow`
+ * (defaults to `account` so every existing invocation/doc is unchanged). Both
+ * flows share every line of boot infrastructure below (relay, control plane,
+ * gateway harness, auth shim, TLS terminator); only the account id, the
+ * xcodebuild test target, the env var prefix handed to the simulator, and the
+ * result-bundle path differ.
+ */
+const FLOWS = {
+  account: {
+    testTarget: 'DashIntegrationTests/LiveAccountFlowTests/testAccountSignInMintAndChat',
+    accountId: 'acct-live-account-flow-test',
+    envPrefix: 'DASH_TEST_ACCOUNT_',
+    resultBundlePath: 'ios/LiveAccountFlow.xcresult',
+  },
+  signer: {
+    testTarget: 'DashIntegrationTests/LiveSignerFlowTests/testSignerApprovalLoop',
+    accountId: 'acct-live-signer-flow-test',
+    envPrefix: 'DASH_TEST_SIGNER_',
+    resultBundlePath: 'ios/LiveSignerFlow.xcresult',
+  },
+};
+
+function parseFlow(argv) {
+  const idx = argv.indexOf('--flow');
+  if (idx === -1) return 'account';
+  const value = argv[idx + 1];
+  if (!value || !(value in FLOWS)) {
+    throw new Error(`--flow must be one of: ${Object.keys(FLOWS).join(', ')}`);
+  }
+  return value;
+}
 
 const RELAY_PORT = 18544;
 const CP_PORT = 18400;
 const RELAY_ADMIN_SECRET = 'live-account-flow-admin-secret';
 const GATEWAY_LABEL = '127';
 const RELAY_ZONE = '0.0.1';
-const ACCOUNT_ID = 'acct-live-account-flow-test';
 
 const activeChildren = new Set();
 let interruptExitCode = null;
@@ -405,10 +438,10 @@ function raceChildExit(child, getStderrTail, promise) {
  * gateway has actually dialed in — so an unauthenticated probe would always
  * read 401 and never prove the tunnel is live.
  */
-async function mintThrowawayCredential(cpUrl, gatewayId) {
+async function mintThrowawayCredential(cpUrl, gatewayId, accountId) {
   const res = await fetch(`${cpUrl}/v1/gateways/${gatewayId}/pairings/pairing-id-v1`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-test-account': ACCOUNT_ID },
+    headers: { 'content-type': 'application/json', 'x-test-account': accountId },
     body: JSON.stringify({ deviceLabel: 'tunnel-health-probe', clientKind: 'mobile' }),
   });
   if (!res.ok) throw new Error(`Failed to mint a throwaway pairing credential: ${res.status}`);
@@ -564,7 +597,7 @@ function closeServer(server) {
 }
 
 /** Spawn the gateway+relay-dial-in harness and await its readiness JSON line. */
-function startGatewayHarness(cpUrl, relayUrl) {
+function startGatewayHarness(cpUrl, relayUrl, accountId) {
   const child = trackedSpawn(
     process.execPath,
     [
@@ -578,7 +611,7 @@ function startGatewayHarness(cpUrl, relayUrl) {
       '--gateway-id',
       GATEWAY_LABEL,
       '--account',
-      ACCOUNT_ID,
+      accountId,
     ],
     { cwd: ROOT_DIR, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
@@ -628,6 +661,7 @@ function startGatewayHarness(cpUrl, relayUrl) {
 }
 
 async function main() {
+  const flow = FLOWS[parseFlow(process.argv.slice(2))];
   const { code, destination, bootedByScript } = await resolveDestination();
   if (code !== 0 || !destination) {
     process.exitCode = code || 1;
@@ -711,6 +745,7 @@ async function main() {
     gatewayHarness = startGatewayHarness(
       `http://127.0.0.1:${CP_PORT}`,
       `ws://127.0.0.1:${RELAY_PORT}`,
+      flow.accountId,
     );
     const readiness = await gatewayHarness.readiness;
 
@@ -733,6 +768,7 @@ async function main() {
     const probeCredential = await mintThrowawayCredential(
       `http://127.0.0.1:${CP_PORT}`,
       readiness.gatewayId,
+      flow.accountId,
     );
     await waitForTunnelHealth(terminatorPort, caCertBuffer, probeCredential);
     await runCommand('xcrun', ['simctl', 'keychain', udid, 'add-root-cert', crypto.caCert], {
@@ -741,15 +777,15 @@ async function main() {
     });
 
     const testEnvironment = {
-      DASH_TEST_ACCOUNT_CONTROL_PLANE_URL: `http://127.0.0.1:${shimPort}`,
-      DASH_TEST_ACCOUNT_BEARER: ACCOUNT_ID,
-      DASH_TEST_ACCOUNT_GATEWAY_ID: readiness.gatewayId,
-      DASH_TEST_ACCOUNT_IDENTITY_GATEWAY_ID: readiness.harnessGatewayId,
-      DASH_TEST_ACCOUNT_AGENT_ID: readiness.agentId,
-      DASH_TEST_ACCOUNT_RELAY_PORT: String(terminatorPort),
+      [`${flow.envPrefix}CONTROL_PLANE_URL`]: `http://127.0.0.1:${shimPort}`,
+      [`${flow.envPrefix}BEARER`]: flow.accountId,
+      [`${flow.envPrefix}GATEWAY_ID`]: readiness.gatewayId,
+      [`${flow.envPrefix}IDENTITY_GATEWAY_ID`]: readiness.harnessGatewayId,
+      [`${flow.envPrefix}AGENT_ID`]: readiness.agentId,
+      [`${flow.envPrefix}RELAY_PORT`]: String(terminatorPort),
     };
 
-    const bundlePath = 'ios/LiveAccountFlow.xcresult';
+    const bundlePath = flow.resultBundlePath;
     await rm(resolve(ROOT_DIR, bundlePath), { recursive: true, force: true });
     const result = await withSimulatorEnvironment(destination, testEnvironment, () =>
       runCommand(
@@ -765,7 +801,7 @@ async function main() {
           'never',
           '-resultBundlePath',
           bundlePath,
-          `-only-testing:${TEST_TARGET}`,
+          `-only-testing:${flow.testTarget}`,
           'test',
           // Ad-hoc signed, NOT unsigned: this test is the first in the suite
           // to touch the REAL Keychain (`AccountConnectFeature`'s connect
@@ -781,7 +817,7 @@ async function main() {
         {
           env: { ...process.env, ...testEnvironment },
           timeoutMs: XCODEBUILD_TIMEOUT_MS,
-          label: TEST_TARGET,
+          label: flow.testTarget,
         },
       ),
     );
@@ -791,14 +827,14 @@ async function main() {
       const summaryResult = await runCommand(
         'xcrun',
         ['xcresulttool', 'get', 'test-results', 'summary', '--path', bundlePath],
-        { captureStdout: true, timeoutMs: 30_000, label: `${TEST_TARGET} result verification` },
+        { captureStdout: true, timeoutMs: 30_000, label: `${flow.testTarget} result verification` },
       );
       try {
         if (summaryResult.code !== 0) throw new Error('xcresulttool could not read the result');
         assertSinglePassedTest(JSON.parse(summaryResult.stdout));
       } catch {
         process.stderr.write(
-          `[live-account-flow] ${TEST_TARGET} did not execute exactly one passing test\n`,
+          `[live-account-flow] ${flow.testTarget} did not execute exactly one passing test\n`,
         );
         outcome = 1;
       }
