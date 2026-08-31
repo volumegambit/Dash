@@ -59,12 +59,19 @@ struct ChatView: View {
       Task { await feature.disappear() }
     }
     .sheet(item: $editingMessage) { editing in
+      // Fix I5 (final-review): only dismiss on a `true` result —
+      // `resendFromMessage` returns `false` for a guarded no-op (most
+      // commonly: another turn already has send authority — see its doc
+      // comment), and dismissing unconditionally here used to silently
+      // discard whatever the user had just typed with no indication
+      // anything went wrong. `EditAndResendSheet` keeps its own text state
+      // and shows an inline note when `onResend` comes back `false`.
       EditAndResendSheet(
         text: editing.text,
         onResend: { editedText in
-          editingMessage = nil
-          Task { await feature.resendFromMessage(id: editing.id, editedText: editedText) }
+          await feature.resendFromMessage(id: editing.id, editedText: editedText)
         },
+        onResendSucceeded: { editingMessage = nil },
         onCancel: { editingMessage = nil }
       )
     }
@@ -350,14 +357,32 @@ private struct EditingMessage: Identifiable, Equatable {
 /// the exact same call a plain Retry makes, just with `editedText` set. See
 /// `ChatView.editingMessage`'s doc comment for why this is a sheet rather
 /// than a composer-prefill.
+///
+/// Fix I5 (final-review): `onResend` is now `async -> Bool` (mirroring
+/// `ChatFeature.resendFromMessage`'s own return — see its doc comment) so
+/// this sheet can tell "sent" apart from "guarded no-op" (most commonly:
+/// another turn already has send authority). On `false` the sheet stays
+/// open with `text` untouched and shows `blockedNote` under the editor;
+/// `onResendSucceeded` — called only on `true` — is `ChatView`'s cue to
+/// actually dismiss it. Before this fix the sheet dismissed unconditionally
+/// on tapping Resend, silently discarding the user's edited text whenever
+/// the resend was guarded.
 private struct EditAndResendSheet: View {
   @State private var text: String
-  let onResend: (String) -> Void
+  @State private var blockedNote = false
+  let onResend: (String) async -> Bool
+  let onResendSucceeded: () -> Void
   let onCancel: () -> Void
 
-  init(text: String, onResend: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+  init(
+    text: String,
+    onResend: @escaping (String) async -> Bool,
+    onResendSucceeded: @escaping () -> Void,
+    onCancel: @escaping () -> Void
+  ) {
     _text = State(initialValue: text)
     self.onResend = onResend
+    self.onResendSucceeded = onResendSucceeded
     self.onCancel = onCancel
   }
 
@@ -367,21 +392,37 @@ private struct EditAndResendSheet: View {
 
   var body: some View {
     NavigationStack {
-      TextEditor(text: $text)
-        .padding()
-        .navigationTitle("Edit & Resend")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-          ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel", action: onCancel)
-          }
-          ToolbarItem(placement: .confirmationAction) {
-            Button("Resend") {
-              onResend(trimmedText)
-            }
-            .disabled(trimmedText.isEmpty)
-          }
+      VStack(alignment: .leading, spacing: 8) {
+        TextEditor(text: $text)
+        if blockedNote {
+          Text("Wait for the current response to finish.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("chat.editAndResend.blockedNote")
         }
+      }
+      .padding()
+      .navigationTitle("Edit & Resend")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel", action: onCancel)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Resend") {
+            blockedNote = false
+            Task {
+              let sent = await onResend(trimmedText)
+              if sent {
+                onResendSucceeded()
+              } else {
+                blockedNote = true
+              }
+            }
+          }
+          .disabled(trimmedText.isEmpty)
+        }
+      }
     }
     .accessibilityIdentifier("chat.editAndResend.sheet")
   }

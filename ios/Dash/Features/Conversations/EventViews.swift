@@ -117,8 +117,11 @@ struct AssistantEventViews: View {
 
 /// 3-dot pulse (chat-ux Phase 2, audit #6). Hidden from accessibility like
 /// `StreamingCaretView` below — the message's own container already carries
-/// `message.accessibilityStatusLabel` ("Assistant message, accepted"), so
-/// this transient visual filler has nothing more useful to announce.
+/// `message.accessibilityStatusLabel` ("Assistant message, streaming" — an
+/// assistant message's status is never actually `.accepted`; see the
+/// `ChatReducer`/`finishTurn` fix "typing indicator gate was dead code" —
+/// `.accepted` only ever applies to the user's own message), so this
+/// transient visual filler has nothing more useful to announce.
 private struct TypingIndicatorView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isAnimating = false

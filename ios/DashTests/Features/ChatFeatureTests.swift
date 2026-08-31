@@ -359,7 +359,9 @@ struct ChatFeatureTests {
 
     #expect(featureMessageIDs(feature) == ["kept-user", "kept-assistant", "u1", "a1"])
 
-    await feature.resendFromMessage(id: "u1")
+    // fix I5: resolves `true` once the resend actually fired.
+    let sent = await feature.resendFromMessage(id: "u1")
+    #expect(sent)
 
     // The failed turn (u1 + a1) is gone; the earlier, unrelated turn is
     // untouched; a fresh optimistic user message replaces it.
@@ -413,7 +415,8 @@ struct ChatFeatureTests {
     feature.setConnection(.online)
     await feature.appear()
 
-    await feature.resendFromMessage(id: "u1", editedText: "Edited text")
+    let sent = await feature.resendFromMessage(id: "u1", editedText: "Edited text")
+    #expect(sent)
 
     #expect(feature.state.messages.map(\.id) == [localID.uuidString.lowercased()])
     #expect(feature.state.messages.last?.user?.text == "Edited text")
@@ -441,14 +444,23 @@ struct ChatFeatureTests {
     feature.setConnection(.online)
     await feature.appear()
 
-    await feature.resendFromMessage(id: "does-not-exist")
+    // fix I5: resolves `false`, never a silent no-return, for this no-op.
+    let sent = await feature.resendFromMessage(id: "does-not-exist")
+    #expect(sent == false)
 
     #expect(featureMessageIDs(feature) == ["u1"])
     let calls = await chat.calls
     #expect(calls.isEmpty)
   }
 
-  @Test("resendFromMessage is blocked while another turn is active, same as a plain send")
+  @Test(
+    """
+    resendFromMessage is blocked while another turn is active, same as a plain send — resolves \
+    `false` (fix I5) and leaves transcript AND composer state completely untouched, which is \
+    what lets `ChatView`'s Edit & Resend sheet decide to stay open with the user's edited text \
+    intact instead of dismissing and silently discarding it
+    """
+  )
   func resendFromMessageBlockedDuringActiveTurn() async throws {
     let sync = FakeChatSynchronizer()
     await sync.enqueueRefresh(
@@ -473,13 +485,73 @@ struct ChatFeatureTests {
     // specifically "resendFromMessage sent nothing", not "nothing happened
     // all session".
     let callsBeforeResend = await chat.calls
+    let messagesBefore = feature.state.messages
+    let draftBefore = feature.state.draft
+    let attachmentsBefore = feature.state.attachments
 
-    await feature.resendFromMessage(id: "u1")
+    let sent = await feature.resendFromMessage(id: "u1")
 
+    #expect(sent == false)
     #expect(featureMessageIDs(feature) == ["u1", "a1"])
+    #expect(feature.state.messages == messagesBefore)
+    #expect(feature.state.draft == draftBefore)
+    #expect(feature.state.attachments == attachmentsBefore)
     let calls = await chat.calls
     #expect(calls == callsBeforeResend)
     #expect(calls.contains { $0.sendCall != nil } == false)
+  }
+
+  @Test(
+    """
+    resendFromMessage does not clobber an unrelated in-progress draft/attachment (fix I6) — \
+    `send()` has no text/attachments parameter of its own, so a resend has to stage its payload \
+    through the SAME `state.draft`/`state.attachments` a genuinely unsent draft lives in; this \
+    asserts the snapshot/restore around that borrow actually round-trips the user's own draft \
+    intact once the resend completes
+    """
+  )
+  func resendFromMessagePreservesUnrelatedDraftAndAttachments() async throws {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(id: "u1", turnID: "turn-orig", text: "Hello", ordinal: 1)
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let turnID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let localID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let feature = makeFeature(
+      sync: sync,
+      chat: chat,
+      ids: [turnID.uuidString.lowercased(), localID.uuidString.lowercased()]
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // The user has an unrelated message half-typed, with an image staged,
+    // BEFORE triggering a resend of a completely different (older) message.
+    await feature.updateDraft("unsent new text")
+    await feature.addSelections([ImageSelection(data: Data([1, 2, 3]), type: .png)])
+    let stagedAttachments = feature.state.attachments
+    #expect(stagedAttachments.isEmpty == false)
+
+    let sent = await feature.resendFromMessage(id: "u1")
+
+    #expect(sent)
+    // The resend itself still went through, targeting u1's own text — this
+    // isn't a no-op, it's specifically the SUCCESSFUL-resend case where the
+    // clobber used to happen.
+    let calls = await chat.calls
+    #expect(calls.compactMap(\.sentPayload).map(\.text) == ["Hello"])
+    // The user's own unrelated draft/attachment — untouched by the resend
+    // that borrowed the same composer state to stage ITS payload.
+    #expect(feature.state.draft == "unsent new text")
+    #expect(feature.state.attachments == stagedAttachments)
   }
 
   @Test("an ambiguous send that was admitted reconciles and resumes the same turn ID")

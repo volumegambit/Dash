@@ -13,19 +13,23 @@ import { fileURLToPath } from 'node:url';
 const css = readFileSync(fileURLToPath(new URL('./styles.css', import.meta.url)), 'utf8');
 
 /** Slices out one balanced `{ ... }` block starting at the first match of
- * `marker` that is followed (after only whitespace) by `{` — i.e. the actual
- * rule, not a prose mention of the same text inside a comment above it. */
-function ruleBlock(marker: string): string {
+ * `marker` (within `source`, `css` by default) that is followed (after only
+ * whitespace) by `{` — i.e. the actual rule, not a prose mention of the same
+ * text inside a comment above it. Pass a narrower `source` (e.g. a slice
+ * already scoped to one `@media` block) to disambiguate a selector that's
+ * declared more than once at different points in the file (e.g.
+ * `.app-sidebar`'s desktop grid-column rule vs. its mobile-drawer rule). */
+function ruleBlock(marker: string, source: string = css): string {
   const re = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{`);
-  const match = css.match(re);
+  const match = source.match(re);
   if (!match || match.index === undefined) throw new Error(`styles.css has no rule for ${marker}`);
   const braceStart = match.index + match[0].length - 1;
   let depth = 0;
-  for (let i = braceStart; i < css.length; i++) {
-    if (css[i] === '{') depth++;
-    if (css[i] === '}') {
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    if (source[i] === '}') {
       depth--;
-      if (depth === 0) return css.slice(braceStart, i + 1);
+      if (depth === 0) return source.slice(braceStart, i + 1);
     }
   }
   throw new Error(`unterminated rule block for ${marker}`);
@@ -42,6 +46,14 @@ function darkBlock(): string {
  * header comment's prose mentions of `` `:root` ``). */
 function rootBlock(): string {
   return ruleBlock(':root');
+}
+
+/** The `@media (max-width: 768px) { ... }` mobile-drawer block — scopes
+ * lookups of `.app-sidebar`/`.app-sidebar--open` to their MOBILE rules,
+ * disambiguated from the separate desktop `.app-sidebar` grid-column rule
+ * declared earlier in the file. */
+function mobileDrawerBlock(): string {
+  return ruleBlock('@media (max-width: 768px)');
 }
 
 describe('styles.css design tokens (chat-ux Phase 2 Task 1)', () => {
@@ -104,10 +116,82 @@ describe('styles.css design tokens (chat-ux Phase 2 Task 1)', () => {
     expect(css).toContain('.app-composer-stop');
   });
 
+  it('never removes the empty banner row from the `.app-main` grid flow (fix C1 layout trap: ' +
+    '`display: none` on `.app-banner-row:empty` reassigns the implicit `auto 1fr auto` grid ' +
+    'rows the moment there is no banner content — which is the DEFAULT state on every normal ' +
+    'page load — so `.app-transcript-wrap` (whose only child, `.app-transcript`, is ' +
+    '`position: absolute` and contributes no auto height) collapses to zero and ' +
+    '`.app-composer-row` balloons to fill the leftover `1fr` instead)', () => {
+    const emptyRule = ruleBlock('.app-banner-row:empty');
+    expect(emptyRule).not.toMatch(/display:\s*none/);
+    // The row must still visually collapse when empty — just without
+    // leaving the grid's implicit row order, so `min-height: 0` (not
+    // `display: none`) is the mechanism.
+    expect(emptyRule).toMatch(/min-height:\s*0/);
+  });
+
   it('turns the sidebar into an overlay drawer under 768px', () => {
     expect(css).toContain('@media (max-width: 768px)');
     const mobile = css.slice(css.indexOf('@media (max-width: 768px)'));
     expect(mobile).toContain('.app-hamburger');
     expect(mobile).toContain('.app-sidebar--open');
+  });
+});
+
+describe('final-review fix wave', () => {
+  it('fix I2: the CLOSED mobile drawer is visibility:hidden (not just translated off-screen), ' +
+    'so it drops out of the accessibility tree/tab order rather than merely off the visible ' +
+    'viewport, and the open state restores visibility:visible', () => {
+    const mobile = mobileDrawerBlock();
+    const closedRule = ruleBlock('.app-sidebar', mobile);
+    expect(closedRule).toMatch(/visibility:\s*hidden/);
+    const openRule = ruleBlock('.app-sidebar--open', mobile);
+    expect(openRule).toMatch(/visibility:\s*visible/);
+  });
+
+  it('fix m1: the drawer transform/visibility transition — and the copy/message-action opacity ' +
+    'reveal transitions — only apply under prefers-reduced-motion: no-preference, so a ' +
+    'reduced-motion user gets the open/closed and shown/hidden end states instantly rather ' +
+    'than via a suppressed-but-still-applied animation', () => {
+    // Base rules must NOT themselves declare `transition` — it must live
+    // only inside the `no-preference` gate.
+    expect(ruleBlock('.app-sidebar', mobileDrawerBlock())).not.toMatch(/transition:/);
+    expect(ruleBlock('.copy-button')).not.toMatch(/transition:/);
+    expect(ruleBlock('.chat-message-action')).not.toMatch(/transition:/);
+
+    expect(css).toContain('@media (max-width: 768px) and (prefers-reduced-motion: no-preference)');
+    const drawerMotion = css.slice(
+      css.indexOf('@media (max-width: 768px) and (prefers-reduced-motion: no-preference)'),
+    );
+    expect(drawerMotion).toMatch(/\.app-sidebar\s*{[^}]*transition:\s*transform/);
+
+    // The reveal-fade transitions for both buttons must each be
+    // immediately preceded by their own `no-preference` gate (adjacent in
+    // the file, not just present somewhere) — a direct substring check,
+    // since `ruleBlock` only ever returns the FIRST match of a marker and
+    // there are two separate `no-preference` blocks in this file.
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: no-preference\) {\s*\.copy-button\s*{\s*transition:/,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-message-action\s*{\s*transition:/,
+    );
+  });
+
+  it('fix I3: --text-muted-strong meets WCAG AA (>=4.5:1) against --surface in both schemes, and ' +
+    '.chat-message-action uses it at full opacity for its rest state (not the ~1.75:1 ' +
+    'color-mix(...50%, transparent) it used to render at), going to --text on hover/focus', () => {
+    expect(rootBlock()).toMatch(/--text-muted-strong:\s*#595f6b\s*;/);
+    expect(darkBlock()).toMatch(/--text-muted-strong:\s*#a8b3c4\s*;/);
+
+    const actionRule = ruleBlock('.chat-message-action');
+    expect(actionRule).toMatch(/color:\s*var\(--text-muted-strong\)/);
+    // Not the OLD low-contrast declaration (the ~1.75:1 color-mix this
+    // fix replaces) — check the actual `color:` VALUE, not the whole
+    // block (which legitimately mentions `color-mix` in the explanatory
+    // comment above the property).
+    expect(actionRule).not.toMatch(/color:\s*color-mix/);
+
+    expect(css).toMatch(/\.chat-message-action:hover\s*{[^}]*color:\s*var\(--text\)/);
   });
 });

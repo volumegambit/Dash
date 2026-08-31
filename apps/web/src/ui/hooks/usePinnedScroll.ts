@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Scroll-pinning + jump-to-bottom (chat-ux Phase 2 Task 3, audit #4): web's
@@ -24,6 +24,26 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
  * the test drive `entries` manually. This is the intended test seam — keep
  * `ChatView`'s usage of this hook thin so behavior stays covered here rather
  * than only reachable through a real browser.
+ *
+ * POST-MORTEM (final-review fix C2): `containerRef`/`sentinelRef` used to be
+ * plain `useRef`s, and the observer-mounting effect below depended only on
+ * `[createObserver]` (stable in production). That's correct IF the
+ * container/sentinel DOM nodes already exist the first time this hook's
+ * component mounts. `ChatView` calls this hook unconditionally, ABOVE its
+ * `if (!conversationId) return <empty state>` branch — so when it first
+ * mounts with `conversationId === null` (no conversation picked yet), the
+ * transcript markup these refs attach to is never rendered, the refs stay
+ * `null` forever, the effect's one-shot run below is a no-op, and because
+ * `ChatView` is never unmounted/remounted just for picking a conversation
+ * (see its own draft-per-conversation comment), the effect never gets a
+ * second chance to run — pinning/auto-scroll/jump-to-bottom were silently
+ * inert for every session's first conversation. Fixed by switching to
+ * CALLBACK refs backed by state (`containerEl`/`sentinelEl` below): the
+ * callback fires — and updates state, triggering a re-render — the moment
+ * React actually attaches the DOM node, whenever that happens, so the
+ * observer-mounting effect (now keyed on that state) reliably fires exactly
+ * once the nodes genuinely exist, regardless of whether that's on first
+ * mount or a later render.
  */
 export interface UsePinnedScrollOptions {
   /** Changes when the open conversation itself changes (e.g. the
@@ -52,10 +72,13 @@ export interface UsePinnedScrollOptions {
 }
 
 export interface UsePinnedScrollResult {
-  /** Attach to the scrollable transcript container (the `IntersectionObserver`'s `root`). */
-  containerRef: RefObject<HTMLDivElement | null>;
-  /** Attach to a zero-height sentinel rendered immediately after the last message. */
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  /** Attach to the scrollable transcript container (the `IntersectionObserver`'s `root`).
+   * A CALLBACK ref, not a plain `RefObject` (post-mortem below) — pass it
+   * straight to the element's `ref` prop, same as a plain ref. */
+  containerRef: (node: HTMLDivElement | null) => void;
+  /** Attach to a zero-height sentinel rendered immediately after the last message.
+   * Also a callback ref — see `containerRef`. */
+  sentinelRef: (node: HTMLDivElement | null) => void;
   /** `true` while the bottom sentinel is visible in the container — i.e. the
    * user is following the live transcript. Drives the jump-to-bottom pill's
    * visibility (rendered when `!pinned`). */
@@ -83,8 +106,15 @@ export function usePinnedScroll({
   createObserver = defaultCreateObserver,
   prefersReducedMotion = defaultPrefersReducedMotion,
 }: UsePinnedScrollOptions): UsePinnedScrollResult {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Backed by state (not `useRef`) so attachment itself is observable — see
+  // the CALLBACK REF post-mortem above. `useCallback` with an empty
+  // dependency array keeps each setter's identity stable across renders, so
+  // it isn't re-invoked by React on every render the way an inline arrow
+  // function passed straight to `ref` would be.
+  const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
+  const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null);
+  const containerRef = useCallback((node: HTMLDivElement | null) => setContainerEl(node), []);
+  const sentinelRef = useCallback((node: HTMLDivElement | null) => setSentinelEl(node), []);
   const [pinned, setPinned] = useState(true);
   // Read inside the content-driven effect below without adding `pinned` to
   // its dependency array — that effect must only react to NEW CONTENT
@@ -93,39 +123,45 @@ export function usePinnedScroll({
   const pinnedRef = useRef(pinned);
   pinnedRef.current = pinned;
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    const container = containerRef.current;
-    if (!container) return;
-    container.scrollTo({ top: container.scrollHeight, behavior });
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior) => {
+      if (!containerEl) return;
+      containerEl.scrollTo({ top: containerEl.scrollHeight, behavior });
+    },
+    [containerEl],
+  );
 
   // Mount/observe the bottom sentinel once per container+sentinel pair.
-  // `createObserver` is the only real dependency (stable in production,
-  // test-provided in `usePinnedScroll.test.ts`) — the refs themselves are
-  // mutable containers, not reactive values, and don't belong in the
-  // dependency array.
+  // Depends on `containerEl`/`sentinelEl` (state, not refs) precisely so
+  // this re-runs the moment React actually attaches those DOM nodes — see
+  // the CALLBACK REF post-mortem above. `createObserver` stays a dependency
+  // too (stable in production, test-provided in `usePinnedScroll.test.ts`).
   useEffect(() => {
-    const sentinel = sentinelRef.current;
-    const container = containerRef.current;
-    if (!sentinel || !container) return;
+    if (!sentinelEl || !containerEl) return;
     const observer = createObserver(
       (entries) => {
         const entry = entries[entries.length - 1];
         if (entry) setPinned(entry.isIntersecting);
       },
-      { root: container, threshold: 0 },
+      { root: containerEl, threshold: 0 },
     );
-    observer.observe(sentinel);
+    observer.observe(sentinelEl);
     return () => observer.disconnect();
-  }, [createObserver]);
+  }, [createObserver, containerEl, sentinelEl]);
 
   // Conversation switch (or first mount): re-pin and snap to the bottom —
   // this is a context change, not streamed content, so it's never smooth.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the intentional trigger (a conversation switch); scrollToBottom is stable
+  // `containerEl` is included alongside `resetKey` on purpose (not just via
+  // `scrollToBottom`'s closure): if `resetKey` changes on the very render
+  // the transcript DOM first mounts, `containerEl` is still `null` on THAT
+  // render (the callback ref attaches during commit, one render later), so
+  // the initial snap-to-bottom would otherwise silently no-op — re-running
+  // this effect once `containerEl` itself becomes available closes that gap.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey/containerEl are the intentional triggers; scrollToBottom is derived from containerEl already
   useEffect(() => {
     setPinned(true);
     scrollToBottom('auto');
-  }, [resetKey]);
+  }, [resetKey, containerEl]);
 
   // New content (a message arriving, a streamed delta): auto-scroll ONLY
   // while pinned (audit #4) — this is the behavior the old code never had at

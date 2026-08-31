@@ -510,7 +510,8 @@ describe('createWebAppStore', () => {
         },
       }));
 
-      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1');
+      // fix I5: resolves `true` once the resend actually fired.
+      await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).resolves.toBe(true);
 
       const messages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
       // The failed turn (u1 + a1) is gone; the earlier turn survives; a
@@ -542,7 +543,9 @@ describe('createWebAppStore', () => {
         },
       }));
 
-      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1', 'Edited text');
+      await expect(
+        store.getState().resendFromMessage(CONVERSATION_ID, 'u1', 'Edited text'),
+      ).resolves.toBe(true);
 
       const messages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
       expect(messages).toHaveLength(1);
@@ -571,8 +574,11 @@ describe('createWebAppStore', () => {
         },
       }));
 
-      await store.getState().resendFromMessage(CONVERSATION_ID, 'a1');
-      await store.getState().resendFromMessage(CONVERSATION_ID, 'does-not-exist');
+      // fix I5: resolves `false`, never throws, for either no-op shape.
+      await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'a1')).resolves.toBe(false);
+      await expect(
+        store.getState().resendFromMessage(CONVERSATION_ID, 'does-not-exist'),
+      ).resolves.toBe(false);
 
       expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toEqual([assistantOnly]);
       expect(sockets[0].sent).toHaveLength(0);
@@ -638,7 +644,9 @@ describe('createWebAppStore', () => {
         transcripts: { ...state.transcripts, [CONVERSATION_ID]: transcriptBefore },
       }));
 
-      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1');
+      // fix I5: resolves `false` — this is the exact "guarded, don't
+      // silently discard the caller's edited text" case the fix exists for.
+      await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).resolves.toBe(false);
 
       expect(store.getState().transcripts[CONVERSATION_ID]).toEqual(transcriptBefore);
       expect(sockets[0].sent).toHaveLength(0);
@@ -671,7 +679,7 @@ describe('createWebAppStore', () => {
         transcripts: { ...state.transcripts, [CONVERSATION_ID]: transcriptBefore },
       }));
 
-      await store.getState().resendFromMessage(CONVERSATION_ID, 'u1');
+      await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).resolves.toBe(false);
 
       expect(store.getState().transcripts[CONVERSATION_ID]).toEqual(transcriptBefore);
       expect(sockets[0].sent).toHaveLength(0);

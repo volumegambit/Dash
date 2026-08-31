@@ -1030,22 +1030,82 @@ final class ChatFeature {
   /// this task; regenerating an assistant turn in place (as opposed to
   /// resending the user turn that produced it) is also out of scope — it
   /// needs server support Dash doesn't have yet.
-  func resendFromMessage(id: String, editedText: String? = nil) async {
-    guard rejectIfShutdown() == false else { return }
+  /// RETURN VALUE (fix I5, final-review): `true` once the resend passed
+  /// every guard below and actually truncated + called `send()` — same
+  /// meaning as the web store's `resendFromMessage` returning
+  /// `Promise<boolean>` (see its doc comment in `apps/web/src/state/
+  /// store.ts`), NOT "the network round-trip succeeded" (a network-level
+  /// failure inside `send()` still returns `true` here; it surfaces through
+  /// the resent message's own `.failed` status instead, same as any other
+  /// send). `false` covers every guard above that no-ops: the feature is
+  /// shut down, `id` doesn't name a `role: .user` message currently in the
+  /// transcript, or (the common case) another turn already has send
+  /// authority (`composerMutationAllowed`/`sendAuthorityIsAvailable`).
+  /// `@discardableResult` because `send()`'s own callers (a plain Retry)
+  /// don't need it — only `ChatView`'s Edit & Resend sheet does, to decide
+  /// whether it's safe to dismiss (see `EditAndResendSheet`) instead of
+  /// silently discarding whatever the user just typed.
+  @discardableResult
+  func resendFromMessage(id: String, editedText: String? = nil) async -> Bool {
+    guard rejectIfShutdown() == false else { return false }
     guard
       let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
       let user = state.messages[index].user
-    else { return }
-    guard composerMutationAllowed, sendAuthorityIsAvailable else { return }
+    else { return false }
+    guard composerMutationAllowed, sendAuthorityIsAvailable else { return false }
 
     let attachments: [PreparedAttachment] = user.images.compactMap { image in
       guard let data = Data(base64Encoded: image.data) else { return nil }
       return PreparedAttachment(id: UUID(), mediaType: image.mediaType.rawValue, data: data)
     }
+    // Fix I6 (final-review): `send()` takes no text/attachments parameter of
+    // its own, so a resend has always had to stage its payload through the
+    // SAME composer state (`state.draft`/`state.attachments`) a genuinely
+    // unsent draft lives in. Snapshot whatever's already there BEFORE
+    // borrowing it below, and restore it once `send()` settles — otherwise
+    // an unrelated draft (or staged attachment) the user was mid-typing
+    // gets silently overwritten by the resent text/images. Because
+    // `state.draft` is disk-persisted (`persistDraft()`), an unrestored
+    // clobber here doesn't just cost the user their in-progress typing for
+    // the rest of this session — a resend failure that falls through to
+    // `restorePendingSendAsDraft` (see `send()`) would persist the RESENT
+    // text as "the draft" to disk, so the loss would still be there after
+    // an app relaunch too. This directly contradicts the edit sheet's own
+    // design rationale for persisting drafts in the first place (see
+    // `ChatView.swift`'s doc comment on why drafts survive relaunch at
+    // all).
+    let draftSnapshot = state.draft
+    let attachmentsSnapshot = state.attachments
     state.messages.removeSubrange(index...)
     state.draft = editedText ?? user.text
     state.attachments = attachments
     await send()
+    // Restore in every case EXCEPT a draft-conflict recovery flow
+    // (`pendingSendRecovery` gets installed by `applyPendingSendDraftConflict`
+    // when `send()`'s own failure handling finds an unrelated disk draft
+    // that collides with restoring the resend as one) — that flow already
+    // populated `state.draft` with something the user needs to resolve
+    // through ITS OWN UI, so overwriting it here would fight that flow
+    // instead of complementing it. Every other outcome of `send()`
+    // (dispatched and awaiting confirmation — by far the common case,
+    // `pendingSendReconciliation` stays non-nil for that entire window
+    // because confirmation arrives asynchronously off a separate event
+    // stream, NOT synchronously inside `send()` itself — a clean failure
+    // restored as a draft, or an ambiguous failure pending reconciliation)
+    // leaves `state.draft`/`.attachments` as either `""`/`[]` (send()'s own
+    // optimistic clear) or the resent text/images being redisplayed as if
+    // they were "the draft" — neither of which is more correct to show
+    // than the user's own actual unsent draft, so restoring is always
+    // right here. `persistDraft()` below still no-ops (returns without
+    // writing) while `pendingSendReconciliation` is active, same as every
+    // other composer mutation already does during that window — the
+    // in-memory `state.draft` this method's caller reads is correct
+    // immediately regardless.
+    guard pendingSendRecovery == nil else { return true }
+    state.draft = draftSnapshot
+    state.attachments = attachmentsSnapshot
+    await persistDraft()
+    return true
   }
 
   func answer(questionID: String, answer: String) async {

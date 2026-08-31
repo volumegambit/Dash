@@ -92,8 +92,23 @@ export interface WebAppState {
    * second, orphaned `sendMessage`. `ChatView`'s toolbar already disables
    * these buttons while streaming, but this guard is enforced here too so
    * it holds regardless of caller — not just the one first-party UI.
+   *
+   * RETURN VALUE (fix I5): resolves `true` once the resend actually fired
+   * (the same success signal `sendMessage`'s resolution implies), `false`
+   * for either no-op guard above (in-flight turn, or an unknown/non-user
+   * `messageId`) — NEVER throws for those cases, only for the connectivity
+   * precondition, which still throws so a genuinely offline resend attempt
+   * surfaces the same way `sendMessage` itself does. Callers that let a
+   * user hand-edit text before resending (`ChatView`'s `MessageEditor`)
+   * MUST check this: on `false` the caller's edited text would otherwise be
+   * silently discarded (the editor closing without ever sending it) with no
+   * indication anything went wrong.
    */
-  resendFromMessage(conversationId: string, messageId: string, editedText?: string): Promise<void>;
+  resendFromMessage(
+    conversationId: string,
+    messageId: string,
+    editedText?: string,
+  ): Promise<boolean>;
   /**
    * Cancels the in-flight turn for `conversationId` by sending a WS `cancel`
    * frame (`{ type: 'cancel', id: <turnId> }`) — the same gateway route
@@ -706,11 +721,13 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         // A turn is in flight for this conversation (accepted, mid-stream,
         // or awaiting its first event) — never truncate/resend underneath
         // it, regardless of which message `messageId` names. See the doc
-        // comment on this method for why.
-        if (transcript?.pending || transcript?.streaming) return;
+        // comment on this method for why. Returns `false` (fix I5), not a
+        // silent `undefined` — callers with user-edited text in hand need
+        // to tell "guarded, nothing happened" apart from "sent".
+        if (transcript?.pending || transcript?.streaming) return false;
         const index =
           transcript?.messages.findIndex((m) => m.id === messageId && m.role === 'user') ?? -1;
-        if (!transcript || index === -1) return;
+        if (!transcript || index === -1) return false;
         const target = transcript.messages[index];
         const text = editedText ?? (target.content.type === 'user' ? target.content.text : '');
 
@@ -720,6 +737,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         }));
 
         await get().sendMessage(conversationId, text);
+        return true;
       },
 
       cancelTurn(conversationId) {

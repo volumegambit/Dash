@@ -16,6 +16,13 @@ export interface ChatViewProps {
 /** Exact banner text shown while the store is retrying a dropped socket. */
 export const RECONNECTING_COPY = 'Reconnecting…';
 
+/** Fix I5: exact copy shown inline under an open `MessageEditor` when a
+ * resend attempt comes back guarded — `resendFromMessage` returned `false`
+ * because a later turn is currently in flight (see its doc comment in
+ * `state/store.ts`). The editor stays open with the user's edited text
+ * intact rather than silently discarding it. */
+export const RESEND_BLOCKED_COPY = 'Wait for the current response to finish.';
+
 function unreachableCopy(gatewayLabel: string): string {
   return `Your gateway '${gatewayLabel}' is unreachable.`;
 }
@@ -197,13 +204,23 @@ function MessageToolbar({
  * Shift, and not mid IME-composition — same guard as the composer) submits
  * via `onSubmit`; Escape cancels via `onCancel`. Autofocused so entering
  * edit mode drops the caret straight into the field.
+ *
+ * `note` (fix I5): rendered under the actions row when set — `MessageRow`
+ * passes the "wait for the current turn" copy here after a resend attempt
+ * comes back guarded (see its own doc comment). This component never closes
+ * itself on submit; whether the caller actually unmounts it (success) or
+ * leaves it mounted with `note` set (guarded/rejected) is entirely
+ * `MessageRow`'s call, which is exactly what keeps the user's edited `text`
+ * state alive across a rejected attempt — nothing here resets it.
  */
 function MessageEditor({
   initialText,
+  note,
   onSubmit,
   onCancel,
 }: {
   initialText: string;
+  note?: string | null;
   onSubmit: (text: string) => void;
   onCancel: () => void;
 }): ReactNode {
@@ -250,6 +267,7 @@ function MessageEditor({
           Cancel
         </button>
       </div>
+      {note && <output className="chat-message-edit-note">{note}</output>}
     </div>
   );
 }
@@ -288,21 +306,46 @@ const MessageRow = memo(function MessageRow({
   canAct: boolean;
   isRetryable: boolean;
   onRetry: (messageId: string) => void;
-  onEditResend: (messageId: string, editedText: string) => void;
+  /** Fix I5: resolves `true` once the resend actually fired, `false` for a
+   * guarded no-op (see `resendFromMessage`'s doc comment) — NEVER rejects;
+   * `ChatView`'s `handleEditResend` already funnels a thrown/rejected
+   * attempt into the `sendError` banner and resolves `false` itself so this
+   * callback is safe to treat as authoritative without its own try/catch. */
+  onEditResend: (messageId: string, editedText: string) => Promise<boolean>;
 }): ReactNode {
   const copyText = getMessageCopyText(message.content);
   const [isEditing, setIsEditing] = useState(false);
+  // Fix I5: set when a resend attempt comes back guarded (`false`) while
+  // editing — kept OUTSIDE `isEditing`'s toggle so re-submitting after a
+  // blocked attempt clears the stale note rather than stacking a second one.
+  const [blockedNote, setBlockedNote] = useState<string | null>(null);
 
   if (isEditing) {
     return (
       <div data-testid="chat-message" data-role={message.role} className="chat-message">
         <MessageEditor
           initialText={copyText}
+          note={blockedNote}
           onSubmit={(text) => {
-            setIsEditing(false);
-            onEditResend(message.id, text);
+            setBlockedNote(null);
+            // Fire-and-forget from `MessageEditor`'s perspective (its
+            // `onSubmit` prop is typed `(text: string) => void`) — the
+            // actual close-vs-stay-open decision happens here, once the
+            // real outcome is known, NOT synchronously on submit like the
+            // pre-fix version did (which closed unconditionally and
+            // silently dropped the edited text on a guarded resend).
+            void onEditResend(message.id, text).then((sent) => {
+              if (sent) {
+                setIsEditing(false);
+              } else {
+                setBlockedNote(RESEND_BLOCKED_COPY);
+              }
+            });
           }}
-          onCancel={() => setIsEditing(false)}
+          onCancel={() => {
+            setIsEditing(false);
+            setBlockedNote(null);
+          }}
         />
       </div>
     );
@@ -383,6 +426,49 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     contentSignature: transcriptContentSignature(transcript),
   });
 
+  // Streamed-turn lifecycle announcer (fix I1): a single polite live region
+  // (rendered below, `.visually-hidden`) that announces the START and END
+  // of a turn — NOT every token, which would spam a screen reader with one
+  // interruption per delta (`ContentBlocks`/the transcript itself is
+  // deliberately NOT aria-live for this reason). Mirrors iOS's
+  // `ChatReducer.reduce`'s `.done`/`.error` handling (`ChatFeature.swift`'s
+  // `announceFinalResponse` effect): announce the finalized reply text when
+  // there is one, falling back to a generic "Response finished" when the
+  // turn produced no visible text (e.g. a pure tool-only turn), and
+  // "Response failed" when the finalized message itself ended up marked
+  // failed. `isStreamingNow` (not the raw `transcript?.streaming` object,
+  // which gets a fresh reference on every `event` frame) is the effect's
+  // dependency so this only actually runs once per streaming START/STOP
+  // transition, not once per token.
+  const isStreamingNow = transcript?.streaming != null;
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+  const wasStreamingRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: isStreamingNow is the intentional trigger; transcript?.messages is read fresh (not tracked) so a message arriving mid-stream doesn't itself re-fire this
+  useEffect(() => {
+    const wasStreaming = wasStreamingRef.current;
+    wasStreamingRef.current = isStreamingNow;
+
+    if (isStreamingNow && !wasStreaming) {
+      setLiveAnnouncement('Assistant is replying');
+      return;
+    }
+
+    if (!isStreamingNow && wasStreaming) {
+      const messages = transcript?.messages ?? [];
+      const last = messages[messages.length - 1];
+      if (!last) {
+        setLiveAnnouncement('Response finished');
+        return;
+      }
+      if (last.status === 'failed') {
+        setLiveAnnouncement('Response failed');
+        return;
+      }
+      const text = getMessageCopyText(last.content);
+      setLiveAnnouncement(text || 'Response finished');
+    }
+  }, [isStreamingNow]);
+
   // Draft-per-conversation (audit #14): a component-level Map, keyed by
   // conversation id, outlives conversation switches (this component instance
   // is never remounted just because `conversationId` changes — `Shell` keeps
@@ -422,12 +508,25 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     [conversationId, resendFromMessage],
   );
 
+  // Fix I5: unlike `handleRetry` (nothing to keep open on failure —
+  // there's no editor UI for a plain Retry), this one has to report its
+  // outcome BACK to `MessageRow`'s `MessageEditor` so it can decide whether
+  // to close (matches `resendFromMessage`'s new `Promise<boolean>` return —
+  // see its doc comment) rather than closing unconditionally and silently
+  // discarding whatever the user typed. A thrown/rejected attempt (the
+  // connectivity precondition) still surfaces through the same `sendError`
+  // banner `handleSend`/`handleRetry` use, and — like the guarded case —
+  // resolves `false` so the caller can't accidentally treat a real failure
+  // as a success either.
   const handleEditResend = useCallback(
-    (messageId: string, editedText: string) => {
-      if (!conversationId) return;
-      resendFromMessage(conversationId, messageId, editedText).catch((err: unknown) => {
+    async (messageId: string, editedText: string): Promise<boolean> => {
+      if (!conversationId) return false;
+      try {
+        return await resendFromMessage(conversationId, messageId, editedText);
+      } catch (err) {
         setSendError(err instanceof Error ? err.message : 'Failed to resend message.');
-      });
+        return false;
+      }
     },
     [conversationId, resendFromMessage],
   );
@@ -515,8 +614,11 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // through empty-events right after accept) until `done`/`error` clears it
   // — see `assemble.ts`. Drives the composer's send↔stop morph (MC parity,
   // chat.tsx:2633-2643) and locks the textarea while a turn is in flight,
-  // same as MC's `composerLocked`.
-  const isStreaming = streaming !== null;
+  // same as MC's `composerLocked`. Same value as `isStreamingNow` above
+  // (computed early, ahead of the early returns, to drive the live-region
+  // announcer) — kept as its own local for readability at every call site
+  // below.
+  const isStreaming = isStreamingNow;
   // Streaming presence (chat-ux Phase 2 Task 5, audit #13): "no visible
   // event yet" mirrors MC's own `liveEvents.length === 0` check exactly —
   // `streaming.events` is the same raw per-frame array `ContentBlocks`
@@ -540,6 +642,21 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   return (
     <main className="app-main">
+      {/* Streamed-turn lifecycle announcer (fix I1) — see the effect above
+       * that drives `liveAnnouncement`. `aria-live="polite"` (not
+       * "assertive"): a reply finishing isn't urgent enough to interrupt
+       * whatever else the screen reader is currently saying. Deliberately
+       * NOT on the transcript itself — that would re-announce on every
+       * streamed token. Safe as a 4th child of `.app-main` DESPITE fix C1's
+       * "every child of this grid participates in implicit row placement"
+       * trap: `.visually-hidden` is `position: absolute`, and
+       * absolutely-positioned grid children are excluded from CSS Grid's
+       * auto-placement entirely — they never consume/shift the row the
+       * banner/transcript-wrap/composer siblings get assigned. Do not
+       * remove that `position: absolute` without re-verifying this. */}
+      <div aria-live="polite" className="visually-hidden" data-testid="chat-live-region">
+        {liveAnnouncement}
+      </div>
       <div className="app-banner-row">
         {connection === 'reconnecting' && <output>{RECONNECTING_COPY}</output>}
         {transcript?.error && <p role="alert">{transcript.error.message}</p>}

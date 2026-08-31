@@ -9,7 +9,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
 import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
-import { ChatView, RECONNECTING_COPY } from './ChatView.js';
+import { ChatView, RECONNECTING_COPY, RESEND_BLOCKED_COPY } from './ChatView.js';
 import { WebAppStoreContext } from './Shell.js';
 import { ContentBlocks } from './blocks/ContentBlocks.js';
 
@@ -238,6 +238,112 @@ describe('ChatView', () => {
     // First visible content flips the indicator off and the caret on.
     await waitFor(() => expect(screen.getByTestId('streaming-caret')).toBeTruthy());
     expect(screen.queryByTestId('thinking-indicator')).toBeNull();
+  });
+
+  it('fix I1: announces a streamed turn\'s lifecycle in a polite live region — "Assistant is ' +
+    'replying" on start, then the finalized reply text on done — WITHOUT making the whole ' +
+    'transcript aria-live (which would spam a screen reader on every token)', async () => {
+    const { sockets, onFrames } = await renderConnected();
+
+    const liveRegion = screen.getByTestId('chat-live-region');
+    expect(liveRegion.getAttribute('aria-live')).toBe('polite');
+    expect(liveRegion.textContent).toBe('');
+    // Not on the transcript itself — the scrolling container that
+    // actually re-renders per streamed token.
+    expect(screen.getByTestId('chat-transcript').getAttribute('aria-live')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    const turnId = sockets[0].sent[0].id;
+
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+    });
+    await waitFor(() => expect(liveRegion.textContent).toBe('Assistant is replying'));
+
+    // Tokens streaming in must NOT re-announce (or spam the live region)
+    // — only the start/end transitions do.
+    act(() => {
+      onFrames[0]({
+        type: 'event',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        event: { type: 'text_delta', text: 'Final reply text' },
+      });
+    });
+    await waitFor(() => expect(screen.getByText('Final reply text')).toBeTruthy());
+    expect(liveRegion.textContent).toBe('Assistant is replying');
+
+    act(() => {
+      onFrames[0]({ type: 'done', id: turnId, conversationId: CONVERSATION_ID, seq: 3 });
+    });
+    await waitFor(() => expect(liveRegion.textContent).toBe('Final reply text'));
+  });
+
+  it('fix I1: announces "Response failed" when the finalized assistant message ends up failed', async () => {
+    const { store } = await renderConnected({
+      messages: [
+        message({
+          id: 'user-1',
+          role: 'user',
+          turnId: 'turn-1',
+          content: { type: 'user', text: 'Ping' },
+        }),
+      ],
+    });
+
+    const liveRegion = screen.getByTestId('chat-live-region');
+
+    // Simulate a turn that was mid-stream and finalized failed (mirrors how
+    // the gateway's `finishTurn` marks the assistant row `'failed'`) —
+    // directly through the store so this test doesn't depend on the exact
+    // frame sequence that produces that state server-side.
+    act(() => {
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: {
+            ...state.transcripts[CONVERSATION_ID],
+            streaming: { type: 'assistant', events: [] },
+          },
+        },
+      }));
+    });
+    await waitFor(() => expect(liveRegion.textContent).toBe('Assistant is replying'));
+
+    act(() => {
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: {
+            ...state.transcripts[CONVERSATION_ID],
+            streaming: null,
+            messages: [
+              ...state.transcripts[CONVERSATION_ID].messages,
+              message({
+                id: 'assistant-1',
+                role: 'assistant',
+                turnId: 'turn-1',
+                status: 'failed',
+                content: { type: 'assistant', events: [] },
+              }),
+            ],
+          },
+        },
+      }));
+    });
+
+    await waitFor(() => expect(liveRegion.textContent).toBe('Response failed'));
   });
 
   it('shows the Reconnecting… banner when the connection drops', async () => {
@@ -488,6 +594,66 @@ describe('ChatView scroll pinning wiring (chat-ux Phase 2 Task 3, audit #4)', ()
     });
 
     expect(screen.queryByLabelText('Jump to latest')).toBeNull();
+  });
+
+  /**
+   * Regression (fix C2): `usePinnedScroll` is called unconditionally inside
+   * `ChatView`, ABOVE the `if (!conversationId)` early return — so the very
+   * first time a session's `ChatView` mounts, `conversationId` is `null`
+   * (nothing picked yet in `ChatWorkspace`'s `selectedConversationId`
+   * state), the transcript/sentinel markup the hook's refs attach to isn't
+   * rendered at all, and `ChatView` is never unmounted/remounted just for
+   * picking a conversation afterward. Before the fix, the hook's
+   * observer-mounting effect ran its ONE allotted time against unattached
+   * refs and never got a second chance — pinning/auto-scroll/jump-to-bottom
+   * were silently inert for every conversation opened first in a session.
+   * Exercised here through the REAL global `IntersectionObserver` (stubbed
+   * only to spy on it, matching how `ChatView` actually calls the hook — no
+   * `createObserver` prop exists on `ChatView` itself) rather than the
+   * hook's own injected-fake test seam, so this specifically covers the
+   * wiring between `ChatView` and the hook, not the hook's internal state
+   * machine (already covered by `usePinnedScroll.test.ts`).
+   */
+  it('creates the IntersectionObserver once a conversation is picked, even though ChatView first mounted with conversationId=null', async () => {
+    const rest = fakeRest({ items: [summary()], nextCursor: null }, []);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+
+    const observeSpy = vi.fn();
+    const ctorSpy = vi.fn(() => ({
+      observe: observeSpy,
+      unobserve: vi.fn(),
+      disconnect: vi.fn(),
+      takeRecords: () => [],
+    }));
+    vi.stubGlobal('IntersectionObserver', ctorSpy);
+
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={null} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+
+    // No transcript/sentinel exists yet with no conversation picked — no
+    // observer should be created against nothing to observe.
+    expect(ctorSpy).not.toHaveBeenCalled();
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    await waitFor(() => expect(ctorSpy).toHaveBeenCalledTimes(1));
+    const sentinel = screen.getByTestId('chat-transcript-sentinel');
+    expect(observeSpy).toHaveBeenCalledWith(sentinel);
+
+    vi.unstubAllGlobals();
   });
 });
 
@@ -812,6 +978,46 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
     fireEvent.change(editor, { target: { value: '   ' } });
 
     expect(screen.getByText('Resend')).toHaveProperty('disabled', true);
+  });
+
+  it('fix I5: a blocked resend (a later turn is already streaming when the edit is submitted) ' +
+    'keeps the editor open with the edited text intact and shows an inline note, instead of ' +
+    'closing unconditionally and silently discarding what the user typed', async () => {
+    const { store } = await renderConnected({
+      messages: [
+        message({ id: 'u1', turnId: 'turn-1', content: { type: 'user', text: 'Original' } }),
+      ],
+    });
+
+    fireEvent.click(screen.getByLabelText('Edit and resend this message'));
+    const editor = screen.getByLabelText('Edit message') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: 'Unsent edited text' } });
+
+    // A later turn starts streaming while the editor is still open — an
+    // already-open editor bypasses the toolbar's own `canAct` gate (see
+    // the OTHER regression test above), so `resendFromMessage`'s own
+    // in-flight guard is what's actually being exercised here, not the
+    // toolbar's visibility.
+    act(() => {
+      store.setState((state) => ({
+        transcripts: {
+          ...state.transcripts,
+          [CONVERSATION_ID]: {
+            ...state.transcripts[CONVERSATION_ID],
+            streaming: { type: 'assistant', events: [] },
+          },
+        },
+      }));
+    });
+
+    fireEvent.keyDown(editor, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByText(RESEND_BLOCKED_COPY)).toBeTruthy());
+    // Still open, with the user's text intact — not silently discarded.
+    const stillOpenEditor = screen.getByLabelText('Edit message') as HTMLTextAreaElement;
+    expect(stillOpenEditor.value).toBe('Unsent edited text');
+    // Nothing was truncated or sent.
+    expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toHaveLength(1);
   });
 
   it('regression: Retry/Edit & resend on an EARLIER failed message are removed from the DOM ' +
