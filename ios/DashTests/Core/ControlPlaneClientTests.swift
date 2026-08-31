@@ -234,9 +234,14 @@ struct ControlPlaneClientTests {
     #expect(json == ["publicKey": "pubkey-abc", "label": "Gerry's iPhone"])
   }
 
-  @Test("fetchApproval GETs the exact URL and decodes the approval shape")
+  @Test("fetchApproval GETs the exact URL and decodes the approval shape (expiresAt as unix-ms number)")
   func fetchApprovalDecodesApproval() async throws {
     let session = try await signedInSession(idToken: "id-token-approval")
+    // `expiresAt` is a JSON NUMBER (unix milliseconds) on the wire — matches
+    // `ApprovalRecord.expiresAt: number` in
+    // `apps/relay-control-plane/src/store.ts`, echoed verbatim by
+    // `GET /v1/approvals/:id` (api.ts). A fabricated ISO-8601 STRING here
+    // would mask a decode failure against the real control plane.
     URLProtocolStub.enqueue(
       status: 200,
       data: Data(
@@ -246,7 +251,7 @@ struct ControlPlaneClientTests {
           "pairingId": "pairing-1",
           "gatewayId": "gw-1",
           "deviceLabel": "Chrome on Mac",
-          "expiresAt": "2026-01-01T00:02:00.000Z"
+          "expiresAt": 1767225720000
         }
         """.utf8
       )
@@ -266,13 +271,53 @@ struct ControlPlaneClientTests {
           pairingId: "pairing-1",
           gatewayId: "gw-1",
           deviceLabel: "Chrome on Mac",
-          expiresAt: "2026-01-01T00:02:00.000Z"
+          expiresAt: 1_767_225_720_000
         )
     )
     let request = try #require(URLProtocolStub.requests.last)
     #expect(request.httpMethod == "GET")
     #expect(request.url?.absoluteString == "https://cp.dash.test/v1/approvals/approval-1")
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer id-token-approval")
+  }
+
+  @Test("fetchApproval decodes a null deviceLabel (an unlabeled web pairing) without failing")
+  func fetchApprovalDecodesNullDeviceLabel() async throws {
+    let session = try await signedInSession(idToken: "id-token-approval-null-label")
+    // `deviceLabel` is `string | null` on `ApprovalRecord` — a web pairing
+    // minted without a label stores `null`, which a non-optional `String`
+    // would fail to decode.
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(
+        """
+        {
+          "approvalId": "approval-2",
+          "pairingId": "pairing-2",
+          "gatewayId": "gw-2",
+          "deviceLabel": null,
+          "expiresAt": 1767225720000
+        }
+        """.utf8
+      )
+    )
+    let client = ControlPlaneClient(
+      config: try makeConfig(),
+      tokens: session,
+      session: testURLSession()
+    )
+
+    let approval = try await client.fetchApproval(id: "approval-2")
+
+    #expect(
+      approval
+        == ApprovalRequestDTO(
+          approvalId: "approval-2",
+          pairingId: "pairing-2",
+          gatewayId: "gw-2",
+          deviceLabel: nil,
+          expiresAt: 1_767_225_720_000
+        )
+    )
   }
 
   @Test("postDecision posts the exact decision body to the exact URL")

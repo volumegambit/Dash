@@ -29,15 +29,19 @@ struct PairingGrant: Decodable, Equatable, Sendable {
 }
 
 /// A pending (or already-decided/expired) signer-gated approval, as returned
-/// by `GET /v1/approvals/:id` (Task 3). `expiresAt` is an ISO-8601 string —
-/// this client doesn't parse it; the caller (Task 6) decides how to render or
-/// compare it.
+/// by `GET /v1/approvals/:id` (Task 3). `expiresAt` is unix MILLISECONDS (a
+/// JSON number) — matches `ApprovalRecord.expiresAt: number` in
+/// `apps/relay-control-plane/src/store.ts`; this client doesn't convert it to
+/// a `Date`, the caller (Task 6) does. `deviceLabel` is nullable — a web
+/// pairing minted without a label stores `null`
+/// (`ApprovalRecord.deviceLabel: string | null`); the caller falls back to a
+/// generic label when absent.
 struct ApprovalRequestDTO: Decodable, Equatable, Sendable {
   let approvalId: String
   let pairingId: String
   let gatewayId: String
-  let deviceLabel: String
-  let expiresAt: String
+  let deviceLabel: String?
+  let expiresAt: Int
 }
 
 enum ControlPlaneError: Error, Equatable {
