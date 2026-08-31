@@ -283,9 +283,9 @@ drafts, and attachment metadata without those secrets.
 
 ## Approve a device
 
-Signing in registers this device as a signer for the account: `AccountConnectFeature.
-connect(to:)` best-effort calls `ControlPlaneClient.registerSigner` after every mint
-attempt (active or pending, enrolled or not) and persists the returned `signerId` via
+Signing in registers this device as a signer for the account:
+`AccountConnectFeature.connect(to:)` best-effort calls `ControlPlaneClient.registerSigner`
+after every mint attempt (active or pending, enrolled or not) and persists the returned `signerId` via
 `SignerIdentity.persistSignerId` — so the very first successful connect on a device is
 enough, with no separate setup step. A failed registration never blocks the connect
 itself; `onSignerRegistrationFailed` just logs it (`AccountConnectFeature` `init`'s
