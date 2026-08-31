@@ -18,6 +18,13 @@ private actor NeverScans: QRScanning {
   func stop() {}
 }
 
+/// Fails the test if invoked — for tests where the retry-on-403 path must
+/// never fire (no 403 occurs in that test).
+private func neverRegisterSigner() async throws -> String {
+  Issue.record("registerSigner should not have been called")
+  return "unexpected-signer"
+}
+
 private func fixtureApproval(
   approvalId: String = "approval-1",
   pairingId: String = "pairing-1",
@@ -58,6 +65,7 @@ struct ApproveDeviceViewModelTests {
         return approval
       },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in }
     )
@@ -78,6 +86,7 @@ struct ApproveDeviceViewModelTests {
         return fixtureApproval()
       },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in }
     )
@@ -98,6 +107,7 @@ struct ApproveDeviceViewModelTests {
         return fixtureApproval()
       },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in }
     )
@@ -114,6 +124,7 @@ struct ApproveDeviceViewModelTests {
       scanner: NeverScans(),
       fetchApproval: { _ in throw ControlPlaneError.expired },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in }
     )
@@ -129,6 +140,7 @@ struct ApproveDeviceViewModelTests {
       scanner: NeverScans(),
       fetchApproval: { _ in throw FetchFailure() },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in }
     )
@@ -147,6 +159,7 @@ struct ApproveDeviceViewModelTests {
       scanner: NeverScans(),
       fetchApproval: { _ in approval },
       resolveSignerId: { "signer-42" },
+      registerSigner: neverRegisterSigner,
       sign: { approvalId, pairingId, decision in
         signCall.calls.append((approvalId, pairingId, decision))
         return "signature-42"
@@ -180,6 +193,7 @@ struct ApproveDeviceViewModelTests {
       scanner: NeverScans(),
       fetchApproval: { _ in approval },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { approvalId, pairingId, decision in
         signCall.calls.append((approvalId, pairingId, decision))
         return "signature-1"
@@ -205,6 +219,7 @@ struct ApproveDeviceViewModelTests {
       scanner: NeverScans(),
       fetchApproval: { _ in fixtureApproval() },
       resolveSignerId: { throw FetchFailure() },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in
         signCount += 1
         return "sig"
@@ -220,12 +235,13 @@ struct ApproveDeviceViewModelTests {
     #expect(viewModel.state == .failed(ApproveDeviceCopy.genericFailure))
   }
 
-  @Test("postDecision's 410 maps to the exact expired copy")
+  @Test("postDecision's 410 maps to the exact expired copy, without retrying via registerSigner")
   func postDecisionExpiredMapsToExpiredCopy() async throws {
     let viewModel = ApproveDeviceViewModel(
       scanner: NeverScans(),
       fetchApproval: { _ in fixtureApproval() },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in throw ControlPlaneError.expired }
     )
@@ -236,19 +252,61 @@ struct ApproveDeviceViewModelTests {
     #expect(viewModel.state == .failed(ApproveDeviceCopy.expired))
   }
 
-  @Test("postDecision's 403 maps to the distinct forbidden copy")
-  func postDecisionForbiddenMapsToForbiddenCopy() async throws {
+  @Test(
+    "a 403 on postDecision re-registers the signer exactly once and retries the decision, healing a stale signerId"
+  )
+  func postDecisionForbiddenSelfHealsViaOneRetry() async throws {
+    let decisionCall = DecisionCall()
+    var registerSignerCallCount = 0
     let viewModel = ApproveDeviceViewModel(
       scanner: NeverScans(),
       fetchApproval: { _ in fixtureApproval() },
-      resolveSignerId: { "signer-1" },
+      resolveSignerId: { "stale-signer" },
+      registerSigner: {
+        registerSignerCallCount += 1
+        return "fresh-signer"
+      },
       sign: { _, _, _ in "sig" },
-      postDecision: { _, _, _, _ in throw ControlPlaneError.forbidden }
+      postDecision: { approvalId, decision, signerId, signature in
+        decisionCall.calls.append((approvalId, decision, signerId, signature))
+        if signerId == "stale-signer" {
+          throw ControlPlaneError.forbidden
+        }
+      }
     )
     await viewModel.handleScanned("dash-approve:v1:approval-1")
 
     await viewModel.approve()
 
+    #expect(registerSignerCallCount == 1)
+    #expect(decisionCall.calls.map(\.signerId) == ["stale-signer", "fresh-signer"])
+    #expect(viewModel.state == .result(ApproveDeviceCopy.approved))
+  }
+
+  @Test("a 403 that persists after the one retry surfaces the distinct forbidden copy, without retrying again")
+  func postDecisionForbiddenPersistingAfterRetrySurfacesForbiddenCopy() async throws {
+    var postDecisionCallCount = 0
+    var registerSignerCallCount = 0
+    let viewModel = ApproveDeviceViewModel(
+      scanner: NeverScans(),
+      fetchApproval: { _ in fixtureApproval() },
+      resolveSignerId: { "signer-1" },
+      registerSigner: {
+        registerSignerCallCount += 1
+        return "signer-1-again"
+      },
+      sign: { _, _, _ in "sig" },
+      postDecision: { _, _, _, _ in
+        postDecisionCallCount += 1
+        throw ControlPlaneError.forbidden
+      }
+    )
+    await viewModel.handleScanned("dash-approve:v1:approval-1")
+
+    await viewModel.approve()
+
+    #expect(registerSignerCallCount == 1)
+    #expect(postDecisionCallCount == 2)
     #expect(viewModel.state == .failed(ApproveDeviceCopy.forbidden))
     #expect(ApproveDeviceCopy.forbidden != ApproveDeviceCopy.expired)
   }
@@ -259,6 +317,7 @@ struct ApproveDeviceViewModelTests {
       scanner: NeverScans(),
       fetchApproval: { _ in throw FetchFailure() },
       resolveSignerId: { "signer-1" },
+      registerSigner: neverRegisterSigner,
       sign: { _, _, _ in "sig" },
       postDecision: { _, _, _, _ in }
     )

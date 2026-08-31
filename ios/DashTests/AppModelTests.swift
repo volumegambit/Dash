@@ -1122,15 +1122,54 @@ struct AppModelTests {
     #expect(model.chatHostGeneration == originalChatHostGeneration + 1)
   }
 
+  @Test("signing out of the account wipes this device's signer identity")
+  func signOutWipesSignerIdentity() async throws {
+    let keychain = RecordingSignerKeychain()
+    let config = AccountAuthConfig(
+      frontendAPIHost: "test-account.invalid",
+      clientID: "test-client",
+      controlPlaneURL: URL(string: "https://test-account.invalid")!,
+      redirectURI: "dash://oauth-callback"
+    )
+    let session = AccountSession(
+      preSignedInWithIDToken: "id-token",
+      expiresAt: Date.distantFuture,
+      config: config,
+      presenter: RefusingWebAuthPresenter(),
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 100))
+    )
+    let factory = AccountFeatureFactory(
+      session: session,
+      client: ControlPlaneClient(config: config, tokens: session),
+      verifier: UnavailablePairingVerifier(),
+      installer: UnavailablePairingInstaller(),
+      signer: SignerIdentity(keychain: keychain)
+    )
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine(), accountFeatureFactory: factory)
+    )
+    // Prime the entry so there is something to observe getting wiped — a
+    // fresh install with no signer entry yet would trivially "pass" a
+    // deletion assertion without proving anything.
+    try await factory.signer.persistSignerId("stale-signer-under-old-account")
+
+    await model.signOutOfAccount()
+
+    #expect(await keychain.deletedProfileIDs == [SignerIdentity.keychainNamespace])
+    #expect(try await factory.signer.signerId() == nil)
+  }
+
   private func dependencies(
     profile: ConnectionProfileSnapshot?,
-    engine: FakeAppSyncEngine
+    engine: FakeAppSyncEngine,
+    accountFeatureFactory: AccountFeatureFactory = .unavailable
   ) -> AppDependencies {
     let clock = TestAppClock(now: Date(timeIntervalSince1970: 100))
     return AppDependencies(
       clock: clock,
       loadProfile: { profile },
-      makeSyncEngine: { _ in engine }
+      makeSyncEngine: { _ in engine },
+      accountFeatureFactory: accountFeatureFactory
     )
   }
 
@@ -1269,6 +1308,37 @@ private actor FakeAppSyncEngine: AppSyncing {
     shutdownCallCount += 1
     events.append(.shutdown)
     await shutdownGate?.wait()
+  }
+}
+
+/// A `KeychainStoring` that records every `delete(for:)` call — unlike the
+/// trivial in-memory fakes elsewhere (`FakeKeychain` in
+/// `SignerIdentityTests`) this suite specifically needs to OBSERVE deletion
+/// happened, not just infer it from a subsequent load returning nil.
+private actor RecordingSignerKeychain: KeychainStoring {
+  private var storage: [UUID: ConnectionSecrets] = [:]
+  private(set) var deletedProfileIDs: [UUID] = []
+
+  func save(_ secrets: ConnectionSecrets, for profileID: UUID) async throws {
+    storage[profileID] = secrets
+  }
+
+  func load(for profileID: UUID) async throws -> ConnectionSecrets? {
+    storage[profileID]
+  }
+
+  func delete(for profileID: UUID) async throws {
+    storage[profileID] = nil
+    deletedProfileIDs.append(profileID)
+  }
+}
+
+/// A harmless `WebAuthPresenting` that always fails — this suite's
+/// sign-out test needs a `AccountSession` to construct `AccountFeatureFactory`
+/// but never actually drives an OAuth round-trip.
+private struct RefusingWebAuthPresenter: WebAuthPresenting {
+  func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+    throw AccountSessionError.exchangeFailed
   }
 }
 

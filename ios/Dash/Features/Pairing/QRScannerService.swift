@@ -1,10 +1,10 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-// Retained (currently unreferenced by product code) for an upcoming
-// signer-device feature that reuses camera scanning. QR pairing entry, this
-// service's former consumer, was retired in Task 7 of the iOS account
-// sign-in plan — see `PairingFeature.swift`.
+// Live product consumer: `ApproveDeviceView`'s scan-to-approve flow (Task 6
+// of the signer-device plan). QR pairing entry, this service's FORMER
+// consumer, was retired in Task 7 of the iOS account sign-in plan — see
+// `PairingFeature.swift`.
 
 final class QRScannerPreviewSource: @unchecked Sendable {
   let session: AVCaptureSession

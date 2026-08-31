@@ -106,6 +106,22 @@ actor SignerIdentity {
     )
   }
 
+  /// Wipes this device's ENTIRE signer identity — both the signing key and
+  /// any persisted `signerId` — from the Keychain, and drops the in-memory
+  /// cache. Called by `AppModel.signOutOfAccount()` so a signerId registered
+  /// under one account can never be silently reused after signing into a
+  /// DIFFERENT account on the same device: without this, `resolveSignerId()`
+  /// would keep returning the previous account's stale `signerId` forever,
+  /// and every approval decision would 403 with no path to recovery short of
+  /// reinstalling. After this call, the next `publicKeyB64()`/`sign(...)`
+  /// mints a brand-new key pair, and the next successful gateway connect
+  /// (`AccountConnectFeature.connect`) re-registers it fresh under whichever
+  /// account is signed in at that point.
+  func reset() async throws {
+    cachedKey = nil
+    try await keychain.delete(for: Self.keychainNamespace)
+  }
+
   private static func base64URLUnpadded(_ data: Data) -> String {
     data.base64EncodedString()
       .replacingOccurrences(of: "+", with: "-")

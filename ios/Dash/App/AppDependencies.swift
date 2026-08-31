@@ -106,6 +106,17 @@ struct AccountFeatureFactory: Sendable {
     try? await client.revokePairing(gatewayId: gatewayId, pairingId: pairingId)
   }
 
+  /// Wipes this device's signer identity (key + persisted signerId) — see
+  /// `SignerIdentity.reset()`. Called by `AppModel.signOutOfAccount()` so a
+  /// signerId registered under this account can never be reused after
+  /// signing into a DIFFERENT one on the same device. Best-effort, like
+  /// `revokePairing` above: a Keychain delete failure here must not block
+  /// sign-out, and the worst case (a leftover stale signerId) is already
+  /// defended against by `makeApproveDeviceViewModel`'s retry-on-403.
+  func resetSignerIdentity() async {
+    try? await signer.reset()
+  }
+
   @MainActor
   func makeConnect(
     onGrantMinted: @escaping @MainActor @Sendable (String, String) -> Void = { _, _ in },
@@ -122,6 +133,22 @@ struct AccountFeatureFactory: Sendable {
     )
   }
 
+  /// Registers this device's signer key fresh (ignoring any cached
+  /// `signerId`) and persists the result, returning the new `signerId`.
+  /// Shared by `makeApproveDeviceViewModel`'s `resolveSignerId` (the normal
+  /// "have I registered yet?" path) and `registerSigner` (the unconditional
+  /// re-register `ApproveDeviceViewModel` uses to recover from a stale,
+  /// no-longer-recognized `signerId` — see that closure's doc comment).
+  private func registerAndPersistSigner() async throws -> String {
+    let publicKey = try await signer.publicKeyB64()
+    let signerId = try await client.registerSigner(
+      publicKey: publicKey,
+      label: makeDeviceLabel()
+    )
+    try await signer.persistSignerId(signerId)
+    return signerId
+  }
+
   /// Builds a fresh `ApproveDeviceViewModel` for one scan-to-approve attempt
   /// (Task 6). `resolveSignerId` implements "register-then-decide": most of
   /// the time `signer.signerId()` already holds a value from the best-effort
@@ -131,6 +158,16 @@ struct AccountFeatureFactory: Sendable {
   /// now, on demand, using this same signer key — rather than showing a dead
   /// end that tells the user to reconnect a gateway they're already
   /// connected to.
+  ///
+  /// `registerSigner` is the defense-in-depth half of the same story: even
+  /// with `AppModel.signOutOfAccount()` wiping the signer identity on
+  /// sign-out, a `signerId` cached from BEFORE that wipe could theoretically
+  /// still be in play for an in-flight approve attempt, or a future bug could
+  /// reintroduce the leak. `ApproveDeviceViewModel` calls this — an
+  /// unconditional re-register, bypassing `signer.signerId()`'s cache — the
+  /// one time it sees a `403` while posting a decision, so a stale signerId
+  /// self-heals instead of permanently bricking "Approve a device" on this
+  /// device.
   @MainActor
   func makeApproveDeviceViewModel() -> ApproveDeviceViewModel {
     ApproveDeviceViewModel(
@@ -140,14 +177,9 @@ struct AccountFeatureFactory: Sendable {
         if let existing = try await self.signer.signerId() {
           return existing
         }
-        let publicKey = try await self.signer.publicKeyB64()
-        let signerId = try await self.client.registerSigner(
-          publicKey: publicKey,
-          label: self.makeDeviceLabel()
-        )
-        try await self.signer.persistSignerId(signerId)
-        return signerId
+        return try await self.registerAndPersistSigner()
       },
+      registerSigner: { try await self.registerAndPersistSigner() },
       sign: { approvalId, pairingId, decision in
         try await self.signer.sign(
           approvalId: approvalId,

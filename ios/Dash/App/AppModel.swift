@@ -402,7 +402,11 @@ final class AppModel {
   /// Forget" performs — `GatewayPickerView` only shows once `selectedProfile`
   /// is already nil, so this is normally a no-op belt-and-suspenders check),
   /// best-effort revokes the most recently minted — but never completed —
-  /// pairing grant from this session, then drops the cached account token.
+  /// pairing grant from this session, wipes this device's signer identity
+  /// (Task 6 review fix: without this, a signerId registered under THIS
+  /// account would survive into a later sign-in as a different account,
+  /// permanently 403ing every approval decision that account's Settings
+  /// screen ever tries to post), then drops the cached account token.
   func signOutOfAccount() async {
     if selectedProfile != nil {
       try? await disconnectAndForget()
@@ -414,6 +418,7 @@ final class AppModel {
       )
       lastAccountGrant = nil
     }
+    await dependencies.accountFeatureFactory.resetSignerIdentity()
     await dependencies.accountFeatureFactory.signOut()
   }
 

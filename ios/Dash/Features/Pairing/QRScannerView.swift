@@ -2,8 +2,8 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-/// Camera-scanning UI. Retained (currently unreferenced by product code) for
-/// an upcoming signer-device feature that reuses camera scanning. QR pairing
+/// Camera-scanning UI. Live product consumer: `ApproveDeviceView`'s
+/// scan-to-approve flow (Task 6 of the signer-device plan). QR pairing
 /// entry — which used to host this view via `PairingFeature`/`PairingRoute`
 /// — was retired in Task 7 of the iOS account sign-in plan; this view no
 /// longer depends on either.

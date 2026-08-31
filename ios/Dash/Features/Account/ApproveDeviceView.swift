@@ -56,6 +56,12 @@ final class ApproveDeviceViewModel {
   private let fetchApproval: @MainActor @Sendable (String) async throws -> ApprovalRequestDTO
   @ObservationIgnored
   private let resolveSignerId: @MainActor @Sendable () async throws -> String
+  /// Unconditionally re-registers this device's signer (bypassing whatever
+  /// `resolveSignerId` cached) — the recovery half of the retry-on-403 story.
+  /// See `decide(_:)`'s doc comment and `AccountFeatureFactory.
+  /// makeApproveDeviceViewModel`'s.
+  @ObservationIgnored
+  private let registerSigner: @MainActor @Sendable () async throws -> String
   @ObservationIgnored
   private let sign: @MainActor @Sendable (String, String, String) async throws -> String
   @ObservationIgnored
@@ -65,12 +71,14 @@ final class ApproveDeviceViewModel {
     scanner: any QRScanning,
     fetchApproval: @escaping @MainActor @Sendable (String) async throws -> ApprovalRequestDTO,
     resolveSignerId: @escaping @MainActor @Sendable () async throws -> String,
+    registerSigner: @escaping @MainActor @Sendable () async throws -> String,
     sign: @escaping @MainActor @Sendable (String, String, String) async throws -> String,
     postDecision: @escaping @MainActor @Sendable (String, String, String, String) async throws -> Void
   ) {
     self.scanner = scanner
     self.fetchApproval = fetchApproval
     self.resolveSignerId = resolveSignerId
+    self.registerSigner = registerSigner
     self.sign = sign
     self.postDecision = postDecision
   }
@@ -112,17 +120,43 @@ final class ApproveDeviceViewModel {
     state = .scanning
   }
 
+  /// Defense-in-depth against a stale, no-longer-recognized `signerId`:
+  /// `AppModel.signOutOfAccount()` wipes this device's signer identity on
+  /// sign-out so that scenario shouldn't normally arise, but a `403` here
+  /// (the control plane's "signature didn't verify or signerId isn't
+  /// registered under this account" response) is unconditionally
+  /// re-registered and retried EXACTLY ONCE before giving up — self-healing
+  /// a stale id rather than permanently bricking "Approve a device" on this
+  /// device until reinstall. A second `403` (or any other error) surfaces
+  /// normally.
   private func decide(_ decision: String) async {
     guard case .confirming(let approval) = state else { return }
     state = .deciding(approval, decision: decision)
     do {
       let signerId = try await resolveSignerId()
-      let signature = try await sign(approval.approvalId, approval.pairingId, decision)
-      try await postDecision(approval.approvalId, decision, signerId, signature)
+      do {
+        try await signAndPostDecision(approval: approval, decision: decision, signerId: signerId)
+      } catch ControlPlaneError.forbidden {
+        let freshSignerId = try await registerSigner()
+        try await signAndPostDecision(
+          approval: approval,
+          decision: decision,
+          signerId: freshSignerId
+        )
+      }
       state = .result(decision == "approve" ? ApproveDeviceCopy.approved : ApproveDeviceCopy.denied)
     } catch {
       state = .failed(Self.copy(for: error))
     }
+  }
+
+  private func signAndPostDecision(
+    approval: ApprovalRequestDTO,
+    decision: String,
+    signerId: String
+  ) async throws {
+    let signature = try await sign(approval.approvalId, approval.pairingId, decision)
+    try await postDecision(approval.approvalId, decision, signerId, signature)
   }
 
   private static func copy(for error: Error) -> String {

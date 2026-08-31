@@ -6,10 +6,13 @@ import Testing
 
 /// A trivial in-memory `KeychainStoring` — no `SecItem*` calls, just a
 /// dictionary keyed by `profileID`. Mirrors `RecordingPairingKeychain` in
-/// `PairingPipelineTests` but only needs load/save (no delete assertions).
+/// `PairingPipelineTests`. `deleteCount` was added alongside `reset()` (Task
+/// 6 review fix) so tests can assert deletion actually happened, not just
+/// infer it from a subsequent load returning nil.
 private actor FakeKeychain: KeychainStoring {
   private var storage: [UUID: ConnectionSecrets] = [:]
   private(set) var saveCount = 0
+  private(set) var deleteCount = 0
 
   func save(_ secrets: ConnectionSecrets, for profileID: UUID) async throws {
     storage[profileID] = secrets
@@ -22,6 +25,7 @@ private actor FakeKeychain: KeychainStoring {
 
   func delete(for profileID: UUID) async throws {
     storage[profileID] = nil
+    deleteCount += 1
   }
 }
 
@@ -204,6 +208,59 @@ struct SignerIdentityTests {
     try await identity.persistSignerId("signer-new")
 
     #expect(try await identity.signerId() == "signer-new")
+  }
+
+  @Test("reset deletes the Keychain entry and clears the persisted signerId")
+  func resetDeletesTheKeychainEntry() async throws {
+    let keychain = FakeKeychain()
+    let identity = SignerIdentity(keychain: keychain)
+    try await identity.persistSignerId("signer-under-old-account")
+
+    try await identity.reset()
+
+    #expect(await keychain.deleteCount == 1)
+    #expect(try await identity.signerId() == nil)
+    #expect(try await keychain.load(for: SignerIdentity.keychainNamespace) == nil)
+  }
+
+  @Test("reset mints a brand-new, different key on the next publicKeyB64 call")
+  func resetMintsANewKeyOnNextUse() async throws {
+    let identity = SignerIdentity(keychain: FakeKeychain())
+    let originalKey = try await identity.publicKeyB64()
+
+    try await identity.reset()
+
+    let newKey = try await identity.publicKeyB64()
+    #expect(newKey != originalKey)
+  }
+
+  @Test("reset on a device with no signer entry yet is a harmless no-op")
+  func resetWithNoExistingEntryIsSafe() async throws {
+    let keychain = FakeKeychain()
+    let identity = SignerIdentity(keychain: keychain)
+
+    try await identity.reset()
+
+    #expect(await keychain.deleteCount == 1)
+    #expect(try await identity.signerId() == nil)
+  }
+
+  @Test("reset does not affect an unrelated connection profile's Keychain entry")
+  func resetDoesNotAffectUnrelatedConnectionProfiles() async throws {
+    let keychain = FakeKeychain()
+    let identity = SignerIdentity(keychain: keychain)
+    try await identity.persistSignerId("signer-to-be-wiped")
+    let unrelatedProfileID = UUID()
+    let unrelatedSecrets = ConnectionSecrets(
+      managementToken: "mgmt",
+      chatToken: "chat",
+      relayCredential: "cred"
+    )
+    try await keychain.save(unrelatedSecrets, for: unrelatedProfileID)
+
+    try await identity.reset()
+
+    #expect(try await keychain.load(for: unrelatedProfileID) == unrelatedSecrets)
   }
 }
 
