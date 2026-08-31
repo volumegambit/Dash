@@ -407,7 +407,194 @@ describe('ChatView shell structure (chat-ux Phase 2 Task 1, audit #1)', () => {
     const shellRoot = transcript.closest('.app-main');
     expect(shellRoot).toBeTruthy();
     // The composer lives inside the same shell root, in its own row.
-    expect(shellRoot?.querySelector('.app-composer-row input[aria-label="Message"]')).toBeTruthy();
+    expect(
+      shellRoot?.querySelector('.app-composer-row textarea[aria-label="Message"]'),
+    ).toBeTruthy();
+  });
+});
+
+describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
+  it('Enter sends the drafted message; Shift+Enter does not', async () => {
+    const { sockets } = await renderConnected();
+    const textarea = screen.getByLabelText('Message');
+
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+    expect(sockets[0].sent).toHaveLength(0);
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'hello' });
+  });
+
+  it('ignores Enter while an IME composition is in progress (isComposing, and the legacy keyCode 229 fallback)', async () => {
+    const { sockets } = await renderConnected();
+    const textarea = screen.getByLabelText('Message');
+
+    fireEvent.change(textarea, { target: { value: 'こんにちは' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
+
+    expect(sockets[0].sent).toHaveLength(0);
+  });
+
+  it('autogrows the textarea by matching its scrollHeight on every keystroke', async () => {
+    await renderConnected();
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+
+    // happy-dom (like jsdom) never lays out real content, so `scrollHeight`
+    // is otherwise always 0 — stub it to a multi-line value to exercise the
+    // resize effect (ChatView.tsx: `ta.style.height = scrollHeight + 'px'`).
+    // The visual clamp itself (`max-height: 40dvh`) is a CSS rule, asserted
+    // separately in styles.test.ts — jsdom/happy-dom can't compute it.
+    Object.defineProperty(textarea, 'scrollHeight', { value: 96, configurable: true });
+    fireEvent.change(textarea, { target: { value: 'line one\nline two\nline three' } });
+
+    await waitFor(() => expect(textarea.style.height).toBe('96px'));
+  });
+
+  it('shows a stop button (not Send) while a turn is streaming, and calls cancelTurn on click', async () => {
+    const { sockets, onFrames } = await renderConnected();
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    const turnId = sockets[0].sent[0].id;
+
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+    });
+
+    const stopButton = await screen.findByLabelText('Stop response');
+    expect(screen.queryByText('Send')).toBeNull();
+
+    fireEvent.click(stopButton);
+    await waitFor(() =>
+      expect(sockets[0].sent).toContainEqual(
+        expect.objectContaining({ type: 'cancel', id: turnId }),
+      ),
+    );
+
+    act(() => {
+      onFrames[0]({
+        type: 'done',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        outcome: 'cancelled',
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByLabelText('Stop response')).toBeNull());
+    expect(screen.getByText('Send')).toBeTruthy();
+  });
+
+  it('keeps drafts isolated per conversation — switching away and back restores the original draft without leaking it onto the other thread (audit #14)', async () => {
+    const OTHER_ID = 'conv-2';
+    const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'draft for A' } });
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(2));
+    sockets[1].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    // Thread B never saw thread A's draft.
+    expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('');
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'draft for B' } });
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(3));
+    sockets[2].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    // Thread A's draft survived the round trip.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('draft for A'),
+    );
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('draft for B'),
+    );
+  });
+
+  it('clears the draft map entry for a conversation once its message actually sends', async () => {
+    const OTHER_ID = 'conv-2';
+    const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'sent from A' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe(''),
+    );
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(2));
+    sockets[1].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(3));
+    sockets[2].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    // Back on A: the sent draft was cleared, not resurrected.
+    expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('');
   });
 });
 

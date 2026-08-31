@@ -95,6 +95,15 @@ describe('styles.css design tokens (chat-ux Phase 2 Task 1)', () => {
     expect(css).toContain('.app-composer-row');
   });
 
+  it('clamps the composer textarea autogrow to ~40dvh (chat-ux Phase 2 Task 2, audit #3)', () => {
+    expect(css).toMatch(/\.app-composer-textarea\s*{[^}]*max-height:\s*40dvh/);
+    expect(css).toMatch(/\.app-composer-textarea\s*{[^}]*overflow-y:\s*auto/);
+  });
+
+  it('declares a distinct stop-button rule for the composer send↔stop morph', () => {
+    expect(css).toContain('.app-composer-stop');
+  });
+
   it('turns the sidebar into an overlay drawer under 768px', () => {
     expect(css).toContain('@media (max-width: 768px)');
     const mobile = css.slice(css.indexOf('@media (max-width: 768px)'));

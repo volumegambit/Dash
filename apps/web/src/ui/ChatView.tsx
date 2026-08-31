@@ -1,5 +1,5 @@
 import type { ConversationMessage } from '@dash/mobile-contract';
-import { type FormEvent, type ReactNode, memo, useCallback, useEffect, useState } from 'react';
+import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useWebAppStore } from './Shell.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
 
@@ -32,6 +32,16 @@ function CopyIcon(): ReactNode {
         strokeWidth="2"
       />
       <path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+/** Send↔stop morph target (MC parity, chat.tsx:2633-2643 `Square` icon):
+ * shown on the composer's stop button while a turn is streaming. */
+function StopIcon(): ReactNode {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
     </svg>
   );
 }
@@ -139,9 +149,50 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   );
   const openConversation = useAppStore((s) => s.openConversation);
   const sendMessage = useAppStore((s) => s.sendMessage);
+  const cancelTurn = useAppStore((s) => s.cancelTurn);
 
-  const [draft, setDraft] = useState('');
+  // Draft-per-conversation (audit #14): a component-level Map, keyed by
+  // conversation id, outlives conversation switches (this component instance
+  // is never remounted just because `conversationId` changes — `Shell` keeps
+  // rendering the same `ChatView`) without leaking one thread's in-progress
+  // draft into another's textarea. `draft` itself is the *displayed* value
+  // for whichever conversation is currently open; the effect below loads it
+  // from the map (or '' for a thread with no saved draft) every time
+  // `conversationId` changes, and `updateDraft` keeps the map in sync on
+  // every keystroke so switching away and back round-trips it.
+  const draftsRef = useRef(new Map<string, string>());
+  const [draft, setDraftState] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const updateDraft = useCallback(
+    (text: string) => {
+      setDraftState(text);
+      if (conversationId) draftsRef.current.set(conversationId, text);
+    },
+    [conversationId],
+  );
+
+  useEffect(() => {
+    setDraftState(conversationId ? (draftsRef.current.get(conversationId) ?? '') : '');
+  }, [conversationId]);
+
+  // Autogrow (MC parity, chat.tsx:1914-1919 `resizeTextarea`): re-measure
+  // `scrollHeight` after every render (deliberately no dependency array —
+  // this must re-run for every draft change, including the reset-to-''
+  // on a successful send or a conversation switch, and depending on
+  // `draft` alone would be a lint-flagged unused dependency since the body
+  // never reads that variable, only the DOM). Cheap synchronous DOM-only
+  // work, so running it unconditionally is fine. The max visual height is
+  // clamped by the `.app-composer-textarea` CSS rule (`max-height: 40dvh`),
+  // not here, so this only ever grows/shrinks the element up to that
+  // ceiling and lets CSS `overflow-y: auto` take over beyond it.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  });
 
   useEffect(() => {
     if (!conversationId) return;
@@ -192,15 +243,21 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const messages = transcript?.messages ?? [];
   const streaming = transcript?.streaming ?? null;
   const canSend = connection === 'connected';
+  // Non-null once the `accepted` frame lands and stays that way (even
+  // through empty-events right after accept) until `done`/`error` clears it
+  // — see `assemble.ts`. Drives the composer's send↔stop morph (MC parity,
+  // chat.tsx:2633-2643) and locks the textarea while a turn is in flight,
+  // same as MC's `composerLocked`.
+  const isStreaming = streaming !== null;
 
-  async function handleSubmit(event: FormEvent): Promise<void> {
-    event.preventDefault();
+  async function handleSend(): Promise<void> {
     const text = draft.trim();
-    if (!text || !conversationId || !canSend) return;
+    if (!text || !conversationId || !canSend || isStreaming) return;
     setSendError(null);
     try {
       await sendMessage(conversationId, text);
-      setDraft('');
+      draftsRef.current.delete(conversationId);
+      updateDraft('');
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send message.');
     }
@@ -231,17 +288,52 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
       </div>
 
       <div className="app-composer-row">
-        <form className="app-composer" onSubmit={(event) => void handleSubmit(event)}>
-          <input
+        <form
+          className="app-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleSend();
+          }}
+        >
+          <textarea
+            ref={textareaRef}
+            rows={1}
             aria-label="Message"
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            disabled={!canSend}
+            onChange={(event) => updateDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey) return;
+              // IME composition (e.g. typing Japanese/Chinese/Korean via a
+              // candidate window) fires `Enter` to confirm a candidate, not
+              // to submit — `isComposing` is the modern signal; `keyCode ===
+              // 229` is the legacy fallback some browsers still use during
+              // composition instead of setting `isComposing` reliably.
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              event.preventDefault();
+              void handleSend();
+            }}
+            disabled={!canSend || isStreaming}
             placeholder={canSend ? 'Message…' : 'Reconnecting…'}
+            className="app-composer-textarea"
           />
-          <button type="submit" disabled={!canSend || !draft.trim()}>
-            Send
-          </button>
+          {isStreaming ? (
+            <button
+              type="button"
+              aria-label="Stop response"
+              className="app-composer-stop"
+              onClick={() => conversationId && cancelTurn(conversationId)}
+            >
+              <StopIcon />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="app-composer-send"
+              disabled={!canSend || !draft.trim()}
+            >
+              Send
+            </button>
+          )}
         </form>
         {sendError && <p role="alert">{sendError}</p>}
       </div>

@@ -33,6 +33,7 @@ function fakeWebAppState() {
     loadConversations: vi.fn(async () => undefined),
     openConversation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
+    cancelTurn: vi.fn(),
     dispose: vi.fn(),
   }));
 }
