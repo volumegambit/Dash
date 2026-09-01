@@ -55,6 +55,28 @@ enum ConversationSearchFilter {
   }
 }
 
+/// Compose-first new chat (Task 3, audit #16), factored out of
+/// `ConversationListView.startCompose()` the same way `ConversationSearchFilter`
+/// is factored out of the search bar (review fix, minor: the brief called
+/// for a persisted-agent-no-longer-exists fallback test, which needs a pure
+/// function to test against — `startCompose()` itself is a private `View`
+/// method that can't be unit-tested directly).
+///
+/// `lastUsedAgentID` may name an agent that's since been deleted or
+/// disabled (no longer in `availableAgents`, which is already filtered to
+/// `status != .disabled`) — that's not an error, just a stale preference,
+/// so this falls back to the first available agent exactly the same way it
+/// does when nothing's been recorded yet.
+enum ComposeAgentSelection {
+  static func resolve(
+    availableAgents: [RegisteredAgentDTO],
+    lastUsedAgentID: String?
+  ) -> String? {
+    guard availableAgents.isEmpty == false else { return nil }
+    return availableAgents.first { $0.id == lastUsedAgentID }?.id ?? availableAgents[0].id
+  }
+}
+
 struct ConversationListView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(ConversationListFeature.self) private var feature
@@ -361,31 +383,35 @@ struct ConversationListView: View {
   /// straight into `ChatView`. The agent choice itself isn't asked for here
   /// anymore: it defaults to whichever agent this gateway was last used
   /// with (`ConversationListFeature.lastUsedAgentID()`, persisted per
-  /// gateway), falling back to the first enabled agent the very first time.
+  /// gateway), falling back to the first enabled agent the very first time —
+  /// see `ComposeAgentSelection.resolve(availableAgents:lastUsedAgentID:)`.
   /// `ChatView`'s header agent chip is now the ONLY place to override that
   /// choice, and only while the resulting conversation is still empty — see
   /// `AgentPickerSheet`'s doc comment.
   private func startCompose() async {
     guard isComposing == false else { return }
-    let availableAgents = availableComposeAgents
-    guard availableAgents.isEmpty == false else { return }
+    // Armed BEFORE the first `await` below: `lastUsedAgentID()` suspends, and
+    // a second tap landing in that window would otherwise pass the reentrancy
+    // guard and compose twice.
     isComposing = true
     defer { isComposing = false }
-    let lastUsed = await feature.lastUsedAgentID()
-    let agentID = availableAgents.first { $0.id == lastUsed }?.id ?? availableAgents[0].id
-    await feature.create(agentID: agentID)
-    // Bug fix (verified by `testAgentChipSwitchesConversationAndPersistsLastUsedAgent`):
-    // this used to compare `feature.selectedID` against its value BEFORE the
-    // call, treating "unchanged" as failure — but `create(agentID:)` is
-    // idempotent per agent (the gateway returns the SAME conversation for a
-    // repeat create against an agent that already has one), so composing
-    // twice in a row with the same default/last-used agent legitimately
-    // resolves to the conversation that was already selected. `mutationError`
-    // is the real success/failure signal: `create` clears it on success and
-    // sets it on every failure path (offline, validation, outcome-unknown).
-    guard feature.mutationError == nil, let conversationID = feature.selectedID else {
-      return
-    }
+    guard
+      let agentID = ComposeAgentSelection.resolve(
+        availableAgents: availableComposeAgents,
+        lastUsedAgentID: await feature.lastUsedAgentID()
+      )
+    else { return }
+    // Review fix I2: `create(agentID:)` now returns the resolved
+    // conversation id directly (or `nil` on ANY failure, including a rare
+    // tombstone-reconciliation race) rather than this call re-reading
+    // `feature.selectedID`/`mutationError` afterward — a prior version of
+    // this compared the resolved `selectedID` against its value BEFORE the
+    // call, which broke because `create(agentID:)` is idempotent per agent
+    // (composing twice with the same default/last-used agent legitimately
+    // resolves to the conversation that was already selected, which the old
+    // "did it change" check wrongly treated as failure — caught by
+    // `testAgentChipSwitchesConversationAndPersistsLastUsedAgent`).
+    guard let conversationID = await feature.create(agentID: agentID) else { return }
     await feature.recordLastUsedAgent(agentID)
     appModel.openConversation(conversationID, presentation: presentation)
   }

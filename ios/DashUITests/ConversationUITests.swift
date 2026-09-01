@@ -576,4 +576,30 @@ final class ConversationUITests: DashUITestCase {
       "Expected the agent chip to disappear once a message has been sent"
     )
   }
+
+  /// Review fix I1: backing out of a compose-created, still-empty
+  /// conversation without ever sending anything used to leave a permanent
+  /// empty "New Conversation" row — the exact anti-pattern audit #16
+  /// targets. iPhone-only: on the regular/iPad split, tapping the sidebar
+  /// toggle doesn't deselect the open conversation (`splitConversationSelection`
+  /// is unchanged), so `ChatView.onDisappear`'s `stillNavigatedTo` guard
+  /// deliberately does NOT treat that as "left" — see its doc comment.
+  func testComposeThenBackWithoutSendingLeavesNoPermanentRow() throws {
+    let app = launch(scenario: "compose-new-chat")
+    try XCTSkipIf(app.windows.firstMatch.frame.width >= 700, "Compact back-navigation is iPhone-only")
+    selectTab("tab.conversations", in: app)
+
+    element("conversation.new", in: app).tap()
+    XCTAssertTrue(element("chat.transcript", in: app).waitForExistence(timeout: 5))
+
+    app.navigationBars.buttons.firstMatch.tap()
+
+    XCTAssertTrue(element("conversation.list", in: app).exists)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["conversation.row.conversation-research-agent"]
+        .waitForNonExistence(timeout: 5),
+      "Expected backing out of an unsent compose-created conversation to leave no permanent row"
+    )
+    XCTAssertTrue(app.staticTexts["No conversations"].waitForExistence(timeout: 5))
+  }
 }

@@ -93,7 +93,55 @@ struct ChatView: View {
       await feature.appear()
     }
     .onDisappear {
-      Task { await feature.disappear() }
+      // Compose-first new chat (Task 3 review, I1): backing out of a
+      // compose-created, still-empty conversation without ever sending
+      // anything used to leave a permanent empty "New Conversation" row —
+      // the exact anti-pattern audit #16 targets (the pre-compose-first
+      // `NewConversationView` Form never had this problem, since creation
+      // only happened after an explicit "Start conversation" tap). Values
+      // captured synchronously, before the `Task`, since navigation state
+      // can keep changing after this closure returns:
+      //
+      // - `hasActivity` — this conversation is exempt from cleanup once it
+      //   has ever had a message or an active turn.
+      // - `stillNavigatedTo` — distinguishes a genuine "user backed out of
+      //   this conversation" from a transient tab-switch-away (which also
+      //   fires `onDisappear` — see `ChatFeature.disappear()`'s existing
+      //   use of the same hook to suspend the connection — but doesn't
+      //   remove this route from navigation, only hides it behind another
+      //   tab). Branches on presentation exactly like `ConversationListView
+      //   .isSelected(_:)` does, for the same reason: a compact back-button
+      //   pop mutates the BOUND `conversationPath` array (that's what makes
+      //   bound-path navigation work), but has no knowledge of
+      //   `splitConversationSelection` at all — that property is only ever
+      //   written by `AppModel`'s own navigation methods, never cleared by
+      //   an interactive pop. Checking it for compact too (an earlier
+      //   version of this did) meant it stayed permanently stale at
+      //   whatever was last opened, silently defeating cleanup on iPhone
+      //   entirely — caught by
+      //   `testComposeThenBackWithoutSendingLeavesNoPermanentRow`. Regular
+      //   width has the opposite asymmetry: its detail column's own
+      //   NavigationStack isn't bound to `conversationPath` at all, so
+      //   `splitConversationSelection` is the only thing that actually
+      //   tracks what's open there.
+      let conversationID = feature.state.conversation.id
+      let hasActivity = feature.state.messages.isEmpty == false
+        || feature.state.activeTurnID != nil
+      let stillNavigatedTo: Bool
+      switch AdaptiveNavigationPolicy.presentation(horizontalSizeClass: horizontalSizeClass) {
+      case .compact:
+        stillNavigatedTo = appModel.conversationPath.contains(.transcript(conversationID))
+      case .regular:
+        stillNavigatedTo = appModel.splitConversationSelection == .transcript(conversationID)
+      }
+      Task {
+        await feature.disappear()
+        guard stillNavigatedTo == false else { return }
+        await appModel.conversationListFeature?.discardIfUnusedComposeCreation(
+          id: conversationID,
+          hasActivity: hasActivity
+        )
+      }
     }
     .alert("Rename conversation", isPresented: $isRenamePresented) {
       TextField("Title", text: $renameTitle)
@@ -207,15 +255,20 @@ struct ChatView: View {
     guard isSwitchingAgent == false else { return }
     isSwitchingAgent = true
     defer { isSwitchingAgent = false }
-    await listFeature.create(agentID: agentID)
-    // See `ConversationListView.startCompose()`'s matching comment: `create`
-    // is idempotent per agent, so comparing the resolved `selectedID`
-    // against its value from BEFORE this call would wrongly treat "resolved
-    // to a conversation that happened to already be selected" as failure.
-    // `listFeature.mutationError == nil` is the actual success signal.
-    guard listFeature.mutationError == nil, let newConversationID = listFeature.selectedID else {
-      return
-    }
+    // Review fix I2: `create(agentID:)` returns the resolved conversation id
+    // directly (or `nil` on ANY failure, including a rare tombstone-
+    // reconciliation race) — see `ConversationListView.startCompose()`'s
+    // matching comment for why re-reading `selectedID`/`mutationError`
+    // afterward was wrong. The `!= current conversation` check is
+    // defensive: `onSelect` above already guards `agentID` against the
+    // CURRENT conversation's agent, and `create` dedups by agent, so a
+    // resolved id equal to `feature.state.conversation.id` should be
+    // unreachable — but if it ever happened, replacing a conversation with
+    // itself would be a no-op worth skipping rather than a route churn.
+    guard
+      let newConversationID = await listFeature.create(agentID: agentID),
+      newConversationID != feature.state.conversation.id
+    else { return }
     await listFeature.recordLastUsedAgent(agentID)
     appModel.replaceConversation(
       feature.state.conversation.id,

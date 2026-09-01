@@ -1020,7 +1020,20 @@ extension AppDependenciesFactory {
     }
 
     func create(_ request: CreateConversationRequest) -> ConversationSummaryDTO {
-      if let existing = conversationValues.first(where: { $0.agentId == request.agentId }) {
+      // Review fix (I1/I2 fixture mismatch, Task 3 review): dedup only
+      // against a LIVE (non-deleted) existing conversation for this agent.
+      // A real gateway's create endpoint would never hand back an
+      // already-deleted conversation for a repeat create — it only
+      // idempotently returns a conversation that's still actually there.
+      // Compose-first's own cleanup (`ConversationListFeature
+      // .discardIfUnusedComposeCreation`, review fix I1) makes this
+      // reachable now: compose, switch agents (creating a second
+      // conversation), then leave it unsent — the first create's result
+      // gets deleted, and composing with that SAME agent again must create
+      // a genuinely fresh conversation, not resurrect the tombstone.
+      if let existing = conversationValues.first(where: {
+        $0.agentId == request.agentId && $0.status != .deleted
+      }) {
         return existing
       }
       let agent = agentValues.first { $0.id == request.agentId }
@@ -1040,7 +1053,17 @@ extension AppDependenciesFactory {
         updatedAt: UITestScenarioFixtures.now,
         deletedAt: nil
       )
-      conversationValues.append(value)
+      // The deterministic `"conversation-\(agentId)"` id means a fresh
+      // create for an agent whose PRIOR conversation was deleted collides
+      // with that stale (tombstoned) entry's id — replace it in place
+      // rather than appending a duplicate id, which would otherwise shadow
+      // the new live entry behind the old tombstone in every `first(where:)`
+      // lookup keyed by id.
+      if let staleIndex = conversationValues.firstIndex(where: { $0.id == value.id }) {
+        conversationValues[staleIndex] = value
+      } else {
+        conversationValues.append(value)
+      }
       messages[value.id] = []
       return value
     }
@@ -1239,7 +1262,11 @@ extension AppDependenciesFactory {
     }
 
     func startConversation(agentID: String) throws -> ConversationSummaryDTO {
-      if let existing = conversationValues.first(where: { $0.agentId == agentID }) {
+      // See `create(_:)`'s matching comment: dedup only against a LIVE
+      // conversation, same as a real gateway would.
+      if let existing = conversationValues.first(where: {
+        $0.agentId == agentID && $0.status != .deleted
+      }) {
         return existing
       }
       return create(

@@ -514,35 +514,6 @@ struct ConversationListFeatureTests {
     #expect(feature.isAuthoritative)
   }
 
-  @Test("new-conversation agent choices load from cache while offline")
-  func cachedAgentChoicesLoadOffline() async {
-    let cachedAgent = agent(id: "agent-cached", name: "Cached agent")
-    let service = FakeConversationListService(cachedAgents: [cachedAgent])
-    let feature = makeFeature(service: service)
-    feature.consume(snapshot(connection: .offline, conversations: []))
-
-    await feature.loadAgentChoices()
-
-    #expect(feature.agents == [cachedAgent])
-    #expect(await service.refreshAgentCallCount == 0)
-  }
-
-  @Test("an agent-choice refresh failure reports one gateway error")
-  func agentChoiceRefreshReportsOnce() async {
-    let service = FakeConversationListService()
-    await service.enqueueAgents(.failure(.gatewayOffline))
-    let recorder = GatewayErrorRecorder()
-    let feature = makeFeature(service: service)
-    feature.setGatewayErrorHandler { error in
-      await recorder.record(error)
-    }
-    feature.consume(snapshot(connection: .online, conversations: []))
-
-    await feature.loadAgentChoices()
-
-    #expect(await recorder.values == [.gatewayOffline])
-  }
-
   @Test("becoming online after cache load fetches the first canonical page")
   func onlineTransitionStartsCanonicalRefresh() async {
     let cached = cachedConversation(summary(id: "cached", title: "Cached"))
@@ -866,8 +837,19 @@ struct ConversationListFeatureTests {
       snapshot(connection: .online, conversations: [cachedConversation(newerTombstone)])
     )
     await clearGate.release()
-    await create.value
+    let resolvedID = await create.value
 
+    // Review fix I2: this hidden-tombstone reconciliation is exactly the
+    // case where `mutationError == nil` alone used to be a false success
+    // signal — `resolveCreate` cleared `mutationError` unconditionally
+    // BEFORE branching on the reconciliation outcome, so callers gating
+    // navigation on "no error" would proceed with whatever `selectedID`
+    // happened to already hold (here, still `nil`, but in general a STALE
+    // id from something unrelated) instead of correctly treating this as a
+    // failure. `create(agentID:)`'s return value is now the only signal
+    // callers should trust: `nil` here, with `mutationError` actually set.
+    #expect(resolvedID == nil)
+    #expect(feature.mutationError == .failed)
     #expect(feature.conversations.isEmpty)
     #expect(feature.selectedID == nil)
   }
@@ -938,6 +920,96 @@ struct ConversationListFeatureTests {
         firstID.uuidString.lowercased(), firstID.uuidString.lowercased(),
       ])
     #expect(reconstructed.selectedID == canonical.id)
+  }
+
+  @Test("leaving an unused compose-created conversation deletes it")
+  func discardIfUnusedComposeCreationDeletesUnsentConversation() async {
+    let created = summary(id: "created", agentID: "agent-1", revision: 3)
+    let tombstone = summary(id: created.id, agentID: "agent-1", revision: 4, status: .deleted)
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.success(created))
+    await service.enqueueDelete(.success(tombstone))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    let resolvedID = await feature.create(agentID: "agent-1")
+    #expect(resolvedID == created.id)
+
+    await feature.discardIfUnusedComposeCreation(id: created.id, hasActivity: false)
+
+    // Review fix I1: audit #16's whole point is that compose-first must
+    // never leave behind a permanent empty "New Conversation" row — backing
+    // out without sending anything deletes the conversation this created.
+    #expect(await service.deleteCalls == [.init(id: created.id, revision: created.revision)])
+    #expect(feature.conversations.isEmpty)
+  }
+
+  @Test("leaving a compose-created conversation that has activity does not delete it")
+  func discardIfUnusedComposeCreationKeepsSentConversation() async {
+    let created = summary(id: "created", agentID: "agent-1", revision: 3)
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.success(created))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.create(agentID: "agent-1")
+
+    await feature.discardIfUnusedComposeCreation(id: created.id, hasActivity: true)
+
+    #expect(await service.deleteCalls.isEmpty)
+    #expect(feature.conversations.map(\.id) == [created.id])
+  }
+
+  @Test("discardIfUnusedComposeCreation only ever considers a given id once")
+  func discardIfUnusedComposeCreationIsOneShot() async {
+    let created = summary(id: "created", agentID: "agent-1", revision: 3)
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.success(created))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.create(agentID: "agent-1")
+
+    // First ask reports activity, so nothing is deleted — but the tracking
+    // entry is consumed regardless of outcome, so a SECOND ask for the same
+    // id (e.g. a duplicate `onDisappear` firing) can't delete it either,
+    // even if it now (wrongly) claims no activity.
+    await feature.discardIfUnusedComposeCreation(id: created.id, hasActivity: true)
+    await feature.discardIfUnusedComposeCreation(id: created.id, hasActivity: false)
+
+    #expect(await service.deleteCalls.isEmpty)
+  }
+
+  @Test("discardIfUnusedComposeCreation never touches a conversation not created via compose")
+  func discardIfUnusedComposeCreationIgnoresNonComposeConversations() async {
+    let existing = summary(id: "existing", agentID: "agent-1")
+    let service = FakeConversationListService()
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: [cachedConversation(existing)]))
+
+    await feature.discardIfUnusedComposeCreation(id: existing.id, hasActivity: false)
+
+    #expect(await service.deleteCalls.isEmpty)
+    #expect(feature.conversations.map(\.id) == [existing.id])
+  }
+
+  @Test("discardIfUnusedComposeCreation swallows a delete failure without surfacing mutationError")
+  func discardIfUnusedComposeCreationSwallowsFailure() async {
+    let created = summary(id: "created", agentID: "agent-1", revision: 3)
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.success(created))
+    await service.enqueueDelete(.failure(.gatewayOffline))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.create(agentID: "agent-1")
+    #expect(feature.mutationError == nil)
+
+    await feature.discardIfUnusedComposeCreation(id: created.id, hasActivity: false)
+
+    // Best-effort by design (review comment, I1): a failed cleanup delete
+    // must stay invisible — no `mutationError`, no gateway-error reporting
+    // that would flip the app's connection banner for a cleanup the user
+    // never asked for. The (harmless, empty) conversation is simply left
+    // behind for the user to remove manually later.
+    #expect(feature.mutationError == nil)
+    #expect(feature.conversations.map(\.id) == [created.id])
   }
 
   @Test("rename conflict replaces canonical state and Retry uses its revision")
@@ -1972,6 +2044,81 @@ struct ConversationSearchFilterTests {
   }
 }
 
+/// Compose-first new chat (Task 3, audit #16): `ComposeAgentSelection.resolve`
+/// is the pure function `ConversationListView.startCompose()` delegates the
+/// agent choice to.
+@Suite("ComposeAgentSelection (Task 3, audit #16)")
+struct ComposeAgentSelectionTests {
+  @Test("prefers the last-used agent when it's still available")
+  func prefersLastUsedAgent() {
+    let agents = [
+      agentFixture(id: "agent-a", name: "Agent A"),
+      agentFixture(id: "agent-b", name: "Agent B"),
+    ]
+    #expect(
+      ComposeAgentSelection.resolve(availableAgents: agents, lastUsedAgentID: "agent-b")
+        == "agent-b"
+    )
+  }
+
+  @Test("falls back to the first available agent when nothing has been recorded yet")
+  func fallsBackToFirstWhenNoLastUsedAgent() {
+    let agents = [
+      agentFixture(id: "agent-a", name: "Agent A"),
+      agentFixture(id: "agent-b", name: "Agent B"),
+    ]
+    #expect(
+      ComposeAgentSelection.resolve(availableAgents: agents, lastUsedAgentID: nil) == "agent-a"
+    )
+  }
+
+  /// The brief called for this explicitly (review fix, minor): the
+  /// persisted last-used agent id may name an agent that's since been
+  /// deleted or disabled (so it's no longer in `availableAgents`, which is
+  /// already filtered to `status != .disabled`) — that's a stale
+  /// preference, not an error, so this falls back exactly like the
+  /// nothing-recorded-yet case rather than producing no selection at all.
+  @Test("falls back to the first available agent when the persisted agent no longer exists")
+  func fallsBackToFirstWhenLastUsedAgentIsGone() {
+    let agents = [
+      agentFixture(id: "agent-a", name: "Agent A"),
+      agentFixture(id: "agent-b", name: "Agent B"),
+    ]
+    #expect(
+      ComposeAgentSelection.resolve(availableAgents: agents, lastUsedAgentID: "agent-deleted")
+        == "agent-a"
+    )
+  }
+
+  @Test("returns nil when there are no available agents at all")
+  func returnsNilWithNoAgents() {
+    #expect(ComposeAgentSelection.resolve(availableAgents: [], lastUsedAgentID: "agent-a") == nil)
+  }
+
+  private func agentFixture(id: String, name: String) -> RegisteredAgentDTO {
+    RegisteredAgentDTO(
+      id: id,
+      name: name,
+      config: AgentConfigDTO(
+        name: name,
+        model: "test/model",
+        systemPrompt: "",
+        fallbackModels: nil,
+        tools: nil,
+        skills: nil,
+        workspace: nil,
+        maxTokens: nil,
+        mcpServers: nil,
+        swarm: nil,
+        plugins: nil,
+        providers: nil
+      ),
+      status: .registered,
+      registeredAt: Date(timeIntervalSince1970: 10)
+    )
+  }
+}
+
 private enum FakeListResult<Value: Sendable>: Sendable {
   case success(Value)
   case failure(GatewayError)
@@ -1981,14 +2128,6 @@ private enum FakeListResult<Value: Sendable>: Sendable {
     case .success(let value): value
     case .failure(let error): throw error
     }
-  }
-}
-
-private actor GatewayErrorRecorder {
-  private(set) var values: [GatewayError] = []
-
-  func record(_ error: GatewayError) {
-    values.append(error)
   }
 }
 

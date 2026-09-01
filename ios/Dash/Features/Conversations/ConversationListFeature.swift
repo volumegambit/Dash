@@ -745,6 +745,12 @@ final class ConversationListFeature {
   @ObservationIgnored private var onlineRefreshGeneration: UInt64 = 0
   @ObservationIgnored private var pendingCreateRequestID: String?
   @ObservationIgnored private var pendingCreateAgentID: String?
+  // Compose-first new chat (Task 3, audit #16 / review fix I1): ids created
+  // via `create(agentID:)` (the compose flow) THIS session, not yet known
+  // to have any activity. `discardIfUnusedComposeCreation` consumes (and
+  // clears) an entry the first time it's asked about, whether or not it
+  // ends up deleting anything — see that method's doc comment.
+  @ObservationIgnored private var composeCreatedConversationIDs: Set<String> = []
   @ObservationIgnored private var pendingConflict: PendingConflict?
   @ObservationIgnored private var recoveryGeneration: UInt64 = 0
   @ObservationIgnored private var recoveryReloadTask: Task<Void, Never>?
@@ -1179,26 +1185,6 @@ final class ConversationListFeature {
     }
   }
 
-  func loadAgentChoices() async {
-    do {
-      agents = try await service.cachedAgents()
-    } catch is CancellationError {
-      return
-    } catch {
-      mutationError = .failed
-      await reportGatewayError(error)
-    }
-    guard mutationsAllowed else { return }
-    do {
-      agents = try await service.refreshAgents()
-    } catch is CancellationError {
-      return
-    } catch {
-      mutationError = .failed
-      await reportGatewayError(error)
-    }
-  }
-
   func setAgentFilter(_ agentID: String?) async {
     selectedAgentID = agentID
     listGeneration &+= 1
@@ -1290,8 +1276,20 @@ final class ConversationListFeature {
     }
   }
 
-  func create(agentID: String) async {
-    guard requireMutation() else { return }
+  /// Returns the id of the conversation this call resolved to, or `nil` on
+  /// ANY failure — including the tombstone edge case (review fix I2, Task 3
+  /// review): `mutationError == nil` alone used to be treated as "success"
+  /// by callers, but a create that immediately reconciles as a hidden
+  /// tombstone (see `resolveCreate`) also clears `mutationError` without
+  /// ever advancing `selectedID`, which let callers silently navigate to a
+  /// STALE `selectedID` left over from something unrelated. The return
+  /// value is now the only success signal callers should trust —
+  /// `ConversationListView.startCompose()` and `ChatView.switchAgent(to:)`
+  /// both gate navigation on it directly rather than re-reading
+  /// `selectedID`/`mutationError` afterward.
+  @discardableResult
+  func create(agentID: String) async -> String? {
+    guard requireMutation() else { return nil }
     if pendingCreateAgentID != agentID {
       pendingCreateRequestID = nil
       pendingCreateAgentID = nil
@@ -1312,19 +1310,20 @@ final class ConversationListFeature {
     )
     do {
       let canonical = try await service.create(request)
-      await resolveCreate(canonical)
+      return await resolveCreate(canonical)
     } catch is CancellationError {
-      return
+      return nil
     } catch let error as GatewayError {
       switch error {
       case .mutationOutcomeUnknown, .transport:
-        await reconcileCreate(request)
+        return await reconcileCreate(request)
       default:
         await reportGatewayError(error)
         await service.clearRetainedCreateRequestID(agentID: agentID)
         pendingCreateRequestID = nil
         pendingCreateAgentID = nil
         mutationError = .failed
+        return nil
       }
     } catch {
       await service.clearRetainedCreateRequestID(agentID: agentID)
@@ -1332,6 +1331,7 @@ final class ConversationListFeature {
       pendingCreateAgentID = nil
       mutationError = .failed
       await reportGatewayError(error)
+      return nil
     }
   }
 
@@ -1431,6 +1431,44 @@ final class ConversationListFeature {
     }
   }
 
+  /// Best-effort cleanup for the compose-first flow (Task 3 review, I1):
+  /// deletes a compose-created conversation IF it's still completely unused
+  /// (no messages, no active turn) when the user leaves it — so backing out
+  /// of compose without ever sending anything doesn't leave a permanent
+  /// empty "New Conversation" row behind (the exact anti-pattern audit #16
+  /// targets; the pre-compose-first `NewConversationView` Form never had
+  /// this problem since creation only happened after an explicit "Start
+  /// conversation" tap, never just from navigating to the screen).
+  ///
+  /// No-ops for any id NOT created via `create(agentID:)` THIS session — a
+  /// conversation the user opened normally (however empty) is never
+  /// touched. Each id can only ever be asked about once: the tracking
+  /// entry is consumed on the first ask, `hasActivity` or not.
+  ///
+  /// Deliberately calls the low-level `service.delete(id:revision:)`
+  /// directly rather than the public `delete(id:confirmed:)` this mirrors:
+  /// that method's failure paths call `reportGatewayError`, which can flip
+  /// the WHOLE APP's connection banner (`AppModel`'s `gatewayErrorHandler`
+  /// reacts to it) — much too loud a side effect for a background cleanup
+  /// the user never asked for and has no way to know failed. Any failure
+  /// here (offline, conflict, already gone, network) is swallowed by
+  /// design: the conversation — real but harmless and empty — is simply
+  /// left for the user to clean up manually later (swipe-to-delete), same
+  /// as if this method didn't exist. A 409-busy failure specifically can't
+  /// happen here: `hasActivity == false` (checked above) already implies
+  /// no active turn, which is the only thing that makes a delete busy.
+  func discardIfUnusedComposeCreation(id: String, hasActivity: Bool) async {
+    guard composeCreatedConversationIDs.remove(id) != nil else { return }
+    guard hasActivity == false else { return }
+    guard let current = allConversations.first(where: { $0.id == id })?.summary else { return }
+    do {
+      _ = try await service.delete(id: id, revision: current.revision)
+      removeVisible(id: id)
+    } catch {
+      // Swallowed by design — see doc comment.
+    }
+  }
+
   func retryConflict() async {
     guard let pendingConflict else { return }
     mutationError = nil
@@ -1462,29 +1500,57 @@ final class ConversationListFeature {
     }
   }
 
-  private func resolveCreate(_ canonical: ConversationSummaryDTO) async {
+  /// Returns the resolved conversation's id on success, `nil` otherwise.
+  @discardableResult
+  private func resolveCreate(_ canonical: ConversationSummaryDTO) async -> String? {
     await service.clearRetainedCreateRequestID(agentID: canonical.agentId)
     pendingCreateRequestID = nil
     pendingCreateAgentID = nil
-    mutationError = nil
     let reconciliation = replaceVisible(canonical, insertAtFront: true)
     await publishLifecycleChange(for: canonical, reconciliation: reconciliation)
-    if case .visible(let effective) = reconciliation {
+    switch reconciliation {
+    case .visible(let effective):
+      mutationError = nil
       selectedID = effective.id
+      // Compose-first new chat (Task 3, audit #16 / review fix I1): every
+      // caller of the public `create(agentID:)` is a compose-flow entry
+      // point (`ConversationListView.startCompose()` or
+      // `ChatView.switchAgent(to:)`) — there is no other caller — so
+      // tracking every successful resolution here scopes
+      // `discardIfUnusedComposeCreation` precisely to "created via compose
+      // this session," never a conversation the user opened normally.
+      composeCreatedConversationIDs.insert(effective.id)
+      return effective.id
+    case .hidden:
+      // Review fix I2: a create that reconciles as an already-tombstoned
+      // canonical (e.g. a revision race where the just-created conversation
+      // was deleted before this reconciliation ran) must NOT be reported as
+      // success — `selectedID` would otherwise stay silently stale (still
+      // pointing at whatever was selected before this call), and callers
+      // gating navigation on "no error" would wrongly proceed to whatever
+      // that stale id happens to be. Surfacing `.failed` makes this
+      // (extremely rare) race visible instead of an invisible no-op.
+      mutationError = .failed
+      return nil
     }
   }
 
-  private func reconcileCreate(_ request: CreateConversationRequest) async {
+  /// Returns the resolved conversation's id on success, `nil` otherwise —
+  /// see `create(agentID:)`'s doc comment.
+  @discardableResult
+  private func reconcileCreate(_ request: CreateConversationRequest) async -> String? {
     do {
       let canonical = try await service.reconcileCreate(request)
-      await resolveCreate(canonical)
+      return await resolveCreate(canonical)
     } catch GatewayError.mutationOutcomeUnknown, GatewayError.transport {
       mutationError = .outcomeUnknown
+      return nil
     } catch is CancellationError {
-      return
+      return nil
     } catch {
       mutationError = .failed
       await reportGatewayError(error)
+      return nil
     }
   }
 
