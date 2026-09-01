@@ -96,6 +96,36 @@ enum ConversationMutationError: Equatable, Sendable {
   case failed
 }
 
+extension ConversationMutationError {
+  /// User-facing copy shared by `ConversationListView`'s rename/delete error
+  /// alert and `ChatView`'s toolbar Menu rename/delete error alert (audit
+  /// #15) — both trigger the exact same `ConversationListFeature.rename`/
+  /// `delete` calls, so they surface identical failures identically rather
+  /// than drifting into two independently-worded copies of the same error.
+  /// `.revisionConflict` is excluded on purpose: only `ConversationListView`
+  /// owns the richer "this conversation changed on another device" conflict
+  /// banner + retry flow, so callers gate presentation on
+  /// `case .revisionConflict = error` before reading this.
+  var userMessage: String {
+    switch self {
+    case .offline:
+      "Connect to the gateway and try again."
+    case .invalidTitle:
+      "Enter a title that is not empty."
+    case .outcomeUnknown:
+      "Dash could not confirm the result. Retry to reconcile the same request."
+    case .conversationBusy:
+      "This conversation has an active turn. Resume or cancel it before deleting."
+    case .readOnly:
+      "This conversation was archived on another device and is now read-only."
+    case .failed:
+      "Dash couldn't complete the update. Try again."
+    case .revisionConflict:
+      ""
+    }
+  }
+}
+
 protocol ConversationListServicing: Actor {
   func cachedConversations() async throws -> [CachedConversation]
   func cachedAgents() async throws -> [RegisteredAgentDTO]

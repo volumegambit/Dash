@@ -360,6 +360,125 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(send.isEnabled)
   }
 
+  /// Audit #15 (iOS chat-screen toolbar): presence smoke test for the "⋯"
+  /// Menu — Rename/Delete/Share Transcript should all be offered, enabled,
+  /// for an idle, online, mutable conversation (`shared-plan` in
+  /// `paired-online`). Split into three single-open tests (this one plus
+  /// the two below) rather than one test that reopens the Menu multiple
+  /// times: reopening it produced flaky "multiple matching elements" lookups
+  /// against stale, not-yet-torn-down `Menu` item elements from the
+  /// previous presentation.
+  func testChatToolbarMenuOffersRenameDeleteAndShareTranscript() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `.buttons.matching(identifier:).firstMatch`, not the shared `element`
+    // helper: this toolbar Menu — like `AgentDetailView`'s "agent.actions"
+    // Menu (see its offline UI test) — resolves to more than one
+    // accessibility node (its `UIBarButtonItem` bridging plus the SwiftUI
+    // hierarchy), so a strict single-match lookup throws "multiple matching
+    // elements".
+    let options = app.buttons.matching(identifier: "chat.options").firstMatch
+    XCTAssertTrue(options.waitForExistence(timeout: 5))
+    XCTAssertEqual(options.label, "Conversation options")
+    XCTAssertTrue(options.isEnabled)
+    options.tap()
+
+    let renameItem = app.buttons["Rename"].firstMatch
+    let deleteItem = app.buttons["Delete"].firstMatch
+    let shareItem = app.buttons["Share Transcript"].firstMatch
+    XCTAssertTrue(renameItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(renameItem.isEnabled)
+    XCTAssertTrue(deleteItem.exists)
+    XCTAssertTrue(deleteItem.isEnabled)
+    XCTAssertTrue(shareItem.exists)
+    XCTAssertTrue(shareItem.isEnabled)
+  }
+
+  /// Rename should open the exact same alert copy `ConversationListView`'s
+  /// context menu uses, prefilled with the conversation's current title —
+  /// stops short of completing the rename since `ConversationListFeatureTests`
+  /// already covers `rename` end-to-end at the feature layer this Menu item
+  /// calls straight through to.
+  func testChatToolbarRenameOpensPrefilledRenameAlert() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    app.buttons.matching(identifier: "chat.options").firstMatch.tap()
+    let renameItem = app.buttons["Rename"].firstMatch
+    XCTAssertTrue(renameItem.waitForExistence(timeout: 3))
+    renameItem.tap()
+
+    let renameAlert = app.alerts["Rename conversation"]
+    XCTAssertTrue(renameAlert.waitForExistence(timeout: 3))
+    XCTAssertEqual(renameAlert.textFields.firstMatch.value as? String, "Shared launch plan")
+    let cancelRename = renameAlert.buttons["Cancel"].firstMatch
+    XCTAssertTrue(waitUntilHittable(cancelRename, timeout: 3))
+    cancelRename.tap()
+    XCTAssertTrue(renameAlert.waitForNonExistence(timeout: 3))
+    XCTAssertTrue(element("chat.transcript", in: app).exists)
+  }
+
+  /// Delete should open the exact same confirmation copy
+  /// `ConversationListView`'s context menu uses — stops short of completing
+  /// the delete since `ConversationListFeatureTests` already covers `delete`
+  /// end-to-end at the feature layer this Menu item calls straight through
+  /// to, and this screen's pop-back-on-delete is exercised there via
+  /// `pruneTranscriptRoutes`. Dismissed via `PopoverDismissRegion` rather
+  /// than a "Cancel" button: on this simulator, a `confirmationDialog`
+  /// triggered from a toolbar Menu's button action — including the
+  /// pre-existing, unmodified `ConversationListView` one triggered from its
+  /// `.contextMenu` — renders as a small anchored popover with only the
+  /// destructive action and no separate Cancel row (dismiss-by-tapping-
+  /// outside covers that role instead); this is a platform rendering choice
+  /// unrelated to this task's changes, confirmed by probing the existing
+  /// list dialog with the same shape.
+  func testChatToolbarDeleteOpensConfirmationDialog() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    app.buttons.matching(identifier: "chat.options").firstMatch.tap()
+    let deleteItem = app.buttons["Delete"].firstMatch
+    XCTAssertTrue(deleteItem.waitForExistence(timeout: 3))
+    deleteItem.tap()
+
+    let deleteConfirmation = confirmationDialog(titled: "Delete Shared launch plan?", in: app)
+    let confirmDelete = deleteConfirmation.buttons["Delete"].firstMatch
+    XCTAssertTrue(
+      waitUntilHittable(confirmDelete, timeout: 5),
+      "Expected the delete confirmation's destructive action to be available"
+    )
+
+    let dismissRegion = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
+    XCTAssertTrue(dismissRegion.waitForExistence(timeout: 3))
+    dismissRegion.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+    XCTAssertTrue(deleteConfirmation.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(element("chat.transcript", in: app).exists)
+  }
+
+  func testConversationListSearchFiltersByTitleAndPreview() {
+    let app = launch(scenario: "paired-online")
+    selectTab("tab.conversations", in: app)
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    // Captured now, while it's known to exist — `waitForNonExistence` below
+    // watches this same element handle disappear rather than re-resolving
+    // the identifier (which would fail its own existence assertion first).
+    let row = element("conversation.row.shared-plan", in: app)
+
+    let searchField = app.searchFields.firstMatch
+    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    searchField.tap()
+    searchField.typeText("nonexistent conversation title")
+
+    XCTAssertTrue(
+      row.waitForNonExistence(timeout: 5),
+      "Expected the shared-plan row to be filtered out by a non-matching search query"
+    )
+
+    searchField.buttons["Clear text"].tap()
+    XCTAssertTrue(element("conversation.row.shared-plan", in: app).waitForExistence(timeout: 5))
+  }
+
   func testIPhoneBackReturnsToConversationListInSameTab() throws {
     let app = launch(scenario: "paired-online")
     try XCTSkipIf(app.windows.firstMatch.frame.width >= 700, "Compact navigation is iPhone-only")

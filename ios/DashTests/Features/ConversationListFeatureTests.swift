@@ -1789,6 +1789,79 @@ struct ConversationListFeatureTests {
   }
 }
 
+/// Audit #9 (iOS conversation search): `ConversationSearchFilter.apply` is
+/// the pure function `ConversationListView`'s `.searchable` filtering
+/// delegates to.
+@Suite("ConversationSearchFilter (audit #9)")
+struct ConversationSearchFilterTests {
+  @Test("an empty or whitespace-only query returns every conversation, unfiltered")
+  func emptyQueryReturnsAll() {
+    let conversations = [
+      searchFixture(id: "a", title: "Launch plan", preview: "ship it"),
+      searchFixture(id: "b", title: "Budget review", preview: "numbers"),
+    ]
+    #expect(ConversationSearchFilter.apply(conversations, query: "").map(\.id) == ["a", "b"])
+    #expect(ConversationSearchFilter.apply(conversations, query: "   ").map(\.id) == ["a", "b"])
+  }
+
+  @Test("matches on title, case-insensitively")
+  func matchesTitleCaseInsensitively() {
+    let conversations = [
+      searchFixture(id: "a", title: "Launch Plan", preview: "n/a"),
+      searchFixture(id: "b", title: "Budget review", preview: "n/a"),
+    ]
+    #expect(ConversationSearchFilter.apply(conversations, query: "launch").map(\.id) == ["a"])
+  }
+
+  @Test("matches on lastMessagePreview, case-insensitively, when the title doesn't match")
+  func matchesPreviewCaseInsensitively() {
+    let conversations = [
+      searchFixture(id: "a", title: "Launch plan", preview: "Ship it Friday"),
+      searchFixture(id: "b", title: "Budget review", preview: "Numbers look good"),
+    ]
+    #expect(ConversationSearchFilter.apply(conversations, query: "FRIDAY").map(\.id) == ["a"])
+  }
+
+  @Test("a conversation with no lastMessagePreview never crashes and simply doesn't match on it")
+  func nilPreviewIsSkippedSafely() {
+    let conversations = [searchFixture(id: "a", title: "Launch plan", preview: nil)]
+    #expect(ConversationSearchFilter.apply(conversations, query: "anything").isEmpty)
+    #expect(ConversationSearchFilter.apply(conversations, query: "launch").map(\.id) == ["a"])
+  }
+
+  @Test("a query matching neither title nor preview returns an empty result")
+  func noMatchReturnsEmpty() {
+    let conversations = [searchFixture(id: "a", title: "Launch plan", preview: "ship it")]
+    #expect(ConversationSearchFilter.apply(conversations, query: "budget").isEmpty)
+  }
+
+  private func searchFixture(
+    id: String,
+    title: String,
+    preview: String?
+  ) -> CachedConversation {
+    CachedConversation(
+      gatewayID: "gateway-1",
+      summary: ConversationSummaryDTO(
+        id: id,
+        agentId: "agent-1",
+        agentName: "Agent",
+        title: title,
+        revision: 1,
+        status: .idle,
+        activeTurnId: nil,
+        owningIssueId: nil,
+        projectId: nil,
+        lastSeq: 0,
+        lastMessagePreview: preview,
+        createdAt: Date(timeIntervalSince1970: 10),
+        updatedAt: Date(timeIntervalSince1970: 20),
+        deletedAt: nil
+      )
+    )
+  }
+}
+
 private enum FakeListResult<Value: Sendable>: Sendable {
   case success(Value)
   case failure(GatewayError)

@@ -116,6 +116,68 @@ struct ChatScrollGeometryTests {
   }
 }
 
+/// Audit #15 (iOS chat-screen toolbar): `ChatTranscriptExport.plainText`
+/// backs the toolbar Menu's "Share Transcript" `ShareLink`.
+@Suite("ChatTranscriptExport (audit #15)")
+struct ChatTranscriptExportTests {
+  @Test("renders a user/assistant pair with You:/Assistant: prefixes")
+  func rendersUserAndAssistantTurns() {
+    let text = ChatTranscriptExport.plainText(for: [
+      userMessage(id: "u-1", text: "What's the launch date?"),
+      assistantMessage(id: "a-1", text: "The launch date is March 3rd."),
+    ])
+    #expect(
+      text == "You: What's the launch date?\n\nAssistant: The launch date is March 3rd."
+    )
+  }
+
+  @Test("strips markdown syntax from assistant text via the VoiceOver plain-text helper")
+  func stripsMarkdownFromAssistantText() {
+    let text = ChatTranscriptExport.plainText(for: [
+      assistantMessage(id: "a-1", text: "**Ship it** now with `flag=true`")
+    ])
+    #expect(text.contains("**") == false)
+    #expect(text.contains("Ship it now with flag=true"))
+  }
+
+  @Test("drops messages with no renderable text instead of emitting an empty line")
+  func dropsEmptyMessages() {
+    let text = ChatTranscriptExport.plainText(for: [
+      userMessage(id: "u-1", text: "  "),
+      assistantMessage(id: "a-1", text: ""),
+      userMessage(id: "u-2", text: "Real question"),
+    ])
+    #expect(text == "You: Real question")
+  }
+
+  @Test("an empty transcript exports to an empty string")
+  func emptyTranscriptExportsEmptyString() {
+    #expect(ChatTranscriptExport.plainText(for: []).isEmpty)
+  }
+
+  @Test("preserves message order across multiple turns")
+  func preservesOrder() {
+    let text = ChatTranscriptExport.plainText(for: [
+      userMessage(id: "u-1", text: "First"),
+      assistantMessage(id: "a-1", text: "Second"),
+      userMessage(id: "u-2", text: "Third"),
+    ])
+    #expect(text == "You: First\n\nAssistant: Second\n\nYou: Third")
+  }
+}
+
+private func userMessage(id: String, text: String) -> ChatMessageState {
+  ChatMessageState(
+    id: id,
+    turnID: "turn-1",
+    ordinal: 1,
+    role: .user,
+    status: .completed,
+    user: UserMessageProjection(text: text, images: []),
+    assistant: nil
+  )
+}
+
 private func assistantMessage(
   id: String,
   status: MessageStatus = .completed,

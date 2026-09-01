@@ -33,6 +33,28 @@ struct ConversationRowActionPolicy: Equatable {
   }
 }
 
+/// Audit #9's local search filter, factored out of `ConversationListView` so
+/// it's directly unit-testable (`@testable import Dash`) the same way
+/// `ChatTranscriptSignature.of(_:)` is — SwiftUI's `.searchable` binding
+/// itself isn't unit-testable, but the actual filtering decision is a pure
+/// function of `(conversations, query)`. Case-insensitive `Locale`-aware
+/// match over title + `lastMessagePreview`, mirroring the web conversation
+/// search's client-side filter (Task 1, audit #8, `ConversationList.tsx`).
+enum ConversationSearchFilter {
+  static func apply(
+    _ conversations: [CachedConversation],
+    query: String
+  ) -> [CachedConversation] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.isEmpty == false else { return conversations }
+    return conversations.filter { conversation in
+      conversation.summary.title.localizedCaseInsensitiveContains(trimmed)
+        || (conversation.summary.lastMessagePreview?.localizedCaseInsensitiveContains(trimmed)
+          ?? false)
+    }
+  }
+}
+
 struct ConversationListView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(ConversationListFeature.self) private var feature
@@ -42,6 +64,11 @@ struct ConversationListView: View {
   @State private var renameTarget: CachedConversation?
   @State private var renameTitle = ""
   @State private var deleteTarget: CachedConversation?
+  // Audit #9: local-only filter over the (already agent-filtered)
+  // `feature.conversations` — no server round-trip, mirrors the web
+  // conversation search (Task 1, audit #8) which is likewise a client-side
+  // filter over title + lastMessagePreview.
+  @State private var searchText = ""
 
   var body: some View {
     List {
@@ -58,16 +85,13 @@ struct ConversationListView: View {
           .listRowBackground(Color.clear)
       } else if feature.conversations.isEmpty == false {
         Section("Conversations") {
-          ForEach(feature.conversations) { conversation in
+          ForEach(filteredConversations) { conversation in
             conversationRow(conversation)
               .task {
                 await feature.loadOlderIfNeeded(currentID: conversation.id)
               }
               .contextMenu {
-                let actions = ConversationRowActionPolicy(
-                  summary: conversation.summary,
-                  mutationsAllowed: feature.mutationsAllowed
-                )
+                let actions = actionPolicy(for: conversation)
 
                 if actions.showsRename {
                   Button {
@@ -90,9 +114,42 @@ struct ConversationListView: View {
                   .accessibilityHint(actions.deleteDisabledHint)
                 }
               }
+              // Audit #10: same `ConversationRowActionPolicy` the context
+              // menu above uses — availability, disabled state, and hints
+              // stay identical across both entry points.
+              .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                let actions = actionPolicy(for: conversation)
+                if actions.showsRename {
+                  Button {
+                    renameTarget = conversation
+                    renameTitle = conversation.summary.title
+                  } label: {
+                    Label("Rename", systemImage: "pencil")
+                  }
+                  .disabled(actions.canRename == false)
+                  .accessibilityHint(actions.renameDisabledHint)
+                  .tint(DashTheme.accent)
+                }
+              }
+              .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                let actions = actionPolicy(for: conversation)
+                if actions.showsDelete {
+                  Button(role: .destructive) {
+                    deleteTarget = conversation
+                  } label: {
+                    Label("Delete", systemImage: "trash")
+                  }
+                  .disabled(actions.canDelete == false)
+                  .accessibilityHint(actions.deleteDisabledHint)
+                }
+              }
           }
 
-          if feature.isLoadingOlder {
+          if filteredConversations.isEmpty {
+            ContentUnavailableView.search(text: searchText)
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
+          } else if feature.isLoadingOlder {
             HStack {
               Spacer()
               ProgressView("Loading older conversations")
@@ -106,6 +163,7 @@ struct ConversationListView: View {
     .accessibilityIdentifier("conversation.list")
     .listStyle(.plain)
     .navigationTitle("Conversations")
+    .searchable(text: $searchText, prompt: "Search conversations")
     .refreshable { await feature.refresh() }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
@@ -191,22 +249,7 @@ struct ConversationListView: View {
   }
 
   private var genericErrorMessage: String {
-    switch feature.mutationError {
-    case .offline:
-      "Connect to the gateway and try again."
-    case .invalidTitle:
-      "Enter a title that is not empty."
-    case .outcomeUnknown:
-      "Dash could not confirm the result. Retry to reconcile the same request."
-    case .conversationBusy:
-      "This conversation has an active turn. Resume or cancel it before deleting."
-    case .readOnly:
-      "This conversation was archived on another device and is now read-only."
-    case .failed, .none:
-      "Dash couldn't complete the update. Try again."
-    case .revisionConflict:
-      ""
-    }
+    feature.mutationError?.userMessage ?? "Dash couldn't complete the update. Try again."
   }
 
   private var actionableConversationID: String? {
@@ -261,6 +304,23 @@ struct ConversationListView: View {
 
   private var selectedAgentName: String? {
     feature.agents.first { $0.id == feature.selectedAgentID }?.name
+  }
+
+  /// Audit #9: local filter over `feature.conversations` (already scoped by
+  /// `agentFilter`) so search and the agent-filter menu compose rather than
+  /// fight each other.
+  private var filteredConversations: [CachedConversation] {
+    ConversationSearchFilter.apply(feature.conversations, query: searchText)
+  }
+
+  /// Shared by the context menu and the swipe actions (audit #10) so
+  /// availability/disabled-state/hints can never drift between the two entry
+  /// points for the same row.
+  private func actionPolicy(for conversation: CachedConversation) -> ConversationRowActionPolicy {
+    ConversationRowActionPolicy(
+      summary: conversation.summary,
+      mutationsAllowed: feature.mutationsAllowed
+    )
   }
 
   @ViewBuilder

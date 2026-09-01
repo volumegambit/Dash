@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ChatView: View {
   @Environment(ChatFeature.self) private var feature
+  @Environment(AppModel.self) private var appModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var isNearBottom = true
@@ -35,6 +36,19 @@ struct ChatView: View {
   /// same `resendFromMessage(id:editedText:)` a Retry does.
   @State private var editingMessage: EditingMessage?
 
+  /// Chat-screen toolbar (audit #15): rename/delete reuse the exact
+  /// `ConversationListFeature.rename`/`delete` calls `ConversationListView`
+  /// makes — `appModel.conversationListFeature` is the same `@Observable`
+  /// instance the list's rows mutate through, so a delete fired from here
+  /// flows through `AppModel`'s existing lifecycle-change plumbing
+  /// (`applyConversationLifecycleChanges` → `pruneTranscriptRoutes`) and
+  /// pops this screen off `conversationPath`/clears `splitConversationSelection`
+  /// exactly as if the delete had come from the list — no bespoke
+  /// "navigate back after delete" code needed here.
+  @State private var isRenamePresented = false
+  @State private var renameTitle = ""
+  @State private var isDeletePresented = false
+
   var body: some View {
     VStack(spacing: 0) {
       if let presentation = feature.statusPresentation {
@@ -52,11 +66,44 @@ struct ChatView: View {
     }
     .navigationTitle(feature.state.conversation.title)
     .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+        conversationOptionsMenu
+      }
+    }
     .task {
       await feature.appear()
     }
     .onDisappear {
       Task { await feature.disappear() }
+    }
+    .alert("Rename conversation", isPresented: $isRenamePresented) {
+      TextField("Title", text: $renameTitle)
+      Button("Cancel", role: .cancel) {}
+      Button("Rename") {
+        let conversationID = feature.state.conversation.id
+        Task { await appModel.conversationListFeature?.rename(id: conversationID, title: renameTitle) }
+      }
+    } message: {
+      Text("Enter a title for this conversation.")
+    }
+    .confirmationDialog(
+      "Delete \(feature.state.conversation.title)?",
+      isPresented: $isDeletePresented,
+      titleVisibility: .visible
+    ) {
+      Button("Delete", role: .destructive) {
+        let conversationID = feature.state.conversation.id
+        Task { await appModel.conversationListFeature?.delete(id: conversationID, confirmed: true) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This removes the conversation while preserving the gateway's canonical history rules.")
+    }
+    .alert("Conversation update failed", isPresented: chatMutationErrorPresented) {
+      Button("OK") { appModel.conversationListFeature?.mutationError = nil }
+    } message: {
+      Text(chatMutationErrorMessage)
     }
     .sheet(item: $editingMessage) { editing in
       // Fix I5 (final-review): only dismiss on a `true` result —
@@ -239,6 +286,113 @@ struct ChatView: View {
       return
     }
     withAnimation(.easeOut(duration: 0.2), operation)
+  }
+
+  /// Chat-screen toolbar (audit #15). Rename/Delete availability mirrors
+  /// `ConversationListView`'s context menu / swipe actions exactly —
+  /// `ConversationRowActionPolicy` driven off this same conversation's
+  /// current summary, so a read-only (archived) or busy (active-turn)
+  /// conversation disables the same actions here that it would in the list.
+  /// New Conversation is deliberately NOT offered here: pushing
+  /// `.newConversation` would work on the compact `NavigationStack(path:
+  /// $appModel.conversationPath)` (this view's own path), but the regular
+  /// (iPad split-view) presentation renders `ChatView` inside the `detail:`
+  /// column's own bare `NavigationStack` — which has no
+  /// `.navigationDestination(for: ConversationRoute.self)` registered at
+  /// all, so the same push would silently no-op there. Rather than ship a
+  /// control that only works in one size class, this is deferred to Task
+  /// 3's compose-first work, which owns new-chat UX end-to-end.
+  private var conversationOptionsMenu: some View {
+    let policy = ConversationRowActionPolicy(
+      summary: feature.state.conversation,
+      mutationsAllowed: feature.connection == .online
+    )
+    let transcriptText = ChatTranscriptExport.plainText(for: feature.state.messages)
+    return Menu {
+      if policy.showsRename {
+        Button {
+          renameTitle = feature.state.conversation.title
+          isRenamePresented = true
+        } label: {
+          Label("Rename", systemImage: "pencil")
+        }
+        .disabled(policy.canRename == false)
+        .accessibilityHint(policy.renameDisabledHint)
+      }
+
+      if policy.showsDelete {
+        Button(role: .destructive) {
+          isDeletePresented = true
+        } label: {
+          Label("Delete", systemImage: "trash")
+        }
+        .disabled(policy.canDelete == false)
+        .accessibilityHint(policy.deleteDisabledHint)
+      }
+
+      ShareLink(item: transcriptText) {
+        Label("Share Transcript", systemImage: "square.and.arrow.up")
+      }
+      .disabled(transcriptText.isEmpty)
+    } label: {
+      Image(systemName: "ellipsis.circle")
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .accessibilityLabel("Conversation options")
+    .accessibilityIdentifier("chat.options")
+  }
+
+  /// Same "action failed" alert `ConversationListView` shows, reusing
+  /// `ConversationMutationError.userMessage` — since Rename/Delete here call
+  /// straight through to the shared `ConversationListFeature`, a failure
+  /// surfaces with identical copy regardless of which screen triggered it.
+  /// `.revisionConflict` is excluded: that richer "changed on another
+  /// device" flow (with its retry banner) is owned by `ConversationListView`
+  /// alone, so it's left to surface there instead of duplicating it here.
+  private var chatMutationErrorPresented: Binding<Bool> {
+    Binding(
+      get: {
+        guard let error = appModel.conversationListFeature?.mutationError else { return false }
+        if case .revisionConflict = error { return false }
+        return true
+      },
+      set: { if $0 == false { appModel.conversationListFeature?.mutationError = nil } }
+    )
+  }
+
+  private var chatMutationErrorMessage: String {
+    appModel.conversationListFeature?.mutationError?.userMessage
+      ?? "Dash couldn't complete the update. Try again."
+  }
+}
+
+/// Plain-text transcript export for the chat-screen toolbar's Share
+/// Transcript action (audit #15). Assistant turns run through
+/// `markdownPlainTextAccessibilityLabel` — the same markdown-stripping used
+/// for VoiceOver — so a shared transcript reads as plain prose rather than
+/// leaking raw `**markdown**` syntax; user turns are already plain text.
+/// Messages with no renderable text (e.g. a still-streaming or tool-only
+/// turn with an empty `assistant.text`) are dropped rather than emitting an
+/// empty "Assistant:" line. Internal (not `private`) so `DashTests` can
+/// exercise `plainText(for:)` directly via `@testable import Dash`.
+enum ChatTranscriptExport {
+  static func plainText(for messages: [ChatMessageState]) -> String {
+    let lines: [String] = messages.compactMap { message -> String? in
+      switch message.role {
+      case .user:
+        guard let text = message.user?.text.trimmingCharacters(in: .whitespacesAndNewlines),
+          text.isEmpty == false
+        else { return nil }
+        return "You: \(text)"
+      case .assistant:
+        guard let raw = message.assistant?.text, raw.isEmpty == false else { return nil }
+        let plain = markdownPlainTextAccessibilityLabel(for: raw)
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard plain.isEmpty == false else { return nil }
+        return "Assistant: \(plain)"
+      }
+    }
+    return lines.joined(separator: "\n\n")
   }
 }
 
