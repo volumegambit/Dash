@@ -1331,10 +1331,24 @@ textarea:focus-visible {
   text-align: left;
 }
 
+/* Final-review fix m5: this used to read `var(--accent)` unconditionally.
+ * `--accent` is the SAME literal (#2563eb) in both schemes (only
+ * `--accent-hover` differs light-vs-dark), and #2563eb text on this
+ * scheme's dark `--surface` (#0a0a0a) computes to only ~3.83:1 — under
+ * WCAG AA's 4.5:1 minimum for normal-size text (same #ddd-vs-#0a0a0a class
+ * of failure the `--text-muted-strong` fix above already called out).
+ * `--accent-hover` clears 4.5:1 in BOTH schemes, so swapping to it here
+ * (rather than only overriding inside the dark media query) fixes the
+ * failing case and improves the passing one:
+ *   light: --accent-hover #1d4ed8 on --surface #ffffff  ≈ 6.70:1 (was ≈5.17:1 with --accent)
+ *   dark:  --accent-hover #3b82f6 on --surface #0a0a0a  ≈ 5.38:1 (was ≈3.83:1 with --accent — FAIL)
+ * (Both computed via the standard WCAG relative-luminance/contrast-ratio
+ * formulas — sRGB channels gamma-corrected, then (L1+0.05)/(L2+0.05).)
+ */
 .chat-empty-state-prompt:hover,
 .chat-empty-state-prompt:focus-visible {
-  border-left-color: var(--accent);
-  color: var(--accent);
+  border-left-color: var(--accent-hover);
+  color: var(--accent-hover);
 }
 
 @media (prefers-reduced-motion: no-preference) {

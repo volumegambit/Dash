@@ -6,7 +6,13 @@ import { MobileRestClient } from '../api/rest.js';
 import type { GatewayInfo } from '../auth/control-plane.js';
 import type { StoredCredential } from '../auth/credential-store.js';
 import type { WebAppState, WebAppStoreDeps } from '../state/store.js';
-import { NEW_CONVERSATION_LABEL, SEARCH_INPUT_LABEL } from './ConversationList.js';
+import {
+  DELETE_ACTION_LABEL,
+  DELETE_CONFIRM_COPY,
+  NEW_CONVERSATION_LABEL,
+  RENAME_ACTION_LABEL,
+  SEARCH_INPUT_LABEL,
+} from './ConversationList.js';
 import { SESSION_REVOKED_COPY, Shell } from './Shell.js';
 
 vi.mock('../api/rest.js', () => ({
@@ -563,6 +569,29 @@ describe('Shell', () => {
       await waitFor(() => expect(createdStores[0].getState().listAgents).toHaveBeenCalledTimes(1));
     });
 
+    it('final-review fix I1: rapid key-repeat on Cmd+Shift+O only starts one conversation (reentrancy guard armed before the first await)', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      await waitFor(() => expect(screen.getByText(NEW_CONVERSATION_LABEL)).toBeTruthy());
+
+      // Three keydowns fired back-to-back, synchronously, with no `await` in
+      // between — the same shape a held/repeating key produces. Each one
+      // re-enters `ConversationList`'s `handleNewConversation` via
+      // `newConversationRef.current?.()` before the first invocation's
+      // `listAgents()` promise has had a chance to resolve.
+      fireEvent.keyDown(window, { key: 'O', metaKey: true, shiftKey: true });
+      fireEvent.keyDown(window, { key: 'O', metaKey: true, shiftKey: true });
+      fireEvent.keyDown(window, { key: 'O', metaKey: true, shiftKey: true });
+
+      await waitFor(() => expect(createdStores[0].getState().listAgents).toHaveBeenCalledTimes(1));
+      // Give any wrongly-reentered second/third call a chance to have fired
+      // its own `listAgents()` before asserting it didn't.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(createdStores[0].getState().listAgents).toHaveBeenCalledTimes(1);
+    });
+
     it('Cmd+Shift+O switches off the Devices screen before starting a new conversation', async () => {
       await renderChatWorkspace();
       act(() => {
@@ -629,6 +658,51 @@ describe('Shell', () => {
       expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
       // The editor's own onKeyDown (not this global handler) closed it.
       await waitFor(() => expect(screen.queryByLabelText('Edit message')).toBeNull());
+    });
+
+    it('final-review fix I2: Escape cancelling an open rename does not also cancelTurn, even while the conversation is streaming', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        });
+      });
+      await waitFor(() => expect(screen.getByText('Chat about the roadmap')).toBeTruthy());
+      fireEvent.click(screen.getByText('Chat about the roadmap')); // selects conv-1
+
+      fireEvent.click(screen.getByLabelText(RENAME_ACTION_LABEL));
+      const input = screen.getByDisplayValue('Chat about the roadmap');
+      fireEvent.keyDown(input, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+      // The rename input's own Escape handling closed it (reverted, not committed).
+      expect(screen.queryByDisplayValue('Chat about the roadmap')).toBeNull();
+      expect(screen.getByText('Chat about the roadmap')).toBeTruthy();
+    });
+
+    it('final-review fix I2: Escape while the delete confirm is open dismisses the confirm, not cancelTurn, even while streaming', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        });
+      });
+      await waitFor(() => expect(screen.getByText('Chat about the roadmap')).toBeTruthy());
+      fireEvent.click(screen.getByText('Chat about the roadmap')); // selects conv-1
+
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+      expect(screen.getByText(DELETE_CONFIRM_COPY)).toBeTruthy();
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+      expect(screen.queryByText(DELETE_CONFIRM_COPY)).toBeNull();
     });
   });
 });

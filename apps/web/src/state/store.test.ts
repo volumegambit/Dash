@@ -866,10 +866,12 @@ describe('createWebAppStore', () => {
       );
     });
 
-    it('does not re-fetch when the conversation already has a non-default title', async () => {
-      const titled = summary({ title: 'Already named', revision: 1 });
+    it('final-review fix C1b: still re-fetches on done when the conversation already has a non-default title (also refreshes lastMessagePreview/revision, not just the auto-title case)', async () => {
+      const titled = summary({ title: 'Already named', revision: 1, lastMessagePreview: null });
+      const refreshed = { ...titled, revision: 2, lastMessagePreview: 'hi' };
       const { rest, getConversation } = fakeRest({
         conversationPage: { items: [titled], nextCursor: null },
+        getConversationImpl: async () => refreshed,
       });
       const { factory, sockets, onFrames } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
@@ -895,7 +897,38 @@ describe('createWebAppStore', () => {
         outcome: 'completed',
       });
 
-      expect(getConversation).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(getConversation).toHaveBeenCalledWith(CONVERSATION_ID));
+      await vi.waitFor(() =>
+        expect(
+          store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.lastMessagePreview,
+        ).toBe('hi'),
+      );
+    });
+
+    it('final-review fix C1a: applies the accepted frame\'s fresh revision to the summary immediately, before "done" ever fires', async () => {
+      const { rest } = fakeRest({
+        conversationPage: { items: [summary({ revision: 1 })], nextCursor: null },
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hi');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'u1',
+        assistantMessageId: 'a1',
+        revision: 7,
+        seq: 1,
+      });
+
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.revision).toBe(
+        7,
+      );
     });
   });
 
@@ -976,6 +1009,60 @@ describe('createWebAppStore', () => {
       expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
         'Original title',
       );
+    });
+
+    describe('final-review fix C1c: revision_conflict retry-once', () => {
+      it('a stale revision refetches the summary and retries once, succeeding', async () => {
+        const original = summary({ title: 'Original title', revision: 1 });
+        let calls = 0;
+        const { rest, getConversation } = fakeRest({
+          conversationPage: { items: [original], nextCursor: null },
+          patchConversationImpl: async (conversationId, patch, revision) => {
+            calls += 1;
+            if (calls === 1) {
+              expect(revision).toBe(1);
+              throw new MobileApiError(409, 'revision_conflict');
+            }
+            expect(revision).toBe(5);
+            return summary({ id: conversationId, ...(patch as object), revision: 6 });
+          },
+          getConversationImpl: async () => summary({ revision: 5, title: 'Original title' }),
+        });
+        const { factory } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await store.getState().loadConversations();
+
+        await store.getState().renameConversation(CONVERSATION_ID, 'Renamed after conflict');
+
+        expect(getConversation).toHaveBeenCalledWith(CONVERSATION_ID);
+        expect(calls).toBe(2);
+        const updated = store.getState().conversations.find((c) => c.id === CONVERSATION_ID);
+        expect(updated?.title).toBe('Renamed after conflict');
+        expect(updated?.revision).toBe(6);
+      });
+
+      it('a double revision_conflict (still stale after the retry) rolls back and surfaces the error — no reload-required dead end', async () => {
+        const original = summary({ title: 'Original title', revision: 1 });
+        const { rest, getConversation } = fakeRest({
+          conversationPage: { items: [original], nextCursor: null },
+          patchConversationImpl: async () => {
+            throw new MobileApiError(409, 'revision_conflict');
+          },
+          getConversationImpl: async () => summary({ revision: 5, title: 'Original title' }),
+        });
+        const { factory } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await store.getState().loadConversations();
+
+        await expect(
+          store.getState().renameConversation(CONVERSATION_ID, 'Renamed after conflict'),
+        ).rejects.toBeInstanceOf(MobileApiError);
+
+        expect(getConversation).toHaveBeenCalledTimes(1); // refetched exactly once, not looped
+        expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+          'Original title',
+        );
+      });
     });
   });
 
@@ -1076,6 +1163,56 @@ describe('createWebAppStore', () => {
       await store.getState().deleteConversation('conv-1');
       expect(store.getState().connection).toBe('unauthorized');
       expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-1']);
+    });
+
+    describe('final-review fix C1c: revision_conflict retry-once', () => {
+      it('a stale revision refetches the summary and retries once, succeeding', async () => {
+        const target = summary({ id: 'conv-1', revision: 1 });
+        let calls = 0;
+        const { rest, getConversation, deleteConversation } = fakeRest({
+          conversationPage: { items: [target], nextCursor: null },
+          deleteConversationImpl: async (conversationId, revision) => {
+            calls += 1;
+            if (calls === 1) {
+              expect(revision).toBe(1);
+              throw new MobileApiError(409, 'revision_conflict');
+            }
+            expect(revision).toBe(5);
+            return summary({ id: conversationId, status: 'deleted', revision: 6 });
+          },
+          getConversationImpl: async () => summary({ id: 'conv-1', revision: 5 }),
+        });
+        const { factory } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await store.getState().loadConversations();
+
+        await store.getState().deleteConversation('conv-1');
+
+        expect(getConversation).toHaveBeenCalledWith('conv-1');
+        expect(deleteConversation).toHaveBeenCalledTimes(2);
+        expect(store.getState().conversations.map((c) => c.id)).toEqual([]);
+      });
+
+      it('a double revision_conflict (still stale after the retry) rolls back the row and surfaces the error — no reload-required dead end', async () => {
+        const target = summary({ id: 'conv-1', revision: 1 });
+        const { rest, getConversation } = fakeRest({
+          conversationPage: { items: [target], nextCursor: null },
+          deleteConversationImpl: async () => {
+            throw new MobileApiError(409, 'revision_conflict');
+          },
+          getConversationImpl: async () => summary({ id: 'conv-1', revision: 5 }),
+        });
+        const { factory } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await store.getState().loadConversations();
+
+        await expect(store.getState().deleteConversation('conv-1')).rejects.toBeInstanceOf(
+          MobileApiError,
+        );
+
+        expect(getConversation).toHaveBeenCalledTimes(1); // refetched exactly once, not looped
+        expect(store.getState().conversations.map((c) => c.id)).toEqual(['conv-1']);
+      });
     });
   });
 

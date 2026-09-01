@@ -232,8 +232,16 @@ describe('chat-ux Phase 3 Task 4 (audit #18, #13 remainder): motion + empty stat
     expect(prompt).toMatch(/color:\s*var\(--text-muted-strong\)/);
     expect(prompt).not.toMatch(/border-radius/);
     expect(prompt).not.toMatch(/transition:/);
+    // Final-review fix m5: `--accent` is byte-identical light/dark (only
+    // `--accent-hover` differs), and #2563eb text on the dark scheme's
+    // #0a0a0a surface fails WCAG AA (~3.83:1, under the 4.5:1 minimum) —
+    // `--accent-hover` clears 4.5:1 in both schemes (see styles.css's
+    // comment on this rule for the computed ratios).
     expect(css).toMatch(
-      /\.chat-empty-state-prompt:hover,\s*\.chat-empty-state-prompt:focus-visible\s*{[^}]*color:\s*var\(--accent\)/,
+      /\.chat-empty-state-prompt:hover,\s*\.chat-empty-state-prompt:focus-visible\s*{[^}]*color:\s*var\(--accent-hover\)/,
+    );
+    expect(css).not.toMatch(
+      /\.chat-empty-state-prompt:hover,\s*\.chat-empty-state-prompt:focus-visible\s*{[^}]*color:\s*var\(--accent\);/,
     );
     expect(css).toMatch(
       /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-empty-state-prompt\s*{\s*transition:/,

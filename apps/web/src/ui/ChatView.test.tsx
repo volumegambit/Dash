@@ -111,6 +111,16 @@ function fakeRest(conversationPage: ConversationPage, messages: ConversationMess
   const rest = {
     listConversations: vi.fn(async () => conversationPage),
     getMessages: vi.fn(async () => ({ items: messages, nextCursor: null, throughSeq: 0 })),
+    // Final-review fix C1b: the store's turn-completion summary refresh
+    // (`maybeRefreshAutoTitle`) is now unconditional (fires on every `done`
+    // frame, not just an untitled conversation), so any test here that
+    // drives a turn to completion needs this stubbed — best-effort/silent
+    // on failure in the store itself, but these tests don't exercise that
+    // path, they just need it not to throw "not a function".
+    getConversation: vi.fn(
+      async (conversationId: string) =>
+        conversationPage.items.find((c) => c.id === conversationId) ?? conversationPage.items[0],
+    ),
   } as unknown as MobileRestClient;
   return rest;
 }

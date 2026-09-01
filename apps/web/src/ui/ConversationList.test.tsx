@@ -391,6 +391,44 @@ describe('ConversationList', () => {
 
       await waitFor(() => expect(screen.getByText(NO_AGENTS_COPY)).toBeTruthy());
     });
+
+    it('final-review fix I1: three rapid invocations via the imperative ref (mirrors Cmd/Ctrl+Shift+O key-repeat, which bypasses the disabled button) start exactly one conversation', async () => {
+      const onlyAgent = agent({ id: 'agent-only', name: 'Solo Agent' });
+      const created = summary({ id: 'new-conv-1', agentId: 'agent-only' });
+      const { store, listAgents, createConversation } = buildStore([], {
+        agents: [onlyAgent],
+        createConversationImpl: async () => created,
+      });
+      const onSelect = vi.fn();
+      const newConversationRef = { current: null as (() => void) | null };
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList
+            selectedConversationId={null}
+            onSelect={onSelect}
+            newConversationRef={newConversationRef}
+          />
+        </WebAppStoreContext.Provider>,
+      );
+
+      await waitFor(() => expect(newConversationRef.current).toBeTruthy());
+
+      // All three fire synchronously, in the same tick — before
+      // `listAgents()`'s `await` ever yields back to the guard's `finally`.
+      // A guard that were armed only via `setBusy(true)` (a state update,
+      // not committed until React's next render) would let all three
+      // through; the ref-based guard must not.
+      act(() => {
+        newConversationRef.current?.();
+        newConversationRef.current?.();
+        newConversationRef.current?.();
+      });
+
+      await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
+      expect(listAgents).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('search (chat-ux Phase 3 Task 1, audit #8)', () => {
@@ -595,6 +633,117 @@ describe('ConversationList', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
       await waitFor(() => expect(onConversationDeleted).toHaveBeenCalledWith('conv-1'));
+    });
+
+    describe('accessibility and focus management (final-review fix I4)', () => {
+      it('the confirm is an announced alertdialog naming the conversation', async () => {
+        const { store } = buildStore([summary({ id: 'conv-1', title: 'Mobile launch check' })]);
+
+        render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+        await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+        fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+
+        const dialog = screen.getByRole('alertdialog');
+        expect(dialog.getAttribute('aria-label')).toBe('Delete "Mobile launch check"?');
+      });
+
+      it('focus moves to the Cancel button when the confirm opens', async () => {
+        const { store } = buildStore([summary({ id: 'conv-1', title: 'Mobile launch check' })]);
+
+        render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+        await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+        fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }));
+      });
+
+      it("focus returns to the row's Delete button after Cancel", async () => {
+        const { store } = buildStore([summary({ id: 'conv-1', title: 'Mobile launch check' })]);
+
+        render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+        await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+        const deleteButton = screen.getByLabelText(DELETE_ACTION_LABEL);
+        fireEvent.click(deleteButton);
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+        expect(document.activeElement).toBe(deleteButton);
+      });
+
+      it('after a successful delete that leaves other conversations behind, focus moves to the search input', async () => {
+        const { store } = buildStore([
+          summary({ id: 'conv-1', title: 'Mobile launch check' }),
+          summary({ id: 'conv-2', title: 'Second' }),
+        ]);
+
+        render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+        await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+        const deleteButtons = screen.getAllByLabelText(DELETE_ACTION_LABEL);
+        fireEvent.click(deleteButtons[0]);
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+        await waitFor(() => expect(screen.queryByText('Mobile launch check')).toBeNull());
+        expect(document.activeElement).toBe(screen.getByLabelText(SEARCH_INPUT_LABEL));
+      });
+
+      it('after a successful delete that empties the list, focus moves to the list container', async () => {
+        const { store } = buildStore([summary({ id: 'conv-1', title: 'Mobile launch check' })]);
+
+        render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+        await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+        fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+        await waitFor(() => expect(screen.getByText(NO_CONVERSATIONS_COPY)).toBeTruthy());
+        expect(document.activeElement).toBe(
+          screen.getByRole('navigation', { name: 'Conversations' }),
+        );
+      });
+
+      it('Escape while the confirm is open dismisses it and restores focus to the Delete button', async () => {
+        const { store, deleteConversation } = buildStore([
+          summary({ id: 'conv-1', title: 'Mobile launch check' }),
+        ]);
+
+        render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+        await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+
+        const deleteButton = screen.getByLabelText(DELETE_ACTION_LABEL);
+        fireEvent.click(deleteButton);
+        fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
+
+        expect(screen.queryByText(DELETE_CONFIRM_COPY)).toBeNull();
+        expect(deleteConversation).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(deleteButton);
+      });
     });
   });
 });

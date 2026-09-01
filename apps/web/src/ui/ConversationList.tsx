@@ -5,6 +5,7 @@ import {
   type RefObject,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useWebAppStore } from './Shell.js';
@@ -121,6 +122,15 @@ function describeMutationError(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+/** Final-review fix I4: the destructive delete-confirm's `aria-label`,
+ * naming the specific conversation (same title-or-agent-name fallback the
+ * row itself renders) so a screen reader announces which conversation is
+ * about to be deleted rather than an identical, unqualified label for
+ * every row's confirm. */
+function deleteConfirmLabel(conversation: ConversationSummary): string {
+  return `Delete "${conversation.title || conversation.agentName}"?`;
+}
+
 /** Local-only filter (chat-ux Phase 3 Task 1, audit #8): case-insensitive
  * substring match against title (falling back to the agent name, same as
  * what the row itself displays when there's no title) and the last-message
@@ -176,6 +186,36 @@ export function ConversationList({
 
   const [agentChoices, setAgentChoices] = useState<MobileAgent[] | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * Final-review fix I1: a synchronous reentrancy guard for
+   * `handleNewConversation`, armed BEFORE its first `await` — mirrors iOS's
+   * `isComposing` guard in `ConversationListView.swift`'s `startCompose`
+   * ("Armed BEFORE the first await below: ... a second tap landing in that
+   * window would otherwise pass the reentrancy guard"). The `busy` STATE
+   * variable above isn't sufficient on its own: `newConversationRef.current?.()`
+   * (Shell's Cmd/Ctrl+Shift+O handler, and its key-repeat) calls
+   * `handleNewConversation` directly, bypassing the "New conversation"
+   * button's `disabled={busy}` — and `setBusy(true)`'s update hasn't
+   * committed yet by the time a second, synchronous invocation in the same
+   * tick would read `busy` via closure. A plain ref read/write is
+   * synchronous, so it closes that window regardless of caller.
+   */
+  const newConversationBusyRef = useRef(false);
+  /** Final-review fix I4: per-row refs to each Delete affordance, keyed by
+   * conversation id, so closing the destructive confirm (via Cancel, Escape,
+   * or a failed delete) can restore focus to the exact button that opened
+   * it instead of leaving focus stranded on a fieldset that just unmounted. */
+  const deleteButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  /** Fix I4: mirrors whatever `searchInputRef` (a prop `Shell` also reaches
+   * into for its own Cmd/Ctrl+K handling) points at, but always populated —
+   * unlike the prop, which is optional — so this component can manage its
+   * OWN post-delete focus target without depending on a caller having
+   * supplied one. See the combined ref callback on the `<input>` below. */
+  const internalSearchInputRef = useRef<HTMLInputElement | null>(null);
+  /** Fix I4: focus fallback when the search input isn't rendered (an empty
+   * `conversations` list) — the `<nav>` itself, made programmatically
+   * focusable via `tabIndex={-1}` below. */
+  const listContainerRef = useRef<HTMLElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -217,6 +257,12 @@ export function ConversationList({
   }
 
   async function handleNewConversation(): Promise<void> {
+    // Fix I1: see `newConversationBusyRef`'s doc comment — checked and armed
+    // synchronously, before `listAgents()`'s `await`, so three rapid
+    // invocations (key-repeat on Cmd/Ctrl+Shift+O, or any other reentrant
+    // caller) can only ever let the first one through.
+    if (newConversationBusyRef.current) return;
+    newConversationBusyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -234,6 +280,7 @@ export function ConversationList({
       setError(describeError(err));
     } finally {
       setBusy(false);
+      newConversationBusyRef.current = false;
     }
   }
 
@@ -282,7 +329,40 @@ export function ConversationList({
       void commitRename(conversation);
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      // Final-review fix I2 (belt+suspenders): `Shell`'s own Escape handler
+      // already bails out for any focus target inside `.conversation-list`
+      // (which this input is), so this shouldn't be reachable in practice —
+      // but stopping propagation here too means this Escape can never be
+      // misrouted to `Shell`'s `cancelTurn` even if that bail-out is ever
+      // narrowed or reordered.
+      event.stopPropagation();
       cancelRename();
+    }
+  }
+
+  /** Final-review fix I2/I4: closes the delete confirm WITHOUT deleting —
+   * shared by the confirm's own Cancel button and its Escape handling (see
+   * `handleDeleteConfirmKeyDown`) — and restores focus to the row's own
+   * Delete affordance (I4) rather than leaving focus stranded on a button
+   * that's about to unmount. */
+  function cancelDeleteConfirm(conversationId: string): void {
+    setConfirmingDeleteId(null);
+    deleteButtonRefs.current.get(conversationId)?.focus();
+  }
+
+  function handleDeleteConfirmKeyDown(
+    event: KeyboardEvent<HTMLFieldSetElement>,
+    conversation: ConversationSummary,
+  ): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      // Fix I2: Escape here means "dismiss the confirm", not "cancel the
+      // in-flight turn" — stop it from ever reaching `Shell`'s window-level
+      // Escape handler (which would otherwise also see it and, while
+      // streaming, call `cancelTurn`; see `Shell.tsx`'s widened bail-out for
+      // the belt side of this belt+suspenders pair).
+      event.stopPropagation();
+      cancelDeleteConfirm(conversation.id);
     }
   }
 
@@ -291,8 +371,24 @@ export function ConversationList({
     try {
       await deleteConversation(conversation.id);
       onConversationDeleted?.(conversation.id);
+      // Fix I4: focus somewhere still on the page rather than letting it
+      // fall back to <body> now that the confirm (and possibly the whole
+      // row) is gone. The search input only renders while `conversations`
+      // is non-empty (see the render below) — reading the STORE's live
+      // state (not the `conversations` render-closure value, which is
+      // stale until the next render commits) tells us which is about to be
+      // true once this delete's removal lands.
+      if (useAppStore.getState().conversations.length > 0) {
+        internalSearchInputRef.current?.focus();
+      } else {
+        listContainerRef.current?.focus();
+      }
     } catch (err) {
       setError(describeMutationError(err, 'Failed to delete conversation.'));
+      // The confirm already closed (optimistically, above) even though the
+      // delete failed — same focus-restore as an explicit Cancel, so focus
+      // never just vanishes into the fieldset that unmounted under it.
+      deleteButtonRefs.current.get(conversation.id)?.focus();
     }
   }
 
@@ -309,10 +405,22 @@ export function ConversationList({
   );
 
   return (
-    <nav aria-label="Conversations" className="conversation-list">
+    <nav
+      aria-label="Conversations"
+      className="conversation-list"
+      // Fix I4: a focus target of last resort once a delete leaves the
+      // account empty (no search input to fall back to) — `tabIndex={-1}`
+      // makes a non-interactive element programmatically focusable without
+      // adding it to the Tab order.
+      tabIndex={-1}
+      ref={listContainerRef}
+    >
       {conversations.length > 0 && (
         <input
-          ref={searchInputRef}
+          ref={(el) => {
+            internalSearchInputRef.current = el;
+            if (searchInputRef) searchInputRef.current = el;
+          }}
           type="search"
           aria-label={SEARCH_INPUT_LABEL}
           placeholder={SEARCH_INPUT_LABEL}
@@ -417,6 +525,12 @@ export function ConversationList({
                         type="button"
                         aria-label={DELETE_ACTION_LABEL}
                         className="conversation-row-action"
+                        // Fix I4: recorded so `cancelDeleteConfirm`/a failed
+                        // delete can send focus back here.
+                        ref={(el) => {
+                          if (el) deleteButtonRefs.current.set(conversation.id, el);
+                          else deleteButtonRefs.current.delete(conversation.id);
+                        }}
                         onClick={(event) => {
                           event.stopPropagation();
                           setEditingId(null);
@@ -430,7 +544,18 @@ export function ConversationList({
                 </div>
 
                 {isConfirmingDelete && (
-                  <fieldset className="conversation-delete-confirm">
+                  <fieldset
+                    className="conversation-delete-confirm"
+                    // Fix I4: an unannounced inline confirm for a
+                    // destructive action is a trap for screen-reader users —
+                    // `alertdialog` (not plain `dialog`) since this demands
+                    // an immediate decision, same semantics as a native
+                    // confirm. The label names the conversation so it reads
+                    // distinctly from every other row's identical confirm.
+                    role="alertdialog"
+                    aria-label={deleteConfirmLabel(conversation)}
+                    onKeyDown={(event) => handleDeleteConfirmKeyDown(event, conversation)}
+                  >
                     <p>{DELETE_CONFIRM_COPY}</p>
                     <button
                       type="button"
@@ -442,7 +567,12 @@ export function ConversationList({
                     <button
                       type="button"
                       className="conversation-delete-confirm-cancel"
-                      onClick={() => setConfirmingDeleteId(null)}
+                      // Fix I4: focus moves here the moment the confirm
+                      // opens — the safer of the two actions, and where a
+                      // screen-reader user lands ready to hear the alert.
+                      // biome-ignore lint/a11y/noAutofocus: opening a destructive confirm should focus its safe (Cancel) action
+                      autoFocus
+                      onClick={() => cancelDeleteConfirm(conversation.id)}
                     >
                       Cancel
                     </button>

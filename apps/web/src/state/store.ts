@@ -139,9 +139,22 @@ export interface WebAppState {
    * to its prior value; a 401 additionally routes to `enterUnauthorized()`
    * (same "revoked credential" handling as every other REST call in this
    * store) and is swallowed rather than rethrown, but any other failure
-   * (network error, 409 revision conflict, validation) propagates to the
-   * caller so the UI can show it — same "don't swallow an action the UI
-   * asked for" philosophy as `startConversation`.
+   * (network error, validation) propagates to the caller so the UI can show
+   * it — same "don't swallow an action the UI asked for" philosophy as
+   * `startConversation`.
+   *
+   * FINAL-REVIEW FIX C1c: a `revision_conflict` (409) — this store's local
+   * `revision` is stale, which any turn on this conversation makes routine
+   * (the gateway bumps `revision` on `beginTurn`/`finishTurn`; see fix C1a's
+   * `accepted`-frame handling and C1b's unconditional done-refresh, which
+   * both narrow the window but can't close it entirely — a rename issued in
+   * the instant between a turn starting and its `accepted` frame landing can
+   * still race) — is handled specially: re-fetch the authoritative summary
+   * (`rest.getConversation`) and retry the SAME rename once against its
+   * `revision`. Only a second `revision_conflict` (someone else changed it
+   * again in that same window) propagates to the caller like any other
+   * failure — no reload-required dead end for the common single-conflict
+   * case.
    */
   renameConversation(conversationId: string, title: string): Promise<void>;
   /**
@@ -155,6 +168,11 @@ export interface WebAppState {
    * A no-op if `conversationId` isn't in `conversations`. On REST failure,
    * restores the removed row and rethrows (except a 401, which routes to
    * `enterUnauthorized()` instead, same as every other REST call here).
+   *
+   * FINAL-REVIEW FIX C1c: same `revision_conflict` (409) retry-once handling
+   * as `renameConversation` — see its doc comment — re-fetches the
+   * authoritative summary and retries the delete once against its
+   * `revision` before giving up and surfacing the error.
    *
    * If the deleted conversation is the one this store's live socket is
    * currently attached to (`openConversation`'s target), the socket is torn
@@ -234,18 +252,20 @@ function isAuthError(err: unknown): boolean {
   return err instanceof MobileApiError && err.status === 401;
 }
 
+/**
+ * True for a `revision_conflict` (409) `MobileApiError` — this store's
+ * local `revision` for a conversation (used as the `If-Match` precondition
+ * on `renameConversation`/`deleteConversation`) is stale relative to the
+ * gateway's. Final-review fix C1c: rather than dead-ending the user on a
+ * "reload the page" error, both mutations catch exactly this and retry once
+ * against a freshly-fetched `revision` — see their doc comments.
+ */
+function isRevisionConflict(err: unknown): boolean {
+  return err instanceof MobileApiError && err.code === 'revision_conflict';
+}
+
 /** Channel identifier this browser client identifies itself with on outgoing frames. */
 const CHANNEL_ID = 'web';
-
-/**
- * The gateway's own default conversation title (`apps/gateway/src/conversation-service.ts`'s
- * `DEFAULT_CONVERSATION_TITLE`; Mission Control's `chat-service.ts` compares
- * against the same literal) — never imported cross-package since it's a
- * value contract, not a type. Used by the auto-title-refresh heuristic below:
- * a conversation still carrying this title hasn't had its first-turn
- * auto-title land locally yet.
- */
-const DEFAULT_CONVERSATION_TITLE = 'New Conversation';
 
 function emptyTranscript(): Transcript {
   return { messages: [], streaming: null };
@@ -353,15 +373,26 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     }
 
     /**
-     * Auto-title refresh (chat-ux Phase 3 Task 1, audit #8): the gateway
-     * generates a conversation's title in the background starting from its
-     * FIRST accepted user message (`apps/gateway/src/resumable-chat-hub.ts`'s
+     * Summary refresh on turn completion (chat-ux Phase 3 Task 1, audit #8;
+     * widened by final-review fix C1b): the gateway generates a
+     * conversation's title in the background starting from its FIRST
+     * accepted user message (`apps/gateway/src/resumable-chat-hub.ts`'s
      * `autoTitle.schedule`, fired in parallel with the turn itself, not
      * gated on it finishing) — there's no push notification of that title
-     * landing on this store's WS connection, so the simplest honest
-     * heuristic is: once a turn COMPLETES (`done` frame) for a conversation
-     * whose local title is still the gateway's default, re-fetch just that
-     * one summary. Best-effort and silent on failure (this isn't a
+     * (or of `lastMessagePreview`, or of `revision`) landing on this store's
+     * WS connection, so once a turn COMPLETES (`done` frame) this
+     * unconditionally re-fetches that one summary. Originally gated on the
+     * local title still being the gateway's default (the literal
+     * `'New Conversation'`, `apps/gateway/src/conversation-service.ts`'s
+     * `DEFAULT_CONVERSATION_TITLE`) — narrowly aimed at the auto-title case —
+     * but that guard left
+     * `lastMessagePreview` and `revision` stale on every OTHER turn (a
+     * second message in an already-titled conversation never refreshed
+     * either), and `revision` staleness is exactly what makes a
+     * rename/delete issued right after a turn 409 with `revision_conflict`
+     * (see `renameConversation`/`deleteConversation`'s retry-once handling)
+     * — dropping the guard fixes both by keeping every turn-completion
+     * refresh unconditional. Best-effort and silent on failure (this isn't a
      * user-initiated action, so nothing here shows an error) EXCEPT a 401,
      * which still means "this credential is dead" and routes to
      * `enterUnauthorized()` same as every other REST call in this store.
@@ -372,7 +403,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      */
     function maybeRefreshAutoTitle(conversationId: string): void {
       const conversation = get().conversations.find((c) => c.id === conversationId);
-      if (!conversation || conversation.title !== DEFAULT_CONVERSATION_TITLE) return;
+      if (!conversation) return;
       rest
         .getConversation(conversationId)
         .then((updated) => {
@@ -459,10 +490,31 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         return applyServerFrame(reconciled, frame);
       });
 
-      // Auto-title refresh (chat-ux Phase 3 Task 1, audit #8): a turn just
-      // finished — see `maybeRefreshAutoTitle`'s doc comment for why `done`
-      // (not `accepted`, which fires before the gateway's title generation
-      // has had any time to run) is the trigger.
+      // Final-review fix C1a: the gateway bumps a conversation's `revision`
+      // on both `beginTurn` and `finishTurn` (server-side, no push outside
+      // this WS frame), and the `accepted` frame is the one place that
+      // revision rides along for free (`MobileWsServerFrame`'s `accepted`
+      // variant, contracts/mobile/v1 types.ts). Applying it to the summary
+      // here — as soon as it's accepted, not waiting for `done` — keeps
+      // `renameConversation`/`deleteConversation`'s `If-Match` precondition
+      // from going stale the moment ANY turn runs on this conversation
+      // (previously only a full `getConversation`/`listConversations`
+      // refetch ever updated `revision`, so a rename/delete issued after a
+      // turn reliably 409'd with `revision_conflict` even before the retry
+      // handling below).
+      if (frame.type === 'accepted') {
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId ? { ...c, revision: frame.revision } : c,
+          ),
+        }));
+      }
+
+      // Summary refresh (chat-ux Phase 3 Task 1, audit #8; widened by
+      // final-review fix C1b): a turn just finished — see
+      // `maybeRefreshAutoTitle`'s doc comment for why `done` (not
+      // `accepted`, which fires before the gateway's title generation has
+      // had any time to run) is the trigger.
       if (frame.type === 'done') {
         maybeRefreshAutoTitle(conversationId);
       }
@@ -846,7 +898,18 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           conversations: previous.map((c) => (c.id === conversationId ? { ...c, title } : c)),
         });
         try {
-          const updated = await rest.patchConversation(conversationId, { title }, target.revision);
+          let updated: ConversationSummary;
+          try {
+            updated = await rest.patchConversation(conversationId, { title }, target.revision);
+          } catch (err) {
+            // Fix C1c: stale local `revision` — refetch and retry ONCE
+            // before giving up. Anything other than `revision_conflict`
+            // (network error, 401, validation) falls straight through to
+            // the outer catch, same as before this fix.
+            if (!isRevisionConflict(err)) throw err;
+            const fresh = await rest.getConversation(conversationId);
+            updated = await rest.patchConversation(conversationId, { title }, fresh.revision);
+          }
           set((state) => ({
             conversations: state.conversations.map((c) => (c.id === conversationId ? updated : c)),
           }));
@@ -867,7 +930,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
         set({ conversations: previous.filter((c) => c.id !== conversationId) });
         try {
-          await rest.deleteConversation(conversationId, target.revision);
+          try {
+            await rest.deleteConversation(conversationId, target.revision);
+          } catch (err) {
+            // Fix C1c: same stale-`revision` retry-once as renameConversation.
+            if (!isRevisionConflict(err)) throw err;
+            const fresh = await rest.getConversation(conversationId);
+            await rest.deleteConversation(conversationId, fresh.revision);
+          }
         } catch (err) {
           set({ conversations: previous });
           if (isAuthError(err)) {

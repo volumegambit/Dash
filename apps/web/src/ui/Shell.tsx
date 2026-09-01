@@ -309,7 +309,18 @@ interface ChatWorkspaceProps {
  *   streaming; otherwise close the mobile drawer if it's open. An open
  *   inline edit editor (`ChatView`'s `MessageEditor`) owns Escape itself
  *   (cancels the edit) — detected via `.chat-message-edit` on the event's
- *   target so this handler steps aside instead of double-handling.
+ *   target so this handler steps aside instead of double-handling. Final-
+ *   review fix I2 widened this bail-out to any focus target inside
+ *   `.conversation-list` (`ConversationList`'s own `<nav>`), not just
+ *   `.chat-message-edit`: `ConversationList` owns two OTHER Escape-handling
+ *   surfaces of its own — the rename input (cancels the edit) and the
+ *   destructive delete-confirm (dismisses it, fix I2/I4) — and without this,
+ *   an Escape aimed at either of those would ALSO reach this handler (they
+ *   don't call `stopPropagation`, though the rename input now does too, as
+ *   a second line of defense — see `ConversationList.tsx`'s
+ *   `handleRenameKeyDown`/`handleDeleteConfirmKeyDown`) and could
+ *   `cancelTurn` a live generation as an unwanted side effect of dismissing
+ *   an unrelated dialog.
  */
 function ChatWorkspace({
   gateway,
@@ -383,7 +394,12 @@ function ChatWorkspace({
         // `event.target` isn't always an `Element` — e.g. a test (or a real
         // Escape press with nothing focused) dispatching straight on
         // `window` leaves it as `window` itself, which has no `closest`.
-        if (event.target instanceof Element && event.target.closest('.chat-message-edit')) {
+        // Fix I2: widened from `.chat-message-edit` alone to also cover
+        // `.conversation-list` — see this handler's doc comment above.
+        if (
+          event.target instanceof Element &&
+          (event.target.closest('.chat-message-edit') || event.target.closest('.conversation-list'))
+        ) {
           return;
         }
 
