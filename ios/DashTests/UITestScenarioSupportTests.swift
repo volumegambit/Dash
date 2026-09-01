@@ -18,6 +18,7 @@ import Testing
           "pending-recovery",
           "active-recovery",
           "agents",
+          "compose-new-chat",
           "settings-forget",
           "signed-out",
           "account-picker",

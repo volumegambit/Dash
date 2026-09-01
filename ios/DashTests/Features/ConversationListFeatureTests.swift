@@ -46,6 +46,36 @@ struct ConversationListFeatureTests {
     #expect(await recoveryService.discarded == [recovery])
   }
 
+  @Test("last-used agent is nil until recorded, then persists per gateway")
+  func lastUsedAgentPersistsPerGateway() async {
+    let store = FakeLastUsedAgentStore()
+    let featureA = makeFeature(
+      service: FakeConversationListService(),
+      lastUsedAgentStore: store,
+      gatewayID: "gateway-a"
+    )
+    let featureB = makeFeature(
+      service: FakeConversationListService(),
+      lastUsedAgentStore: store,
+      gatewayID: "gateway-b"
+    )
+
+    #expect(await featureA.lastUsedAgentID() == nil)
+    #expect(await featureB.lastUsedAgentID() == nil)
+
+    await featureA.recordLastUsedAgent("research-agent")
+
+    #expect(await featureA.lastUsedAgentID() == "research-agent")
+    // Compose-first new chat (Task 3, audit #16): recording a last-used
+    // agent on one gateway must never leak into another gateway's default —
+    // each paired gateway's compose button should offer ITS OWN most
+    // recently used agent, not whichever gateway was used last overall.
+    #expect(await featureB.lastUsedAgentID() == nil)
+
+    await featureA.recordLastUsedAgent("delete-agent")
+    #expect(await featureA.lastUsedAgentID() == "delete-agent")
+  }
+
   @Test("live recovery discard keeps an active corrupt newer draft readable after restart")
   func liveRecoveryDiscardPreservesCorruptCoexistingDraftText() async throws {
     let directory = FileManager.default.temporaryDirectory.appending(
@@ -1789,13 +1819,16 @@ struct ConversationListFeatureTests {
     service: FakeConversationListService,
     recoveryService: any ConversationRecoveryServicing = FakeConversationRecoveryService(),
     recoveryChanges: any ConversationRecoveryChangeStreaming = ConversationRecoveryChangeSignal(),
+    lastUsedAgentStore: any LastUsedAgentStoring = FakeLastUsedAgentStore(),
+    gatewayID: String = "gateway-1",
     requestID: @escaping @Sendable () -> UUID = { UUID() }
   ) -> ConversationListFeature {
     ConversationListFeature(
-      gatewayID: "gateway-1",
+      gatewayID: gatewayID,
       service: service,
       recoveryService: recoveryService,
       recoveryChanges: recoveryChanges,
+      lastUsedAgentStore: lastUsedAgentStore,
       requestID: requestID
     )
   }
@@ -2291,6 +2324,21 @@ private actor FakeConversationListService: ConversationListServicing {
   func shutdown() async {
     shutdownCallCount += 1
     await shutdownGate?.wait()
+  }
+}
+
+/// Compose-first new chat (Task 3, audit #16): in-memory `LastUsedAgentStoring`
+/// fake — mirrors `LastUsedAgentStore`'s real per-gateway `UserDefaults`
+/// scoping without touching real UserDefaults from a unit test.
+private actor FakeLastUsedAgentStore: LastUsedAgentStoring {
+  private var values: [String: String] = [:]
+
+  func agentID(gatewayID: String) -> String? {
+    values[gatewayID]
+  }
+
+  func setAgentID(_ agentID: String, gatewayID: String) {
+    values[gatewayID] = agentID
   }
 }
 

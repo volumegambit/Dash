@@ -500,4 +500,80 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("conversation.list", in: app).exists)
     waitUntilSelected(element("conversation.row.shared-plan", in: app))
   }
+
+  // MARK: - Compose-first new chat (Task 3, audit #16)
+
+  /// Tapping the compose button lands straight in a fresh, empty `ChatView`
+  /// — no intermediate agent-picker Form (the old `NewConversationView`
+  /// flow this replaces) — with the composer keyboard-ready and the header
+  /// chip showing the default agent (the first enabled agent, since nothing
+  /// has been used on this gateway yet).
+  func testComposeButtonEntersChatDirectlyWithKeyboardReadyComposerAndDefaultAgent() {
+    let app = launch(scenario: "compose-new-chat")
+    selectTab("tab.conversations", in: app)
+
+    let compose = element("conversation.new", in: app)
+    waitUntilEnabled(compose)
+    compose.tap()
+
+    XCTAssertTrue(element("chat.transcript", in: app).waitForExistence(timeout: 5))
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(composer, timeout: 5),
+      "Expected the composer to be immediately actionable after compose"
+    )
+    XCTAssertTrue(
+      app.keyboards.firstMatch.waitForExistence(timeout: 5),
+      "Expected the composer to be keyboard-ready without an extra tap"
+    )
+
+    let chip = element("chat.agentChip", in: app)
+    XCTAssertEqual(chip.value as? String, "Research Agent")
+  }
+
+  /// Selecting a different agent from the header chip's picker can't patch
+  /// the OPEN (still-empty) conversation's agent in place — the gateway has
+  /// no such endpoint — so it creates a new conversation under the chosen
+  /// agent and swaps over to it, AND remembers that choice: reopening
+  /// compose afterward defaults to the newly-chosen agent instead of the
+  /// original default. Once a message is actually sent, the chip disappears
+  /// — the agent decision is locked in for that conversation, and the
+  /// picker is (deliberately) not a way to reassign an in-use conversation.
+  func testAgentChipSwitchesConversationAndPersistsLastUsedAgent() {
+    let app = launch(scenario: "compose-new-chat")
+    selectTab("tab.conversations", in: app)
+
+    element("conversation.new", in: app).tap()
+    let chip = element("chat.agentChip", in: app)
+    XCTAssertEqual(chip.value as? String, "Research Agent")
+
+    chip.tap()
+    let sheet = element("chat.agentPicker.sheet", in: app)
+    XCTAssertTrue(sheet.exists)
+    element("chat.agentPicker.row.delete-agent", in: app).tap()
+
+    XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(element("chat.transcript", in: app).waitForExistence(timeout: 5))
+    let switchedChip = element("chat.agentChip", in: app)
+    XCTAssertEqual(switchedChip.value as? String, "Delete Me")
+
+    // Back to the list, then compose again: last-used-agent persistence
+    // means this lands back on the SAME "Delete Me" conversation rather
+    // than defaulting to "Research Agent" again.
+    revealSidebarIfNeeded(toExpose: "conversation.list", in: app)
+    element("conversation.new", in: app).tap()
+    let reopenedChip = element("chat.agentChip", in: app)
+    XCTAssertEqual(reopenedChip.value as? String, "Delete Me")
+
+    // Sending a message locks the agent in: the chip is no longer offered.
+    let composer = element("chat.composer", in: app)
+    replaceText(in: composer, with: "Kick off the plan", clearExisting: false)
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["chat.agentChip"].waitForNonExistence(timeout: 5),
+      "Expected the agent chip to disappear once a message has been sent"
+    )
+  }
 }

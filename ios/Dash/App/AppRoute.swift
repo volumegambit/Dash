@@ -21,7 +21,6 @@ enum AppRoute: Equatable, Sendable {
 enum ConversationRoute: Hashable, Sendable {
   case transcript(String)
   case recovery(String)
-  case newConversation
 }
 
 enum AgentRoute: Hashable, Sendable {

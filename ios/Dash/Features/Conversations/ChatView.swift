@@ -4,6 +4,7 @@ struct ChatView: View {
   @Environment(ChatFeature.self) private var feature
   @Environment(AppModel.self) private var appModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   @State private var isNearBottom = true
   // iOS 17 fallback geometry (audit #4): the transcript scroll view's own
@@ -49,8 +50,25 @@ struct ChatView: View {
   @State private var renameTitle = ""
   @State private var isDeletePresented = false
 
+  /// Compose-first new chat (Task 3, audit #16): whether the header agent
+  /// chip is shown/tappable at all. Gated on "no message has ever been sent
+  /// in this conversation yet" — once that's no longer true the agent
+  /// decision is locked in for real (the gateway has no
+  /// agent-reassignment endpoint; see `AgentPickerSheet`'s doc comment), so
+  /// showing a picker that can't actually change anything for THIS
+  /// conversation would be misleading.
+  private var showsAgentChip: Bool {
+    feature.state.messages.isEmpty && feature.state.activeTurnID == nil
+  }
+  @State private var isAgentPickerPresented = false
+  @State private var isSwitchingAgent = false
+
   var body: some View {
     VStack(spacing: 0) {
+      if showsAgentChip {
+        agentChipBar
+      }
+
       if let presentation = feature.statusPresentation {
         ChatStatusBanner(presentation: presentation) {
           Task { await feature.retryConnection() }
@@ -122,6 +140,88 @@ struct ChatView: View {
         onCancel: { editingMessage = nil }
       )
     }
+    .sheet(isPresented: $isAgentPickerPresented) {
+      AgentPickerSheet(
+        agents: appModel.conversationListFeature?.agents ?? [],
+        currentAgentID: feature.state.conversation.agentId,
+        onSelect: { agent in
+          guard agent.id != feature.state.conversation.agentId else { return }
+          Task { await switchAgent(to: agent.id) }
+        }
+      )
+    }
+  }
+
+  /// Compose-first new chat (Task 3, audit #16): the header agent chip's
+  /// tap target, shown only while `showsAgentChip` (this conversation is
+  /// still empty). A capsule rather than a plain toolbar button since it
+  /// needs to show the current agent's NAME, not just an icon — SwiftUI's
+  /// nav bar doesn't have room for that alongside the title and the
+  /// trailing options menu at every width this app supports.
+  private var agentChipBar: some View {
+    HStack {
+      Button {
+        isAgentPickerPresented = true
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "person.crop.circle")
+          Text(feature.state.conversation.agentName)
+            .font(.subheadline.weight(.medium))
+            .lineLimit(1)
+          if isSwitchingAgent {
+            ProgressView()
+              .controlSize(.mini)
+          } else {
+            Image(systemName: "chevron.down")
+              .font(.caption2)
+          }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: 44)
+        .background(Color.secondary.opacity(0.12), in: Capsule())
+      }
+      .buttonStyle(.plain)
+      .disabled(isSwitchingAgent)
+      .accessibilityLabel("Change agent")
+      .accessibilityValue(feature.state.conversation.agentName)
+      .accessibilityIdentifier("chat.agentChip")
+
+      Spacer()
+    }
+    .padding(.horizontal)
+    .padding(.top, 8)
+  }
+
+  /// Handles a different agent being picked from `AgentPickerSheet` while
+  /// this conversation is still empty. Can't patch the open conversation's
+  /// agent in place (no such gateway endpoint — see `AgentPickerSheet`'s doc
+  /// comment), so this creates a NEW conversation under the chosen agent and
+  /// swaps `AppModel`'s navigation over to it via `replaceConversation`,
+  /// leaving the current (still-empty) conversation behind untouched.
+  /// Mirrors `ConversationListView.startCompose()`'s create call exactly,
+  /// just landing on `replaceConversation` instead of `openConversation`
+  /// since a conversation is already open here.
+  private func switchAgent(to agentID: String) async {
+    guard let listFeature = appModel.conversationListFeature else { return }
+    guard isSwitchingAgent == false else { return }
+    isSwitchingAgent = true
+    defer { isSwitchingAgent = false }
+    await listFeature.create(agentID: agentID)
+    // See `ConversationListView.startCompose()`'s matching comment: `create`
+    // is idempotent per agent, so comparing the resolved `selectedID`
+    // against its value from BEFORE this call would wrongly treat "resolved
+    // to a conversation that happened to already be selected" as failure.
+    // `listFeature.mutationError == nil` is the actual success signal.
+    guard listFeature.mutationError == nil, let newConversationID = listFeature.selectedID else {
+      return
+    }
+    await listFeature.recordLastUsedAgent(agentID)
+    appModel.replaceConversation(
+      feature.state.conversation.id,
+      with: newConversationID,
+      presentation: AdaptiveNavigationPolicy.presentation(horizontalSizeClass: horizontalSizeClass)
+    )
   }
 
   private var transcript: some View {
@@ -293,15 +393,17 @@ struct ChatView: View {
   /// `ConversationRowActionPolicy` driven off this same conversation's
   /// current summary, so a read-only (archived) or busy (active-turn)
   /// conversation disables the same actions here that it would in the list.
-  /// New Conversation is deliberately NOT offered here: pushing
-  /// `.newConversation` would work on the compact `NavigationStack(path:
-  /// $appModel.conversationPath)` (this view's own path), but the regular
-  /// (iPad split-view) presentation renders `ChatView` inside the `detail:`
-  /// column's own bare `NavigationStack` — which has no
+  /// New Conversation is deliberately NOT offered here as its own toolbar
+  /// entry (Task 3, audit #16, compose-first new chat): starting a new
+  /// conversation now always goes through `ConversationListView`'s compose
+  /// button, which lives on the list's own `NavigationStack`/split-view
+  /// column — the regular (iPad split-view) presentation renders `ChatView`
+  /// inside the `detail:` column's own bare `NavigationStack`, which has no
   /// `.navigationDestination(for: ConversationRoute.self)` registered at
-  /// all, so the same push would silently no-op there. Rather than ship a
-  /// control that only works in one size class, this is deferred to Task
-  /// 3's compose-first work, which owns new-chat UX end-to-end.
+  /// all, so a push from here would silently no-op there regardless. The
+  /// only new-chat-adjacent affordance this screen owns is the header agent
+  /// chip (`agentChipBar`), and only for changing THIS still-empty
+  /// conversation's agent, not starting an unrelated one.
   private var conversationOptionsMenu: some View {
     let policy = ConversationRowActionPolicy(
       summary: feature.state.conversation,

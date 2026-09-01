@@ -261,14 +261,6 @@ struct RootView: View {
         )
         .navigationTitle("Message Recovery")
       }
-    case .newConversation:
-      if let feature = appModel.conversationListFeature {
-        NewConversationView()
-          .environment(feature)
-          .id(ObjectIdentifier(feature))
-      } else {
-        FeatureSlotView(title: "New conversation", systemImage: "square.and.pencil")
-      }
     }
   }
 

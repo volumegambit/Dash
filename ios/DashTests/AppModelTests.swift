@@ -108,6 +108,66 @@ struct AppModelTests {
     #expect(model.splitConversationSelection == .transcript("regular"))
   }
 
+  @Test("compose-first agent switch replaces the top of the compact stack in place")
+  func replaceConversationReplacesCompactStackTop() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+    model.openConversation("fresh-research-agent", presentation: .compact)
+
+    model.replaceConversation(
+      "fresh-research-agent",
+      with: "fresh-delete-agent",
+      presentation: .compact
+    )
+
+    // Compose-first new chat (Task 3, audit #16): the abandoned (still
+    // empty) conversation must NOT be left on the back stack as a dead
+    // "back" stop — the switch replaces it in place rather than pushing on
+    // top the way `openConversation` does.
+    #expect(model.conversationPath == [.transcript("fresh-delete-agent")])
+    #expect(model.splitConversationSelection == .transcript("fresh-delete-agent"))
+  }
+
+  @Test("compose-first agent switch falls back to a normal push when the old route isn't on top")
+  func replaceConversationFallsBackWhenOldRouteIsNotTopOfStack() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+    model.openConversation("unrelated", presentation: .compact)
+
+    // "fresh-research-agent" was never actually pushed here (e.g. it was
+    // opened in a since-discarded scene state) — the top-of-stack replace
+    // optimization can't apply, so this should behave like a normal push
+    // instead of corrupting an unrelated top-of-stack entry.
+    model.replaceConversation(
+      "fresh-research-agent",
+      with: "fresh-delete-agent",
+      presentation: .compact
+    )
+
+    #expect(
+      model.conversationPath == [.transcript("unrelated"), .transcript("fresh-delete-agent")]
+    )
+  }
+
+  @Test("compose-first agent switch resets the whole path in regular width")
+  func replaceConversationResetsRegularPath() {
+    let model = AppModel(
+      dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine())
+    )
+    model.openConversation("fresh-research-agent", presentation: .regular)
+
+    model.replaceConversation(
+      "fresh-research-agent",
+      with: "fresh-delete-agent",
+      presentation: .regular
+    )
+
+    #expect(model.conversationPath == [.transcript("fresh-delete-agent")])
+    #expect(model.splitConversationSelection == .transcript("fresh-delete-agent"))
+  }
+
   @Test("discarding recovery closes compact and regular destinations")
   func recoveryDiscardClosesEveryDestination() {
     let model = AppModel(
@@ -1066,7 +1126,7 @@ struct AppModelTests {
       )
     )
     await model.start()
-    model.conversationPath = [.newConversation, .transcript("old-conversation")]
+    model.conversationPath = [.recovery("old-recovery"), .transcript("old-conversation")]
     model.splitConversationSelection = .transcript("old-conversation")
     model.agentPath = [.detail("old-agent")]
     model.splitAgentSelection = .detail("old-agent")

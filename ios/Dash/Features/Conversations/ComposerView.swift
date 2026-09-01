@@ -14,6 +14,20 @@ struct ComposerView: View {
   // tick regardless of how the async call resolves, matching a physical
   // button's immediate feedback.
   @State private var actionFeedbackTick = 0
+  // Compose-first new chat (Task 3, audit #16): "keyboard-ready" composer —
+  // a brand-new conversation should land with the keyboard already up
+  // rather than making the user tap the text field first. Scoped to
+  // conversations that have never had a message sent (`isFreshConversation`)
+  // so opening an existing, already-used conversation never steals focus
+  // out from under the user. `hasAttemptedAutoFocus` makes this a one-shot
+  // per `ComposerView` instance (itself one per open conversation, since
+  // `ChatView` is `.id(ObjectIdentifier(feature))`-keyed in `RootView`) — it
+  // fires as soon as `feature.draftEditingAllowed` first goes true and never
+  // refires after that, so a later reconnect or reachability flip toggling
+  // that same flag can't yank the keyboard back up after the user's
+  // deliberately dismissed it.
+  @FocusState private var isDraftFocused: Bool
+  @State private var hasAttemptedAutoFocus = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -32,6 +46,7 @@ struct ComposerView: View {
           .frame(minHeight: 44)
           .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
           .disabled(feature.draftEditingAllowed == false)
+          .focused($isDraftFocused)
           .accessibilityIdentifier("chat.composer")
           .keyboardShortcut("l", modifiers: .command)
           .submitLabel(.send)
@@ -62,6 +77,22 @@ struct ComposerView: View {
       Task { await load(items) }
     }
     .sensoryFeedback(.impact(weight: .light), trigger: actionFeedbackTick)
+    .task { attemptAutoFocus() }
+    .onChange(of: feature.draftEditingAllowed) { _, allowed in
+      guard allowed else { return }
+      attemptAutoFocus()
+    }
+  }
+
+  private var isFreshConversation: Bool {
+    feature.state.messages.isEmpty && feature.state.activeTurnID == nil
+  }
+
+  private func attemptAutoFocus() {
+    guard hasAttemptedAutoFocus == false else { return }
+    guard feature.draftEditingAllowed, isFreshConversation else { return }
+    hasAttemptedAutoFocus = true
+    isDraftFocused = true
   }
 
   private var draftBinding: Binding<String> {

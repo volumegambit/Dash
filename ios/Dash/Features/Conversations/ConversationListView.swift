@@ -69,6 +69,12 @@ struct ConversationListView: View {
   // conversation search (Task 1, audit #8) which is likewise a client-side
   // filter over title + lastMessagePreview.
   @State private var searchText = ""
+  // Compose-first new chat (Task 3, audit #16): `isComposing` covers the
+  // async gap between tapping the compose button and `appModel.openConversation`
+  // actually navigating — the old `NewConversationView.isCreating` this
+  // replaces guarded the exact same window, just one screen later (after an
+  // explicit "Start conversation" tap instead of the compose tap itself).
+  @State private var isComposing = false
 
   var body: some View {
     List {
@@ -189,15 +195,20 @@ struct ConversationListView: View {
         agentFilter
       }
       ToolbarItem(placement: .topBarTrailing) {
-        NavigationLink(value: ConversationRoute.newConversation) {
-          Label("New conversation", systemImage: "square.and.pencil")
-            .frame(minWidth: 44, minHeight: 44)
+        Button {
+          Task { await startCompose() }
+        } label: {
+          if isComposing {
+            ProgressView()
+              .frame(minWidth: 44, minHeight: 44)
+          } else {
+            Label("New conversation", systemImage: "square.and.pencil")
+              .frame(minWidth: 44, minHeight: 44)
+          }
         }
-        .disabled(feature.mutationsAllowed == false)
+        .disabled(composeDisabled)
         .accessibilityIdentifier("conversation.new")
-        .accessibilityHint(
-          feature.mutationsAllowed ? "" : "Connect to the gateway to create a conversation"
-        )
+        .accessibilityHint(composeDisabledHint)
       }
     }
     .safeAreaInset(edge: .top) {
@@ -323,6 +334,60 @@ struct ConversationListView: View {
 
   private var selectedAgentName: String? {
     feature.agents.first { $0.id == feature.selectedAgentID }?.name
+  }
+
+  // MARK: - Compose-first new chat (Task 3, audit #16)
+
+  private var availableComposeAgents: [RegisteredAgentDTO] {
+    feature.agents.filter { $0.status != .disabled }
+  }
+
+  private var composeDisabled: Bool {
+    feature.mutationsAllowed == false || availableComposeAgents.isEmpty || isComposing
+  }
+
+  private var composeDisabledHint: String {
+    if feature.mutationsAllowed == false {
+      return "Connect to the gateway to create a conversation"
+    }
+    if availableComposeAgents.isEmpty {
+      return "Enable or create an agent before starting a conversation"
+    }
+    return ""
+  }
+
+  /// Replaces `NewConversationView`'s Form (agent `Picker` + "Start
+  /// conversation" button — three taps before typing) with a single tap
+  /// straight into `ChatView`. The agent choice itself isn't asked for here
+  /// anymore: it defaults to whichever agent this gateway was last used
+  /// with (`ConversationListFeature.lastUsedAgentID()`, persisted per
+  /// gateway), falling back to the first enabled agent the very first time.
+  /// `ChatView`'s header agent chip is now the ONLY place to override that
+  /// choice, and only while the resulting conversation is still empty — see
+  /// `AgentPickerSheet`'s doc comment.
+  private func startCompose() async {
+    guard isComposing == false else { return }
+    let availableAgents = availableComposeAgents
+    guard availableAgents.isEmpty == false else { return }
+    isComposing = true
+    defer { isComposing = false }
+    let lastUsed = await feature.lastUsedAgentID()
+    let agentID = availableAgents.first { $0.id == lastUsed }?.id ?? availableAgents[0].id
+    await feature.create(agentID: agentID)
+    // Bug fix (verified by `testAgentChipSwitchesConversationAndPersistsLastUsedAgent`):
+    // this used to compare `feature.selectedID` against its value BEFORE the
+    // call, treating "unchanged" as failure — but `create(agentID:)` is
+    // idempotent per agent (the gateway returns the SAME conversation for a
+    // repeat create against an agent that already has one), so composing
+    // twice in a row with the same default/last-used agent legitimately
+    // resolves to the conversation that was already selected. `mutationError`
+    // is the real success/failure signal: `create` clears it on success and
+    // sets it on every failure path (offline, validation, outcome-unknown).
+    guard feature.mutationError == nil, let conversationID = feature.selectedID else {
+      return
+    }
+    await feature.recordLastUsedAgent(agentID)
+    appModel.openConversation(conversationID, presentation: presentation)
   }
 
   /// Audit #9: local filter over `feature.conversations` (already scoped by

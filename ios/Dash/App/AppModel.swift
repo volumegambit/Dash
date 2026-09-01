@@ -273,6 +273,38 @@ final class AppModel {
     openConversationDestination(destination, presentation: presentation)
   }
 
+  /// Compose-first new chat (Task 3, audit #16): swaps the chat header's
+  /// agent chip from `oldID` to a freshly-created `newID` conversation under
+  /// a different agent. `oldID` is always still-empty (no message ever sent
+  /// — the chip only offers the picker while that's true, see `ChatView`),
+  /// so the swap should REPLACE it in place rather than push on top the way
+  /// `openConversation` does: leaving `oldID` on the compact
+  /// `NavigationStack` would leave a dead "back" stop pointing at a
+  /// conversation the user never meaningfully visited. `oldID` itself is
+  /// left behind untouched (harmless — it's real but empty, same as if the
+  /// pre-compose-first "New conversation" Form had been used to create it
+  /// and then abandoned without sending).
+  func replaceConversation(
+    _ oldID: String,
+    with newID: String,
+    presentation: NavigationPresentation
+  ) {
+    if let gatewayID = selectedProfile?.gatewayID,
+      chatLifecycleByScope[chatScope(gatewayID: gatewayID, conversationID: newID)]?.isRemoved
+        == true
+    {
+      return
+    }
+    selectedTab = .conversations
+    let destination = ConversationRoute.transcript(newID)
+    if presentation == .compact, conversationPath.last == .transcript(oldID) {
+      conversationPath[conversationPath.count - 1] = destination
+      splitConversationSelection = destination
+      return
+    }
+    openConversationDestination(destination, presentation: presentation)
+  }
+
   func openConversationRecovery(_ id: String, presentation: NavigationPresentation) {
     selectedTab = .conversations
     let destination = ConversationRoute.recovery(id)

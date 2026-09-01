@@ -53,6 +53,14 @@ extension AppDependenciesFactory {
     case pendingRecovery = "pending-recovery"
     case activeRecovery = "active-recovery"
     case agents
+    /// Compose-first new chat (Task 3, audit #16): agents are seeded but NO
+    /// conversation exists yet, unlike every other paired scenario (which
+    /// all start with `sharedConversation` already bound to `research-agent`
+    /// — see `UITestScenarioStore.init`). Tapping compose here always
+    /// produces a genuinely fresh, empty conversation instead of the fake
+    /// store's create-dedups-by-agent shortcut (`UITestScenarioStore.create`)
+    /// silently reopening a pre-existing, already-populated thread.
+    case composeNewChat = "compose-new-chat"
     case settingsForget = "settings-forget"
     /// Signed-out entry point (`SignInView`) — functionally identical to
     /// `.unpaired`, kept as its own case so `AccountUITests` reads
@@ -80,7 +88,8 @@ extension AppDependenciesFactory {
     var startsPaired: Bool {
       switch self {
       case .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
-        .pendingRecovery, .activeRecovery, .agents, .settingsForget, .approveDevice:
+        .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
+        .approveDevice:
         return true
       case .unpaired, .signedOut, .accountPicker, .accountPickerError, .accountNotEnrolled:
         return false
@@ -460,7 +469,8 @@ extension AppDependenciesFactory {
         return signedInPickerFactory(keychain: keychain, clock: clock)
 
       case .unpaired, .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
-        .pendingRecovery, .activeRecovery, .agents, .settingsForget, .approveDevice:
+        .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
+        .approveDevice:
         // `.approveDevice` never reaches here — `uiTesting`'s ternary routes
         // it to `approveDeviceAccountFactory` first. Listed for exhaustiveness.
         return .unavailable
@@ -569,6 +579,12 @@ extension AppDependenciesFactory {
       )
       let keychain = UITestKeychainStore()
       let clock = UITestClock()
+      // Compose-first new chat (Task 3, audit #16): a fresh, in-memory
+      // last-used-agent store scoped to THIS launch — never the real
+      // `LastUsedAgentStore` (which persists to `UserDefaults.standard` and
+      // would leak one test's agent selection into the next test on the
+      // same simulator).
+      let lastUsedAgentStore = UITestLastUsedAgentStore()
 
       return AppDependencies(
         clock: clock,
@@ -592,7 +608,8 @@ extension AppDependenciesFactory {
             gatewayID: profile.gatewayID,
             service: store,
             recoveryService: recoveryService,
-            recoveryChanges: recoveryChanges
+            recoveryChanges: recoveryChanges,
+            lastUsedAgentStore: lastUsedAgentStore
           )
         },
         makeAgentsFeature: { profile in
@@ -894,6 +911,22 @@ extension AppDependenciesFactory {
     }
   }
 
+  /// Compose-first new chat (Task 3, audit #16): per-launch, in-memory
+  /// `LastUsedAgentStoring` fake — see the `AppDependencies.uiTesting`
+  /// call-site comment for why this can't be the real UserDefaults-backed
+  /// `LastUsedAgentStore`.
+  actor UITestLastUsedAgentStore: LastUsedAgentStoring {
+    private var values: [String: String] = [:]
+
+    func agentID(gatewayID: String) -> String? {
+      values[gatewayID]
+    }
+
+    func setAgentID(_ agentID: String, gatewayID: String) {
+      values[gatewayID] = agentID
+    }
+  }
+
   actor UITestScenarioStore: ConversationListServicing, AgentsServicing, ChatFeaturePersisting,
     ChatFeatureSynchronizing
   {
@@ -911,14 +944,22 @@ extension AppDependenciesFactory {
     init(scenario: UITestScenario, dataIdentifier: String) {
       self.dataIdentifier = dataIdentifier
       self.scenario = scenario
-      let conversation = UITestScenarioFixtures.conversation(for: scenario)
-      conversationValues = [conversation]
       agentValues = UITestScenarioFixtures.agents
-      messages = [conversation.id: UITestScenarioFixtures.cachedMessages(for: scenario)]
-      cursors[conversation.id] = conversation.lastSeq
+      // Compose-first new chat (Task 3, audit #16): `.composeNewChat` starts
+      // with no seeded conversation at all, unlike every other paired
+      // scenario — see the case's doc comment in `UITestScenario`.
+      if scenario == .composeNewChat {
+        conversationValues = []
+        messages = [:]
+      } else {
+        let conversation = UITestScenarioFixtures.conversation(for: scenario)
+        conversationValues = [conversation]
+        messages = [conversation.id: UITestScenarioFixtures.cachedMessages(for: scenario)]
+        cursors[conversation.id] = conversation.lastSeq
+      }
       if scenario == .pendingRecovery || scenario == .activeRecovery {
-        pendingSends[conversation.id] = UITestScenarioFixtures.recoveredPendingSend
-        drafts[conversation.id] = UITestScenarioFixtures.recoveredNewerDraft
+        pendingSends[conversationValues[0].id] = UITestScenarioFixtures.recoveredPendingSend
+        drafts[conversationValues[0].id] = UITestScenarioFixtures.recoveredNewerDraft
       }
     }
 

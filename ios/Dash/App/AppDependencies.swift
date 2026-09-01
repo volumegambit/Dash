@@ -305,6 +305,7 @@ struct AppDependencies: Sendable {
     let store = PersistenceStore(modelContainer: container)
     let keychain = SystemKeychainStore()
     let pendingConversationCreates = PendingConversationCreateStore()
+    let lastUsedAgentStore = LastUsedAgentStore()
     let clock = SystemAppClock()
     let activeGatewayKey = "app.dash.ios.active-gateway-id"
 
@@ -446,7 +447,8 @@ struct AppDependencies: Sendable {
           recoveryService: LiveConversationRecoveryService(
             gatewayID: profile.gatewayID,
             store: store
-          )
+          ),
+          lastUsedAgentStore: lastUsedAgentStore
         )
       },
       makeAgentsFeature: { profile in

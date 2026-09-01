@@ -260,6 +260,50 @@ actor PendingConversationCreateStore {
   }
 }
 
+/// Compose-first new chat (Task 3, audit #16): where the "last agent used to
+/// start a conversation on this gateway" lives. A protocol (rather than a
+/// concrete `UserDefaults`-backed type injected directly) so
+/// `UITestScenarioSupport` can substitute a per-launch in-memory fake — the
+/// same reason `ConversationListServicing`'s `retainedCreateRequestID` exists
+/// as a protocol method rather than a hardcoded `PendingConversationCreateStore`
+/// call: real `UserDefaults.standard` persists across UI test launches on the
+/// same simulator, which would let one test's agent selection leak into the
+/// next. Kept as its OWN small protocol (not folded into
+/// `ConversationListServicing`) since it's pure local preference state with
+/// no gateway round-trip or retry semantics — adding it to the service
+/// protocol would force every existing fake conformer (`ConversationListFeatureTests`,
+/// `ChatFeatureTests`, `AgentsFeatureTests`, `AppModelTests`) to grow two new
+/// stub methods for something they don't otherwise care about.
+protocol LastUsedAgentStoring: Actor {
+  func agentID(gatewayID: String) -> String?
+  func setAgentID(_ agentID: String, gatewayID: String)
+}
+
+actor LastUsedAgentStore: LastUsedAgentStoring {
+  private let defaults: UserDefaults
+  private let keyPrefix = "app.dash.ios.last-used-agent"
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  func agentID(gatewayID: String) -> String? {
+    defaults.string(forKey: key(gatewayID: gatewayID))
+  }
+
+  func setAgentID(_ agentID: String, gatewayID: String) {
+    defaults.set(agentID, forKey: key(gatewayID: gatewayID))
+  }
+
+  private func key(gatewayID: String) -> String {
+    "\(keyPrefix).\(encoded(gatewayID))"
+  }
+
+  private func encoded(_ value: String) -> String {
+    Data(value.utf8).base64EncodedString()
+  }
+}
+
 actor LiveConversationListService: ConversationListServicing {
   private let gatewayID: String
   private let store: any ConversationListPersisting
@@ -685,6 +729,7 @@ final class ConversationListFeature {
   @ObservationIgnored private let service: any ConversationListServicing
   @ObservationIgnored private let recoveryService: any ConversationRecoveryServicing
   @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeStreaming
+  @ObservationIgnored private let lastUsedAgentStore: any LastUsedAgentStoring
   @ObservationIgnored private let requestID: @Sendable () -> UUID
   @ObservationIgnored private let pageSize: Int
   @ObservationIgnored private var allConversations: [CachedConversation] = []
@@ -726,6 +771,7 @@ final class ConversationListFeature {
     service: any ConversationListServicing,
     recoveryService: any ConversationRecoveryServicing = EmptyConversationRecoveryService(),
     recoveryChanges: any ConversationRecoveryChangeStreaming = ConversationRecoveryChangeSignal.shared,
+    lastUsedAgentStore: any LastUsedAgentStoring = LastUsedAgentStore(),
     requestID: @escaping @Sendable () -> UUID = { UUID() },
     pageSize: Int = 50
   ) {
@@ -733,8 +779,27 @@ final class ConversationListFeature {
     self.service = service
     self.recoveryService = recoveryService
     self.recoveryChanges = recoveryChanges
+    self.lastUsedAgentStore = lastUsedAgentStore
     self.requestID = requestID
     self.pageSize = pageSize
+  }
+
+  /// Compose-first new chat (Task 3, audit #16): the agent the compose
+  /// button/chip should default to, persisted per-gateway so returning to
+  /// this gateway later re-offers whichever agent conversations were last
+  /// started with — falls back to `nil` (caller picks the first enabled
+  /// agent) when nothing's been recorded yet.
+  func lastUsedAgentID() async -> String? {
+    await lastUsedAgentStore.agentID(gatewayID: gatewayID)
+  }
+
+  /// Records `agentID` as this gateway's last-used agent — called after a
+  /// successful compose-flow create (`ConversationListView`'s compose button
+  /// or `ChatView`'s agent-chip switch), never for `AgentDetailView`'s
+  /// explicit per-agent "Start Chat" (that flow already disambiguates the
+  /// agent by construction, so it's out of scope for this preference).
+  func recordLastUsedAgent(_ agentID: String) async {
+    await lastUsedAgentStore.setAgentID(agentID, gatewayID: gatewayID)
   }
 
   func consume(_ snapshot: SyncSnapshot?) {
