@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import { ChatSocket } from '../api/chat-socket.js';
 import { MobileRestClient } from '../api/rest.js';
@@ -291,6 +291,25 @@ interface ChatWorkspaceProps {
  * is a normal grid column at desktop width and an overlay drawer under
  * 768px, toggled by the hamburger (`aria-expanded`, closes on Escape or a
  * backdrop click, and on picking a conversation).
+ *
+ * Global keyboard shortcuts (chat-ux Phase 3 Task 5, MC parity — ported
+ * from `apps/mission-control/src/renderer/src/routes/chat.tsx`'s own
+ * `window`-level keydown effect, whose SEMANTICS this borrows rather than
+ * its literal bindings: a single listener owned by the component that owns
+ * the state each shortcut acts on, cleaned up on unmount, `preventDefault`
+ * only on the branch that actually handled the key, and — MC's own handler
+ * has no "don't fire while typing" guard at all — Cmd/Ctrl+K and
+ * Cmd/Ctrl+Shift+O fire regardless of focus, same as MC's Cmd+N/Cmd+O/Cmd+W):
+ * - Cmd/Ctrl+K: focus `ConversationList`'s search input (Task 1), opening the
+ *   mobile drawer first if it's closed.
+ * - Cmd/Ctrl+Shift+O: start a new conversation via `ConversationList`'s own
+ *   "New conversation" flow (see `newConversationRef` below) rather than a
+ *   second implementation of it here.
+ * - Escape: stop generation (`cancelTurn`) if the open conversation is
+ *   streaming; otherwise close the mobile drawer if it's open. An open
+ *   inline edit editor (`ChatView`'s `MessageEditor`) owns Escape itself
+ *   (cancels the edit) — detected via `.chat-message-edit` on the event's
+ *   target so this handler steps aside instead of double-handling.
  */
 function ChatWorkspace({
   gateway,
@@ -303,16 +322,103 @@ function ChatWorkspace({
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Escape closes the mobile drawer — a no-op (no listener attached) once
-  // the drawer is already closed.
+  const useAppStore = useWebAppStore();
+  const cancelTurn = useAppStore((s) => s.cancelTurn);
+  // Same "streaming" definition `ChatView` uses for the same conversation
+  // (`transcript?.streaming != null`) — recomputed here independently
+  // because `ChatWorkspace` (not `ChatView`) is what owns this shortcut
+  // handler and `selectedConversationId`.
+  const isStreaming = useAppStore((s) =>
+    selectedConversationId
+      ? (s.transcripts[selectedConversationId]?.streaming ?? null) !== null
+      : false,
+  );
+
+  // Imperative handles into `ConversationList`, which owns both the search
+  // input and the "New conversation" flow — Cmd/Ctrl+K and
+  // Cmd/Ctrl+Shift+O reach into them rather than duplicating either. See
+  // `ConversationList`'s own doc comments on these props.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const newConversationRef = useRef<(() => void) | null>(null);
+  // Set when Cmd/Ctrl+K or Cmd/Ctrl+Shift+O needs a render it just kicked
+  // off (switching off the Devices screen, and/or opening the mobile
+  // drawer) to actually commit before the target it wants
+  // (`searchInputRef`/`newConversationRef`) exists/is visible — the effect
+  // below runs it once that render lands. `null` means "nothing pending".
+  const pendingShortcutActionRef = useRef<'focus-search' | 'new-conversation' | null>(null);
+
   useEffect(() => {
-    if (!sidebarOpen) return;
     function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape') setSidebarOpen(false);
+      // Never hijack a key that's part of composing IME input (an Escape
+      // mid-composition is the browser's own "cancel the composition"
+      // gesture, not ours) — same guard the composer/edit editor use.
+      if (event.isComposing || event.keyCode === 229) return;
+
+      const mod = event.metaKey || event.ctrlKey;
+
+      if (mod && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (screen === 'conversations' && sidebarOpen) {
+          searchInputRef.current?.focus();
+        } else {
+          pendingShortcutActionRef.current = 'focus-search';
+          if (screen !== 'conversations') setScreen('conversations');
+          if (!sidebarOpen) setSidebarOpen(true);
+        }
+        return;
+      }
+
+      if (mod && event.shiftKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        if (screen === 'conversations') {
+          newConversationRef.current?.();
+        } else {
+          pendingShortcutActionRef.current = 'new-conversation';
+          setScreen('conversations');
+        }
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        // `event.target` isn't always an `Element` — e.g. a test (or a real
+        // Escape press with nothing focused) dispatching straight on
+        // `window` leaves it as `window` itself, which has no `closest`.
+        if (event.target instanceof Element && event.target.closest('.chat-message-edit')) {
+          return;
+        }
+
+        if (isStreaming && selectedConversationId) {
+          event.preventDefault();
+          cancelTurn(selectedConversationId);
+          return;
+        }
+        if (sidebarOpen) {
+          event.preventDefault();
+          setSidebarOpen(false);
+        }
+      }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [sidebarOpen]);
+  }, [screen, sidebarOpen, isStreaming, selectedConversationId, cancelTurn]);
+
+  // Runs a shortcut action deferred above, once the render it asked for has
+  // actually committed (`screen`/`sidebarOpen` reaching the state the
+  // handler needs) — reaching for `searchInputRef`/`newConversationRef` any
+  // earlier would hit a not-yet-mounted `ConversationList` or a still-hidden
+  // (mobile drawer) search input.
+  useEffect(() => {
+    const pending = pendingShortcutActionRef.current;
+    if (!pending) return;
+    if (screen !== 'conversations') return;
+    if (pending === 'focus-search' && !sidebarOpen) return;
+    pendingShortcutActionRef.current = null;
+    if (pending === 'focus-search') {
+      searchInputRef.current?.focus();
+    } else {
+      newConversationRef.current?.();
+    }
+  }, [screen, sidebarOpen]);
 
   function selectConversation(conversationId: string): void {
     setSelectedConversationId(conversationId);
@@ -386,6 +492,8 @@ function ChatWorkspace({
                 selectedConversationId={selectedConversationId}
                 onSelect={selectConversation}
                 onConversationDeleted={handleConversationDeleted}
+                searchInputRef={searchInputRef}
+                newConversationRef={newConversationRef}
               />
             </aside>
             <ChatView conversationId={selectedConversationId} gatewayLabel={gateway.subdomain} />

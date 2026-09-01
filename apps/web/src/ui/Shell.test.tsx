@@ -1,3 +1,4 @@
+import type { ConversationMessage, ConversationSummary } from '@dash/mobile-contract';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { create } from 'zustand';
 import { ChatSocket } from '../api/chat-socket.js';
@@ -5,6 +6,7 @@ import { MobileRestClient } from '../api/rest.js';
 import type { GatewayInfo } from '../auth/control-plane.js';
 import type { StoredCredential } from '../auth/credential-store.js';
 import type { WebAppState, WebAppStoreDeps } from '../state/store.js';
+import { NEW_CONVERSATION_LABEL, SEARCH_INPUT_LABEL } from './ConversationList.js';
 import { SESSION_REVOKED_COPY, Shell } from './Shell.js';
 
 vi.mock('../api/rest.js', () => ({
@@ -82,6 +84,63 @@ function baseControlPlaneClient() {
     listPairings: vi.fn(async () => []),
     deletePairing: vi.fn(),
   };
+}
+
+function conversationSummary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+  return {
+    id: 'conv-1',
+    agentId: 'agent-1',
+    agentName: 'Helper',
+    title: 'Chat about the roadmap',
+    revision: 1,
+    status: 'idle',
+    activeTurnId: null,
+    owningIssueId: null,
+    projectId: null,
+    lastSeq: 0,
+    lastMessagePreview: null,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function conversationMessage(overrides: Partial<ConversationMessage> = {}): ConversationMessage {
+  return {
+    id: 'msg-1',
+    conversationId: 'conv-1',
+    turnId: 'turn-1',
+    ordinal: 1,
+    role: 'user',
+    status: 'completed',
+    content: { type: 'user', text: 'hi there' },
+    createdAt: '2026-08-01T00:00:01.000Z',
+    updatedAt: '2026-08-01T00:00:01.000Z',
+    ...overrides,
+  };
+}
+
+/** Renders `Shell` straight through to the `'chat'` view (a stored
+ * credential for `GATEWAY`, same as most tests in this file), for the
+ * keyboard-shortcut tests below that only care about `ChatWorkspace`'s own
+ * behavior once mounted. */
+async function renderChatWorkspace(): Promise<void> {
+  const controlPlaneClient = baseControlPlaneClient();
+  const credentialStore = {
+    get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+    set: vi.fn(),
+    delete: vi.fn(),
+  };
+
+  render(
+    <Shell
+      controlPlaneClient={controlPlaneClient}
+      credentialStore={credentialStore}
+      relayDomain="relay.example.com"
+    />,
+  );
+
+  await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
 }
 
 describe('Shell', () => {
@@ -436,5 +495,140 @@ describe('Shell', () => {
     unmount();
 
     expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1);
+  });
+
+  describe('global keyboard shortcuts (chat-ux Phase 3 Task 5, MC parity)', () => {
+    it('Cmd+K opens the mobile drawer (if closed) and focuses the conversation search input', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      await waitFor(() => expect(screen.getByLabelText(SEARCH_INPUT_LABEL)).toBeTruthy());
+
+      const hamburger = screen.getByRole('button', { name: 'Toggle conversations menu' });
+      expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+
+      fireEvent.keyDown(window, { key: 'k', metaKey: true });
+
+      await waitFor(() => expect(hamburger.getAttribute('aria-expanded')).toBe('true'));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByLabelText(SEARCH_INPUT_LABEL)),
+      );
+    });
+
+    it('Ctrl+K also focuses the search input, directly, once the drawer is already open', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      await waitFor(() => expect(screen.getByLabelText(SEARCH_INPUT_LABEL)).toBeTruthy());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Toggle conversations menu' }));
+      expect(
+        screen
+          .getByRole('button', { name: 'Toggle conversations menu' })
+          .getAttribute('aria-expanded'),
+      ).toBe('true');
+
+      fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByLabelText(SEARCH_INPUT_LABEL)),
+      );
+    });
+
+    it('a bare "k" with no modifier does nothing — never opens the drawer or moves focus', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      await waitFor(() => expect(screen.getByLabelText(SEARCH_INPUT_LABEL)).toBeTruthy());
+      const hamburger = screen.getByRole('button', { name: 'Toggle conversations menu' });
+
+      fireEvent.keyDown(window, { key: 'k' });
+
+      expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).not.toBe(screen.getByLabelText(SEARCH_INPUT_LABEL));
+    });
+
+    it("Cmd+Shift+O starts a new conversation via ConversationList's own new-conversation flow", async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      await waitFor(() => expect(screen.getByText(NEW_CONVERSATION_LABEL)).toBeTruthy());
+
+      fireEvent.keyDown(window, { key: 'O', metaKey: true, shiftKey: true });
+
+      await waitFor(() => expect(createdStores[0].getState().listAgents).toHaveBeenCalledTimes(1));
+    });
+
+    it('Cmd+Shift+O switches off the Devices screen before starting a new conversation', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      await waitFor(() => expect(screen.getByText(NEW_CONVERSATION_LABEL)).toBeTruthy());
+
+      fireEvent.click(screen.getByText('Devices'));
+      await waitFor(() => expect(screen.queryByText(NEW_CONVERSATION_LABEL)).toBeNull());
+
+      fireEvent.keyDown(window, { key: 'o', ctrlKey: true, shiftKey: true });
+
+      await waitFor(() =>
+        expect(screen.getByText('Conversations').getAttribute('aria-current')).toBe('page'),
+      );
+      await waitFor(() => expect(createdStores[0].getState().listAgents).toHaveBeenCalledTimes(1));
+    });
+
+    it('Escape stops generation (cancelTurn) while the open conversation is streaming, and does not also close an already-open drawer', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        });
+      });
+      await waitFor(() => expect(screen.getByText('Chat about the roadmap')).toBeTruthy());
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Toggle conversations menu' }));
+      const hamburger = screen.getByRole('button', { name: 'Toggle conversations menu' });
+      expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).toHaveBeenCalledWith('conv-1');
+      // Streaming takes priority over the drawer — the SAME Escape must not
+      // also close it (see `ChatWorkspace`'s doc comment on the precedence).
+      expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it("Escape lets an open edit editor's own handling win — it neither calls cancelTurn nor is double-handled", async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          transcripts: {
+            'conv-1': { messages: [conversationMessage()], streaming: null },
+          },
+        });
+      });
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+
+      const editButton = await screen.findByRole('button', {
+        name: 'Edit and resend this message',
+      });
+      fireEvent.click(editButton);
+
+      const editTextarea = await screen.findByLabelText('Edit message');
+      fireEvent.keyDown(editTextarea, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+      // The editor's own onKeyDown (not this global handler) closed it.
+      await waitFor(() => expect(screen.queryByLabelText('Edit message')).toBeNull());
+    });
   });
 });

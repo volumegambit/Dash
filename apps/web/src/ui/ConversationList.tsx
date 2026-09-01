@@ -1,5 +1,12 @@
 import type { ConversationSummary, MobileAgent } from '@dash/mobile-contract';
-import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { useWebAppStore } from './Shell.js';
 
 export interface ConversationListProps {
@@ -15,6 +22,26 @@ export interface ConversationListProps {
    * `ConversationList`'s own tests can render without it.
    */
   onConversationDeleted?: (conversationId: string) => void;
+  /**
+   * Chat-ux Phase 3 Task 5 (web keyboard shortcuts, MC parity): lets
+   * `Shell`'s global Cmd/Ctrl+K handler focus the search input directly,
+   * without lifting the query into `Shell`'s own state — same
+   * "parent-owns-a-ref, child attaches it" idiom `ChatView`/`MessageEditor`
+   * already use for autofocus, just handed in from outside instead of
+   * created locally. Optional so `ConversationList`'s own tests (and any
+   * render without a keyboard-shortcut owner) don't need to pass one.
+   */
+  searchInputRef?: RefObject<HTMLInputElement | null>;
+  /**
+   * Chat-ux Phase 3 Task 5: `Shell`'s global Cmd/Ctrl+Shift+O handler
+   * reuses THIS component's own "New conversation" flow (agent
+   * fetch/skip-the-picker-if-there's-one/picker) instead of duplicating it
+   * — `ConversationList` keeps this ref pointed at its latest
+   * `handleNewConversation` closure (see the effect below) so `Shell` can
+   * invoke it imperatively without either component needing to know the
+   * other's internals.
+   */
+  newConversationRef?: RefObject<(() => void) | null>;
 }
 
 /** Exact copy shown when the store's `conversations` list is empty. */
@@ -135,6 +162,8 @@ export function ConversationList({
   selectedConversationId,
   onSelect,
   onConversationDeleted,
+  searchInputRef,
+  newConversationRef,
 }: ConversationListProps) {
   const useAppStore = useWebAppStore();
   const conversations = useAppStore((s) => s.conversations);
@@ -208,6 +237,20 @@ export function ConversationList({
     }
   }
 
+  // Keeps `newConversationRef` pointed at the CURRENT `handleNewConversation`
+  // closure (it captures `listAgents`/`startConversation`/`onSelect`, which
+  // are stable across renders, but re-running this after every render — no
+  // dependency array — is what makes this safe against ever going stale
+  // without needing to think about it). A ref write, not state: it must not
+  // itself trigger a re-render.
+  useEffect(() => {
+    if (newConversationRef) {
+      newConversationRef.current = () => {
+        void handleNewConversation();
+      };
+    }
+  });
+
   function startRename(conversation: ConversationSummary): void {
     setConfirmingDeleteId(null);
     setError(null);
@@ -269,9 +312,11 @@ export function ConversationList({
     <nav aria-label="Conversations" className="conversation-list">
       {conversations.length > 0 && (
         <input
+          ref={searchInputRef}
           type="search"
           aria-label={SEARCH_INPUT_LABEL}
           placeholder={SEARCH_INPUT_LABEL}
+          title="⌘K"
           className="conversation-search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -283,6 +328,7 @@ export function ConversationList({
         data-testid={NEW_CONVERSATION_TESTID}
         onClick={() => void handleNewConversation()}
         disabled={busy}
+        title="⌘⇧O"
         className="conversation-new-button"
       >
         {NEW_CONVERSATION_LABEL}
