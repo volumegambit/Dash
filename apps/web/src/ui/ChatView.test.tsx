@@ -9,7 +9,13 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
 import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
-import { ChatView, RECONNECTING_COPY, RESEND_BLOCKED_COPY } from './ChatView.js';
+import {
+  ChatView,
+  EMPTY_CHAT_GREETING,
+  RECONNECTING_COPY,
+  RESEND_BLOCKED_COPY,
+  STARTER_PROMPTS,
+} from './ChatView.js';
 import { WebAppStoreContext } from './Shell.js';
 import { ContentBlocks } from './blocks/ContentBlocks.js';
 
@@ -839,6 +845,100 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     // Back on A: the sent draft was cleared, not resurrected.
     expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('');
+  });
+});
+
+describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remainder)', () => {
+  it('shows the greeting and starter prompts once a conversation with no history finishes loading', async () => {
+    await renderConnected();
+
+    const empty = screen.getByTestId('chat-empty-state');
+    expect(within(empty).getByText(EMPTY_CHAT_GREETING)).toBeTruthy();
+    for (const prompt of STARTER_PROMPTS) {
+      expect(within(empty).getByText(prompt)).toBeTruthy();
+    }
+  });
+
+  it('does not show the greeting while the initial history replay is still in flight — only ' +
+    'once it resolves empty', async () => {
+    let resolveMessages!: (page: {
+      items: ConversationMessage[];
+      nextCursor: null;
+      throughSeq: number;
+    }) => void;
+    const pending = new Promise<{
+      items: ConversationMessage[];
+      nextCursor: null;
+      throughSeq: number;
+    }>((resolve) => {
+      resolveMessages = resolve;
+    });
+    const rest = {
+      listConversations: vi.fn(async () => ({ items: [summary()], nextCursor: null })),
+      getMessages: vi.fn(() => pending),
+    } as unknown as MobileRestClient;
+    const { factory } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+
+    render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+
+    expect(screen.queryByTestId('chat-empty-state')).toBeNull();
+
+    await act(async () => {
+      resolveMessages({ items: [], nextCursor: null, throughSeq: 0 });
+      await pending;
+    });
+
+    await waitFor(() => expect(screen.getByTestId('chat-empty-state')).toBeTruthy());
+  });
+
+  it('clicking a starter prompt prefills the composer without sending', async () => {
+    const { sockets } = await renderConnected();
+
+    fireEvent.click(screen.getByText(STARTER_PROMPTS[0]));
+
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    expect(textarea.value).toBe(STARTER_PROMPTS[0]);
+    expect(sockets[0].sent).toHaveLength(0);
+  });
+
+  it('hides the greeting once the conversation has a message', async () => {
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    expect(screen.queryByTestId('chat-empty-state')).toBeNull();
+  });
+
+  it('hides the greeting once a turn starts streaming, even with zero confirmed messages', async () => {
+    const { sockets, onFrames } = await renderConnected();
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    // A brand-new optimistic user message already makes `messages.length`
+    // nonzero here, but assert the greeting is gone regardless — belt and
+    // suspenders against a future change to how the optimistic send works.
+    expect(screen.queryByTestId('chat-empty-state')).toBeNull();
+
+    const turnId = sockets[0].sent[0].id;
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+    });
+    expect(screen.queryByTestId('chat-empty-state')).toBeNull();
   });
 });
 

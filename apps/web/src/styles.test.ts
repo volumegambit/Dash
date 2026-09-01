@@ -195,3 +195,48 @@ describe('final-review fix wave', () => {
     expect(css).toMatch(/\.chat-message-action:hover\s*{[^}]*color:\s*var\(--text\)/);
   });
 });
+
+describe('chat-ux Phase 3 Task 4 (audit #18, #13 remainder): motion + empty states', () => {
+  it('gates the message entrance fade-rise keyframe animation under prefers-reduced-motion: ' +
+    'no-preference — the only place `.chat-message`/`.chat-message-streaming` declare an ' +
+    '`animation` at all is inside that media query', () => {
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-message,\s*\.chat-message-streaming\s*{\s*animation:\s*message-enter/,
+    );
+    // `message-enter` is referenced by exactly one declaration (the gated
+    // one above) — never duplicated ungated elsewhere in the file.
+    expect(css.split('animation: message-enter').length - 1).toBe(1);
+
+    const keyframe = ruleBlock('@keyframes message-enter');
+    expect(keyframe).toMatch(/opacity:\s*0/);
+    expect(keyframe).toMatch(/transform:\s*translateY/);
+  });
+
+  it('keeps the message-enter keyframe presentation-only — no border-radius (hard corners stay ' +
+    'at --radius: 0)', () => {
+    expect(ruleBlock('@keyframes message-enter')).not.toMatch(/border-radius/);
+  });
+
+  it('gates the conversation-list skeleton pulse under prefers-reduced-motion: no-preference, ' +
+    "and uses --border (not --surface-raised, the sidebar's own background) so it is visible", () => {
+    expect(ruleBlock('.conversation-skeleton-line')).not.toMatch(/animation:/);
+    expect(ruleBlock('.conversation-skeleton-line')).toMatch(/background:\s*var\(--border\)/);
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: no-preference\) {\s*\.conversation-skeleton-line\s*{\s*animation:\s*skeleton-pulse/,
+    );
+  });
+
+  it('styles the empty-chat greeting and starter prompts with semantic tokens, hard corners, and ' +
+    'a reduced-motion-gated hover transition', () => {
+    const prompt = ruleBlock('.chat-empty-state-prompt');
+    expect(prompt).toMatch(/color:\s*var\(--text-muted-strong\)/);
+    expect(prompt).not.toMatch(/border-radius/);
+    expect(prompt).not.toMatch(/transition:/);
+    expect(css).toMatch(
+      /\.chat-empty-state-prompt:hover,\s*\.chat-empty-state-prompt:focus-visible\s*{[^}]*color:\s*var\(--accent\)/,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-empty-state-prompt\s*{\s*transition:/,
+    );
+  });
+});

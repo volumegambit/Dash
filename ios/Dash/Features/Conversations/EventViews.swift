@@ -188,6 +188,7 @@ struct ThinkingView: View {
   let isCollapsed: Bool
 
   @State private var isExpanded: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(thinking: String, isCollapsed: Bool) {
     self.thinking = thinking
@@ -198,7 +199,12 @@ struct ThinkingView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       Button {
-        isExpanded.toggle()
+        // Disclosure animation (chat-ux Phase 3 Task 4, audit #18): same
+        // "guard reduceMotion, then withAnimation" idiom
+        // `ChatView.scrollToBottom` uses for its own animated transition.
+        withAnimation(reduceMotion ? nil : .snappy) {
+          isExpanded.toggle()
+        }
       } label: {
         Text(isExpanded ? "Hide thinking" : "Show thinking")
           .font(.caption)
@@ -232,11 +238,16 @@ struct ToolCardView: View {
   let tool: ToolCardState
 
   @State private var isExpanded = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Button {
-        isExpanded.toggle()
+        // Disclosure animation (chat-ux Phase 3 Task 4, audit #18): same
+        // gating/idiom as `ThinkingView`'s toggle above.
+        withAnimation(reduceMotion ? nil : .snappy) {
+          isExpanded.toggle()
+        }
       } label: {
         header
       }

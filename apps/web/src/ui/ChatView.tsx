@@ -90,6 +90,57 @@ function ThinkingIndicator(): ReactNode {
   );
 }
 
+/** Starter prompts (chat-ux Phase 3 Task 4, audit #13 remainder): clicking
+ * one PREFILLS the composer (via `updateDraft`) rather than sending
+ * immediately — same "click to load, not click to send" semantics as MC's
+ * `chat.empty-state.tsx` `AgentList`/`RecentList` rows (which start a NEW
+ * conversation on click; there's no exact "starter prompt" list there to
+ * port verbatim — this adapts that file's row/hover/reveal SEMANTICS,
+ * `EmptyChatState`'s doc comment's own words, to the "conversation is
+ * already open but empty" case that component doesn't cover). Kept short
+ * and generic (this app has no fixed persona/domain to write copy against,
+ * unlike MC's per-agent picker). */
+export const STARTER_PROMPTS = [
+  'What can you help me with?',
+  'Summarize something I paste in',
+  'Help me think through a decision',
+] as const;
+
+/** Exact greeting copy shown above the starter prompts. */
+export const EMPTY_CHAT_GREETING = 'How can I help?';
+
+/**
+ * Empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remainder): shown
+ * in place of the (otherwise blank) message column once a conversation is
+ * OPEN and its history has finished loading but is genuinely empty — see
+ * `ChatView`'s `showEmptyState` for the "loaded vs still loading" guard.
+ * `onPromptSelected` prefills the composer; it never sends on its own.
+ */
+function EmptyConversationGreeting({
+  onPromptSelected,
+}: {
+  onPromptSelected: (prompt: string) => void;
+}): ReactNode {
+  return (
+    <div className="chat-empty-state" data-testid="chat-empty-state">
+      <p className="chat-empty-state-greeting">{EMPTY_CHAT_GREETING}</p>
+      <ul className="chat-empty-state-prompts">
+        {STARTER_PROMPTS.map((prompt) => (
+          <li key={prompt}>
+            <button
+              type="button"
+              className="chat-empty-state-prompt"
+              onClick={() => onPromptSelected(prompt)}
+            >
+              {prompt}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function CheckIcon(): ReactNode {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" className="copy-check">
@@ -626,6 +677,22 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // (still true right after `accepted`, before the first `event` frame).
   const streamingHasVisibleContent =
     streaming !== null && streaming.type === 'assistant' && streaming.events.length > 0;
+  // Empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remainder):
+  // `transcript` (the raw store selector, not `messages`/`streaming` above)
+  // is `undefined` until `openConversation`'s history replay actually lands
+  // (see `updateTranscript` in `state/store.ts` — it's the first thing that
+  // ever creates this conversation's entry), so `transcript !== undefined`
+  // is exactly "history has finished loading" — checking `messages.length
+  // === 0` alone would flash this greeting during the loading window too,
+  // for a conversation that turns out to have history. `streaming === null`
+  // additionally excludes the rare case of a reopened conversation with an
+  // in-flight turn but no confirmed messages yet (nothing to greet through).
+  const showEmptyState = transcript !== undefined && messages.length === 0 && streaming === null;
+
+  function handleStarterPrompt(prompt: string): void {
+    updateDraft(prompt);
+    textareaRef.current?.focus();
+  }
 
   async function handleSend(): Promise<void> {
     const text = draft.trim();
@@ -673,6 +740,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
       <div className="app-transcript-wrap">
         <div className="app-transcript" data-testid="chat-transcript" ref={containerRef}>
           <div className="app-message-column">
+            {showEmptyState && <EmptyConversationGreeting onPromptSelected={handleStarterPrompt} />}
             {messages.map((message) => (
               <MessageRow
                 key={message.id}
@@ -687,7 +755,11 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
               />
             ))}
             {streaming && (
-              <div data-testid="chat-message-streaming" data-role="assistant">
+              <div
+                data-testid="chat-message-streaming"
+                data-role="assistant"
+                className="chat-message-streaming"
+              >
                 {!streamingHasVisibleContent && <ThinkingIndicator />}
                 <ContentBlocks content={streaming} />
                 {/* Streaming caret (audit #13): only once there's actual

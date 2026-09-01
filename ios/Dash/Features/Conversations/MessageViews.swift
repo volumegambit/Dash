@@ -31,6 +31,8 @@ struct MessageListView: View {
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   init(
     messages: [ChatMessageState],
     isAnsweringEnabled: Bool = true,
@@ -59,9 +61,52 @@ struct MessageListView: View {
           onRetry: onRetry,
           onEditAndResend: onEditAndResend
         )
+        // Entrance animation (chat-ux Phase 3 Task 4, audit #18): a fresh
+        // row (new `ChatMessageState.id`, `ForEach`'s identity) fades+rises
+        // in rather than popping in place — never re-triggered by an
+        // in-place content update to an EXISTING row (streamed
+        // text/tool-card deltas mutate that row's own properties, they
+        // don't change `messages`' identity list), since SwiftUI only
+        // applies `.transition` to genuine insertions/removals it diffs
+        // against the PREVIOUS `messages` array. `.identity` under reduce
+        // motion is a real no-op transition (no fade, no offset) rather
+        // than merely suppressing the `.animation` driving it below —
+        // belt-and-suspenders with the `reduceMotion ? nil : .default`
+        // gate, same "guard, then withAnimation-equivalent" idiom
+        // `ChatView.scrollToBottom` uses for the jump-to-bottom scroll.
+        .transition(
+          reduceMotion
+            ? .identity
+            : .opacity.combined(with: .move(edge: .bottom))
+        )
       }
     }
+    // `messageIdentitySignature` (not `messages` itself, which would
+    // animate on every streamed token mutating the LAST message's own
+    // properties) and specifically NOT `messages.map(\.id)` — this `body`
+    // re-evaluates on every token/tool-card delta during streaming (same
+    // frequency `ChatTranscriptSignature`, this file's sibling O(1) fix in
+    // `ChatView.swift`, was written to survive), so an O(n) array map here
+    // would reintroduce exactly the per-render cost audit #4 removed.
+    .animation(reduceMotion ? nil : .default, value: messageIdentitySignature)
   }
+
+  /// Cheap "did the message LIST's identity change" signal — count + last
+  /// id — deliberately narrower than `messages` itself (whose `Equatable`
+  /// conformance would also fire on in-place content mutations to the last
+  /// message, re-animating every streamed delta) and O(1) rather than
+  /// mapping the whole array every render. Sufficient for this view's only
+  /// use (detecting insertion/removal so `.transition` fires for a
+  /// genuinely NEW row): every mutation that changes which messages exist
+  /// changes `count`, `lastID`, or both.
+  private var messageIdentitySignature: MessageIdentitySignature {
+    MessageIdentitySignature(count: messages.count, lastID: messages.last?.id)
+  }
+}
+
+private struct MessageIdentitySignature: Equatable {
+  let count: Int
+  let lastID: String?
 }
 
 struct ChatMessageView: View {

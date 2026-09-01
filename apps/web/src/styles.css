@@ -756,6 +756,37 @@ textarea:focus-visible {
   font-size: 0.85em;
 }
 
+/* ---------------------------------------------------------------------
+ * Message entrance animation (chat-ux Phase 3 Task 4, audit #18): fade+rise
+ * on mount for each confirmed message row (`.chat-message`, keyed by
+ * `message.id` in `ChatView`'s `MessageRow` — a fresh key means a fresh DOM
+ * node, so this fires once per NEW message, not on every re-render of an
+ * already-mounted one) and the streaming assistant shell
+ * (`.chat-message-streaming`, mounted once per turn when `streaming` first
+ * goes non-null — not remounted per token). Reduced-motion gated the same
+ * way as every other animation in this file: the base rule declares no
+ * `animation`, and `no-preference` is the only place it's added. Hard
+ * corners (`--radius: 0`) are untouched — only opacity/transform animate.
+ * ------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-message,
+  .chat-message-streaming {
+    animation: message-enter 0.2s ease-out both;
+  }
+}
+
+@keyframes message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Headings */
 .md-h1 {
   margin: 16px 0 8px;
@@ -1248,4 +1279,115 @@ textarea:focus-visible {
   margin: 0;
   color: var(--text-muted-strong);
   font-size: 0.85em;
+}
+
+/* ---------------------------------------------------------------------
+ * Empty-chat greeting + starter prompts (chat-ux Phase 3 Task 4, audit #13
+ * remainder): shown by `ChatView`'s `EmptyConversationGreeting` in place of
+ * the message column once a selected conversation has finished loading and
+ * has no messages. `min-height` (not a percentage/flex-stretch on
+ * `.app-message-column`, which would risk changing that column's sizing for
+ * every OTHER — populated — conversation too) keeps this centered in
+ * roughly the same viewport real estate the transcript otherwise occupies,
+ * without touching shared layout rules. Row hover treatment ports MC's
+ * `chat.empty-state.tsx` `AgentList`/`RecentList` semantics
+ * (`apps/mission-control/src/renderer/src/routes/chat.empty-state.tsx:151-219`):
+ * a left accent border reveal on hover/focus, muted text going to accent.
+ * ------------------------------------------------------------------- */
+.chat-empty-state {
+  display: flex;
+  min-height: 60vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.chat-empty-state-greeting {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+  font-size: 0.95em;
+}
+
+.chat-empty-state-prompts {
+  display: flex;
+  width: 100%;
+  max-width: 22rem;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chat-empty-state-prompt {
+  width: 100%;
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--text-muted-strong);
+  cursor: pointer;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.chat-empty-state-prompt:hover,
+.chat-empty-state-prompt:focus-visible {
+  border-left-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chat-empty-state-prompt {
+    transition: border-color 0.15s, color 0.15s;
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * Conversation list skeleton rows (chat-ux Phase 3 Task 4, audit #13
+ * remainder): shown by `ConversationList` while its initial
+ * `loadConversations()` round-trip is in flight, in place of the row list —
+ * never together with `NO_CONVERSATIONS_COPY`/the real rows. `aria-hidden`
+ * on the container (set in the component) keeps screen readers from
+ * announcing placeholder content. Uses `--border` (not `--surface-raised`,
+ * which is this sidebar's own background) so the lines are actually
+ * visible against `.app-sidebar`.
+ * ------------------------------------------------------------------- */
+.conversation-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.conversation-skeleton-line {
+  height: 10px;
+  border-radius: var(--radius);
+  background: var(--border);
+}
+
+.conversation-skeleton-line--title {
+  width: 70%;
+}
+
+.conversation-skeleton-line--preview {
+  width: 45%;
+  height: 8px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .conversation-skeleton-line {
+    animation: skeleton-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }

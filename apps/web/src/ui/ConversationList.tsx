@@ -1,5 +1,5 @@
 import type { ConversationSummary, MobileAgent } from '@dash/mobile-contract';
-import { type KeyboardEvent, useEffect, useMemo, useState } from 'react';
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useWebAppStore } from './Shell.js';
 
 export interface ConversationListProps {
@@ -55,6 +55,36 @@ export const RENAME_INPUT_LABEL = 'Conversation title';
  * stylable, not reduce-motion-gated, and inconsistent with the rest of this
  * app's dialogs), a small two-button inline confirm instead. */
 export const DELETE_CONFIRM_COPY = "Delete this conversation? This can't be undone.";
+
+/** Number of placeholder rows shown while `loadConversations()` is in
+ * flight (chat-ux Phase 3 Task 4, audit #13 remainder) — just enough to
+ * plausibly fill the sidebar without implying a specific real count. */
+const SKELETON_ROW_COUNT = 5;
+
+/** `data-testid` on the skeleton container, for tests. */
+export const CONVERSATION_SKELETON_TESTID = 'conversation-skeleton';
+
+/** Placeholder rows shown in place of the conversation list while its
+ * initial load is in flight — never alongside `NO_CONVERSATIONS_COPY` or
+ * the real rows (see `ConversationList`'s `isLoading` gate). `aria-hidden`:
+ * this is decorative filler, not content a screen reader should announce. */
+function ConversationSkeletonRows(): ReactNode {
+  return (
+    <ul
+      className="conversation-items"
+      aria-hidden="true"
+      data-testid={CONVERSATION_SKELETON_TESTID}
+    >
+      {Array.from({ length: SKELETON_ROW_COUNT }, (_, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length decorative placeholder, never reordered/filtered
+        <li key={i} className="conversation-skeleton-row">
+          <span className="conversation-skeleton-line conversation-skeleton-line--title" />
+          <span className="conversation-skeleton-line conversation-skeleton-line--preview" />
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : 'Failed to start a new conversation.';
@@ -122,9 +152,25 @@ export function ConversationList({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  // Skeleton rows (chat-ux Phase 3 Task 4, audit #13 remainder): true only
+  // for the FIRST `loadConversations()` round-trip this component instance
+  // ever kicks off — not re-armed on every mount/prop change, since this
+  // effect's own `[loadConversations]` dependency is stable for a given
+  // store (a component-level flag, not derived from the store, because the
+  // store itself has no "am I loading" field of its own; see
+  // `state/store.ts`'s `WebAppState` — nothing else needs one yet). `mounted`
+  // guards the `finally` against setting state after an unmount that
+  // happens to race a slow REST call.
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    void loadConversations();
+    let mounted = true;
+    void loadConversations().finally(() => {
+      if (mounted) setIsLoading(false);
+    });
+    return () => {
+      mounted = false;
+    };
   }, [loadConversations]);
 
   async function createWithAgent(agentId: string): Promise<void> {
@@ -261,7 +307,11 @@ export function ConversationList({
 
       {error && <p role="alert">{error}</p>}
 
-      {conversations.length === 0 ? (
+      {isLoading ? (
+        suppressEmptyCopy ? null : (
+          <ConversationSkeletonRows />
+        )
+      ) : conversations.length === 0 ? (
         suppressEmptyCopy ? null : (
           <p className="conversation-empty">{NO_CONVERSATIONS_COPY}</p>
         )

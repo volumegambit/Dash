@@ -4,6 +4,7 @@ import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
 import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
 import {
+  CONVERSATION_SKELETON_TESTID,
   ConversationList,
   DELETE_ACTION_LABEL,
   DELETE_CONFIRM_COPY,
@@ -63,6 +64,7 @@ function buildStore(
   conversations: ConversationSummary[],
   opts: {
     agents?: MobileAgent[];
+    listConversationsImpl?: () => Promise<{ items: ConversationSummary[]; nextCursor: null }>;
     listAgentsImpl?: () => Promise<MobileAgent[]>;
     createConversationImpl?: (req: unknown) => Promise<ConversationSummary>;
     patchConversationImpl?: (
@@ -77,7 +79,9 @@ function buildStore(
   } = {},
 ) {
   const rest = {
-    listConversations: vi.fn(async () => ({ items: conversations, nextCursor: null })),
+    listConversations: vi.fn(
+      opts.listConversationsImpl ?? (async () => ({ items: conversations, nextCursor: null })),
+    ),
     getMessages: vi.fn(async () => ({ items: [], nextCursor: null, throughSeq: 0 })),
     listAgents: vi.fn(opts.listAgentsImpl ?? (async () => opts.agents ?? [])),
     createConversation: vi.fn(
@@ -187,6 +191,82 @@ describe('ConversationList', () => {
       .closest('button') as HTMLButtonElement;
     expect(selectedButton.getAttribute('aria-current')).toBe('true');
     expect(unselectedButton.getAttribute('aria-current')).toBeNull();
+  });
+
+  describe('loading skeleton (chat-ux Phase 3 Task 4, audit #13 remainder)', () => {
+    /** A `listConversations` promise the test controls the resolution of,
+     * so the loading window is observable rather than racing real
+     * microtask timing. */
+    function deferredList() {
+      let resolve!: (page: { items: ConversationSummary[]; nextCursor: null }) => void;
+      const promise = new Promise<{ items: ConversationSummary[]; nextCursor: null }>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+
+    it('shows skeleton rows while the initial load is in flight, then swaps to the real list', async () => {
+      const { promise, resolve } = deferredList();
+      const { store } = buildStore([], { listConversationsImpl: () => promise });
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+
+      expect(screen.getByTestId(CONVERSATION_SKELETON_TESTID)).toBeTruthy();
+      expect(screen.queryByText(NO_CONVERSATIONS_COPY)).toBeNull();
+      expect(screen.queryByText('Mobile launch check')).toBeNull();
+
+      await act(async () => {
+        resolve({ items: [summary()], nextCursor: null });
+        await promise;
+      });
+
+      await waitFor(() => expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull());
+      expect(screen.getByText('Mobile launch check')).toBeTruthy();
+    });
+
+    it('swaps the skeleton for the empty-state copy when the load resolves to zero conversations', async () => {
+      const { promise, resolve } = deferredList();
+      const { store } = buildStore([], { listConversationsImpl: () => promise });
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+
+      expect(screen.getByTestId(CONVERSATION_SKELETON_TESTID)).toBeTruthy();
+
+      await act(async () => {
+        resolve({ items: [], nextCursor: null });
+        await promise;
+      });
+
+      await waitFor(() => expect(screen.getByText(NO_CONVERSATIONS_COPY)).toBeTruthy());
+      expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull();
+    });
+
+    it("suppresses the skeleton (like the empty-state copy) when connection is 'offline' or 'unauthorized'", async () => {
+      for (const connection of ['offline', 'unauthorized'] as const) {
+        const { promise } = deferredList(); // never resolved — isLoading stays true throughout
+        const { store } = buildStore([], { listConversationsImpl: () => promise });
+        act(() => {
+          store.setState({ connection });
+        });
+
+        const { unmount } = render(
+          <WebAppStoreContext.Provider value={store}>
+            <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+          </WebAppStoreContext.Provider>,
+        );
+
+        expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull();
+        unmount();
+      }
+    });
   });
 
   describe('New conversation', () => {
