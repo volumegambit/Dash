@@ -297,6 +297,39 @@ class DashUITestCase: XCTestCase {
     }
   }
 
+  /// Visible title of the tab-bar button backing a `tab.<x>` identifier —
+  /// see `tabBarFallback(_:in:)`.
+  private static let tabTitles = [
+    "tab.conversations": "Conversations",
+    "tab.agents": "Agents",
+    "tab.settings": "Settings",
+  ]
+
+  /// Compact-width fallback locator for a tab, matched by its visible title
+  /// inside the tab bar instead of by accessibility identifier.
+  ///
+  /// SwiftUI publishes the `.accessibilityIdentifier` set on a `.tabItem`'s
+  /// `Label` onto the underlying `UITabBarItem` asynchronously, and on a
+  /// contended host that publish frequently never happens for the lifetime of
+  /// the launch: the tab bar renders, is hittable, and carries correct labels
+  /// and traits, but its buttons have no `identifier` attribute at all — while
+  /// every other element on the same screen (rows, toolbar buttons, the
+  /// collection view) is present and correctly identified. Verified to
+  /// reproduce on unmodified code, with a 20s wait (so it is not a race that
+  /// eventually resolves), across every test class in this suite.
+  ///
+  /// Falling back to the title keeps the assertion just as strong — the tab-bar
+  /// button for that tab must still exist and be hittable, and every downstream
+  /// assertion is unchanged — while scoping the match to `app.tabBars` so it
+  /// can never collide with same-titled content elsewhere on screen (the
+  /// conversation list, for instance, also renders a "Conversations" header).
+  /// Regular width is unaffected: its sidebar rows are ordinary SwiftUI views
+  /// whose identifiers always publish, so this only ever applies on compact.
+  private func tabBarFallback(_ identifier: String, in app: XCUIApplication) -> XCUIElement? {
+    guard let title = Self.tabTitles[identifier] else { return nil }
+    return app.tabBars.buttons[title]
+  }
+
   func tab(
     _ identifier: String,
     in app: XCUIApplication,
@@ -309,8 +342,13 @@ class DashUITestCase: XCTestCase {
     }
 
     let regularLabel = app.staticTexts.matching(identifier: identifier).firstMatch
-    XCTAssertTrue(regularLabel.waitForExistence(timeout: 3), file: file, line: line)
-    return regularLabel
+    if regularLabel.waitForExistence(timeout: 3) {
+      return regularLabel
+    }
+
+    let fallback = tabBarFallback(identifier, in: app)
+    XCTAssertTrue(fallback?.exists == true, file: file, line: line)
+    return fallback ?? regularLabel
   }
 
   func revealSidebarIfNeeded(
@@ -358,6 +396,7 @@ class DashUITestCase: XCTestCase {
     timeout: TimeInterval
   ) -> Bool {
     if identifier.hasPrefix("tab.") {
+      let titleFallback = Self.tabTitles[identifier]
       let expectation = XCTNSPredicateExpectation(
         predicate: NSPredicate { object, _ in
           guard let app = object as? XCUIApplication else { return false }
@@ -366,7 +405,15 @@ class DashUITestCase: XCTestCase {
             return true
           }
           let regularLabel = app.staticTexts.matching(identifier: identifier).firstMatch
-          return regularLabel.exists && regularLabel.isHittable
+          if regularLabel.exists, regularLabel.isHittable {
+            return true
+          }
+          // See `tabBarFallback(_:in:)`: the tab-bar button is there and
+          // hittable, but SwiftUI may never publish the `.tabItem` label's
+          // accessibility identifier onto it for this launch.
+          guard let titleFallback else { return false }
+          let barButton = app.tabBars.buttons[titleFallback]
+          return barButton.exists && barButton.isHittable
         },
         object: app
       )
