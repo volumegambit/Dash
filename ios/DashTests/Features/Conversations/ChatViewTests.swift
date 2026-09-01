@@ -164,6 +164,59 @@ struct ChatTranscriptExportTests {
     ])
     #expect(text == "You: First\n\nAssistant: Second\n\nYou: Third")
   }
+
+  // MARK: - Fidelity markers (final-review fix I3)
+
+  @Test("prefixes a disclosure line when hasOlderMessages is true (unpaginated earlier history)")
+  func prefixesOlderMessagesDisclosure() {
+    let text = ChatTranscriptExport.plainText(
+      for: [userMessage(id: "u-1", text: "Where were we?")],
+      hasOlderMessages: true
+    )
+    #expect(text == "(Earlier messages not included)\n\nYou: Where were we?")
+  }
+
+  @Test("omits the disclosure line when hasOlderMessages is false (the default)")
+  func omitsOlderMessagesDisclosureByDefault() {
+    let text = ChatTranscriptExport.plainText(for: [userMessage(id: "u-1", text: "Hello")])
+    #expect(text == "You: Hello")
+  }
+
+  @Test("does not prefix a disclosure line for an otherwise-empty export, even with hasOlderMessages true")
+  func noDisclosurePrefixWhenNothingToExport() {
+    let text = ChatTranscriptExport.plainText(for: [], hasOlderMessages: true)
+    #expect(text.isEmpty)
+  }
+
+  @Test("marks a completed assistant turn with no suffix")
+  func completedAssistantTurnHasNoMarker() {
+    let text = ChatTranscriptExport.plainText(for: [
+      assistantMessage(id: "a-1", status: .completed, text: "All done.")
+    ])
+    #expect(text == "Assistant: All done.")
+  }
+
+  @Test("marks a cancelled/failed/interrupted assistant turn with a trailing (interrupted) suffix")
+  func nonCompletedAssistantTurnsAreMarkedInterrupted() {
+    for status: MessageStatus in [.cancelled, .failed, .interrupted, .streaming, .accepted] {
+      let text = ChatTranscriptExport.plainText(for: [
+        assistantMessage(id: "a-1", status: status, text: "Partial reply")
+      ])
+      #expect(text == "Assistant: Partial reply (interrupted)", "status: \(status)")
+    }
+  }
+
+  @Test("a completed turn followed by an interrupted one only marks the interrupted turn")
+  func onlyInterruptedTurnsAreMarked() {
+    let text = ChatTranscriptExport.plainText(for: [
+      assistantMessage(id: "a-1", status: .completed, text: "First reply"),
+      userMessage(id: "u-1", text: "Follow-up"),
+      assistantMessage(id: "a-2", status: .cancelled, text: "Cut off"),
+    ])
+    #expect(
+      text == "Assistant: First reply\n\nYou: Follow-up\n\nAssistant: Cut off (interrupted)"
+    )
+  }
 }
 
 private func userMessage(id: String, text: String) -> ChatMessageState {

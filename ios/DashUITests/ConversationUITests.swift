@@ -442,7 +442,11 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(deleteItem.waitForExistence(timeout: 3))
     deleteItem.tap()
 
-    let deleteConfirmation = confirmationDialog(titled: "Delete Shared launch plan?", in: app)
+    // Final-review fix m6: the dialog's title is now the plan's verbatim,
+    // non-interpolated copy ("Delete this conversation? This can't be
+    // undone.", split title/message) rather than "Delete <this
+    // conversation's own title>?".
+    let deleteConfirmation = confirmationDialog(titled: "Delete this conversation?", in: app)
     let confirmDelete = deleteConfirmation.buttons["Delete"].firstMatch
     XCTAssertTrue(
       waitUntilHittable(confirmDelete, timeout: 5),

@@ -103,7 +103,10 @@ struct ChatView: View {
       // can keep changing after this closure returns:
       //
       // - `hasActivity` — this conversation is exempt from cleanup once it
-      //   has ever had a message or an active turn.
+      //   has ever had a message or an active turn, OR (final-review fix
+      //   C2 — see `ChatState.hasComposeActivity`'s doc comment)
+      //   a non-empty draft, a staged attachment, or a title the user
+      //   already changed away from the gateway's default.
       // - `stillNavigatedTo` — distinguishes a genuine "user backed out of
       //   this conversation" from a transient tab-switch-away (which also
       //   fires `onDisappear` — see `ChatFeature.disappear()`'s existing
@@ -125,8 +128,7 @@ struct ChatView: View {
       //   `splitConversationSelection` is the only thing that actually
       //   tracks what's open there.
       let conversationID = feature.state.conversation.id
-      let hasActivity = feature.state.messages.isEmpty == false
-        || feature.state.activeTurnID != nil
+      let hasActivity = feature.state.hasComposeActivity
       let stillNavigatedTo: Bool
       switch AdaptiveNavigationPolicy.presentation(horizontalSizeClass: horizontalSizeClass) {
       case .compact:
@@ -153,8 +155,16 @@ struct ChatView: View {
     } message: {
       Text("Enter a title for this conversation.")
     }
+    // Final-review fix m6: verbatim copy per the plan (docs/plans/2026-09-01-
+    // chat-ux-phase3-plan.md, "delete confirm 'Delete this conversation?
+    // This can't be undone.' (both platforms verbatim)") — split across the
+    // dialog's title/message the same way this app's other confirmation
+    // dialogs do (a short question as the title, the consequence as the
+    // message), previously a per-conversation-title interpolation plus a
+    // different, non-verbatim sentence. `ConversationListView`'s own delete
+    // confirmation shares this exact copy — see its matching comment.
     .confirmationDialog(
-      "Delete \(feature.state.conversation.title)?",
+      "Delete this conversation?",
       isPresented: $isDeletePresented,
       titleVisibility: .visible
     ) {
@@ -164,7 +174,7 @@ struct ChatView: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("This removes the conversation while preserving the gateway's canonical history rules.")
+      Text("This can't be undone.")
     }
     .alert("Conversation update failed", isPresented: chatMutationErrorPresented) {
       Button("OK") { appModel.conversationListFeature?.mutationError = nil }
@@ -462,7 +472,13 @@ struct ChatView: View {
       summary: feature.state.conversation,
       mutationsAllowed: feature.connection == .online
     )
-    let transcriptText = ChatTranscriptExport.plainText(for: feature.state.messages)
+    // Fix I3: `feature.state.olderCursor != nil` means there's more history
+    // on the gateway this screen hasn't paginated in yet (`Load Earlier`) —
+    // see `ChatTranscriptExport.plainText`'s doc comment.
+    let transcriptText = ChatTranscriptExport.plainText(
+      for: feature.state.messages,
+      hasOlderMessages: feature.state.olderCursor != nil
+    )
     return Menu {
       if policy.showsRename {
         Button {
@@ -530,8 +546,24 @@ struct ChatView: View {
 /// turn with an empty `assistant.text`) are dropped rather than emitting an
 /// empty "Assistant:" line. Internal (not `private`) so `DashTests` can
 /// exercise `plainText(for:)` directly via `@testable import Dash`.
+///
+/// Final-review fix I3: two fidelity markers, deliberately simple rather
+/// than fetching/paginating in the full server-side history (out of scope
+/// — see the plan's ruling):
+///  - `hasOlderMessages`: this export only ever covers `messages` — whatever
+///    this screen currently has loaded, not necessarily the conversation's
+///    full history (`ChatState.olderCursor != nil` means there's more,
+///    reachable only via "Load Earlier" pagination). Presenting a partial
+///    transcript with no indication it's partial would misrepresent it as
+///    complete, so callers pass `true` whenever `olderCursor != nil` and a
+///    disclosure line is prefixed.
+///  - a trailing `" (interrupted)"` marker on any assistant turn whose
+///    `status` never reached `.completed` (cancelled, failed, or
+///    interrupted mid-stream) — it still has SOME text worth keeping, but
+///    presenting it identically to a normal, finished reply would overstate
+///    it as the model's complete answer.
 enum ChatTranscriptExport {
-  static func plainText(for messages: [ChatMessageState]) -> String {
+  static func plainText(for messages: [ChatMessageState], hasOlderMessages: Bool = false) -> String {
     let lines: [String] = messages.compactMap { message -> String? in
       switch message.role {
       case .user:
@@ -544,10 +576,13 @@ enum ChatTranscriptExport {
         let plain = markdownPlainTextAccessibilityLabel(for: raw)
           .trimmingCharacters(in: .whitespacesAndNewlines)
         guard plain.isEmpty == false else { return nil }
-        return "Assistant: \(plain)"
+        let interruptedMarker = message.status == .completed ? "" : " (interrupted)"
+        return "Assistant: \(plain)\(interruptedMarker)"
       }
     }
-    return lines.joined(separator: "\n\n")
+    guard lines.isEmpty == false else { return "" }
+    let olderMessagesPrefix = hasOlderMessages ? "(Earlier messages not included)\n\n" : ""
+    return olderMessagesPrefix + lines.joined(separator: "\n\n")
   }
 }
 

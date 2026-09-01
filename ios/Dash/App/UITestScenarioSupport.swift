@@ -1041,7 +1041,20 @@ extension AppDependenciesFactory {
         id: "conversation-\(request.agentId)",
         agentId: request.agentId,
         agentName: agent?.name ?? "Agent",
-        title: "Chat with \(agent?.name ?? "Agent")",
+        // Final-review fix C2 (fixture-fidelity follow-up): the real gateway
+        // ignores nothing here — `create(agentID:)` (ConversationListFeature.swift)
+        // always sends `title: nil` for the compose-first flow, so the
+        // REAL default is always `ChatState.defaultConversationTitle`
+        // ("New Conversation"), never a synthesized "Chat with <agent>".
+        // This mock previously diverged from that, which meant every
+        // compose-created conversation in UI tests looked ALREADY renamed
+        // to `ChatState.hasComposeActivity`'s title check — silently
+        // defeating `discardIfUnusedComposeCreation`'s cleanup for every UI
+        // test (caught by `testComposeThenBackWithoutSendingLeavesNoPermanentRow`).
+        // `request.title` is still honored when a caller explicitly
+        // supplies one (none currently do, but the real endpoint accepts
+        // it) so this stays a faithful stand-in either way.
+        title: request.title ?? ChatState.defaultConversationTitle,
         revision: 1,
         status: .idle,
         activeTurnId: nil,

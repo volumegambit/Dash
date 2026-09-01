@@ -13,6 +13,31 @@ struct ChatState: Equatable, Sendable {
   var olderCursor: String?
   var composerBlock: ComposerBlockReason?
   var errorBanner: String?
+
+  /// The gateway's own default conversation title
+  /// (`apps/gateway/src/conversation-service.ts`'s `DEFAULT_CONVERSATION_TITLE`,
+  /// mirrored here rather than shared cross-language) — `create(agentID:)`
+  /// (`ConversationListFeature.swift`) always passes `title: nil`, so a
+  /// still-unrenamed compose-created conversation carries exactly this
+  /// title.
+  static let defaultConversationTitle = "New Conversation"
+
+  /// Final-review fix C2: the single choke point `ChatView`'s `onDisappear`
+  /// consults before letting `discardIfUnusedComposeCreation` silently
+  /// delete a compose-created conversation the user is backing out of.
+  /// Originally only checked `messages`/`activeTurnID` — extended to also
+  /// count a non-empty (trimmed) draft, any staged attachment, and a title
+  /// that's no longer the gateway's default: each is real user work (an
+  /// unsent draft, staged photos, an explicit rename via the header/toolbar,
+  /// all reachable before a first message ever sends) that a background
+  /// cleanup the user has no visibility into must never discard.
+  var hasComposeActivity: Bool {
+    messages.isEmpty == false
+      || activeTurnID != nil
+      || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      || attachments.isEmpty == false
+      || conversation.title != ChatState.defaultConversationTitle
+  }
 }
 
 enum ChatAction: Sendable {

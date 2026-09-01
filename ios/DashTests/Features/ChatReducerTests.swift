@@ -981,6 +981,92 @@ struct ChatReducerTests {
     #expect(ChatTerminalState.interrupted.isChromeWorthy == true)
   }
 
+  // MARK: - hasComposeActivity (final-review fix C2)
+  //
+  // The choke point `ChatView`'s `onDisappear` consults before letting
+  // `discardIfUnusedComposeCreation` silently delete a compose-created,
+  // still-navigated-away-from conversation. A truly untouched compose
+  // conversation (empty messages, no active turn, empty draft, no
+  // attachments, still the gateway's default title) must be discarded —
+  // everything else must be kept.
+
+  @Test("a completely untouched compose conversation has no activity — the baseline the discard path relies on")
+  func hasComposeActivityFalseForUntouchedConversation() {
+    let state = composeActivityState()
+    #expect(state.hasComposeActivity == false)
+  }
+
+  @Test("a non-empty draft counts as activity, even with no messages/attachments/rename")
+  func hasComposeActivityTrueForDraftOnly() {
+    let state = composeActivityState(draft: "half-typed thought")
+    #expect(state.hasComposeActivity == true)
+  }
+
+  @Test("a whitespace-only draft does NOT count as activity — matches the trimmed-empty check elsewhere")
+  func hasComposeActivityFalseForWhitespaceOnlyDraft() {
+    let state = composeActivityState(draft: "   \n\t  ")
+    #expect(state.hasComposeActivity == false)
+  }
+
+  @Test("a staged attachment counts as activity, even with no draft text/messages/rename")
+  func hasComposeActivityTrueForAttachmentOnly() {
+    let state = composeActivityState(
+      attachments: [PreparedAttachment(id: UUID(), mediaType: "image/png", data: Data([0x01]))]
+    )
+    #expect(state.hasComposeActivity == true)
+  }
+
+  @Test("a title changed away from the gateway's default counts as activity, even with no messages/draft/attachments")
+  func hasComposeActivityTrueForRenamedOnly() {
+    let state = composeActivityState(title: "Trip planning")
+    #expect(state.hasComposeActivity == true)
+  }
+
+  @Test("a non-empty message list counts as activity (pre-existing behavior, unchanged by this fix)")
+  func hasComposeActivityTrueForMessages() {
+    var state = composeActivityState()
+    state.messages = [
+      ChatMessageState(
+        id: "u1",
+        turnID: "turn-1",
+        ordinal: 1,
+        role: .user,
+        status: .completed,
+        user: UserMessageProjection(text: "hi", images: []),
+        assistant: nil
+      )
+    ]
+    #expect(state.hasComposeActivity == true)
+  }
+
+  @Test("an active turn counts as activity (pre-existing behavior, unchanged by this fix)")
+  func hasComposeActivityTrueForActiveTurn() {
+    var state = composeActivityState()
+    state.activeTurnID = "turn-1"
+    #expect(state.hasComposeActivity == true)
+  }
+
+  private func composeActivityState(
+    draft: String = "",
+    attachments: [PreparedAttachment] = [],
+    title: String = ChatState.defaultConversationTitle
+  ) -> ChatState {
+    ChatState(
+      conversation: summary(title: title),
+      messages: [],
+      draft: draft,
+      attachments: attachments,
+      transport: .connected,
+      lastAppliedSeq: 0,
+      activeTurnID: nil,
+      pendingGapFrame: nil,
+      isLoadingOlder: false,
+      olderCursor: nil,
+      composerBlock: nil,
+      errorBanner: nil
+    )
+  }
+
   private func apply(
     _ event: AgentEvent,
     seq: Int,
@@ -1038,13 +1124,14 @@ struct ChatReducerTests {
   private func summary(
     status: ConversationStatus = .idle,
     activeTurnID: String? = nil,
-    lastSeq: Int = 0
+    lastSeq: Int = 0,
+    title: String = "Chat"
   ) -> ConversationSummaryDTO {
     ConversationSummaryDTO(
       id: "conv-1",
       agentId: "agent-1",
       agentName: "Dash",
-      title: "Chat",
+      title: title,
       revision: 1,
       status: status,
       activeTurnId: activeTurnID,

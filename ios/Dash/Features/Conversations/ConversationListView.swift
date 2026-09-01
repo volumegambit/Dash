@@ -248,8 +248,12 @@ struct ConversationListView: View {
     } message: {
       Text("Enter a title for this conversation.")
     }
+    // Final-review fix m6: verbatim copy per the plan — see the matching
+    // comment on `ChatView`'s own delete confirmation, which this mirrors
+    // exactly (previously both interpolated the conversation's own title
+    // into the question and used a different, non-verbatim message).
     .confirmationDialog(
-      "Delete \(deleteTarget?.summary.title ?? "conversation")?",
+      "Delete this conversation?",
       isPresented: deletePresented,
       titleVisibility: .visible
     ) {
@@ -260,7 +264,7 @@ struct ConversationListView: View {
       }
       Button("Cancel", role: .cancel) { deleteTarget = nil }
     } message: {
-      Text("This removes the conversation while preserving the gateway's canonical history rules.")
+      Text("This can't be undone.")
     }
     .alert("Conversation update failed", isPresented: genericErrorPresented) {
       if let conversationID = actionableConversationID {
