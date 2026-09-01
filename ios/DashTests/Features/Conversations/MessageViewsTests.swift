@@ -72,6 +72,51 @@ struct MessageActionsHelperTests {
   }
 }
 
+@Suite("Message entrance animation signal (chat-ux Phase 3 Task 4 review fix, audit #18)")
+struct MessageEntranceSignatureTests {
+  @Test(
+    "append: a brand-new last message (optimistic send, a finalized reply, edit & resend's truncate-then-resend) changes the signal — fires the entrance transition for the new row"
+  )
+  func appendChangesSignal() {
+    let before = [userMessage(id: "u1", turnID: "t1", text: "Hi")]
+    let after = before + [assistantMessage(id: "a1", turnID: "t1", status: .completed)]
+    #expect(messageEntranceSignature(for: before) != messageEntranceSignature(for: after))
+  }
+
+  @Test(
+    "prepend: Load Earlier pagination growing the FRONT of the list (ChatReducer's .olderMessagesLoaded) leaves the signal unchanged — the already-visible rows must not re-animate just because more history loaded behind them"
+  )
+  func prependLeavesSignalUnchanged() {
+    let before = [userMessage(id: "u2", turnID: "t2", text: "Recent")]
+    let after = [
+      userMessage(id: "u1", turnID: "t1", text: "Older"),
+      userMessage(id: "u2", turnID: "t2", text: "Recent"),
+    ]
+    #expect(before.count != after.count, "sanity: this is genuinely a prepend, not a no-op")
+    #expect(messageEntranceSignature(for: before) == messageEntranceSignature(for: after))
+  }
+
+  @Test(
+    "a content/status mutation to the LAST message (a streamed token, thinking/tool-card delta, or a terminal status flip) leaves the signal unchanged — same id, no re-animation"
+  )
+  func lastMessageMutationLeavesSignalUnchanged() {
+    var message = assistantMessage(id: "a1", turnID: "t1", status: .streaming)
+    let before = [message]
+    message.status = .completed
+    let after = [message]
+    #expect(messageEntranceSignature(for: before) == messageEntranceSignature(for: after))
+  }
+
+  @Test(
+    "initial load: empty-to-non-empty naturally changes the signal (nil to the first message's id), but this is harmless — MessageListView is only ever constructed once `messages` is already non-empty (see ChatView.swift's isEmpty branch), so there is no PREVIOUS render of this view for `.animation(value:)` to diff against for that transition"
+  )
+  func initialLoadSignalGoesFromNilToTheFirstMessageID() {
+    let after = [userMessage(id: "u1", turnID: "t1", text: "Hi")]
+    #expect(messageEntranceSignature(for: []) == nil)
+    #expect(messageEntranceSignature(for: after) == "u1")
+  }
+}
+
 private func userMessage(
   id: String,
   turnID: String,

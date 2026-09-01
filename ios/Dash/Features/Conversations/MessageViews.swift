@@ -81,32 +81,56 @@ struct MessageListView: View {
         )
       }
     }
-    // `messageIdentitySignature` (not `messages` itself, which would
-    // animate on every streamed token mutating the LAST message's own
-    // properties) and specifically NOT `messages.map(\.id)` — this `body`
-    // re-evaluates on every token/tool-card delta during streaming (same
-    // frequency `ChatTranscriptSignature`, this file's sibling O(1) fix in
-    // `ChatView.swift`, was written to survive), so an O(n) array map here
-    // would reintroduce exactly the per-render cost audit #4 removed.
-    .animation(reduceMotion ? nil : .default, value: messageIdentitySignature)
-  }
-
-  /// Cheap "did the message LIST's identity change" signal — count + last
-  /// id — deliberately narrower than `messages` itself (whose `Equatable`
-  /// conformance would also fire on in-place content mutations to the last
-  /// message, re-animating every streamed delta) and O(1) rather than
-  /// mapping the whole array every render. Sufficient for this view's only
-  /// use (detecting insertion/removal so `.transition` fires for a
-  /// genuinely NEW row): every mutation that changes which messages exist
-  /// changes `count`, `lastID`, or both.
-  private var messageIdentitySignature: MessageIdentitySignature {
-    MessageIdentitySignature(count: messages.count, lastID: messages.last?.id)
+    // `messageEntranceSignature(for:)` (review fix, chat-ux Phase 3 Task 4,
+    // audit #18) — NOT `messages` itself (would animate on every streamed
+    // token mutating the LAST message's own properties) and NOT
+    // `messages.count`/`messages.map(\.id)` either: `.animation(value:)`
+    // fires whenever this value differs from the PREVIOUS render's, and a
+    // `Load Earlier` pagination prepend (`ChatReducer`'s
+    // `.olderMessagesLoaded` case) grows `count` without changing which
+    // message is LAST — a count-inclusive signature incorrectly fired the
+    // fade+rise transition for every already-visible row too, right where
+    // the user was reading. Keying purely on the last message's id fixes
+    // that: a prepend never changes it, so no animation; see the function's
+    // own doc comment for why an append always does.
+    .animation(reduceMotion ? nil : .default, value: messageEntranceSignature(for: messages))
   }
 }
 
-private struct MessageIdentitySignature: Equatable {
-  let count: Int
-  let lastID: String?
+/// The `.animation(value:)` signal for `MessageListView`'s entrance
+/// transition (review fix, chat-ux Phase 3 Task 4, audit #18) — SwiftUI
+/// re-animates exactly when this differs from the value it computed on the
+/// PREVIOUS render, so "which changes should animate" reduces to "which
+/// mutations change this function's output":
+///
+/// - **Append** (optimistic send, a streamed reply finalizing into a new
+///   row, edit & resend's truncate-then-resend) always changes which
+///   message is last → output changes → animates. Correct: exactly the
+///   genuinely-new row the user just caused to appear.
+/// - **Prepend** (`ChatReducer`'s `.olderMessagesLoaded`, the "Load
+///   Earlier" pagination the `chat.loadOlder` control in `ChatView.swift`
+///   drives) grows `messages.count` but never touches the last element →
+///   output unchanged → no animation. This is the actual review fix: the
+///   previous version of this signature included `messages.count`, which
+///   made a prepend indistinguishable from an append and fired the
+///   fade+rise transition for every already-visible row too.
+/// - **Status/content mutation to the last message** (a streamed token,
+///   thinking/tool-card delta, a terminal status flip) doesn't change ITS
+///   id → output unchanged → no animation, same as before this fix.
+/// - **Empty → non-empty initial population** doesn't need special-casing
+///   HERE: `ChatView.swift`'s `if feature.state.messages.isEmpty {
+///   ContentUnavailableView } else { MessageListView(...) }` branch means
+///   this view is only ever constructed once `messages` is already
+///   non-empty. SwiftUI has no PREVIOUS render of this view to diff
+///   against for that transition — the whole subtree is freshly inserted,
+///   not individually-transitioning rows — regardless of what this
+///   function returns for that first render.
+///
+/// Internal (not `private`) so `DashTests` can exercise the append/prepend/
+/// initial-load distinction directly, same pattern as `failedTurnIDs`/
+/// `userMessageID` above and `ChatTranscriptSignature` in `ChatView.swift`.
+func messageEntranceSignature(for messages: [ChatMessageState]) -> String? {
+  messages.last?.id
 }
 
 struct ChatMessageView: View {
