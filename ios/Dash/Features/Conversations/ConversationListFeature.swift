@@ -1146,15 +1146,60 @@ final class ConversationListFeature {
     }
   }
 
-  func loadOlderIfNeeded(currentID: String) async {
+  /// `visibleConversations` defaults to `conversations` (the canonical,
+  /// agent-filtered — but NOT search-filtered — list) for source
+  /// compatibility with the pre-search call sites/tests. `ConversationListView`
+  /// instead passes its own `filteredConversations` explicitly (review fix,
+  /// audit #9): the "near the tail" position check below must be evaluated
+  /// against whatever list the row is actually rendered from, or a search
+  /// query that filters out the canonical list's last few rows silently
+  /// stalls pagination — the visible (filtered) tail never lines up with the
+  /// canonical tail that used to gate this, so older pages (that might
+  /// contain matches) never load and the user sees "no results" instead of
+  /// "haven't looked far enough yet." See also `loadOlderForEmptySearchResults`
+  /// for the companion case where the filtered list is empty outright (no
+  /// row exists to hang this check off at all).
+  func loadOlderIfNeeded(
+    currentID: String,
+    visibleConversations: [CachedConversation]? = nil
+  ) async {
     guard
       mutationsAllowed,
       isLoadingOlder == false,
       isRefreshing == false,
       let cursor = nextCursor,
       loadedCursors.contains(cursor) == false,
-      shouldLoadOlder(currentID: currentID)
+      shouldLoadOlder(currentID: currentID, in: visibleConversations ?? conversations)
     else { return }
+    await performLoadOlder(cursor: cursor)
+  }
+
+  /// Companion to `loadOlderIfNeeded` (review fix, audit #9): when a local
+  /// search filter matches nothing among the conversations loaded so far,
+  /// `ConversationListView` renders `ContentUnavailableView.search` instead
+  /// of any row — so there is no "last visible row" to trigger the usual
+  /// near-the-tail pagination at all, even though an older, not-yet-loaded
+  /// page might contain a match. This eagerly loads the next page whenever
+  /// one exists, reusing the exact same has-more/single-flight guards as
+  /// `loadOlderIfNeeded` (mutations allowed, not already loading/refreshing,
+  /// a cursor exists, that cursor hasn't been consumed yet) minus the
+  /// position check — there's no position to check. `ConversationListView`
+  /// drives this via `.task(id: feature.nextCursor)` on its empty-results
+  /// row, which stops re-firing on its own once either a match appears (the
+  /// row — and its `.task` — disappears) or pages run out (`nextCursor`
+  /// settles at `nil`, so the `id` stops changing).
+  func loadOlderForEmptySearchResults() async {
+    guard
+      mutationsAllowed,
+      isLoadingOlder == false,
+      isRefreshing == false,
+      let cursor = nextCursor,
+      loadedCursors.contains(cursor) == false
+    else { return }
+    await performLoadOlder(cursor: cursor)
+  }
+
+  private func performLoadOlder(cursor: String) async {
     isLoadingOlder = true
     defer { isLoadingOlder = false }
     let generation = listGeneration
@@ -1494,7 +1539,7 @@ final class ConversationListFeature {
     }
   }
 
-  private func shouldLoadOlder(currentID: String) -> Bool {
+  private func shouldLoadOlder(currentID: String, in conversations: [CachedConversation]) -> Bool {
     guard let index = conversations.firstIndex(where: { $0.id == currentID }) else { return false }
     return index >= max(0, conversations.count - 5)
   }

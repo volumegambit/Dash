@@ -88,7 +88,15 @@ struct ConversationListView: View {
           ForEach(filteredConversations) { conversation in
             conversationRow(conversation)
               .task {
-                await feature.loadOlderIfNeeded(currentID: conversation.id)
+                // Review fix (audit #9): pass the FILTERED list a search is
+                // actively rendering from, not the canonical
+                // `feature.conversations` — see `loadOlderIfNeeded`'s doc
+                // comment for why the canonical list silently stalls
+                // pagination once a query hides its tail rows.
+                await feature.loadOlderIfNeeded(
+                  currentID: conversation.id,
+                  visibleConversations: filteredConversations
+                )
               }
               .contextMenu {
                 let actions = actionPolicy(for: conversation)
@@ -149,6 +157,17 @@ struct ConversationListView: View {
             ContentUnavailableView.search(text: searchText)
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
+              // Review fix (audit #9): with zero locally-matching rows
+              // there's no row left to hang the usual near-the-tail
+              // pagination trigger off, so eagerly keep loading older pages
+              // while this empty-results state is showing — an unloaded
+              // page might still contain a match. Keyed on `nextCursor` so
+              // it re-fires after each successful page load and stops on
+              // its own once a match appears (this view disappears) or
+              // pages run out (`nextCursor` settles at `nil`).
+              .task(id: feature.nextCursor) {
+                await feature.loadOlderForEmptySearchResults()
+              }
           } else if feature.isLoadingOlder {
             HStack {
               Spacer()

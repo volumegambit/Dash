@@ -661,6 +661,83 @@ struct ConversationListFeatureTests {
     #expect(await service.pageCalls.map(\.cursor) == [nil, "opaque/+cursor=="])
   }
 
+  @Test(
+    """
+    a search filter matching only early rows still triggers pagination via the visible \
+    (filtered) list, not the canonical one — review fix, audit #9
+    """
+  )
+  func searchFilteredPaginationTriggersFromVisibleList() async {
+    let firstPage = (0..<8).map { summary(id: "new-\($0)", updatedAt: 100 - $0) }
+    let older = [summary(id: "older-1", updatedAt: 10)]
+    let service = FakeConversationListService()
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: firstPage, nextCursor: "opaque/+cursor=="))
+    )
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: older, nextCursor: nil))
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.start()
+
+    // Simulates `ConversationListView.filteredConversations` for a query
+    // matching only the first three of the eight loaded rows. Its last row
+    // ("new-2") sits at index 2 of 3 — inside the last-5 trigger window of
+    // this FILTERED list — but at index 2 of 8 in the canonical
+    // `feature.conversations`, nowhere near ITS last-5 window. That gap is
+    // exactly the stall the review fix addresses: a query that filters out
+    // the canonical list's tail rows must not silently stop pagination.
+    let visibleDuringSearch = firstPage.prefix(3).map(cachedConversation)
+
+    // Regression guard: the pre-fix call shape (no `visibleConversations`,
+    // defaulting to the canonical list) must NOT trigger here — otherwise
+    // this test would no longer be reproducing the bug the fix addresses.
+    await feature.loadOlderIfNeeded(currentID: "new-2")
+    #expect(await service.pageCalls.map(\.cursor) == [nil])
+
+    // The fix: passing the actually-visible (search-filtered) list — the
+    // same one `ConversationListView` now passes — triggers pagination.
+    await feature.loadOlderIfNeeded(
+      currentID: "new-2",
+      visibleConversations: visibleDuringSearch
+    )
+
+    #expect(await service.pageCalls.map(\.cursor) == [nil, "opaque/+cursor=="])
+    #expect(feature.conversations.map(\.id) == firstPage.map(\.id) + older.map(\.id))
+  }
+
+  @Test(
+    """
+    loadOlderForEmptySearchResults eagerly loads the next page when a search matches nothing \
+    loaded yet, since there is no row to hang the usual trigger off — review fix, audit #9
+    """
+  )
+  func emptySearchResultsEagerlyPaginates() async {
+    let firstPage = (0..<8).map { summary(id: "new-\($0)", updatedAt: 100 - $0) }
+    let matching = [summary(id: "match-1", updatedAt: 5)]
+    let service = FakeConversationListService()
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: firstPage, nextCursor: "opaque/+cursor=="))
+    )
+    await service.enqueuePage(
+      .success(ConversationPageDTO(items: matching, nextCursor: nil))
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+    await feature.start()
+    #expect(await service.pageCalls.map(\.cursor) == [nil])
+
+    // No locally-loaded row would match this fixture's hypothetical query —
+    // `ConversationListView` would be rendering `ContentUnavailableView
+    // .search` instead of any row — but a further page does contain a
+    // match, so this must still page forward to find it.
+    await feature.loadOlderForEmptySearchResults()
+
+    #expect(await service.pageCalls.map(\.cursor) == [nil, "opaque/+cursor=="])
+    #expect(feature.conversations.map(\.id) == firstPage.map(\.id) + matching.map(\.id))
+  }
+
   @Test("pagination cannot replace a newer active row with stale or equal tombstones")
   func paginationRejectsNonNewerTombstones() async {
     let active = summary(id: "conversation", title: "Active", revision: 6, updatedAt: 200)
