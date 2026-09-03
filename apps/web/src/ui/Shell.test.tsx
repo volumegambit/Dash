@@ -704,5 +704,32 @@ describe('Shell', () => {
       expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
       expect(screen.queryByText(DELETE_CONFIRM_COPY)).toBeNull();
     });
+
+    // Re-review regression guard for fix I2. The "Escape stops generation"
+    // test above dispatches on `window`, whose `event.target` is the window
+    // itself — not an `Element` — so it sails past the bail-out entirely and
+    // cannot observe it. A real Escape targets the FOCUSED element, and
+    // clicking a conversation row leaves focus on that row's button, so I2's
+    // first (blanket `.conversation-list`) selector silently swallowed it.
+    it('Escape still stops generation when focus is resting on a conversation row (fix I2 must not over-bail)', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        });
+      });
+      await waitFor(() => expect(screen.getByText('Chat about the roadmap')).toBeTruthy());
+      const row = screen.getByText('Chat about the roadmap').closest('button') as HTMLButtonElement;
+      fireEvent.click(row);
+      row.focus();
+      expect(document.activeElement).toBe(row);
+
+      fireEvent.keyDown(row, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).toHaveBeenCalledWith('conv-1');
+    });
   });
 });
