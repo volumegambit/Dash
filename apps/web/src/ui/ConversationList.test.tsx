@@ -14,6 +14,7 @@ import {
   NO_CONVERSATIONS_COPY,
   NO_SEARCH_RESULTS_COPY,
   RENAME_ACTION_LABEL,
+  RENAME_INPUT_LABEL,
   SEARCH_INPUT_LABEL,
 } from './ConversationList.js';
 import { WebAppStoreContext } from './Shell.js';
@@ -744,6 +745,70 @@ describe('ConversationList', () => {
         expect(deleteConversation).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(deleteButton);
       });
+    });
+  });
+
+  describe('chat-ux Phase 4 — deferred minors from the Phase 3 whole-branch review', () => {
+    // Minor 1. The search input was gated on `conversations.length > 0`, so on an
+    // empty account (and throughout the initial load) Cmd/Ctrl+K had nothing to
+    // focus and was a silent no-op — and on desktop it still flipped `sidebarOpen`
+    // for nothing, so the NEXT Escape was consumed "closing" an invisible drawer.
+    // Claude/ChatGPT both keep search as permanent sidebar chrome; doing the same
+    // removes the whole failure class rather than special-casing the shortcut.
+    it('renders the search input on an empty account, so Cmd+K always has a target', async () => {
+      const { store } = buildStore([]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText(NO_CONVERSATIONS_COPY)).toBeTruthy());
+
+      expect(screen.getByLabelText(SEARCH_INPUT_LABEL)).toBeTruthy();
+    });
+
+    // Minor 3. Rename committed on Enter and cancelled on Escape, but a blur did
+    // neither: clicking away left the row as a live text input, so the row could
+    // not be clicked to open its conversation until the user found Enter or Esc.
+    it('cancels the rename on blur instead of leaving the row stuck in edit mode', async () => {
+      const { store, patchConversation } = buildStore([summary({ title: 'Mobile launch check' })]);
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+      fireEvent.click(screen.getByLabelText(RENAME_ACTION_LABEL));
+      const input = screen.getByLabelText(RENAME_INPUT_LABEL);
+      fireEvent.change(input, { target: { value: 'Half-typed title' } });
+
+      fireEvent.blur(input);
+
+      expect(screen.queryByLabelText(RENAME_INPUT_LABEL)).toBeNull();
+      expect(screen.getByText('Mobile launch check')).toBeTruthy();
+      // Blur CANCELS — it must not silently commit a half-typed title.
+      expect(patchConversation).not.toHaveBeenCalled();
+    });
+
+    // Minor 4. `isLoading` was seeded `true` unconditionally, so every remount
+    // (returning from the Devices screen, say) flashed five skeleton rows over a
+    // list the store had already cached.
+    it('does not flash skeleton rows over an already-loaded list on remount', async () => {
+      const { store } = buildStore([summary()]);
+      await act(async () => {
+        await store.getState().loadConversations();
+      });
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+
+      expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull();
+      expect(screen.getByText('Mobile launch check')).toBeTruthy();
     });
   });
 });

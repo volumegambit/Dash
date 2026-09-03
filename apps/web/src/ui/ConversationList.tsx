@@ -230,7 +230,13 @@ export function ConversationList({
   // `state/store.ts`'s `WebAppState` — nothing else needs one yet). `mounted`
   // guards the `finally` against setting state after an unmount that
   // happens to race a slow REST call.
-  const [isLoading, setIsLoading] = useState(true);
+  // Minor 4 (Phase 4): seeded from whether the store ALREADY holds conversations
+  // rather than unconditionally `true`. `loadConversations()` below still runs on
+  // every mount (it refreshes), but a remount over a warm store — returning from
+  // the Devices screen, say — must not flash skeletons over a list that is
+  // already on screen. An empty store still starts in the loading state, so a
+  // genuine first load is unchanged.
+  const [isLoading, setIsLoading] = useState(() => conversations.length === 0);
 
   useEffect(() => {
     let mounted = true;
@@ -415,21 +421,26 @@ export function ConversationList({
       tabIndex={-1}
       ref={listContainerRef}
     >
-      {conversations.length > 0 && (
-        <input
-          ref={(el) => {
-            internalSearchInputRef.current = el;
-            if (searchInputRef) searchInputRef.current = el;
-          }}
-          type="search"
-          aria-label={SEARCH_INPUT_LABEL}
-          placeholder={SEARCH_INPUT_LABEL}
-          title="⌘K"
-          className="conversation-search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      )}
+      {/* Minor 1 (Phase 4): rendered unconditionally — NOT gated on
+          `conversations.length > 0`. While gated, Cmd/Ctrl+K had no target on an
+          empty account and throughout the initial load, so it was a silent no-op
+          that still flipped `sidebarOpen` on desktop, leaving the next Escape to
+          be consumed "closing" a drawer that is `display:none` above 768px.
+          Claude and ChatGPT both keep search as permanent sidebar chrome, which
+          removes the failure class instead of special-casing the shortcut. */}
+      <input
+        ref={(el) => {
+          internalSearchInputRef.current = el;
+          if (searchInputRef) searchInputRef.current = el;
+        }}
+        type="search"
+        aria-label={SEARCH_INPUT_LABEL}
+        placeholder={SEARCH_INPUT_LABEL}
+        title="⌘K"
+        className="conversation-search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
 
       <button
         type="button"
@@ -489,6 +500,15 @@ export function ConversationList({
                       autoFocus
                       onChange={(event) => setEditValue(event.target.value)}
                       onKeyDown={(event) => handleRenameKeyDown(event, conversation)}
+                      // Minor 3 (Phase 4): blur CANCELS. Without this the row
+                      // stayed a live text input after a click elsewhere — and
+                      // an editing row renders no button, so the conversation
+                      // could not be opened until the user found Enter or Esc.
+                      // Cancel rather than commit: a blur is not a confirmation,
+                      // and silently saving a half-typed title on an accidental
+                      // click away is the worse failure. Escape's behaviour
+                      // (`handleRenameKeyDown`) is the one this matches.
+                      onBlur={cancelRename}
                     />
                   ) : (
                     <button
