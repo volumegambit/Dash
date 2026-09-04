@@ -18,7 +18,6 @@ export type { OAuthTokenRefresher, RefreshedOAuthTokens } from './oauth-refreshe
 export type { AgentClient } from './client.js';
 export { FileLogger } from './logger.js';
 export type { LogLevel, Logger } from './logger.js';
-export { buildMemoryPreamble } from './memory.js';
 export { ConversationPool } from './conversation-pool.js';
 export type {
   ConversationPoolOptions,

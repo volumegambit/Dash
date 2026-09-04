@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DashAgent } from './agent.js';
+import { MemoryStore } from './memory/store.js';
 import type { AgentEvent, AgentState, DashAgentConfig, RunOptions } from './types.js';
 
 // Helper to collect all events from an AsyncGenerator
@@ -47,30 +48,7 @@ describe('DashAgent.chat()', () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it('injects memory preamble into systemPrompt when workspace has MEMORY.md', async () => {
-    await writeFile(join(tempDir, 'MEMORY.md'), 'Remember: user likes TypeScript');
-
-    let capturedSystemPrompt = '';
-    const backend = makeBackend([], (state) => {
-      capturedSystemPrompt = state.systemPrompt;
-    });
-
-    const agent = new DashAgent(
-      backend,
-      staticResolver({
-        model: 'anthropic/claude-3-haiku',
-        systemPrompt: 'You are a helpful assistant.',
-        workspace: tempDir,
-      }),
-    );
-
-    await collect(agent.chat('ch', 'conv1', 'hello'));
-
-    expect(capturedSystemPrompt).toContain('Remember: user likes TypeScript');
-    expect(capturedSystemPrompt).toContain('You are a helpful assistant.');
-  });
-
-  it('does not inject memory preamble when no workspace set', async () => {
+  it('does not inject a memory block when no memory config is set', async () => {
     let capturedSystemPrompt = '';
     const backend = makeBackend([], (state) => {
       capturedSystemPrompt = state.systemPrompt;
@@ -87,30 +65,6 @@ describe('DashAgent.chat()', () => {
     await collect(agent.chat('ch', 'conv1', 'hello'));
 
     expect(capturedSystemPrompt).toBe('You are a helpful assistant.');
-  });
-
-  it('memory preamble uses fallback when workspace set but MEMORY.md absent', async () => {
-    // tempDir has no MEMORY.md — use it directly as the workspace
-    let capturedSystemPrompt = '';
-    const backend = makeBackend([], (state) => {
-      capturedSystemPrompt = state.systemPrompt;
-    });
-
-    const agent = new DashAgent(
-      backend,
-      staticResolver({
-        model: 'anthropic/claude-3-haiku',
-        systemPrompt: 'You are a helpful assistant.',
-        workspace: tempDir,
-      }),
-    );
-
-    await collect(agent.chat('ch', 'conv8', 'hello'));
-
-    // Should include the "not yet created" fallback text
-    expect(capturedSystemPrompt).toContain('not yet created');
-    // Should still end with the original system prompt
-    expect(capturedSystemPrompt).toContain('You are a helpful assistant.');
   });
 
   // ------------------------------------------------------------------
@@ -190,5 +144,61 @@ describe('DashAgent.chat()', () => {
         // consume
       }
     }).rejects.toThrow(/not found/);
+  });
+});
+
+describe('DashAgent memory prompt', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dash-agent-memory-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('appends the <memory> block with the index when config.memory is set', async () => {
+    await new MemoryStore(dir).save({
+      name: 'user-timezone',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      content: 'UTC+8',
+      source: 'agent',
+    });
+
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+
+    const agent = new DashAgent(backend, async () => ({
+      model: 'anthropic/claude-sonnet-5',
+      systemPrompt: 'base',
+      memory: { dir },
+    }));
+
+    await collect(agent.chat('ch', 'conv', 'hi'));
+
+    expect(seen[0]).toContain('base\n\n<memory>');
+    expect(seen[0]).toContain('- **user-timezone** — Gerry is in Singapore');
+  });
+
+  it('adds no memory block when config.memory is absent, even with a workspace', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+
+    const agent = new DashAgent(backend, async () => ({
+      model: 'm',
+      systemPrompt: 'base',
+      workspace: dir,
+    }));
+
+    await collect(agent.chat('ch', 'conv', 'hi'));
+
+    expect(seen[0]).toBe('base');
+    expect(seen[0]).not.toContain('MEMORY.md');
   });
 });
