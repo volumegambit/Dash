@@ -24,3 +24,13 @@ export type {
   WorkerSpec,
   WorkerStatus,
 } from './types.js';
+export {
+  READ_ONLY_TOOLS,
+  ROSTER_TOKEN_BUDGET,
+  buildRosterText,
+  builtinSubagentTypes,
+  createStaticResolver,
+  estimateTokens,
+  type ResolvedSubagentType,
+  type SubagentTypeResolver,
+} from './subagent-types.js';
