@@ -3,6 +3,7 @@ export const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project
 
 /** Who wrote the memory: the agent via a tool, the post-turn sweep, a human via the API, or the legacy import. */
 export type MemorySource = 'agent' | 'sweep' | 'user' | 'import';
+export const MEMORY_SOURCES: readonly MemorySource[] = ['agent', 'sweep', 'user', 'import'];
 
 export interface MemoryRecord {
   name: string;
@@ -54,4 +55,8 @@ export const MEMORY_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export function isMemoryType(value: unknown): value is MemoryType {
   return typeof value === 'string' && (MEMORY_TYPES as readonly string[]).includes(value);
+}
+
+export function isMemorySource(value: unknown): value is MemorySource {
+  return typeof value === 'string' && (MEMORY_SOURCES as readonly string[]).includes(value);
 }

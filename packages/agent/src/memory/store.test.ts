@@ -98,6 +98,31 @@ describe('MemoryStore', () => {
     ).rejects.toBeInstanceOf(MemoryOpError);
   });
 
+  it('rejects invalid and newline-containing sources', async () => {
+    const base = {
+      name: 'test',
+      description: 'd',
+      type: 'user' as const,
+      content: 'c',
+    };
+    await expect(store.save({ ...base, source: 'bogus' as MemorySource })).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(
+      store.save({
+        ...base,
+        source: 'agent\ndescription: injected' as MemorySource,
+      }),
+    ).rejects.toMatchObject({
+      code: 'invalid',
+    });
+    await expect(
+      store.save({ ...base, source: 'agent\n---\n...' as MemorySource }),
+    ).rejects.toMatchObject({
+      code: 'invalid',
+    });
+  });
+
   it('enforces the per-agent cap for creates but not updates', async () => {
     const small = new MemoryStore(join(dir, 'capped'), { perAgent: 2 });
     await small.save({ name: 'a', description: 'd', type: 'user', content: 'c', source: 'agent' });

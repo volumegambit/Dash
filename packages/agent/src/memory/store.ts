@@ -5,17 +5,17 @@ import { renderIndex } from './index-render.js';
 import {
   MEMORY_LIMITS,
   MEMORY_NAME_RE,
+  MEMORY_SOURCES,
   type MemoryInfo,
   MemoryOpError,
   type MemoryRecord,
   type MemorySource,
   type SaveMemoryInput,
+  isMemorySource,
   isMemoryType,
 } from './types.js';
 
 export const INDEX_FILENAME = 'MEMORY.md';
-
-const SOURCES: readonly MemorySource[] = ['agent', 'sweep', 'user', 'import'];
 
 export function todayIso(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
@@ -35,7 +35,7 @@ export function parseMemoryFile(raw: string, fallbackName: string): MemoryRecord
   const name = str(parsed.fields, 'name') || fallbackName;
   if (!MEMORY_NAME_RE.test(name)) return null;
   const sourceRaw = str(parsed.fields, 'source');
-  const source = (SOURCES as readonly string[]).includes(sourceRaw)
+  const source = (MEMORY_SOURCES as readonly string[]).includes(sourceRaw)
     ? (sourceRaw as MemorySource)
     : 'agent';
   const createdAt = str(parsed.fields, 'created') || todayIso();
@@ -89,6 +89,9 @@ function validate(input: SaveMemoryInput): void {
       'invalid',
       'Memory type must be one of user, feedback, project, reference',
     );
+  }
+  if (!isMemorySource(input.source) || input.source.includes('\n')) {
+    throw new MemoryOpError('invalid', 'Memory source must be one of agent, sweep, user, import');
   }
   const max = input.source === 'import' ? MEMORY_LIMITS.importContentMax : MEMORY_LIMITS.contentMax;
   if (!input.content.trim() || input.content.length > max) {
