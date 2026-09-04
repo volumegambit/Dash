@@ -49,6 +49,7 @@ export type {
   InstalledSkill,
   SkillOpCode,
 } from './skills/index.js';
+export * from './memory/index.js';
 
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.
