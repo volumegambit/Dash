@@ -54,14 +54,20 @@ export function builtinSubagentTypes(): ResolvedSubagentType[] {
     {
       name: 'general-purpose',
       description:
-        'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. Use when the task needs exploration and action.',
+        'General-purpose agent for researching complex questions, ' +
+        'searching for code, and executing multi-step tasks. Use when the ' +
+        'task needs exploration and action.',
       systemPrompt: GENERAL_PURPOSE_PROMPT,
+      model: 'inherit',
       source: 'builtin',
     },
     {
       name: 'Explore',
       description:
-        'Read-only search agent for broad fan-out searches — when answering means sweeping many files or naming conventions and you only need the conclusion. Specify search breadth: "medium" or "very thorough".',
+        'Read-only search agent for broad fan-out searches — when ' +
+        'answering means sweeping many files or naming conventions and you ' +
+        'only need the conclusion. Specify search breadth: "medium" or ' +
+        '"very thorough".',
       systemPrompt: EXPLORE_PROMPT,
       tools: [...READ_ONLY_TOOLS],
       skipMemory: true,
@@ -71,7 +77,9 @@ export function builtinSubagentTypes(): ResolvedSubagentType[] {
     {
       name: 'Plan',
       description:
-        'Software architect agent for designing implementation plans. Returns step-by-step plans, identifies critical files, and considers trade-offs.',
+        'Software architect agent for designing implementation plans. ' +
+        'Returns step-by-step plans, identifies critical files, and ' +
+        'considers trade-offs.',
       systemPrompt: PLAN_PROMPT,
       tools: [...READ_ONLY_TOOLS],
       skipMemory: true,

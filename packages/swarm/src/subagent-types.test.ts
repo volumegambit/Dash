@@ -25,6 +25,7 @@ describe('built-in subagent types', () => {
     const gp = builtinSubagentTypes().find((t) => t.name === 'general-purpose');
     expect(gp).toBeDefined();
     expect(gp?.tools).toBeUndefined();
+    expect(gp?.model).toBe('inherit');
   });
 
   it('resolves by exact name only', () => {
