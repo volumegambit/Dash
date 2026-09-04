@@ -17,6 +17,8 @@ describe('parseControlPlaneFlags', () => {
       parseControlPlaneFlags([
         '--port',
         '9500',
+        '--host',
+        '127.0.0.1',
         '--db-path',
         '/d/cp.db',
         '--relay-admin-url',
@@ -32,6 +34,7 @@ describe('parseControlPlaneFlags', () => {
       ]),
     ).toEqual({
       port: 9500,
+      host: '127.0.0.1',
       dbPath: '/d/cp.db',
       relayAdminUrl: 'https://relay.example/admin',
       relayAdminSecret: 'sek',
@@ -44,15 +47,33 @@ describe('parseControlPlaneFlags', () => {
   it('ignores flags without values', () => {
     expect(parseControlPlaneFlags(['--relay-admin-secret'])).toEqual({});
   });
+
+  it('parses --web-origins as a comma-separated, trimmed list', () => {
+    expect(
+      parseControlPlaneFlags(['--web-origins', ' https://a.example.com , https://b.example.com ']),
+    ).toEqual({ webOrigins: ['https://a.example.com', 'https://b.example.com'] });
+  });
 });
 
 describe('loadConfig', () => {
   it('applies defaults when only the required fields are set', () => {
     const cfg = loadConfig({ env: requiredEnv });
     expect(cfg.port).toBe(9400);
+    expect(cfg.host).toBeUndefined();
     expect(cfg.dialTokenTtlSec).toBe(86400);
     expect(cfg.relayAdminSecret).toBe('master');
     expect(cfg.dialTokenPrivateKeyPath).toBe('/k/cp.pem');
+  });
+
+  it('reads host from RELAY_CP_HOST, and a --host flag overrides it', () => {
+    const fromEnv = loadConfig({ env: { ...requiredEnv, RELAY_CP_HOST: '127.0.0.1' } });
+    expect(fromEnv.host).toBe('127.0.0.1');
+
+    const fromFlag = loadConfig({
+      argv: ['--host', '10.0.0.1'],
+      env: { ...requiredEnv, RELAY_CP_HOST: '127.0.0.1' },
+    });
+    expect(fromFlag.host).toBe('10.0.0.1');
   });
 
   it('reads every value from RELAY_CP_* env', () => {
@@ -129,5 +150,29 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ env: { RELAY_CP_RELAY_ADMIN_SECRET: 'master' } })).toThrow(
       /dial.token private key/i,
     );
+  });
+
+  describe('webOrigins', () => {
+    it('defaults to an empty array when unset', () => {
+      expect(loadConfig({ env: requiredEnv }).webOrigins).toEqual([]);
+    });
+
+    it('reads a comma-separated RELAY_CP_WEB_ORIGINS, trimming and dropping blanks', () => {
+      const cfg = loadConfig({
+        env: {
+          ...requiredEnv,
+          RELAY_CP_WEB_ORIGINS: ' https://app.example.com , https://other.example.com ,,',
+        },
+      });
+      expect(cfg.webOrigins).toEqual(['https://app.example.com', 'https://other.example.com']);
+    });
+
+    it('lets a --web-origins flag override the env value', () => {
+      const cfg = loadConfig({
+        argv: ['--web-origins', 'https://flag.example.com'],
+        env: { ...requiredEnv, RELAY_CP_WEB_ORIGINS: 'https://env.example.com' },
+      });
+      expect(cfg.webOrigins).toEqual(['https://flag.example.com']);
+    });
   });
 });

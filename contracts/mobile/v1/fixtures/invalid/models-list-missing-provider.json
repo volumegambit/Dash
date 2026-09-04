@@ -1,0 +1,14 @@
+{
+  "models": [
+    {
+      "value": "anthropic/claude-sonnet-4-5",
+      "label": "Claude Sonnet 4.5"
+    }
+  ],
+  "source": "bootstrap",
+  "errors": {
+    "anthropic": "Provider unavailable"
+  },
+  "fetchedAt": "2026-07-12T00:00:00.000Z",
+  "supportedModelsReviewedAt": "unreviewed"
+}

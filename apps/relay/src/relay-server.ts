@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { type RawData, type WebSocket, WebSocketServer } from 'ws';
@@ -29,6 +30,19 @@ export interface RelayLimits {
   ratePerSec?: number;
   /** Burst capacity per gateway (token bucket size). Default 100. */
   rateBurst?: number;
+  /**
+   * Sustained CORS-preflight requests/sec per gateway. Default 5.
+   *
+   * Preflights are the ONE thing the relay forwards without a pairing
+   * credential (see handlePhoneHttp), so they get their own much smaller
+   * bucket. Sharing the authenticated bucket would let anyone who knows a
+   * subdomain hold it empty at zero cost and 429 every legitimate phone and
+   * browser request. A browser preflights once per (origin, method, header-set)
+   * and then caches, so a handful per second is generous for real clients.
+   */
+  preflightRatePerSec?: number;
+  /** Burst capacity of the preflight bucket per gateway. Default 10. */
+  preflightBurst?: number;
 }
 
 /** Admin API config for the pairing-credential lifecycle (Bearer-gated). */
@@ -60,13 +74,37 @@ const RELAY_RATE_LIMIT_CLOSE = 4429;
 const PAIRING_CREDENTIAL_HEADER = 'x-dash-relay-credential';
 /** Header carrying the gateway's holder-of-key dial-in proof (hosted mode). */
 const GATEWAY_PROOF_HEADER = 'x-gateway-proof';
+/**
+ * Subprotocol prefix a browser uses to present the pairing credential. The
+ * WebSocket API gives web clients no way to set request headers on an upgrade,
+ * so `Sec-WebSocket-Protocol` is the only client-settable channel. Unlike a
+ * query parameter it is not written to access logs.
+ */
+const CREDENTIAL_SUBPROTOCOL_PREFIX = 'dash.relay-credential.';
+/** The application subprotocol clients offer alongside the credential one. */
+const APP_SUBPROTOCOL = 'dash.v1';
 
 /** A phone-originated stream's callbacks, driven by frames from the gateway. */
 interface PhoneStream {
+  /**
+   * SHA-256 (base64url) of the pairing credential that opened this stream —
+   * the same digest the credential store and the admin revoke API key by. Kept
+   * so a revoke can find this stream's live connection; the raw credential is
+   * never retained. Undefined for the credential-less CORS-preflight path.
+   */
+  credentialHash?: string;
   onHead(status: number, headers: Record<string, string>): void;
   onData(chunk: Buffer, binary: boolean): void;
   onEnd(): void;
   onClose(code?: number, reason?: string): void;
+  /**
+   * Drop this connection because its credential was revoked. Terminating the
+   * PHONE side is enough: the existing `close` handlers on the response/socket
+   * fire, which delete the stream and send the gateway its `close` frame — so
+   * the loopback request upstream is torn down by the same path a normal
+   * client disconnect uses.
+   */
+  revoke(): void;
 }
 
 interface GatewayConn {
@@ -84,10 +122,23 @@ interface GatewayConn {
  */
 export function createRelayServer(deps: RelayDeps, options: RelayServerOptions = {}): RelayServer {
   const gateways = new Map<string, GatewayConn>();
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    // Only ever select the application subprotocol. `ws`'s default is to echo
+    // back the FIRST protocol the client offered, which for a browser client
+    // may be the credential-bearing one — the credential must never appear in
+    // a response header. A client that offered no `dash.v1` gets no selection
+    // (the native header path offers nothing, so its handshake is unchanged).
+    noServer: true,
+    handleProtocols: (protocols) => (protocols.has(APP_SUBPROTOCOL) ? APP_SUBPROTOCOL : false),
+  });
 
   const maxStreams = options.maxStreamsPerGateway ?? 256;
   const limiter = new RateLimiter(options.rateBurst ?? 100, options.ratePerSec ?? 50);
+  // Separate, deliberately tight bucket for the unauthenticated preflight path.
+  const preflightLimiter = new RateLimiter(
+    options.preflightBurst ?? 10,
+    options.preflightRatePerSec ?? 5,
+  );
   const admin = options.admin;
 
   const httpServer = http.createServer((req, res) => {
@@ -97,7 +148,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
       handleAdmin(admin, gateways, req, res);
       return;
     }
-    handlePhoneHttp(gateways, deps, limiter, maxStreams, req, res);
+    handlePhoneHttp(gateways, deps, limiter, preflightLimiter, maxStreams, req, res);
   });
 
   httpServer.on('upgrade', (req, socket, head) => {
@@ -118,7 +169,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
         ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
         return;
       }
-      registerGateway(gateways, limiter, gatewayId, ws);
+      registerGateway(gateways, limiter, preflightLimiter, gatewayId, ws);
     });
   });
 
@@ -138,6 +189,7 @@ export function createRelayServer(deps: RelayDeps, options: RelayServerOptions =
 function registerGateway(
   gateways: Map<string, GatewayConn>,
   limiter: RateLimiter,
+  preflightLimiter: RateLimiter,
   gatewayId: string,
   socket: WebSocket,
 ): void {
@@ -160,7 +212,9 @@ function registerGateway(
   socket.on('close', () => {
     if (gateways.get(gatewayId) === conn) {
       gateways.delete(gatewayId);
-      limiter.forget(gatewayId); // release the rate-limit bucket for this gateway
+      // Release both rate-limit buckets for this gateway.
+      limiter.forget(gatewayId);
+      preflightLimiter.forget(gatewayId);
     }
     for (const stream of conn.streams.values()) stream.onClose();
     conn.streams.clear();
@@ -212,26 +266,48 @@ function handlePhoneHttp(
   gateways: Map<string, GatewayConn>,
   deps: RelayDeps,
   limiter: RateLimiter,
+  preflightLimiter: RateLimiter,
   maxStreams: number,
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
+  if (!isCanonicalMobileHttpTarget(req.url ?? '/')) {
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('Not Found');
+    return;
+  }
+
+  // Past this point the target is a validated canonical `/mobile/v1` path, so
+  // every response the relay generates itself is an error a browser client
+  // needs to be able to READ (see errorCorsHeaders).
+  const cors = errorCorsHeaders(req.headers.origin);
+
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
   if (!gatewayId || !conn) {
-    res.writeHead(502, { 'content-type': 'text/plain' });
+    res.writeHead(502, { 'content-type': 'text/plain', ...cors });
     res.end('No gateway connected');
     return;
   }
+
+  // CORS preflights are exempt. A browser strips every author-set header from
+  // the OPTIONS it sends before a cross-origin request, so a web client can
+  // never satisfy the credential gate on a preflight — gating it would make the
+  // whole `/mobile/v1` surface unreachable from a browser. The exemption is
+  // narrow: it only applies to the canonical `/mobile/v1` targets validated
+  // above, and the request is forwarded unchanged so the GATEWAY's own
+  // `mobileCors` middleware answers it from its origin allowlist. The relay
+  // never becomes the CORS policy holder, and an OPTIONS reaches no data route
+  // — the only thing it can obtain is that CORS answer.
+  const isCorsPreflight = req.method === 'OPTIONS';
 
   // Per-pairing relay credential. The relay never inspects gateway tokens; this
   // is a separate gate authorizing the phone to reach THIS gateway at all.
   // Checked BEFORE the rate limiter so an unauthenticated caller can't spend a
   // gateway's shared token budget and throttle its legitimately paired phones.
-  if (
-    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
-  ) {
-    res.writeHead(401, { 'content-type': 'text/plain' });
+  const credential = headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]);
+  if (!isCorsPreflight && !deps.pairingCredentialValid(gatewayId, credential)) {
+    res.writeHead(401, { 'content-type': 'text/plain', ...cors });
     res.end('Unauthorized');
     return;
   }
@@ -239,8 +315,15 @@ function handlePhoneHttp(
   // Abuse limits on the public edge: a per-gateway token bucket caps sustained
   // request rate, and a concurrent-stream cap bounds in-flight work. Both reject
   // with 429 so a flood can't exhaust the gateway's loopback or the relay.
-  if (!limiter.allow(gatewayId) || conn.streams.size >= maxStreams) {
-    res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1' });
+  //
+  // Credential-less preflights draw on a SEPARATE, much smaller bucket. They
+  // must be bounded (they are the one unauthenticated thing we forward), but
+  // they must not share the authenticated budget: anyone who knows a subdomain
+  // could otherwise hold that bucket empty at zero cost and 429 every paired
+  // phone and browser. The two budgets are independent in both directions.
+  const budget = isCorsPreflight ? preflightLimiter : limiter;
+  if (!budget.allow(gatewayId) || conn.streams.size >= maxStreams) {
+    res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '1', ...cors });
     res.end('Too Many Requests');
     return;
   }
@@ -258,6 +341,15 @@ function handlePhoneHttp(
   };
 
   conn.streams.set(streamId, {
+    credentialHash: credential ? hashCredential(credential) : undefined,
+    revoke() {
+      if (res.writableEnded) return;
+      // A revoked long-lived stream (SSE/chat) has already sent headers, so all
+      // we can do is end it — the client sees the stream close and re-requests,
+      // getting a clean 401 then. One that hasn't responded yet still can.
+      if (!res.headersSent) res.writeHead(401, { 'content-type': 'text/plain', ...cors });
+      res.end();
+    },
     onHead(status, headers) {
       // Guard against a duplicate/late `head` frame: writeHead after headers are
       // already sent throws ERR_HTTP_HEADERS_SENT (which would otherwise crash
@@ -324,7 +416,7 @@ function handlePhoneHttp(
   });
 }
 
-/** Bridge a phone WebSocket (/ws/chat → chat:9200, /projects/ws → mgmt:9300). */
+/** Bridge the sole public phone WebSocket route (/ws/chat → chat:9200). */
 function handlePhoneWsUpgrade(
   gateways: Map<string, GatewayConn>,
   deps: RelayDeps,
@@ -335,6 +427,11 @@ function handlePhoneWsUpgrade(
   socket: Duplex,
   head: Buffer,
 ): void {
+  if (!isCanonicalChatWsTarget(req.url ?? '/')) {
+    socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
+
   const gatewayId = gatewayIdFromHost(req.headers.host);
   const conn = gatewayId ? gateways.get(gatewayId) : undefined;
   if (!gatewayId || !conn) {
@@ -345,9 +442,15 @@ function handlePhoneWsUpgrade(
   // Per-pairing relay credential (see handlePhoneHttp). Checked before the rate
   // limiter so an unauthenticated caller can't spend the gateway's token budget.
   // Reject with 4401.
-  if (
-    !deps.pairingCredentialValid(gatewayId, headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]))
-  ) {
+  //
+  // The header is the native (iOS / Mission Control) path and takes precedence
+  // — its behaviour is untouched. Only when it is ABSENT do we fall back to the
+  // credential subprotocol, the sole channel a browser can use. Either way the
+  // credential goes through the same `pairingCredentialValid` check.
+  const credential =
+    headerValue(req.headers[PAIRING_CREDENTIAL_HEADER]) ||
+    credentialFromSubprotocols(offeredSubprotocols(req.headers));
+  if (!deps.pairingCredentialValid(gatewayId, credential)) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.close(RELAY_AUTH_CLOSE, 'Unauthorized');
     });
@@ -364,11 +467,15 @@ function handlePhoneWsUpgrade(
   }
 
   const fullPath = req.url ?? '/';
-  const target: Target = fullPath.split('?')[0].startsWith('/ws/chat') ? 'chat' : 'mgmt';
+  const target: Target = 'chat';
 
   wss.handleUpgrade(req, socket, head, (phoneWs) => {
     const streamId = conn.nextStreamId++;
     conn.streams.set(streamId, {
+      credentialHash: hashCredential(credential),
+      revoke() {
+        phoneWs.close(RELAY_AUTH_CLOSE, 'Revoked');
+      },
       onHead() {
         // 101 — the phone connection is already upgraded at the relay edge.
       },
@@ -394,7 +501,7 @@ function handlePhoneWsUpgrade(
         target,
         kind: 'ws',
         path: fullPath,
-        headers: forwardableHeaders(req.headers),
+        headers: forwardableWsHeaders(req.headers),
       }),
     );
 
@@ -409,6 +516,54 @@ function handlePhoneWsUpgrade(
       }
     });
   });
+}
+
+/**
+ * Return the request's pathname only when it is a canonical origin-form path.
+ * URL parsing normalizes literal and percent-encoded dot segments, so comparing
+ * the parsed pathname to the wire pathname rejects traversal before forwarding.
+ * Repeated decoding also catches encoded separators and double-encoded traversal
+ * that a downstream router could otherwise interpret differently.
+ */
+function canonicalPathname(requestTarget: string): string | undefined {
+  if (!requestTarget.startsWith('/') || requestTarget.includes('#')) return undefined;
+
+  const rawPathname = requestTarget.split('?')[0];
+  let parsed: URL;
+  try {
+    parsed = new URL(requestTarget, 'http://relay.invalid');
+  } catch {
+    return undefined;
+  }
+  if (parsed.origin !== 'http://relay.invalid' || parsed.pathname !== rawPathname) return undefined;
+
+  let decoded = rawPathname;
+  for (let depth = 0; depth < 5; depth++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return undefined;
+    }
+    if (
+      next.includes('\\') ||
+      next.split('/').some((segment) => segment === '.' || segment === '..')
+    ) {
+      return undefined;
+    }
+    if (next === decoded) return rawPathname;
+    decoded = next;
+  }
+  return undefined;
+}
+
+function isCanonicalMobileHttpTarget(requestTarget: string): boolean {
+  const pathname = canonicalPathname(requestTarget);
+  return pathname === '/mobile/v1' || pathname?.startsWith('/mobile/v1/') === true;
+}
+
+function isCanonicalChatWsTarget(requestTarget: string): boolean {
+  return canonicalPathname(requestTarget) === '/ws/chat';
 }
 
 /**
@@ -486,6 +641,15 @@ function handleAdmin(
         if (credentialHash) admin.store.revokeByHash(tenantId, gatewayId, credentialHash);
         else if (credential) admin.store.revoke(tenantId, gatewayId, credential);
         else admin.store.revokeAll(tenantId, gatewayId);
+        // Revocation must be immediate, not "from the next request": a phone
+        // holding a live chat socket or an open SSE stream would otherwise keep
+        // it indefinitely. Mirrors the force-close /admin/gateways/revoke does
+        // for the whole tunnel, but scoped to the revoked device's streams.
+        closeRevokedStreams(
+          gateways,
+          gatewayId,
+          credentialHash ?? (credential ? hashCredential(credential) : undefined),
+        );
         return respondJson(res, 200, { ok: true });
       }
       if (path === '/admin/gateways/revoke') {
@@ -501,6 +665,38 @@ function handleAdmin(
       respondJson(res, 404, { error: 'Unknown admin route' });
     })
     .catch(() => respondJson(res, 400, { error: 'Invalid JSON body' }));
+}
+
+/** The relay's canonical credential digest — base64url, as the stores key by. */
+function hashCredential(credential: string): string {
+  return createHash('sha256').update(credential).digest('base64url');
+}
+
+/**
+ * Drop the live phone connections a revoke just invalidated.
+ *
+ * `credentialHash` targets one device; `undefined` means the caller revoked
+ * every pairing for the gateway, so every credentialed stream goes. Streams
+ * opened without a credential (the CORS-preflight exemption) carry no hash and
+ * are never matched by a targeted revoke.
+ */
+function closeRevokedStreams(
+  gateways: Map<string, GatewayConn>,
+  gatewayId: string,
+  credentialHash: string | undefined,
+): void {
+  const conn = gateways.get(gatewayId);
+  if (!conn) return;
+  // Snapshot first: `revoke()` triggers close handlers that mutate the map.
+  for (const stream of [...conn.streams.values()]) {
+    if (credentialHash !== undefined && stream.credentialHash !== credentialHash) continue;
+    if (credentialHash === undefined && stream.credentialHash === undefined) continue;
+    try {
+      stream.revoke();
+    } catch {
+      // A stream already torn down by a racing disconnect — nothing to do.
+    }
+  }
 }
 
 /** Read a request body as JSON ({} when empty); caps size to 64 KiB. */
@@ -558,6 +754,87 @@ function gatewayIdFromHost(host: string | undefined): string | undefined {
   if (!host) return undefined;
   const label = host.split(':')[0].split('.')[0];
   return label || undefined;
+}
+
+/**
+ * CORS headers for an error the RELAY generates on a canonical `/mobile/v1`
+ * target (401 / 429 / 502). Without them a browser sees an opaque network
+ * failure instead of the status, so a revoked credential surfaces as "offline,
+ * retrying" rather than "your session was revoked, sign in again".
+ *
+ * The origin is echoed with no allowlist, and that is safe HERE specifically:
+ *
+ *  - These are relay-authored responses only. Anything the gateway produces is
+ *    piped back with the gateway's own headers, so the real `/mobile/v1` data
+ *    surface keeps its exact-match allowlist (`mobile-cors.ts`) — the relay
+ *    never becomes the policy holder for anything that carries data.
+ *  - The bodies are fixed constants ("Unauthorized", "Too Many Requests", "No
+ *    gateway connected"). Reading one tells an attacker's page nothing it could
+ *    not learn by making the same request from a server.
+ *  - `Access-Control-Allow-Credentials` is deliberately never set, so no
+ *    ambient cookie or HTTP-auth credential can ride along — the echoed origin
+ *    grants read access to a constant, not to an authenticated response.
+ *
+ * `Vary: Origin` keeps a shared cache from serving one origin's echoed header
+ * to another. Absent an `Origin` header (every native client) this returns an
+ * empty object, so the non-browser path is byte-for-byte unchanged.
+ */
+function errorCorsHeaders(origin: string | undefined): Record<string, string> {
+  if (!origin) return {};
+  return { 'access-control-allow-origin': origin, vary: 'Origin' };
+}
+
+/** The `Sec-WebSocket-Protocol` entries a client offered, in order. */
+function offeredSubprotocols(headers: http.IncomingHttpHeaders): string[] {
+  const raw = headerValue(headers['sec-websocket-protocol']);
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+/**
+ * Extract the pairing credential from a WebSocket subprotocol offer.
+ *
+ * The accepted shape is exactly one `dash.relay-credential.<credential>`
+ * alongside an optional `dash.v1` — nothing else. An unknown extra token, a
+ * second credential entry, or an empty credential yields `''`, which fails the
+ * usual `pairingCredentialValid` check and closes 4401. Being strict here means
+ * there is never a question of WHICH offered value was treated as the secret.
+ */
+function credentialFromSubprotocols(offered: readonly string[]): string {
+  let credential = '';
+  for (const entry of offered) {
+    if (entry === APP_SUBPROTOCOL) continue;
+    if (!entry.startsWith(CREDENTIAL_SUBPROTOCOL_PREFIX)) return '';
+    if (credential) return ''; // ambiguous: two credentials offered
+    credential = entry.slice(CREDENTIAL_SUBPROTOCOL_PREFIX.length);
+    if (!credential) return '';
+  }
+  return credential;
+}
+
+/**
+ * Headers forwarded for a phone WebSocket upgrade: the plain-HTTP set, minus
+ * the credential subprotocol. The credential is consumed at the public edge and
+ * must never travel to the gateway — the gateway's loopback replay also drops
+ * every `sec-websocket-*` header, but stripping it here means it never crosses
+ * the relay↔gateway tunnel at all.
+ */
+function forwardableWsHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
+  const forwarded = forwardableHeaders(headers);
+  const offered = offeredSubprotocols(headers);
+  const kept = offered.filter((entry) => !entry.startsWith(CREDENTIAL_SUBPROTOCOL_PREFIX));
+  // Nothing credential-bearing was offered (the native path) — forward verbatim.
+  if (kept.length === offered.length) return forwarded;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(forwarded)) {
+    if (name === 'sec-websocket-protocol') continue;
+    out[name] = value;
+  }
+  if (kept.length > 0) out['sec-websocket-protocol'] = kept.join(', ');
+  return out;
 }
 
 /** Forward phone request headers verbatim, minus hop-by-hop / routing headers. */

@@ -1,12 +1,40 @@
 import { randomUUID } from 'node:crypto';
-import type { ConversationStore, McConversation, McMessage } from '@dash/mc';
+import {
+  ConversationRepositoryOfflineError,
+  GatewayHttpError,
+  toCanonicalLegacyContent,
+} from '@dash/mc';
+import type {
+  ConversationRef,
+  ConversationStore,
+  McConversation,
+  McConversationListResult,
+  McConversationView,
+  McMessage,
+} from '@dash/mc';
+import type {
+  ConversationMessagePage,
+  ConversationSummary,
+  MobileImage,
+  MobileWsServerFrame,
+} from '@dash/mobile-contract';
 import WebSocket from 'ws';
 import type { McAgentEvent } from '../shared/ipc.js';
+import type { ConversationController } from './conversation-controller.js';
+import type { ResumableChatTransport } from './resumable-chat-transport.js';
 import type { SessionStatus } from './session-status-sync.js';
 
 export interface GatewayConnection {
-  channelPort: number;
+  channelPort?: number;
   chatToken?: string;
+  /**
+   * WebSocket base URL for a remote/relay gateway (for example
+   * "wss://gw.relay.example.com"). When absent, ChatService falls back to the
+   * local channel port.
+   */
+  chatBaseUrl?: string;
+  /** Extra hop-by-hop headers, e.g. the relay pairing credential. */
+  headers?: Record<string, string>;
   /**
    * Base URL of the gateway's management HTTP API (e.g.
    * "http://127.0.0.1:9300"). Used for the replay endpoint that
@@ -43,8 +71,30 @@ interface ReplayedEventLogEntry {
     | { type: 'error'; error: string };
 }
 
+function legacyView(record: McConversation): McConversationView {
+  return {
+    id: record.id,
+    agentId: record.agentId,
+    agentName: record.agentId,
+    title: record.title,
+    revision: 0,
+    status: 'idle',
+    activeTurnId: null,
+    owningIssueId: record.issueId ?? null,
+    projectId: null,
+    lastSeq: 0,
+    lastMessagePreview: '',
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    origin: 'local',
+    offline: false,
+    readOnly: false,
+  };
+}
+
 export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
+  private readonly backgroundTasks = new Set<Promise<void>>();
 
   /**
    * Attached by the main process (where the projects client is in scope)
@@ -60,13 +110,34 @@ export class ChatService {
     private onDone: (conversationId: string) => void,
     private onError: (conversationId: string, error: string) => void,
     private gatewayConnection?: GatewayConnection,
-    private onConversationRenamed?: (conversationId: string, title: string) => void,
+    private onConversationRenamed?: (conversation: ConversationRef, title: string) => void,
+    private conversations?: ConversationController,
+    private resumable?: ResumableChatTransport,
   ) {}
+
+  setResumableTransport(transport: ResumableChatTransport | undefined): void {
+    if (this.resumable !== transport) this.resumable?.closeAll();
+    this.resumable = transport;
+  }
 
   setSessionStatusListener(
     listener: (conversationId: string, status: SessionStatus) => void,
   ): void {
     this.sessionStatusListener = listener;
+  }
+
+  async drainBackgroundTasks(): Promise<void> {
+    while (this.backgroundTasks.size > 0) {
+      await Promise.allSettled([...this.backgroundTasks]);
+    }
+  }
+
+  private runInBackground(task: Promise<void>): void {
+    this.backgroundTasks.add(task);
+    void task.then(
+      () => this.backgroundTasks.delete(task),
+      () => this.backgroundTasks.delete(task),
+    );
   }
 
   /**
@@ -93,17 +164,23 @@ export class ChatService {
     this.sessionStatusListener?.(conversationId, 'error');
   }
 
-  async setConversationIssueId(conversationId: string, issueId: string): Promise<void> {
-    return this.store.setIssueId(conversationId, issueId);
-  }
-
   /** The owning task id recorded for a conversation, if any. */
-  async getConversationIssueId(conversationId: string): Promise<string | undefined> {
-    return (await this.store.get(conversationId))?.issueId;
+  async getConversationIssueId(ref: ConversationRef): Promise<string | undefined> {
+    if (this.conversations) {
+      return (await this.conversations.find(ref))?.owningIssueId ?? undefined;
+    }
+    return (await this.store.get(ref.id))?.issueId;
   }
 
   setGatewayConnection(connection: GatewayConnection): void {
     this.gatewayConnection = connection;
+  }
+
+  private chatWebSocketUrl(gc: GatewayConnection): string {
+    const base = gc.chatBaseUrl
+      ? gc.chatBaseUrl.replace(/\/+$/, '')
+      : `ws://localhost:${gc.channelPort}`;
+    return `${base}/ws/chat${gc.chatToken ? `?token=${encodeURIComponent(gc.chatToken)}` : ''}`;
   }
 
   /** Authenticated JSON fetch against the gateway management API. */
@@ -113,6 +190,7 @@ export class ChatService {
     return fetch(`${gc.managementBaseUrl}${path}`, {
       method: 'POST',
       headers: {
+        ...gc.headers,
         authorization: `Bearer ${gc.managementToken}`,
         'content-type': 'application/json',
       },
@@ -136,12 +214,9 @@ export class ChatService {
    * connection skips everything; a titling failure still creates the task
    * with the placeholder title; a task failure still applies the title.
    */
-  private async titleAndFileTask(
-    agentId: string,
-    conversationId: string,
-    text: string,
-  ): Promise<void> {
+  private async titleAndFileTask(conversation: McConversationView, text: string): Promise<void> {
     if (!this.gatewayConnection?.managementBaseUrl) return;
+    const ref: ConversationRef = { id: conversation.id, origin: conversation.origin };
 
     // 1. Title + project inference (best-effort).
     let title = text.slice(0, 60);
@@ -149,7 +224,7 @@ export class ChatService {
     let titled = false;
     try {
       const res = await this.managementFetch(
-        `/agents/${encodeURIComponent(agentId)}/conversation-title`,
+        `/agents/${encodeURIComponent(conversation.agentId)}/conversation-title`,
         { text },
       );
       if (res?.ok) {
@@ -170,7 +245,7 @@ export class ChatService {
     }
 
     // 2. Create the task and link this conversation to it (best-effort).
-    let issueKey: string | null = null;
+    let createdIssue: { id: string; key: string } | null = null;
     try {
       const res = await this.managementFetch('/issues', {
         title,
@@ -180,13 +255,15 @@ export class ChatService {
       if (res?.ok) {
         const issue = (await res.json()) as { id?: unknown; key?: unknown };
         if (typeof issue.id === 'string' && typeof issue.key === 'string') {
-          issueKey = issue.key;
+          createdIssue = { id: issue.id, key: issue.key };
           await this.managementFetch(`/issues/${encodeURIComponent(issue.id)}/sessions`, {
-            session_id: conversationId,
-            agent_id: agentId,
+            session_id: conversation.id,
+            agent_id: conversation.agentId,
           }).catch(() => null);
-          // Record ownership so session-status sync can find this task.
-          await this.store.setIssueId(conversationId, issue.id).catch(() => {});
+          if (conversation.origin === 'local') {
+            // Record ownership so session-status sync can find this task.
+            await this.store.setIssueId(conversation.id, issue.id).catch(() => {});
+          }
         }
       }
     } catch {
@@ -194,13 +271,63 @@ export class ChatService {
     }
 
     // 3. Apply the final conversation name.
-    const finalTitle = issueKey ? `${issueKey} — ${title}` : titled ? title : null;
+    if (conversation.origin === 'gateway') {
+      try {
+        if (createdIssue) {
+          await this.patchGatewayTaskLinkage(ref, title, createdIssue, projectId);
+        } else if (titled && this.conversations) {
+          const current = await this.conversations.find(ref);
+          if (current?.origin === 'gateway' && current.title === 'New Conversation') {
+            const updated = await this.conversations.rename(ref, current.revision, title);
+            this.onConversationRenamed?.(ref, updated.title);
+          }
+        }
+      } catch {
+        // Keep the canonical gateway title/linkage unchanged.
+      }
+      return;
+    }
+
+    const finalTitle = createdIssue ? `${createdIssue.key} — ${title}` : titled ? title : null;
     if (!finalTitle) return;
     try {
-      await this.store.rename(conversationId, finalTitle);
-      this.onConversationRenamed?.(conversationId, finalTitle);
+      await this.store.rename(conversation.id, finalTitle);
+      this.onConversationRenamed?.(ref, finalTitle);
     } catch {
       // Keep the truncated-first-message placeholder.
+    }
+  }
+
+  private async patchGatewayTaskLinkage(
+    ref: ConversationRef,
+    suggestedTitle: string,
+    issue: { id: string; key: string },
+    projectId: string | null,
+  ): Promise<void> {
+    if (!this.conversations || ref.origin !== 'gateway') return;
+    let current = await this.conversations.find(ref);
+    if (!current || current.origin !== 'gateway') return;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const linkage: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>> = {
+        owningIssueId: issue.id,
+        ...(projectId === null ? {} : { projectId }),
+      };
+      if (current.title === 'New Conversation') {
+        linkage.title = `${issue.key} — ${suggestedTitle}`;
+      }
+      try {
+        current = await this.conversations.patch(ref, current.revision, linkage);
+        this.onConversationRenamed?.(ref, current.title);
+        return;
+      } catch (error) {
+        if (!(error instanceof GatewayHttpError) || error.apiError?.code !== 'revision_conflict') {
+          throw error;
+        }
+        const refreshed = await this.conversations.find(ref);
+        if (!refreshed || refreshed.origin !== 'gateway') return;
+        current = refreshed;
+      }
     }
   }
 
@@ -225,7 +352,7 @@ export class ChatService {
       `/conversations/${encodeURIComponent(conversationId)}/events?sinceSeq=${sinceSeq}`;
     try {
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${gc.managementToken}` },
+        headers: { ...gc.headers, Authorization: `Bearer ${gc.managementToken}` },
       });
       if (!res.ok) return [];
       const body = (await res.json()) as { entries?: ReplayedEventLogEntry[] };
@@ -235,31 +362,137 @@ export class ChatService {
     }
   }
 
-  async createConversation(agentId: string): Promise<McConversation> {
-    return this.store.create(agentId);
+  async createConversation(
+    agentId: string,
+    requestId: string,
+    metadata: Partial<Pick<ConversationSummary, 'title' | 'owningIssueId' | 'projectId'>> = {},
+  ): Promise<McConversationView> {
+    if (this.conversations) return this.conversations.create(agentId, requestId, metadata);
+    const created = await this.store.create(agentId);
+    if (metadata.title !== undefined) await this.store.rename(created.id, metadata.title);
+    if (typeof metadata.owningIssueId === 'string') {
+      await this.store.setIssueId(created.id, metadata.owningIssueId);
+    }
+    const updated = await this.store.get(created.id);
+    if (!updated) throw new Error(`Conversation "${created.id}" not found after create`);
+    return legacyView(updated);
   }
 
-  async listConversations(): Promise<McConversation[]> {
-    return this.store.listAll();
+  listConversations(cursor?: string): Promise<McConversationListResult> {
+    if (this.conversations) return this.conversations.list({ limit: 50, cursor });
+    return this.listLegacyConversations();
   }
 
-  async getMessages(conversationId: string): Promise<McMessage[]> {
-    return this.store.getMessages(conversationId);
+  async getMessages(ref: ConversationRef, before?: string): Promise<ConversationMessagePage> {
+    if (!this.conversations) return this.getLegacyMessagePage(ref.id);
+    const [conversation, page] = await Promise.all([
+      this.conversations.find(ref),
+      this.conversations.messages(ref, { limit: 100, before }),
+    ]);
+    if (
+      ref.origin === 'gateway' &&
+      conversation?.status === 'running' &&
+      conversation.activeTurnId &&
+      this.resumable
+    ) {
+      await this.resumable.subscribe(conversation, conversation.activeTurnId, page.throughSeq);
+    }
+    return page;
   }
 
-  async renameConversation(conversationId: string, title: string): Promise<void> {
-    return this.store.rename(conversationId, title);
+  async renameConversation(
+    ref: ConversationRef,
+    revision: number,
+    title: string,
+  ): Promise<McConversationView> {
+    if (this.conversations) return this.conversations.rename(ref, revision, title);
+    await this.store.rename(ref.id, title);
+    const updated = await this.store.get(ref.id);
+    if (!updated) throw new Error(`Conversation "${ref.id}" not found`);
+    return legacyView(updated);
   }
 
-  async deleteConversation(conversationId: string): Promise<void> {
-    this.cancel(conversationId);
-    return this.store.delete(conversationId);
+  async deleteConversation(ref: ConversationRef, revision: number): Promise<void> {
+    if (this.conversations) {
+      if (ref.origin === 'local' && this.conversations.authority === 'legacy') {
+        this.cancelLegacy(ref.id);
+      }
+      await this.conversations.delete(ref, revision);
+      return;
+    }
+    await this.cancelLegacy(ref.id);
+    return this.store.delete(ref.id);
   }
 
   async sendMessage(
+    ref: ConversationRef,
+    turnId: string,
+    text: string,
+    images?: MobileImage[],
+  ): Promise<Extract<MobileWsServerFrame, { type: 'accepted' }> | undefined> {
+    if (ref.origin === 'local') {
+      if (this.conversations) {
+        const conversation = await this.conversations.find(ref);
+        if (!conversation) throw new Error(`Conversation "${ref.id}" not found`);
+        if (conversation.offline || conversation.readOnly) {
+          throw new ConversationRepositoryOfflineError(
+            'On this Mac conversations are read-only with this gateway',
+          );
+        }
+      }
+      await this.sendLegacyMessage(ref.id, text, images);
+      return undefined;
+    }
+    if (!this.conversations || !this.resumable) {
+      throw new Error('Conversation sync unavailable');
+    }
+    const conversation = await this.conversations.find(ref);
+    if (!conversation || conversation.origin !== 'gateway') {
+      throw new Error(`Conversation "${ref.id}" not found`);
+    }
+    if (conversation.offline || conversation.readOnly) {
+      throw new ConversationRepositoryOfflineError();
+    }
+    const accepted = await this.resumable.send(conversation, turnId, text, images);
+    if (conversation.title === 'New Conversation') {
+      this.runInBackground(this.titleAndFileTask(conversation, text));
+    }
+    return accepted;
+  }
+
+  private async listLegacyConversations(): Promise<McConversationListResult> {
+    const items = (await this.store.listAll()).map(legacyView);
+    return {
+      items,
+      nextCursor: null,
+      authority: 'legacy',
+      gatewayOnline: Boolean(this.gatewayConnection),
+    };
+  }
+
+  private async getLegacyMessagePage(conversationId: string): Promise<ConversationMessagePage> {
+    const records = await this.store.getMessages(conversationId);
+    return {
+      items: records.map((record, index) => ({
+        id: record.id,
+        conversationId,
+        turnId: `legacy:${record.id}`,
+        ordinal: index + 1,
+        role: record.role,
+        status: 'completed',
+        content: toCanonicalLegacyContent(record),
+        createdAt: record.timestamp,
+        updatedAt: record.timestamp,
+      })),
+      nextCursor: null,
+      throughSeq: 0,
+    };
+  }
+
+  private async sendLegacyMessage(
     conversationId: string,
     text: string,
-    images?: { mediaType: string; data: string }[],
+    images?: MobileImage[],
   ): Promise<void> {
     const conversation = await this.store.get(conversationId);
     if (!conversation) throw new Error(`Conversation "${conversationId}" not found`);
@@ -283,15 +516,14 @@ export class ChatService {
     // conversation's task (filed under an inferred project when possible),
     // and link the two — all in the background.
     if (conversation.title === 'New Conversation') {
-      void this.titleAndFileTask(conversation.agentId, conversationId, text);
+      this.runInBackground(this.titleAndFileTask(legacyView(conversation), text));
     }
 
     if (!this.gatewayConnection) throw new Error('Gateway connection not configured');
-    const { channelPort, chatToken } = this.gatewayConnection;
-    const url = `ws://localhost:${channelPort}/ws/chat${chatToken ? `?token=${encodeURIComponent(chatToken)}` : ''}`;
+    const url = this.chatWebSocketUrl(this.gatewayConnection);
     const msgId = randomUUID();
     const agentId = conversation.agentId;
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, { headers: this.gatewayConnection.headers });
     this.activeStreams.set(conversationId, { ws, msgId });
 
     const accumulatedEvents: McAgentEvent[] = [];
@@ -441,7 +673,25 @@ export class ChatService {
     });
   }
 
-  cancel(conversationId: string): void {
+  async cancel(ref: ConversationRef, turnId?: string): Promise<void> {
+    if (ref.origin === 'local') {
+      this.cancelLegacy(ref.id);
+      return;
+    }
+    if (!this.conversations || !this.resumable || !turnId) {
+      throw new Error('Conversation sync unavailable for gateway cancel');
+    }
+    const conversation = await this.conversations.find(ref);
+    if (!conversation || conversation.origin !== 'gateway') {
+      throw new Error(`Conversation "${ref.id}" not found`);
+    }
+    if (conversation.activeTurnId !== turnId) {
+      throw new Error(`Conversation "${ref.id}" does not have active turn "${turnId}"`);
+    }
+    this.resumable.cancel(ref.id, turnId);
+  }
+
+  private cancelLegacy(conversationId: string): void {
     const entry = this.activeStreams.get(conversationId);
     if (entry) {
       this.activeStreams.delete(conversationId);
@@ -478,7 +728,30 @@ export class ChatService {
     }
   }
 
-  answerQuestion(conversationId: string, questionId: string, answer: string): void {
+  async answerQuestion(
+    ref: ConversationRef,
+    turnId: string | undefined,
+    questionId: string,
+    answer: string,
+  ): Promise<void> {
+    if (ref.origin === 'gateway') {
+      if (!this.conversations || !this.resumable || !turnId) {
+        throw new Error('Conversation sync unavailable for gateway answer');
+      }
+      const conversation = await this.conversations.find(ref);
+      if (!conversation || conversation.origin !== 'gateway') {
+        throw new Error(`Conversation "${ref.id}" not found`);
+      }
+      if (conversation.activeTurnId !== turnId) {
+        throw new Error(`Conversation "${ref.id}" does not have active turn "${turnId}"`);
+      }
+      this.resumable.answer(ref.id, turnId, questionId, answer);
+      return;
+    }
+    this.answerLegacyQuestion(ref.id, questionId, answer);
+  }
+
+  private answerLegacyQuestion(conversationId: string, questionId: string, answer: string): void {
     const entry = this.activeStreams.get(conversationId);
     if (!entry) {
       throw new Error(`No active stream for conversation "${conversationId}"`);
@@ -512,6 +785,10 @@ export class ChatService {
    * management endpoint details are missing.
    */
   async reconcileAllConversations(): Promise<void> {
+    return this.reconcileLegacyConversations();
+  }
+
+  private async reconcileLegacyConversations(): Promise<void> {
     if (!this.gatewayConnection?.managementBaseUrl || !this.gatewayConnection.managementToken) {
       return;
     }

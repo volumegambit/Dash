@@ -38,14 +38,18 @@ const ATTENTION: ReadonlySet<CompanionStatus> = new Set<CompanionStatus>([
 
 export function attentionIds(sessions: CompanionSession[]): Set<string> {
   const ids = new Set<string>();
-  for (const s of sessions) if (ATTENTION.has(s.status)) ids.add(s.conversationId);
+  for (const session of sessions) {
+    if (ATTENTION.has(session.status)) ids.add(session.conversationKey);
+  }
   return ids;
 }
 
 export function newAttentionIds(prev: Set<string>, sessions: CompanionSession[]): string[] {
   const fresh: string[] = [];
-  for (const s of sessions) {
-    if (ATTENTION.has(s.status) && !prev.has(s.conversationId)) fresh.push(s.conversationId);
+  for (const session of sessions) {
+    if (ATTENTION.has(session.status) && !prev.has(session.conversationKey)) {
+      fresh.push(session.conversationKey);
+    }
   }
   return fresh;
 }

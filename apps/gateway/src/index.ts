@@ -1,4 +1,6 @@
 import type { Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { networkInterfaces } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
@@ -14,6 +16,7 @@ import { createConsoleLogger } from '@dash/logging';
 import { mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
+import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
 import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
@@ -27,15 +30,25 @@ import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
-import { parseFlags, resolveSwarmConfig, swarmOverridesFromEnv } from './config.js';
+import {
+  parseFlags,
+  resolveSwarmConfig,
+  resolveWebOrigins,
+  swarmOverridesFromEnv,
+  validateGatewayStartupOptions,
+} from './config.js';
 import { createControlPlaneClient } from './control-plane-client.js';
+import { createConversationAutoTitleService } from './conversation-auto-title.js';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
+import { generateConversationTitle } from './conversation-title.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
-import { SqliteEventLogStore } from './event-log-store-sqlite.js';
-import type { EventLogStore } from './event-log-store.js';
-import { loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
+import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
+import { createLanMobileApp } from './lan-mobile-app.js';
+import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { migrateIncludeBundled } from './migrate-include-bundled.js';
@@ -49,15 +62,18 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
+import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
+import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
+  validateGatewayStartupOptions(flags);
 
   const managementPort = flags.managementPort ?? 9300;
   const channelPort = flags.channelPort ?? 9200;
+  const lanPort = flags.lanPort ?? 9400;
   const startedAt = new Date().toISOString();
 
   // One structured logger for the whole gateway process. Text format for
@@ -86,11 +102,33 @@ async function main() {
   const { mkdir } = await import('node:fs/promises');
   await mkdir(dataDir, { recursive: true });
 
+  // A public-LAN listener is safe only when both route namespaces have
+  // explicit credentials. Mission Control always supplies them; tokenless
+  // standalone gateway launches keep their historical loopback-only shape.
+  const hasLanCredentials = Boolean(flags.token?.trim() && flags.chatToken?.trim());
+  const lanAddresses = Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => !entry.internal)
+    .map((entry) => entry.address);
+  const lanTls = hasLanCredentials
+    ? await loadOrCreateLanTlsIdentity(dataDir, lanAddresses)
+    : undefined;
+
   // Gateway cryptographic identity (always on, transport-independent). Loads or
   // generates an Ed25519 keypair (private key 0600 at <dataDir>/relay-gateway-key)
   // and signs the short-lived holder-of-key assertions used by relay dial-in and
   // control-plane token refresh.
+  const gatewayId = await loadOrCreateGatewayId(flags.gatewayId, dataDir);
   const relayIdentity = await loadOrCreateGatewayIdentity(dataDir);
+  // A relay-enrolled gateway allows the hosted web client at `app.<relay zone>`
+  // by default; DASH_WEB_ORIGINS overrides it (and an empty value opts out).
+  // Resolved here, after `gatewayId`, so the gateway's own label is stripped
+  // from the relay hostname even when it was derived rather than passed in.
+  const webOrigins = resolveWebOrigins({ relayUrl: flags.relayUrl, gatewayId });
+  const mobileIdentity: GatewayIdentity = {
+    gatewayId,
+    publicKey: relayIdentity.publicKeyB64,
+  };
 
   // Initialize credential store
   const credentialStore = new GatewayCredentialStore(dataDir);
@@ -118,7 +156,8 @@ async function main() {
   // endpoint + GC on agent deletion). Kept behind the `EventLogStore`
   // interface so future backends (LMDB, Postgres, etc.) only need a
   // new adapter class in this one spot.
-  const eventLogStore: EventLogStore = new SqliteEventLogStore({ dataDir });
+  const conversationService = new SqliteConversationService({ dataDir });
+  const eventLogStore = conversationService.eventLog;
 
   // Projects DB — durable task/issue records. Opened once and shared by the
   // agent tools (via createBackend) and the management API (routes + WS).
@@ -392,11 +431,18 @@ async function main() {
   // event log (so MC's replay terminalizes instead of spinning forever) and
   // restore the interrupted runs into the panel history. Runs before any
   // server accepts traffic, so no live turn can exist yet.
-  recoverInterruptedSwarmTurns({
+  const { conversations: conversationRecovery } = recoverGatewayTurns({
     eventLog: eventLogStore,
+    conversations: conversationService,
     restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
     log: (message) => logger.info(message),
   });
+  if (conversationRecovery.conversationsInterrupted > 0) {
+    logger.info(
+      `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +
+        `appended ${conversationRecovery.terminalsAppended} terminal(s)`,
+    );
+  }
 
   const agents = createAgentChatCoordinator({
     registry,
@@ -596,6 +642,40 @@ async function main() {
     },
   });
 
+  const emitConversationChanged = (summary: ConversationSummary): void => {
+    eventBus.emit({
+      type: 'conversation:changed',
+      conversationId: summary.id,
+      revision: summary.revision,
+    });
+  };
+  const conversationAutoTitle = createConversationAutoTitleService({
+    conversations: conversationService,
+    async generateTitle({ agentId, text }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      const { title } = await generateConversationTitle({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        text,
+      });
+      return title;
+    },
+    onChanged: emitConversationChanged,
+    logger,
+  });
+  const resumableChatHub = createResumableChatHub({
+    conversations: conversationService,
+    agents,
+    autoTitle: conversationAutoTitle,
+    swarmCoordinator,
+    onChanged: emitConversationChanged,
+  });
+
   // --- Plugin hot-reload trigger ---
   //
   // The management routes cannot reassign this entrypoint's `wiringState`
@@ -740,6 +820,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    identity: mobileIdentity,
     // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload
@@ -749,17 +830,26 @@ async function main() {
     reloadPlugins,
     pluginsDir,
     dataDir,
-    relayIdentity: { publicKeyB64: relayIdentity.publicKeyB64 },
     // Same teardown as the SIGTERM/SIGINT handlers. `shutdown` is declared
     // after serve() below (it closes over the servers); this closure only
     // runs at request time, long after it exists.
     onShutdown: () => shutdown('POST /lifecycle/shutdown'),
-    eventLogStore,
+    conversationService,
+    resumableChatHub,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
     swarmCoordinator,
+    // Phones receive the chat capability, never the administrative bearer.
+    // The management app accepts it only under `/mobile/v1`.
+    mobileToken: flags.chatToken,
     token: flags.token,
+    // Browser origins for `/mobile/v1`. Configured on the management app (not
+    // only on the LAN app below) because the relay replays phone traffic
+    // directly against THIS server — a relayed preflight never passes through
+    // `createLanMobileApp`, so this is the CORS answer a web client gets.
+    webOrigins,
+    lanTlsFingerprint: lanTls?.fingerprint,
     startedAt,
     eventBus,
     logger,
@@ -794,19 +884,32 @@ async function main() {
 
   injectMgmtWs(managementServer);
 
+  // ONE ws-ticket store for the process, created before any listener and shared
+  // by every `/ws/chat` mount below. Browsers can't set headers on a WebSocket
+  // upgrade, so they mint a single-use ticket over HTTP and present it in the
+  // query string; the relay forwards `/ws/chat` to the CHANNEL listener, so
+  // that mount needs this store just as much as the LAN one does — and it must
+  // exist whether or not LAN TLS is configured.
+  const wsTickets = mountWsTicketRoute(managementApp);
+
   // Channel server (HTTP + WebSocket for /ws/chat)
   const channelApp = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app: channelApp });
 
-  // Verbose WS logging in dev mode (opt in via --verbose OR NODE_ENV !== 'production')
-  const verboseWs = flags.verbose || process.env.NODE_ENV !== 'production';
+  // Payload diagnostics are explicit opt-in. Mission Control persists gateway
+  // stdout/stderr, so an inherited development environment must never enable
+  // chat-frame logging implicitly.
+  const verboseWs = flags.verbose === true;
   mountChatWs(channelApp, {
     agents,
+    resumableChatHub,
     token: flags.chatToken,
     upgradeWebSocket,
     eventLogStore,
     verbose: verboseWs,
     swarmCoordinator,
+    // This is the listener the relay forwards browser `/ws/chat` traffic to.
+    wsTickets,
   });
   if (verboseWs) {
     console.log('[gateway] chat-ws verbose logging enabled');
@@ -820,8 +923,37 @@ async function main() {
 
   injectWebSocket(channelServer);
 
+  // One pinned HTTPS/WSS listener is the complete LAN-facing surface. It
+  // forwards only `/mobile/v1` into the canonical management app and mounts
+  // only `/ws/chat`; all administrative routes remain bound to loopback.
+  let lanServer: Server | undefined;
+  if (lanTls) {
+    const lanApp = createLanMobileApp(managementApp);
+    const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
+      createNodeWebSocket({ app: lanApp });
+    mountChatWs(lanApp, {
+      agents,
+      resumableChatHub,
+      token: flags.chatToken,
+      upgradeWebSocket: lanUpgradeWebSocket,
+      eventLogStore,
+      verbose: verboseWs,
+      swarmCoordinator,
+      wsTickets,
+    });
+    lanServer = serve({
+      fetch: lanApp.fetch,
+      port: lanPort,
+      hostname: '0.0.0.0',
+      createServer: createHttpsServer,
+      serverOptions: { key: lanTls.privateKey, cert: lanTls.certificate },
+    }) as Server;
+    injectLanWebSocket(lanServer);
+  }
+
   console.log(`Gateway management API listening on port ${managementPort}`);
   console.log(`Gateway channel server listening on port ${channelPort}`);
+  if (lanServer) console.log(`Gateway pinned mobile LAN server listening on port ${lanPort}`);
 
   // Relay mode: when --relay-url is set, dial OUT to the relay and replay phone
   // traffic against our own loopback servers. With --control-plane-url present
@@ -830,8 +962,6 @@ async function main() {
   let relayClient: RelayClient | undefined;
   let dialTokenManager: ReturnType<typeof createDialTokenManager> | undefined;
   if (flags.relayUrl) {
-    const gatewayId = await resolveGatewayId(flags.gatewayId, dataDir);
-
     if (flags.controlPlaneUrl) {
       // Autonomous mode: the manager refreshes via the control plane (holder-of-
       // key assertion) on boot, proactively before expiry, and reactively on a
@@ -913,6 +1043,8 @@ async function main() {
     await safeStep('relayClient.stop', () => relayClient?.stop());
     await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
     await safeStep('mcpManager.stop', () => mcpManager.stop());
+    await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
+    await safeStep('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.
@@ -921,40 +1053,18 @@ async function main() {
     await safeStep('gateway.stop', () => gateway.stop());
     await safeStep('managementServer.close', () => managementServer.close());
     await safeStep('channelServer.close', () => channelServer.close());
+    await safeStep('lanServer.close', () => lanServer?.close());
     // Close the event-log DB last so any in-flight appends from the
     // agents/gateway shutdown path land cleanly. WAL checkpoints are
     // flushed on close, so the next gateway start sees a consistent
     // database.
-    await safeStep('eventLogStore.close', () => eventLogStore.close());
+    await safeStep('conversationService.close', () => conversationService.close());
     await safeStep('projectsDb.close', () => projectsDb.db.close());
     process.exit(0);
   };
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-}
-
-/**
- * Resolve a stable per-gateway id for relay routing. An explicit --gateway-id
- * wins (the MC supervisor passes one cached in the keychain). Otherwise persist
- * a generated id under the data dir so it survives restarts: the relay routes by
- * `<gatewayId>` subdomain and the phone's pairing payload encodes it, so it must
- * not change between launches.
- */
-async function resolveGatewayId(explicit: string | undefined, dataDir: string): Promise<string> {
-  if (explicit) return explicit;
-  const { readFile, writeFile } = await import('node:fs/promises');
-  const idPath = resolve(dataDir, 'relay-gateway-id');
-  try {
-    const existing = (await readFile(idPath, 'utf8')).trim();
-    if (existing) return existing;
-  } catch {
-    // Not created yet — fall through and generate one.
-  }
-  const { randomUUID } = await import('node:crypto');
-  const id = randomUUID();
-  await writeFile(idPath, id, { mode: 0o600 });
-  return id;
 }
 
 main().catch((err) => {

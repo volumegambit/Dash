@@ -1,12 +1,27 @@
+import type { MobileWsServerFrame } from '@dash/mobile-contract';
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  ChatIpcResult,
   CompanionAgentStatus,
   CompanionSelection,
+  ConversationInvalidation,
   McAgentEvent,
   McpStatusChange,
   MissionControlAPI,
 } from '../shared/ipc.js';
+import { unwrapChatIpcResult } from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
+
+type ApiResult<K extends keyof MissionControlAPI> = MissionControlAPI[K] extends (
+  ...args: never[]
+) => Promise<infer T>
+  ? T
+  : never;
+
+async function invokeChat<T>(channel: string, ...args: unknown[]): Promise<T> {
+  const result = (await ipcRenderer.invoke(channel, ...args)) as ChatIpcResult<T>;
+  return unwrapChatIpcResult(result);
+}
 
 const api: MissionControlAPI = {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -51,20 +66,52 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('claude:completeOAuth', keyName, code, state, verifier),
 
   // Chat
-  chatCreateConversation: (agentId) => ipcRenderer.invoke('chat:createConversation', agentId),
-  chatListConversations: () => ipcRenderer.invoke('chat:listConversations'),
-  chatGetMessages: (conversationId) => ipcRenderer.invoke('chat:getMessages', conversationId),
-  chatSend: (conversationId, text, images) =>
-    ipcRenderer.invoke('chat:sendMessage', conversationId, text, images),
-  chatCancel: (conversationId) => ipcRenderer.send('chat:cancel', conversationId),
-  chatRenameConversation: (conversationId, title) =>
-    ipcRenderer.invoke('chat:renameConversation', conversationId, title),
-  chatDeleteConversation: (conversationId) =>
-    ipcRenderer.invoke('chat:deleteConversation', conversationId),
-  chatAnswerQuestion: (conversationId, questionId, answer) =>
-    ipcRenderer.send('chat:answer-question', conversationId, questionId, answer),
+  chatCreateConversation: (agentId, requestId) =>
+    invokeChat<ApiResult<'chatCreateConversation'>>('chat:createConversation', agentId, requestId),
+  chatListConversations: (cursor) =>
+    invokeChat<ApiResult<'chatListConversations'>>('chat:listConversations', cursor),
+  chatGetConversation: (conversation) =>
+    invokeChat<ApiResult<'chatGetConversation'>>('chat:getConversation', conversation),
+  chatGetMessages: (conversation, before) =>
+    invokeChat<ApiResult<'chatGetMessages'>>('chat:getMessages', conversation, before),
+  chatSend: (conversation, turnId, text, images) =>
+    invokeChat<ApiResult<'chatSend'>>('chat:sendMessage', conversation, turnId, text, images),
+  chatCancel: (conversation, turnId) => ipcRenderer.send('chat:cancel', conversation, turnId),
+  chatRenameConversation: (conversation, revision, title) =>
+    invokeChat<ApiResult<'chatRenameConversation'>>(
+      'chat:renameConversation',
+      conversation,
+      revision,
+      title,
+    ),
+  chatDeleteConversation: (conversation, revision) =>
+    invokeChat<ApiResult<'chatDeleteConversation'>>(
+      'chat:deleteConversation',
+      conversation,
+      revision,
+    ),
+  chatAnswerQuestion: (conversation, turnId, questionId, answer) =>
+    ipcRenderer.send('chat:answer-question', conversation, turnId, questionId, answer),
 
   // Events
+  onChatFrame: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, frame: MobileWsServerFrame) =>
+      callback(frame);
+    ipcRenderer.on('chat:frame', listener);
+    return () => ipcRenderer.removeListener('chat:frame', listener);
+  },
+  onChatConnectionError: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, issue: Parameters<typeof callback>[0]) =>
+      callback(issue);
+    ipcRenderer.on('chat:connectionError', listener);
+    return () => ipcRenderer.removeListener('chat:connectionError', listener);
+  },
+  onChatConversationInvalidated: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: ConversationInvalidation) =>
+      callback(event);
+    ipcRenderer.on('chat:conversationInvalidated', listener);
+    return () => ipcRenderer.removeListener('chat:conversationInvalidated', listener);
+  },
   onAgentEvent: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
@@ -169,6 +216,11 @@ const api: MissionControlAPI = {
     ipcRenderer.on('gateway:status', listener);
     return () => ipcRenderer.removeListener('gateway:status', listener);
   },
+  gatewayConnectionGet: () => ipcRenderer.invoke('gatewayConnection:get'),
+  gatewayConnectionUseLocal: () => ipcRenderer.invoke('gatewayConnection:useLocal'),
+  gatewayConnectionTest: (input) => ipcRenderer.invoke('gatewayConnection:test', input),
+  gatewayConnectionSaveRelay: (input) => ipcRenderer.invoke('gatewayConnection:saveRelay', input),
+  gatewayDeployVps: (input) => ipcRenderer.invoke('gateway:deployVps', input),
 
   // Gateway events (SSE)
   onGatewayEvent: (callback: (eventType: string, data: string) => void): (() => void) => {

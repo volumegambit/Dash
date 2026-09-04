@@ -35,14 +35,21 @@ export class ManagementClient {
   constructor(
     private baseUrl: string,
     private token: string,
+    private extraHeaders: Record<string, string> = {},
   ) {}
+
+  private headers(contentType = false): Record<string, string> {
+    return {
+      ...this.extraHeaders,
+      Authorization: `Bearer ${this.token}`,
+      ...(contentType ? { 'Content-Type': 'application/json' } : {}),
+    };
+  }
 
   private async request<T>(method: string, path: string): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-      },
+      headers: this.headers(),
     });
 
     if (!response.ok) {
@@ -56,10 +63,7 @@ export class ManagementClient {
   private async requestWithBody<T>(method: string, path: string, body: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-      },
+      headers: this.headers(true),
       body: JSON.stringify(body),
     });
 
@@ -74,7 +78,7 @@ export class ManagementClient {
   private async requestDelete(path: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${this.token}` },
+      headers: this.headers(),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -204,7 +208,7 @@ export class ManagementClient {
     if (opts?.level) params.set('level', opts.level);
     const query = params.toString();
     const response = await fetch(`${this.baseUrl}/logs/stream${query ? `?${query}` : ''}`, {
-      headers: { Authorization: `Bearer ${this.token}` },
+      headers: this.headers(),
       signal,
     });
 

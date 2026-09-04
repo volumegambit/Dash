@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { MobileCapability } from '@dash/mobile-contract';
 
 export interface AppSettings {
   defaultModel?: string;
@@ -8,6 +9,24 @@ export interface AppSettings {
   setupCompletedAt?: string;
   /** Persisted top-left position of the always-on-top companion widget window. */
   companionWindowPos?: { x: number; y: number };
+  /**
+   * Non-secret gateway connection profile for Mission Control. Secrets for
+   * remote profiles live in the OS keychain.
+   */
+  gatewayConnection?: GatewayConnectionSettings;
+}
+
+export type GatewayConnectionMode = 'local' | 'relay' | 'hosted';
+
+export interface GatewayConnectionSettings {
+  mode: GatewayConnectionMode;
+  name?: string;
+  managementBaseUrl?: string;
+  chatBaseUrl?: string;
+  updatedAt?: string;
+  gatewayId?: string;
+  apiVersion?: number;
+  capabilities?: MobileCapability[];
 }
 
 export class SettingsStore {

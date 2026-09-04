@@ -35,8 +35,9 @@ describe('RelaySettings', () => {
     });
     mockApi.subdomainCheck.mockResolvedValue(true);
     mockApi.gatewayEnroll.mockResolvedValue(undefined);
+    const onPairingStateChanged = vi.fn();
     const user = userEvent.setup();
-    render(<RelaySettings />);
+    render(<RelaySettings onPairingStateChanged={onPairingStateChanged} />);
 
     const input = await screen.findByTestId('subdomain-input');
     await user.type(input, 'alice-mbp');
@@ -45,6 +46,7 @@ describe('RelaySettings', () => {
 
     await user.click(screen.getByRole('button', { name: /claim & enable/i }));
     await waitFor(() => expect(mockApi.gatewayEnroll).toHaveBeenCalledWith('alice-mbp'));
+    expect(onPairingStateChanged).toHaveBeenCalledWith({ type: 'enrolled' });
   });
 
   it('rejects a DNS-unsafe label client-side without calling the control plane', async () => {
@@ -83,11 +85,16 @@ describe('RelaySettings', () => {
     });
     mockApi.devicesList.mockResolvedValue([{ id: 'dev-1', label: 'Pixel 9' }]);
     mockApi.devicesRevoke.mockResolvedValue(undefined);
+    const onPairingStateChanged = vi.fn();
     const user = userEvent.setup();
-    render(<RelaySettings />);
+    render(<RelaySettings onPairingStateChanged={onPairingStateChanged} />);
 
     await user.click(await screen.findByRole('button', { name: /revoke pixel 9/i }));
     await waitFor(() => expect(mockApi.devicesRevoke).toHaveBeenCalledWith('dev-1'));
+    expect(onPairingStateChanged).toHaveBeenCalledWith({
+      type: 'revoked',
+      deviceId: 'dev-1',
+    });
   });
 
   it('surfaces a sign-in error from the main process', async () => {

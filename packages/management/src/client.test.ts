@@ -80,6 +80,31 @@ describe('ManagementClient', () => {
     expect(res.status).toBe('healthy');
   });
 
+  it('sends extra headers for relay-fronted gateways', async () => {
+    const seenHeaders: Array<string | undefined> = [];
+    const relayServer = createServer((req, res) => {
+      seenHeaders.push(req.headers['x-dash-relay-credential'] as string | undefined);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'healthy', uptime: 1, version: 'test' }));
+    });
+    await new Promise<void>((resolve) => relayServer.listen(0, resolve));
+    const addr = relayServer.address();
+    const relayPort = typeof addr === 'object' && addr ? addr.port : 0;
+    const relayClient = new ManagementClient(`http://localhost:${relayPort}`, TEST_TOKEN, {
+      'x-dash-relay-credential': 'relay-cred',
+    });
+
+    try {
+      await relayClient.health();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        relayServer.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+
+    expect(seenHeaders).toEqual(['relay-cred']);
+  });
+
   it('throws on wrong auth token for protected endpoints', async () => {
     const badClient = new ManagementClient(`http://localhost:${port}`, 'wrong-token');
     await expect(badClient.info()).rejects.toThrow('Management API error 401');

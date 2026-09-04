@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.dash.connection.ConnectionProfile
 import app.dash.connection.PairingPayload
+import app.dash.connection.TlsCertificatePin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,17 +36,44 @@ class PairingViewModel(
         )
     }
 
-    fun submitManual(host: String, mgmtToken: String, chatToken: String, label: String? = null) {
-        if (host.isBlank() || mgmtToken.isBlank() || chatToken.isBlank()) {
-            _state.value = PairingUiState.Error("Host and both tokens are required")
+    fun submitManual(
+        host: String,
+        mobileToken: String,
+        tlsCertificateSha256: String,
+        label: String? = null,
+    ) {
+        val normalizedHost = host.trim()
+        if (
+            normalizedHost.isBlank() ||
+            mobileToken.isBlank() ||
+            tlsCertificateSha256.isBlank()
+        ) {
+            _state.value = PairingUiState.Error(
+                "Host, mobile token, and the certificate SHA-256 are required",
+            )
+            return
+        }
+        if (!PairingPayload.isValidHost(normalizedHost)) {
+            _state.value = PairingUiState.Error("Enter a host or IP without a URL scheme or path")
+            return
+        }
+        val normalizedCertificateSha256 = TlsCertificatePin.normalize(tlsCertificateSha256)
+        if (normalizedCertificateSha256 == null) {
+            _state.value = PairingUiState.Error(
+                "Certificate SHA-256 must be 64 hexadecimal characters",
+            )
             return
         }
         pairAndSave(
             ConnectionProfile(
-                label = label?.takeIf { it.isNotBlank() } ?: host.trim(),
-                host = host.trim(),
-                mgmtToken = mgmtToken.trim(),
-                chatToken = chatToken.trim(),
+                label = label?.takeIf { it.isNotBlank() } ?: normalizedHost,
+                host = normalizedHost,
+                mgmtPort = ConnectionProfile.DEFAULT_PINNED_LAN_PORT,
+                chatPort = ConnectionProfile.DEFAULT_PINNED_LAN_PORT,
+                mgmtToken = mobileToken.trim(),
+                chatToken = mobileToken.trim(),
+                secure = true,
+                tlsCertificateSha256 = normalizedCertificateSha256,
             ),
         )
     }

@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@dash/agent';
+import type { MobileAgentEvent } from '@dash/mobile-contract';
 import type { RunSnapshot } from '@dash/swarm';
-import type { EventLogStore } from './event-log-store.js';
+import type { EventLogPayload, EventLogStore } from './event-log-store.js';
 
 /**
  * Boot-time repair of swarm turns a previous gateway process died in the
@@ -35,12 +36,35 @@ import type { EventLogStore } from './event-log-store.js';
  * next boot's `listInterrupted` no longer returns it.
  */
 
-type WorkerSpawnedEvent = Extract<AgentEvent, { type: 'worker_spawned' }>;
-type WorkerDoneEvent = Extract<AgentEvent, { type: 'worker_done' }>;
+type WorkerSpawnedEvent = Extract<AgentEvent, { type: 'worker_spawned' }> & MobileAgentEvent;
+type WorkerDoneEvent = Extract<AgentEvent, { type: 'worker_done' }> & MobileAgentEvent;
+
+function isWorkerSpawnedEvent(event: MobileAgentEvent): event is WorkerSpawnedEvent {
+  return (
+    event.type === 'worker_spawned' &&
+    typeof event.workerId === 'string' &&
+    typeof event.runId === 'string' &&
+    typeof event.role === 'string' &&
+    typeof event.brief === 'string' &&
+    typeof event.model === 'string'
+  );
+}
+
+function isWorkerDoneEvent(event: MobileAgentEvent): event is WorkerDoneEvent {
+  return (
+    event.type === 'worker_done' &&
+    typeof event.workerId === 'string' &&
+    typeof event.runId === 'string' &&
+    typeof event.role === 'string' &&
+    (event.status === 'done' || event.status === 'failed' || event.status === 'cancelled') &&
+    typeof event.report === 'string'
+  );
+}
 
 const CANCELLED_WORKER_REPORT = 'Gateway restarted while this worker was running.';
 const TURN_ERROR =
   'Gateway restarted while this swarm run was in progress — remaining workers were cancelled.';
+const TURN_ERROR_PAYLOAD = { type: 'error', error: TURN_ERROR } satisfies EventLogPayload;
 
 export interface SwarmLogRecoveryOptions {
   eventLog: EventLogStore;
@@ -75,9 +99,9 @@ export function recoverInterruptedSwarmTurns(
       for (const entry of tail) {
         if (entry.payload.type !== 'event') continue;
         const event = entry.payload.event;
-        if (event.type === 'worker_spawned') {
+        if (isWorkerSpawnedEvent(event)) {
           spawns.set(event.workerId, { event, timestamp: entry.timestamp });
-        } else if (event.type === 'worker_done') {
+        } else if (isWorkerDoneEvent(event)) {
           terminals.set(event.workerId, event);
         }
       }
@@ -107,10 +131,7 @@ export function recoverInterruptedSwarmTurns(
 
       // 2) One terminal stream marker: the turn ended in an error, not
       //    silence. MC's reconcile fires its error path off this.
-      eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, {
-        type: 'error',
-        error: TURN_ERROR,
-      });
+      eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, TURN_ERROR_PAYLOAD);
 
       // 3) Rebuild the run for the panel. Timestamps come from the log
       //    itself: the run started at its first spawn and can't have

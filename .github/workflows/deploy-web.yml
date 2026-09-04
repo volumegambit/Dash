@@ -1,0 +1,62 @@
+name: Deploy Web App
+
+# Deploys apps/web (Vite SPA) to Cloudflare Pages.
+# Production deploy runs on push to main when web-app files change.
+#
+# Required GitHub config (Settings -> Secrets and variables -> Actions):
+#   secret   CLOUDFLARE_API_TOKEN        - token with "Account / Cloudflare Pages / Edit"
+#   secret   CLOUDFLARE_ACCOUNT_ID       - Cloudflare account id
+#   variable CF_PAGES_PROJECT_WEB        - the Cloudflare Pages project name for apps/web
+#   variable WEB_CLERK_PUBLISHABLE_KEY   - production Clerk publishable key (pk_live_...)
+#   variable WEB_CONTROL_PLANE_URL       - hosted control-plane origin (https://...)
+#   variable WEB_RELAY_DOMAIN            - relay zone the gateways are served under
+#
+# NOTE: the app's Content-Security-Policy (apps/web/index.html) pins Clerk +
+# the relay/control-plane origins at build time via VITE_* interpolation, so
+# these variables must be the real production values before the built bundle
+# will connect to anything. A missing VITE_CONTROL_PLANE_URL fails closed (the
+# app shows a configuration-error screen rather than calling a placeholder host).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build SPA
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.WEB_CLERK_PUBLISHABLE_KEY }}
+          VITE_CONTROL_PLANE_URL: ${{ vars.WEB_CONTROL_PLANE_URL }}
+          VITE_RELAY_DOMAIN: ${{ vars.WEB_RELAY_DOMAIN }}
+        run: npm run web:build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy apps/web/dist
+            --project-name=${{ vars.CF_PAGES_PROJECT_WEB }}
+            --branch=main

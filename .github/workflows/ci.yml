@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, codex/mc-vps-gateway-relay]
 
 jobs:
   ci:
@@ -22,6 +22,8 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run mobile:contract-check
+
       - run: npm run lint
 
       # Hard-fails the build at 60 days since the oldest catalog `reviewedAt`.
@@ -31,4 +33,3 @@ jobs:
       - run: npm run models:check
 
       - run: npm test
-

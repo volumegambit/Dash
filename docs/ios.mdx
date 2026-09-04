@@ -1,0 +1,152 @@
+---
+title: Dash for iPhone and iPad
+description: Sign in to reach your gateway, share conversations with Mission Control, and manage agents from iOS.
+---
+
+Dash for iOS is a native companion for your gateway. It lets you continue the same conversations
+you see in Mission Control and manage agents without running an agent on the phone itself.
+
+<Note>
+  Your gateway remains the source of truth. The app keeps a local cache for reading and drafting
+  while offline, then reconciles with the gateway when the connection returns.
+</Note>
+
+## Sign in
+
+Dash for iOS connects to your gateway through your Dash account, not a pairing code.
+
+<Steps>
+  <Step title="Enroll your gateway in Mission Control">
+    Open **Settings → Devices → Remote access**, sign in to Dash, and create a gateway if you
+    haven't already. Enrolling here is also what makes the gateway visible to the app.
+  </Step>
+  <Step title="Sign in on iOS">
+    Open Dash and tap **Sign In**. A browser opens to the Dash sign-in page — sign in with the
+    same account you used in Mission Control, then the browser hands you back to the app.
+  </Step>
+  <Step title="Choose your gateway">
+    Dash lists every gateway enrolled in your account, by its address. Tap one to connect. The
+    Conversations tab opens once the gateway accepts the connection.
+  </Step>
+</Steps>
+
+Dash for iOS always connects through Dash's hosted relay, so it works the same way at home, at
+the office, or on cellular — there's no local-network step and no QR code to scan. The gateway
+picker's toolbar also has **Sign Out**, which disconnects this device and returns to Sign In.
+
+If something goes wrong, the gateway picker tells you exactly what:
+
+- **Couldn't reach your Dash account service. Check your connection and try again.** — check your connection and tap **Retry**.
+- **No gateways linked to your account yet. Open Mission Control → Settings → Devices → Remote access to enroll this machine.** — open Remote access in Mission Control and enroll this machine.
+- **This gateway needs to be re-enrolled from Mission Control before app access works.** — its Remote access setup predates this app's sign-in support; open Mission Control on that computer once and it updates the gateway's app access automatically.
+
+## Approve a device
+
+As soon as you sign in, this iPhone or iPad becomes a signer for your account
+automatically — there's nothing to turn on. From then on, whenever a new browser
+tries to reach one of your gateways for the first time, it waits for one of your
+signer devices to approve it instead of connecting right away.
+
+To approve one:
+
+<Steps>
+  <Step title="Get the code">
+    On the browser asking for access — the web client — a QR code appears under
+    **Approve this device**.
+  </Step>
+  <Step title="Scan it">
+    On this phone, open **Settings** and tap **Approve a device**, then scan that code
+    with the camera.
+  </Step>
+  <Step title="Confirm">
+    Dash shows `Allow "<device>" to access <gateway>?`. Tap **Approve** to let it in,
+    or **Deny** to turn it away.
+  </Step>
+</Steps>
+
+If you take too long to scan or confirm, the code expires and Dash shows
+**This code has expired. Ask the device to try again.** — go back to the browser
+that's waiting and have it request a fresh one.
+
+Accounts with no signer device yet skip this entirely: a new browser sign-in
+connects immediately, just like before. The moment your first Dash for iOS device
+signs in, every new browser sign-in after that needs approval from one of your
+signer devices.
+
+## Use shared conversations
+
+The **Conversations** tab shows the gateway's canonical conversation list. Changes made here also
+appear in Mission Control.
+
+- Start a conversation by choosing an agent.
+- Open existing and archived conversations, including messages created on another paired device.
+- Rename or delete an idle conversation from its context menu.
+- Pull to refresh when you want to check the gateway immediately.
+
+When a conversation changed elsewhere before your edit completed, Dash refreshes the canonical
+version and asks you to retry instead of overwriting it.
+
+## Chat from your phone
+
+Open a conversation, enter a message, and tap **Send**. Dash shows thinking, tool activity, worker
+status, questions, and response text as the gateway streams them. You can attach supported images,
+answer an agent question, or cancel the active turn.
+
+Only one client owns a running turn at a time. If Mission Control or another phone started the turn,
+the composer shows **Active on another device** and stays read-only until that turn finishes. If the
+connection drops during your own turn, Dash keeps the partial response visible and resumes from the
+last durable event after reconnecting. If the connection fails before Dash can confirm that a new
+message was admitted, the app checks the gateway's canonical conversation before doing anything
+else. An ambiguous message stays saved across app restarts and is never resent automatically. When
+the conversation still exists, **Retry** reuses the exact original request ID so the gateway can
+resume or deduplicate the same turn instead of creating a second one.
+
+If another client deleted that conversation, Dash never recreates or resends the saved message.
+It appears in **Needs Recovery** at the top of Conversations. Open it to copy the exact text and
+preview or share its readable attachments, then discard it with confirmation when you no longer
+need it. Dash uses the same manual recovery flow if it finds unreadable saved attachment data. The
+same flow also protects an earlier rejected message if a newer draft was saved separately: the newer
+draft and earlier message are both preserved in one recovery item. You can copy either text and
+preview or share readable attachments from either copy. If the conversation is still available,
+discarding the earlier message preserves the newer draft in the composer. If the conversation is
+unavailable, the confirmation makes clear that discarding removes both copies. Dash checks again
+before deleting anything; if availability changed while the confirmation was open, it stops and
+asks you to review and confirm the current outcome.
+The affected chat stays read-only until you explicitly discard the recovery item. Corrupt
+attachment data cannot be previewed or shared, but the exact text for that copy remains available.
+Recovery items survive app restarts and never include a Retry action.
+
+## Manage agents
+
+Open **Agents** to inspect gateway-owned agent status and configuration.
+
+- Create an agent by choosing a name, model, and system prompt.
+- Edit the model or prompt for an existing agent.
+- Enable or disable an agent. Disabling requires confirmation.
+- Start a shared conversation directly from an agent's detail screen.
+- Delete an agent by typing its exact name. Its conversations remain in history as archived chats.
+
+Provider credentials, connectors, projects, gateway shutdown, and other host administration remain
+in Mission Control.
+
+## Work through connection changes
+
+Previously synced conversations and agents remain readable when the gateway is offline. You can
+keep a local draft, but creating, sending, renaming, deleting, and agent changes wait until the
+gateway reconnects. A banner distinguishes an offline gateway, a temporary relay failure, a rate
+limit, rejected credentials, and an incompatible app or gateway version.
+
+Use **Settings → Reconnect** after fixing connectivity. If the gateway rejected the saved
+credentials or its identity changed, open **Settings** and choose **Disconnect & Forget**, then
+sign back in and tap the gateway again in the picker — no QR code needed.
+
+## Remove a gateway from the device
+
+Open **Settings** and choose **Disconnect & Forget**. After confirmation, Dash stops its connections
+and removes that gateway's credentials, cached conversations, agents, attachments, and drafts from
+the device. The canonical gateway data is not deleted.
+
+<Warning>
+  **Disconnect & Forget** cannot restore local drafts or cached attachments. Make sure anything you
+  need has synced before removing the gateway.
+</Warning>

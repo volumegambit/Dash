@@ -269,13 +269,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         if (issueId && get().detailById[issueId]) {
           void get().loadIssueDetail(issueId);
         }
-        // A linked session usually means a NEW chat conversation (agent
-        // dispatch — possibly from another window or an agent's projects
-        // tool). The task page's session tabs only show links present in the
-        // chat store's conversation list, so refresh it here: broadcast-only
-        // link paths have no component calling loadConversations.
+        // A linked session usually means a NEW chat conversation. Refresh the
+        // first page promptly; the task route also performs an exact-origin
+        // lookup so conversations outside this page still resolve.
         if (topic === 'session.linked') {
-          void useChatStore.getState().loadConversations();
+          void useChatStore
+            .getState()
+            .loadConversations()
+            .catch(() => {});
         }
         return;
       }

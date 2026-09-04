@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { SquadPicker } from '../../companion/pets/SquadPicker.js';
+import { GatewayRuntimeSettings } from '../../components/GatewayRuntimeSettings.js';
 import { useUIStore } from '../../stores/ui.js';
 
 export function GeneralSettings(): JSX.Element {
@@ -65,6 +66,9 @@ export function GeneralSettings(): JSX.Element {
             {restartStatus === 'error' && (
               <span className="text-xs text-red">Failed to restart gateway</span>
             )}
+          </div>
+          <div className="mt-5 border-t border-border pt-5">
+            <GatewayRuntimeSettings />
           </div>
         </div>
 

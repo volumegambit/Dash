@@ -24,6 +24,7 @@
     "@dash/chat": "*",
     "@dash/logging": "*",
     "@dash/management": "*",
+    "@dash/mobile-contract": "*",
     "@dash/paths": "*",
     "@dash/plugin-sdk": "*",
     "@dash/projects": "*",
@@ -35,10 +36,14 @@
     "@hono/node-ws": "^1",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^16.4.0",
-    "hono": "^4"
+    "hono": "^4",
+    "selfsigned": "^5.5.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.9.0",
     "tsx": "^4.19.0"
   },
   "tsup": {

@@ -148,7 +148,7 @@ describe('hosted relay e2e', () => {
     expect(credential).toBeTruthy();
 
     // 3. A phone presents the credential and its request round-trips to the gateway.
-    const ok = await httpGet('/health', {
+    const ok = await httpGet('/mobile/v1/health', {
       host: 'gw-1.relay.local',
       'x-dash-relay-credential': credential,
     });
@@ -156,7 +156,7 @@ describe('hosted relay e2e', () => {
     expect(ok.body).toBe('ok');
 
     // A phone without the credential is rejected at the relay edge.
-    const denied = await httpGet('/health', { host: 'gw-1.relay.local' });
+    const denied = await httpGet('/mobile/v1/health', { host: 'gw-1.relay.local' });
     expect(denied.status).toBe(401);
 
     // 4. Revoking the gateway force-closes its live socket with 4401…
@@ -172,7 +172,7 @@ describe('hosted relay e2e', () => {
     expect(server.hasGateway('gw-1')).toBe(false);
 
     // …and a subsequent phone request gets 502 (no gateway connected).
-    const after = await httpGet('/health', {
+    const after = await httpGet('/mobile/v1/health', {
       host: 'gw-1.relay.local',
       'x-dash-relay-credential': credential,
     });

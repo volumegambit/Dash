@@ -31,6 +31,8 @@ let relayPort: number;
 const seen = {
   agentsAuth: undefined as string | undefined,
   chatToken: undefined as string | undefined,
+  chatAuthorization: undefined as string | undefined,
+  chatRelayCredential: undefined as string | undefined,
   chatMessages: [] as string[],
 };
 
@@ -50,17 +52,19 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 beforeEach(async () => {
   seen.agentsAuth = undefined;
   seen.chatToken = undefined;
+  seen.chatAuthorization = undefined;
+  seen.chatRelayCredential = undefined;
   seen.chatMessages = [];
 
   // --- Stub gateway management server (:9300 stand-in) ---
   mgmt = http.createServer((req, res) => {
-    if (req.url === '/agents') {
+    if (req.url === '/mobile/v1/agents') {
       seen.agentsAuth = req.headers.authorization;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify([{ id: 'a1', name: 'demo' }]));
       return;
     }
-    if (req.url === '/events') {
+    if (req.url === '/mobile/v1/events') {
       // SSE: emit one event promptly, then another later, keeping the stream
       // open — proves streaming passthrough (chunks arrive as they are written).
       res.writeHead(200, {
@@ -89,7 +93,13 @@ beforeEach(async () => {
     chatWss.handleUpgrade(req, socket, head, (ws) => {
       const token = url.searchParams.get('token') ?? undefined;
       seen.chatToken = token;
-      if (token === 'bad') {
+      seen.chatAuthorization = req.headers.authorization;
+      seen.chatRelayCredential = req.headers['x-dash-relay-credential'] as string | undefined;
+      const authorized =
+        seen.chatAuthorization !== undefined
+          ? seen.chatAuthorization === 'Bearer chattok'
+          : token === 'chattok';
+      if (!authorized) {
         ws.close(4001, 'Unauthorized');
         return;
       }
@@ -161,7 +171,9 @@ function phoneGet(
 
 describe('relay end-to-end (real server + real client)', () => {
   it('round-trips a phone HTTP request and forwards the Bearer token', async () => {
-    const { status, body } = await phoneGet('/agents', { authorization: 'Bearer apptoken' });
+    const { status, body } = await phoneGet('/mobile/v1/agents', {
+      authorization: 'Bearer apptoken',
+    });
     expect(status).toBe(200);
     expect(JSON.parse(body)).toEqual([{ id: 'a1', name: 'demo' }]);
     // The phone's auth reached the gateway untouched — auth is end-to-end.
@@ -174,7 +186,7 @@ describe('relay end-to-end (real server + real client)', () => {
         {
           hostname: '127.0.0.1',
           port: relayPort,
-          path: '/agents',
+          path: '/mobile/v1/agents',
           method: 'GET',
           headers: { host: 'nobody.relay.local' },
         },
@@ -196,7 +208,7 @@ describe('relay end-to-end (real server + real client)', () => {
         {
           hostname: '127.0.0.1',
           port: relayPort,
-          path: '/events',
+          path: '/mobile/v1/events',
           method: 'GET',
           headers: { host: PHONE_HOST },
         },
@@ -242,6 +254,47 @@ describe('relay end-to-end (real server + real client)', () => {
     expect(seen.chatToken).toBe('chattok');
     expect(seen.chatMessages).toHaveLength(1);
     phone.close();
+  });
+
+  it('authenticates native chat with a header while stripping the relay credential', async () => {
+    const phone = new WebSocket(`ws://127.0.0.1:${relayPort}/ws/chat?token=wrong-query`, {
+      headers: {
+        host: PHONE_HOST,
+        authorization: 'Bearer chattok',
+        'x-dash-relay-credential': 'pairing-edge-secret',
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    const frames: Array<{ type: string }> = [];
+    phone.on('message', (data: Buffer) => frames.push(JSON.parse(data.toString())));
+    phone.send(JSON.stringify({ type: 'message', id: 'header-auth-turn' }));
+
+    await waitFor(() => frames.some((frame) => frame.type === 'done'));
+    expect(seen.chatAuthorization).toBe('Bearer chattok');
+    expect(seen.chatRelayCredential).toBeUndefined();
+    phone.close();
+  });
+
+  it('preserves a malformed Authorization header so query fallback cannot bypass it', async () => {
+    const phone = new WebSocket(`ws://127.0.0.1:${relayPort}/ws/chat?token=chattok`, {
+      headers: {
+        host: PHONE_HOST,
+        authorization: 'Malformed phone authorization',
+        'x-dash-relay-credential': 'pairing-edge-secret',
+      },
+    });
+    let closeCode: number | undefined;
+    phone.on('close', (code) => {
+      closeCode = code;
+    });
+
+    await waitFor(() => closeCode !== undefined);
+    expect(closeCode).toBe(4001);
+    expect(seen.chatAuthorization).toBe('Malformed phone authorization');
+    expect(seen.chatRelayCredential).toBeUndefined();
   });
 
   it('propagates a gateway WS close code (4001) to the phone', async () => {

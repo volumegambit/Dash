@@ -1,6 +1,8 @@
 export interface LoadConfigOptions {
   managementPort?: number;
   channelPort?: number;
+  /** HTTPS/WSS mobile-only LAN surface. */
+  lanPort?: number;
   token?: string;
   chatToken?: string;
   dataDir?: string;
@@ -78,6 +80,26 @@ export type SwarmConfigOverrides = Partial<{
   defaults: Partial<GatewaySwarmDefaults>;
 }>;
 
+/**
+ * Relay traffic reaches the gateway's loopback servers through the outbound
+ * tunnel, so both inner servers must require their own credentials. Two
+ * nonblank local credentials also enable the LAN listener, where the mobile
+ * bearer must never collapse into the administrative scope. Tokenless or
+ * partially configured local mode keeps its historical loopback-only behavior.
+ */
+export function validateGatewayStartupOptions(options: LoadConfigOptions): void {
+  const managementToken = options.token?.trim();
+  const mobileToken = options.chatToken?.trim();
+  if (managementToken && mobileToken && managementToken === mobileToken) {
+    throw new Error('Management and mobile/chat tokens must be distinct when both are configured');
+  }
+  if (options.relayUrl !== undefined && (!managementToken || !mobileToken)) {
+    throw new Error(
+      'Relay mode requires non-empty --token and --chat-token values to secure the management and chat servers',
+    );
+  }
+}
+
 const SWARM_ENV_VARS = [
   ['SWARM_MAX_CONCURRENT_WORKERS_GLOBAL', 'maxConcurrentWorkersGlobal', null],
   ['SWARM_DEFAULT_MAX_CONCURRENT_WORKERS', 'maxConcurrentWorkers', 'defaults'],
@@ -120,6 +142,69 @@ export function swarmOverridesFromEnv(env: Record<string, string | undefined> = 
   return { overrides, warnings };
 }
 
+/**
+ * Read the browser-origin allowlist for the `/mobile/v1` CORS surface from
+ * `DASH_WEB_ORIGINS` (comma-separated). Unset or empty yields `[]`, which
+ * keeps CORS disabled on that surface. Each entry is trimmed; blank entries
+ * (e.g. from a trailing comma) are dropped.
+ */
+export function webOriginsFromEnv(env: Record<string, string | undefined> = process.env): string[] {
+  const raw = env.DASH_WEB_ORIGINS;
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
+/**
+ * The web client's canonical origin for a relay zone: the hosted SPA is
+ * deployed at `app.<zone>` (see apps/web/README.md, "Deploy: its own origin").
+ *
+ * The relay URL a gateway dials is `wss://<gatewayId>.<zone>`, so the zone is
+ * the hostname with the gateway's own label removed. `gatewayId` is required to
+ * do that safely — without it we cannot tell a gateway label from a real one,
+ * so the whole hostname is treated as the zone rather than guessing. Returns
+ * undefined for anything that isn't a real domain (a bare `localhost`, an
+ * unparseable URL), where there is no sensible web origin to allow.
+ */
+function webOriginForRelayZone(relayUrl: string, gatewayId?: string): string | undefined {
+  let hostname: string;
+  try {
+    hostname = new URL(relayUrl).hostname;
+  } catch {
+    return undefined;
+  }
+  const prefix = gatewayId ? `${gatewayId}.` : '';
+  const zone = prefix && hostname.startsWith(prefix) ? hostname.slice(prefix.length) : hostname;
+  if (!zone.includes('.')) return undefined;
+  return `https://app.${zone}`;
+}
+
+/**
+ * Resolve the browser-origin allowlist for the `/mobile/v1` CORS surface.
+ *
+ * A relay-enrolled gateway is reachable by the hosted web client at
+ * `app.<relay zone>`, so that origin is allowed by default — otherwise every
+ * hosted browser session would need a manual env var on every machine, and the
+ * web client would appear broken out of the box.
+ *
+ * `DASH_WEB_ORIGINS` takes precedence when present:
+ *   - unset            → the derived default (or none, when not relay-enrolled)
+ *   - set, non-empty   → exactly that list (extend by naming the default too)
+ *   - set, empty       → no origins at all; CORS stays fully disabled, which is
+ *                        how an operator opts out of browser access entirely
+ */
+export function resolveWebOrigins(
+  options: Pick<LoadConfigOptions, 'relayUrl' | 'gatewayId'>,
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  if (env.DASH_WEB_ORIGINS !== undefined) return webOriginsFromEnv(env);
+  if (!options.relayUrl) return [];
+  const derived = webOriginForRelayZone(options.relayUrl, options.gatewayId);
+  return derived ? [derived] : [];
+}
+
 export function parseFlags(argv: string[]): LoadConfigOptions {
   const options: LoadConfigOptions = {};
 
@@ -135,6 +220,9 @@ export function parseFlags(argv: string[]): LoadConfigOptions {
       i++;
     } else if (argv[i] === '--channel-port' && argv[i + 1]) {
       options.channelPort = Number(argv[i + 1]);
+      i++;
+    } else if (argv[i] === '--lan-port' && argv[i + 1]) {
+      options.lanPort = Number(argv[i + 1]);
       i++;
     } else if (argv[i] === '--chat-token' && argv[i + 1]) {
       options.chatToken = argv[i + 1];

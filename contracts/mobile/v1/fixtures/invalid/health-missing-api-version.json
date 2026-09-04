@@ -1,0 +1,8 @@
+{
+  "status": "healthy",
+  "startedAt": "2026-07-12T00:00:00.000Z",
+  "pid": 4242,
+  "agents": 1,
+  "channels": 1,
+  "capabilities": ["conversation-sync-v1", "chat-resume-v1"]
+}

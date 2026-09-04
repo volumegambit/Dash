@@ -134,7 +134,7 @@ function phoneGet(
       {
         hostname: '127.0.0.1',
         port: relayPort,
-        path: '/health',
+        path: '/mobile/v1/health',
         method: 'GET',
         headers: { host: `${gatewayId}.relay.local`, ...headers },
       },
@@ -189,7 +189,7 @@ describe('control-plane ↔ relay integration e2e', () => {
 
     // 3. The control plane provisions a pairing (pushed to the relay admin API).
     const { credential } = (await (
-      await cp('POST', `/v1/gateways/${created.gatewayId}/pairings`, 'acct-1', {
+      await cp('POST', `/v1/gateways/${created.gatewayId}/pairings/pairing-id-v1`, 'acct-1', {
         deviceLabel: 'iPhone',
       })
     ).json()) as { credential: string };
@@ -238,9 +238,12 @@ describe('control-plane ↔ relay integration e2e', () => {
     await waitFor(() => relayServer.hasGateway(created.gatewayId));
 
     // A foreign account cannot pair against acct-1's gateway — nothing is minted.
-    const pairRes = await cp('POST', `/v1/gateways/${created.gatewayId}/pairings`, 'acct-2', {
-      deviceLabel: 'Pixel',
-    });
+    const pairRes = await cp(
+      'POST',
+      `/v1/gateways/${created.gatewayId}/pairings/pairing-id-v1`,
+      'acct-2',
+      { deviceLabel: 'Pixel' },
+    );
     expect(pairRes.status).toBe(404);
 
     // A foreign account cannot delete it — the tunnel stays live.

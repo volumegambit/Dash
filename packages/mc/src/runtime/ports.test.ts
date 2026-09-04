@@ -1,33 +1,50 @@
-import { DEFAULT_CHANNEL_PORT, DEFAULT_MANAGEMENT_PORT, resolveGatewayPorts } from './ports.js';
+import {
+  DEFAULT_CHANNEL_PORT,
+  DEFAULT_LAN_PORT,
+  DEFAULT_MANAGEMENT_PORT,
+  resolveGatewayPorts,
+} from './ports.js';
 
 describe('resolveGatewayPorts', () => {
-  it('returns 9300/9200 defaults when env vars are unset', () => {
-    expect(resolveGatewayPorts({})).toEqual({ managementPort: 9300, channelPort: 9200 });
+  it('returns 9300/9200/9400 defaults when env vars are unset', () => {
+    expect(resolveGatewayPorts({})).toEqual({
+      managementPort: 9300,
+      channelPort: 9200,
+      lanPort: 9400,
+    });
     expect(DEFAULT_MANAGEMENT_PORT).toBe(9300);
     expect(DEFAULT_CHANNEL_PORT).toBe(9200);
+    expect(DEFAULT_LAN_PORT).toBe(9400);
   });
 
   it('treats empty and whitespace-only values as unset', () => {
     expect(
       resolveGatewayPorts({ MC_GATEWAY_MANAGEMENT_PORT: '', MC_GATEWAY_CHANNEL_PORT: '  ' }),
-    ).toEqual({ managementPort: 9300, channelPort: 9200 });
+    ).toEqual({ managementPort: 9300, channelPort: 9200, lanPort: 9400 });
   });
 
   it('parses valid overrides, independently per var', () => {
     expect(resolveGatewayPorts({ MC_GATEWAY_MANAGEMENT_PORT: '9310' })).toEqual({
       managementPort: 9310,
       channelPort: 9200,
+      lanPort: 9400,
     });
     expect(resolveGatewayPorts({ MC_GATEWAY_CHANNEL_PORT: '9210' })).toEqual({
       managementPort: 9300,
       channelPort: 9210,
+      lanPort: 9400,
     });
     expect(
       resolveGatewayPorts({
         MC_GATEWAY_MANAGEMENT_PORT: '9310',
         MC_GATEWAY_CHANNEL_PORT: '9210',
       }),
-    ).toEqual({ managementPort: 9310, channelPort: 9210 });
+    ).toEqual({ managementPort: 9310, channelPort: 9210, lanPort: 9400 });
+    expect(resolveGatewayPorts({ MC_GATEWAY_LAN_PORT: '9410' })).toEqual({
+      managementPort: 9300,
+      channelPort: 9200,
+      lanPort: 9410,
+    });
   });
 
   it.each([
@@ -43,6 +60,7 @@ describe('resolveGatewayPorts', () => {
     expect(() => resolveGatewayPorts({ MC_GATEWAY_CHANNEL_PORT: raw })).toThrow(
       /MC_GATEWAY_CHANNEL_PORT/,
     );
+    expect(() => resolveGatewayPorts({ MC_GATEWAY_LAN_PORT: raw })).toThrow(/MC_GATEWAY_LAN_PORT/);
   });
 
   it('throws when both ports are set to the same value', () => {
@@ -52,10 +70,17 @@ describe('resolveGatewayPorts', () => {
         MC_GATEWAY_CHANNEL_PORT: '9310',
       }),
     ).toThrow(/must differ/);
+    expect(() => resolveGatewayPorts({ MC_GATEWAY_MANAGEMENT_PORT: '9400' })).toThrow(
+      /must differ/,
+    );
   });
 
   it('reads process.env when no env object is passed', () => {
     // The test runner sets no MC_GATEWAY_* overrides, so defaults come back.
-    expect(resolveGatewayPorts()).toEqual({ managementPort: 9300, channelPort: 9200 });
+    expect(resolveGatewayPorts()).toEqual({
+      managementPort: 9300,
+      channelPort: 9200,
+      lanPort: 9400,
+    });
   });
 });

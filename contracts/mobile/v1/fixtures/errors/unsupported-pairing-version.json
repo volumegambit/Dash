@@ -1,0 +1,6 @@
+{
+  "v": 99,
+  "host": "192.168.1.50",
+  "mgmtToken": "mgmt-test-token",
+  "chatToken": "chat-test-token"
+}

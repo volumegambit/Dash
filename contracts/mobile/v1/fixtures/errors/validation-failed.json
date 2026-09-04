@@ -1,0 +1,8 @@
+{
+  "code": "validation_failed",
+  "error": "Request body is invalid",
+  "retryable": false,
+  "details": {
+    "field": "agentId"
+  }
+}

@@ -107,6 +107,24 @@ describe('InMemoryKeychainStore', () => {
     });
   });
 
+  it('round-trips remote gateway secrets independently from local gateway tokens', async () => {
+    await store.setGatewayToken('local-management');
+    await store.setChatToken('local-chat');
+    await store.setRemoteGatewaySecrets({
+      managementToken: 'remote-management',
+      chatToken: 'remote-chat',
+      relayCredential: 'relay-credential',
+    });
+
+    expect(await store.getRemoteGatewaySecrets()).toEqual({
+      managementToken: 'remote-management',
+      chatToken: 'remote-chat',
+      relayCredential: 'relay-credential',
+    });
+    expect(await store.getGatewayToken()).toBe('local-management');
+    expect(await store.getChatToken()).toBe('local-chat');
+  });
+
   it('returns null for the issued gateway record when only partially set', async () => {
     // A record is only valid when all three fields are present.
     await store.setControlPlaneToken('cp');
@@ -125,6 +143,11 @@ describe('InMemoryKeychainStore', () => {
       subdomain: 'gw-i.relay.example.com',
       host: 'h',
     });
+    await store.setRemoteGatewaySecrets({
+      managementToken: 'remote-management',
+      chatToken: 'remote-chat',
+      relayCredential: 'remote-relay',
+    });
     await store.clearAllGatewayTokens();
     expect(await store.getGatewayToken()).toBeNull();
     expect(await store.getChatToken()).toBeNull();
@@ -133,6 +156,7 @@ describe('InMemoryKeychainStore', () => {
     expect(await store.getRelayAdminSecret()).toBeNull();
     expect(await store.getControlPlaneToken()).toBeNull();
     expect(await store.getIssuedGateway()).toBeNull();
+    expect(await store.getRemoteGatewaySecrets()).toBeNull();
   });
 
   it('clearAllGatewayTokens is idempotent on empty store', async () => {
@@ -277,6 +301,32 @@ describe('DefaultKeychainStore', () => {
       'issued-gateway-subdomain',
     ]);
     expect(entryConstructorCalls).toContainEqual(['dash-mission-control', 'issued-gateway-host']);
+  });
+
+  it('reads/writes remote gateway secrets under their own accounts', async () => {
+    const store = createDefaultKeychainStore();
+    await store.setRemoteGatewaySecrets({
+      managementToken: 'remote-management',
+      chatToken: 'remote-chat',
+      relayCredential: 'remote-relay',
+    });
+    expect(await store.getRemoteGatewaySecrets()).toEqual({
+      managementToken: 'remote-management',
+      chatToken: 'remote-chat',
+      relayCredential: 'remote-relay',
+    });
+    expect(entryConstructorCalls).toContainEqual([
+      'dash-mission-control',
+      'remote-gateway-management-token',
+    ]);
+    expect(entryConstructorCalls).toContainEqual([
+      'dash-mission-control',
+      'remote-gateway-chat-token',
+    ]);
+    expect(entryConstructorCalls).toContainEqual([
+      'dash-mission-control',
+      'remote-gateway-relay-credential',
+    ]);
   });
 
   it('caches Entry instances per account so the native ctor runs once', async () => {

@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import {
   type SwarmAttachment,
@@ -11,6 +14,8 @@ import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, RegisteredChannel } from './channel-registry.js';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
+import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
@@ -124,7 +129,10 @@ function makeAgents(): AgentChatCoordinator {
     chat: vi.fn(),
     steer: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
+    answerQuestion: vi.fn().mockResolvedValue(undefined),
+    cancel: vi.fn().mockReturnValue(false),
     evict: vi.fn().mockResolvedValue(undefined),
+    evictAll: vi.fn().mockResolvedValue(undefined),
     listSkills: vi.fn().mockResolvedValue([]),
     getSkill: vi.fn().mockResolvedValue(null),
     createSkill: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
@@ -146,6 +154,39 @@ function makeModelsStore() {
     save: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
   } as unknown as import('./models-store.js').ModelsStore;
+}
+
+function makeConversationService(): ConversationService {
+  return {
+    eventLog: {
+      append: vi.fn(() => 1),
+      readSince: vi.fn(() => []),
+      listInterrupted: vi.fn(() => []),
+      deleteAgent: vi.fn(),
+      deleteConversation: vi.fn(),
+      close: vi.fn(),
+    },
+    create: vi.fn(),
+    get: vi.fn(() => null),
+    list: vi.fn(() => ({ items: [], nextCursor: null })),
+    update: vi.fn(),
+    delete: vi.fn(),
+    listMessages: vi.fn(() => ({ items: [], nextCursor: null, throughSeq: 0 })),
+    acceptTurn: vi.fn(),
+    appendTurnEvent: vi.fn(() => null),
+    finishTurn: vi.fn(),
+    trySetAutoTitle: vi.fn(() => null),
+    archiveAgentConversations: vi.fn(() => []),
+    recoverInterruptedTurns: vi.fn(() => ({ conversationsInterrupted: 0, terminalsAppended: 0 })),
+    close: vi.fn(),
+  } as unknown as ConversationService;
+}
+
+function makeResumableChatHub() {
+  return {
+    cancelAgent: vi.fn().mockResolvedValue(undefined),
+    allowAgent: vi.fn(),
+  };
 }
 
 // --- Controllable fake worker backend ---
@@ -192,6 +233,9 @@ function createApp(overrides: Record<string, unknown> = {}) {
     channelRegistry: makeChannelRegistry(),
     credentialStore: makeCredentialStore(),
     modelsStore: makeModelsStore(),
+    conversationService: makeConversationService(),
+    resumableChatHub: makeResumableChatHub(),
+    identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
     ...overrides,
@@ -203,6 +247,14 @@ function createApp(overrides: Record<string, unknown> = {}) {
 const AUTH = { Authorization: 'Bearer test-token' };
 const JSON_HEADERS = { 'Content-Type': 'application/json', ...AUTH };
 const MODEL = 'anthropic/claude-sonnet-4-20250514';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 /** Register an agent in a mock registry and return its id. */
 function registerAgent(agentRegistry: AgentRegistry, extra: Record<string, unknown> = {}): string {
@@ -652,6 +704,76 @@ describe('lifecycle cascades', () => {
       expect(agentRegistry.disable).toHaveBeenCalledWith(entry.id);
       expect(cancelSpy).toHaveBeenCalledWith(entry.id);
       expect(agents.evict).toHaveBeenCalledWith(entry.id);
+    });
+
+    it('awaits durable resumable cancellation before swarm cleanup and backend eviction', async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'disable-cancellation-order-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      try {
+        const cancellation = deferred<void>();
+        const order: string[] = [];
+        const resumableChatHub = {
+          cancelAgent: vi.fn(async (agentId: string) => {
+            order.push('hub-start');
+            await cancellation.promise;
+            conversationService.finishTurn({
+              conversationId: conversation.id,
+              turnId: 'turn-01',
+              outcome: 'cancelled',
+            });
+            order.push(`hub-resolved:${agentId}`);
+          }),
+        };
+        const cancelRuns = vi.spyOn(coordinator, 'cancelRunsFor').mockImplementation(() => {
+          order.push('swarm');
+        });
+        const { app, agentRegistry, agents } = createApp({
+          swarmCoordinator: coordinator,
+          conversationService,
+          resumableChatHub,
+        });
+        const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+          name: 'x',
+          model: MODEL,
+          systemPrompt: 'p',
+        });
+        const conversation = conversationService.create({
+          agentId: entry.id,
+          agentName: entry.name,
+          requestId: 'create-01',
+        });
+        conversationService.acceptTurn({
+          agentId: entry.id,
+          conversationId: conversation.id,
+          turnId: 'turn-01',
+          text: 'Keep this turn durable',
+        });
+        vi.mocked(agents.evict).mockImplementation(async () => {
+          order.push('evict');
+          expect(conversationService.get(conversation.id)).toMatchObject({
+            status: 'idle',
+            activeTurnId: null,
+          });
+          expect(
+            conversationService.eventLog.readSince(entry.id, conversation.id, 0).at(-1),
+          ).toMatchObject({ payload: { type: 'done', outcome: 'cancelled' } });
+        });
+
+        const response = app.request(`/agents/${entry.id}/disable`, {
+          method: 'POST',
+          headers: AUTH,
+        });
+        await vi.waitFor(() => expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id));
+        expect(cancelRuns).not.toHaveBeenCalled();
+        expect(agents.evict).not.toHaveBeenCalled();
+
+        cancellation.resolve(undefined);
+        expect((await response).status).toBe(200);
+        expect(order).toEqual(['hub-start', `hub-resolved:${entry.id}`, 'swarm', 'evict']);
+      } finally {
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
     });
 
     it('actually finalizes a live run for the disabled agent', async () => {

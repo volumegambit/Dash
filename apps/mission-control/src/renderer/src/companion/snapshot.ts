@@ -2,11 +2,11 @@ import type { CompanionSnapshot } from './types.js';
 
 export interface ChatLike {
   conversations: CompanionSnapshot['conversations'];
-  selectedConversationId: string | null;
+  selectedConversationRef: CompanionSnapshot['selectedConversationRef'];
   messages: CompanionSnapshot['messages'];
-  streamingEvents: CompanionSnapshot['streamingEvents'];
+  streamingFrames: CompanionSnapshot['streamingFrames'];
   sending: CompanionSnapshot['sending'];
-  unreadConversations: Set<string>;
+  unreadConversations: CompanionSnapshot['unreadConversations'];
 }
 
 export interface AgentsLike {
@@ -16,11 +16,11 @@ export interface AgentsLike {
 export function buildSnapshot(chat: ChatLike, agents: AgentsLike): CompanionSnapshot {
   return {
     conversations: chat.conversations,
-    selectedConversationId: chat.selectedConversationId,
+    selectedConversationRef: chat.selectedConversationRef,
     messages: chat.messages,
-    streamingEvents: chat.streamingEvents,
+    streamingFrames: chat.streamingFrames,
     sending: chat.sending,
     unreadConversations: chat.unreadConversations,
-    agentName: (id) => agents.agents.find((a) => a.id === id)?.name ?? 'Agent',
+    agentName: (id) => agents.agents.find((agent) => agent.id === id)?.name ?? 'Agent',
   };
 }

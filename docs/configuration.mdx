@@ -124,6 +124,29 @@ It uses `~/.dash/gateway` for its data and creates agents, channels, and credent
 
 There are no `--config` or `--secrets` flags, and the gateway does not read any JSON config file — agents, channels, and credentials are managed at runtime through the [Management API](/api-reference), which is exactly what Mission Control uses.
 
+## Remote gateway runtime
+
+Mission Control can also use a gateway that runs somewhere else, such as a VPS.
+Open **Settings → General → Gateway** to choose where MC should connect.
+
+The gateway row shows the active connection. Click **Change gateway** to switch.
+
+**Use this computer** is the default. Mission Control starts the gateway on this
+machine and talks to it over loopback.
+
+**Connect existing gateway** connects Mission Control to a gateway URL you already
+have. Enter the management URL, chat URL, management token, chat token, and relay
+credential if your relay requires one. Click **Test connection** first. Mission
+Control only enables **Use this gateway** after the gateway answers successfully.
+URLs are saved in Mission Control's settings. Tokens and relay credentials stay
+in the OS keychain.
+
+**Self-host on a VPS** is the advanced path. It connects over SSH, installs Dash
+on the server, creates a `dash-gateway` systemd user service, starts the gateway
+with your relay settings, tests the deployed gateway, and then saves the resulting
+relay endpoint in Mission Control. You need a VPS that already has Node.js, npm,
+git, and systemd user services available.
+
 ## Credentials
 
 Provider API keys and messaging tokens are encrypted at rest. The gateway keeps them in `~/.dash/gateway/credentials.enc` (AES-256-GCM); gateway access tokens live in your OS keychain. See [Secrets](/secrets) for the full picture of how credentials are stored and delivered to agents.

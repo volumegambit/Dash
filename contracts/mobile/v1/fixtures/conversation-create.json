@@ -1,0 +1,7 @@
+{
+  "agentId": "agent-01",
+  "requestId": "request-01",
+  "title": "Mobile launch check",
+  "owningIssueId": "issue-01",
+  "projectId": "project-01"
+}

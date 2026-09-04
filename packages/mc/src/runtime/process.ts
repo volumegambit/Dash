@@ -45,9 +45,10 @@ import {
   type GatewayHealthResponse,
   GatewayHttpError,
   GatewayManagementClient,
+  InvalidGatewayLanTlsFingerprintError,
 } from './gateway-client.js';
 import { GatewayStateStore } from './gateway-state.js';
-import { DEFAULT_CHANNEL_PORT, DEFAULT_MANAGEMENT_PORT } from './ports.js';
+import { DEFAULT_CHANNEL_PORT, DEFAULT_LAN_PORT, DEFAULT_MANAGEMENT_PORT } from './ports.js';
 
 /**
  * Classify an error thrown by the reuse-check (health + startedAt + listAgents)
@@ -59,6 +60,13 @@ import { DEFAULT_CHANNEL_PORT, DEFAULT_MANAGEMENT_PORT } from './ports.js';
  */
 function isPermanentAuthMismatch(err: unknown): boolean {
   return err instanceof GatewayHttpError && err.status === 401;
+}
+
+function requiresLanTlsUpgrade(err: unknown): boolean {
+  return (
+    (err instanceof GatewayHttpError && err.status === 404) ||
+    err instanceof InvalidGatewayLanTlsFingerprintError
+  );
 }
 
 export { providerSecretKey, parseProviderSecretKey } from './provider-keys.js';
@@ -218,6 +226,7 @@ export interface GatewaySupervisorOptions {
   makeGatewayClient?: (baseUrl: string, token: string) => GatewayManagementClient;
   managementPort?: number;
   channelPort?: number;
+  lanPort?: number;
   /** Control-plane base URL, passed to the gateway so it refreshes its own dial
    *  token. Present iff hosted relay mode is configured. */
   controlPlaneUrl?: string;
@@ -358,6 +367,7 @@ export class GatewaySupervisor {
     const opts = this.options;
     const managementPort = opts.managementPort ?? DEFAULT_MANAGEMENT_PORT;
     const channelPort = opts.channelPort ?? DEFAULT_CHANNEL_PORT;
+    const lanPort = opts.lanPort ?? DEFAULT_LAN_PORT;
     const store = new GatewayStateStore(opts.gatewayDataDir);
     const makeClient =
       opts.makeGatewayClient ?? ((url, token) => new GatewayManagementClient(url, token));
@@ -408,6 +418,34 @@ export class GatewaySupervisor {
       try {
         const client = makeClient(`http://localhost:${state.port}`, keychainToken);
         await client.listAgents();
+        const storedChatToken = await this.keychain.getChatToken();
+        let missingLanTlsCapability = false;
+        try {
+          await client.getLanTlsFingerprint();
+        } catch (error) {
+          if (!requiresLanTlsUpgrade(error)) throw error;
+          missingLanTlsCapability = true;
+        }
+        if (
+          !keychainToken.trim() ||
+          !storedChatToken?.trim() ||
+          storedChatToken.trim() === keychainToken.trim() ||
+          missingLanTlsCapability
+        ) {
+          // Older gateways can have missing/colliding credentials or predate
+          // the pinned LAN TLS route entirely. Successful admin auth proves the
+          // gateway is ours, but use only the probed listener PID for automatic
+          // repair so normalized state defaults or PID drift never target a
+          // different process.
+          if (probe.pid === undefined) {
+            throw new Error(
+              'The running gateway needs a mobile transport upgrade and its listener PID could not be verified; restart the gateway manually to apply it',
+            );
+          }
+          await this.shutdownStaleProcess(probe.pid, state.port, keychainToken);
+          await store.clear();
+          return this.ensureRunningInner();
+        }
         // Happy path — every new MC launch / poller tick goes
         // through here as long as the gateway we spawned is still
         // up and still accepts our token. No spawn, no kill.
@@ -438,8 +476,13 @@ export class GatewaySupervisor {
     // Reuse keychain tokens across spawns when available, so a
     // gateway restarted by the supervisor inherits the same identity.
     // First launch (empty keychain) generates fresh 256-bit tokens.
-    const token = keychainToken ?? generateToken();
-    const chatToken = (await this.keychain.getChatToken()) ?? generateToken();
+    const token = keychainToken?.trim() ? keychainToken : generateToken();
+    const storedChatToken = await this.keychain.getChatToken();
+    let chatToken =
+      storedChatToken?.trim() && storedChatToken.trim() !== token.trim()
+        ? storedChatToken
+        : generateToken();
+    while (chatToken.trim() === token.trim()) chatToken = generateToken();
     // Persist tokens to keychain BEFORE spawning. If the keychain
     // write fails, the error propagates and spawn never happens —
     // avoids the split-brain state where a running gateway has a
@@ -455,6 +498,8 @@ export class GatewaySupervisor {
       String(managementPort),
       '--channel-port',
       String(channelPort),
+      '--lan-port',
+      String(lanPort),
       '--token',
       token,
       '--chat-token',
@@ -557,6 +602,7 @@ export class GatewaySupervisor {
       startedAt: health.startedAt,
       port: managementPort,
       channelPort,
+      lanPort,
     });
 
     return newClient;

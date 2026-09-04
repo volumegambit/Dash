@@ -2,6 +2,13 @@
 export interface ControlPlaneConfig {
   /** TCP port to listen on. */
   port: number;
+  /**
+   * Bind address. Unset (the default) preserves the historical behavior of
+   * handing `@hono/node-server` no `hostname` at all (binds every interface).
+   * Pass `127.0.0.1` for a loopback-only control plane (e.g. a local dev-stub
+   * rig that must not be reachable from the LAN/tailnet).
+   */
+  host?: string;
   /** Path to the SQLite store (accounts → gateways → pairings). */
   dbPath: string;
   /** Base URL of the relay's admin API (the control plane is its sole caller). */
@@ -22,17 +29,22 @@ export interface ControlPlaneConfig {
    * the ID token needs only the public Frontend API JWKS, so no secret key.
    */
   clerk?: { frontendApi: string; clientId: string };
+  /** Browser origins allowed to call `/v1/*` and `/gw/dial-token` cross-origin
+   *  (exact match only). Empty/unset disables CORS on those surfaces entirely. */
+  webOrigins: string[];
 }
 
 /** A subset of {@link ControlPlaneConfig} parsed from CLI flags. */
 export interface ControlPlaneFlags {
   port?: number;
+  host?: string;
   dbPath?: string;
   relayAdminUrl?: string;
   relayAdminSecret?: string;
   relayZone?: string;
   dialTokenTtlSec?: number;
   dialTokenPrivateKeyPath?: string;
+  webOrigins?: string[];
 }
 
 export interface ControlPlaneConfigSources {
@@ -52,6 +64,9 @@ export function parseControlPlaneFlags(argv: string[]): ControlPlaneFlags {
     if (argv[i] === '--port' && argv[i + 1]) {
       flags.port = Number(argv[i + 1]);
       i++;
+    } else if (argv[i] === '--host' && argv[i + 1]) {
+      flags.host = argv[i + 1];
+      i++;
     } else if (argv[i] === '--db-path' && argv[i + 1]) {
       flags.dbPath = argv[i + 1];
       i++;
@@ -70,9 +85,26 @@ export function parseControlPlaneFlags(argv: string[]): ControlPlaneFlags {
     } else if (argv[i] === '--dial-token-private-key' && argv[i + 1]) {
       flags.dialTokenPrivateKeyPath = argv[i + 1];
       i++;
+    } else if (argv[i] === '--web-origins' && argv[i + 1]) {
+      flags.webOrigins = parseOriginsList(argv[i + 1]);
+      i++;
     }
   }
   return flags;
+}
+
+/**
+ * Split a comma-separated origin list (from a flag or env var), trimming each
+ * entry and dropping blanks (e.g. from a trailing or doubled comma). Unset or
+ * empty yields `[]`, which keeps CORS disabled on the browser-reachable
+ * surfaces.
+ */
+function parseOriginsList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 }
 
 /**
@@ -87,6 +119,7 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
   const env = sources.env ?? {};
 
   const port = flags.port ?? (env.RELAY_CP_PORT ? Number(env.RELAY_CP_PORT) : DEFAULT_PORT);
+  const host = flags.host ?? env.RELAY_CP_HOST ?? undefined;
   const dbPath = flags.dbPath ?? env.RELAY_CP_DB_PATH ?? DEFAULT_DB_PATH;
   const relayAdminUrl =
     flags.relayAdminUrl ?? env.RELAY_CP_RELAY_ADMIN_URL ?? DEFAULT_RELAY_ADMIN_URL;
@@ -115,8 +148,11 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
   const clientId = env.RELAY_CP_CLERK_CLIENT_ID;
   const clerk = frontendApi && clientId ? { frontendApi, clientId } : undefined;
 
+  const webOrigins = flags.webOrigins ?? parseOriginsList(env.RELAY_CP_WEB_ORIGINS);
+
   return {
     port,
+    host,
     dbPath,
     relayAdminUrl,
     relayAdminSecret,
@@ -124,5 +160,6 @@ export function loadConfig(sources: ControlPlaneConfigSources = {}): ControlPlan
     dialTokenTtlSec,
     dialTokenPrivateKeyPath,
     clerk,
+    webOrigins,
   };
 }

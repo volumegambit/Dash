@@ -14,10 +14,12 @@
 
 export const DEFAULT_MANAGEMENT_PORT = 9300;
 export const DEFAULT_CHANNEL_PORT = 9200;
+export const DEFAULT_LAN_PORT = 9400;
 
 export interface GatewayPorts {
   managementPort: number;
   channelPort: number;
+  lanPort: number;
 }
 
 function parsePort(raw: string | undefined, fallback: number, name: string): number {
@@ -43,10 +45,11 @@ export function resolveGatewayPorts(
     DEFAULT_CHANNEL_PORT,
     'MC_GATEWAY_CHANNEL_PORT',
   );
-  if (managementPort === channelPort) {
+  const lanPort = parsePort(env.MC_GATEWAY_LAN_PORT, DEFAULT_LAN_PORT, 'MC_GATEWAY_LAN_PORT');
+  if (new Set([managementPort, channelPort, lanPort]).size !== 3) {
     throw new Error(
-      `MC_GATEWAY_MANAGEMENT_PORT and MC_GATEWAY_CHANNEL_PORT must differ, both are ${managementPort}`,
+      'MC_GATEWAY_MANAGEMENT_PORT, MC_GATEWAY_CHANNEL_PORT, and MC_GATEWAY_LAN_PORT must differ',
     );
   }
-  return { managementPort, channelPort };
+  return { managementPort, channelPort, lanPort };
 }

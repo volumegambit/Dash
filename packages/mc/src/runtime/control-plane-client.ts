@@ -12,12 +12,16 @@
  * caller decides whether to prompt for sign-in.
  *
  * Contract (`apps/relay-control-plane/src/api.ts`):
- *   POST   /v1/gateways {subdomain, publicKey} → { gatewayId, subdomain, dialToken }
- *   POST   /v1/gateways/:id/pairings          → { credential }
- *   GET    /v1/gateways                        → { gateways: GatewayRecord[] }
- *   GET    /v1/gateways/:id/pairings           → { pairings: PairingRecord[] }
- *   DELETE /v1/gateways/:id/pairings/:pid      → { ok: true }
+ *   GET    /health                                  → { status, capabilities }
+ *   POST   /v1/gateways {subdomain, publicKey}      → { gatewayId, subdomain, dialToken }
+ *   PUT    /v1/gateways/:id/web-chat-token {chatToken} → { ok: true }
+ *   POST   /v1/gateways/:id/pairings/pairing-id-v1 → { credential, pairingId }
+ *   GET    /v1/gateways                             → { gateways: GatewayRecord[] }
+ *   GET    /v1/gateways/:id/pairings                → { pairings: PairingRecord[] }
+ *   DELETE /v1/gateways/:id/pairings/:pid           → { ok: true }
  */
+
+const PAIRING_ID_CAPABILITY = 'pairing-id-v1';
 
 /** A freshly provisioned gateway: its id, public subdomain, and signed dial token. */
 export interface GatewayProvision {
@@ -39,6 +43,12 @@ export interface GatewaySummary {
   devices: GatewayDevice[];
 }
 
+/** A newly minted pairing credential and its nonsecret revocation identity. */
+export interface PairingProvision {
+  credential: string;
+  pairingId: string;
+}
+
 /** Mission Control's HTTP interface to the control plane (injectable for DI). */
 export interface ControlPlaneClient {
   /** Enroll a new gateway for the signed-in account at a chosen subdomain. */
@@ -46,7 +56,14 @@ export interface ControlPlaneClient {
   /** True iff a subdomain `label` is available to claim (backs the picker hint). */
   isSubdomainAvailable(label: string): Promise<boolean>;
   /** Provision a one-time pairing credential for an owned gateway. */
-  createPairing(gatewayId: string, deviceLabel?: string): Promise<{ credential: string }>;
+  createPairing(gatewayId: string, deviceLabel?: string): Promise<PairingProvision>;
+  /**
+   * Register the chat-scoped capability the control plane hands to browser
+   * pairings of `gatewayId`. Browsers have no QR channel, so this is how a web
+   * client ever receives one. Pass the gateway's MOBILE/chat token — the same
+   * value the pairing QR carries — never the administrative bearer. Idempotent.
+   */
+  setWebChatToken(gatewayId: string, chatToken: string): Promise<void>;
   /** List the gateways the signed-in account owns, each with its devices. */
   listGateways(): Promise<GatewaySummary[]>;
   /** Revoke a single device pairing. */
@@ -111,16 +128,43 @@ export function createControlPlaneClient(
       return body.available === true;
     },
 
-    async createPairing(gatewayId: string, deviceLabel?: string): Promise<{ credential: string }> {
-      const body = await request<{ credential?: unknown }>(
+    async createPairing(gatewayId: string, deviceLabel?: string): Promise<PairingProvision> {
+      // Deployment skew must fail before minting: older control planes returned
+      // only `{ credential }`, so discovering the missing pairing id after POST
+      // created an unidentifiable credential that each retry would orphan. The
+      // server-first capability gate handles ordinary skew; repeating the
+      // capability in the POST path closes the rolling-deploy TOCTOU because an
+      // old server 404s that path before minting and the client never falls back.
+      const health = await request<{ capabilities?: unknown }>('GET', '/health');
+      if (
+        !Array.isArray(health.capabilities) ||
+        !health.capabilities.includes(PAIRING_ID_CAPABILITY)
+      ) {
+        throw new Error(
+          'control plane lacks pairing-id support; upgrade it before pairing a device',
+        );
+      }
+
+      const body = await request<{ credential?: unknown; pairingId?: unknown }>(
         'POST',
-        `/v1/gateways/${encodeURIComponent(gatewayId)}/pairings`,
+        `/v1/gateways/${encodeURIComponent(gatewayId)}/pairings/${PAIRING_ID_CAPABILITY}`,
         deviceLabel !== undefined ? { deviceLabel } : {},
       );
       if (typeof body.credential !== 'string' || body.credential.length === 0) {
         throw new Error('control plane: createPairing returned no credential');
       }
-      return { credential: body.credential };
+      if (typeof body.pairingId !== 'string' || body.pairingId.length === 0) {
+        throw new Error('control plane: createPairing returned no pairing id');
+      }
+      return { credential: body.credential, pairingId: body.pairingId };
+    },
+
+    async setWebChatToken(gatewayId: string, chatToken: string): Promise<void> {
+      await request<unknown>(
+        'PUT',
+        `/v1/gateways/${encodeURIComponent(gatewayId)}/web-chat-token`,
+        { chatToken },
+      );
     },
 
     async listGateways(): Promise<GatewaySummary[]> {

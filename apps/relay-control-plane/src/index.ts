@@ -18,7 +18,9 @@ export {
   InvalidSubdomainError,
   SubdomainTakenError,
   InvalidPublicKeyError,
+  WebChatTokenMissingError,
   type CreatedGateway,
+  type CreatedPairing,
   type ProvisioningDeps,
 } from './provisioning.js';
 export { validateSubdomainLabel } from './subdomain.js';

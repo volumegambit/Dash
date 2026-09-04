@@ -35,7 +35,7 @@ class ChatSocketTest {
 
     private fun socket(): ChatSocket {
         val url = server.url("/ws").toString().replaceFirst("http", "ws")
-        return ChatSocket(url, ok)
+        return ChatSocket(url, "mobile-token", ok)
     }
 
     @Test fun streamsEventsThenCompletes() = runTest {
@@ -118,8 +118,64 @@ class ChatSocketTest {
             }),
         )
         val url = server.url("/ws").toString().replaceFirst("http", "ws")
-        ChatSocket(url, ok, "relay-cred").stream(message()).test { awaitComplete() }
+        ChatSocket(url, "mobile-token", ok, "relay-cred").stream(message()).test { awaitComplete() }
         // The upgrade HTTP request must carry the relay credential header.
         assertEquals("relay-cred", server.takeRequest().getHeader("x-dash-relay-credential"))
+    }
+
+    @Test fun sendsBearerWithoutPuttingMobileTokenInUpgradeUrl() = runTest {
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send("""{"type":"done","id":"1"}""")
+                }
+            }),
+        )
+        socket().stream(message()).test { awaitComplete() }
+        val request = server.takeRequest()
+        assertEquals("Bearer mobile-token", request.getHeader("Authorization"))
+        assertEquals("/ws", request.path)
+    }
+
+    @Test fun exactLeafPinAllowsSelfSignedWebSocket() = runTest {
+        val tlsServer = MockWebServer()
+        tlsServer.useHttps(TlsTestFixture.serverSocketFactory, false)
+        tlsServer.start()
+        try {
+            tlsServer.enqueue(
+                MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        webSocket.send("""{"type":"done","id":"1"}""")
+                    }
+                }),
+            )
+            val client = PinnedTlsClientFactory.create(
+                baseClient = ok,
+                expectedHost = "localhost",
+                certificateSha256 = TlsTestFixture.certificateSha256,
+            )
+            val url = tlsServer.url("/ws").toString().replaceFirst("https", "wss")
+            ChatSocket(url, "mobile-token", client).stream(message()).test { awaitComplete() }
+        } finally {
+            tlsServer.shutdown()
+        }
+    }
+
+    @Test fun wrongLeafPinRejectsWebSocketBeforeUpgrade() = runTest {
+        val tlsServer = MockWebServer()
+        tlsServer.useHttps(TlsTestFixture.serverSocketFactory, false)
+        tlsServer.start()
+        try {
+            val client = PinnedTlsClientFactory.create(
+                baseClient = ok,
+                expectedHost = "localhost",
+                certificateSha256 = TlsTestFixture.differentCertificateSha256,
+            )
+            val url = tlsServer.url("/ws").toString().replaceFirst("https", "wss")
+            ChatSocket(url, "mobile-token", client).stream(message()).test { awaitError() }
+            assertEquals(0, tlsServer.requestCount)
+        } finally {
+            tlsServer.shutdown()
+        }
     }
 }

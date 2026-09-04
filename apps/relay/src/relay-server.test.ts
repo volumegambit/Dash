@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { WebSocket } from 'ws';
 import { credentialStoreAuth } from './auth.js';
 import { PairingCredentialStore } from './credential-store.js';
@@ -16,6 +17,9 @@ const deps = {
   verifyDialIn: (_gatewayId: string, t: string) => t === 'good',
   pairingCredentialValid: () => true,
 };
+
+/** Mirrors relay-server.ts's close code for a revoked/unauthorized peer. */
+const RELAY_AUTH_CLOSE = 4401;
 
 let server: RelayServer;
 let port: number;
@@ -68,6 +72,30 @@ function httpGet(
   });
 }
 
+function httpRequest(
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string; headers: Record<string, string> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers }, (res) => {
+      let body = '';
+      res.on('data', (c) => {
+        body += c;
+      });
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode ?? 0,
+          body,
+          headers: res.headers as Record<string, string>,
+        }),
+      );
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 function httpPost(
   path: string,
   headers: Record<string, string>,
@@ -93,6 +121,70 @@ function httpPost(
     );
     req.on('error', reject);
     if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function websocketHandshakeStatus(path: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const phone = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers });
+    phone.on('open', () => {
+      settled = true;
+      resolve(101);
+      phone.close();
+    });
+    phone.on('unexpected-response', (_request, response) => {
+      settled = true;
+      resolve(response.statusCode ?? 0);
+      response.destroy();
+    });
+    phone.on('error', (error) => {
+      if (!settled) reject(error);
+    });
+  });
+}
+
+/**
+ * Perform a raw WebSocket handshake and resolve the 101 response headers. Used
+ * where the `ws` client is too strict to observe the server's answer: `ws`
+ * throws "Server sent no subprotocol" whenever it offered protocols and the
+ * server selected none, which is exactly the case we want to assert on.
+ */
+function rawWsHandshake(
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; headers: Record<string, string>; socket: Duplex }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method: 'GET',
+      headers: {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': randomBytes(16).toString('base64'),
+        ...headers,
+      },
+    });
+    req.on('upgrade', (res, socket) => {
+      resolve({
+        status: res.statusCode ?? 0,
+        headers: res.headers as Record<string, string>,
+        socket,
+      });
+    });
+    req.on('response', (res) => {
+      res.resume();
+      resolve({
+        status: res.statusCode ?? 0,
+        headers: res.headers as Record<string, string>,
+        socket: req.socket as Duplex,
+      });
+    });
+    req.on('error', reject);
     req.end();
   });
 }
@@ -249,20 +341,20 @@ describe('relay-server', () => {
     });
     await waitFor(() => server.hasGateway('g1'));
 
-    const { status, body } = await httpGet('/agents', {
+    const { status, body } = await httpGet('/mobile/v1/agents?cursor=next', {
       host: 'g1.relay.local',
       authorization: 'Bearer apptoken',
     });
     expect(status).toBe(200);
     expect(body).toBe('{"ok":true}');
-    expect(seenOpen?.path).toBe('/agents');
+    expect(seenOpen?.path).toBe('/mobile/v1/agents?cursor=next');
     expect(seenOpen?.headers.authorization).toBe('Bearer apptoken');
     expect(seenOpen?.headers.host).toBeUndefined(); // host stripped, not forwarded
     gw.close();
   });
 
   it('returns 502 when no gateway is connected for the host', async () => {
-    const { status } = await httpGet('/agents', { host: 'nope.relay.local' });
+    const { status } = await httpGet('/mobile/v1/agents', { host: 'nope.relay.local' });
     expect(status).toBe(502);
   });
 
@@ -327,6 +419,67 @@ describe('relay-server', () => {
     expect(code).toBe(4001);
   });
 
+  it.each([
+    '/credentials',
+    '/agents',
+    '/admin/pairings',
+    '/projects',
+    '/mobile/v10/agents',
+    '/mobile/v1evil/agents',
+    '/mobile/v1/../credentials',
+    '/mobile/v1/%2e%2e/credentials',
+    '/mobile/v1/%252e%252e/credentials',
+    '/mobile/v1%2f..%2fcredentials',
+  ])('rejects non-canonical phone HTTP path %s before forwarding', async (path) => {
+    const gw = await connectGateway('g1', 'good');
+    const forwarded: Frame[] = [];
+    gw.on('message', (raw: Buffer) => {
+      const frame = decodeFrame(raw.toString());
+      forwarded.push(frame);
+      if (frame.t === 'open') {
+        gw.send(encodeFrame({ t: 'head', streamId: frame.streamId, status: 200, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: frame.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const response = await httpGet(path, {
+      host: 'g1.relay.local',
+      authorization: 'Bearer leaked-legacy-management-token',
+      'x-dash-relay-credential': 'valid-pairing-credential',
+    });
+
+    expect(response.status).toBe(404);
+    expect(forwarded).toEqual([]);
+    gw.close();
+  });
+
+  it.each([
+    '/projects/ws?token=legacy-admin',
+    '/ws/chat/',
+    '/ws/chatevil',
+    '/ws/chat/../projects/ws',
+    '/ws/chat/%2e%2e/projects/ws',
+    '/ws/chat/%252e%252e/projects/ws',
+    '/ws/chat%2f..%2fprojects%2fws',
+  ])('rejects non-canonical phone WebSocket path %s before forwarding', async (path) => {
+    const gw = await connectGateway('g1', 'good');
+    const forwarded: Frame[] = [];
+    gw.on('message', (raw: Buffer) => forwarded.push(decodeFrame(raw.toString())));
+    await waitFor(() => server.hasGateway('g1'));
+
+    const status = await websocketHandshakeStatus(path, {
+      host: 'g1.relay.local',
+      authorization: 'Bearer leaked-legacy-management-token',
+      'x-dash-relay-credential': 'valid-pairing-credential',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(status).toBe(404);
+    expect(forwarded).toEqual([]);
+    gw.close();
+  });
+
   /** Swap the beforeEach server for one with custom deps and/or options. */
   async function restartWith(
     customDeps: RelayDeps,
@@ -343,6 +496,8 @@ describe('relay-server', () => {
     maxStreamsPerGateway?: number;
     ratePerSec?: number;
     rateBurst?: number;
+    preflightRatePerSec?: number;
+    preflightBurst?: number;
   }): Promise<void> {
     return restartWith(deps, limits);
   }
@@ -369,9 +524,9 @@ describe('relay-server', () => {
     });
     await waitFor(() => server.hasGateway('g1'));
 
-    const first = await httpGet('/agents', { host: 'g1.relay.local' });
+    const first = await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' });
     expect(first.status).toBe(200); // consumes the single token
-    const second = await httpGet('/agents', { host: 'g1.relay.local' });
+    const second = await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' });
     expect(second.status).toBe(429); // pre-empted by the limiter, never reaches the gateway
     gw.close();
   });
@@ -383,7 +538,7 @@ describe('relay-server', () => {
     const gw = await connectGateway('g1', 'good');
     await waitFor(() => server.hasGateway('g1'));
 
-    const { status } = await httpGet('/agents', { host: 'g1.relay.local' });
+    const { status } = await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' });
     expect(status).toBe(429);
     gw.close();
   });
@@ -415,7 +570,7 @@ describe('relay-server', () => {
     const gw = await connectGateway('g1', 'good');
     await waitFor(() => server.hasGateway('g1'));
 
-    const { status } = await httpGet('/agents', {
+    const { status } = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': 'cred',
     });
@@ -461,7 +616,7 @@ describe('relay-server', () => {
     });
     await waitFor(() => server.hasGateway('g1'));
 
-    const { status, body } = await httpGet('/agents', {
+    const { status, body } = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': 'secret',
     });
@@ -486,14 +641,14 @@ describe('relay-server', () => {
     expect(credential).toBeTruthy();
 
     // The provisioned credential lets the phone through.
-    const ok = await httpGet('/agents', {
+    const ok = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': credential,
     });
     expect(ok.status).toBe(200);
 
     // No credential (or a wrong one) is rejected with 401.
-    const denied = await httpGet('/agents', { host: 'g1.relay.local' });
+    const denied = await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' });
     expect(denied.status).toBe(401);
     gw.close();
   });
@@ -524,7 +679,7 @@ describe('relay-server', () => {
     const { credential } = JSON.parse(prov.body) as { credential: string };
 
     // Works before revoke.
-    const before = await httpGet('/agents', {
+    const before = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': credential,
     });
@@ -538,7 +693,7 @@ describe('relay-server', () => {
     expect(rev.status).toBe(200);
 
     // Rejected immediately after revoke.
-    const after = await httpGet('/agents', {
+    const after = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': credential,
     });
@@ -578,12 +733,12 @@ describe('relay-server', () => {
     expect(rev.status).toBe(200);
 
     // Device A is now rejected; device B is untouched.
-    const afterA = await httpGet('/agents', {
+    const afterA = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': a,
     });
     expect(afterA.status).toBe(401);
-    const afterB = await httpGet('/agents', {
+    const afterB = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': b,
     });
@@ -612,6 +767,256 @@ describe('relay-server', () => {
     expect(server.hasGateway('gw-1')).toBe(false);
   });
 
+  // --- I3: revoking a pairing drops its LIVE connections ------------------
+
+  it('closes a live phone WebSocket when its credential is revoked', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    const closed = new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+
+    const rev = await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1', credential },
+    );
+    expect(rev.status).toBe(200);
+
+    // The live socket drops immediately — revocation is not "next request".
+    expect(await closed).toBe(RELAY_AUTH_CLOSE);
+    gw.close();
+  });
+
+  it('closes a live socket when revoked by credentialHash (the control plane path)', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    const closed = new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      {
+        tenantId: 't1',
+        gatewayId: 'g1',
+        credentialHash: createHash('sha256').update(credential).digest('base64url'),
+      },
+    );
+
+    expect(await closed).toBe(RELAY_AUTH_CLOSE);
+    gw.close();
+  });
+
+  it('leaves another device’s live socket untouched when one credential is revoked', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const a = store.provision('t1', 'g1');
+    const b = store.provision('t1', 'g1');
+
+    const open = async (credential: string): Promise<WebSocket> => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+        headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.on('open', () => resolve());
+        socket.on('error', reject);
+      });
+      return socket;
+    };
+    const deviceA = await open(a);
+    const deviceB = await open(b);
+    const closedA = new Promise<number>((resolve) => deviceA.on('close', (c) => resolve(c)));
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1', credential: a },
+    );
+
+    expect(await closedA).toBe(RELAY_AUTH_CLOSE);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(deviceB.readyState).toBe(WebSocket.OPEN);
+    deviceB.close();
+    gw.close();
+  });
+
+  it('ends a live phone HTTP/SSE stream when its credential is revoked', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    let openStreamId: number | undefined;
+    const gatewaySawClose = new Promise<void>((resolve) => {
+      gw.on('message', (raw: Buffer) => {
+        const f = decodeFrame(raw.toString());
+        if (f.t === 'open') {
+          openStreamId = f.streamId;
+          // An open-ended SSE response: headers, one event, never ended.
+          gw.send(
+            encodeFrame({
+              t: 'head',
+              streamId: f.streamId,
+              status: 200,
+              headers: { 'content-type': 'text/event-stream' },
+            }),
+          );
+          gw.send(
+            encodeFrame({
+              t: 'data',
+              streamId: f.streamId,
+              chunk: encodeChunk(Buffer.from(':\n')),
+            }),
+          );
+        }
+        // The relay must also tear down the gateway's loopback request.
+        if (f.t === 'close' && f.streamId === openStreamId) resolve();
+      });
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    const streamEnded = new Promise<void>((resolve, reject) => {
+      const request = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/mobile/v1/events',
+          method: 'GET',
+          headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+        },
+        (response) => {
+          expect(response.statusCode).toBe(200);
+          response.on('data', () => {});
+          response.on('end', () => resolve());
+        },
+      );
+      request.on('error', reject);
+      request.end();
+    });
+    await waitFor(() => openStreamId !== undefined);
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1', credential },
+    );
+
+    await streamEnded;
+    await gatewaySawClose;
+    gw.close();
+  });
+
+  it('closes every live connection for the gateway on an un-targeted revoke-all', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+    const a = store.provision('t1', 'g1');
+    const b = store.provision('t1', 'g1');
+
+    const sockets = await Promise.all(
+      [a, b].map(async (credential) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+          headers: { host: 'g1.relay.local', 'x-dash-relay-credential': credential },
+        });
+        await new Promise<void>((resolve, reject) => {
+          socket.on('open', () => resolve());
+          socket.on('error', reject);
+        });
+        return socket;
+      }),
+    );
+    const closed = sockets.map(
+      (socket) => new Promise<number>((resolve) => socket.on('close', (c) => resolve(c))),
+    );
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1' }, // no credential/hash → un-pair all
+    );
+
+    expect(await Promise.all(closed)).toEqual([RELAY_AUTH_CLOSE, RELAY_AUTH_CLOSE]);
+    gw.close();
+  });
+
+  it('does not disturb another gateway’s live connections', async () => {
+    const store = await restartWithCredentialStore();
+    const gw1 = await connectGateway('g1', 'good');
+    const gw2 = await connectGateway('g2', 'good');
+    for (const gw of [gw1, gw2]) {
+      gw.on('message', (raw: Buffer) => {
+        const f = decodeFrame(raw.toString());
+        if (f.t === 'open' && f.kind === 'ws') {
+          gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+        }
+      });
+    }
+    await waitFor(() => server.hasGateway('g1') && server.hasGateway('g2'));
+    store.provision('t1', 'g1');
+    const other = store.provision('t1', 'g2');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=t`, {
+      headers: { host: 'g2.relay.local', 'x-dash-relay-credential': other },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+
+    await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'g1' }, // revoke-all, but only for g1
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(phone.readyState).toBe(WebSocket.OPEN);
+    phone.close();
+    gw1.close();
+    gw2.close();
+  });
+
   it('admin pairing routes require tenantId', async () => {
     await restartWithCredentialStore();
     const res = await httpPost(
@@ -638,14 +1043,562 @@ describe('relay-server', () => {
       }
     });
     await waitFor(() => server.hasGateway('g1'));
-    await httpGet('/agents', { host: 'g1.relay.local' }); // triggers the bad sequence
+    await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' }); // triggers the bad sequence
 
     // The relay is still alive: a fresh request to the same gateway succeeds.
     gw.removeAllListeners('message');
     respondOk(gw);
-    const second = await httpGet('/agents', { host: 'g1.relay.local' });
+    const second = await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' });
     expect(second.status).toBe(200);
     expect(second.body).toBe('ok');
+    gw.close();
+  });
+
+  // --- R1: browser-compatible credential over the WS subprotocol ----------
+  //
+  // Browsers cannot set request headers on a WebSocket upgrade, so the web
+  // client offers `['dash.v1', 'dash.relay-credential.<credential>']`. The
+  // relay must accept that, echo back only `dash.v1`, and never leak the
+  // credential subprotocol to the gateway.
+
+  /** Open a phone WS offering subprotocols; resolve the negotiated protocol. */
+  function phoneWs(path: string, protocols: string[], headers: Record<string, string> = {}) {
+    return new WebSocket(`ws://127.0.0.1:${port}${path}`, protocols, {
+      headers: { host: 'g1.relay.local', ...headers },
+    });
+  }
+
+  it('upgrades a phone WebSocket authenticated by the credential subprotocol', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    let openFrame: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        openFrame = f;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = phoneWs('/ws/chat?ticket=t', ['dash.v1', 'dash.relay-credential.secret']);
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+
+    // A browser errors unless the server selects a protocol it offered.
+    expect(phone.protocol).toBe('dash.v1');
+    await waitFor(() => openFrame !== undefined);
+    phone.close();
+    gw.close();
+  });
+
+  it('never forwards the credential subprotocol to the gateway', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    let openFrame: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        openFrame = f;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = phoneWs('/ws/chat?ticket=t', ['dash.v1', 'dash.relay-credential.secret']);
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    await waitFor(() => openFrame !== undefined);
+
+    const forwardedProtocols = openFrame?.headers['sec-websocket-protocol'] ?? '';
+    expect(forwardedProtocols).not.toContain('secret');
+    expect(forwardedProtocols).not.toContain('dash.relay-credential');
+    expect(forwardedProtocols).toBe('dash.v1');
+    // And no other forwarded header smuggles it either.
+    expect(JSON.stringify(openFrame?.headers)).not.toContain('secret');
+    phone.close();
+    gw.close();
+  });
+
+  it('drops the sec-websocket-protocol header entirely when only the credential was offered', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    let openFrame: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        openFrame = f;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const handshake = await rawWsHandshake('/ws/chat?ticket=t', {
+      host: 'g1.relay.local',
+      'sec-websocket-protocol': 'dash.relay-credential.secret',
+    });
+    await waitFor(() => openFrame !== undefined);
+
+    // Authenticated, but nothing was offered except the credential — so the
+    // relay selects no subprotocol (never echoing the secret back) and forwards
+    // no subprotocol header to the gateway at all.
+    expect(handshake.status).toBe(101);
+    expect(handshake.headers['sec-websocket-protocol']).toBeUndefined();
+    expect(openFrame?.headers['sec-websocket-protocol']).toBeUndefined();
+    handshake.socket.destroy();
+    gw.close();
+  });
+
+  it('echoes only dash.v1 back to the browser, never the credential', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    // Credential offered FIRST — `ws`'s default would echo the first entry.
+    const handshake = await rawWsHandshake('/ws/chat?ticket=t', {
+      host: 'g1.relay.local',
+      'sec-websocket-protocol': 'dash.relay-credential.secret, dash.v1',
+    });
+    expect(handshake.status).toBe(101);
+    expect(handshake.headers['sec-websocket-protocol']).toBe('dash.v1');
+    handshake.socket.destroy();
+    gw.close();
+  });
+
+  it('rejects an invalid credential subprotocol with 4401', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = phoneWs('/ws/chat?ticket=t', ['dash.v1', 'dash.relay-credential.wrong']);
+    const code = await new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+    expect(code).toBe(4401);
+    gw.close();
+  });
+
+  it('rejects a revoked (reused) credential offered as a subprotocol with 4401', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+
+    // Accepted while live.
+    const first = phoneWs('/ws/chat?ticket=t', ['dash.v1', `dash.relay-credential.${credential}`]);
+    await new Promise<void>((resolve, reject) => {
+      first.on('open', () => resolve());
+      first.on('error', reject);
+    });
+    first.close();
+
+    // Revoked → the very same subprotocol offer is now 4401.
+    store.revoke('t1', 'g1', credential);
+    const second = phoneWs('/ws/chat?ticket=t', ['dash.v1', `dash.relay-credential.${credential}`]);
+    const code = await new Promise<number>((resolve) => second.on('close', (c) => resolve(c)));
+    expect(code).toBe(4401);
+    gw.close();
+  });
+
+  it('rejects a subprotocol offer carrying an unknown extra token with 4401', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = phoneWs('/ws/chat?ticket=t', [
+      'dash.v1',
+      'dash.relay-credential.secret',
+      'something.else',
+    ]);
+    const code = await new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+    expect(code).toBe(4401);
+    gw.close();
+  });
+
+  it('rejects two credential subprotocols with 4401 rather than picking one', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = phoneWs('/ws/chat?ticket=t', [
+      'dash.v1',
+      'dash.relay-credential.wrong',
+      'dash.relay-credential.secret',
+    ]);
+    const code = await new Promise<number>((resolve) => phone.on('close', (c) => resolve(c)));
+    expect(code).toBe(4401);
+    gw.close();
+  });
+
+  it('keeps the header path authoritative and unchanged when both are present', async () => {
+    // Regression guard for the native iOS/MC path: the header decides, and a
+    // subprotocol offer can never rescue a bad header.
+    const seen: string[] = [];
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => {
+        seen.push(credential);
+        return credential === 'header-cred';
+      },
+    });
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    // Good header + junk subprotocol → admitted on the header.
+    const ok = phoneWs('/ws/chat?token=t', ['dash.v1', 'dash.relay-credential.wrong'], {
+      'x-dash-relay-credential': 'header-cred',
+    });
+    await new Promise<void>((resolve, reject) => {
+      ok.on('open', () => resolve());
+      ok.on('error', reject);
+    });
+    ok.close();
+
+    // Bad header + good subprotocol → still rejected (header takes precedence).
+    const denied = phoneWs('/ws/chat?token=t', ['dash.v1', 'dash.relay-credential.header-cred'], {
+      'x-dash-relay-credential': 'wrong',
+    });
+    const code = await new Promise<number>((resolve) => denied.on('close', (c) => resolve(c)));
+    expect(code).toBe(4401);
+    expect(seen).toEqual(['header-cred', 'wrong']);
+    gw.close();
+  });
+
+  it('leaves the native header-only WebSocket path byte-for-byte unchanged', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    let openFrame: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open' && f.kind === 'ws') {
+        openFrame = f;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status: 101, headers: {} }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=tok`, {
+      headers: { host: 'g1.relay.local', 'x-dash-relay-credential': 'secret' },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    await waitFor(() => openFrame !== undefined);
+
+    // No subprotocol negotiated, and no subprotocol header invented.
+    expect(phone.protocol).toBe('');
+    expect(openFrame?.headers['sec-websocket-protocol']).toBeUndefined();
+    expect(openFrame?.headers['x-dash-relay-credential']).toBe('secret');
+    phone.close();
+    gw.close();
+  });
+
+  // --- R2: CORS preflight passthrough --------------------------------------
+
+  it('forwards an OPTIONS preflight without a credential and returns the gateway CORS answer', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    let seenOpen: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        seenOpen = f;
+        // Stand in for the gateway's mobileCors 204 answer.
+        gw.send(
+          encodeFrame({
+            t: 'head',
+            streamId: f.streamId,
+            status: 204,
+            headers: {
+              'access-control-allow-origin': 'https://app.example.com',
+              'access-control-allow-headers': 'Authorization,Content-Type,x-dash-relay-credential',
+            },
+          }),
+        );
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const res = await httpRequest('OPTIONS', '/mobile/v1/agents', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'authorization,x-dash-relay-credential',
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    // Forwarded unchanged so the gateway owns the origin policy.
+    expect(seenOpen?.method).toBe('OPTIONS');
+    expect(seenOpen?.headers.origin).toBe('https://app.example.com');
+    gw.close();
+  });
+
+  it('still rejects a credential-less GET with 401 while OPTIONS is exempt', async () => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, t) => t === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'secret',
+    });
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const denied = await httpGet('/mobile/v1/agents', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(denied.status).toBe(401);
+    gw.close();
+  });
+
+  /** A gateway that answers every proxied request with the mobileCors 204. */
+  function respondPreflight(gw: WebSocket): void {
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        gw.send(
+          encodeFrame({
+            t: 'head',
+            streamId: f.streamId,
+            status: 204,
+            headers: { 'access-control-allow-origin': 'https://app.example.com' },
+          }),
+        );
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+  }
+
+  it('rate-limits exempt preflights with their own dedicated bucket', async () => {
+    // A preflight burst of 1 with no refill: the 2nd OPTIONS in the same
+    // instant is throttled even though the authenticated bucket is untouched.
+    await restartWithLimits({ preflightBurst: 1, preflightRatePerSec: 0 });
+    const gw = await connectGateway('g1', 'good');
+    respondPreflight(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const first = await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' });
+    expect(first.status).toBe(204);
+    const second = await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' });
+    expect(second.status).toBe(429);
+    gw.close();
+  });
+
+  it('does not spend the authenticated rate-limit budget on exempt preflights', async () => {
+    // The authenticated bucket holds a single token. An unauthenticated caller
+    // who knows the subdomain floods preflights; the paired phone must still be
+    // served, i.e. preflights can never starve authenticated traffic.
+    await restartWith(
+      {
+        verifyDialIn: (_gatewayId, t) => t === 'good',
+        pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
+      },
+      { rateBurst: 1, ratePerSec: 0, preflightBurst: 50, preflightRatePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        const status = f.method === 'OPTIONS' ? 204 : 200;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    for (let i = 0; i < 20; i++) {
+      const flood = await httpRequest('OPTIONS', '/mobile/v1/agents', {
+        host: 'g1.relay.local',
+        origin: 'https://app.example.com',
+        'access-control-request-method': 'GET',
+      });
+      expect(flood.status).toBe(204);
+    }
+
+    // The paired phone's single token was never spent by the flood.
+    const authed = await httpGet('/mobile/v1/agents', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'valid',
+    });
+    expect(authed.status).toBe(200);
+    gw.close();
+  });
+
+  it('does not spend the preflight budget on authenticated traffic', async () => {
+    // The converse guard: a busy paired app must not exhaust the small
+    // preflight bucket and break a browser's ability to preflight.
+    await restartWith(
+      {
+        verifyDialIn: (_gatewayId, t) => t === 'good',
+        pairingCredentialValid: (_gatewayId, cred) => cred === 'valid',
+      },
+      { rateBurst: 50, ratePerSec: 0, preflightBurst: 1, preflightRatePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const f = decodeFrame(raw.toString());
+      if (f.t === 'open') {
+        const status = f.method === 'OPTIONS' ? 204 : 200;
+        gw.send(encodeFrame({ t: 'head', streamId: f.streamId, status, headers: {} }));
+        gw.send(encodeFrame({ t: 'end', streamId: f.streamId }));
+      }
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    for (let i = 0; i < 10; i++) {
+      const ok = await httpGet('/mobile/v1/agents', {
+        host: 'g1.relay.local',
+        'x-dash-relay-credential': 'valid',
+      });
+      expect(ok.status).toBe(200);
+    }
+
+    const preflight = await httpRequest('OPTIONS', '/mobile/v1/agents', {
+      host: 'g1.relay.local',
+    });
+    expect(preflight.status).toBe(204);
+    gw.close();
+  });
+
+  it('releases the preflight bucket when the gateway disconnects', async () => {
+    await restartWithLimits({ preflightBurst: 1, preflightRatePerSec: 0 });
+    const gw = await connectGateway('g1', 'good');
+    respondPreflight(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    expect(
+      (await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' })).status,
+    ).toBe(204);
+    expect(
+      (await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' })).status,
+    ).toBe(429);
+
+    // Reconnecting the gateway drops the stale bucket, like the authed one.
+    gw.close();
+    await waitFor(() => !server.hasGateway('g1'));
+    const gw2 = await connectGateway('g1', 'good');
+    respondPreflight(gw2);
+    await waitFor(() => server.hasGateway('g1'));
+    expect(
+      (await httpRequest('OPTIONS', '/mobile/v1/agents', { host: 'g1.relay.local' })).status,
+    ).toBe(204);
+    gw2.close();
+  });
+
+  // --- I2: relay-generated errors must be readable cross-origin -----------
+
+  it('echoes the Origin on a 401 so a browser can read the revoked-credential failure', async () => {
+    const store = await restartWithCredentialStore();
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+    const credential = store.provision('t1', 'g1');
+    store.revoke('t1', 'g1', credential);
+
+    const res = await httpRequest('GET', '/mobile/v1/conversations', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+      'x-dash-relay-credential': credential,
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers.vary).toContain('Origin');
+    // Never credentialed: the browser must not be able to attach cookies.
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+
+  it('echoes the Origin on a 502 when no gateway is connected', async () => {
+    const res = await httpRequest('GET', '/mobile/v1/agents', {
+      host: 'nope.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(res.status).toBe(502);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers.vary).toContain('Origin');
+  });
+
+  it('echoes the Origin on a 429', async () => {
+    await restartWithLimits({ maxStreamsPerGateway: 0 });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const res = await httpRequest('GET', '/mobile/v1/agents', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers.vary).toContain('Origin');
+    gw.close();
+  });
+
+  it('adds no CORS headers when the request carries no Origin (native clients)', async () => {
+    const res = await httpGet('/mobile/v1/agents', { host: 'nope.relay.local' });
+    expect(res.status).toBe(502);
+    // The native path is byte-for-byte unchanged: no Origin in, none out.
+    const withHeaders = await httpRequest('GET', '/mobile/v1/agents', {
+      host: 'nope.relay.local',
+    });
+    expect(withHeaders.headers['access-control-allow-origin']).toBeUndefined();
+    expect(withHeaders.headers.vary).toBeUndefined();
+  });
+
+  it('does not add CORS headers to the non-canonical 404', async () => {
+    // Not a canonical mobile target — nothing here is a browser-visible error
+    // worth explaining, and echoing on an unvalidated path widens the surface.
+    const res = await httpRequest('OPTIONS', '/credentials', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('does not exempt OPTIONS on a non-canonical path', async () => {
+    const gw = await connectGateway('g1', 'good');
+    const forwarded: Frame[] = [];
+    gw.on('message', (raw: Buffer) => forwarded.push(decodeFrame(raw.toString())));
+    await waitFor(() => server.hasGateway('g1'));
+
+    const res = await httpRequest('OPTIONS', '/credentials', { host: 'g1.relay.local' });
+    expect(res.status).toBe(404);
+    expect(forwarded).toEqual([]);
     gw.close();
   });
 
@@ -662,12 +1615,12 @@ describe('relay-server', () => {
     await waitFor(() => server.hasGateway('g1'));
 
     // Unauthenticated → 401, and must NOT consume the single rate-limit token.
-    const unauth = await httpGet('/agents', { host: 'g1.relay.local' });
+    const unauth = await httpGet('/mobile/v1/agents', { host: 'g1.relay.local' });
     expect(unauth.status).toBe(401);
 
     // The paired phone still has its token → served (would be 429 under the old
     // order where the rate limiter ran before the credential check).
-    const authed = await httpGet('/agents', {
+    const authed = await httpGet('/mobile/v1/agents', {
       host: 'g1.relay.local',
       'x-dash-relay-credential': 'valid',
     });
