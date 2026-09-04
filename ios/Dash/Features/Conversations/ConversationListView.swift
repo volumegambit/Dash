@@ -68,6 +68,22 @@ enum ConversationSearchFilter {
 /// so this falls back to the first available agent exactly the same way it
 /// does when nothing's been recorded yet.
 enum ComposeAgentSelection {
+  /// Phase 4 minor 7: the pool compose picks from. Drops disabled agents and,
+  /// when the list is filtered to one agent (`ConversationListFeature
+  /// .selectedAgentID`), narrows to exactly that agent — otherwise compose
+  /// under a filter could start a thread under the last-used agent, which
+  /// the filtered list the user is looking at would never show. A disabled
+  /// filtered agent yields an EMPTY pool (compose disables with its hint)
+  /// rather than escaping the filter.
+  static func availableAgents(
+    _ agents: [RegisteredAgentDTO],
+    filteredAgentID: String?
+  ) -> [RegisteredAgentDTO] {
+    agents.filter { agent in
+      agent.status != .disabled && (filteredAgentID == nil || agent.id == filteredAgentID)
+    }
+  }
+
   static func resolve(
     availableAgents: [RegisteredAgentDTO],
     lastUsedAgentID: String?
@@ -365,7 +381,7 @@ struct ConversationListView: View {
   // MARK: - Compose-first new chat (Task 3, audit #16)
 
   private var availableComposeAgents: [RegisteredAgentDTO] {
-    feature.agents.filter { $0.status != .disabled }
+    ComposeAgentSelection.availableAgents(feature.agents, filteredAgentID: feature.selectedAgentID)
   }
 
   private var composeDisabled: Bool {
@@ -417,6 +433,12 @@ struct ConversationListView: View {
     // `testAgentChipSwitchesConversationAndPersistsLastUsedAgent`).
     guard let conversationID = await feature.create(agentID: agentID) else { return }
     await feature.recordLastUsedAgent(agentID)
+    // Phase 4 minor 2 (iOS half; web: `ConversationList.tsx` `handleCreate`):
+    // drop any active search, otherwise the conversation about to be opened
+    // is filtered out of the list beside it — selected, being typed into,
+    // and with no row. Reachable on iPadOS 26, where the sidebar keeps its
+    // toolbar during a search (iOS 18 collapses it to the field + Cancel).
+    searchText = ""
     appModel.openConversation(conversationID, presentation: presentation)
   }
 

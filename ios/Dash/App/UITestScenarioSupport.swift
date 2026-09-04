@@ -925,6 +925,10 @@ extension AppDependenciesFactory {
     func setAgentID(_ agentID: String, gatewayID: String) {
       values[gatewayID] = agentID
     }
+
+    func clear(gatewayID: String) {
+      values[gatewayID] = nil
+    }
   }
 
   actor UITestScenarioStore: ConversationListServicing, AgentsServicing, ChatFeaturePersisting,

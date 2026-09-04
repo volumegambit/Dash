@@ -2095,7 +2095,57 @@ struct ComposeAgentSelectionTests {
     #expect(ComposeAgentSelection.resolve(availableAgents: [], lastUsedAgentID: "agent-a") == nil)
   }
 
-  private func agentFixture(id: String, name: String) -> RegisteredAgentDTO {
+  // Phase 4 minor 7: `ConversationListView.availableComposeAgents` ignored the
+  // active agent filter (`feature.selectedAgentID`), so composing while the
+  // list was filtered to Agent B could start a thread under last-used Agent A
+  // — a conversation that is selected but invisible in the list the user is
+  // looking at (the same shape as minor 2, via the OTHER filter). The pool
+  // compose picks from has to be narrowed to the filtered agent first.
+  @Test("an active agent filter narrows the compose pool to exactly that agent")
+  func agentFilterNarrowsComposePool() {
+    let agents = [
+      agentFixture(id: "agent-a", name: "Agent A"),
+      agentFixture(id: "agent-b", name: "Agent B"),
+    ]
+    #expect(
+      ComposeAgentSelection.availableAgents(agents, filteredAgentID: "agent-b").map(\.id)
+        == ["agent-b"]
+    )
+    #expect(
+      ComposeAgentSelection.resolve(
+        availableAgents: ComposeAgentSelection.availableAgents(agents, filteredAgentID: "agent-b"),
+        lastUsedAgentID: "agent-a"
+      ) == "agent-b"
+    )
+  }
+
+  @Test("filtering to a disabled agent leaves nothing to compose with, rather than escaping the filter")
+  func agentFilterToDisabledAgentYieldsEmptyPool() {
+    let agents = [
+      agentFixture(id: "agent-a", name: "Agent A"),
+      agentFixture(id: "agent-b", name: "Agent B", status: .disabled),
+    ]
+    #expect(ComposeAgentSelection.availableAgents(agents, filteredAgentID: "agent-b").isEmpty)
+  }
+
+  @Test("no agent filter keeps every enabled agent in the compose pool")
+  func noAgentFilterKeepsEnabledAgents() {
+    let agents = [
+      agentFixture(id: "agent-a", name: "Agent A"),
+      agentFixture(id: "agent-b", name: "Agent B", status: .disabled),
+      agentFixture(id: "agent-c", name: "Agent C"),
+    ]
+    #expect(
+      ComposeAgentSelection.availableAgents(agents, filteredAgentID: nil).map(\.id)
+        == ["agent-a", "agent-c"]
+    )
+  }
+
+  private func agentFixture(
+    id: String,
+    name: String,
+    status: RegisteredAgentStatus = .registered
+  ) -> RegisteredAgentDTO {
     RegisteredAgentDTO(
       id: id,
       name: name,
@@ -2113,7 +2163,7 @@ struct ComposeAgentSelectionTests {
         plugins: nil,
         providers: nil
       ),
-      status: .registered,
+      status: status,
       registeredAt: Date(timeIntervalSince1970: 10)
     )
   }
@@ -2466,6 +2516,31 @@ private actor FakeConversationListService: ConversationListServicing {
   }
 }
 
+/// Phase 4 minor 8: the real `LastUsedAgentStore` wrote `UserDefaults.standard`
+/// and was never cleared on forget-gateway / sign-out, so a gateway forgotten
+/// and re-paired later still defaulted compose to whatever agent the PREVIOUS
+/// pairing last used — leaking a preference across what the user experienced
+/// as a fresh start. `clear(gatewayID:)` is what `AppDependencies.live`'s
+/// `clearProfileData` now calls alongside `PendingConversationCreateStore.clear`.
+@Suite("LastUsedAgentStore (Phase 4 minor 8)")
+struct LastUsedAgentStoreTests {
+  @Test("clear(gatewayID:) forgets the recorded agent for that gateway only")
+  func clearForgetsOnlyThatGateway() async {
+    let suiteName = "LastUsedAgentStoreTests.\(UUID().uuidString)"
+    // The instance handed to the actor is never touched again here (Swift 6
+    // region isolation); cleanup goes through a fresh handle to the same suite.
+    defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+    let store = LastUsedAgentStore(defaults: UserDefaults(suiteName: suiteName) ?? .standard)
+
+    await store.setAgentID("agent-a", gatewayID: "gateway-1")
+    await store.setAgentID("agent-b", gatewayID: "gateway-2")
+    await store.clear(gatewayID: "gateway-1")
+
+    #expect(await store.agentID(gatewayID: "gateway-1") == nil)
+    #expect(await store.agentID(gatewayID: "gateway-2") == "agent-b")
+  }
+}
+
 /// Compose-first new chat (Task 3, audit #16): in-memory `LastUsedAgentStoring`
 /// fake — mirrors `LastUsedAgentStore`'s real per-gateway `UserDefaults`
 /// scoping without touching real UserDefaults from a unit test.
@@ -2478,6 +2553,10 @@ private actor FakeLastUsedAgentStore: LastUsedAgentStoring {
 
   func setAgentID(_ agentID: String, gatewayID: String) {
     values[gatewayID] = agentID
+  }
+
+  func clear(gatewayID: String) {
+    values[gatewayID] = nil
   }
 }
 

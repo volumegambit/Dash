@@ -277,6 +277,9 @@ actor PendingConversationCreateStore {
 protocol LastUsedAgentStoring: Actor {
   func agentID(gatewayID: String) -> String?
   func setAgentID(_ agentID: String, gatewayID: String)
+  /// Phase 4 minor 8: called from `AppDependencies.live`'s `clearProfileData`
+  /// (forget-gateway / sign-out) so the preference doesn't outlive the pairing.
+  func clear(gatewayID: String)
 }
 
 actor LastUsedAgentStore: LastUsedAgentStoring {
@@ -293,6 +296,10 @@ actor LastUsedAgentStore: LastUsedAgentStoring {
 
   func setAgentID(_ agentID: String, gatewayID: String) {
     defaults.set(agentID, forKey: key(gatewayID: gatewayID))
+  }
+
+  func clear(gatewayID: String) {
+    defaults.removeObject(forKey: key(gatewayID: gatewayID))
   }
 
   private func key(gatewayID: String) -> String {

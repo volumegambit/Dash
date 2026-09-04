@@ -768,6 +768,32 @@ describe('ConversationList', () => {
       expect(screen.getByLabelText(SEARCH_INPUT_LABEL)).toBeTruthy();
     });
 
+    // Minor 2. Creating a conversation while a search filter is active left the
+    // new conversation SELECTED but filtered out of the list — the user is now
+    // typing into a thread they cannot see a row for. The query has to clear on
+    // create; the alternative (leaving it) makes the sidebar disagree with the
+    // transcript pane about what is open.
+    it('clears an active search filter when a new conversation is created, so it is never selected-but-invisible', async () => {
+      const { store } = buildStore([summary({ id: 'conv-1', title: 'Mobile launch check' })], {
+        agents: [agent()],
+        createConversationImpl: async () => summary({ id: 'new-conv', title: 'Fresh thread' }),
+      });
+
+      render(
+        <WebAppStoreContext.Provider value={store}>
+          <ConversationList selectedConversationId={null} onSelect={vi.fn()} />
+        </WebAppStoreContext.Provider>,
+      );
+      await waitFor(() => expect(screen.getByText('Mobile launch check')).toBeTruthy());
+      fireEvent.change(screen.getByLabelText(SEARCH_INPUT_LABEL), { target: { value: 'zzz' } });
+      expect(screen.getByText(NO_SEARCH_RESULTS_COPY)).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId(NEW_CONVERSATION_TESTID));
+
+      await waitFor(() => expect(screen.getByText('Fresh thread')).toBeTruthy());
+      expect((screen.getByLabelText(SEARCH_INPUT_LABEL) as HTMLInputElement).value).toBe('');
+    });
+
     // Minor 3. Rename committed on Enter and cancelled on Escape, but a blur did
     // neither: clicking away left the row as a live text input, so the row could
     // not be clicked to open its conversation until the user found Enter or Esc.

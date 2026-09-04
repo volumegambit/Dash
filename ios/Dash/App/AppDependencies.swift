@@ -424,6 +424,7 @@ struct AppDependencies: Sendable {
       clearProfileData: { profile in
         try await store.clearGateway(gatewayID: profile.gatewayID)
         await pendingConversationCreates.clear(gatewayID: profile.gatewayID)
+        await lastUsedAgentStore.clear(gatewayID: profile.gatewayID)
       },
       forgetProfileSelection: { _ in
         UserDefaults.standard.removeObject(forKey: activeGatewayKey)

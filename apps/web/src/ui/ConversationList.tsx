@@ -254,6 +254,12 @@ export function ConversationList({
     try {
       const created = await startConversation(agentId);
       setAgentChoices(null);
+      // Minor 2 (Phase 4): drop any active search filter, otherwise the
+      // conversation we are about to select is filtered out of the list the
+      // user is looking at — selected, being typed into, and with no row.
+      // Clearing here (rather than suppressing the filter for one row) keeps
+      // the sidebar and the transcript pane agreeing about what is open.
+      setQuery('');
       onSelect(created.id);
     } catch (err) {
       setError(describeError(err));

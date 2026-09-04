@@ -483,6 +483,66 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("conversation.row.shared-plan", in: app).waitForExistence(timeout: 5))
   }
 
+  /// Phase 4 minor 2 (iOS half; web half is `ConversationList.test.tsx`'s
+  /// "clears an active search filter when a new conversation is created"):
+  /// composing while a search query is active used to leave the query in
+  /// place, so the conversation just opened was SELECTED but filtered out of
+  /// the list — on iPad, side by side with a sidebar showing "No Results".
+  /// Compose must clear the search so the sidebar and the transcript pane
+  /// agree about what is open.
+  func testComposeUnderActiveSearchClearsTheSearchSoTheOpenedConversationHasAVisibleRow() throws {
+    let app = launch(scenario: "paired-online")
+    // Compact width collapses the navigation bar to search-field + Cancel for
+    // as long as a search is active (keyboard up or not), which hides the
+    // toolbar's compose button entirely — verified on the iPhone 16 Pro
+    // simulator, iOS 26 — so the selected-but-invisible state is only
+    // reachable in the regular-width split view, where the sidebar keeps its
+    // toolbar beside the open conversation.
+    try XCTSkipIf(
+      app.windows.firstMatch.frame.width < 700,
+      "Compose-under-active-search is only reachable in the regular-width split view"
+    )
+    // iPadOS 26 opens straight onto the conversations column (sidebar-tab
+    // layout, no `tab.*` bar to select from); older runtimes need the tab.
+    if app.descendants(matching: .any)["conversation.list"].waitForExistence(timeout: 2) == false {
+      selectTab("tab.conversations", in: app)
+    }
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    let row = element("conversation.row.shared-plan", in: app)
+
+    let searchField = app.searchFields.firstMatch
+    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    searchField.tap()
+    searchField.typeText("nonexistent conversation title")
+    XCTAssertTrue(row.waitForNonExistence(timeout: 5))
+    // Commit the search (keyboard "Search" key): the query stays, the
+    // keyboard goes, and the collapsed navigation bar gives the toolbar —
+    // and with it the compose button — back.
+    searchField.typeText("\n")
+
+    // The fake store's create dedups by agent, so compose here reopens the
+    // (populated) shared-plan conversation rather than a fresh one — exactly
+    // the row the search just hid.
+    // iOS 18's `.searchable` collapses the sidebar's navigation bar to
+    // search-field + Cancel for the whole active search, hiding the compose
+    // toolbar item — there the bug is unreachable, and this test has nothing
+    // to prove. iOS 26 keeps the toolbar beside the search field.
+    let compose = app.descendants(matching: .any)["conversation.new"]
+    try XCTSkipUnless(
+      compose.waitForExistence(timeout: 3),
+      "This runtime hides the compose toolbar item while a search is active"
+    )
+    waitUntilEnabled(compose)
+    compose.tap()
+    XCTAssertTrue(element("chat.transcript", in: app).waitForExistence(timeout: 5))
+
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    XCTAssertTrue(
+      element("conversation.row.shared-plan", in: app).waitForExistence(timeout: 5),
+      "Expected compose to clear the active search so the opened conversation's row is visible"
+    )
+  }
+
   func testIPhoneBackReturnsToConversationListInSameTab() throws {
     let app = launch(scenario: "paired-online")
     try XCTSkipIf(app.windows.firstMatch.frame.width >= 700, "Compact navigation is iPhone-only")
