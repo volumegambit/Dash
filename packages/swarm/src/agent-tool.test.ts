@@ -1,6 +1,23 @@
+import type { AgentEvent } from '@dash/agent';
 import { createAgentTools } from './agent-tool.js';
-import type { SwarmCoordinator } from './coordinator.js';
-import { builtinSubagentTypes, createStaticResolver } from './subagent-types.js';
+import { SwarmCoordinator } from './coordinator.js';
+import {
+  type ResolvedSubagentType,
+  type SubagentTypeResolver,
+  builtinSubagentTypes,
+  createStaticResolver,
+} from './subagent-types.js';
+import type { WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
+
+/** The orchestrator's default grant (coordinator.ts DEFAULT_TOOL_NAMES). */
+const PARENT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+
+type AgentSchema = {
+  properties: {
+    subagent_type: { description: string };
+    name: { pattern?: string };
+  };
+};
 
 function makeCoordinator(overrides: Partial<Record<string, unknown>> = {}) {
   const spawned: unknown[] = [];
@@ -75,18 +92,65 @@ describe('agent tool', () => {
     expect(r.details).toMatchObject({ subagentId: 'w1', status: 'done', toolCallCount: 2 });
   });
 
-  it('Explore gets read-only tools and skipMemory', async () => {
+  it('Explore gets only the grantable read-only tools, plus skipMemory/oneShot', async () => {
     const c = makeCoordinator();
-    const [agent] = createAgentTools(base(c));
+    const [agent] = createAgentTools({ ...base(c), parentTools: () => PARENT_TOOLS });
     await agent.execute('t1', { prompt: 'p', description: 'd', subagent_type: 'Explore' });
+    // load_skill is rejected outright by validateTools; web_fetch/web_search are
+    // not in the parent's grant. Only the intersection may be requested.
     expect(c.spawnWorker).toHaveBeenCalledWith(
       'a',
       'c',
       expect.objectContaining({
-        tools: ['read', 'grep', 'find', 'ls', 'web_fetch', 'web_search', 'load_skill'],
+        tools: ['read', 'grep', 'find', 'ls'],
         skipMemory: true,
         oneShot: true,
       }),
+    );
+    const granted = (c.spawned[0] as { tools: string[] }).tools;
+    expect(granted).not.toContain('load_skill');
+    expect(granted).not.toContain('web_fetch');
+  });
+
+  it('the roster advertises exactly the tools the spawn requests', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools({ ...base(c), parentTools: () => PARENT_TOOLS });
+    await agent.execute('t', { prompt: 'p', description: 'd' });
+    const granted = (c.spawned[0] as { tools: string[] }).tools;
+    const schema = agent.parameters as AgentSchema;
+    const line = schema.properties.subagent_type.description
+      .split('\n')
+      .find((l) => l.startsWith('- general-purpose:'));
+    expect(line).toContain(`(Tools: ${granted.join(', ')})`);
+    expect(granted).toEqual(PARENT_TOOLS);
+  });
+
+  it('advertises the name pattern in the schema', () => {
+    const [agent] = createAgentTools(base(makeCoordinator()));
+    const schema = agent.parameters as AgentSchema;
+    expect(schema.properties.name.pattern).toBe('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$');
+  });
+
+  it('renders the roster lazily so types registered later show up', () => {
+    const types = builtinSubagentTypes();
+    const resolver: SubagentTypeResolver = {
+      list: () => [...types],
+      resolve: (name) => types.find((t) => t.name === name),
+    };
+    const [agent] = createAgentTools({ ...base(makeCoordinator()), resolver });
+    expect((agent.parameters as AgentSchema).properties.subagent_type.description).not.toContain(
+      '- reviewer:',
+    );
+    const reviewer: ResolvedSubagentType = {
+      name: 'reviewer',
+      description: 'Reviews diffs.',
+      systemPrompt: 'review',
+      tools: ['read'],
+      source: 'workspace',
+    };
+    types.push(reviewer);
+    expect((agent.parameters as AgentSchema).properties.subagent_type.description).toContain(
+      '- reviewer:',
     );
   });
 
@@ -136,5 +200,91 @@ describe('agent tool', () => {
     await expect(send.execute('t', { to: 'ghost', message: 'm' })).rejects.toThrow(
       /No agent named or with id "ghost"/,
     );
+  });
+});
+
+/** A worker backend whose chat() blocks forever, so spawned children stay live. */
+class IdleBackend implements WorkerBackend {
+  private release: (() => void) | undefined;
+
+  async *chat(_message: string): AsyncGenerator<AgentEvent> {
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  abort(): void {
+    this.release?.();
+  }
+
+  async stop(): Promise<void> {}
+}
+
+/**
+ * The fake coordinator above validates nothing, so these run the `agent` tool
+ * against a REAL SwarmCoordinator: its `validateTools` is what rejects
+ * `load_skill` and tools the orchestrator does not hold.
+ */
+describe('agent tool against a real SwarmCoordinator', () => {
+  function setup(orchestratorTools?: string[]) {
+    const specs: WorkerSpec[] = [];
+    const factory: WorkerFactory = (spec) => {
+      specs.push(spec);
+      return Promise.resolve(new IdleBackend());
+    };
+    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const attachment = coordinator.attach({
+      agentId: 'a',
+      agentName: 'A',
+      conversationId: 'c',
+      orchestratorModel: 'orch-model',
+      orchestratorTools,
+    });
+    const [agent] = createAgentTools({
+      coordinator,
+      agentId: 'a',
+      conversationId: () => 'c',
+      resolver: createStaticResolver(builtinSubagentTypes()),
+      backgroundMode: 'turn-scoped',
+      parentTools: () => orchestratorTools ?? PARENT_TOOLS,
+    });
+    return { coordinator, attachment, specs, agent };
+  }
+
+  it('spawns Explore without tripping validateTools', async () => {
+    const { attachment, specs, agent } = setup();
+    await expect(
+      agent.execute('t', {
+        prompt: 'p',
+        description: 'd',
+        subagent_type: 'Explore',
+        run_in_background: true,
+      }),
+    ).resolves.toBeDefined();
+    expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls']);
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('spawns general-purpose with the parent grant, not the default subset', async () => {
+    const { attachment, specs, agent } = setup();
+    await expect(
+      agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true }),
+    ).resolves.toBeDefined();
+    expect(specs[0].tools).toEqual(PARENT_TOOLS);
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('never requests a tool the orchestrator itself lacks', async () => {
+    const { attachment, specs, agent } = setup(['read', 'grep']);
+    await expect(
+      agent.execute('t', {
+        prompt: 'p',
+        description: 'd',
+        subagent_type: 'Plan',
+        run_in_background: true,
+      }),
+    ).resolves.toBeDefined();
+    expect(specs[0].tools).toEqual(['read', 'grep']);
+    attachment.finalize({ consumerAlive: true });
   });
 });

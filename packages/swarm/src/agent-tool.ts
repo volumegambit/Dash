@@ -41,7 +41,48 @@ const TURN_SCOPED_NOTE =
 
 const DETACHED_NOTE = ' You will be notified when it completes.';
 
-const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const NAME_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
+const NAME_RE = new RegExp(NAME_PATTERN);
+
+/**
+ * The coordinator's spawnable universe (`UNIVERSE` in coordinator.ts). Kept in
+ * sync by `grantableTools`'s tests, which spawn against a real SwarmCoordinator.
+ */
+const SPAWNABLE_TOOLS: ReadonlySet<string> = new Set([
+  'read',
+  'bash',
+  'edit',
+  'write',
+  'grep',
+  'find',
+  'ls',
+  'web_fetch',
+  'web_search',
+]);
+
+/**
+ * The exact tool list `SwarmCoordinator.validateTools` will accept for a child:
+ * the type's request (or the parent's own grant when the type asks for none),
+ * intersected with the spawnable universe AND with the parent's tools, minus
+ * anything mcp- or skill-shaped. The roster and the spawn both read this, so
+ * what the model is told it gets and what it actually gets are identical by
+ * construction.
+ *
+ * PHASE A STOPGAP. Task B4's `resolveChildTools` replaces this with the full
+ * resolution: `disallowedTools`, `mcp__*` patterns, the `agent(a,b)` spawnable-
+ * type restriction, model aliases, and skill preloading.
+ */
+export function grantableTools(typeTools: string[] | undefined, parentTools: string[]): string[] {
+  const parent = new Set(parentTools);
+  const granted: string[] = [];
+  for (const tool of typeTools ?? parentTools) {
+    if (granted.includes(tool)) continue;
+    if (/^mcp/.test(tool) || /_skill$/.test(tool)) continue;
+    if (!SPAWNABLE_TOOLS.has(tool) || !parent.has(tool)) continue;
+    granted.push(tool);
+  }
+  return granted;
+}
 
 export interface CreateAgentToolsOptions {
   coordinator: SwarmCoordinator;
@@ -70,60 +111,70 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
   const convo = () => opts.conversationId();
   const childDepth = (opts.depth ?? 0) + 1;
 
+  const toolsFor = (typeTools: string[] | undefined) =>
+    grantableTools(typeTools, opts.parentTools());
+
   const rosterDescription = () => {
-    const roster = buildRosterText(resolver.list(), (t) =>
-      t.tools ? t.tools.join(', ') : opts.parentTools().join(', '),
-    );
+    const roster = buildRosterText(resolver.list(), (t) => toolsFor(t.tools).join(', '));
     return `${roster}\nDefaults to general-purpose.`;
   };
 
-  const parameters = {
-    type: 'object',
-    properties: {
-      prompt: {
-        type: 'string',
-        description:
-          'The task for the agent to perform. Self-contained: it does not ' +
-          'see this conversation.',
+  /**
+   * Rebuilt on every read (the `parameters` getter below). PiAgentBackend's
+   * `buildCustomTools` copies `parameters` by value at wrap time, so a lazy
+   * getter is what lets `refreshCustomTools()` pick up a changed roster.
+   */
+  const buildParameters = () =>
+    ({
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description:
+            'The task for the agent to perform. Self-contained: it does not ' +
+            'see this conversation.',
+        },
+        description: {
+          type: 'string',
+          description: 'A short (3-5 word) description of the task, shown in the UI.',
+        },
+        subagent_type: { type: 'string', description: rosterDescription() },
+        model: {
+          type: 'string',
+          description:
+            'Optional model override: a provider/model id, an alias (fable, ' +
+            'opus, sonnet, haiku), or inherit.',
+        },
+        name: {
+          type: 'string',
+          pattern: NAME_PATTERN,
+          description:
+            'Optional name; makes the agent addressable via send_message ' +
+            'while running and after it finishes.',
+        },
+        run_in_background: {
+          type: 'boolean',
+          description:
+            'Run concurrently and notify this conversation on completion. ' +
+            'Default false. Use for long independent work.',
+        },
+        isolation: {
+          type: 'string',
+          enum: ['worktree'],
+          description: 'Give the agent its own git worktree of the workspace.',
+        },
       },
-      description: {
-        type: 'string',
-        description: 'A short (3-5 word) description of the task, shown in the UI.',
-      },
-      subagent_type: { type: 'string', description: rosterDescription() },
-      model: {
-        type: 'string',
-        description:
-          'Optional model override: a provider/model id, an alias (fable, ' +
-          'opus, sonnet, haiku), or inherit.',
-      },
-      name: {
-        type: 'string',
-        description:
-          'Optional name; makes the agent addressable via send_message ' +
-          'while running and after it finishes.',
-      },
-      run_in_background: {
-        type: 'boolean',
-        description:
-          'Run concurrently and notify this conversation on completion. ' +
-          'Default false. Use for long independent work.',
-      },
-      isolation: {
-        type: 'string',
-        enum: ['worktree'],
-        description: 'Give the agent its own git worktree of the workspace.',
-      },
-    },
-    required: ['prompt', 'description'],
-    additionalProperties: false,
-  } as const;
+      required: ['prompt', 'description'],
+      additionalProperties: false,
+    }) as const;
 
   const agent: SwarmExtraTool = {
     name: 'agent',
     label: 'Agent',
     description: AGENT_TOOL_DESCRIPTION,
-    parameters,
+    get parameters() {
+      return buildParameters();
+    },
     execute: async (_id, params, signal) => {
       const p = asRecord(params);
       const prompt = typeof p.prompt === 'string' ? p.prompt : '';
@@ -159,7 +210,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
       const { workerId } = coordinator.spawnWorker(agentId, convo(), {
         role: name ?? type.name,
         brief: prompt,
-        tools: type.tools,
+        tools: toolsFor(type.tools),
         model,
         subagentType: type.name,
         description,
