@@ -198,10 +198,11 @@ describe('final-review fix wave', () => {
 
 describe('chat-ux Phase 3 Task 4 (audit #18, #13 remainder): motion + empty states', () => {
   it('gates the message entrance fade-rise keyframe animation under prefers-reduced-motion: ' +
-    'no-preference — the only place `.chat-message`/`.chat-message-streaming` declare an ' +
-    '`animation` at all is inside that media query', () => {
+    'no-preference — the only place `.chat-message-enter`/`.chat-message-streaming` declare an ' +
+    '`animation` at all is inside that media query (Phase 4 Task 1 narrowed the row selector ' +
+    'from `.chat-message` to `.chat-message-enter`, the live-arrival class)', () => {
     expect(css).toMatch(
-      /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-message,\s*\.chat-message-streaming\s*{\s*animation:\s*message-enter/,
+      /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-message-enter,\s*\.chat-message-streaming\s*{\s*animation:\s*message-enter/,
     );
     // `message-enter` is referenced by exactly one declaration (the gated
     // one above) — never duplicated ungated elsewhere in the file.
@@ -246,5 +247,24 @@ describe('chat-ux Phase 3 Task 4 (audit #18, #13 remainder): motion + empty stat
     expect(css).toMatch(
       /@media \(prefers-reduced-motion: no-preference\) {\s*\.chat-empty-state-prompt\s*{\s*transition:/,
     );
+  });
+});
+
+describe('styles.css transcript performance (chat-ux Phase 4 Task 1, audit #21 + minor 10)', () => {
+  it('animates only rows that arrive live (.chat-message-enter), not every mounted .chat-message', () => {
+    // Several `no-preference` blocks exist; scope to the one under the
+    // entrance-animation comment, same disambiguation as `mobileDrawerBlock`.
+    const start = css.indexOf('Message entrance animation');
+    expect(start).toBeGreaterThan(-1);
+    const block = ruleBlock('@media (prefers-reduced-motion: no-preference)', css.slice(start));
+    expect(block).toContain('.chat-message-enter');
+    expect(block).toContain('.chat-message-streaming');
+    expect(block).not.toMatch(/\.chat-message\s*,/);
+  });
+
+  it('lets the browser skip layout/paint for offscreen rows via content-visibility', () => {
+    const block = ruleBlock('.chat-message');
+    expect(block).toContain('content-visibility: auto');
+    expect(block).toMatch(/contain-intrinsic-size:\s*auto/);
   });
 });

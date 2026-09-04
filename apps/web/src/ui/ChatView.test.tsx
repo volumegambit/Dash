@@ -1195,6 +1195,69 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
   });
 });
 
+describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)', () => {
+  // Phase 3's `.chat-message` entrance animation fired on MOUNT, and every
+  // row mounts at once when a conversation is opened or switched to — a
+  // burst of N simultaneous fade-ups, not an entrance. Only rows that arrive
+  // while the transcript is already showing (an optimistic send, a
+  // finalized reply) should animate; rows that came with the conversation
+  // load must render settled.
+  it('rows loaded with the conversation carry no entrance class; a row that arrives live does', async () => {
+    const { sockets } = await renderConnected({
+      messages: [
+        message({ id: 'm-1', content: { type: 'user', text: 'Ping' } }),
+        message({ id: 'm-2', role: 'assistant', content: { type: 'assistant', events: [] } }),
+      ],
+    });
+    await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(2));
+    for (const row of screen.getAllByTestId('chat-message')) {
+      expect(row.classList.contains('chat-message-enter')).toBe(false);
+    }
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+
+    await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(3));
+    const rows = screen.getAllByTestId('chat-message');
+    expect(rows[0].classList.contains('chat-message-enter')).toBe(false);
+    expect(rows[1].classList.contains('chat-message-enter')).toBe(false);
+    expect(rows[2].classList.contains('chat-message-enter')).toBe(true);
+  });
+
+  it('switching to another already-populated conversation animates none of its rows', async () => {
+    const rest = fakeRest({ items: [summary(), summary({ id: 'conv-2' })], nextCursor: null }, [
+      message({ id: 'm-1', content: { type: 'user', text: 'Ping' } }),
+      message({ id: 'm-2', role: 'assistant', content: { type: 'assistant', events: [] } }),
+    ]);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(2));
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId="conv-2" gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(2));
+    sockets[1].open();
+    await waitFor(() => expect(store.getState().transcripts['conv-2']?.messages).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(2));
+    for (const row of screen.getAllByTestId('chat-message')) {
+      expect(row.classList.contains('chat-message-enter')).toBe(false);
+    }
+  });
+});
+
 describe('ChatView message row memoization', () => {
   beforeEach(() => {
     vi.mocked(ContentBlocks).mockClear();

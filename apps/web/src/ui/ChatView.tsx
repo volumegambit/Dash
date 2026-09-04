@@ -348,12 +348,17 @@ function MessageEditor({
  */
 const MessageRow = memo(function MessageRow({
   message,
+  entrance,
   canAct,
   isRetryable,
   onRetry,
   onEditResend,
 }: {
   message: ConversationMessage;
+  /** Phase 4 Task 1 (minor 10): `true` only for rows that arrived while the
+   * transcript was already showing — see `markLiveMessages`. Stable for a
+   * given message (never flips back), so it doesn't defeat the memo. */
+  entrance: boolean;
   canAct: boolean;
   isRetryable: boolean;
   onRetry: (messageId: string) => void;
@@ -403,7 +408,11 @@ const MessageRow = memo(function MessageRow({
   }
 
   return (
-    <div data-testid="chat-message" data-role={message.role} className="chat-message">
+    <div
+      data-testid="chat-message"
+      data-role={message.role}
+      className={entrance ? 'chat-message chat-message-enter' : 'chat-message'}
+    >
       <ContentBlocks content={message.content} />
       <MessageToolbar
         message={message}
@@ -421,6 +430,50 @@ const MessageRow = memo(function MessageRow({
     </div>
   );
 });
+
+/**
+ * Entrance-animation bookkeeping (chat-ux Phase 4 Task 1, minor 10). Phase
+ * 3's fade-up fired on MOUNT of every `.chat-message`, so opening or
+ * switching to a conversation animated all N rows at once — a burst, not an
+ * entrance. Only rows that arrive while the transcript is already showing
+ * (an optimistic send, a finalized reply, a message merged in from another
+ * device) should animate; rows that came with the conversation's load must
+ * render settled, matching Claude/ChatGPT.
+ *
+ * Per conversation: `loaded` is every id present the FIRST time the
+ * transcript is defined for it (the store only defines `transcripts[id]`
+ * once the history replay has merged in — see `openConversation` — so this
+ * is the loaded batch, never a half-populated one); `live` accumulates every
+ * id seen after that and is never pruned, so a row keeps its class for its
+ * whole life instead of losing it on the next streaming-token re-render
+ * (which would cut the 0.2s animation short). Deterministic and idempotent
+ * for a given input, so calling it during render is safe under StrictMode's
+ * double invocation.
+ */
+interface EntranceLedger {
+  loaded: Set<string>;
+  live: Set<string>;
+}
+
+function markLiveMessages(
+  ledgers: Map<string, EntranceLedger>,
+  conversationId: string | null,
+  transcript: Transcript | undefined,
+): ReadonlySet<string> {
+  if (!conversationId || !transcript) return EMPTY_ID_SET;
+  let ledger = ledgers.get(conversationId);
+  if (!ledger) {
+    ledger = { loaded: new Set(transcript.messages.map((m) => m.id)), live: new Set() };
+    ledgers.set(conversationId, ledger);
+    return ledger.live;
+  }
+  for (const message of transcript.messages) {
+    if (!ledger.loaded.has(message.id)) ledger.live.add(message.id);
+  }
+  return ledger.live;
+}
+
+const EMPTY_ID_SET: ReadonlySet<string> = new Set();
 
 /**
  * Cheap "did new content arrive that scroll-follow should react to" signal
@@ -530,6 +583,8 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // `conversationId` changes, and `updateDraft` keeps the map in sync on
   // every keystroke so switching away and back round-trips it.
   const draftsRef = useRef(new Map<string, string>());
+  // Entrance-animation ledgers (Phase 4 Task 1, minor 10) — see `markLiveMessages`.
+  const entranceLedgersRef = useRef(new Map<string, EntranceLedger>());
   const [draft, setDraftState] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -651,6 +706,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   const messages = transcript?.messages ?? [];
   const streaming = transcript?.streaming ?? null;
+  const liveMessageIds = markLiveMessages(entranceLedgersRef.current, conversationId, transcript);
   const canSend = connection === 'connected';
   // Retry eligibility (chat-ux Phase 2 Task 4, audit #5): a turn counts as
   // failed if EITHER its user message failed to send in the first place
@@ -745,6 +801,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
               <MessageRow
                 key={message.id}
                 message={message}
+                entrance={liveMessageIds.has(message.id)}
                 canAct={canSend && !isStreaming}
                 isRetryable={
                   message.role === 'user' &&
