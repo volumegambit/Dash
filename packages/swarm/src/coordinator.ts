@@ -333,7 +333,12 @@ export class SwarmCoordinator {
       return all.filter((w) => set.has(w.workerId));
     };
 
-    const isTerminal = (s: WorkerStatus) => s === 'done' || s === 'failed' || s === 'cancelled';
+    const isTerminal = (s: WorkerStatus) =>
+      s === 'done' ||
+      s === 'failed' ||
+      s === 'cancelled' ||
+      s === 'interrupted' ||
+      s === 'max_turns';
 
     const settled = (): boolean => {
       const refs = referenced();
@@ -612,7 +617,13 @@ export class SwarmCoordinator {
   }
 
   private isHandleTerminal(status: WorkerStatus): boolean {
-    return status === 'done' || status === 'failed' || status === 'cancelled';
+    return (
+      status === 'done' ||
+      status === 'failed' ||
+      status === 'cancelled' ||
+      status === 'interrupted' ||
+      status === 'max_turns'
+    );
   }
 
   private pushHistory(agentId: string, snap: RunSnapshot): void {

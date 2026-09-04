@@ -33,7 +33,13 @@ export interface RunSnapshot extends RunSummary {
   workers: RunWorkerSnapshot[];
 }
 
-const TERMINAL: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>(['done', 'failed', 'cancelled']);
+const TERMINAL: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
+  'done',
+  'failed',
+  'cancelled',
+  'interrupted',
+  'max_turns',
+]);
 
 export interface SwarmRunOptions {
   runId: string;
@@ -262,7 +268,7 @@ export class SwarmRun {
       if (!only.has(id)) continue;
       const h = this.handles.get(id) as WorkerHandle;
       if (!TERMINAL.has(h.status)) continue;
-      const status = h.status as 'done' | 'failed' | 'cancelled';
+      const status = h.status as 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
       events.push({
         type: 'worker_done',
         workerId: h.workerId,

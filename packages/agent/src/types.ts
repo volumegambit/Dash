@@ -28,6 +28,8 @@ export interface ImageBlock {
 
 // --- Agent types ---
 
+export type SubagentTerminalStatus = 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
+
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -76,9 +78,45 @@ export type AgentEvent =
       workerId: string;
       runId: string;
       role: string;
-      status: 'done' | 'failed' | 'cancelled';
+      status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
       report: string;
       usage?: { inputTokens: number; outputTokens: number };
+    }
+  | {
+      type: 'subagent_started';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      prompt: string;
+      model: string;
+      background: boolean;
+      depth: number;
+      startedAt: string;
+      isolation?: 'worktree';
+      parentTurnId?: string;
+    }
+  | {
+      type: 'subagent_progress';
+      subagentId: string;
+      status: 'running' | 'waiting_input';
+      toolCallCount: number;
+      elapsedMs: number;
+      detail?: string;
+      question?: string;
+    }
+  | {
+      type: 'subagent_finished';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      status: SubagentTerminalStatus;
+      report: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      toolCallCount: number;
+      startedAt: string;
+      endedAt: string;
     }
   | { type: 'agent_retry'; attempt: number; reason: string }
   | { type: 'context_compacted'; overflow: boolean }

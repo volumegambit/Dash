@@ -19,6 +19,16 @@ export interface WorkerSpec {
   tools: string[];
   /** Worker-side extra tools (ask_orchestrator) built by the coordinator. */
   extraTools: SwarmExtraTool[];
+  subagentType?: string; // defaults 'general-purpose'
+  description?: string; // 3-5 words for UI
+  name?: string; // addressable name
+  systemPrompt?: string; // definition body (+ preloaded skills); preamble is prepended by wiring
+  background?: boolean;
+  isolation?: 'worktree';
+  skipMemory?: boolean; // Explore/Plan
+  maxTurns?: number;
+  oneShot?: boolean; // Explore/Plan: not resumable
+  depth?: number; // 1 for a direct child
 }
 
 export type WorkerFactory = (spec: WorkerSpec) => Promise<WorkerBackend>;
@@ -42,7 +52,9 @@ export type WorkerStatus =
   | 'waiting_input'
   | 'done'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'interrupted'
+  | 'max_turns';
 
 export interface SwarmCaps {
   maxConcurrentWorkers: number; // 8

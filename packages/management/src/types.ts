@@ -345,7 +345,9 @@ export type SwarmWorkerStatus =
   | 'waiting_input'
   | 'done'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'interrupted'
+  | 'max_turns';
 
 /** A worker as surfaced to the swarm panel. Mirror of `RunWorkerSnapshot`. */
 export interface SwarmRunWorkerSnapshot {
