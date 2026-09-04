@@ -4,7 +4,7 @@ import { AsyncChannel } from './channel.js';
 import { type RunSnapshot, type RunSummary, type RunWorkerSnapshot, SwarmRun } from './run.js';
 import { createAskOrchestratorTool } from './tools.js';
 import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
-import type { WorkerHandleOptions } from './worker-handle.js';
+import { DEFAULT_SUBAGENT_TYPE, type WorkerHandleOptions } from './worker-handle.js';
 
 export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
 
@@ -247,6 +247,8 @@ export class SwarmCoordinator {
       skipMemory?: boolean;
       maxTurns?: number;
       oneShot?: boolean;
+      /** 1 (the default) for a direct child; the `agent` tool passes childDepth. */
+      depth?: number;
     },
   ): { workerId: string; status: 'spawning' } {
     const k = key(agentId, conversationId);
@@ -312,6 +314,7 @@ export class SwarmCoordinator {
       skipMemory: p.skipMemory,
       maxTurns: p.maxTurns,
       oneShot: p.oneShot,
+      depth: p.depth,
     };
 
     // Synchronous registration + sync emits before any await returns to caller.
@@ -333,12 +336,20 @@ export class SwarmCoordinator {
       model,
     });
     run.channel.push({ type: 'agent_spawned', name: p.role });
-    run.register({ spec, hooks: this.hooks }, (handle) =>
-      this.workerFactory({
-        ...spec,
-        extraTools: [createAskOrchestratorTool(handle, run.closed)],
-      }),
-    );
+    try {
+      run.register({ spec, hooks: this.hooks }, (handle) =>
+        this.workerFactory({
+          ...spec,
+          extraTools: [createAskOrchestratorTool(handle, run.closed)],
+        }),
+      );
+    } catch (err) {
+      // register() is documented never to throw, but the worker_spawned card is
+      // already on the stream: terminalize the phantom before rethrowing so no
+      // client is left with a card that can never complete.
+      this.terminalizePhantom(run, workerId, p, err);
+      throw err;
+    }
 
     this.onRunChanged?.(turn.opts.agentId, run.runId);
 
@@ -456,15 +467,30 @@ export class SwarmCoordinator {
       },
       signal,
     );
-    if (!w) throw new Error(`unknown worker ${workerId}`);
-    // Not terminal => the wait settled on run-closed or the wall clock; go round
-    // again (a closed run has already cancelled its workers, so this terminates).
-    if (!TERMINAL_STATUSES.has(w.status)) {
-      return this.waitWorker(agentId, conversationId, workerId, signal);
+    const snapshot = () =>
+      this.workersFor(agentId, conversationId).find((s) => s.workerId === workerId);
+    if (!w) {
+      // No live run referenced the worker. It may still be terminal in this
+      // conversation's most recent finalized run — the same view findWorker
+      // returns — so agree with findWorker instead of throwing.
+      const historic = snapshot();
+      if (historic && TERMINAL_STATUSES.has(historic.status)) return historic;
+      throw new Error(`unknown worker ${workerId}`);
     }
-    const snapshot = this.workersFor(agentId, conversationId).find((s) => s.workerId === workerId);
-    if (!snapshot) throw new Error(`unknown worker ${workerId}`);
-    return snapshot;
+    if (!TERMINAL_STATUSES.has(w.status)) {
+      // The wait settled without a terminal status: either the wall-clock
+      // timeout (retry) or a closed run. NEVER retry on a closed run: `closed`
+      // resolves waitWorkers synchronously, so the retry would re-enter on a
+      // microtask forever and starve the event loop. A closed run also cannot
+      // produce another transition, so the current snapshot is final.
+      const run = this.getLiveRun(agentId, conversationId);
+      if (run && !run.closed.aborted) {
+        return this.waitWorker(agentId, conversationId, workerId, signal);
+      }
+    }
+    const current = snapshot();
+    if (!current) throw new Error(`unknown worker ${workerId}`);
+    return current;
   }
 
   /**
@@ -722,6 +748,44 @@ export class SwarmCoordinator {
 
   private isHandleTerminal(status: WorkerStatus): boolean {
     return TERMINAL_STATUSES.has(status);
+  }
+
+  /**
+   * Emit the terminal pair for a worker whose `worker_spawned` card reached the
+   * stream but whose registration failed. Mirrors WorkerHandle's ordering:
+   * legacy `worker_done` first, then `subagent_finished`.
+   */
+  private terminalizePhantom(
+    run: SwarmRun,
+    workerId: string,
+    p: { role: string; name?: string; subagentType?: string; description?: string },
+    err: unknown,
+  ): void {
+    const report = err instanceof Error ? err.message : String(err);
+    const nowIso = new Date().toISOString();
+    const usage = { inputTokens: 0, outputTokens: 0 };
+    run.channel.push({
+      type: 'worker_done',
+      workerId,
+      runId: run.runId,
+      role: p.role,
+      status: 'failed',
+      report,
+      usage,
+    });
+    run.channel.push({
+      type: 'subagent_finished',
+      subagentId: workerId,
+      ...(p.name !== undefined ? { name: p.name } : {}),
+      subagentType: p.subagentType ?? DEFAULT_SUBAGENT_TYPE,
+      description: p.description ?? p.role,
+      status: 'failed',
+      report,
+      usage,
+      toolCallCount: 0,
+      startedAt: nowIso,
+      endedAt: nowIso,
+    });
   }
 
   /**

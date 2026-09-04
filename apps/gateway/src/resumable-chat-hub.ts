@@ -3,6 +3,7 @@ import type {
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
+import { isTransientAgentEvent } from '@dash/swarm';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import {
@@ -199,6 +200,17 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         if (result.done) break;
         const event = result.value;
         if (event.type === 'error') throw event.error;
+        if (isTransientAgentEvent(event)) {
+          // Spec §7.2: live-stream only. Subscribers still see it, but it is
+          // never persisted — hence no seq, and no row for a resume to replay.
+          broadcast(live, {
+            type: 'event',
+            id: live.turnId,
+            conversationId: live.conversationId,
+            event,
+          });
+          continue;
+        }
         const persisted = conversations.appendTurnEvent(live.conversationId, live.turnId, event);
         if (persisted) broadcast(live, frameFromPersisted(live, persisted));
       }

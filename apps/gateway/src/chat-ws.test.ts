@@ -687,6 +687,53 @@ describe('mountChatWs protocol ownership', () => {
     }
   });
 
+  it('broadcasts transient subagent_progress live but never appends it to the log', async () => {
+    const append = vi.fn(() => 7);
+    const eventLogStore = { append } as unknown as EventLogStore;
+    const harness = makeWsHarness({
+      eventLogStore,
+      streamFactory: () =>
+        makeScriptedStream([
+          {
+            type: 'subagent_progress',
+            subagentId: 'w-1',
+            status: 'running',
+            toolCallCount: 1,
+            elapsedMs: 12,
+          },
+          { type: 'text_delta', text: 'durable' },
+        ]),
+    });
+    const connection = harness.connect();
+
+    dispatch(connection, { ...RESUMABLE_MESSAGE, resumable: false });
+
+    await vi.waitFor(() =>
+      expect(sentFrames(connection.socket)).toContainEqual(
+        expect.objectContaining({ type: 'done' }),
+      ),
+    );
+    // Live delivery is unaffected — but the transient frame carries no seq
+    // because nothing was persisted for it.
+    const frames = sentFrames(connection.socket);
+    const progress = frames.find(
+      (frame) => frame.type === 'event' && frame.event.type === 'subagent_progress',
+    );
+    expect(progress).toBeDefined();
+    expect((progress as { seq?: number }).seq).toBeUndefined();
+    expect(
+      frames.some((frame) => frame.type === 'event' && frame.event.type === 'text_delta'),
+    ).toBe(true);
+
+    const payloads = append.mock.calls.map(
+      (call) => call[3] as { type: string; event?: AgentEvent },
+    );
+    expect(payloads.some((p) => p.type === 'event' && p.event?.type === 'subagent_progress')).toBe(
+      false,
+    );
+    expect(payloads.some((p) => p.type === 'event' && p.event?.type === 'text_delta')).toBe(true);
+  });
+
   it('preserves the /ws/chat token route and unauthorized 4001 close', () => {
     const harness = makeWsHarness({ token: 'secret' });
     expect(harness.app.routes).toEqual(

@@ -1,5 +1,6 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-contract';
+import { isTransientAgentEvent } from '@dash/swarm';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -517,10 +518,15 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                   // the WS. Order matters: if the WS is already
                   // dead, the log still captures the event so MC
                   // can replay it on reconnect.
-                  const seq = logPayload(agentId, convId, msg.id, {
-                    type: 'event',
-                    event: agentEvent,
-                  });
+                  // Transient events (spec §7.2) are live-stream only: broadcast
+                  // but never appended, so they carry no seq and never show up
+                  // in a resume replay.
+                  const seq = isTransientAgentEvent(agentEvent)
+                    ? undefined
+                    : logPayload(agentId, convId, msg.id, {
+                        type: 'event',
+                        event: agentEvent,
+                      });
                   sendServerMessage(ws, { type: 'event', id: msg.id, seq, event: agentEvent });
                 }
                 if (!controller.signal.aborted) {

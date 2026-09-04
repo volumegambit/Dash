@@ -135,6 +135,9 @@ function makeEventLog() {
   return { sink, appends };
 }
 
+/** Mirror of the coordinator's terminal set, for assertions. */
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'interrupted', 'max_turns']);
+
 const AGENT_ID = 'agent-1';
 const CONVO_ID = 'convo-1';
 
@@ -1248,6 +1251,91 @@ describe('SwarmCoordinator', () => {
       // The legacy mirror lands first, then the richer event.
       const types = events.map((e) => e.type);
       expect(types.indexOf('worker_done')).toBeLessThan(types.indexOf('subagent_finished'));
+    });
+  });
+
+  // A4 review fixes: retry guard, depth threading, phantom cleanup, history wait.
+  describe('named children (review fixes)', () => {
+    it('waitWorker returns the snapshot it has when the run closes non-terminal', async () => {
+      const { factory, backends } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      await backends[0].onNextSegment();
+      const run = coord.getLiveRun(AGENT_ID, CONVO_ID);
+      if (!run) throw new Error('expected a live run');
+
+      const waitP = coord.waitWorker(AGENT_ID, CONVO_ID, workerId);
+      // Abort `closed` WITHOUT cancelling the workers. run.finalize/onWallClock
+      // happen to cancelAll first today, but nothing enforces that, and an
+      // unguarded retry would re-enter on a microtask forever (starving the
+      // event loop) because an aborted `closed` settles waitWorkers at once.
+      (run as unknown as { closedController: AbortController }).closedController.abort();
+
+      const snap = await waitP;
+      expect(snap.workerId).toBe(workerId);
+      expect(TERMINAL.has(snap.status)).toBe(false);
+    }, 1_000);
+
+    it('threads depth into subagent_started, defaulting to 1', async () => {
+      const { coordinator, events } = setupLiveTurn();
+      const child = coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'grandchild',
+        brief: 'b',
+        depth: 2,
+      });
+      const direct = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'child', brief: 'b' });
+      await flush();
+      const startedFor = (id: string) =>
+        events.find((e) => e.type === 'subagent_started' && e.subagentId === id);
+      expect(startedFor(child.workerId)).toMatchObject({ depth: 2 });
+      expect(startedFor(direct.workerId)).toMatchObject({ depth: 1 });
+    });
+
+    it('terminalizes the phantom card when register throws', async () => {
+      const { coordinator, events } = setupLiveTurn();
+      coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'real', brief: 'b' });
+      const run = coordinator.getLiveRun(AGENT_ID, CONVO_ID);
+      if (!run) throw new Error('expected a live run');
+      run.register = () => {
+        throw new Error('register exploded');
+      };
+
+      expect(() =>
+        coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+          role: 'ghost',
+          brief: 'b',
+          name: 'ghost',
+          subagentType: 'Explore',
+        }),
+      ).toThrow(/register exploded/);
+      await flush();
+
+      const spawned = events.find((e) => e.type === 'worker_spawned' && e.role === 'ghost');
+      expect(spawned).toBeDefined();
+      const ghostId = spawned && 'workerId' in spawned ? spawned.workerId : '';
+      expect(events.find((e) => e.type === 'worker_done' && e.workerId === ghostId)).toMatchObject({
+        status: 'failed',
+        report: 'register exploded',
+      });
+      expect(
+        events.find((e) => e.type === 'subagent_finished' && e.subagentId === ghostId),
+      ).toMatchObject({ status: 'failed', name: 'ghost', subagentType: 'Explore' });
+    });
+
+    it('waitWorker agrees with findWorker after the turn finalizes', async () => {
+      const { coordinator, attachment } = setupLiveTurn();
+      const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      await flush();
+      attachment.finalize({ consumerAlive: true });
+
+      const snap = await coordinator.waitWorker(AGENT_ID, CONVO_ID, workerId);
+      expect(snap.workerId).toBe(workerId);
+      expect(snap.status).toBe('done');
+      expect(coordinator.findWorker(AGENT_ID, CONVO_ID, workerId)).toEqual(snap);
+      await expect(coordinator.waitWorker(AGENT_ID, CONVO_ID, 'nope')).rejects.toThrow(
+        /unknown worker nope/,
+      );
     });
   });
 });

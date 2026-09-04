@@ -20,7 +20,7 @@ export interface WorkerHandleOptions {
 const DEFAULT_HEARTBEAT_MS = 10_000;
 
 /** The default subagent type when a caller names none. */
-const DEFAULT_SUBAGENT_TYPE = 'general-purpose';
+export const DEFAULT_SUBAGENT_TYPE = 'general-purpose';
 
 /**
  * The legacy `worker_done` event is a MIRROR of `subagent_finished` kept for the

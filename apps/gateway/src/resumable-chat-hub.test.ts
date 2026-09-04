@@ -290,6 +290,50 @@ describe('ResumableChatHub', () => {
     );
   });
 
+  it('broadcasts a transient subagent_progress to subscribers without persisting it', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(sendFrame(conversation), sink);
+    scripted.emit({
+      type: 'subagent_progress',
+      subagentId: 'w-1',
+      status: 'running',
+      toolCallCount: 2,
+      elapsedMs: 10,
+    });
+    await waitForFrames(sink, 2);
+    scripted.emit({ type: 'text_delta', text: 'durable' });
+    await waitForFrames(sink, 3);
+    scripted.finish();
+    await waitForFrames(sink, 4);
+
+    // Live delivery is unaffected; the transient frame just carries no seq.
+    expect(sink.frames.map((frame) => frame.type)).toEqual(['accepted', 'event', 'event', 'done']);
+    expect(sink.frames[1]).toEqual({
+      type: 'event',
+      id: 'turn-01',
+      conversationId: conversation.id,
+      event: expect.objectContaining({ type: 'subagent_progress' }),
+    });
+    expect(sink.frames.map((frame) => frame.seq)).toEqual([1, undefined, 2, 3]);
+
+    const entries = conversations.eventLog.readSince(conversation.agentId, conversation.id, 0);
+    expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3]);
+    expect(
+      entries.some(
+        (entry) =>
+          entry.payload.type === 'event' && entry.payload.event.type === 'subagent_progress',
+      ),
+    ).toBe(false);
+    expect(
+      entries.some(
+        (entry) => entry.payload.type === 'event' && entry.payload.event.type === 'text_delta',
+      ),
+    ).toBe(true);
+  });
+
   it('retries one turn with original accepted IDs, durable replay, and one live generator', async () => {
     const conversation = createConversation();
     const scripted = register(conversation.id);

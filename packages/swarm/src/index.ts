@@ -10,6 +10,7 @@ export {
 } from './coordinator.js';
 export { scanSubagentOutput, type ScannedOutput } from './output-scan.js';
 export { SwarmRun, type SwarmRunOptions } from './run.js';
+export { isTransientAgentEvent } from './transient-events.js';
 export {
   createAskOrchestratorTool,
   createSwarmTools,
