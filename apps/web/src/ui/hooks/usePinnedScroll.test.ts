@@ -72,21 +72,49 @@ function Harness(props: UsePinnedScrollOptions) {
   );
 }
 
+/** Same seam for `ResizeObserver` (Phase 4 review I1): happy-dom has no
+ * functional one, so the hook takes a factory and the test fires it. */
+function fakeResizeObserverFactory() {
+  let capturedCallback: ResizeObserverCallback | null = null;
+  const observedElements: Element[] = [];
+  const factory = (callback: ResizeObserverCallback) => {
+    capturedCallback = callback;
+    return {
+      observe: (el: Element) => observedElements.push(el),
+      unobserve: () => {},
+      disconnect: () => {},
+    } as unknown as ResizeObserver;
+  };
+  return {
+    factory,
+    observedElements,
+    fireResize() {
+      if (!capturedCallback) throw new Error('resize callback was never captured');
+      const callback = capturedCallback;
+      act(() => {
+        callback([] as unknown as ResizeObserverEntry[], {} as unknown as ResizeObserver);
+      });
+    },
+  };
+}
+
 function renderHarness(overrides: Partial<UsePinnedScrollOptions> = {}) {
   const fake = fakeObserverFactory();
+  const resize = fakeResizeObserverFactory();
   const prefersReducedMotion = vi.fn(() => false);
   const utils = render(
     createElement(Harness, {
       resetKey: 'conv-1',
       contentSignature: 0,
       createObserver: fake.factory,
+      createResizeObserver: resize.factory,
       prefersReducedMotion,
       ...overrides,
     }),
   );
   const container = screen.getByTestId('container') as HTMLDivElement;
   const scrollToSpy = vi.spyOn(container, 'scrollTo');
-  return { ...utils, fake, container, scrollToSpy, prefersReducedMotion };
+  return { ...utils, fake, resize, container, scrollToSpy, prefersReducedMotion };
 }
 
 describe('usePinnedScroll', () => {
@@ -201,5 +229,33 @@ describe('usePinnedScroll', () => {
     // Snaps regardless of reduced-motion — a conversation switch is a
     // context change, not streamed content, so it's always 'auto'.
     expect(scrollToSpy).toHaveBeenCalledWith({ top: container.scrollHeight, behavior: 'auto' });
+  });
+
+  // Phase 4 review I1: with `content-visibility: auto` on rows (Task 1),
+  // rows below the first viewport are laid out at their placeholder height
+  // when the conversation opens, so the reset-time `scrollTo(scrollHeight)`
+  // lands short; a frame later the real heights arrive and the transcript
+  // sits ~one viewport above the bottom with `pinned` false. The same
+  // happens when attachment thumbnails finish decoding. Verified in Chrome
+  // by the reviewer. Cure: re-snap whenever the content resizes while the
+  // user is still following the bottom.
+  it('observes the transcript content for size changes and re-snaps (instant) while pinned (review I1)', () => {
+    const { resize, scrollToSpy, container } = renderHarness();
+    expect(resize.observedElements).toContain(screen.getByTestId('content'));
+    scrollToSpy.mockClear();
+
+    resize.fireResize();
+
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: container.scrollHeight, behavior: 'auto' });
+  });
+
+  it('does not re-snap on a content resize once the user has scrolled up', () => {
+    const { fake, resize, scrollToSpy } = renderHarness();
+    fake.fireIntersection(false);
+    scrollToSpy.mockClear();
+
+    resize.fireResize();
+
+    expect(scrollToSpy).not.toHaveBeenCalled();
   });
 });

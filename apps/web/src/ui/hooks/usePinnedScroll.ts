@@ -64,6 +64,9 @@ export interface UsePinnedScrollOptions {
     callback: IntersectionObserverCallback,
     options?: IntersectionObserverInit,
   ) => IntersectionObserver;
+  /** Test seam (Phase 4 review I1) — defaults to the real global
+   * `ResizeObserver` when one exists, otherwise a no-op. */
+  createResizeObserver?: (callback: ResizeObserverCallback) => ResizeObserver;
   /** Test seam for the reduced-motion check below (`window.matchMedia`
    * itself is present in happy-dom, but doesn't evaluate real OS/browser
    * preference — tests that care about the smooth-vs-auto choice inject
@@ -93,6 +96,13 @@ function defaultPrefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+function defaultCreateResizeObserver(callback: ResizeObserverCallback): ResizeObserver {
+  if (typeof ResizeObserver === 'undefined') {
+    return { observe() {}, unobserve() {}, disconnect() {} } as unknown as ResizeObserver;
+  }
+  return new ResizeObserver(callback);
+}
+
 function defaultCreateObserver(
   callback: IntersectionObserverCallback,
   options?: IntersectionObserverInit,
@@ -104,6 +114,7 @@ export function usePinnedScroll({
   resetKey,
   contentSignature,
   createObserver = defaultCreateObserver,
+  createResizeObserver = defaultCreateResizeObserver,
   prefersReducedMotion = defaultPrefersReducedMotion,
 }: UsePinnedScrollOptions): UsePinnedScrollResult {
   // Backed by state (not `useRef`) so attachment itself is observable — see
@@ -148,6 +159,24 @@ export function usePinnedScroll({
     observer.observe(sentinelEl);
     return () => observer.disconnect();
   }, [createObserver, containerEl, sentinelEl]);
+
+  // Content resize while pinned → re-snap (Phase 4 review I1). With
+  // `content-visibility: auto` on rows, a freshly-opened transcript lays
+  // rows below the first viewport out at their placeholder height, so the
+  // reset snap below lands short and the real heights arrive a frame later;
+  // attachment thumbnails decoding late do the same. Watching the content
+  // element (the message column — the container's first child) and
+  // re-snapping instantly while the user is still following the bottom
+  // keeps every one of those honest. Never fires once unpinned.
+  useEffect(() => {
+    if (!containerEl) return;
+    const target = containerEl.firstElementChild ?? containerEl;
+    const observer = createResizeObserver(() => {
+      if (pinnedRef.current) scrollToBottom('auto');
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [createResizeObserver, containerEl, scrollToBottom]);
 
   // Conversation switch (or first mount): re-pin and snap to the bottom —
   // this is a context change, not streamed content, so it's never smooth.

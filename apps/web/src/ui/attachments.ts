@@ -35,7 +35,7 @@ export interface PendingImageAttachment extends MobileImage {
   bytes: number;
 }
 
-function isImageMediaType(type: string): type is MobileImageMediaType {
+export function isImageMediaType(type: string): type is MobileImageMediaType {
   return (IMAGE_MEDIA_TYPES as readonly string[]).includes(type);
 }
 
@@ -80,8 +80,14 @@ export function validateImageFiles(
 }
 
 function toBase64(bytes: Uint8Array): string {
+  // Chunked (review M4): per-byte string concatenation over a 5 MB file is
+  // needlessly quadratic-ish; 32 KiB slices keep `fromCharCode`'s argument
+  // list under engine limits and the concat count small.
+  const chunk = 0x8000;
   let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
   return btoa(binary);
 }
 
@@ -112,4 +118,16 @@ export function imageFilesFrom(
     if (file && isImageMediaType(file.type)) files.push(file);
   }
   return files;
+}
+
+/**
+ * Whether a drag carries at least one image file — decided from `kind` and
+ * `type` ONLY. During `dragover` the drag data store is in protected mode
+ * and `getAsFile()` returns `null` by spec (Phase 4 review I2), so
+ * `imageFilesFrom` would always say "no" there; this is the check to use
+ * for accepting a drag. `drop` then reads `dataTransfer.files` for real.
+ */
+export function hasImageItems(items: DataTransferItemList | null | undefined): boolean {
+  if (!items) return false;
+  return Array.from(items).some((item) => item.kind === 'file' && isImageMediaType(item.type));
 }

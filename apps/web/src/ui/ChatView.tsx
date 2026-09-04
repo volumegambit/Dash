@@ -3,7 +3,9 @@ import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from '
 import type { Transcript } from '../state/assemble.js';
 import { useWebAppStore } from './Shell.js';
 import {
+  IMAGE_MEDIA_TYPES,
   type PendingImageAttachment,
+  hasImageItems,
   imageFilesFrom,
   readImageFile,
   validateImageFiles,
@@ -473,6 +475,15 @@ const MessageRow = memo(function MessageRow({
 interface EntranceLedger {
   loaded: Set<string>;
   live: Set<string>;
+  /** `turnId:role` of every turn that already made its entrance (review
+   * I3): the `accepted` frame swaps an optimistic user row's id for the
+   * gateway's `userMessageId`, which remounts the row — the new id must
+   * join `loaded`, not `live`, or it fades in a second time. */
+  liveTurns: Set<string>;
+}
+
+function turnKey(message: ConversationMessage): string {
+  return `${message.turnId}:${message.role}`;
 }
 
 function markLiveMessages(
@@ -480,15 +491,33 @@ function markLiveMessages(
   conversationId: string | null,
   transcript: Transcript | undefined,
 ): ReadonlySet<string> {
+  // Review I3: every OTHER conversation's live rows have had their entrance;
+  // fold them into `loaded` so switching back renders them settled.
+  for (const [id, other] of ledgers) {
+    if (id === conversationId || other.live.size === 0) continue;
+    for (const liveId of other.live) other.loaded.add(liveId);
+    other.live.clear();
+  }
   if (!conversationId || !transcript) return EMPTY_ID_SET;
   let ledger = ledgers.get(conversationId);
   if (!ledger) {
-    ledger = { loaded: new Set(transcript.messages.map((m) => m.id)), live: new Set() };
+    ledger = {
+      loaded: new Set(transcript.messages.map((m) => m.id)),
+      live: new Set(),
+      liveTurns: new Set(),
+    };
     ledgers.set(conversationId, ledger);
     return ledger.live;
   }
   for (const message of transcript.messages) {
-    if (!ledger.loaded.has(message.id)) ledger.live.add(message.id);
+    if (ledger.loaded.has(message.id) || ledger.live.has(message.id)) continue;
+    const key = turnKey(message);
+    if (ledger.liveTurns.has(key)) {
+      ledger.loaded.add(message.id);
+    } else {
+      ledger.live.add(message.id);
+      ledger.liveTurns.add(key);
+    }
   }
   return ledger.live;
 }
@@ -616,34 +645,54 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Which thread is open RIGHT NOW, readable after an `await` (review M1):
+  // a file read that resolves after a switch must land in the thread it was
+  // added to, and must not be displayed under the one now open.
+  const openConversationRef = useRef(conversationId);
+  openConversationRef.current = conversationId;
 
   useEffect(() => {
     setAttachments(conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : []);
     setAttachmentError(null);
   }, [conversationId]);
 
+  const storeAttachments = useCallback(
+    (forConversation: string, next: PendingImageAttachment[]) => {
+      if (next.length === 0) attachmentsRef.current.delete(forConversation);
+      else attachmentsRef.current.set(forConversation, next);
+      if (openConversationRef.current === forConversation) setAttachments(next);
+    },
+    [],
+  );
+
   const setConversationAttachments = useCallback(
     (next: PendingImageAttachment[]) => {
-      setAttachments(next);
-      if (!conversationId) return;
-      if (next.length === 0) attachmentsRef.current.delete(conversationId);
-      else attachmentsRef.current.set(conversationId, next);
+      if (conversationId) storeAttachments(conversationId, next);
+      else setAttachments(next);
     },
-    [conversationId],
+    [conversationId, storeAttachments],
   );
 
   const addImageFiles = useCallback(
     async (files: ReadonlyArray<File>) => {
-      if (files.length === 0) return;
-      const current = conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : [];
+      if (files.length === 0 || !conversationId) return;
+      const forConversation = conversationId;
+      const current = attachmentsRef.current.get(forConversation) ?? [];
       const { accepted, error } = validateImageFiles(current, files);
       setAttachmentError(error);
       if (accepted.length === 0) return;
       const read = await Promise.all(accepted.map(readImageFile));
-      const latest = conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : [];
-      setConversationAttachments([...latest, ...read]);
+      // Review M2: another add may have landed while these were being read
+      // — re-run the limits against what is attached NOW, not what was.
+      const latest = attachmentsRef.current.get(forConversation) ?? [];
+      const recheck = validateImageFiles(latest, accepted);
+      const kept = read.filter((_, index) => recheck.accepted.includes(accepted[index]));
+      if (recheck.error && openConversationRef.current === forConversation) {
+        setAttachmentError(recheck.error);
+      }
+      if (kept.length > 0) storeAttachments(forConversation, [...latest, ...kept]);
     },
-    [conversationId, setConversationAttachments],
+    [conversationId, storeAttachments],
   );
 
   const removeAttachment = useCallback(
@@ -933,7 +982,8 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
             void handleSend();
           }}
           onDragOver={(event) => {
-            if (imageFilesFrom(event.dataTransfer.items).length > 0) event.preventDefault();
+            // `kind`/`type` only — files aren't readable mid-drag (review I2).
+            if (hasImageItems(event.dataTransfer.items)) event.preventDefault();
           }}
           onDrop={(event) => {
             const files = imageFilesFrom(event.dataTransfer.files);
@@ -966,7 +1016,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
+            accept={IMAGE_MEDIA_TYPES.join(',')}
             multiple
             aria-label="Attach images"
             className="app-composer-file-input"

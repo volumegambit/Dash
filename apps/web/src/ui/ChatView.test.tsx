@@ -5,7 +5,15 @@ import type {
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
 import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
@@ -1225,6 +1233,82 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
     expect(rows[2].classList.contains('chat-message-enter')).toBe(true);
   });
 
+  // Phase 4 review I3: `live` ids were never folded into `loaded`, so
+  // switching away and back remounted every live row WITH the entrance
+  // class — the burst Task 1 set out to remove, on the second visit.
+  it('does not replay the entrance for rows that arrived live once the user switches away and back', async () => {
+    const OTHER_ID = 'conv-2';
+    const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(1));
+    expect(screen.getAllByTestId('chat-message')[0].classList.contains('chat-message-enter')).toBe(
+      true,
+    );
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(2));
+    sockets[1].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(3));
+    sockets[2].open();
+    await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(1));
+    expect(screen.getAllByTestId('chat-message')[0].classList.contains('chat-message-enter')).toBe(
+      false,
+    );
+  });
+
+  // Phase 4 review I3 (second half): the `accepted` frame swaps the
+  // optimistic user row's id for the gateway's `userMessageId`, which
+  // remounts the row — it must not animate in a second time.
+  it('does not animate the accepted-frame id reconciliation of an optimistic row a second time', async () => {
+    const { sockets, onFrames } = await renderConnected();
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    const turnId = sockets[0].sent[0].id;
+    expect(screen.getAllByTestId('chat-message')[0].classList.contains('chat-message-enter')).toBe(
+      true,
+    );
+
+    act(() => {
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'real-user-id',
+        assistantMessageId: 'real-assistant-id',
+        revision: 2,
+        seq: 1,
+      });
+    });
+    const rows = screen.getAllByTestId('chat-message');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].classList.contains('chat-message-enter')).toBe(false);
+  });
+
   it('switching to another already-populated conversation animates none of its rows', async () => {
     const rest = fakeRest({ items: [summary(), summary({ id: 'conv-2' })], nextCursor: null }, [
       message({ id: 'm-1', content: { type: 'user', text: 'Ping' } }),
@@ -1308,6 +1392,117 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
       },
     });
     await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+  });
+
+  // Phase 4 review I2: during `dragover` the drag data store is in
+  // protected mode, so `DataTransferItem.getAsFile()` is `null` by spec —
+  // only `kind`/`type` are readable. Deciding whether to accept the drag by
+  // materialising files therefore ALWAYS refused it, `drop` never fired,
+  // and the browser navigated to the image.
+  it('accepts an image drag over the composer even though getAsFile() is null during dragover, then attaches the dropped file', async () => {
+    await renderConnected();
+    const form = screen.getByLabelText('Message').closest('form') as HTMLFormElement;
+
+    const dragOver = createEvent.dragOver(form, {
+      dataTransfer: {
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => null }],
+        files: [],
+        types: ['Files'],
+      },
+    });
+    fireEvent(form, dragOver);
+    expect(dragOver.defaultPrevented).toBe(true);
+
+    const png = pngFile('dropped.png');
+    const drop = createEvent.drop(form, {
+      dataTransfer: { files: [png], items: [], types: ['Files'] },
+    });
+    fireEvent(form, drop);
+    expect(drop.defaultPrevented).toBe(true);
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+  });
+
+  // Phase 4 review M1: a file read that resolves after the user switched
+  // threads must land in the thread it was added to, not the one now open.
+  it('attributes a file read that resolves after a conversation switch to the conversation it was added to', async () => {
+    const OTHER_ID = 'conv-2';
+    const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    let resolveRead: (buffer: ArrayBuffer) => void = () => {};
+    const slow = pngFile('slow.png');
+    Object.defineProperty(slow, 'arrayBuffer', {
+      value: () =>
+        new Promise<ArrayBuffer>((resolve) => {
+          resolveRead = resolve;
+        }),
+    });
+    fireEvent.change(screen.getByLabelText('Attach images'), { target: { files: [slow] } });
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(2));
+    sockets[1].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+    await act(async () => {
+      resolveRead(new Uint8Array([104, 105]).buffer);
+      await Promise.resolve();
+    });
+    expect(screen.queryByAltText('Attachment 1')).toBeNull();
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(3));
+    sockets[2].open();
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+  });
+
+  // Phase 4 review M2: two adds racing each other validated against the
+  // same starting count and could exceed the four-image cap together.
+  it('re-validates the count limit after reading so concurrent adds cannot exceed four images', async () => {
+    await renderConnected();
+    const resolvers: Array<(buffer: ArrayBuffer) => void> = [];
+    const slowPng = (name: string) => {
+      const file = pngFile(name);
+      Object.defineProperty(file, 'arrayBuffer', {
+        value: () =>
+          new Promise<ArrayBuffer>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      });
+      return file;
+    };
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: { files: [slowPng('a.png'), slowPng('b.png'), slowPng('c.png')] },
+    });
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: { files: [slowPng('d.png'), slowPng('e.png')] },
+    });
+    await waitFor(() => expect(resolvers).toHaveLength(5));
+    await act(async () => {
+      for (const resolve of resolvers) resolve(new Uint8Array([104, 105]).buffer);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getAllByAltText(/Attachment \d/).length).toBeGreaterThan(0));
+    expect(screen.getAllByAltText(/Attachment \d/)).toHaveLength(4);
+    expect(screen.getByText('Maximum 4 images per message.')).toBeTruthy();
   });
 
   it('keeps attachments isolated per conversation, like drafts (audit #14)', async () => {
