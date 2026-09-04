@@ -32,6 +32,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Skip cleanly until the Cloudflare Pages project for apps/web is configured
+    # (the four variables above). Without this the job fails on every push that
+    # touches apps/web — the tailnet deployment on spark-2 is the live one today.
+    if: ${{ vars.CF_PAGES_PROJECT_WEB != '' }}
     permissions:
       contents: read
     steps:
@@ -43,6 +47,10 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # apps/web typechecks against the built workspace packages (@dash/agent,
+      # @dash/mobile-contract, …), same as ci.yml — build them first.
+      - run: npm run build
 
       - name: Build SPA
         env:
