@@ -347,7 +347,14 @@ class DashUITestCase: XCTestCase {
     }
 
     let fallback = tabBarFallback(identifier, in: app)
-    XCTAssertTrue(fallback?.exists == true, file: file, line: line)
+    // A contended CI runner can be mid-transition here (the tab bar
+    // re-appearing after a pop) — wait, don't just peek.
+    XCTAssertTrue(
+      fallback?.waitForExistence(timeout: 5) == true,
+      "Expected the tab bar button for \(identifier). UI: \(app.debugDescription)",
+      file: file,
+      line: line
+    )
     return fallback ?? regularLabel
   }
 
@@ -359,19 +366,40 @@ class DashUITestCase: XCTestCase {
   ) {
     if waitUntilExposed(identifier, in: app, timeout: 0.25) { return }
 
+    // iOS 26 publishes `BackButton`/`ToggleSidebar` identifiers; iOS 18 (the
+    // CI runtime) exposes the back control only as an unidentified leading
+    // button labelled with the previous screen's title — indistinguishable
+    // from a root screen's own leading toolbar item (the list's Filter
+    // menu). So on compact width, when no identified control exists and a
+    // navigation bar is up, pop with the interactive left-edge swipe: it
+    // needs no identifier and is a no-op on a root screen.
     let controls = [
       app.buttons.matching(identifier: "BackButton").firstMatch,
       app.buttons.matching(identifier: "ToggleSidebar").firstMatch,
     ]
+    let isCompact = app.windows.firstMatch.frame.width < 700
     for _ in 0..<4 {
       if waitUntilExposed(identifier, in: app, timeout: 0.5) { return }
-      guard let control = controls.first(where: { $0.exists && $0.isHittable }) else {
-        break
+      if let control = controls.first(where: { $0.exists && $0.isHittable }) {
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        continue
       }
-      control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      // Only from a pushed detail: on a root list the same drag would reveal
+      // a row's leading swipe action instead of popping anything.
+      let atRoot = ["conversation.list", "agent.list", "settings.list"].contains {
+        app.descendants(matching: .any)[$0].exists
+      }
+      guard isCompact, atRoot == false, app.navigationBars.firstMatch.exists else { break }
+      let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.5))
+      let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+      start.press(forDuration: 0.05, thenDragTo: end)
     }
+    if waitUntilExposed(identifier, in: app, timeout: 3) { return }
+    // SwiftUI intermittently never publishes `.tabItem` identifiers for a
+    // launch (see `tabBarFallback`) — on those launches the title-matched
+    // tab-bar button is the exposure signal, and `tab(_:)` will use it too.
     XCTAssertTrue(
-      waitUntilExposed(identifier, in: app, timeout: 3),
+      tabBarFallback(identifier, in: app)?.exists == true,
       "Expected \(identifier) after revealing the split-navigation columns. UI: \(app.debugDescription)",
       file: file,
       line: line
@@ -523,6 +551,32 @@ class DashUITestCase: XCTestCase {
       line: line
     )
     return popover
+  }
+
+  /// Dismisses a confirmation without choosing its action. iOS 18 renders a
+  /// toolbar-Menu-triggered `confirmationDialog` as a sheet with a Cancel
+  /// row; iOS 26 renders an anchored popover with no Cancel, dismissed by
+  /// tapping outside (`PopoverDismissRegion`).
+  func dismissConfirmation(
+    _ dialog: XCUIElement,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let cancel = dialog.buttons["Cancel"].firstMatch
+    if cancel.waitForExistence(timeout: 1) {
+      cancel.tap()
+    } else {
+      let dismissRegion = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
+      XCTAssertTrue(
+        dismissRegion.waitForExistence(timeout: 3),
+        "Expected a Cancel row or a popover dismiss region. UI: \(app.debugDescription)",
+        file: file,
+        line: line
+      )
+      dismissRegion.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+    }
+    XCTAssertTrue(dialog.waitForNonExistence(timeout: 5), file: file, line: line)
   }
 
   func assertFitsHorizontally(
