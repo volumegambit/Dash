@@ -18,6 +18,10 @@ private struct FixtureCase: Decodable {
   let format: String?
 }
 
+private struct ConversationDefaultsFixture: Decodable {
+  let defaultConversationTitle: String
+}
+
 private enum FixtureDispatchError: Error {
   case unsupported(String)
 }
@@ -124,6 +128,21 @@ struct ContractFixtureTests {
       "conversation-messages-page.json"
     )
     _ = try FixtureLoader.decode(ReplayPageDTO.self, "replay.json")
+  }
+
+  /// Chat UX Phase 4 Task 6: `ChatState.defaultConversationTitle` hand-mirrors
+  /// the gateway's `DEFAULT_CONVERSATION_TITLE`, and compose-cleanup (final
+  /// review C2) is only correct while they agree — the fix wave's one real
+  /// regression was exactly this drift. `conversation-defaults.json` is
+  /// `const`-pinned in openapi.yaml and asserted by the gateway too, so this
+  /// closes the cross-language loop.
+  @Test("default conversation title matches the contract fixture")
+  func defaultConversationTitleMatchesContract() throws {
+    let defaults = try FixtureLoader.decode(
+      ConversationDefaultsFixture.self,
+      "conversation-defaults.json"
+    )
+    #expect(ChatState.defaultConversationTitle == defaults.defaultConversationTitle)
   }
 
   @Test("request fixtures re-encode to the frozen wire shape")
@@ -369,6 +388,8 @@ struct ContractFixtureTests {
       try decodeIfValid(CreateConversationRequest.self, fixture)
     case ("json", "openapi", "ConversationPatchRequest"):
       try decodeIfValid(PatchConversationRequest.self, fixture)
+    case ("json", "openapi", "ConversationDefaults"):
+      try decodeIfValid(ConversationDefaultsFixture.self, fixture)
     case ("json", "openapi", "ConversationSummary"):
       try decodeIfValid(ConversationSummaryDTO.self, fixture)
     case ("json", "openapi", "ConversationPage"):

@@ -866,6 +866,60 @@ describe('createWebAppStore', () => {
       );
     });
 
+    // Chat UX Phase 4 Task 6 (re-review parked minor 3): the post-turn
+    // summary refresh could land AFTER the user had already optimistically
+    // renamed the conversation, momentarily overwriting their new title with
+    // the gateway's (older) one until the rename's PATCH response put it back.
+    // The refresh is best-effort; a title the user changed in the meantime
+    // must win.
+    it('does not overwrite an optimistic rename made while the post-turn summary refresh was in flight', async () => {
+      const untitled = summary({ title: 'New Conversation', revision: 1 });
+      let resolveRefresh: (value: ConversationSummary) => void = () => {};
+      const { rest, getConversation } = fakeRest({
+        conversationPage: { items: [untitled], nextCursor: null },
+        getConversationImpl: () =>
+          new Promise<ConversationSummary>((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'hi');
+      const turnId = sockets[0].sent[0].id;
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'u1',
+        assistantMessageId: 'a1',
+        revision: 1,
+        seq: 1,
+      });
+      onFrames[0]({
+        type: 'done',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        outcome: 'completed',
+      });
+      await vi.waitFor(() => expect(getConversation).toHaveBeenCalledWith(CONVERSATION_ID));
+
+      await store.getState().renameConversation(CONVERSATION_ID, 'Lisbon planning');
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+        'Lisbon planning',
+      );
+
+      // The refresh resolves late, still carrying the pre-rename title.
+      resolveRefresh({ ...untitled, revision: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.title).toBe(
+        'Lisbon planning',
+      );
+    });
+
     it('final-review fix C1b: still re-fetches on done when the conversation already has a non-default title (also refreshes lastMessagePreview/revision, not just the auto-title case)', async () => {
       const titled = summary({ title: 'Already named', revision: 1, lastMessagePreview: null });
       const refreshed = { ...titled, revision: 2, lastMessagePreview: 'hi' };

@@ -699,6 +699,18 @@ components:
         title: { type: string }
         owningIssueId: { type: [string, 'null'] }
         projectId: { type: [string, 'null'] }
+    ConversationDefaults:
+      description: >-
+        Gateway-side defaults that clients must mirror verbatim. `defaultConversationTitle` is
+        the title a conversation is created with when the create request omits one; clients
+        compare against it to decide whether a conversation is still untitled (auto-title refresh,
+        compose-cleanup). Pinned by `const` so the fixture, the gateway, and every client are
+        tested against one value.
+      type: object
+      additionalProperties: false
+      required: [defaultConversationTitle]
+      properties:
+        defaultConversationTitle: { type: string, const: New Conversation }
     MobileApiError:
       type: object
       additionalProperties: false

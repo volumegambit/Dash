@@ -404,11 +404,18 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     function maybeRefreshAutoTitle(conversationId: string): void {
       const conversation = get().conversations.find((c) => c.id === conversationId);
       if (!conversation) return;
+      // Phase 4 Task 6: remember the title this refresh started from. If the
+      // user optimistically renames while the fetch is in flight, the (older)
+      // summary that comes back must not overwrite their title — the rename's
+      // own PATCH response is what settles it. Best-effort refresh loses.
+      const titleAtRefreshStart = conversation.title;
       rest
         .getConversation(conversationId)
         .then((updated) => {
           set((state) => ({
-            conversations: state.conversations.map((c) => (c.id === conversationId ? updated : c)),
+            conversations: state.conversations.map((c) =>
+              c.id === conversationId && c.title === titleAtRefreshStart ? updated : c,
+            ),
           }));
         })
         .catch((err: unknown) => {

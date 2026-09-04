@@ -68,6 +68,12 @@
       "valid": true
     },
     {
+      "file": "conversation-defaults.json",
+      "document": "openapi",
+      "schema": "ConversationDefaults",
+      "valid": true
+    },
+    {
       "file": "conversation-patch.json",
       "document": "openapi",
       "schema": "ConversationPatchRequest",
