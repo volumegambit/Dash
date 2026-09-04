@@ -187,6 +187,48 @@ struct AppModelTests {
     #expect(model.splitConversationSelection == nil)
   }
 
+  @Test("regular→compact rebuilds the stacks from the split selections")
+  func reconcileToCompactRebuildsStacks() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    model.openConversation("conv-a", presentation: .regular)
+    model.conversationPath = []  // simulate the regular detail column owning the selection alone
+    model.splitAgentSelection = .detail("agent-1")
+
+    model.reconcileNavigation(for: .compact)
+
+    #expect(model.conversationPath == [.transcript("conv-a")])
+    #expect(model.agentPath == [.detail("agent-1")])
+    #expect(model.splitConversationSelection == .transcript("conv-a"))
+  }
+
+  @Test("compact→regular promotes the top of each stack to the split selection")
+  func reconcileToRegularPromotesStackTops() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    model.openConversation("conv-a", presentation: .compact)
+    model.openConversationRecovery("conv-a", presentation: .compact)
+    model.closeConversationRecovery("conv-a", presentation: .compact)  // leaves split nil, path [transcript]
+    #expect(model.splitConversationSelection == nil)
+
+    model.reconcileNavigation(for: .regular)
+
+    #expect(model.splitConversationSelection == .transcript("conv-a"))
+    #expect(model.conversationPath == [.transcript("conv-a")])
+  }
+
+  @Test("reconciliation is idempotent and keeps an empty state empty")
+  func reconcileIsIdempotent() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+
+    model.reconcileNavigation(for: .regular)
+    model.reconcileNavigation(for: .compact)
+    model.reconcileNavigation(for: .compact)
+
+    #expect(model.conversationPath.isEmpty)
+    #expect(model.agentPath.isEmpty)
+    #expect(model.splitConversationSelection == nil)
+    #expect(model.splitAgentSelection == nil)
+  }
+
   @Test("agent navigation survives an adaptive width transition")
   func agentNavigationSurvivesWidthTransition() {
     let model = AppModel(

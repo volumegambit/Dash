@@ -356,6 +356,28 @@ final class AppModel {
     }
   }
 
+  /// iPad goal Phase A (design §1.3): the compact `NavigationStack` paths
+  /// and the regular split selections are two projections of one intent.
+  /// Called by `RootView` whenever `AdaptiveNavigationPolicy` flips
+  /// (rotation, Split View resize, Stage Manager) so neither projection is
+  /// stale when its column tree is mounted.
+  func reconcileNavigation(for presentation: NavigationPresentation) {
+    switch presentation {
+    case .compact:
+      conversationPath = splitConversationSelection.map { [$0] } ?? []
+      agentPath = splitAgentSelection.map { [$0] } ?? []
+    case .regular:
+      if let top = conversationPath.last {
+        splitConversationSelection = top
+        conversationPath = [top]
+      }
+      if let top = agentPath.last {
+        splitAgentSelection = top
+        agentPath = [top]
+      }
+    }
+  }
+
   func makePairingFeature() -> PairingFeature {
     dependencies.pairingFeatureFactory.make { [weak self] profile in
       guard
