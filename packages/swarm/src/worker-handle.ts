@@ -19,6 +19,24 @@ export interface WorkerHandleOptions {
 
 const DEFAULT_HEARTBEAT_MS = 10_000;
 
+/** The default subagent type when a caller names none. */
+const DEFAULT_SUBAGENT_TYPE = 'general-purpose';
+
+/**
+ * The legacy `worker_done` event is a MIRROR of `subagent_finished` kept for the
+ * iOS app and Mission Control, whose decoders only understand
+ * `done | failed | cancelled`. Until those clients migrate, the newer terminal
+ * statuses (`interrupted`, `max_turns`) are reported to them as `failed`; the
+ * true status rides `subagent_finished.status`.
+ */
+export function legacyWorkerDoneStatus(status: WorkerStatus): 'done' | 'failed' | 'cancelled' {
+  if (status === 'done' || status === 'cancelled') return status;
+  return 'failed';
+}
+
+/** The statuses `subagent_finished` can carry. */
+type TerminalWorkerStatus = Exclude<WorkerStatus, 'spawning' | 'running' | 'waiting_input'>;
+
 /** Stored resolve/reject pair for an in-flight ask_orchestrator question. */
 interface QuestionWaiter {
   resolve(answer: string): void;
@@ -46,12 +64,25 @@ export class WorkerHandle {
   readonly role: string;
   readonly brief: string;
   readonly model: string;
+  /** Resolved subagent type ('general-purpose' when the caller named none). */
+  readonly subagentType: string;
+  /** 3-5 word UI label; falls back to the role. */
+  readonly description: string;
+  /** Addressable name, when the caller gave one. */
+  readonly name?: string;
+  readonly background: boolean;
+  readonly oneShot: boolean;
+  /** 1 for a direct child of the orchestrator. */
+  readonly depth: number;
+  private readonly isolation?: 'worktree';
 
   status: WorkerStatus = 'spawning';
   report?: string;
   usage: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 };
   steersUsed = 0;
   pendingQuestion?: string;
+  /** Tool calls this worker has started across all of its segments. */
+  toolCallCount = 0;
 
   private readonly opts: WorkerHandleOptions;
   private readonly runId: string;
@@ -83,6 +114,13 @@ export class WorkerHandle {
     this.role = opts.spec.role;
     this.brief = opts.spec.brief;
     this.model = opts.spec.model;
+    this.subagentType = opts.spec.subagentType ?? DEFAULT_SUBAGENT_TYPE;
+    this.description = opts.spec.description ?? opts.spec.role;
+    this.name = opts.spec.name;
+    this.background = opts.spec.background ?? false;
+    this.oneShot = opts.spec.oneShot ?? false;
+    this.depth = opts.spec.depth ?? 1;
+    this.isolation = opts.spec.isolation;
     this.runId = opts.spec.runId;
     this.heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
 
@@ -104,6 +142,19 @@ export class WorkerHandle {
     this.status = 'running';
     this.startedAt = Date.now();
     this.opts.hooks?.subagentStart?.({ workerId: this.workerId, role: this.role });
+    this.emit({
+      type: 'subagent_started',
+      subagentId: this.workerId,
+      ...(this.name !== undefined ? { name: this.name } : {}),
+      subagentType: this.subagentType,
+      description: this.description,
+      prompt: this.brief,
+      model: this.model,
+      background: this.background,
+      depth: this.depth,
+      startedAt: this.startedAtIso(),
+      ...(this.isolation !== undefined ? { isolation: this.isolation } : {}),
+    });
     this.startHeartbeat();
     void this.runSegment(this.brief);
   }
@@ -236,10 +287,11 @@ export class WorkerHandle {
       workerId: this.workerId,
       runId: this.runId,
       role: this.role,
-      status: 'cancelled',
+      status: legacyWorkerDoneStatus(this.status),
       report: reason,
       usage: this.usage,
     });
+    this.emitFinished(this.status, reason);
     this.opts.hooks?.subagentStop?.({
       workerId: this.workerId,
       role: this.role,
@@ -262,6 +314,12 @@ export class WorkerHandle {
     usage: { inputTokens: number; outputTokens: number };
     startedAt?: number;
     endedAt?: number;
+    subagentType: string;
+    description: string;
+    name?: string;
+    toolCallCount: number;
+    background: boolean;
+    oneShot: boolean;
   } {
     return {
       workerId: this.workerId,
@@ -273,6 +331,12 @@ export class WorkerHandle {
       usage: { ...this.usage },
       startedAt: this.startedAt,
       endedAt: this.endedAt,
+      subagentType: this.subagentType,
+      description: this.description,
+      name: this.name,
+      toolCallCount: this.toolCallCount,
+      background: this.background,
+      oneShot: this.oneShot,
     };
   }
 
@@ -322,6 +386,9 @@ export class WorkerHandle {
 
   private processEvent(event: AgentEvent): void {
     this.lastEventSummary = summarize(event);
+    if (event.type === 'tool_use_start') {
+      this.toolCallCount++;
+    }
     if (event.type === 'response') {
       this.usage.inputTokens += event.usage.inputTokens;
       this.usage.outputTokens += event.usage.outputTokens;
@@ -343,10 +410,11 @@ export class WorkerHandle {
       workerId: this.workerId,
       runId: this.runId,
       role: this.role,
-      status: 'done',
+      status: legacyWorkerDoneStatus(this.status),
       report: this.report ?? '',
       usage: this.usage,
     });
+    this.emitFinished(this.status, this.report ?? '');
     this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status: 'done' });
     this.opts.onTerminal(this);
     this.terminal.resolve();
@@ -369,10 +437,11 @@ export class WorkerHandle {
       workerId: this.workerId,
       runId: this.runId,
       role: this.role,
-      status: 'failed',
+      status: legacyWorkerDoneStatus(this.status),
       report: message,
       usage: this.usage,
     });
+    this.emitFinished(this.status, message);
     this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status: 'failed' });
     this.opts.onTerminal(this);
     this.terminal.resolve();
@@ -424,6 +493,11 @@ export class WorkerHandle {
     }
   }
 
+  /**
+   * Every non-terminal status transition (and the heartbeat) emits the legacy
+   * `worker_status` plus its `subagent_progress` twin. No second timer: the two
+   * always ride together so a client can follow either one alone.
+   */
   private emitStatus(
     status: 'running' | 'waiting_input',
     detail?: string,
@@ -437,6 +511,41 @@ export class WorkerHandle {
       status,
       ...(detail !== undefined ? { detail } : {}),
       ...(question !== undefined ? { question } : {}),
+    });
+    this.emit({
+      type: 'subagent_progress',
+      subagentId: this.workerId,
+      status,
+      toolCallCount: this.toolCallCount,
+      elapsedMs: Date.now() - (this.startedAt ?? Date.now()),
+      ...(detail !== undefined ? { detail } : {}),
+      ...(question !== undefined ? { question } : {}),
+    });
+  }
+
+  /** ISO start stamp for the subagent_* events; `now` when never started. */
+  private startedAtIso(): string {
+    return new Date(this.startedAt ?? Date.now()).toISOString();
+  }
+
+  /**
+   * The `subagent_finished` twin of `worker_done`, pushed straight after it so
+   * legacy decoders see their event first. Carries the TRUE terminal status,
+   * which `worker_done` may have had to flatten (see legacyWorkerDoneStatus).
+   */
+  private emitFinished(status: TerminalWorkerStatus, report: string): void {
+    this.emit({
+      type: 'subagent_finished',
+      subagentId: this.workerId,
+      ...(this.name !== undefined ? { name: this.name } : {}),
+      subagentType: this.subagentType,
+      description: this.description,
+      status,
+      report,
+      usage: this.usage,
+      toolCallCount: this.toolCallCount,
+      startedAt: this.startedAtIso(),
+      endedAt: new Date(this.endedAt ?? Date.now()).toISOString(),
     });
   }
 

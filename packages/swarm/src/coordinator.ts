@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
-import { type RunSnapshot, type RunSummary, SwarmRun } from './run.js';
+import { type RunSnapshot, type RunSummary, type RunWorkerSnapshot, SwarmRun } from './run.js';
 import { createAskOrchestratorTool } from './tools.js';
 import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
 import type { WorkerHandleOptions } from './worker-handle.js';
 
-export type { RunSnapshot, RunSummary } from './run.js';
+export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
 
 /** The full universe of tools a worker may ever be granted. */
 const UNIVERSE = [
@@ -37,7 +37,17 @@ const HARD_DEFAULT_CAPS: SwarmCaps = {
 
 const DEFAULT_GLOBAL_MAX_CONCURRENT = 16;
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
+/** waitWorker waits on one named child for as long as the turn can live. */
+const WAIT_WORKER_TIMEOUT_SECONDS = 24 * 3600;
 const RING_BUFFER_SIZE = 20;
+
+const TERMINAL_STATUSES: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
+  'done',
+  'failed',
+  'cancelled',
+  'interrupted',
+  'max_turns',
+]);
 
 export interface AttachOptions {
   agentId: string;
@@ -223,7 +233,21 @@ export class SwarmCoordinator {
   spawnWorker(
     agentId: string,
     conversationId: string,
-    p: { role: string; brief: string; tools?: string[]; model?: string },
+    p: {
+      role: string;
+      brief: string;
+      tools?: string[];
+      model?: string;
+      subagentType?: string;
+      description?: string;
+      name?: string;
+      systemPrompt?: string;
+      background?: boolean;
+      isolation?: 'worktree';
+      skipMemory?: boolean;
+      maxTurns?: number;
+      oneShot?: boolean;
+    },
   ): { workerId: string; status: 'spawning' } {
     const k = key(agentId, conversationId);
     const turn = this.live.get(k);
@@ -279,6 +303,15 @@ export class SwarmCoordinator {
       model,
       workspace: turn.opts.workspace ?? process.cwd(),
       tools,
+      subagentType: p.subagentType,
+      description: p.description,
+      name: p.name,
+      systemPrompt: p.systemPrompt,
+      background: p.background,
+      isolation: p.isolation,
+      skipMemory: p.skipMemory,
+      maxTurns: p.maxTurns,
+      oneShot: p.oneShot,
     };
 
     // Synchronous registration + sync emits before any await returns to caller.
@@ -287,13 +320,10 @@ export class SwarmCoordinator {
     // threaded into the WorkerSpec before the factory is invoked. The factory
     // promise is chained into a deferred backend promise inside register — it is
     // NOT awaited here, preserving synchronous registration.
-    run.register({ spec, hooks: this.hooks }, (handle) =>
-      this.workerFactory({
-        ...spec,
-        extraTools: [createAskOrchestratorTool(handle, run.closed)],
-      }),
-    );
-    // worker_spawned + agent_spawned emitted synchronously into the channel.
+    // worker_spawned + agent_spawned are pushed synchronously BEFORE register so
+    // the legacy mirror precedes the handle's subagent_started: a client that
+    // only decodes worker_spawned always has the card before any subagent_*
+    // event refers to it.
     run.channel.push({
       type: 'worker_spawned',
       workerId,
@@ -303,6 +333,12 @@ export class SwarmCoordinator {
       model,
     });
     run.channel.push({ type: 'agent_spawned', name: p.role });
+    run.register({ spec, hooks: this.hooks }, (handle) =>
+      this.workerFactory({
+        ...spec,
+        extraTools: [createAskOrchestratorTool(handle, run.closed)],
+      }),
+    );
 
     this.onRunChanged?.(turn.opts.agentId, run.runId);
 
@@ -312,7 +348,17 @@ export class SwarmCoordinator {
   async waitWorkers(
     agentId: string,
     conversationId: string,
-    p: { workerIds?: string[]; timeoutSeconds?: number },
+    p: {
+      workerIds?: string[];
+      timeoutSeconds?: number;
+      /**
+       * Internal. `wait_workers` (the tool) returns as soon as any referenced
+       * worker asks a question, so the orchestrator can answer it. `waitWorker`
+       * waits on ONE child and passes false: a question from that child must not
+       * end the wait, or the caller would see a non-terminal snapshot.
+       */
+      returnOnWaitingInput?: boolean;
+    },
     signal?: AbortSignal,
   ): Promise<
     Array<{ workerId: string; status: WorkerStatus; report?: string; question?: string }>
@@ -333,18 +379,13 @@ export class SwarmCoordinator {
       return all.filter((w) => set.has(w.workerId));
     };
 
-    const isTerminal = (s: WorkerStatus) =>
-      s === 'done' ||
-      s === 'failed' ||
-      s === 'cancelled' ||
-      s === 'interrupted' ||
-      s === 'max_turns';
+    const returnOnWaitingInput = p.returnOnWaitingInput ?? true;
 
     const settled = (): boolean => {
       const refs = referenced();
       if (refs.length === 0) return true;
-      if (refs.every((w) => isTerminal(w.status))) return true;
-      if (refs.some((w) => w.status === 'waiting_input')) return true;
+      if (refs.every((w) => TERMINAL_STATUSES.has(w.status))) return true;
+      if (returnOnWaitingInput && refs.some((w) => w.status === 'waiting_input')) return true;
       return false;
     };
 
@@ -391,6 +432,69 @@ export class SwarmCoordinator {
         if (signal) signal.removeEventListener('abort', onAbort);
       }
     });
+  }
+
+  /**
+   * Wait for ONE named child to reach a terminal status and return its full
+   * snapshot. Unlike `wait_workers` it does not return early when the child
+   * asks a question — the question is answered out of band (sendToWorker) and
+   * the wait continues. Throws when the worker is unknown to the live run.
+   */
+  async waitWorker(
+    agentId: string,
+    conversationId: string,
+    workerId: string,
+    signal?: AbortSignal,
+  ): Promise<RunWorkerSnapshot> {
+    const [w] = await this.waitWorkers(
+      agentId,
+      conversationId,
+      {
+        workerIds: [workerId],
+        timeoutSeconds: WAIT_WORKER_TIMEOUT_SECONDS,
+        returnOnWaitingInput: false,
+      },
+      signal,
+    );
+    if (!w) throw new Error(`unknown worker ${workerId}`);
+    // Not terminal => the wait settled on run-closed or the wall clock; go round
+    // again (a closed run has already cancelled its workers, so this terminates).
+    if (!TERMINAL_STATUSES.has(w.status)) {
+      return this.waitWorker(agentId, conversationId, workerId, signal);
+    }
+    const snapshot = this.workersFor(agentId, conversationId).find((s) => s.workerId === workerId);
+    if (!snapshot) throw new Error(`unknown worker ${workerId}`);
+    return snapshot;
+  }
+
+  /**
+   * Resolve a child by name first, then by id, over the conversation's live run
+   * (or its most recent finalized run). Names are not unique — the LATEST worker
+   * with that name wins, so re-using a name addresses the newest child.
+   */
+  findWorker(
+    agentId: string,
+    conversationId: string,
+    nameOrId: string,
+  ): RunWorkerSnapshot | undefined {
+    const workers = this.workersFor(agentId, conversationId);
+    return (
+      [...workers].reverse().find((w) => w.name === nameOrId) ??
+      workers.find((w) => w.workerId === nameOrId)
+    );
+  }
+
+  /** The conversation's children as an addressable roster (for the agent tool). */
+  rosterFor(
+    agentId: string,
+    conversationId: string,
+  ): Array<{ id: string; name?: string; type: string; status: WorkerStatus }> {
+    return this.workersFor(agentId, conversationId).map((w) => ({
+      id: w.workerId,
+      name: w.name,
+      type: w.subagentType,
+      status: w.status,
+    }));
   }
 
   sendToWorker(
@@ -617,13 +721,23 @@ export class SwarmCoordinator {
   }
 
   private isHandleTerminal(status: WorkerStatus): boolean {
-    return (
-      status === 'done' ||
-      status === 'failed' ||
-      status === 'cancelled' ||
-      status === 'interrupted' ||
-      status === 'max_turns'
-    );
+    return TERMINAL_STATUSES.has(status);
+  }
+
+  /**
+   * The worker snapshots of a conversation: its live run when one exists, else
+   * the most recent finalized run of that conversation in the ring buffer (so a
+   * child stays addressable for the rest of the turn it was spawned in).
+   */
+  private workersFor(agentId: string, conversationId: string): RunWorkerSnapshot[] {
+    const live = this.getLiveRun(agentId, conversationId);
+    if (live) return live.snapshot().workers;
+    const snaps = this.history.get(agentId) ?? [];
+    for (let i = snaps.length - 1; i >= 0; i--) {
+      const snap = snaps[i];
+      if (snap.conversationId === conversationId) return snap.workers;
+    }
+    return [];
   }
 
   private pushHistory(agentId: string, snap: RunSnapshot): void {

@@ -170,6 +170,50 @@ async function drain(channel: {
   return out;
 }
 
+/** Advance one macrotask so channel drains and worker transitions settle. */
+function flush(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+/** A WorkerBackend that replays a fixed script of events and then completes. */
+class ScriptedBackend implements WorkerBackend {
+  constructor(private readonly script: AgentEvent[]) {}
+
+  async *chat(): AsyncGenerator<AgentEvent> {
+    for (const event of this.script) yield event;
+  }
+
+  abort(): void {}
+
+  async stop(): Promise<void> {}
+}
+
+/**
+ * Attaches a live turn whose workers are backed by ScriptedBackends, and drains
+ * the attachment channel into `events` in the background. Every spawned worker
+ * replays the same `script` and then finalizes (an empty script finalizes at
+ * once with an empty report).
+ */
+function setupLiveTurn(opts: { script?: AgentEvent[] } = {}) {
+  const script = opts.script ?? [];
+  const specs: WorkerSpec[] = [];
+  const factory: WorkerFactory = (spec) => {
+    specs.push(spec);
+    return Promise.resolve(new ScriptedBackend(script));
+  };
+  const coordinator = new SwarmCoordinator({ workerFactory: factory });
+  const attachment = coordinator.attach(baseAttach());
+  const events: AgentEvent[] = [];
+  void (async () => {
+    while (true) {
+      const r = await attachment.channel.take();
+      if (r.done) return;
+      events.push(r.value);
+    }
+  })();
+  return { coordinator, attachment, events, specs, flush };
+}
+
 describe('SwarmCoordinator', () => {
   // Behavior 1: ownership.
   describe('ownership', () => {
@@ -712,6 +756,11 @@ describe('SwarmCoordinator', () => {
             model: 'orch-model',
             report: 'Gateway restarted while this worker was running.',
             usage: { inputTokens: 0, outputTokens: 0 },
+            subagentType: 'general-purpose',
+            description: 'researcher',
+            toolCallCount: 0,
+            background: false,
+            oneShot: false,
           },
         ],
       };
@@ -1022,6 +1071,183 @@ describe('SwarmCoordinator', () => {
 
       const err = await askError.promise;
       expect(err).toBeInstanceOf(Error);
+    });
+  });
+
+  // A4: named children — subagent_* emission, waitWorker, findWorker, roster.
+  describe('named children', () => {
+    it('spawnWorker emits subagent_started with the named-child fields', async () => {
+      const { coordinator, events } = setupLiveTurn();
+      const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'mapper',
+        brief: 'map it',
+        subagentType: 'Explore',
+        description: 'map code',
+        name: 'mapper',
+      });
+      await flush();
+      const started = events.find((e) => e.type === 'subagent_started');
+      expect(started).toMatchObject({
+        subagentId: workerId,
+        name: 'mapper',
+        subagentType: 'Explore',
+        description: 'map code',
+        background: false,
+        depth: 1,
+      });
+      expect(started && 'startedAt' in started && started.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(events.some((e) => e.type === 'worker_spawned' && e.workerId === workerId)).toBe(true);
+      // The legacy mirror lands first so clients that only decode worker_spawned
+      // still create the card before any subagent_* update refers to it.
+      const types = events.map((e) => e.type);
+      expect(types.indexOf('worker_spawned')).toBeLessThan(types.indexOf('subagent_started'));
+    });
+
+    it('spawnWorker threads the new spec fields through to the worker factory', () => {
+      const { coordinator, specs } = setupLiveTurn();
+      coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        subagentType: 'Plan',
+        description: 'plan the work',
+        name: 'planner',
+        systemPrompt: 'you plan',
+        background: true,
+        isolation: 'worktree',
+        skipMemory: true,
+        maxTurns: 4,
+        oneShot: true,
+      });
+      expect(specs[0]).toMatchObject({
+        subagentType: 'Plan',
+        description: 'plan the work',
+        name: 'planner',
+        systemPrompt: 'you plan',
+        background: true,
+        isolation: 'worktree',
+        skipMemory: true,
+        maxTurns: 4,
+        oneShot: true,
+      });
+    });
+
+    it('waitWorker resolves with the terminal snapshot including toolCallCount', async () => {
+      const { coordinator } = setupLiveTurn({
+        script: [
+          { type: 'tool_use_start', id: 't1', name: 'read' },
+          { type: 'response', content: 'report!', usage: { inputTokens: 1, outputTokens: 2 } },
+        ],
+      });
+      const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      const snap = await coordinator.waitWorker(AGENT_ID, CONVO_ID, workerId);
+      expect(snap.status).toBe('done');
+      expect(snap.report).toBe('report!');
+      expect(snap.toolCallCount).toBe(1);
+      // Defaults when the caller names no subagent type / description.
+      expect(snap.subagentType).toBe('general-purpose');
+      expect(snap.description).toBe('r');
+      expect(snap.background).toBe(false);
+      expect(snap.oneShot).toBe(false);
+    });
+
+    it('waitWorker throws for an unknown worker id', async () => {
+      const { coordinator } = setupLiveTurn();
+      coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      await expect(coordinator.waitWorker(AGENT_ID, CONVO_ID, 'nope')).rejects.toThrow(
+        /unknown worker nope/,
+      );
+    });
+
+    it('waitWorker ignores waiting_input; wait_workers still returns early', async () => {
+      const { factory, backends } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      const seg = await backends[0].onNextSegment();
+      const handle = coord.getLiveRun(AGENT_ID, CONVO_ID)?.getHandle(workerId);
+      if (!handle) throw new Error('expected a live handle');
+
+      let settled = false;
+      const waitP = coord.waitWorker(AGENT_ID, CONVO_ID, workerId);
+      void waitP.then(() => {
+        settled = true;
+      });
+      const askP = handle.waitForQuestion('need input?', undefined, 60_000);
+      // Longer than waitWorkers' 5ms poll, so a premature resolve would show up.
+      await new Promise((r) => setTimeout(r, 25));
+      expect(settled).toBe(false);
+
+      // The public wait_workers behaviour is unchanged: it returns on waiting_input.
+      const early = await coord.waitWorkers(AGENT_ID, CONVO_ID, { workerIds: [workerId] });
+      expect(early[0].status).toBe('waiting_input');
+
+      handle.answerQuestion('go on');
+      await askP;
+      await seg.emit({
+        type: 'response',
+        content: 'finally',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      });
+      seg.complete();
+      const snap = await waitP;
+      expect(snap.status).toBe('done');
+      expect(snap.report).toBe('finally');
+    });
+
+    it('findWorker resolves by name then id, latest wins', () => {
+      const { coordinator } = setupLiveTurn();
+      const a = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', name: 'dup' });
+      const b = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', name: 'dup' });
+      expect(coordinator.findWorker(AGENT_ID, CONVO_ID, 'dup')?.workerId).toBe(b.workerId);
+      expect(coordinator.findWorker(AGENT_ID, CONVO_ID, a.workerId)?.workerId).toBe(a.workerId);
+      expect(coordinator.findWorker(AGENT_ID, CONVO_ID, 'missing')).toBeUndefined();
+    });
+
+    it('findWorker falls back to the latest finalized run of the conversation', async () => {
+      const { coordinator, attachment } = setupLiveTurn();
+      const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        name: 'scout',
+      });
+      await flush();
+      attachment.finalize({ consumerAlive: true });
+      expect(coordinator.findWorker(AGENT_ID, CONVO_ID, 'scout')?.workerId).toBe(workerId);
+      expect(coordinator.findWorker(AGENT_ID, 'other-convo', 'scout')).toBeUndefined();
+    });
+
+    it('rosterFor lists id, name, type and status for every worker', () => {
+      const { coordinator } = setupLiveTurn();
+      const named = coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        name: 'scout',
+        subagentType: 'Explore',
+      });
+      const anon = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r2', brief: 'b2' });
+      expect(coordinator.rosterFor(AGENT_ID, CONVO_ID)).toEqual([
+        { id: named.workerId, name: 'scout', type: 'Explore', status: 'running' },
+        { id: anon.workerId, name: undefined, type: 'general-purpose', status: 'running' },
+      ]);
+      expect(coordinator.rosterFor(AGENT_ID, 'other-convo')).toEqual([]);
+    });
+
+    it('subagent_finished is emitted alongside worker_done', async () => {
+      const { coordinator, events } = setupLiveTurn({
+        script: [{ type: 'response', content: 'r', usage: { inputTokens: 0, outputTokens: 0 } }],
+      });
+      const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      await coordinator.waitWorker(AGENT_ID, CONVO_ID, workerId);
+      await flush();
+      expect(events.find((e) => e.type === 'subagent_finished')).toMatchObject({
+        subagentId: workerId,
+        status: 'done',
+        report: 'r',
+        toolCallCount: 0,
+      });
+      // The legacy mirror lands first, then the richer event.
+      const types = events.map((e) => e.type);
+      expect(types.indexOf('worker_done')).toBeLessThan(types.indexOf('subagent_finished'));
     });
   });
 });

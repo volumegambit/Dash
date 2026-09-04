@@ -3,6 +3,7 @@ export {
   type AttachOptions,
   type RunSnapshot,
   type RunSummary,
+  type RunWorkerSnapshot,
   type SwarmAttachment,
   SwarmCoordinator,
   type SwarmCoordinatorOptions,

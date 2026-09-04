@@ -159,6 +159,13 @@ export function recoverInterruptedSwarmTurns(
             model: event.model,
             report: terminal.report,
             usage: terminal.usage ?? { inputTokens: 0, outputTokens: 0 },
+            // The durable log predates the subagent_* fields (and a crashed run
+            // never wrote them), so the panel gets the neutral defaults.
+            subagentType: 'general-purpose',
+            description: event.role,
+            toolCallCount: 0,
+            background: false,
+            oneShot: false,
           };
         }),
       });

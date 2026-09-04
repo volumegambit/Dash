@@ -360,6 +360,16 @@ export interface SwarmRunWorkerSnapshot {
   usage: { inputTokens: number; outputTokens: number };
   startedAt?: number;
   endedAt?: number;
+  /**
+   * Named-child fields. Optional in the mirror: a gateway older than the swarm
+   * `agent` tool (or a run restored from a pre-subagent event log) omits them.
+   */
+  subagentType?: string;
+  description?: string;
+  name?: string;
+  toolCallCount?: number;
+  background?: boolean;
+  oneShot?: boolean;
 }
 
 /** Lightweight run listing (panel). Mirror of `RunSummary`. */

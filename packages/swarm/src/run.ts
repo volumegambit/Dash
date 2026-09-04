@@ -1,7 +1,7 @@
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import type { SwarmCaps, WorkerBackend, WorkerStatus } from './types.js';
-import { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
+import { WorkerHandle, type WorkerHandleOptions, legacyWorkerDoneStatus } from './worker-handle.js';
 
 /** A worker as seen by the panel/management API. */
 export interface RunWorkerSnapshot {
@@ -14,6 +14,15 @@ export interface RunWorkerSnapshot {
   usage: { inputTokens: number; outputTokens: number };
   startedAt?: number;
   endedAt?: number;
+  /** Resolved subagent type ('general-purpose' when the caller named none). */
+  subagentType: string;
+  /** 3-5 word UI label; falls back to the role. */
+  description: string;
+  /** Addressable name, when the caller gave one. */
+  name?: string;
+  toolCallCount: number;
+  background: boolean;
+  oneShot: boolean;
 }
 
 /** Lightweight run listing (panel). */
@@ -268,13 +277,13 @@ export class SwarmRun {
       if (!only.has(id)) continue;
       const h = this.handles.get(id) as WorkerHandle;
       if (!TERMINAL.has(h.status)) continue;
-      const status = h.status as 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
       events.push({
         type: 'worker_done',
         workerId: h.workerId,
         runId: this.runId,
         role: h.role,
-        status,
+        // Legacy mirror: flattened for the iOS / MC decoders (see the helper).
+        status: legacyWorkerDoneStatus(h.status),
         report: h.report ?? '',
         usage: h.usage,
       });

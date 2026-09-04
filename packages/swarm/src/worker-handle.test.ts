@@ -1,6 +1,6 @@
 import type { AgentEvent } from '@dash/agent';
 import type { WorkerBackend } from './types.js';
-import { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
+import { WorkerHandle, type WorkerHandleOptions, legacyWorkerDoneStatus } from './worker-handle.js';
 
 /** A deferred promise, resolved/rejected externally. */
 function deferred<T>() {
@@ -561,5 +561,167 @@ describe('WorkerHandle', () => {
     handle.start();
     await backend.onNextSegment();
     expect(handle.answerQuestion('nobody asked')).toBe(false);
+  });
+
+  // A4: subagent_* emission, tool-call counting, and the legacy status mirror.
+  describe('subagent_* emission', () => {
+    it('emits subagent_started with the spec fields, depth 1 and an ISO startedAt', () => {
+      const { handle, events } = makeHandle({
+        spec: {
+          agentId: 'agent-1',
+          agentName: 'Agent One',
+          runId: RUN_ID,
+          workerId: WORKER_ID,
+          role: ROLE,
+          brief: 'do the thing',
+          model: 'test-model',
+          workspace: '/tmp/ws',
+          tools: [],
+          subagentType: 'Explore',
+          description: 'map the code',
+          name: 'mapper',
+          background: true,
+          isolation: 'worktree',
+        },
+      });
+      handle.start();
+      const started = events.find((e) => e.type === 'subagent_started');
+      expect(started).toMatchObject({
+        subagentId: WORKER_ID,
+        name: 'mapper',
+        subagentType: 'Explore',
+        description: 'map the code',
+        prompt: 'do the thing',
+        model: 'test-model',
+        background: true,
+        isolation: 'worktree',
+        depth: 1,
+      });
+      expect(started && 'startedAt' in started && started.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('defaults subagentType to general-purpose and description to the role', () => {
+      const { handle, events } = makeHandle();
+      handle.start();
+      expect(events.find((e) => e.type === 'subagent_started')).toMatchObject({
+        subagentType: 'general-purpose',
+        description: ROLE,
+        background: false,
+        depth: 1,
+      });
+      expect(handle.snapshot()).toMatchObject({
+        subagentType: 'general-purpose',
+        description: ROLE,
+        toolCallCount: 0,
+        background: false,
+        oneShot: false,
+      });
+    });
+
+    it('counts tool_use_start events into toolCallCount and reports it on finish', async () => {
+      const { handle, backend, events } = makeHandle();
+      handle.start();
+      const seg = await backend.onNextSegment();
+      await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+      await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+      await seg.emit(response('final', 1, 2));
+      seg.complete();
+      await handle.terminalPromise;
+
+      expect(handle.toolCallCount).toBe(2);
+      expect(handle.snapshot().toolCallCount).toBe(2);
+      const finished = events.find((e) => e.type === 'subagent_finished');
+      expect(finished).toMatchObject({
+        subagentId: WORKER_ID,
+        subagentType: 'general-purpose',
+        description: ROLE,
+        status: 'done',
+        report: 'final',
+        toolCallCount: 2,
+        usage: { inputTokens: 1, outputTokens: 2 },
+      });
+      expect(finished && 'endedAt' in finished && finished.endedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      // The legacy mirror still leads so old decoders see worker_done first.
+      const types = events.map((e) => e.type);
+      expect(types.indexOf('worker_done')).toBeLessThan(types.indexOf('subagent_finished'));
+    });
+
+    it('emits subagent_progress on the heartbeat alongside worker_status', async () => {
+      vi.useFakeTimers();
+      try {
+        const { handle, backend, events } = makeHandle({ heartbeatMs: 1_000 });
+        handle.start();
+        const seg = await backend.onNextSegment();
+        await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+        events.length = 0;
+        await vi.advanceTimersByTimeAsync(1_000);
+        const beats = events.filter((e) => e.type === 'subagent_progress');
+        expect(beats.length).toBeGreaterThanOrEqual(1);
+        expect(beats[0]).toMatchObject({
+          subagentId: WORKER_ID,
+          status: 'running',
+          toolCallCount: 1,
+        });
+        expect(beats[0] && 'elapsedMs' in beats[0] && typeof beats[0].elapsedMs).toBe('number');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('emits subagent_progress with the question on waiting_input', async () => {
+      const { handle, backend, events } = makeHandle();
+      handle.start();
+      await backend.onNextSegment();
+      events.length = 0;
+      const asked = handle.waitForQuestion('which file?', undefined, 60_000);
+      const waiting = events.find((e) => e.type === 'subagent_progress');
+      expect(waiting).toMatchObject({
+        subagentId: WORKER_ID,
+        status: 'waiting_input',
+        question: 'which file?',
+      });
+      handle.answerQuestion('this one');
+      await asked;
+      const back = events.filter((e) => e.type === 'subagent_progress');
+      expect(back[back.length - 1]).toMatchObject({ status: 'running' });
+    });
+
+    it('emits subagent_finished{cancelled} after worker_done on cancel', async () => {
+      const { handle, backend, events } = makeHandle();
+      handle.start();
+      await backend.onNextSegment();
+      handle.cancel('user cancelled');
+      const finished = events.find((e) => e.type === 'subagent_finished');
+      expect(finished).toMatchObject({
+        subagentId: WORKER_ID,
+        status: 'cancelled',
+        report: 'user cancelled',
+      });
+    });
+
+    it('emits subagent_finished{failed} after worker_done on failure', async () => {
+      const { handle, backend, events } = makeHandle();
+      handle.start();
+      const seg = await backend.onNextSegment();
+      await seg.emit({ type: 'error', error: new Error('boom') });
+      await handle.terminalPromise;
+      expect(events.find((e) => e.type === 'subagent_finished')).toMatchObject({
+        status: 'failed',
+        report: 'boom',
+      });
+    });
+  });
+
+  describe('legacyWorkerDoneStatus', () => {
+    it('passes the three statuses the iOS / Mission Control decoders understand', () => {
+      expect(legacyWorkerDoneStatus('done')).toBe('done');
+      expect(legacyWorkerDoneStatus('failed')).toBe('failed');
+      expect(legacyWorkerDoneStatus('cancelled')).toBe('cancelled');
+    });
+
+    it('maps the newer terminal statuses onto failed for legacy decoders', () => {
+      expect(legacyWorkerDoneStatus('interrupted')).toBe('failed');
+      expect(legacyWorkerDoneStatus('max_turns')).toBe('failed');
+    });
   });
 });
