@@ -335,6 +335,71 @@ struct AgentsFeatureTests {
     #expect(feature.startedConversationID == nil)
   }
 
+  // MARK: - Change model from a conversation (goal 2026-09-04)
+
+  @Test("changeModel patches only the model, updates the agent, and records the change for the toast")
+  func changeModelPatchesModel() async {
+    let before = agent(id: "agent-1", name: "Research", model: "openai/gpt-5")
+    let after = agent(id: "agent-1", name: "Research", model: "openai/gpt-5-mini")
+    let service = FakeAgentsService(
+      models: [ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI")]
+    )
+    await service.enqueueUpdate(.success(after))
+    let feature = makeOnlineFeature(service: service, agents: [before])
+    await feature.loadModels()
+
+    let changed = await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5-mini")
+
+    #expect(changed == true)
+    let calls = await service.updateCalls
+    #expect(calls.count == 1)
+    #expect(calls.first?.id == "agent-1")
+    #expect(calls.first?.request.model == "openai/gpt-5-mini")
+    #expect(calls.first?.request.systemPrompt == nil)
+    #expect(feature.agents.first(where: { $0.id == "agent-1" })?.config.model == "openai/gpt-5-mini")
+    #expect(feature.lastModelChange?.agentID == "agent-1")
+    #expect(feature.lastModelChange?.modelLabel == "GPT-5 mini")
+    #expect(feature.mutationError == nil)
+  }
+
+  @Test("changeModel to the model already in use is a no-op that reports success without a request")
+  func changeModelSameModelIsNoOp() async {
+    let current = agent(id: "agent-1", model: "openai/gpt-5")
+    let service = FakeAgentsService()
+    let feature = makeOnlineFeature(service: service, agents: [current])
+
+    #expect(await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5") == true)
+    #expect(await service.updateCalls.isEmpty)
+    #expect(feature.lastModelChange == nil)
+  }
+
+  @Test("changeModel fails closed offline and surfaces the mutation error")
+  func changeModelOffline() async {
+    let current = agent(id: "agent-1", model: "openai/gpt-5")
+    let service = FakeAgentsService()
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .offline, agents: [current]))
+
+    #expect(await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5-mini") == false)
+    #expect(await service.updateCalls.isEmpty)
+    #expect(feature.mutationError != nil)
+  }
+
+  @Test("changeModel reports failure and keeps the old model when the gateway rejects it")
+  func changeModelGatewayFailure() async {
+    let current = agent(id: "agent-1", model: "openai/gpt-5")
+    let service = FakeAgentsService()
+    // A validation refusal (not `.notFound`, which the feature treats as
+    // "agent deleted remotely" and drops from the list).
+    await service.enqueueUpdate(.failure(GatewayError.validation("model not supported")))
+    let feature = makeOnlineFeature(service: service, agents: [current])
+
+    #expect(await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5-mini") == false)
+    #expect(feature.agents.first?.config.model == "openai/gpt-5")
+    #expect(feature.mutationError != nil)
+    #expect(feature.lastModelChange == nil)
+  }
+
   private func makeFeature(service: FakeAgentsService) -> AgentsFeature {
     AgentsFeature(gatewayID: "gateway", service: service)
   }
@@ -989,5 +1054,37 @@ private actor AgentServiceConversationStub: ConversationListServicing {
 
   func retainedRequestID(agentID: String) -> String? {
     retainedRequestIDs[agentID]
+  }
+}
+
+/// `ModelCatalog` — the pure grouping/labeling shared by the agent editor and
+/// the chat toolbar's model picker (goal 2026-09-04).
+@Suite("ModelCatalog")
+struct ModelCatalogTests {
+  private let models = [
+    ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "OpenAI"),
+    ModelDTO(value: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5", provider: "Anthropic"),
+    ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI"),
+  ]
+
+  @Test("groups by provider, providers and labels sorted case-insensitively")
+  func groups() {
+    let groups = ModelCatalog.grouped(models, query: "")
+    #expect(groups.map(\.provider) == ["Anthropic", "OpenAI"])
+    #expect(groups[1].models.map(\.value) == ["openai/gpt-5", "openai/gpt-5-mini"])
+  }
+
+  @Test("filters by label, value, or provider, case-insensitively")
+  func filters() {
+    #expect(ModelCatalog.grouped(models, query: "MINI").flatMap(\.models).map(\.value) == ["openai/gpt-5-mini"])
+    #expect(ModelCatalog.grouped(models, query: "anthropic").flatMap(\.models).count == 1)
+    #expect(ModelCatalog.grouped(models, query: "zzz").isEmpty)
+  }
+
+  @Test("label(for:) uses the catalog label, else the value without its provider prefix")
+  func labels() {
+    #expect(ModelCatalog.label(for: "openai/gpt-5-mini", in: models) == "GPT-5 mini")
+    #expect(ModelCatalog.label(for: "vendor/new-model", in: models) == "new-model")
+    #expect(ModelCatalog.label(for: "bare", in: models) == "bare")
   }
 }

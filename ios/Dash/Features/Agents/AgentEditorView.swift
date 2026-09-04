@@ -98,26 +98,8 @@ struct AgentEditorView: View {
     return configured
   }
 
-  private var groupedModels: [(provider: String, models: [ModelDTO])] {
-    let query = modelSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    let filtered = feature.models.filter { model in
-      query.isEmpty
-        || model.label.localizedCaseInsensitiveContains(query)
-        || model.value.localizedCaseInsensitiveContains(query)
-        || model.provider.localizedCaseInsensitiveContains(query)
-    }
-    return Dictionary(grouping: filtered, by: \.provider)
-      .map { provider, models in
-        (
-          provider: provider,
-          models: models.sorted {
-            let order = $0.label.localizedCaseInsensitiveCompare($1.label)
-            if order == .orderedSame { return $0.value < $1.value }
-            return order == .orderedAscending
-          }
-        )
-      }
-      .sorted { $0.provider.localizedCaseInsensitiveCompare($1.provider) == .orderedAscending }
+  private var groupedModels: [ModelCatalog.Group] {
+    ModelCatalog.grouped(feature.models, query: modelSearch)
   }
 
   private func modelButton(title: String, value: String) -> some View {

@@ -36,6 +36,9 @@ struct ChatView: View {
   /// self-contained: it owns its own text, and on submit calls the exact
   /// same `resendFromMessage(id:editedText:)` a Retry does.
   @State private var editingMessage: EditingMessage?
+  // Change model from the conversation (goal 2026-09-04).
+  @State private var isModelPickerPresented = false
+  @State private var modelChangeToast: AgentsFeature.ModelChange?
 
   /// Chat-screen toolbar (audit #15): rename/delete reuse the exact
   /// `ConversationListFeature.rename`/`delete` calls `ConversationListView`
@@ -86,11 +89,47 @@ struct ChatView: View {
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
+        modelButton
+      }
+      ToolbarItem(placement: .topBarTrailing) {
         conversationOptionsMenu
+      }
+    }
+    .sheet(isPresented: $isModelPickerPresented) {
+      if let agentsFeature = appModel.agentsFeature {
+        ChatModelPickerSheet(
+          agentID: feature.state.conversation.agentId,
+          currentModel: currentModel,
+          agentsFeature: agentsFeature
+        ) { change in
+          showModelChangeToast(change)
+        }
+        .presentationDetents([.medium, .large])
+      }
+    }
+    .overlay(alignment: .top) {
+      if let toast = modelChangeToast {
+        Text("Model changed to \(toast.modelLabel)")
+          .font(.footnote.weight(.semibold))
+          .padding(.horizontal, 14)
+          .padding(.vertical, 8)
+          .background(.regularMaterial, in: Capsule())
+          .overlay(Capsule().strokeBorder(Color.primary.opacity(DashTheme.Opacity.strokeSubtle)))
+          .padding(.top, 8)
+          .transition(reduceMotion ? .identity : .move(edge: .top).combined(with: .opacity))
+          .accessibilityIdentifier("chat.modelToast")
       }
     }
     .task {
       await feature.appear()
+    }
+    .task {
+      // Model picker (goal 2026-09-04): the toolbar label wants the catalog's
+      // human label ("GPT-5", not "gpt-5"), so load it with the view rather
+      // than only when the sheet opens.
+      if appModel.agentsFeature?.models.isEmpty == true {
+        await appModel.agentsFeature?.loadModels()
+      }
     }
     .onDisappear {
       // Compose-first new chat (Task 3 review, I1): backing out of a
@@ -467,6 +506,67 @@ struct ChatView: View {
   /// only new-chat-adjacent affordance this screen owns is the header agent
   /// chip (`agentChipBar`), and only for changing THIS still-empty
   /// conversation's agent, not starting an unrelated one.
+  // MARK: - Change model (goal 2026-09-04)
+
+  /// The conversation's agent's current model, read from the agents
+  /// feature (canonical after a change) with the conversation list's agent
+  /// cache as fallback.
+  private var currentModel: String {
+    let agentID = feature.state.conversation.agentId
+    if let model = appModel.agentsFeature?.agents.first(where: { $0.id == agentID })?.config.model {
+      return model
+    }
+    return appModel.conversationListFeature?.agents.first(where: { $0.id == agentID })?.config.model ?? ""
+  }
+
+  private var currentModelLabel: String {
+    ModelCatalog.label(for: currentModel, in: appModel.agentsFeature?.models ?? [])
+  }
+
+  /// Disabled mid-turn (the running turn already has its model) and while
+  /// the gateway can't take mutations.
+  private var modelChangeDisabled: Bool {
+    feature.state.activeTurnID != nil
+      || appModel.agentsFeature?.mutationsAllowed != true
+      || currentModel.isEmpty
+  }
+
+  private var modelButton: some View {
+    Button {
+      isModelPickerPresented = true
+    } label: {
+      HStack(spacing: 4) {
+        Text(currentModelLabel)
+          .font(.footnote)
+          .lineLimit(1)
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.semibold))
+      }
+      .frame(maxWidth: 140, minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .disabled(modelChangeDisabled)
+    .accessibilityLabel(currentModelLabel)
+    .accessibilityHint(
+      feature.state.activeTurnID != nil
+        ? "Wait for the response to finish before changing the model"
+        : "Change model"
+    )
+    .accessibilityIdentifier("chat.model")
+  }
+
+  private func showModelChangeToast(_ change: AgentsFeature.ModelChange) {
+    withAnimation(reduceMotion ? nil : .snappy) { modelChangeToast = change }
+    AccessibilityNotification.Announcement("Model changed to \(change.modelLabel)").post()
+    appModel.agentsFeature?.lastModelChange = nil
+    Task {
+      try? await Task.sleep(for: .seconds(3.5))
+      withAnimation(reduceMotion ? nil : .easeOut) {
+        if modelChangeToast == change { modelChangeToast = nil }
+      }
+    }
+  }
+
   private var conversationOptionsMenu: some View {
     let policy = ConversationRowActionPolicy(
       summary: feature.state.conversation,

@@ -498,6 +498,38 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertFalse(app.staticTexts["|:---|---:|"].exists, "Delimiter row must not render literally")
   }
 
+  /// Goal 2026-09-04: change the model from inside a conversation (MC
+  /// parity — `ChatModelPicker` there). The toolbar shows the agent's current
+  /// model; tapping it opens a provider-grouped picker; choosing a row
+  /// commits immediately, the label updates, and a toast confirms.
+  func testChatToolbarModelPickerChangesTheAgentModel() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `.buttons.matching(identifier:).firstMatch`, like the `chat.options`
+    // tests: a toolbar Button bridges to more than one accessibility node.
+    XCTAssertTrue(element("chat.model", in: app).waitForExistence(timeout: 5))
+    let modelButton = app.buttons.matching(identifier: "chat.model").firstMatch
+    XCTAssertTrue(
+      waitUntilHittable(modelButton, timeout: 5),
+      "Expected the model button to be hittable. UI: \(app.debugDescription)"
+    )
+    XCTAssertEqual(modelButton.label, "GPT-5")
+    modelButton.tap()
+
+    XCTAssertTrue(element("chat.modelPicker.sheet", in: app).waitForExistence(timeout: 5))
+    let row = element("chat.modelPicker.row.openai/gpt-5-mini", in: app)
+    XCTAssertTrue(waitUntilHittable(row, timeout: 5))
+    row.tap()
+
+    XCTAssertTrue(
+      app.descendants(matching: .any)["chat.modelPicker.sheet"].waitForNonExistence(timeout: 5)
+    )
+    XCTAssertTrue(app.staticTexts["Model changed to GPT-5 mini"].waitForExistence(timeout: 5))
+    let changed = app.buttons.matching(identifier: "chat.model").firstMatch
+    XCTAssertEqual(changed.label, "GPT-5 mini")
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)

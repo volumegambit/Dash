@@ -264,6 +264,16 @@ final class AgentsFeature {
   var mutationError: String?
   var startedConversationID: String?
   var savedAgentID: String?
+  /// The last successful `changeModel` (goal 2026-09-04) — what the chat
+  /// toolbar's toast and VoiceOver announcement read. Cleared by the view
+  /// once shown; `nil` when nothing changed (same model, offline, failure).
+  var lastModelChange: ModelChange?
+
+  struct ModelChange: Equatable, Sendable {
+    let agentID: String
+    let model: String
+    let modelLabel: String
+  }
 
   var mutationsAllowed: Bool { connection == .online }
 
@@ -451,6 +461,45 @@ final class AgentsFeature {
       return
     } catch {
       await handleMutationFailure(error)
+    }
+  }
+
+  /// Change an agent's model from inside a conversation (MC parity:
+  /// `ChatModelPicker` commits `updateAgent(id, { model })` immediately).
+  /// Agent-level, like MC — every conversation on this agent follows. Returns
+  /// `true` on success or when the agent already uses `model` (no request);
+  /// `false` offline or when the gateway rejects it (`mutationError` set).
+  @discardableResult
+  func changeModel(agentID: String, to model: String) async -> Bool {
+    guard requireMutation() else { return false }
+    guard let current = agents.first(where: { $0.id == agentID }) else {
+      mutationError = "That agent is no longer available."
+      return false
+    }
+    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.isEmpty == false else {
+      mutationError = "Choose a model."
+      return false
+    }
+    if current.config.model == trimmed { return true }
+    do {
+      let value = try await service.update(
+        id: agentID,
+        request: UpdateAgentRequest(model: trimmed, systemPrompt: nil)
+      )
+      recordCanonical(value)
+      mutationError = nil
+      lastModelChange = ModelChange(
+        agentID: agentID,
+        model: trimmed,
+        modelLabel: ModelCatalog.label(for: trimmed, in: models)
+      )
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      await handleMutationFailure(error)
+      return false
     }
   }
 
