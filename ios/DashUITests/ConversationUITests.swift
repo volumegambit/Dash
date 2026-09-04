@@ -482,6 +482,22 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
+  /// iOS markdown parity (2026-09-04): agents emit GFM pipe tables
+  /// constantly; they used to render as literal pipes. The seeded offline
+  /// reply carries a two-column table.
+  func testAssistantReplyRendersAGFMTable() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    let table = element("chat.markdown.table", in: app)
+    XCTAssertTrue(table.waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      table.label.contains("Region, Status") && table.label.contains("EU, Ready"),
+      "Expected the table's accessibility label to read header then rows, got: \(table.label)"
+    )
+    XCTAssertFalse(app.staticTexts["|:---|---:|"].exists, "Delimiter row must not render literally")
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)

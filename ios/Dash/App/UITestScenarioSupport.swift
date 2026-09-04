@@ -282,7 +282,10 @@ extension AppDependenciesFactory {
           status: .completed,
           events: [
             .response(
-              content: "This reply is available offline.",
+              // iOS markdown parity (2026-09-04): a GFM table rides along so
+              // the table renderer is exercised by DashUI; the sentence other
+              // tests assert on stays intact as the first paragraph.
+              content: "This reply is available offline.\n\n| Region | Status |\n|:---|---:|\n| EU | Ready |\n| US | Pending |",
               usage: UsageDTO(
                 inputTokens: 4,
                 outputTokens: 6,
