@@ -394,7 +394,9 @@ class DashUITestCase: XCTestCase {
       let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
       start.press(forDuration: 0.05, thenDragTo: end)
     }
-    if waitUntilExposed(identifier, in: app, timeout: 3) { return }
+    // 8s, not 3: on a contended CI runner the list content behind a tab
+    // switch can take several seconds to publish its rows.
+    if waitUntilExposed(identifier, in: app, timeout: 8) { return }
     // SwiftUI intermittently never publishes `.tabItem` identifiers for a
     // launch (see `tabBarFallback`) — on those launches the title-matched
     // tab-bar button is the exposure signal, and `tab(_:)` will use it too.
@@ -476,6 +478,18 @@ class DashUITestCase: XCTestCase {
       object: element
     )
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Taps `element` at its centre coordinate instead of via `.tap()`.
+  ///
+  /// `XCUIElement.tap()` first asks the accessibility system to scroll the
+  /// element to visible; for a toolbar item on the CI runner that action
+  /// fails outright ("Failed to scroll to visible (by AX action) …
+  /// kAXErrorCannotComplete") even though the element has a real on-screen
+  /// frame and taps fine. A coordinate tap skips that step — the same reason
+  /// `revealSidebarIfNeeded` taps its controls by coordinate.
+  func tapByCoordinate(_ element: XCUIElement) {
+    element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
   }
 
   func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {

@@ -384,7 +384,7 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(options.waitForExistence(timeout: 8))
     XCTAssertEqual(options.label, "Conversation options")
     XCTAssertTrue(options.isEnabled)
-    options.tap()
+    tapByCoordinate(options)
 
     let renameItem = app.buttons["Rename"].firstMatch
     let deleteItem = app.buttons["Delete"].firstMatch
@@ -410,7 +410,7 @@ final class ConversationUITests: DashUITestCase {
     // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
     // `hittable == false` yet taps fine; the wait is for a slow CI runner.
     XCTAssertTrue(options.waitForExistence(timeout: 8))
-    options.tap()
+    tapByCoordinate(options)
     let renameItem = app.buttons["Rename"].firstMatch
     XCTAssertTrue(renameItem.waitForExistence(timeout: 8))
     renameItem.tap()
@@ -447,7 +447,7 @@ final class ConversationUITests: DashUITestCase {
     // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
     // `hittable == false` yet taps fine; the wait is for a slow CI runner.
     XCTAssertTrue(options.waitForExistence(timeout: 8))
-    options.tap()
+    tapByCoordinate(options)
     let deleteItem = app.buttons["Delete"].firstMatch
     XCTAssertTrue(deleteItem.waitForExistence(timeout: 8))
     deleteItem.tap()
