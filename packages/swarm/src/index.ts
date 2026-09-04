@@ -7,6 +7,7 @@ export {
   SwarmCoordinator,
   type SwarmCoordinatorOptions,
 } from './coordinator.js';
+export { scanSubagentOutput, type ScannedOutput } from './output-scan.js';
 export { SwarmRun, type SwarmRunOptions } from './run.js';
 export {
   createAskOrchestratorTool,
