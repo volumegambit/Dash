@@ -259,7 +259,7 @@ struct ToolCardView: View {
       }
     }
     .padding(10)
-    .background(cardBackground, in: RoundedRectangle(cornerRadius: 8))
+    .background(cardBackground, in: RoundedRectangle(cornerRadius: DashTheme.Radius.small))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
     .accessibilityIdentifier("chat.tool.\(tool.id)")
@@ -298,17 +298,18 @@ struct ToolCardView: View {
         .frame(width: 12, height: 12)
     case .succeeded:
       Circle()
-        .fill(EventViewColors.green)
+        .fill(DashTheme.success)
         .frame(width: 8, height: 8)
     case .failed:
       Image(systemName: "xmark.circle")
         .font(.system(size: 10))
-        .foregroundStyle(EventViewColors.red)
+        .foregroundStyle(DashTheme.danger)
     }
   }
 
   private var cardBackground: Color {
-    tool.status == .failed ? EventViewColors.red.opacity(0.08) : Color.secondary.opacity(0.08)
+    tool.status == .failed
+      ? DashTheme.danger.opacity(DashTheme.Opacity.fillSubtle) : Color.secondary.opacity(DashTheme.Opacity.fillSubtle)
   }
 
   @ViewBuilder
@@ -334,7 +335,7 @@ struct ToolCardView: View {
     case .failed:
       Text(tool.content ?? "")
         .font(.caption.monospaced())
-        .foregroundStyle(EventViewColors.red)
+        .foregroundStyle(DashTheme.danger)
         .textSelection(.enabled)
 
     case .succeeded:
@@ -347,19 +348,19 @@ struct ToolCardView: View {
       } else if content.components(separatedBy: "\n").count <= 3 {
         Text(content)
           .font(.caption.monospaced())
-          .foregroundStyle(EventViewColors.green.opacity(0.8))
+          .foregroundStyle(DashTheme.success.opacity(DashTheme.Opacity.contentSecondary))
           .textSelection(.enabled)
       } else {
         ScrollView {
           Text(content)
             .font(.caption.monospaced())
-            .foregroundStyle(.primary.opacity(0.8))
+            .foregroundStyle(.primary.opacity(DashTheme.Opacity.contentSecondary))
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
         }
         .frame(maxHeight: 256)
-        .background(EventViewColors.codeBackground)
+        .background(DashTheme.codeBackground)
       }
     }
   }
@@ -376,12 +377,6 @@ private func capitalizedFirstLetter(_ s: String) -> String {
 
 /// MC design tokens (design doc appendix §0) needed for tool-card chrome
 /// that has no existing Dash design-system token.
-private enum EventViewColors {
-  static let green = Color(red: 0x22 / 255, green: 0xc5 / 255, blue: 0x5e / 255)
-  static let red = Color(red: 0xf8 / 255, green: 0x71 / 255, blue: 0x71 / 255)
-  static let codeBackground = Color(red: 0x16 / 255, green: 0x1b / 255, blue: 0x22 / 255)
-}
-
 struct WorkerCardView: View {
   let worker: WorkerCardState
 
@@ -425,7 +420,7 @@ struct WorkerCardView: View {
       }
     }
     .padding(10)
-    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle), in: RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Worker \(worker.role), \(worker.status.title)")
     .accessibilityIdentifier("chat.worker.\(worker.key.workerID)")
@@ -492,7 +487,7 @@ struct QuestionView: View {
       }
     }
     .padding(10)
-    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle), in: RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("chat.question.\(question.id)")
     .onChange(of: question.id) { _, _ in

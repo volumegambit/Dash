@@ -44,7 +44,7 @@ struct ComposerView: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 10)
           .frame(minHeight: 44)
-          .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
+          .background(Color.secondary.opacity(DashTheme.Opacity.fillMuted), in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge))
           .disabled(feature.draftEditingAllowed == false)
           .focused($isDraftFocused)
           .accessibilityIdentifier("chat.composer")
@@ -240,13 +240,13 @@ private struct AttachmentThumbnail: View {
         }
       }
       .frame(width: 64, height: 64)
-      .background(Color.secondary.opacity(0.1))
-      .clipShape(RoundedRectangle(cornerRadius: 12))
+      .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
+      .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
 
       Button(action: onRemove) {
         Image(systemName: "xmark.circle.fill")
           .symbolRenderingMode(.palette)
-          .foregroundStyle(.white, .black.opacity(0.7))
+          .foregroundStyle(.white, .black.opacity(DashTheme.Opacity.scrim))
           .frame(width: 44, height: 44, alignment: .topTrailing)
           .contentShape(Rectangle())
       }

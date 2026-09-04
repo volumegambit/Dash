@@ -55,7 +55,7 @@ struct AgentsListView: View {
           }
           .buttonStyle(.plain)
           .listRowBackground(
-            isSelected(agent.id) ? DashTheme.accent.opacity(0.12) : Color.clear
+            isSelected(agent.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
           )
           .accessibilityElement(children: .combine)
           .accessibilityAddTraits(isSelected(agent.id) ? .isSelected : [])

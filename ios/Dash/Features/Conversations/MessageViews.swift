@@ -175,7 +175,7 @@ struct ChatMessageView: View {
         if let user = message.user {
           UserMessageView(message: user)
             .padding(12)
-            .background(DashTheme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 16))
+            .background(DashTheme.accent.opacity(DashTheme.Opacity.fillEmphasis), in: RoundedRectangle(cornerRadius: DashTheme.Radius.large))
             .contextMenu { userContextMenuItems(user) }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(message.accessibilityStatusLabel)
@@ -364,8 +364,8 @@ private struct MessageImageView: View {
       }
     }
     .frame(width: 88, height: 88)
-    .background(Color.secondary.opacity(0.08))
-    .clipShape(RoundedRectangle(cornerRadius: 10))
+    .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
+    .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
     .accessibilityLabel("Attached image")
   }
 }

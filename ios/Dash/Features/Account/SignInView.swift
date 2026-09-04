@@ -59,7 +59,7 @@ struct SignInView: View {
               .foregroundStyle(.red)
               .frame(maxWidth: .infinity, alignment: .leading)
               .padding(16)
-              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+              .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DashTheme.Radius.large))
               .accessibilityElement(children: .combine)
           }
 

@@ -520,7 +520,7 @@ struct ConversationListView: View {
     }
     .buttonStyle(.plain)
     .listRowBackground(
-      isSelected(conversation.id) ? DashTheme.accent.opacity(0.12) : Color.clear
+      isSelected(conversation.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
     )
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
@@ -582,7 +582,7 @@ struct ConversationListView: View {
     .buttonStyle(.plain)
     .listRowBackground(
       isRecoverySelected(recovery.conversationID)
-        ? DashTheme.accent.opacity(0.12) : Color.clear
+        ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
     )
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isRecoverySelected(recovery.conversationID) ? .isSelected : [])
@@ -868,7 +868,7 @@ private struct RecoveryAttachmentPreviewView: View {
           .resizable()
           .scaledToFit()
           .frame(maxWidth: .infinity, maxHeight: 280)
-          .clipShape(RoundedRectangle(cornerRadius: 12))
+          .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
           .accessibilityLabel(presentation.previewAccessibilityLabel)
           .accessibilityIdentifier(presentation.previewIdentifier)
       case .unavailable(let key) where key == request.key:

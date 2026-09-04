@@ -237,7 +237,7 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(minHeight: 44)
-        .background(Color.secondary.opacity(0.12), in: Capsule())
+        .background(Color.secondary.opacity(DashTheme.Opacity.fillMuted), in: Capsule())
       }
       .buttonStyle(.plain)
       .disabled(isSwitchingAgent)
@@ -676,8 +676,8 @@ private struct JumpToBottomButton: View {
         .foregroundStyle(DashTheme.accent)
         .frame(width: 40, height: 40)
         .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(Color.primary.opacity(0.08)))
-        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        .overlay(Circle().strokeBorder(Color.primary.opacity(DashTheme.Opacity.strokeSubtle)))
+        .shadow(color: .black.opacity(DashTheme.Opacity.shadow), radius: DashTheme.Radius.small, y: 2)
         .contentShape(Circle())
     }
     .buttonStyle(.plain)
@@ -894,9 +894,9 @@ private struct ChatStatusBanner: View {
   private var backgroundStyle: Color {
     switch presentation {
     case .repairRequired, .updateRequired, .failed:
-      Color.red.opacity(0.12)
+      Color.red.opacity(DashTheme.Opacity.fillMuted)
     case .recoveryRequired, .reconnecting, .offline, .gatewayOffline, .rateLimited:
-      Color.orange.opacity(0.12)
+      Color.orange.opacity(DashTheme.Opacity.fillMuted)
     }
   }
 }

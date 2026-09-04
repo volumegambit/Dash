@@ -21,14 +21,14 @@ struct QRScannerView: View {
     ScrollView {
       VStack(spacing: 20) {
         ZStack {
-          RoundedRectangle(cornerRadius: 24)
+          RoundedRectangle(cornerRadius: DashTheme.Radius.xxLarge)
             .fill(Color.black.gradient)
           if let previewSource = scanner.previewSource {
             QRScannerPreview(source: previewSource)
-              .clipShape(RoundedRectangle(cornerRadius: 24))
+              .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.xxLarge))
           }
-          RoundedRectangle(cornerRadius: 20)
-            .strokeBorder(.white.opacity(0.8), lineWidth: 3)
+          RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge)
+            .strokeBorder(.white.opacity(DashTheme.Opacity.contentSecondary), lineWidth: 3)
             .frame(width: 230, height: 230)
           if cameraAuthorization != .authorized {
             Image(systemName: scannerSymbol)
