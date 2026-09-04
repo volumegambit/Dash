@@ -14,7 +14,13 @@ export function isRunTerminal(run: Pick<SwarmRunSummary, 'finalized'>): boolean 
 
 /** A worker status is terminal when the worker has finished (any outcome). */
 export function isWorkerTerminal(status: SwarmWorkerStatus): boolean {
-  return status === 'done' || status === 'failed' || status === 'cancelled';
+  return (
+    status === 'done' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'interrupted' ||
+    status === 'max_turns'
+  );
 }
 
 /**

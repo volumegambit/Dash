@@ -99,7 +99,7 @@ export type McAgentEvent =
       workerId: string;
       runId: string;
       role: string;
-      status: 'done' | 'failed' | 'cancelled';
+      status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
       report: string;
       usage?: { inputTokens: number; outputTokens: number };
     }

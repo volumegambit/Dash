@@ -702,6 +702,8 @@ const WORKER_STATUS_LABEL: Record<WorkerCardStatus, string> = {
   done: 'Done',
   failed: 'Failed',
   cancelled: 'Cancelled',
+  interrupted: 'Interrupted',
+  max_turns: 'Max turns reached',
 };
 
 /**
@@ -1108,6 +1110,8 @@ const WORKER_DOT_COLOR: Record<WorkerCardStatus, string> = {
   done: 'bg-green',
   failed: 'bg-red',
   cancelled: 'bg-muted',
+  interrupted: 'bg-muted',
+  max_turns: 'bg-red',
 };
 
 /**

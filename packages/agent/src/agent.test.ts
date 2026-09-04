@@ -191,4 +191,44 @@ describe('DashAgent.chat()', () => {
       }
     }).rejects.toThrow(/not found/);
   });
+
+  it('accepts the subagent_* event variants', () => {
+    const ev1: AgentEvent = {
+      type: 'subagent_started',
+      subagentId: 'sa1',
+      subagentType: 'Explore',
+      description: 'search code',
+      prompt: 'Find all uses of X',
+      model: 'anthropic/claude-opus-5',
+      background: true,
+      depth: 1,
+      startedAt: '2026-09-04T00:00:00Z',
+      isolation: 'worktree',
+      parentTurnId: 'turn-1',
+    };
+    const ev2: AgentEvent = {
+      type: 'subagent_progress',
+      subagentId: 'sa1',
+      status: 'running',
+      toolCallCount: 2,
+      elapsedMs: 1500,
+      detail: 'Searching grep',
+    };
+    const ev3: AgentEvent = {
+      type: 'subagent_finished',
+      subagentId: 'sa1',
+      name: 'searcher',
+      subagentType: 'Explore',
+      description: 'search code',
+      status: 'done',
+      report: 'Found 12 uses',
+      toolCallCount: 5,
+      startedAt: '2026-09-04T00:00:00Z',
+      endedAt: '2026-09-04T00:05:00Z',
+      usage: { inputTokens: 100, outputTokens: 200 },
+    };
+    expect(ev1.type).toBe('subagent_started');
+    expect(ev2.type).toBe('subagent_progress');
+    expect(ev3.type).toBe('subagent_finished');
+  });
 });

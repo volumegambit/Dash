@@ -28,6 +28,8 @@ const STATUS_DOT: Record<SwarmWorkerStatus, string> = {
   done: 'bg-green',
   failed: 'bg-red',
   cancelled: 'bg-muted',
+  interrupted: 'bg-muted',
+  max_turns: 'bg-red',
 };
 
 interface SwarmPanelProps {

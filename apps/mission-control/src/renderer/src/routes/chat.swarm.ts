@@ -27,7 +27,14 @@ export type WorkerStatusEvent = Extract<McAgentEvent, { type: 'worker_status' }>
 export type WorkerDoneEvent = Extract<McAgentEvent, { type: 'worker_done' }>;
 
 /** Coarse lifecycle state a WorkerCard renders. */
-export type WorkerCardStatus = 'running' | 'waiting' | 'done' | 'failed' | 'cancelled';
+export type WorkerCardStatus =
+  | 'running'
+  | 'waiting'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+  | 'max_turns';
 
 /**
  * All events belonging to a single worker within one message, in arrival
