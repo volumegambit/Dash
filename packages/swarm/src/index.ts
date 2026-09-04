@@ -1,3 +1,8 @@
+export {
+  AGENT_TOOL_DESCRIPTION,
+  type CreateAgentToolsOptions,
+  createAgentTools,
+} from './agent-tool.js';
 export { AsyncChannel } from './channel.js';
 export {
   type AttachOptions,
