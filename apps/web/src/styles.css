@@ -376,6 +376,110 @@ textarea:focus-visible {
   opacity: 0.5;
 }
 
+/* Image attachments (chat-ux Phase 4 Task 5, audit #14 remainder): the
+ * paperclip button, the visually-hidden file input it triggers, and the
+ * thumbnail strip above the textarea — MC parity (chat.tsx input bar), on
+ * tokens, hard corners. The form is `flex-wrap` so the strip takes its own
+ * full-width row above the input row. */
+.app-composer {
+  flex-wrap: wrap;
+}
+
+.app-composer-attachments {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-composer-attachment {
+  position: relative;
+}
+
+.app-composer-attachment-image {
+  display: block;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  background: var(--surface);
+}
+
+.app-composer-attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.app-composer-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.app-composer-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.app-composer-attach:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.app-composer-attach:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.app-composer-attachment-error {
+  margin: 4px auto 0;
+  max-inline-size: 46rem;
+  color: var(--danger);
+  font-size: 0.85em;
+}
+
+/* Transcript: a user message's attached images (ContentBlocks `.user-images`). */
+.user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.user-image {
+  display: block;
+  max-width: 240px;
+  max-height: 240px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+
 /* Send↔stop morph (audit #3, MC parity chat.tsx:2633-2643): swapped in for
  * `.app-composer-send` while a turn is streaming. */
 .app-composer-stop {

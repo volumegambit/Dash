@@ -480,6 +480,41 @@ describe('createWebAppStore', () => {
       expect(typeof (sent as { channelId?: string }).channelId).toBe('string');
     });
 
+    // Chat UX Phase 4 Task 5 (audit #14 remainder): web attachments. Images
+    // ride on the same `message` frame iOS/MC send (`MobileWsClientFrame`
+    // `images`), and the optimistic user message carries them too so the
+    // transcript shows the thumbnails before the gateway echoes them back.
+    it('sends images on the optimistic user message and in the ChatSend frame', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const images = [{ mediaType: 'image/png' as const, data: 'aGVsbG8=' }];
+      await store.getState().sendMessage(CONVERSATION_ID, '', images);
+
+      expect(store.getState().transcripts[CONVERSATION_ID]?.messages[0]).toMatchObject({
+        role: 'user',
+        content: { type: 'user', text: '', images },
+      });
+      expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: '', images });
+    });
+
+    it('omits the images field from the frame and the optimistic message when none are attached', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'text only');
+
+      expect('images' in (sockets[0].sent[0] as object)).toBe(false);
+      const content = store.getState().transcripts[CONVERSATION_ID]?.messages[0]?.content;
+      expect(content && 'images' in content).toBe(false);
+    });
+
     it('throws and adds no optimistic message when not connected', async () => {
       const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
       const { factory, sockets, onCloses } = scriptedSocketFactory();

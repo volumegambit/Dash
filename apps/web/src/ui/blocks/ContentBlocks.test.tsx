@@ -9,6 +9,28 @@ describe('ContentBlocks', () => {
     expect(screen.getByText('Is the mobile connection ready?')).toBeTruthy();
   });
 
+  // Chat UX Phase 4 Task 5 (audit #14 remainder): a user message's attached
+  // images render as thumbnails (MC parity, chat.tsx's `userImages`), sourced
+  // straight from the contract's base64 `MobileImage`.
+  it('renders user images as attached thumbnails', () => {
+    const content: ConversationContent = {
+      type: 'user',
+      text: 'Look at these',
+      images: [
+        { mediaType: 'image/png', data: 'aGVsbG8=' },
+        { mediaType: 'image/jpeg', data: 'd29ybGQ=' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('Look at these')).toBeTruthy();
+    const images = screen.getAllByRole('img');
+    expect(images.map((img) => img.getAttribute('src'))).toEqual([
+      'data:image/png;base64,aGVsbG8=',
+      'data:image/jpeg;base64,d29ybGQ=',
+    ]);
+    expect(images.map((img) => img.getAttribute('alt'))).toEqual(['Attachment 1', 'Attachment 2']);
+  });
+
   it('renders assistant text_delta events as markdown', () => {
     const content: ConversationContent = {
       type: 'assistant',

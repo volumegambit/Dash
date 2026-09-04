@@ -2,6 +2,12 @@ import type { ConversationMessage } from '@dash/mobile-contract';
 import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { Transcript } from '../state/assemble.js';
 import { useWebAppStore } from './Shell.js';
+import {
+  type PendingImageAttachment,
+  imageFilesFrom,
+  readImageFile,
+  validateImageFiles,
+} from './attachments.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
 import { usePinnedScroll } from './hooks/usePinnedScroll.js';
 
@@ -47,6 +53,20 @@ function CopyIcon(): ReactNode {
 
 /** Send↔stop morph target (MC parity, chat.tsx:2633-2643 `Square` icon):
  * shown on the composer's stop button while a turn is streaming. */
+function PaperclipIcon(): ReactNode {
+  return (
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M21 11.5 12.5 20a5.5 5.5 0 0 1-7.8-7.8l9-9a3.5 3.5 0 0 1 5 5l-9 9a1.5 1.5 0 0 1-2.1-2.1L16 6.7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function StopIcon(): ReactNode {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
@@ -585,6 +605,54 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const draftsRef = useRef(new Map<string, string>());
   // Entrance-animation ledgers (Phase 4 Task 1, minor 10) — see `markLiveMessages`.
   const entranceLedgersRef = useRef(new Map<string, EntranceLedger>());
+
+  // Image attachments (Phase 4 Task 5, audit #14 remainder): same
+  // per-conversation shape as drafts — a Map keyed by conversation id that
+  // outlives switches, with `attachments` as the displayed value for the
+  // open thread. Files arrive from the paperclip input, a paste into the
+  // textarea, or a drop onto the composer; all three funnel through
+  // `addImageFiles`, which applies the shared limits (`attachments.ts`).
+  const attachmentsRef = useRef(new Map<string, PendingImageAttachment[]>());
+  const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setAttachments(conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : []);
+    setAttachmentError(null);
+  }, [conversationId]);
+
+  const setConversationAttachments = useCallback(
+    (next: PendingImageAttachment[]) => {
+      setAttachments(next);
+      if (!conversationId) return;
+      if (next.length === 0) attachmentsRef.current.delete(conversationId);
+      else attachmentsRef.current.set(conversationId, next);
+    },
+    [conversationId],
+  );
+
+  const addImageFiles = useCallback(
+    async (files: ReadonlyArray<File>) => {
+      if (files.length === 0) return;
+      const current = conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : [];
+      const { accepted, error } = validateImageFiles(current, files);
+      setAttachmentError(error);
+      if (accepted.length === 0) return;
+      const read = await Promise.all(accepted.map(readImageFile));
+      const latest = conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : [];
+      setConversationAttachments([...latest, ...read]);
+    },
+    [conversationId, setConversationAttachments],
+  );
+
+  const removeAttachment = useCallback(
+    (id: string) => {
+      setConversationAttachments(attachments.filter((item) => item.id !== id));
+      setAttachmentError(null);
+    },
+    [attachments, setConversationAttachments],
+  );
   const [draft, setDraftState] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -752,12 +820,18 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   async function handleSend(): Promise<void> {
     const text = draft.trim();
-    if (!text || !conversationId || !canSend || isStreaming) return;
+    if ((!text && attachments.length === 0) || !conversationId || !canSend || isStreaming) return;
     setSendError(null);
     try {
-      await sendMessage(conversationId, text);
+      const images =
+        attachments.length > 0
+          ? attachments.map(({ mediaType, data }) => ({ mediaType, data }))
+          : undefined;
+      await sendMessage(conversationId, text, images);
       draftsRef.current.delete(conversationId);
       updateDraft('');
+      setConversationAttachments([]);
+      setAttachmentError(null);
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send message.');
     }
@@ -858,13 +932,75 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
             event.preventDefault();
             void handleSend();
           }}
+          onDragOver={(event) => {
+            if (imageFilesFrom(event.dataTransfer.items).length > 0) event.preventDefault();
+          }}
+          onDrop={(event) => {
+            const files = imageFilesFrom(event.dataTransfer.files);
+            if (files.length === 0) return;
+            event.preventDefault();
+            void addImageFiles(files);
+          }}
         >
+          {attachments.length > 0 && (
+            <ul className="app-composer-attachments" aria-label="Attached images">
+              {attachments.map((attachment, index) => (
+                <li key={attachment.id} className="app-composer-attachment">
+                  <img
+                    className="app-composer-attachment-image"
+                    src={attachment.preview}
+                    alt={`Attachment ${index + 1}`}
+                  />
+                  <button
+                    type="button"
+                    className="app-composer-attachment-remove"
+                    aria-label={`Remove attachment ${index + 1}`}
+                    onClick={() => removeAttachment(attachment.id)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            aria-label="Attach images"
+            className="app-composer-file-input"
+            onChange={(event) => {
+              // Every chosen file goes through validation (not
+              // `imageFilesFrom`, which silently drops non-images — right
+              // for paste/drop, wrong here, where the user picked the file
+              // and deserves the "unsupported type" copy).
+              void addImageFiles(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            className="app-composer-attach"
+            aria-label="Add images"
+            title="Attach images"
+            disabled={!canSend || isStreaming}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <PaperclipIcon />
+          </button>
           <textarea
             ref={textareaRef}
             rows={1}
             aria-label="Message"
             value={draft}
             onChange={(event) => updateDraft(event.target.value)}
+            onPaste={(event) => {
+              const files = imageFilesFrom(event.clipboardData.items);
+              if (files.length === 0) return;
+              event.preventDefault();
+              void addImageFiles(files);
+            }}
             onKeyDown={(event) => {
               if (event.key !== 'Enter' || event.shiftKey) return;
               // IME composition (e.g. typing Japanese/Chinese/Korean via a
@@ -893,13 +1029,16 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
             <button
               type="submit"
               className="app-composer-send"
-              disabled={!canSend || !draft.trim()}
+              disabled={!canSend || (!draft.trim() && attachments.length === 0)}
             >
               Send
             </button>
           )}
         </form>
         {sendError && <p role="alert">{sendError}</p>}
+        {attachmentError && (
+          <output className="app-composer-attachment-error">{attachmentError}</output>
+        )}
       </div>
     </main>
   );

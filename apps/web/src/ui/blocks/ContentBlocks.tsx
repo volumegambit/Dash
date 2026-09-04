@@ -404,7 +404,28 @@ export function ContentBlocks({ content }: ContentBlocksProps): ReactNode {
 
   if (content.type === 'user') {
     const text = typeof content.text === 'string' ? content.text : '';
-    return <>{renderParagraphs(text, 'user-text')}</>;
+    const images = Array.isArray(content.images) ? content.images : [];
+    return (
+      <>
+        {renderParagraphs(text, 'user-text')}
+        {images.length > 0 && (
+          // Phase 4 Task 5 (audit #14 remainder): attached images as
+          // thumbnails, sourced straight from the contract's base64
+          // `MobileImage` (MC parity, chat.tsx `userImages`).
+          <div className="user-images">
+            {images.map((image, index) => (
+              <img
+                // biome-ignore lint/suspicious/noArrayIndexKey: images have no id in the contract; order is stable per message
+                key={index}
+                className="user-image"
+                src={`data:${image.mediaType};base64,${image.data}`}
+                alt={`Attachment ${index + 1}`}
+              />
+            ))}
+          </div>
+        )}
+      </>
+    );
   }
 
   const events = Array.isArray(content.events) ? content.events : [];

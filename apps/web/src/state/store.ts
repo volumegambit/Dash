@@ -2,6 +2,7 @@ import type {
   ConversationMessage,
   ConversationSummary,
   MobileAgent,
+  MobileImage,
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
@@ -58,7 +59,7 @@ export interface WebAppState {
   startConversation(agentId: string, title?: string): Promise<ConversationSummary>;
   loadConversations(): Promise<void>;
   openConversation(id: string): Promise<void>;
-  sendMessage(conversationId: string, text: string): Promise<void>;
+  sendMessage(conversationId: string, text: string, images?: MobileImage[]): Promise<void>;
   /**
    * Message actions (chat-ux Phase 2 Task 4, audit #5): retry-failed and
    * edit-and-resend both funnel through here — retry is a call with no
@@ -809,7 +810,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         set({ connection: 'connected' });
       },
 
-      async sendMessage(conversationId: string, text: string) {
+      async sendMessage(conversationId: string, text: string, images?: MobileImage[]) {
         if (!socket || get().connection !== 'connected') {
           throw new Error(
             'Cannot send: no connected chat socket (call openConversation() and wait for it to connect)',
@@ -828,7 +829,12 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           ordinal: (get().transcripts[conversationId]?.messages.length ?? 0) + 1,
           role: 'user',
           status: 'accepted',
-          content: { type: 'user', text },
+          // Phase 4 Task 5: images ride on the optimistic message too, so
+          // the transcript shows the thumbnails before the gateway echoes
+          // them back. Omitted (not `undefined`) when there are none, to
+          // keep the shape byte-identical to a text-only send.
+          content:
+            images && images.length > 0 ? { type: 'user', text, images } : { type: 'user', text },
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -844,6 +850,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           channelId: CHANNEL_ID,
           conversationId,
           text,
+          ...(images && images.length > 0 ? { images } : {}),
           resumable: true,
         };
         try {

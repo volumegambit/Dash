@@ -1258,6 +1258,97 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
   });
 });
 
+describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', () => {
+  function pngFile(name = 'shot.png'): File {
+    return new File([new Uint8Array([104, 105])], name, { type: 'image/png' });
+  }
+
+  it('attaches an image from the file input, enables Send with no text, sends it, and clears the strip', async () => {
+    const { sockets } = await renderConnected();
+    expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('Attach images'), { target: { files: [pngFile()] } });
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+    expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByText('Send'));
+    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect(sockets[0].sent[0]).toMatchObject({
+      type: 'message',
+      text: '',
+      images: [{ mediaType: 'image/png', data: 'aGk=' }],
+    });
+    // Strip cleared; the transcript's optimistic row now shows the image.
+    await waitFor(() => expect(screen.queryByLabelText('Remove attachment 1')).toBeNull());
+    expect(screen.getByAltText('Attachment 1')).toBeTruthy();
+  });
+
+  it('removes an attachment from the strip and surfaces the validation copy for a rejected file', async () => {
+    await renderConnected();
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: {
+        files: [pngFile(), new File([new Uint8Array(3)], 'notes.txt', { type: 'text/plain' })],
+      },
+    });
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+    expect(screen.getByText('Unsupported image type. Use PNG, JPG, GIF, or WebP.')).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Remove attachment 1'));
+    expect(screen.queryByAltText('Attachment 1')).toBeNull();
+    expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('attaches an image pasted into the composer', async () => {
+    await renderConnected();
+    const png = pngFile('pasted.png');
+    fireEvent.paste(screen.getByLabelText('Message'), {
+      clipboardData: {
+        files: [png],
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => png }],
+      },
+    });
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+  });
+
+  it('keeps attachments isolated per conversation, like drafts (audit #14)', async () => {
+    const OTHER_ID = 'conv-2';
+    const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
+    const { factory, sockets } = scriptedSocketFactory();
+    const store = createWebAppStore({ rest, socketFactory: factory });
+    await store.getState().loadConversations();
+
+    const { rerender } = render(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(1));
+    sockets[0].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+    fireEvent.change(screen.getByLabelText('Attach images'), { target: { files: [pngFile()] } });
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(2));
+    sockets[1].open();
+    await waitFor(() => expect(store.getState().connection).toBe('connected'));
+    expect(screen.queryByAltText('Attachment 1')).toBeNull();
+
+    rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() => expect(sockets.length).toBe(3));
+    sockets[2].open();
+    await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
+  });
+});
+
 describe('ChatView message row memoization', () => {
   beforeEach(() => {
     vi.mocked(ContentBlocks).mockClear();

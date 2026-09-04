@@ -268,3 +268,15 @@ describe('styles.css transcript performance (chat-ux Phase 4 Task 1, audit #21 +
     expect(block).toMatch(/contain-intrinsic-size:\s*auto/);
   });
 });
+
+describe('styles.css composer attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', () => {
+  it('styles the attachment strip and thumbnails on tokens with hard corners', () => {
+    const strip = ruleBlock('.app-composer-attachments');
+    expect(strip).toMatch(/display:\s*flex/);
+    const thumb = ruleBlock('.app-composer-attachment-image');
+    expect(thumb).toMatch(/border:\s*1px solid var\(--border\)/);
+    expect(thumb).toMatch(/object-fit:\s*cover/);
+    expect(thumb).not.toMatch(/border-radius:\s*[1-9]/);
+    expect(ruleBlock('.app-composer-attach')).toMatch(/border-radius:\s*var\(--radius\)/);
+  });
+});
