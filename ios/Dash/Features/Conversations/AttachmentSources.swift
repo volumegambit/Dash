@@ -33,7 +33,9 @@ enum AttachmentSource: CaseIterable, Equatable, Sendable {
     allCases.filter { $0 != .camera || cameraAvailable }
   }
 
-  static var cameraIsAvailable: Bool {
+  /// `isSourceTypeAvailable` is main-actor-isolated on the iOS 18 SDK
+  /// (Xcode 16.3, which CI pins); the only caller is a SwiftUI body.
+  @MainActor static var cameraIsAvailable: Bool {
     UIImagePickerController.isSourceTypeAvailable(.camera)
   }
 }

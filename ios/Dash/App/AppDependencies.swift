@@ -206,6 +206,20 @@ struct AccountFeatureFactory: Sendable {
   /// suffix instead so MC's device list can tell two same-model phones
   /// apart.
   static func defaultDeviceLabel() -> String {
+    // `UIDevice.current` is main-actor-isolated on the iOS 18 SDK (Xcode
+    // 16.3, which CI pins) while this default is a nonisolated `@Sendable`
+    // closure — hop to the main actor for the read, synchronously if we are
+    // not already there.
+    if Thread.isMainThread {
+      return MainActor.assumeIsolated { mainActorDeviceLabel() }
+    }
+    return DispatchQueue.main.sync {
+      MainActor.assumeIsolated { mainActorDeviceLabel() }
+    }
+  }
+
+  @MainActor
+  private static func mainActorDeviceLabel() -> String {
     let name = UIDevice.current.name
     let suffix = UIDevice.current.identifierForVendor.map { String($0.uuidString.suffix(4)) }
     guard let suffix else { return name }

@@ -605,13 +605,15 @@ struct ChatTranscriptSignature: Equatable {
     guard let last = messages.last else {
       return ChatTranscriptSignature(messageID: nil, status: nil, contentCount: 0)
     }
+    // Summed in steps: the single chained `+` over five optional-chained
+    // counts is one Xcode 16.3 (CI) refuses to type-check in reasonable time.
     let assistant = last.assistant
-    let contentCount =
-      (assistant?.text.count ?? 0)
-      + (assistant?.thinking.count ?? 0)
-      + (assistant?.toolCards.count ?? 0)
-      + (assistant?.workerCards.count ?? 0)
-      + (assistant?.statusRows.count ?? 0)
+    let textCount: Int = assistant?.text.count ?? 0
+    let thinkingCount: Int = assistant?.thinking.count ?? 0
+    let toolCount: Int = assistant?.toolCards.count ?? 0
+    let workerCount: Int = assistant?.workerCards.count ?? 0
+    let statusCount: Int = assistant?.statusRows.count ?? 0
+    let contentCount = textCount + thinkingCount + toolCount + workerCount + statusCount
     return ChatTranscriptSignature(
       messageID: last.id,
       status: last.status,
