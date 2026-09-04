@@ -246,6 +246,9 @@ extension AppDependenciesFactory {
       )
     }
 
+    static let onePixelPNG =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
       if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
       if scenario == .remoteBusy {
@@ -267,6 +270,9 @@ extension AppDependenciesFactory {
           role: .user,
           status: .completed,
           text: "Saved from your Mac",
+          // Phase 4 Task 4 (audit #19): a decodable 1x1 PNG so the
+          // thumbnail → full-screen viewer path is exercised by UI tests.
+          images: [MessageImage(mediaType: .png, data: onePixelPNG)],
           ordinal: 1
         ),
         message(
@@ -325,6 +331,7 @@ extension AppDependenciesFactory {
       role: MessageRole,
       status: MessageStatus,
       text: String = "",
+      images: [MessageImage]? = nil,
       events: [AgentEvent] = [],
       ordinal: Int
     ) -> ConversationMessageDTO {
@@ -335,7 +342,7 @@ extension AppDependenciesFactory {
         ordinal: ordinal,
         role: role,
         status: status,
-        content: role == .user ? .user(text: text, images: nil) : .assistant(events: events),
+        content: role == .user ? .user(text: text, images: images) : .assistant(events: events),
         createdAt: now.addingTimeInterval(TimeInterval(ordinal)),
         updatedAt: now.addingTimeInterval(TimeInterval(ordinal))
       )

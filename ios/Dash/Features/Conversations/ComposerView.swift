@@ -8,6 +8,12 @@ struct ComposerView: View {
 
   @State private var selectedItems: [PhotosPickerItem] = []
   @State private var pickerError: String?
+  // Input sources (Phase 4 Task 4, audit #19): the paperclip is now a menu
+  // over `AttachmentSource.available(cameraAvailable:)`; each entry flips
+  // one of these to present its picker.
+  @State private var isPhotoPickerPresented = false
+  @State private var isCameraPresented = false
+  @State private var isFileImporterPresented = false
   // Haptics (chat-ux Phase 2, audit #7): bumped synchronously inside the
   // send/cancel button actions (and the composer's Return-key submit),
   // before the `Task { await ... }` kicks off — the tap itself earns the
@@ -76,6 +82,27 @@ struct ComposerView: View {
       guard items.isEmpty == false else { return }
       Task { await load(items) }
     }
+    .photosPicker(
+      isPresented: $isPhotoPickerPresented,
+      selection: $selectedItems,
+      maxSelectionCount: max(1, remainingAttachmentSlots),
+      matching: .images
+    )
+    .fullScreenCover(isPresented: $isCameraPresented) {
+      CameraPicker { data in
+        isCameraPresented = false
+        guard let data else { return }
+        Task { await addFileSelections([ImageSelection(data: data, type: .jpeg)]) }
+      }
+      .ignoresSafeArea()
+    }
+    .fileImporter(
+      isPresented: $isFileImporterPresented,
+      allowedContentTypes: ImageSelection.importableTypes,
+      allowsMultipleSelection: true
+    ) { result in
+      Task { await importFiles(result) }
+    }
     .sensoryFeedback(.impact(weight: .light), trigger: actionFeedbackTick)
     .task { attemptAutoFocus() }
     .onChange(of: feature.draftEditingAllowed) { _, allowed in
@@ -121,22 +148,63 @@ struct ComposerView: View {
     .scrollIndicators(.hidden)
   }
 
+  private var remainingAttachmentSlots: Int {
+    ImageAttachmentValidator.maximumCount - feature.state.attachments.count
+  }
+
+  /// Audit #19: photo library, camera (when the device has one), or the
+  /// Files app — one menu, same `chat.attachments` identifier the old
+  /// library-only button had.
   private var photoPicker: some View {
-    let remaining = ImageAttachmentValidator.maximumCount - feature.state.attachments.count
-    return PhotosPicker(
-      selection: $selectedItems,
-      maxSelectionCount: max(1, remaining),
-      matching: .images
-    ) {
+    Menu {
+      ForEach(AttachmentSource.available(cameraAvailable: AttachmentSource.cameraIsAvailable), id: \.self) { source in
+        Button {
+          switch source {
+          case .photoLibrary: isPhotoPickerPresented = true
+          case .camera: isCameraPresented = true
+          case .files: isFileImporterPresented = true
+          }
+        } label: {
+          Label(source.title, systemImage: source.systemImage)
+        }
+        .accessibilityIdentifier("chat.attachments.\(source)")
+      }
+    } label: {
       Image(systemName: "photo.badge.plus")
         .font(.title3)
         .frame(width: 44, height: 44)
         .contentShape(Rectangle())
     }
-    .disabled(remaining == 0 || feature.draftEditingAllowed == false)
+    .disabled(remainingAttachmentSlots == 0 || feature.draftEditingAllowed == false)
     .accessibilityLabel("Add images")
     .accessibilityHint("Choose up to four JPEG, PNG, GIF, or WebP images")
     .accessibilityIdentifier("chat.attachments")
+  }
+
+  private func importFiles(_ result: Result<[URL], Error>) async {
+    do {
+      var selections: [ImageSelection] = []
+      for url in try result.get() {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url)
+        guard let selection = ImageSelection.fromFile(named: url.lastPathComponent, data: data) else {
+          throw AttachmentPickerError.unsupportedType
+        }
+        selections.append(selection)
+      }
+      await addFileSelections(selections)
+    } catch let error as AttachmentPickerError {
+      pickerError = error.message
+    } catch {
+      pickerError = "That file couldn't be loaded. Try another image."
+    }
+  }
+
+  private func addFileSelections(_ selections: [ImageSelection]) async {
+    guard selections.isEmpty == false else { return }
+    await feature.addSelections(selections)
+    pickerError = nil
   }
 
   @ViewBuilder

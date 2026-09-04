@@ -460,6 +460,28 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
+  /// Phase 4 Task 4 (audit #19): an attached image is no longer a dead
+  /// 88pt thumbnail — tapping it opens the full-screen viewer with Share
+  /// and Save, and Close returns to the transcript.
+  func testTappingAnAttachedImageOpensTheFullScreenViewer() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    let thumbnail = element("chat.image.0", in: app)
+    XCTAssertTrue(waitUntilHittable(thumbnail, timeout: 5))
+    thumbnail.tap()
+
+    XCTAssertTrue(element("chat.imageViewer.image", in: app).waitForExistence(timeout: 5))
+    XCTAssertTrue(element("chat.imageViewer.save", in: app).exists)
+    XCTAssertTrue(element("chat.imageViewer.share", in: app).exists)
+
+    element("chat.imageViewer.close", in: app).tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["chat.imageViewer.image"].waitForNonExistence(timeout: 5)
+    )
+    XCTAssertTrue(element("chat.transcript", in: app).exists)
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)

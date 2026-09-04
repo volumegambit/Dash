@@ -324,6 +324,8 @@ extension ChatMessageState {
 
 private struct UserMessageView: View {
   let message: UserMessageProjection
+  // Phase 4 Task 4 (audit #19): the tapped thumbnail, presented full screen.
+  @State private var viewerImage: ViewerImage?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -335,37 +337,57 @@ private struct UserMessageView: View {
       if !message.images.isEmpty {
         ScrollView(.horizontal) {
           HStack(spacing: 8) {
-            ForEach(Array(message.images.enumerated()), id: \.offset) { _, image in
-              MessageImageView(image: image)
+            ForEach(Array(message.images.enumerated()), id: \.offset) { index, image in
+              MessageImageView(image: image, index: index) { uiImage in
+                viewerImage = ViewerImage(id: index, image: uiImage)
+              }
             }
           }
         }
         .scrollIndicators(.hidden)
       }
     }
+    .fullScreenCover(item: $viewerImage) { item in
+      ImageViewerView(image: item.image) { viewerImage = nil }
+    }
   }
 }
 
+/// One attached-image thumbnail (audit #19): a button that opens the
+/// full-screen `ImageViewerView` when the bytes decode; undecodable bytes
+/// stay a static placeholder rather than a button that opens nothing.
 private struct MessageImageView: View {
   let image: MessageImage
+  let index: Int
+  let onOpen: (UIImage) -> Void
 
   var body: some View {
     Group {
       if let data = Data(base64Encoded: image.data),
         let uiImage = UIImage(data: data)
       {
-        Image(uiImage: uiImage)
-          .resizable()
-          .scaledToFill()
+        Button {
+          onOpen(uiImage)
+        } label: {
+          Image(uiImage: uiImage)
+            .resizable()
+            .scaledToFill()
+            .frame(width: 88, height: 88)
+            .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Attached image \(index + 1)")
+        .accessibilityHint("Opens full screen")
+        .accessibilityIdentifier("chat.image.\(index)")
       } else {
         Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
           .labelStyle(.iconOnly)
           .foregroundStyle(.secondary)
+          .frame(width: 88, height: 88)
+          .accessibilityLabel("Attached image \(index + 1), unavailable")
       }
     }
-    .frame(width: 88, height: 88)
     .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
     .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
-    .accessibilityLabel("Attached image")
   }
 }
