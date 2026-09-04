@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import Testing
+import UIKit
 
 @testable import Dash
 
@@ -51,5 +52,39 @@ struct AttachmentSourceTests {
     #expect(ImageSelection.fromFile(named: "anim.webp", data: bytes)?.typeIdentifier == "org.webmproject.webp")
     #expect(ImageSelection.fromFile(named: "notes.txt", data: bytes) == nil)
     #expect(ImageSelection.fromFile(named: "noext", data: bytes) == nil)
+  }
+}
+
+/// Phase 4 review M6: a 12 MP camera frame re-encoded at 0.9 can exceed
+/// the 5 MB per-file limit, which would turn "Take Photo" into an error
+/// every time on a modern iPhone. Capture is downscaled to a bounded long
+/// edge first — what both reference apps do.
+@Suite("CameraCapture (Phase 4 review M6)")
+struct CameraCaptureTests {
+  private func image(width: CGFloat, height: CGFloat) -> UIImage {
+    UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).image { context in
+      UIColor.systemBlue.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    }
+  }
+
+  @Test("downscales the long edge to the bound and keeps the aspect ratio")
+  func downscalesLargeCapture() throws {
+    let data = try #require(CameraCapture.jpegData(from: image(width: 4000, height: 3000)))
+    let decoded = try #require(UIImage(data: data))
+    #expect(max(decoded.size.width, decoded.size.height) == CameraCapture.maxLongEdge)
+    #expect(abs(decoded.size.width / decoded.size.height - 4.0 / 3.0) < 0.01)
+  }
+
+  @Test("leaves a capture that already fits untouched in size")
+  func keepsSmallCapture() throws {
+    let data = try #require(CameraCapture.jpegData(from: image(width: 800, height: 600)))
+    let decoded = try #require(UIImage(data: data))
+    #expect(decoded.size == CGSize(width: 800, height: 600))
+  }
+
+  @Test("bound sits at 2048pt — comfortably under 5 MB at 0.9 JPEG for photographic content")
+  func boundSnapshot() {
+    #expect(CameraCapture.maxLongEdge == 2048)
   }
 }

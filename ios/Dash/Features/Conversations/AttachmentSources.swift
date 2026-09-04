@@ -56,6 +56,34 @@ extension ImageSelection {
   static let importableTypes: [UTType] = [.jpeg, .png, .gif, .webP]
 }
 
+/// Camera output encoding (review M6): a 12 MP frame at 0.9 JPEG can pass
+/// 5 MB and trip `ImageAttachmentValidator.maximumFileBytes` on every shot.
+/// The long edge is bounded first — 2048pt keeps photographic JPEGs well
+/// under the limit and is what both reference apps send. Always re-rendered
+/// at scale 1 so the encoded pixel size equals the point size regardless of
+/// the source image's screen scale.
+enum CameraCapture {
+  static let maxLongEdge: CGFloat = 2048
+  static let jpegQuality: CGFloat = 0.9
+
+  static func jpegData(from image: UIImage) -> Data? {
+    let size = image.size
+    guard size.width > 0, size.height > 0 else { return nil }
+    let longEdge = max(size.width, size.height)
+    let ratio = longEdge > maxLongEdge ? maxLongEdge / longEdge : 1
+    let target = CGSize(
+      width: (size.width * ratio).rounded(.down),
+      height: (size.height * ratio).rounded(.down)
+    )
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    let rendered = UIGraphicsImageRenderer(size: target, format: format).image { _ in
+      image.draw(in: CGRect(origin: .zero, size: target))
+    }
+    return rendered.jpegData(compressionQuality: jpegQuality)
+  }
+}
+
 /// `UIImagePickerController` in camera mode, wrapped for SwiftUI. Delivers
 /// the shot as JPEG bytes (the contract has no HEIC), or nothing on cancel.
 struct CameraPicker: UIViewControllerRepresentable {
@@ -86,7 +114,7 @@ struct CameraPicker: UIViewControllerRepresentable {
       didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
     ) {
       let image = info[.originalImage] as? UIImage
-      onCapture(image?.jpegData(compressionQuality: 0.9))
+      onCapture(image.flatMap(CameraCapture.jpegData(from:)))
     }
 
     func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {

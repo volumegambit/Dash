@@ -677,7 +677,11 @@ private struct JumpToBottomButton: View {
         .frame(width: 40, height: 40)
         .background(.regularMaterial, in: Circle())
         .overlay(Circle().strokeBorder(Color.primary.opacity(DashTheme.Opacity.strokeSubtle)))
-        .shadow(color: .black.opacity(DashTheme.Opacity.shadow), radius: DashTheme.Radius.small, y: 2)
+        .shadow(
+          color: .black.opacity(DashTheme.Opacity.shadow),
+          radius: DashTheme.Shadow.floatingBlur,
+          y: DashTheme.Shadow.floatingOffsetY
+        )
         .contentShape(Circle())
     }
     .buttonStyle(.plain)

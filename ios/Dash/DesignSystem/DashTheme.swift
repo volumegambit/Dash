@@ -40,6 +40,14 @@ enum DashTheme {
   /// one weight. `contentSecondary` dims text/strokes on strong grounds;
   /// `scrim` sits behind glyphs on imagery; `shadow` is the floating-control
   /// drop shadow.
+  /// Floating-control drop shadow (the jump-to-bottom pill). Its own token
+  /// (review M5): a blur radius is not a corner radius, even when the
+  /// numbers coincide.
+  enum Shadow {
+    static let floatingBlur: CGFloat = 8
+    static let floatingOffsetY: CGFloat = 2
+  }
+
   enum Opacity {
     static let fillSubtle = 0.08
     static let strokeSubtle = 0.08

@@ -64,6 +64,12 @@ struct DashThemeTests {
     #expect(DashTheme.Opacity.contentSecondary == 0.8)
   }
 
+  @Test("shadow blur has its own token (review M5) — a corner radius is not a blur")
+  func shadowToken() {
+    #expect(DashTheme.Shadow.floatingBlur == 8)
+    #expect(DashTheme.Shadow.floatingOffsetY == 2)
+  }
+
   @Test("status colours are exposed as theme tokens, not private to one view")
   func statusColoursExposed() {
     #expect(DashTheme.success != DashTheme.danger)
