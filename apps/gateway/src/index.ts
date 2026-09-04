@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
 import type { AgentClient, ExtraTool } from '@dash/agent';
-import { PiAgentBackend, createOAuthRefreshers } from '@dash/agent';
+import { PiAgentBackend, agentMemoryDir, createOAuthRefreshers } from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
@@ -448,6 +448,11 @@ async function main() {
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
+    // Per-agent memory dir, keyed by the REGISTRY id (immutable) rather than
+    // config.name (which skills/sessions use) so renaming an agent never
+    // orphans its memories. Supplying this resolver is what turns memory on:
+    // every agent gets it unless it opted out with `memory.enabled === false`.
+    memoryDir: (id) => agentMemoryDir(dataDir, id),
     // Same plugin inputs the backend factory injects (skill dirs merged into
     // `skills.paths`, command/agent files as extra flat skills) so the HTTP
     // skills route (GET /agents/:id/skills) lists what chat can actually load.
@@ -585,6 +590,10 @@ async function main() {
             ...agentConfig.skills,
             paths: [...(agentConfig.skills?.paths ?? []), ...skillDirs],
           },
+          // The RESOLVED memory runtime object the coordinator computed
+          // (`{ dir }`), not the persisted `agentConfig.memory` flags.
+          // Undefined when memory is off for this agent.
+          memory: agentConfig.memoryRuntime,
         },
         credentialProvider,
         undefined,

@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import {
   type AgentChatCoordinatorSwarm,
+  type BackendFactoryConfig,
   createAgentChatCoordinator,
 } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
@@ -958,5 +959,188 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
       /* drain */
     }
     await agents.stop();
+  });
+});
+
+describe('AgentChatCoordinator memory wiring', () => {
+  it('passes the memory dir to the backend config and to the per-chat resolver', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'mem-a', model: 'm', systemPrompt: 'p' });
+    const seenConfigs: BackendFactoryConfig[] = [];
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      memoryDir: (agentId) => join('/tmp/dash-mem', agentId),
+      createBackend: async (config) => {
+        seenConfigs.push(config);
+        return backend;
+      },
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+    // The RESOLVED runtime object rides under the distinct `memoryRuntime` key
+    // so it can never be confused with the persisted `memory` flags.
+    expect(seenConfigs[0].memoryRuntime).toEqual({ dir: join('/tmp/dash-mem', id) });
+    expect(states[0].systemPrompt).toContain('<memory>');
+
+    await agents.stop();
+  });
+
+  it('omits memory entirely when the agent has memory.enabled === false', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'mem-b',
+      model: 'm',
+      systemPrompt: 'p',
+      memory: { enabled: false },
+    });
+    const seenConfigs: BackendFactoryConfig[] = [];
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      memoryDir: (agentId) => join('/tmp/dash-mem', agentId),
+      createBackend: async (config) => {
+        seenConfigs.push(config);
+        return backend;
+      },
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+    expect(seenConfigs[0].memoryRuntime).toBeUndefined();
+    expect(states[0].systemPrompt).not.toContain('<memory>');
+    expect(agents.memoryStore(id)).toBeNull();
+
+    await agents.stop();
+  });
+
+  it('memoryStore is null when no memoryDir resolver is configured', () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'mem-none', model: 'm', systemPrompt: 'p' });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend([]),
+    });
+    expect(agents.memoryStore(id)).toBeNull();
+  });
+
+  it('exposes list/save/get/remove backed by the memory dir', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dash-coord-mem-'));
+    try {
+      const registry = new AgentRegistry();
+      const { id } = registry.register({ name: 'mem-c', model: 'm', systemPrompt: 'p' });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(dir, agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      const saved = await agents.saveMemory(id, {
+        name: 'x',
+        description: 'd',
+        type: 'user',
+        content: 'c',
+      });
+      expect(saved.action).toBe('created');
+      expect((await agents.listMemories(id)).map((m) => m.name)).toEqual(['x']);
+      // The human-facing API path always writes source 'user'.
+      expect((await agents.getMemory(id, 'x'))?.source).toBe('user');
+      expect(await agents.removeMemory(id, 'x')).toBe(true);
+      expect(await agents.getMemory(id, 'x')).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads degrade to empty and writes throw when memory is disabled', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'mem-off',
+      model: 'm',
+      systemPrompt: 'p',
+      memory: { enabled: false },
+    });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      memoryDir: (agentId) => join('/tmp/dash-mem', agentId),
+      createBackend: async () => makeMockBackend([]),
+    });
+
+    expect(await agents.listMemories(id)).toEqual([]);
+    expect(await agents.getMemory(id, 'x')).toBeNull();
+    await expect(
+      agents.saveMemory(id, { name: 'x', description: 'd', type: 'user', content: 'c' }),
+    ).rejects.toThrow(/disabled/);
+    await expect(agents.removeMemory(id, 'x')).rejects.toThrow(/disabled/);
+  });
+
+  it('imports a legacy workspace MEMORY.md when the pool entry is created', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-legacy-'));
+    try {
+      const workspace = join(root, 'ws');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'MEMORY.md'), '- likes tea\n');
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-d',
+        model: 'm',
+        systemPrompt: 'p',
+        workspace,
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(root, 'mem', agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+      expect((await agents.listMemories(id)).map((m) => m.name)).toEqual(['legacy-memory-md']);
+      expect((await agents.getMemory(id, 'legacy-memory-md'))?.content).toContain('likes tea');
+
+      await agents.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not import the legacy file when memory is disabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-legacy-off-'));
+    try {
+      const workspace = join(root, 'ws');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'MEMORY.md'), '- likes tea\n');
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-e',
+        model: 'm',
+        systemPrompt: 'p',
+        workspace,
+        memory: { enabled: false },
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(root, 'mem', agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+      expect(await agents.listMemories(id)).toEqual([]);
+
+      await agents.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
