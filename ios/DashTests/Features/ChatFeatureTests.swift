@@ -5719,3 +5719,28 @@ private func eventually(
   }
   Issue.record("Condition did not become true")
 }
+
+/// Composer draft-status chip (user report 2026-09-04: "Saving draft"
+/// flickered on every keystroke — the debounced autosave flips
+/// `.saving`/`.saved` per key). Nothing about a save in flight is
+/// actionable, so it joins `.saved` in staying silent; only a FAILED save
+/// still says anything. Pure so it's unit-testable without SwiftUI.
+@Suite("ComposerDraftStatusPresentation")
+struct ComposerDraftStatusPresentationTests {
+  @Test("saving is silent — no chip to flicker while typing")
+  func savingIsSilent() {
+    #expect(ComposerDraftStatusPresentation.label(for: .saving) == nil)
+  }
+
+  @Test("saved stays silent")
+  func savedIsSilent() {
+    #expect(ComposerDraftStatusPresentation.label(for: .saved) == nil)
+  }
+
+  @Test("a failed save is the only state that shows a chip")
+  func failedShows() {
+    let label = ComposerDraftStatusPresentation.label(for: .failed)
+    #expect(label?.text == "Draft couldn't be saved")
+    #expect(label?.systemImage == "exclamationmark.circle")
+  }
+}

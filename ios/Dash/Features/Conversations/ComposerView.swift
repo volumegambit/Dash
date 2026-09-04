@@ -244,26 +244,20 @@ struct ComposerView: View {
     }
   }
 
-  // Chrome trim (chat-ux Phase 2, audit #17): a persistent "Draft saved"
-  // chip nags on every keystroke's debounced autosave, competing with the
-  // composer for attention over something the user never asked to be told.
-  // Simpler honest behavior, same "silence on success" principle as
-  // `TerminalView`'s trim above: only show the chip while there's something
-  // actionable to communicate — a save in flight, or one that failed — and
-  // say nothing once it's `.saved`.
+  // Chrome trim (chat-ux Phase 2, audit #17; tightened 2026-09-04): the
+  // debounced autosave flips `.saving`→`.saved` on every keystroke, so a
+  // "Saving draft" chip flickered under the composer while typing. A save
+  // in flight isn't actionable either — same "silence on success" principle
+  // as `TerminalView`'s trim above — so only a FAILED save says anything.
+  // Decision lives in `ComposerDraftStatusPresentation` (unit-tested).
   @ViewBuilder
   private var draftStatus: some View {
-    switch feature.draftStatus {
-    case .saved:
-      EmptyView()
-    case .saving:
-      Label("Saving draft", systemImage: "arrow.triangle.2.circlepath")
-        .font(.caption)
-        .foregroundStyle(.secondary)
-    case .failed:
-      Label("Draft couldn't be saved", systemImage: "exclamationmark.circle")
+    if let label = ComposerDraftStatusPresentation.label(for: feature.draftStatus) {
+      Label(label.text, systemImage: label.systemImage)
         .font(.caption)
         .foregroundStyle(.red)
+    } else {
+      EmptyView()
     }
   }
 
@@ -336,6 +330,25 @@ private enum AttachmentPickerError: Error {
       "Choose a JPEG, PNG, GIF, or WebP image."
     case .unreadable:
       "That image couldn't be loaded. Try another image."
+    }
+  }
+}
+
+/// Which draft-status chip (if any) the composer shows — `nil` for both
+/// `.saved` and `.saving`, so nothing flickers while typing; only a failed
+/// save is worth a line.
+enum ComposerDraftStatusPresentation {
+  struct ChipLabel: Equatable {
+    let text: String
+    let systemImage: String
+  }
+
+  static func label(for status: ChatDraftStatus) -> ChipLabel? {
+    switch status {
+    case .saved, .saving:
+      nil
+    case .failed:
+      ChipLabel(text: "Draft couldn't be saved", systemImage: "exclamationmark.circle")
     }
   }
 }
