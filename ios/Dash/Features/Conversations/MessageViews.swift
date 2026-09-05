@@ -26,6 +26,11 @@ func userMessageID(forTurnID turnID: String, in messages: [ChatMessageState]) ->
 
 struct MessageListView: View {
   let messages: [ChatMessageState]
+  /// When set, the FIRST row reports its frame in this named coordinate
+  /// space through `FirstMessageRowFrameKey` — `ChatView`'s "Load earlier"
+  /// hold needs to know where the row the user is reading sits in the
+  /// viewport before a page prepends above it.
+  let firstRowFrameCoordinateSpace: String?
   let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
@@ -35,12 +40,14 @@ struct MessageListView: View {
 
   init(
     messages: [ChatMessageState],
+    firstRowFrameCoordinateSpace: String? = nil,
     isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in }
   ) {
     self.messages = messages
+    self.firstRowFrameCoordinateSpace = firstRowFrameCoordinateSpace
     self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     self.onRetry = onRetry
@@ -49,7 +56,17 @@ struct MessageListView: View {
 
   var body: some View {
     let failedTurns = failedTurnIDs(in: messages)
-    LazyVStack(spacing: 16) {
+    // A plain VStack, not LazyVStack (transcript scroll fix, 2026-09-05): a
+    // lazy stack's content size is an estimate until rows realize, and every
+    // scroll mechanism above this view — the bottom anchor that follows a
+    // stream, the initial-offset anchor that opens on the newest message,
+    // `scrollTo` for jump-to-latest and for holding position across "Load
+    // earlier" — computes against that size. With the estimate they landed
+    // a turn short on open and, on send, scrolled past the end into blank
+    // space (both seen on the iOS 26.5 sim). A page is at most 50 messages
+    // (`ChatFeature`'s `limit: 50`) and grows only by explicit "Load
+    // earlier", so exact geometry is affordable.
+    VStack(spacing: 16) {
       // Keyed on `rowID`, not `id` (transcript scroll fix, 2026-09-05): the
       // gateway's `accepted` frame rewrites `id` from the local uuid to the
       // server's, and keying on it made SwiftUI remove + re-insert the row
@@ -84,6 +101,7 @@ struct MessageListView: View {
             ? .identity
             : .opacity.combined(with: .move(edge: .bottom))
         )
+        .background(firstRowFrameReporter(for: message))
       }
     }
     // `messageEntranceSignature(for:)` (review fix, chat-ux Phase 3 Task 4,
@@ -99,6 +117,20 @@ struct MessageListView: View {
     // that: a prepend never changes it, so no animation; see the function's
     // own doc comment for why an append always does.
     .animation(reduceMotion ? nil : .default, value: messageEntranceSignature(for: messages))
+  }
+}
+
+extension MessageListView {
+  @ViewBuilder
+  fileprivate func firstRowFrameReporter(for message: ChatMessageState) -> some View {
+    if let space = firstRowFrameCoordinateSpace, message.rowID == messages.first?.rowID {
+      GeometryReader { proxy in
+        Color.clear.preference(
+          key: FirstMessageRowFrameKey.self,
+          value: proxy.frame(in: .named(space))
+        )
+      }
+    }
   }
 }
 

@@ -6,21 +6,38 @@ struct ChatView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
+  /// iOS 17 only (audit #4): "the bottom sentinel is within 100pt of the
+  /// viewport's bottom edge" — drives both auto-follow and the jump button
+  /// there. iOS 18+ uses `isPinnedToBottom` instead; see `scrollView(_:)`.
   @State private var isNearBottom = true
-  // iOS 17 fallback geometry (audit #4): the transcript scroll view's own
-  // visible-viewport height, kept fresh by `ScrollViewportHeightKey` below
-  // whenever the ScrollView's bounds change (rotation, keyboard, split-view
-  // resize). iOS 18+ gets an equivalent value for free from
-  // `onScrollGeometryChange`'s `GeometryProxy`, so this state only feeds the
-  // `#unavailable(iOS 18.0)` branch of `scrollView`.
-  @State private var legacyViewportHeight: CGFloat = 0
+  /// iOS 18+ pin state (transcript scroll fix, 2026-09-05). While pinned the
+  /// ScrollView itself keeps the bottom edge in view through content growth
+  /// (`defaultScrollAnchor(.bottom, for: .sizeChanges)`) — no per-token
+  /// `scrollTo`, so nothing animates against the user's finger. Unpinned by
+  /// any user-driven scroll that moves the bottom out of view; re-pinned by
+  /// scrolling back to the bottom or tapping the jump button.
+  @State private var isPinnedToBottom = true
+  /// Mirrors `onScrollPhaseChange` (iOS 18+): true for tracking /
+  /// interacting / decelerating — i.e. the user, not us, is moving the view.
+  @State private var scrollPhaseIsUserDriven = false
+  /// The transcript's visible (inset-adjusted) height. iOS 17 keeps it fresh
+  /// through `ScrollViewportHeightKey` (audit #4's fallback, also its
+  /// `isNearBottom` input); iOS 18+ through `onScrollGeometryChange`. Both
+  /// feed the "Load earlier" position hold in `transcript`.
+  @State private var viewportHeight: CGFloat = 0
+  /// The first message row's frame in `scrollSpace` — where, within the
+  /// viewport, the row the user is reading at the top sits — reported by
+  /// `MessageListView` through `FirstMessageRowFrameKey`. Read at the moment
+  /// a "Load earlier" page lands, so the hold can put that same row back at
+  /// exactly that spot. See `ChatScrollGeometry.holdAnchor`.
+  @State private var firstRowFrame: CGRect = .zero
 
   private let bottomID = "chat-bottom"
-  /// Named coordinate space for the transcript ScrollView (iOS 17 fallback
-  /// only) — anchors `BottomSentinelOffsetKey`'s reported `minY` to the
-  /// ScrollView's own bounds rather than the screen, so it stays correct
-  /// regardless of where the ScrollView sits on screen.
-  private static let scrollSpace = "chatTranscriptScroll"
+  /// Named coordinate space for the transcript ScrollView — anchors
+  /// `BottomSentinelOffsetKey` (iOS 17) and `FirstMessageRowFrameKey` (all
+  /// versions) to the ScrollView's own bounds rather than the screen, so
+  /// their `minY` is viewport-relative wherever the ScrollView sits.
+  static let scrollSpace = "chatTranscriptScroll"
 
   /// Edit & Resend UX choice (chat-ux Phase 2, Task 4 / audit #5): a
   /// dedicated sheet rather than prefilling the composer + arming a
@@ -328,26 +345,78 @@ struct ChatView: View {
 
   private var transcript: some View {
     ScrollViewReader { proxy in
-      scrollView
+      scrollView(proxy)
         .overlay(alignment: .bottomTrailing) {
-          if isNearBottom == false {
+          if showsJumpToBottom {
             JumpToBottomButton {
-              scrollToBottom(proxy, animated: true)
+              jumpToBottom(proxy)
             }
             .padding(.trailing, 16)
             .padding(.bottom, 16)
             .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .bottomTrailing)))
           }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isNearBottom)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: showsJumpToBottom)
         .onAppear {
           scrollToBottom(proxy, animated: false)
         }
         .onChange(of: transcriptSignature) { oldValue, newValue in
-          guard oldValue != newValue, isNearBottom else { return }
-          scrollToBottom(proxy, animated: true)
+          // iOS 17 only: follow the stream by scrolling to the sentinel on
+          // every delta. Not animated — the previous 0.2s ease on every
+          // token meant overlapping animations that never let the view
+          // rest. iOS 18+ needs nothing here: while pinned, the bottom
+          // anchor for size changes keeps the tail in view by itself.
+          if #unavailable(iOS 18.0) {
+            guard oldValue != newValue, isNearBottom else { return }
+            scrollToBottom(proxy, animated: false)
+          }
+        }
+        .onChange(of: feature.state.messages.first?.rowID) { previousFirst, currentFirst in
+          holdReadingPosition(proxy, previousFirst: previousFirst, currentFirst: currentFirst)
         }
     }
+  }
+
+  /// "Load earlier" (transcript scroll fix, 2026-09-05): a page prepends
+  /// above the row the user is reading, and a ScrollView keeps its offset
+  /// from the TOP, so without this the new page fills the viewport and the
+  /// user's row is a page below. Runs in the same update as the prepend
+  /// (before layout, animations disabled), so the row is put back where it
+  /// was — `firstRowFrame`, measured on the last pass — with no visible
+  /// frame in between. Only while scrolled away from the bottom: pinned,
+  /// the bottom anchor is the right behaviour and this must not fight it.
+  private func holdReadingPosition(
+    _ proxy: ScrollViewProxy,
+    previousFirst: String?,
+    currentFirst: String?
+  ) {
+    guard
+      let previousFirst, let currentFirst, previousFirst != currentFirst,
+      showsJumpToBottom,
+      feature.state.messages.contains(where: { $0.rowID == previousFirst })
+    else { return }
+    let anchor = ChatScrollGeometry.holdAnchor(
+      rowFrame: firstRowFrame,
+      viewportHeight: viewportHeight
+    )
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      proxy.scrollTo(previousFirst, anchor: anchor)
+    }
+  }
+
+  private var showsJumpToBottom: Bool {
+    if #available(iOS 18.0, *) {
+      return isPinnedToBottom == false
+    } else {
+      return isNearBottom == false
+    }
+  }
+
+  private func jumpToBottom(_ proxy: ScrollViewProxy) {
+    isPinnedToBottom = true
+    scrollToBottom(proxy, animated: true)
   }
 
   /// Keeps `isNearBottom` accurate on every supported OS version (audit #4,
@@ -364,19 +433,86 @@ struct ChatView: View {
   /// — the same "sentinel within `threshold` points of the visible bottom
   /// edge" concept `onScrollGeometryChange` expresses for 18+, just built
   /// from primitives available since 17.0.
+  ///
+  /// iOS 18+ (transcript scroll fix, 2026-09-05) is anchor-driven instead of
+  /// `scrollTo`-driven:
+  /// - `initialOffset: .bottom` opens the conversation on its newest message
+  ///   with no animated scroll from the top;
+  /// - `sizeChanges: .bottom` while pinned keeps the tail in view as tokens,
+  ///   tool cards and late-sized rows grow the content — SwiftUI adjusts the
+  ///   offset in the same layout pass, so there is nothing to animate and
+  ///   nothing that can fight a drag; unpinned it is the ordinary `.top`;
+  /// - `alignment: .top` keeps a short thread at the top, as before.
+  /// `onScrollPhaseChange` tells user-driven motion from ours, and the
+  /// geometry callback applies `ChatScrollGeometry.pinTransition` — unpin on
+  /// any user scroll that takes the bottom out of view, re-pin when the user
+  /// brings it back — and re-pins once, exactly, when the VISIBLE height
+  /// changes (keyboard, composer growth, rotation), which the anchor does
+  /// not cover. Deliberately NOT an "if pinned and not at the bottom, scroll
+  /// there" rule: a first cut had one, and a `scrollTo` that lands a point
+  /// short re-fires it on every geometry change, so the app never went idle
+  /// (XCUITest's taps stalled for 40s).
   @ViewBuilder
-  private var scrollView: some View {
+  private func scrollView(_ proxy: ScrollViewProxy) -> some View {
     if #available(iOS 18.0, *) {
       transcriptScrollView
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-          geometry.visibleRect.maxY
-            >= geometry.contentSize.height - ChatScrollGeometry.nearBottomThreshold
-        } action: { _, nearBottom in
-          isNearBottom = nearBottom
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(.top, for: .alignment)
+        .defaultScrollAnchor(isPinnedToBottom ? .bottom : .top, for: .sizeChanges)
+        .onScrollPhaseChange { previousPhase, phase, context in
+          let userDriven = phase == .tracking || phase == .interacting || phase == .decelerating
+          scrollPhaseIsUserDriven = userDriven
+          // The finger (or its fling) has come to rest: decide from where it
+          // left the view. Independent of whether the geometry callback saw
+          // the movement first — for a short, quick drag it may not have.
+          let previousUserDriven =
+            previousPhase == .tracking || previousPhase == .interacting
+            || previousPhase == .decelerating
+          if previousUserDriven, phase == .idle || phase == .decelerating {
+            let distance = ChatScrollGeometry.distanceFromBottom(
+              contentHeight: context.geometry.contentSize.height,
+              visibleMaxY: context.geometry.visibleRect.maxY,
+              bottomInset: context.geometry.contentInsets.bottom
+            )
+            isPinnedToBottom = ChatScrollGeometry.isPinnedAtGestureEnd(distance: distance)
+          }
+        }
+        .onScrollGeometryChange(for: TranscriptScrollMetrics.self) { geometry in
+          TranscriptScrollMetrics(
+            distanceFromBottom: ChatScrollGeometry.distanceFromBottom(
+              contentHeight: geometry.contentSize.height,
+              visibleMaxY: geometry.visibleRect.maxY,
+              bottomInset: geometry.contentInsets.bottom
+            ),
+            viewportHeight: geometry.containerSize.height
+          )
+        } action: { previous, current in
+          viewportHeight = current.viewportHeight
+          if scrollPhaseIsUserDriven {
+            if let pinned = ChatScrollGeometry.pinTransition(
+              previousDistance: previous.distanceFromBottom,
+              distance: current.distanceFromBottom
+            ) {
+              isPinnedToBottom = pinned
+            }
+          } else if isPinnedToBottom,
+            ChatScrollGeometry.viewportChangeNeedsRepin(previous: previous, current: current)
+          {
+            // The keyboard rising, the composer growing a line, a rotation
+            // or a split-view resize all change the VISIBLE height, which
+            // the size-change anchor above ignores (it tracks content size
+            // only) — so the tail slides under the keyboard. One exact
+            // `scrollTo` per such change, keyed on the height change rather
+            // than on "not at the bottom", so it cannot re-fire itself.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+              proxy.scrollTo(bottomID, anchor: .bottom)
+            }
+          }
         }
     } else {
       transcriptScrollView
-        .coordinateSpace(name: Self.scrollSpace)
         .background(
           GeometryReader { proxy in
             Color.clear.preference(
@@ -385,11 +521,11 @@ struct ChatView: View {
             )
           }
         )
-        .onPreferenceChange(ScrollViewportHeightKey.self) { legacyViewportHeight = $0 }
+        .onPreferenceChange(ScrollViewportHeightKey.self) { viewportHeight = $0 }
         .onPreferenceChange(BottomSentinelOffsetKey.self) { sentinelMinY in
           isNearBottom = ChatScrollGeometry.isNearBottom(
             sentinelMinY: sentinelMinY,
-            viewportHeight: legacyViewportHeight
+            viewportHeight: viewportHeight
           )
         }
     }
@@ -397,7 +533,8 @@ struct ChatView: View {
 
   private var transcriptScrollView: some View {
     ScrollView {
-      LazyVStack(spacing: 16) {
+      // VStack, not LazyVStack — see `MessageListView.body`.
+      VStack(spacing: 16) {
         olderMessagesControl
 
         if feature.isLoadingInitial, feature.state.messages.isEmpty {
@@ -413,6 +550,7 @@ struct ChatView: View {
         } else {
           MessageListView(
             messages: feature.state.messages,
+            firstRowFrameCoordinateSpace: Self.scrollSpace,
             isAnsweringEnabled: feature.canAnswerQuestions,
             onAnswer: { questionID, answer in
               Task { await feature.answer(questionID: questionID, answer: answer) }
@@ -452,6 +590,8 @@ struct ChatView: View {
       .padding(.vertical, 12)
       .frame(maxWidth: .infinity)
     }
+    .coordinateSpace(name: Self.scrollSpace)
+    .onPreferenceChange(FirstMessageRowFrameKey.self) { firstRowFrame = $0 }
     .scrollDismissesKeyboard(.interactively)
     .accessibilityIdentifier("chat.transcript")
   }
@@ -769,6 +909,83 @@ struct ChatTranscriptSignature: Equatable {
 enum ChatScrollGeometry {
   static let nearBottomThreshold: CGFloat = 100
 
+  /// iOS 18+ pin rules (transcript scroll fix, 2026-09-05), on the distance
+  /// in points between the content's bottom edge and the viewport's bottom
+  /// edge (0 = pinned exactly; negative = rubber-banding past the end).
+  /// Applied only while the scroll phase is user-driven.
+  /// - `repinDistance`: within this of the bottom counts as "back at the
+  ///   bottom" — re-pin. Small, so a token arriving while the user is a
+  ///   screen up never re-pins them; large enough that a finger settling at
+  ///   the very end does.
+  static let repinDistance: CGFloat = 8
+  /// Sub-point layout rounding must not count as "the tail slid out of view".
+  static let pinSlack: CGFloat = 1
+
+  /// iOS 18+: should a pinned transcript scroll back to its tail because the
+  /// viewport's height just changed (keyboard/composer/rotation)? Keyed on
+  /// the height change so a `scrollTo` that lands a point short cannot
+  /// trigger another; and only when the tail actually left the viewport.
+  static func viewportChangeNeedsRepin(
+    previous: TranscriptScrollMetrics,
+    current: TranscriptScrollMetrics
+  ) -> Bool {
+    previous.viewportHeight != current.viewportHeight
+      && current.distanceFromBottom > pinSlack
+  }
+
+  /// How much content is hidden below the transcript's visible bottom edge
+  /// (0 = the tail is exactly in view; negative = rubber-banding). Measured
+  /// on the iOS 26.5 simulator: `ScrollGeometry.visibleRect` spans the scroll
+  /// view's frame PLUS its content insets (it reaches under the navigation
+  /// bar and the composer), so at the true bottom `visibleRect.maxY` is
+  /// `contentSize.height + contentInsets.bottom`. Adding the bottom inset
+  /// back makes 0 mean "tail at the composer's top edge" — the same edge
+  /// `scrollTo(_, anchor: .bottom)` and the bottom anchor align to, and the
+  /// same height (`containerSize.height`) they align within.
+  static func distanceFromBottom(
+    contentHeight: CGFloat,
+    visibleMaxY: CGFloat,
+    bottomInset: CGFloat
+  ) -> CGFloat {
+    contentHeight - visibleMaxY + bottomInset
+  }
+
+  /// The state once a user gesture (and any fling after it) has come to
+  /// rest: pinned exactly when the user left the bottom in view.
+  static func isPinnedAtGestureEnd(distance: CGFloat) -> Bool {
+    distance <= repinDistance
+  }
+
+  /// Where to scroll the previously-first row after a "Load earlier" page
+  /// prepends above it, so it lands back at the viewport position it had:
+  /// `scrollTo(_:anchor:)` aligns the row's unit point with the SAME unit
+  /// point of the scroll view's frame (`containerSize.height`, measured on
+  /// the iOS 26.5 sim: 0.0891 × (611 − 66) landed the row at 48.5pt), so
+  /// for a row of height `h` at frame `y = m` in a frame of height `V`,
+  /// `t = m / (V - h)` reproduces `m`. A row taller than the frame (or one
+  /// whose top was above it) falls back to `.top`.
+  static func holdAnchor(rowFrame: CGRect, viewportHeight: CGFloat) -> UnitPoint {
+    let room = viewportHeight - rowFrame.height
+    guard room > 0, rowFrame.minY > 0 else { return .top }
+    return UnitPoint(x: 0, y: min(rowFrame.minY / room, 1))
+  }
+
+  /// `true` to pin, `false` to unpin, `nil` to leave the state alone.
+  /// Unpins on any user-driven movement AWAY from the bottom that also
+  /// leaves the bottom genuinely out of view (`distance > repinDistance`) —
+  /// so a rubber-band bounce back to 0 after over-scrolling the end, which
+  /// also "moves away", does not unpin. Re-pins as soon as the user brings
+  /// the bottom back within `repinDistance`.
+  static func pinTransition(previousDistance: CGFloat, distance: CGFloat) -> Bool? {
+    if distance <= repinDistance {
+      return true
+    }
+    if distance > previousDistance {
+      return false
+    }
+    return nil
+  }
+
   static func isNearBottom(
     sentinelMinY: CGFloat,
     viewportHeight: CGFloat,
@@ -776,6 +993,30 @@ enum ChatScrollGeometry {
   ) -> Bool {
     sentinelMinY <= viewportHeight + threshold
   }
+}
+
+/// The first message row's frame in `ChatView.scrollSpace`, written by
+/// `MessageListView` (every OS version) for the "Load earlier" hold.
+struct FirstMessageRowFrameKey: PreferenceKey {
+  static let defaultValue: CGRect = .zero
+  /// Only the first row sets this; every other sibling in the stack
+  /// contributes `defaultValue`, and a plain "last one wins" reduce would
+  /// hand back `.zero` from the last row (it did — the hold fell back to
+  /// `.top` until this ignored empty frames).
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let next = nextValue()
+    if next != .zero { value = next }
+  }
+}
+
+/// What `ChatView`'s iOS 18+ geometry callback tracks per layout pass:
+/// how far the content's bottom edge is below the visible bottom edge
+/// (`ChatScrollGeometry.distanceFromBottom`), and the scroll view's frame
+/// height (`containerSize.height` — what `scrollTo` anchors are measured
+/// against; it shrinks when the keyboard rises).
+struct TranscriptScrollMetrics: Equatable {
+  var distanceFromBottom: CGFloat
+  var viewportHeight: CGFloat
 }
 
 /// Sentinel-offset-within-viewport `PreferenceKey` feeding the iOS 17

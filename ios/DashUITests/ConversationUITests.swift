@@ -133,6 +133,131 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertFalse(jumpButton.exists)
   }
 
+  // MARK: - Transcript scrolling (goal 2026-09-05: smooth, no hiccups, in any state)
+  //
+  // All three run against `long-transcript`: 40 cached messages (ordinals
+  // 11–50), a 10-message page behind "Load earlier", and a send that streams
+  // 45 deltas over ~3s. See `UITestScenario.longTranscript`.
+
+  func testOpeningALongConversationStartsAtTheLatestMessage() {
+    let app = launch(scenario: "long-transcript")
+    openFirstConversation(in: app)
+
+    let transcript = element("chat.transcript", in: app)
+    let latest = element("chat.message.long-assistant-50", in: app, timeout: 5)
+    XCTAssertFalse(
+      app.keyboards.firstMatch.waitForExistence(timeout: 1.5),
+      "Opening an existing conversation must not raise the keyboard (keyboard-ready auto-focus is for never-used conversations only)"
+    )
+    XCTAssertTrue(
+      waitUntilHittable(latest, timeout: 3),
+      "The newest message must be on screen without any scrolling"
+    )
+    let frame = settledFrame(of: latest)
+    XCTAssertLessThanOrEqual(
+      frame.maxY, transcript.frame.maxY + 1,
+      "The newest message must be fully inside the transcript, not cut off below it"
+    )
+    XCTAssertFalse(app.descendants(matching: .any)["chat.jumpToBottom"].exists)
+  }
+
+  func testLoadEarlierKeepsTheFirstVisibleMessageInPlace() {
+    let app = launch(scenario: "long-transcript")
+    openFirstConversation(in: app)
+
+    let loadOlder = app.descendants(matching: .any)["chat.loadOlder"]
+    for _ in 0..<24 where !(loadOlder.exists && loadOlder.isHittable) {
+      app.swipeDown()
+    }
+    XCTAssertTrue(waitUntilHittable(loadOlder, timeout: 2), "Expected to reach the top of the page")
+    let first = element("chat.message.long-user-11", in: app)
+    let before = settledFrame(of: first)
+
+    loadOlder.tap()
+    XCTAssertTrue(
+      waitUntilAbsent(loadOlder, timeout: 5),
+      "The control should disappear once the last page has loaded"
+    )
+    let after = settledFrame(of: first)
+    XCTAssertEqual(
+      after.minY, before.minY, accuracy: 2,
+      "Loading earlier messages must not move the message the user was reading"
+    )
+  }
+
+  func testDraggingUpMidStreamUnpinsUntilJumpToLatest() {
+    let app = launch(scenario: "long-transcript")
+    openFirstConversation(in: app)
+
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Stream a long reply",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+    _ = element("chat.message.assistant-ui-turn", in: app, timeout: 5)
+
+    // A short drag — well under the old 100pt near-bottom threshold — with the
+    // finger moving DOWN, i.e. scrolling toward earlier messages.
+    let transcript = element("chat.transcript", in: app)
+    let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+    start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 60)))
+
+    let jump = app.descendants(matching: .any)["chat.jumpToBottom"]
+    XCTAssertTrue(
+      jump.waitForExistence(timeout: 2),
+      "Any deliberate drag away from the bottom must unpin the transcript, even a short one"
+    )
+    XCTAssertFalse(
+      waitUntilAbsent(jump, timeout: 1),
+      "Arriving tokens must not re-pin a transcript the user scrolled away from"
+    )
+
+    jump.tap()
+    XCTAssertTrue(waitUntilAbsent(jump, timeout: 2), "Jumping to the latest re-pins")
+    // Re-pinned means the reply's TAIL is inside the transcript once the
+    // stream completes. (Not `isHittable`: that tests the element's centre,
+    // which for a reply taller than the viewport is legitimately off-screen.)
+    // The streamed row, by message id: every completed reply in a long
+    // transcript carries `chat.final.response`, so that one is ambiguous.
+    XCTAssertTrue(
+      waitUntilAbsent(app.descendants(matching: .any)["chat.cancel"], timeout: 15),
+      "The stream should finish (Cancel gives way to Send)"
+    )
+    let final = element("chat.message.assistant-ui-turn", in: app)
+    let tail = settledFrame(of: final)
+    let transcriptFrame = transcript.frame
+    XCTAssertLessThanOrEqual(
+      tail.maxY, transcriptFrame.maxY + 1,
+      "After jumping to latest, the end of the reply must stay in view while it finishes streaming"
+    )
+    XCTAssertGreaterThan(tail.maxY, transcriptFrame.minY, "The reply's end must be on screen")
+  }
+
+  private func waitUntilAbsent(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// The element's frame once two reads 250ms apart agree — scroll
+  /// deceleration and layout settling otherwise make a single read a
+  /// snapshot of a moving target.
+  private func settledFrame(of element: XCUIElement) -> CGRect {
+    var previous = element.frame
+    for _ in 0..<12 {
+      Thread.sleep(forTimeInterval: 0.25)
+      let current = element.frame
+      if current == previous { return current }
+      previous = current
+    }
+    return previous
+  }
+
   func testCancelReplacesSendAndProducesCancelledTerminalState() {
     let app = launch(scenario: "streaming-reconnect")
     openFirstConversation(in: app)
