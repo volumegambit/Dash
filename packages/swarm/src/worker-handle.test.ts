@@ -1157,8 +1157,11 @@ describe('WorkerHandle maxTurns enforcement', () => {
     // its tail may land: no second terminal, and no overwriting of the partial.
     await seg.emit(response('a full report'));
     seg.complete();
-    await Promise.resolve();
-    await Promise.resolve();
+
+    // For max_turns, onFinished is deferred until backend.stop() settles. The
+    // fake backend holds stop() pending until stopGate is resolved.
+    backend.stopGate.resolve();
+    await vi.waitFor(() => expect(finished).toBe(1));
 
     expect(handle.status).toBe('max_turns');
     expect(handle.snapshot().report).toBe(`${PARTIAL}\n\nhalf a report`);
@@ -1167,6 +1170,28 @@ describe('WorkerHandle maxTurns enforcement', () => {
     expect(terminals).toHaveLength(1);
     expect(stops).toEqual([{ workerId: WORKER_ID, role: ROLE, status: 'max_turns' }]);
     expect(finished).toBe(1);
+  });
+
+  /**
+   * A child can trip its cap while an ask_orchestrator question is outstanding
+   * (pi issues parallel tool calls). Every other terminal path SETTLES that
+   * waiter; leaving it pending would strand the asking tool on a promise that
+   * can never resolve, since the worker it was waiting on is gone.
+   */
+  it('rejects a pending ask_orchestrator question rather than stranding it', async () => {
+    const { handle, backend } = makeCapped(1);
+    handle.start();
+    const seg = await backend.onNextSegment();
+    const asked = handle.waitForQuestion('which file?', undefined, 60_000);
+    expect(handle.status).toBe('waiting_input');
+
+    await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+    await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+    await handle.terminalPromise;
+
+    await expect(asked).rejects.toThrow(/maxTurns/);
+    expect(handle.status).toBe('max_turns');
+    expect(handle.pendingQuestion).toBeUndefined();
   });
 
   it('runs the same terminal sequence as every other terminal status', async () => {
@@ -1187,12 +1212,17 @@ describe('WorkerHandle maxTurns enforcement', () => {
     await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
     await handle.terminalPromise;
 
+    // For max_turns, onFinished is deferred until backend.stop() settles. The
+    // fake backend holds stop() pending until stopGate is resolved.
+    backend.stopGate.resolve();
+    await vi.waitFor(() => expect(order).toContain('onFinished'));
+
     expect(order).toEqual([
       'worker_done',
       'subagent_finished',
       'subagentStop:max_turns',
-      'onFinished',
       'onTerminal',
+      'onFinished',
     ]);
   });
 });

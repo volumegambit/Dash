@@ -325,7 +325,9 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 /** The fields of a finished worker spec the cleanup reads. */
-type FinishedWorkerSpec = Pick<WorkerSpec, 'agentName' | 'isolation' | 'workspace' | 'workerId'>;
+type FinishedWorkerSpec = Pick<WorkerSpec, 'agentName' | 'isolation' | 'workspace' | 'workerId'> & {
+  workerStatus: string;
+};
 
 /** How many status paths a single log line names before it says "and N more". */
 const MAX_LOGGED_ENTRIES = 5;
@@ -372,6 +374,14 @@ export async function cleanupWorktreeForSpec(
   // Nothing to take down: the spawn failed at (or before) isolation — a non-git
   // workspace is the common case — so this is not worth a warning.
   if (!(await pathExists(path))) return undefined;
+
+  // A max_turns child is resumable — its worktree must be kept so send_message
+  // can resume with fresh budget. Keep it regardless of cleanliness.
+  if (spec.workerStatus === 'max_turns') {
+    deps.warn?.(`[swarm] agent ${spec.workerId} tripped maxTurns; keeping ${path} for resumption`);
+    return { removed: false, path };
+  }
+
   try {
     const { removed, blocking, disposable } = await cleanupChildWorktree({
       workspace: spec.workspace,

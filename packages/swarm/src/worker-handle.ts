@@ -24,7 +24,9 @@ export interface WorkerHandleOptions {
    * backend's `stop()` settles or `cancelStopGraceMs` expires, so the spawner
    * never inspects a directory the child is still writing to.
    */
-  onFinished?(spec: Omit<WorkerSpec, 'extraTools'>): void | Promise<void>;
+  onFinished?(
+    spec: Omit<WorkerSpec, 'extraTools'> & { workerStatus: string },
+  ): void | Promise<void>;
   /**
    * How long `cancel()` gives the backend's cooperative `stop()` to settle
    * before running `onFinished` anyway. Default `DEFAULT_CANCEL_STOP_GRACE_MS`.
@@ -348,12 +350,6 @@ export class WorkerHandle {
     this.endedAt = Date.now();
     this.stopHeartbeat();
 
-    const waiter = this.questionWaiter;
-    if (waiter) {
-      this.clearQuestion();
-      waiter.reject(new Error(`worker cancelled: ${reason}`));
-    }
-
     // abort() only if the backend has actually been constructed. Same for
     // stop(): with no backend nothing can still be writing, so the spawner's
     // cleanup has nothing to wait for.
@@ -452,9 +448,12 @@ export class WorkerHandle {
     this.lastEventSummary = summarize(event);
     if (event.type === 'tool_use_start') {
       this.toolCallCount++;
-      // The cap is on calls the child COMPLETES within budget: with maxTurns: 2
-      // the second call is allowed and the third trips. Abort first so the
-      // child stops working, then finalize — runSegment's post-processEvent
+      // Enforcement is best-effort and lands AFTER the offending call: by the time
+      // the handle sees tool_use_start, pi has already dispatched that call, and
+      // pi's abort is cooperative, so the offending call — and possibly further
+      // parallel calls in the same batch — will complete even after abort(). With
+      // maxTurns: 2, the second call is allowed and the third trips. The abort
+      // stops the child from issuing more calls, but runSegment's post-processEvent
       // `finalized` check keeps this segment from also finalizing as `done`.
       if (this.maxTurns !== undefined && this.maxTurns > 0 && this.toolCallCount > this.maxTurns) {
         this.backend?.abort();
@@ -477,7 +476,6 @@ export class WorkerHandle {
     this.status = 'done';
     this.endedAt = Date.now();
     this.stopHeartbeat();
-    this.clearQuestion();
     this.finalizeTerminal('done', this.report ?? '');
   }
 
@@ -488,19 +486,20 @@ export class WorkerHandle {
     this.report = message;
     this.endedAt = Date.now();
     this.stopHeartbeat();
-    const waiter = this.questionWaiter;
-    if (waiter) {
-      this.clearQuestion();
-      waiter.reject(new Error(`worker failed: ${message}`));
-    }
     this.finalizeTerminal('failed', message);
   }
 
   /**
    * Terminal transition for a child that ran out of turn budget. Unlike
    * `failed`, the work is not lost: the report keeps whatever the child had
-   * produced, behind a marker saying so, and the child stays resumable via
-   * `send_message` (which starts a fresh segment).
+   * produced, behind a marker saying so, and the child can resume via
+   * `send_message` (which starts a fresh segment; actual resumability is C4).
+   *
+   * The abort was already issued by processEvent just before this call. This
+   * defers the spawner notification (via settled) until the backend has stopped
+   * (or grace period expires), since pi's abort is cooperative and the child may
+   * still be writing to its worktree. Without this deferral, a spawner told to
+   * clean up immediately could delete the worktree out from under a live process.
    */
   private finalizeMaxTurns(): void {
     if (this.finalized) return;
@@ -509,12 +508,10 @@ export class WorkerHandle {
     this.report = `${MAX_TURNS_PARTIAL_MARKER}\n\n${this.report ?? ''}`;
     this.endedAt = Date.now();
     this.stopHeartbeat();
-    const waiter = this.questionWaiter;
-    if (waiter) {
-      this.clearQuestion();
-      waiter.reject(new Error('maxTurns limit reached'));
-    }
-    this.finalizeTerminal('max_turns', this.report);
+
+    const stopped = this.backend?.stop().catch(() => {});
+
+    this.finalizeTerminal('max_turns', this.report, stopped);
   }
 
   /**
@@ -524,10 +521,10 @@ export class WorkerHandle {
    * and resolves the terminal promise — in that order, exactly once.
    *
    * It is one function on purpose. `notifyFinished` is what takes an isolated
-   * child's worktree down, so a future terminal status (`interrupted`,
-   * `max_turns`) that hand-rolled five of these six steps would leak a
-   * directory per worker and look correct doing it. Route new terminal statuses
-   * through here and that is structurally impossible.
+   * child's worktree down, so a future terminal status (`interrupted`) that
+   * hand-rolled five of these six steps would leak a directory per worker and
+   * look correct doing it. Route new terminal statuses through here and that is
+   * structurally impossible.
    *
    * `settled` is cancel's bounded wait (see cancel): when present the spawner
    * notification is deferred until the backend has stopped, or the grace period
@@ -539,6 +536,19 @@ export class WorkerHandle {
     report: string,
     settled?: Promise<void>,
   ): void {
+    // Settle any pending question waiter with a status-derived error message.
+    const waiter = this.questionWaiter;
+    if (waiter) {
+      this.clearQuestion();
+      const msg =
+        status === 'max_turns'
+          ? 'maxTurns limit reached'
+          : status === 'cancelled'
+            ? 'worker cancelled'
+            : `worker ${status}`;
+      waiter.reject(new Error(msg));
+    }
+
     this.emit({
       type: 'worker_done',
       workerId: this.workerId,
@@ -584,7 +594,7 @@ export class WorkerHandle {
     const hook = this.opts.onFinished;
     if (!hook) return;
     try {
-      void Promise.resolve(hook(this.opts.spec)).catch(() => {});
+      void Promise.resolve(hook({ ...this.opts.spec, workerStatus: this.status })).catch(() => {});
     } catch {
       // A synchronous throw from the hook is the spawner's problem, not the
       // worker's: the terminal transition has already been reported.

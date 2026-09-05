@@ -5,12 +5,18 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type {
   AgentBackend,
+  AgentEvent,
   AgentState,
   DashAgentConfig,
   DashAgentConfigResolver,
   PiAgentBackendOptions,
 } from '@dash/agent';
-import type { SwarmExtraTool, WorkerSpec } from '@dash/swarm';
+import {
+  type SwarmExtraTool,
+  type WorkerBackend,
+  WorkerHandle,
+  type WorkerSpec,
+} from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
 import {
@@ -757,5 +763,102 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     });
     await expect(hook(finished)).resolves.toBeUndefined();
     expect(warnings).not.toHaveLength(0);
+  });
+
+  /**
+   * Ruling 2 of task B7. `max_turns` is the second terminal status produced by
+   * a cooperative abort rather than by the child finishing, and the finalizer's
+   * contract is that EVERY terminal path notifies the spawner. These two pin
+   * that end to end — a real worktree, a real WorkerHandle tripping its cap,
+   * and the real cleanup hook — so a future refactor that hand-rolls the
+   * max_turns transition cannot silently start leaking a directory per capped
+   * child.
+   */
+  describe('a child that trips maxTurns', () => {
+    const EMPTY_USAGE = { inputTokens: 0, outputTokens: 0 };
+
+    /** Yields a report, then more tool calls than `maxTurns` allows. */
+    class CappedBackend implements WorkerBackend {
+      abortCalls = 0;
+      async *chat(): AsyncGenerator<AgentEvent> {
+        yield { type: 'response', content: 'what I found so far', usage: EMPTY_USAGE };
+        yield { type: 'tool_use_start', id: 't1', name: 'read_file' };
+        yield { type: 'tool_use_start', id: 't2', name: 'read_file' };
+        // Never reached: the handle finalizes on the event above.
+        yield { type: 'response', content: 'a complete report', usage: EMPTY_USAGE };
+      }
+      abort(): void {
+        this.abortCalls++;
+      }
+      async stop(): Promise<void> {}
+    }
+
+    async function runCapped(dir: string) {
+      const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
+      const spec = makeSpec({ workspace, isolation: 'worktree', maxTurns: 1 });
+      await factory(spec);
+      const path = childWorktreePath({ dataDir: dir, agentName: spec.agentName, childId: 'w-01' });
+      expect(await pathExists(path)).toBe(true);
+      return { spec, path };
+    }
+
+    function startHandle(
+      spec: WorkerSpec,
+      backend: WorkerBackend,
+      onFinished: (s: Omit<WorkerSpec, 'extraTools'>) => Promise<void>,
+    ) {
+      const { extraTools: _extraTools, ...handleSpec } = spec;
+      const handle = new WorkerHandle({
+        spec: handleSpec,
+        backendPromise: Promise.resolve(backend),
+        emit: () => {},
+        maxSteers: 3,
+        onTerminal: () => {},
+        onFinished,
+      });
+      handle.start();
+      return handle;
+    }
+
+    it('keeps its worktree for resumption even if clean', async () => {
+      const { spec, path } = await runCapped(dataDir);
+      const backend = new CappedBackend();
+      const warnings: string[] = [];
+      const handle = startHandle(
+        spec,
+        backend,
+        createWorktreeCleanupHook({ dataDir, warn: (m) => warnings.push(m) }),
+      );
+      await handle.terminalPromise;
+
+      expect(handle.status).toBe('max_turns');
+      expect(backend.abortCalls).toBe(1);
+      // A max_turns child is resumable, so its worktree must be kept to support
+      // `send_message` resumes. This is true even if the worktree is clean.
+      await vi.waitFor(() => expect(warnings).not.toHaveLength(0));
+      expect(warnings.join('\n')).toContain('resumption');
+      expect(await pathExists(path)).toBe(true);
+    });
+
+    it('keeps the worktree when it left work behind, and says where', async () => {
+      const { spec, path } = await runCapped(dataDir);
+      // A capped child is stopped MID-task: whatever it wrote is exactly the
+      // partial output its report points at, so cleanup must not delete it.
+      await writeFile(join(path, 'findings.md'), '# half the answer\n');
+
+      const warnings: string[] = [];
+      const handle = startHandle(
+        spec,
+        new CappedBackend(),
+        createWorktreeCleanupHook({ dataDir, warn: (m) => warnings.push(m) }),
+      );
+      await handle.terminalPromise;
+
+      expect(handle.status).toBe('max_turns');
+      await vi.waitFor(() => expect(warnings).not.toHaveLength(0));
+      expect(warnings.join('\n')).toContain(path);
+      expect(await pathExists(path)).toBe(true);
+      expect(await pathExists(join(path, 'findings.md'))).toBe(true);
+    });
   });
 });
