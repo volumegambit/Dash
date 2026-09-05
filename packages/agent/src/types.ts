@@ -147,6 +147,17 @@ export interface DashAgentConfig {
   /** Names of MCP servers assigned to this agent from the gateway pool */
   assignedMcpServers?: string[];
   /**
+   * Exact `server__tool` names this agent may call, applied AFTER the
+   * `assignedMcpServers` filter. `undefined` = no per-tool narrowing (every
+   * tool of every assigned server); `[]` = no MCP tool at all.
+   *
+   * Because it is an intersection applied after the server gate, naming a tool
+   * from an unassigned server grants nothing — it cannot widen the grant, only
+   * narrow it. Used for spawned sub-agents, whose definition may grant
+   * `github__pr` without also handing over `github__merge`.
+   */
+  mcpToolAllowlist?: string[];
+  /**
    * Memory-preamble policy. Omitted (or `enabled` left unset) keeps the
    * default: whenever `workspace` is set, the workspace MEMORY.md preamble is
    * appended to the system prompt. `{ enabled: false }` opts out entirely —
@@ -277,4 +288,34 @@ export interface AgentBackend {
   abort(): void;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
+}
+
+/**
+ * Every `PiAgentBackend` construction input as a NAMED slot.
+ *
+ * The positional constructor takes twelve arguments, eight of them optional —
+ * a caller that wants only the last one has to spell out a run of `undefined`s,
+ * and the meaning of each slot lives in its position rather than its name. That
+ * is exactly how the gateway's stripped worker backend ended up silently
+ * shipping `undefined` for the MCP, skills and hook slots. `fromOptions`
+ * consumes this shape; the positional form stays for its existing callers.
+ *
+ * The MCP / logger / skill-file types are referenced through inline `import()`
+ * types so this module keeps its zero top-level imports and @dash/agent gains
+ * no new runtime dependency edge.
+ */
+export interface PiAgentBackendOptions {
+  config: DashAgentConfig;
+  providerApiKeysSource: import('./backends/piagent.js').ProviderApiKeysSource;
+  logger?: import('./logger.js').Logger;
+  sessionDir?: string;
+  /** Writable managed-skills dir. Grants create_skill/install_skill/remove_skill. */
+  managedSkillsDir?: string;
+  mcpManager?: import('@dash/mcp').McpManager;
+  mcpConfigStore?: import('@dash/mcp').McpConfigStoreInterface;
+  mcpAgentContext?: import('@dash/mcp').McpAgentContext;
+  extraTools?: ExtraTool[];
+  extraSkillFiles?: import('./skills/index.js').FlatSkillFile[];
+  hookRunner?: HookRunner;
+  pluginModelCatalog?: PluginModelCatalog;
 }

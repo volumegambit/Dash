@@ -1623,3 +1623,153 @@ describe('PiAgentBackend skill tool registration', () => {
     expect(activated).not.toContain('remove_skill');
   });
 });
+
+/**
+ * A pi session mock whose `setActiveToolsByName` is observable: the names it
+ * receives are the built-in allow-list plus EVERY custom tool the backend
+ * registered, so it is the cheapest true read of `buildCustomTools()`.
+ */
+async function mockSessionCapturingActiveTools(): Promise<ReturnType<typeof vi.fn>> {
+  const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+  const setActiveToolsByName = vi.fn();
+  vi.mocked(createAgentSession).mockResolvedValueOnce({
+    session: {
+      dispose: vi.fn(),
+      subscribe: vi.fn(),
+      prompt: vi.fn(),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      agent: { setSystemPrompt: vi.fn() },
+      getActiveToolNames: vi.fn(() => []),
+      setActiveToolsByName,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+    } as any,
+    // biome-ignore lint/suspicious/noExplicitAny: test mock
+    extensionsResult: {} as any,
+  });
+  return setActiveToolsByName;
+}
+
+/** An McpManager stub exposing two `github` tools and one from another server. */
+function fakeMcpManager() {
+  const tool = (name: string) => ({
+    name,
+    label: name,
+    description: name,
+    parameters: {},
+    execute: async () => ({ content: [{ type: 'text', text: 'ok' }], details: undefined }),
+  });
+  return {
+    getTools: () => [tool('github__pr'), tool('github__merge'), tool('linear__issue')],
+    // biome-ignore lint/suspicious/noExplicitAny: structural stub for the McpManager slot
+  } as any;
+}
+
+describe('PiAgentBackend.fromOptions', () => {
+  const config = { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'You are helpful.' };
+  const extraTool = {
+    name: 'ask_orchestrator',
+    label: 'Ask',
+    description: 'Ask the parent.',
+    parameters: {},
+    execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }], details: undefined }),
+  };
+
+  it('constructs the same backend the positional form does', async () => {
+    const positional = new PiAgentBackend(
+      config,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [extraTool],
+    );
+    const viaOptions = PiAgentBackend.fromOptions({
+      config,
+      providerApiKeysSource: {},
+      extraTools: [extraTool],
+    });
+    expect(viaOptions).toBeInstanceOf(PiAgentBackend);
+    expect(viaOptions.name).toBe(positional.name);
+    expect(viaOptions.listExtraToolNames()).toEqual(positional.listExtraToolNames());
+  });
+
+  it('start() is callable on a fromOptions backend', async () => {
+    const setActiveToolsByName = await mockSessionCapturingActiveTools();
+    const backend = PiAgentBackend.fromOptions({ config, providerApiKeysSource: {} });
+    await expect(backend.start('/tmp/test')).resolves.toBeUndefined();
+    expect(setActiveToolsByName).toHaveBeenCalled();
+  });
+
+  it('omitted slots default exactly like the positional defaults', () => {
+    const backend = PiAgentBackend.fromOptions({ config, providerApiKeysSource: {} });
+    expect(backend.listExtraToolNames()).toEqual([]);
+  });
+});
+
+describe('mcpToolAllowlist', () => {
+  const base = {
+    model: 'anthropic/claude-sonnet-4-20250514',
+    systemPrompt: '',
+    tools: ['read', 'mcp'],
+  };
+
+  async function activeToolsFor(config: Record<string, unknown>): Promise<string[]> {
+    const setActiveToolsByName = await mockSessionCapturingActiveTools();
+    const backend = PiAgentBackend.fromOptions({
+      // biome-ignore lint/suspicious/noExplicitAny: partial DashAgentConfig in a table-driven test
+      config: config as any,
+      providerApiKeysSource: {},
+      mcpManager: fakeMcpManager(),
+    });
+    await backend.start('/tmp/test');
+    return setActiveToolsByName.mock.calls[0]?.[0] as string[];
+  }
+
+  it('narrows an assigned server to the exact tools the allowlist names', async () => {
+    const active = await activeToolsFor({
+      ...base,
+      assignedMcpServers: ['github'],
+      mcpToolAllowlist: ['github__pr'],
+    });
+    expect(active).toContain('github__pr');
+    expect(active).not.toContain('github__merge');
+    expect(active).not.toContain('linear__issue');
+  });
+
+  it('cannot re-admit a server the agent was not assigned', async () => {
+    const active = await activeToolsFor({
+      ...base,
+      assignedMcpServers: ['github'],
+      mcpToolAllowlist: ['github__pr', 'linear__issue'],
+    });
+    expect(active).toContain('github__pr');
+    expect(active).not.toContain('linear__issue');
+  });
+
+  it('an empty allowlist grants no MCP tool at all', async () => {
+    const active = await activeToolsFor({
+      ...base,
+      assignedMcpServers: ['github'],
+      mcpToolAllowlist: [],
+    });
+    expect(active).not.toContain('github__pr');
+    expect(active).not.toContain('github__merge');
+  });
+
+  it('no allowlist leaves the server filter alone', async () => {
+    const active = await activeToolsFor({ ...base, assignedMcpServers: ['github'] });
+    expect(active).toContain('github__pr');
+    expect(active).toContain('github__merge');
+    expect(active).not.toContain('linear__issue');
+  });
+
+  it('applies to the unassigned (legacy) mode too', async () => {
+    const active = await activeToolsFor({ ...base, mcpToolAllowlist: ['linear__issue'] });
+    expect(active).toEqual(expect.arrayContaining(['linear__issue']));
+    expect(active).not.toContain('github__pr');
+  });
+});
