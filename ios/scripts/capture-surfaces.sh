@@ -72,6 +72,12 @@ xcrun simctl uninstall "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 xcrun simctl install "$UDID" "$APP"
 
 # name|scenario|extra env
+# Only surfaces a launch option can actually reach. `approve-device` was here
+# and produced a screenshot of the conversation list under that name — the
+# view is a SHEET presented from Settings, and a scenario alone does not open
+# it. A capture whose filename lies is worse than a missing one. Sheets and
+# pushed detail views (agent detail, agent editor, image viewer) need a route
+# option before they can join this list.
 SURFACES=(
   "conversations|paired-online|DASH_UI_TEST_TAB=conversations"
   "conversations-offline|paired-offline|DASH_UI_TEST_TAB=conversations"
@@ -80,7 +86,6 @@ SURFACES=(
   "chat|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan"
   "signin|signed-out|"
   "gateway-picker|account-picker|"
-  "approve-device|approve-device|"
   "recovery|pending-recovery|DASH_UI_TEST_TAB=conversations"
 )
 
