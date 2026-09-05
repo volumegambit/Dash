@@ -76,6 +76,14 @@ export type McAgentEvent =
   | { type: 'response'; content: string; usage: Record<string, number> }
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_created'; name: string; description: string }
+  | {
+      type: 'memory_saved';
+      name: string;
+      description: string;
+      memoryType: 'user' | 'feedback' | 'project' | 'reference';
+      action: 'created' | 'updated';
+    }
+  | { type: 'memory_forgotten'; name: string }
   | { type: 'context_compacted'; overflow: boolean }
   | {
       type: 'worker_spawned';
