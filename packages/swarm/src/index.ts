@@ -5,7 +5,17 @@ export {
 } from './agent-tool.js';
 export { AsyncChannel } from './channel.js';
 export {
+  CHILD_DELETED_REASON,
+  ChildHandle,
+  type ChildHandleOptions,
+  DEFAULT_CHILD_CANCEL_GRACE_MS,
+} from './child-handle.js';
+export { CHILD_CONVERSATION_ID_RE, childConversationId } from './child-id.js';
+export { createInProcessChildDriver } from './in-process-child-driver.js';
+export {
   type AttachOptions,
+  type ChildSpawnRequest,
+  type ParentSpawnContext,
   type RunSnapshot,
   type RunSummary,
   type RunWorkerSnapshot,
@@ -33,9 +43,19 @@ export {
   createAskOrchestratorTool,
   createSwarmTools,
   type CreateSwarmToolsOptions,
+  type QuestionHost,
 } from './tools.js';
 export { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
+export { ChildTurnStartError } from './types.js';
 export type {
+  ChildConversationInput,
+  ChildInfo,
+  ChildSnapshot,
+  ChildSpec,
+  ChildTurnDriver,
+  ChildTurnOutcome,
+  ChildTurnRef,
+  ChildTurnStartReason,
   SwarmCaps,
   SwarmEventLogSink,
   SwarmExtraTool,

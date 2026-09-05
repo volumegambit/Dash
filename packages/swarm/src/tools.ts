@@ -1,6 +1,14 @@
 import type { SwarmCoordinator } from './coordinator.js';
 import type { SwarmExtraTool, WorkerStatus } from './types.js';
-import type { WorkerHandle } from './worker-handle.js';
+
+/** The one thing `ask_orchestrator` needs from a child: its question waiter. */
+export interface QuestionHost {
+  waitForQuestion(
+    question: string,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): Promise<string>;
+}
 
 /**
  * The swarm tools are the LLM-facing surface of a swarm run. The orchestrator
@@ -259,7 +267,7 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
  * cancel rejection propagates as a thrown Error (pi → isError result).
  */
 export function createAskOrchestratorTool(
-  handle: WorkerHandle,
+  handle: QuestionHost,
   closed: AbortSignal,
 ): SwarmExtraTool {
   return {

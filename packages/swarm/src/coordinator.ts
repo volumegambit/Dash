@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
+import { ChildHandle } from './child-handle.js';
+import { childConversationId } from './child-id.js';
+import { createInProcessChildDriver } from './in-process-child-driver.js';
 import { ALWAYS_AVAILABLE_TOOLS, UNIVERSE, parentBuiltinTools } from './resolve-spawn.js';
 import {
   type RunSnapshot,
@@ -10,7 +13,15 @@ import {
   type SwarmRunOptions,
 } from './run.js';
 import { createAskOrchestratorTool } from './tools.js';
-import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
+import type {
+  ChildSnapshot,
+  ChildSpec,
+  ChildTurnDriver,
+  SwarmCaps,
+  SwarmEventLogSink,
+  WorkerFactory,
+  WorkerStatus,
+} from './types.js';
 import { DEFAULT_SUBAGENT_TYPE, type WorkerHandleOptions } from './worker-handle.js';
 
 export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
@@ -31,7 +42,16 @@ const HARD_DEFAULT_CAPS: SwarmCaps = {
   maxWorkersPerRun: 24,
   maxSteersPerWorker: 10,
   maxRunSeconds: 1800,
+  maxDepth: 3,
 };
+
+/**
+ * How many terminal children of one conversation stay addressable in memory.
+ * The durable record is the child's own conversation, which the driver can
+ * always list; this bound only keeps a long conversation's finished children
+ * from pinning their handles forever.
+ */
+const MAX_RETAINED_CHILDREN_PER_PARENT = 64;
 
 const DEFAULT_GLOBAL_MAX_CONCURRENT = 16;
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
@@ -75,6 +95,42 @@ export interface AttachOptions {
   workspace?: string;
 }
 
+/** Who is spawning, and how deep they already are. */
+export interface ParentSpawnContext {
+  agentId: string;
+  agentName: string;
+  /** The parent conversation — a user conversation, or another child's. */
+  conversationId: string;
+  /** The parent turn doing the spawning; becomes the child's `parentTurnId`. */
+  turnId: string;
+  /** The PARENT's depth. 0 for a top-level agent, so its children are depth 1. */
+  depth: number;
+  workspace?: string;
+}
+
+/** A spawn as the tools ask for it, before validation resolves it. */
+export interface ChildSpawnRequest {
+  role: string;
+  brief: string;
+  tools?: string[];
+  /** Fully-qualified `server__tool` names resolved by `resolveChildTools`. */
+  mcpTools?: string[];
+  /** `agent(a, b)` — the types this child may itself spawn. Unset = all. */
+  spawnableTypes?: string[];
+  /** Whether this child gets `agent` / `send_message` at all. */
+  canSpawn?: boolean;
+  model?: string;
+  subagentType?: string;
+  description?: string;
+  name?: string;
+  systemPrompt?: string;
+  background?: boolean;
+  isolation?: 'worktree';
+  skipMemory?: boolean;
+  maxTurns?: number;
+  oneShot?: boolean;
+}
+
 export interface SwarmAttachment {
   readonly runIdHint: string;
   channel: AsyncChannel<AgentEvent>;
@@ -98,7 +154,27 @@ interface LiveTurn {
 }
 
 export interface SwarmCoordinatorOptions {
-  workerFactory: WorkerFactory;
+  /**
+   * Runs children as CONVERSATIONS (design §7.1). The gateway implements it
+   * over `ResumableChatHub` + `ConversationService`; supply it and children
+   * persist, replay and stay addressable after the turn that spawned them.
+   *
+   * Omitted, the coordinator falls back to
+   * {@link createInProcessChildDriver} over `workerFactory` — the same
+   * `ChildHandle` lifetime over an in-process backend, kept for embedders with
+   * no conversation store. One of the two is required.
+   */
+  childDriver?: ChildTurnDriver;
+  /** Legacy in-process transport. Required unless `childDriver` is supplied. */
+  workerFactory?: WorkerFactory;
+  /**
+   * Each child's heartbeat interval, which is also its liveness poll: a child
+   * whose conversation was deleted (a cascading parent delete) is cancelled on
+   * the first tick that sees the row gone. Default 10s — the abort is
+   * cooperative anyway, so a bounded delay is the cost of not doing a store
+   * lookup per streamed event.
+   */
+  childHeartbeatMs?: number;
   eventLog?: SwarmEventLogSink;
   globalMaxConcurrentWorkers?: number;
   defaultCaps?: Partial<SwarmCaps>;
@@ -137,11 +213,12 @@ function abortedSignal(): AbortSignal {
  * finalized run snapshots for the panel API.
  */
 export class SwarmCoordinator {
-  private readonly workerFactory: WorkerFactory;
+  private readonly driver: ChildTurnDriver;
   private readonly eventLog?: SwarmEventLogSink;
   private readonly globalMax: number;
   private readonly defaultCaps: Partial<SwarmCaps>;
   private readonly hooks?: WorkerHandleOptions['hooks'];
+  private readonly childHeartbeatMs?: number;
   private readonly onRunChanged?: (agentId: string, runId: string) => void;
   private readonly onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
 
@@ -149,13 +226,28 @@ export class SwarmCoordinator {
   private readonly live = new Map<string, LiveTurn>();
   /** Finalized run snapshots, ring-buffered per agent (most-recent last). */
   private readonly history = new Map<string, RunSnapshot[]>();
+  /**
+   * EVERY child this process still holds a handle for, keyed by its subagent
+   * (= conversation) id. Independent of the run that spawned it: this is what
+   * makes `send_message` to a child from an earlier turn resolve.
+   */
+  private readonly children = new Map<string, ChildHandle>();
+  /** Per-parent index, spawn order preserved, bounded per conversation. */
+  private readonly childrenByParent = new Map<string, ChildHandle[]>();
+  /** The live spec of each child, for the runtime that builds its backend. */
+  private readonly childSpecs = new Map<string, ChildSpec>();
 
   constructor(opts: SwarmCoordinatorOptions) {
-    this.workerFactory = opts.workerFactory;
+    const workerFactory = opts.workerFactory;
+    if (!opts.childDriver && !workerFactory) {
+      throw new Error('SwarmCoordinator needs a childDriver or a workerFactory');
+    }
+    this.driver = opts.childDriver ?? createInProcessChildDriver(workerFactory as WorkerFactory);
     this.eventLog = opts.eventLog;
     this.globalMax = opts.globalMaxConcurrentWorkers ?? DEFAULT_GLOBAL_MAX_CONCURRENT;
     this.defaultCaps = opts.defaultCaps ?? {};
     this.hooks = opts.hooks;
+    this.childHeartbeatMs = opts.childHeartbeatMs;
     this.onRunChanged = opts.onRunChanged;
     this.onWorkerFinished = opts.onWorkerFinished;
   }
@@ -245,41 +337,27 @@ export class SwarmCoordinator {
 
   // --- tool-facing API (resolved by agentId, conversationId) ---
 
-  spawnWorker(
-    agentId: string,
-    conversationId: string,
-    p: {
-      role: string;
-      brief: string;
-      tools?: string[];
-      /** Fully-qualified `server__tool` names resolved by `resolveChildTools`. */
-      mcpTools?: string[];
-      /** `agent(a, b)` — the types this child may itself spawn. Unset = all. */
-      spawnableTypes?: string[];
-      /** Whether this child gets `agent` / `send_message` at all. */
-      canSpawn?: boolean;
-      model?: string;
-      subagentType?: string;
-      description?: string;
-      name?: string;
-      systemPrompt?: string;
-      background?: boolean;
-      isolation?: 'worktree';
-      skipMemory?: boolean;
-      maxTurns?: number;
-      oneShot?: boolean;
-      /** 1 (the default) for a direct child; the `agent` tool passes childDepth. */
-      depth?: number;
-    },
-  ): { workerId: string; status: 'spawning' } {
-    const k = key(agentId, conversationId);
+  /**
+   * Spawn one child of `parent` (design §7.1). Creates the child's
+   * conversation, registers it under the spawning turn AND in the per-parent
+   * registry, and starts its first turn with `spec.brief` as the message.
+   *
+   * Everything up to and including the driver's `startTurn` is SYNCHRONOUS, so
+   * a same-batch `wait_workers` or roster read always sees the child.
+   *
+   * All validation lives here — caps, the depth ceiling, the model allow-list
+   * and the tool/MCP subset checks — so `spawn_worker` and the `agent` tool
+   * cannot drift apart by going through different gates.
+   */
+  spawnChild(parent: ParentSpawnContext, p: ChildSpawnRequest): { subagentId: string } {
+    const k = key(parent.agentId, parent.conversationId);
     const turn = this.live.get(k);
     if (!turn || turn.finalized) {
       throw new Error('swarm turn is closed — cannot spawn');
     }
     // Wall-clock expiry fires the run's `closed` before the attachment's
     // finalize lands; refuse spawns into a run that is already closing so no
-    // worker is registered into a dead run.
+    // child is registered into a dead run.
     if (turn.run?.closed.aborted) {
       throw new Error('swarm turn is closed — cannot spawn');
     }
@@ -301,7 +379,10 @@ export class SwarmCoordinator {
         `swarm run reached its worker limit (${turn.caps.maxWorkersPerRun} workers per run)`,
       );
     }
-    if (run.activeCount() >= turn.caps.maxConcurrentWorkers) {
+    // Per-CONVERSATION, not per-run: a background child outlives the turn that
+    // spawned it, so counting the run's own children would let each new turn
+    // start another eight on top of the ones still going.
+    if (this.activeChildCount(parent.conversationId) >= turn.caps.maxConcurrentWorkers) {
       throw new Error(
         `too many workers running at once (max ${turn.caps.maxConcurrentWorkers}) — wait for workers to finish`,
       );
@@ -311,21 +392,38 @@ export class SwarmCoordinator {
         `the gateway is at its global worker limit (${this.globalMax}) — wait for workers to finish`,
       );
     }
+    // The nesting ceiling. `resolveChildTools` already withholds `agent` /
+    // `send_message` from a child that has reached it, but that grant is only
+    // advice to a model: this is the check that a spawn cannot talk its way
+    // past. A direct child of a top-level agent is depth 1.
+    const depth = parent.depth + 1;
+    if (depth > turn.caps.maxDepth) {
+      throw new Error(
+        `depth limit reached (maxDepth ${turn.caps.maxDepth}) — an agent at depth ` +
+          `${parent.depth} cannot spawn a depth-${depth} agent`,
+      );
+    }
 
     const model = this.validateModel(turn, p.model);
     const tools = this.validateTools(turn, p.tools);
     const mcpTools = this.validateMcpTools(turn, p.mcpTools);
 
-    const workerId = randomUUID().slice(0, 8);
-    const spec = {
-      agentId: turn.opts.agentId,
-      agentName: turn.opts.agentName,
+    const childId = childConversationId();
+    const spec: Omit<ChildSpec, 'extraTools'> = {
+      agentId: parent.agentId,
+      agentName: parent.agentName,
       runId: run.runId,
-      workerId,
+      // The child's conversation id IS its worker id: one identity for the
+      // event stream, the panel, `send_message`, its session dir and its
+      // worktree, so nothing has to translate between two of them.
+      workerId: childId,
+      childConversationId: childId,
+      parentConversationId: parent.conversationId,
+      parentTurnId: parent.turnId,
       role: p.role,
       brief: p.brief,
       model,
-      workspace: turn.opts.workspace ?? process.cwd(),
+      workspace: parent.workspace ?? turn.opts.workspace ?? process.cwd(),
       tools,
       mcpTools,
       spawnableTypes: p.spawnableTypes,
@@ -339,46 +437,102 @@ export class SwarmCoordinator {
       skipMemory: p.skipMemory,
       maxTurns: p.maxTurns,
       oneShot: p.oneShot,
-      depth: p.depth,
+      depth,
     };
 
-    // Synchronous registration + sync emits before any await returns to caller.
-    // register() builds the handle first and hands it to this callback so the
-    // per-worker ask_orchestrator tool (which needs the handle) can be built and
-    // threaded into the WorkerSpec before the factory is invoked. The factory
-    // promise is chained into a deferred backend promise inside register — it is
-    // NOT awaited here, preserving synchronous registration.
-    // worker_spawned + agent_spawned are pushed synchronously BEFORE register so
-    // the legacy mirror precedes the handle's subagent_started: a client that
+    // worker_spawned + agent_spawned are pushed synchronously BEFORE the handle
+    // starts, so the legacy mirror precedes `subagent_started`: a client that
     // only decodes worker_spawned always has the card before any subagent_*
     // event refers to it.
-    run.channel.push({
+    this.emitToParent(parent.agentId, parent.conversationId, {
       type: 'worker_spawned',
-      workerId,
+      workerId: childId,
       runId: run.runId,
       role: p.role,
       brief: p.brief,
       model,
     });
-    run.channel.push({ type: 'agent_spawned', name: p.role });
+    this.emitToParent(parent.agentId, parent.conversationId, {
+      type: 'agent_spawned',
+      name: p.role,
+    });
+
+    const handle = new ChildHandle({
+      spec,
+      driver: this.driver,
+      // Looked up PER EMISSION rather than captured: a background child can
+      // outlive the turn that spawned it, and after finalize there is no
+      // parent channel to push into.
+      emit: (event) => this.emitToParent(parent.agentId, parent.conversationId, event),
+      maxSteers: turn.caps.maxSteersPerWorker,
+      ...(this.childHeartbeatMs !== undefined ? { heartbeatMs: this.childHeartbeatMs } : {}),
+      hooks: this.hooks,
+      onTerminal: (h) => this.onChildTerminal(h, run),
+      onFinished: (finished) => run.noteFinished(finished),
+    });
+    const fullSpec: ChildSpec = {
+      ...spec,
+      extraTools: [createAskOrchestratorTool(handle, run.closed)],
+    };
     try {
-      run.register({ spec, hooks: this.hooks }, (handle) =>
-        this.workerFactory({
-          ...spec,
-          extraTools: [createAskOrchestratorTool(handle, run.closed)],
-        }),
-      );
+      // Registration order matters: `start()` is synchronous and can reach a
+      // terminal state before it returns, so every index the terminal path
+      // touches has to be populated first. The driver takes the resolved spec
+      // BEFORE the row exists — it is what the runtime builds the backend from.
+      this.children.set(childId, handle);
+      this.indexChild(parent.conversationId, handle);
+      this.childSpecs.set(childId, fullSpec);
+      run.adopt(handle);
+      this.driver.prepareChild(fullSpec);
+      handle.start();
     } catch (err) {
-      // register() is documented never to throw, but the worker_spawned card is
-      // already on the stream: terminalize the phantom before rethrowing so no
-      // client is left with a card that can never complete.
-      this.terminalizePhantom(run, workerId, p, err);
+      // `start()` catches its own failures, so reaching here means the run or
+      // the driver refused outright. The worker_spawned card is already on the
+      // stream: terminalize the phantom before rethrowing so no client is left
+      // with a card that can never complete.
+      this.forgetChild(parent.conversationId, childId);
+      this.terminalizePhantom(run, childId, p, err);
       throw err;
     }
 
-    this.onRunChanged?.(turn.opts.agentId, run.runId);
+    this.onRunChanged?.(parent.agentId, run.runId);
 
-    return { workerId, status: 'spawning' };
+    return { subagentId: childId };
+  }
+
+  /**
+   * The legacy `spawn_worker` facade. Identical lifetime to `spawnChild` — the
+   * legacy tools do NOT get a second kind of child — with the parent context
+   * read off the live attachment, and `p.depth` interpreted as the CHILD's
+   * depth (the shape the `agent` tool has always passed).
+   */
+  spawnWorker(
+    agentId: string,
+    conversationId: string,
+    p: ChildSpawnRequest & {
+      /** 1 (the default) for a direct child; the `agent` tool passes childDepth. */
+      depth?: number;
+    },
+  ): { workerId: string; status: 'spawning' } {
+    const turn = this.live.get(key(agentId, conversationId));
+    if (!turn || turn.finalized) {
+      throw new Error('swarm turn is closed — cannot spawn');
+    }
+    const { depth: childDepth, ...request } = p;
+    const { subagentId } = this.spawnChild(
+      {
+        agentId,
+        agentName: turn.opts.agentName,
+        conversationId,
+        // The parent turn id. `messageId` is the WS message that opened the
+        // turn; without one (a non-chat caller) the run id hint identifies it.
+        turnId: turn.opts.messageId ?? turn.runIdHint,
+        depth: (childDepth ?? 1) - 1,
+        workspace: turn.opts.workspace,
+      },
+      request,
+    );
+    return { workerId: subagentId, status: 'spawning' };
   }
 
   async waitWorkers(
@@ -481,7 +635,7 @@ export class SwarmCoordinator {
     conversationId: string,
     workerId: string,
     signal?: AbortSignal,
-  ): Promise<RunWorkerSnapshot> {
+  ): Promise<ChildSnapshot> {
     const [w] = await this.waitWorkers(
       agentId,
       conversationId,
@@ -519,63 +673,140 @@ export class SwarmCoordinator {
   }
 
   /**
-   * Resolve a child by name first, then by id, over the conversation's live run
-   * (or its most recent finalized run). Names are not unique — the LATEST worker
-   * with that name wins, so re-using a name addresses the newest child.
+   * Wait for one child to reach a terminal state and return its snapshot.
+   * Resolves immediately for a child that is already terminal.
+   *
+   * Unlike `wait_workers` it does not return early on a question: the question
+   * is answered out of band and the wait continues.
+   */
+  async waitChild(subagentId: string, signal?: AbortSignal): Promise<ChildSnapshot> {
+    const handle = this.children.get(subagentId);
+    // Only a LIVE child can be waited on. A child this process never spawned
+    // (or has already evicted) is terminal by definition and is read through
+    // `findChild`; there is nothing here to wait for.
+    if (!handle) throw new Error(`unknown sub-agent ${subagentId}`);
+    if (TERMINAL_STATUSES.has(handle.status)) return handle.snapshot();
+    if (signal?.aborted) throw new Error('aborted');
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        reject(new Error('aborted'));
+      };
+      const cleanup = () => signal?.removeEventListener('abort', onAbort);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      void handle.terminalPromise.then(() => {
+        cleanup();
+        resolve();
+      });
+    });
+    return handle.snapshot();
+  }
+
+  /**
+   * Resolve a child of `parentConversationId` by name first, then by id. Names
+   * are not unique — the LATEST child with that name wins, so re-using a name
+   * addresses the newest one.
+   *
+   * Reads {@link childrenOf}, which spans EVERY turn of the conversation: a
+   * child spawned in turn N stays addressable in turn N+1, which is exactly
+   * what the run-scoped lookup this replaces could not do.
+   */
+  findChild(parentConversationId: string, nameOrId: string): ChildSnapshot | undefined {
+    const children = this.childrenOf(parentConversationId);
+    return (
+      [...children].reverse().find((c) => c.name === nameOrId) ??
+      children.find((c) => c.subagentId === nameOrId)
+    );
+  }
+
+  /**
+   * Every child of a conversation, in spawn order: the ones this process still
+   * holds a handle for, plus the persisted rows the driver knows about (a
+   * child from before a restart). A live handle always wins over its row.
+   */
+  childrenOf(parentConversationId: string): ChildSnapshot[] {
+    const live = this.childrenByParent.get(parentConversationId) ?? [];
+    const seen = new Set(live.map((h) => h.subagentId));
+    const persisted = this.driver
+      .listChildren(parentConversationId)
+      .filter((c) => !seen.has(c.subagentId));
+    // Spawn order across BOTH sources. `findChild` resolves a duplicated name
+    // to the newest child, so concatenating the two lists would make the answer
+    // depend on which of them a child happened to be read from.
+    return [...persisted, ...live.map((h) => h.snapshot())].sort(
+      (a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0),
+    );
+  }
+
+  /**
+   * Cancel a child and every descendant beneath it. Depth-first from the
+   * leaves so a grandchild is never left running under a cancelled parent —
+   * nothing would report it afterwards.
+   */
+  async cancelChild(subagentId: string, reason = 'cancelled'): Promise<void> {
+    for (const descendant of this.childrenOf(subagentId)) {
+      await this.cancelChild(descendant.subagentId, reason);
+    }
+    const handle = this.children.get(subagentId);
+    if (!handle || TERMINAL_STATUSES.has(handle.status)) return;
+    handle.cancel(reason);
+    await handle.terminalPromise;
+  }
+
+  /** The fully-resolved spec of a live child — what its backend is built from. */
+  childSpec(subagentId: string): ChildSpec | undefined {
+    return this.childSpecs.get(subagentId);
+  }
+
+  /**
+   * Resolve a child by name then id. Legacy alias of {@link findChild}; the
+   * `agentId` is ignored because a conversation id already identifies exactly
+   * one agent's conversation.
    */
   findWorker(
-    agentId: string,
+    _agentId: string,
     conversationId: string,
     nameOrId: string,
-  ): RunWorkerSnapshot | undefined {
-    const workers = this.workersFor(agentId, conversationId);
-    return (
-      [...workers].reverse().find((w) => w.name === nameOrId) ??
-      workers.find((w) => w.workerId === nameOrId)
-    );
+  ): ChildSnapshot | undefined {
+    return this.findChild(conversationId, nameOrId);
   }
 
   /** The conversation's children as an addressable roster (for the agent tool). */
   rosterFor(
-    agentId: string,
+    _agentId: string,
     conversationId: string,
   ): Array<{ id: string; name?: string; type: string; status: WorkerStatus }> {
-    return this.workersFor(agentId, conversationId).map((w) => ({
-      id: w.workerId,
-      name: w.name,
-      type: w.subagentType,
-      status: w.status,
+    return this.childrenOf(conversationId).map((c) => ({
+      id: c.subagentId,
+      name: c.name,
+      type: c.subagentType,
+      status: c.status,
     }));
   }
 
   sendToWorker(
-    agentId: string,
-    conversationId: string,
+    _agentId: string,
+    _conversationId: string,
     p: { workerId: string; message: string },
   ): { ok: boolean; status: WorkerStatus } {
-    const turn = this.live.get(key(agentId, conversationId));
-    const run = turn?.run;
-    if (!run || turn?.finalized) {
-      return { ok: false, status: 'cancelled' };
-    }
-    const handle = run.getHandle(p.workerId);
+    // Resolved from the CHILD REGISTRY rather than the live run: a child is
+    // addressable for as long as this process holds it, not just during the
+    // turn it was spawned in.
+    const handle = this.children.get(p.workerId);
     if (!handle) return { ok: false, status: 'cancelled' };
     const res = handle.send(p.message);
     return { ok: res.ok, status: handle.status };
   }
 
   checkWorkers(
-    agentId: string,
+    _agentId: string,
     conversationId: string,
   ): Array<{ workerId: string; role: string; status: WorkerStatus; detail?: string }> {
-    const turn = this.live.get(key(agentId, conversationId));
-    const run = turn?.run;
-    if (!run) return [];
-    return run.workerStatuses().map((w) => ({
-      workerId: w.workerId,
-      role: w.role,
-      status: w.status,
-      detail: w.report ?? w.question,
+    return this.childrenOf(conversationId).map((c) => ({
+      workerId: c.subagentId,
+      role: c.role,
+      status: c.status,
+      detail: c.report ?? c.question,
     }));
   }
 
@@ -676,10 +907,11 @@ export class SwarmCoordinator {
     this.pushHistory(snapshot.agentId, snapshot);
   }
 
+  /** Non-terminal children across the whole gateway (the global ceiling). */
   activeWorkerCount(): number {
     let n = 0;
-    for (const turn of this.live.values()) {
-      if (turn.run) n += turn.run.activeCount();
+    for (const handle of this.children.values()) {
+      if (!TERMINAL_STATUSES.has(handle.status)) n++;
     }
     return n;
   }
@@ -858,19 +1090,80 @@ export class SwarmCoordinator {
   }
 
   /**
-   * The worker snapshots of a conversation: its live run when one exists, else
-   * the most recent finalized run of that conversation in the ring buffer (so a
-   * child stays addressable for the rest of the turn it was spawned in).
+   * The children of a conversation, as the tools see them. Kept as a private
+   * alias of {@link childrenOf} so the run-scoped lookup it replaced cannot
+   * creep back in: that one could see a live run OR one finalized run, never
+   * both, which is what made a child from an earlier turn unaddressable.
    */
-  private workersFor(agentId: string, conversationId: string): RunWorkerSnapshot[] {
-    const live = this.getLiveRun(agentId, conversationId);
-    if (live) return live.snapshot().workers;
-    const snaps = this.history.get(agentId) ?? [];
-    for (let i = snaps.length - 1; i >= 0; i--) {
-      const snap = snaps[i];
-      if (snap.conversationId === conversationId) return snap.workers;
+  private workersFor(_agentId: string, conversationId: string): ChildSnapshot[] {
+    return this.childrenOf(conversationId);
+  }
+
+  /**
+   * Push onto a parent's live event channel, or drop it when the parent has no
+   * live turn — a background child outlives the turn that spawned it and must
+   * not write into a channel nobody is reading.
+   *
+   * Deliberately NOT gated on `turn.finalized`: `finalizeTurn` flips that flag
+   * before it cancels the turn's children, and their `worker_done{cancelled}`
+   * has to reach the channel before it closes. The map delete at the end of
+   * `finalizeTurn` is the real boundary; `AsyncChannel.push` is already a
+   * no-op once closed.
+   */
+  private emitToParent(agentId: string, conversationId: string, event: AgentEvent): void {
+    const turn = this.live.get(key(agentId, conversationId));
+    if (!turn) return;
+    const channel = turn.run?.channel ?? turn.preRunChannel;
+    channel.push(event);
+  }
+
+  /** Non-terminal children of ONE conversation (the per-conversation cap). */
+  private activeChildCount(conversationId: string): number {
+    let n = 0;
+    for (const handle of this.childrenByParent.get(conversationId) ?? []) {
+      if (!TERMINAL_STATUSES.has(handle.status)) n++;
     }
-    return [];
+    return n;
+  }
+
+  /**
+   * Append to the per-parent index, evicting the oldest TERMINAL children past
+   * the retention bound. Live children are never evicted — the index is what
+   * the caps count and what a cancel cascade walks.
+   */
+  private indexChild(parentConversationId: string, handle: ChildHandle): void {
+    const list = this.childrenByParent.get(parentConversationId) ?? [];
+    list.push(handle);
+    while (list.length > MAX_RETAINED_CHILDREN_PER_PARENT) {
+      const index = list.findIndex((h) => TERMINAL_STATUSES.has(h.status));
+      if (index < 0) break;
+      const [evicted] = list.splice(index, 1);
+      this.children.delete(evicted.subagentId);
+      this.childSpecs.delete(evicted.subagentId);
+    }
+    this.childrenByParent.set(parentConversationId, list);
+  }
+
+  /** Drop every trace of a child whose registration failed. */
+  private forgetChild(parentConversationId: string, subagentId: string): void {
+    this.children.delete(subagentId);
+    this.childSpecs.delete(subagentId);
+    const list = this.childrenByParent.get(parentConversationId);
+    if (!list) return;
+    const index = list.findIndex((h) => h.subagentId === subagentId);
+    if (index >= 0) list.splice(index, 1);
+  }
+
+  /** One child's terminal transition: tell the run, then release the runtime. */
+  private onChildTerminal(handle: ChildHandle, run: SwarmRun): void {
+    this.childSpecs.delete(handle.subagentId);
+    try {
+      this.driver.releaseChild?.(handle.subagentId);
+    } catch {
+      // A runtime that cannot release a finished child must not break its
+      // terminal transition — the child is over either way.
+    }
+    run.noteTerminal();
   }
 
   private pushHistory(agentId: string, snap: RunSnapshot): void {

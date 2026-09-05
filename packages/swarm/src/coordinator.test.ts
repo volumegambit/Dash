@@ -267,7 +267,9 @@ describe('SwarmCoordinator', () => {
       const factory: WorkerFactory = () => Promise.resolve(new ScriptedBackend([]));
       const coord = new SwarmCoordinator({
         workerFactory: factory,
-        onWorkerFinished: (spec) => finished.push(spec),
+        onWorkerFinished: (spec) => {
+          finished.push(spec);
+        },
       });
       const a = coord.attach(baseAttach({ workspace: '/repo' }));
       void drain(a.channel);
@@ -1435,12 +1437,12 @@ describe('SwarmCoordinator', () => {
       expect(startedFor(direct.workerId)).toMatchObject({ depth: 1 });
     });
 
-    it('terminalizes the phantom card when register throws', async () => {
+    it('terminalizes the phantom card when the run refuses to adopt the child', async () => {
       const { coordinator, events } = setupLiveTurn();
       coordinator.spawnWorker(AGENT_ID, CONVO_ID, { role: 'real', brief: 'b' });
       const run = coordinator.getLiveRun(AGENT_ID, CONVO_ID);
       if (!run) throw new Error('expected a live run');
-      run.register = () => {
+      run.adopt = () => {
         throw new Error('register exploded');
       };
 
@@ -1480,5 +1482,359 @@ describe('SwarmCoordinator', () => {
         /unknown worker nope/,
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Children as conversations (Task C3). These drive the coordinator through a
+// scripted ChildTurnDriver — no worker factory, no backend — which is the
+// production shape: the gateway's driver runs a child as a real conversation.
+// ---------------------------------------------------------------------------
+
+interface ScriptedChild {
+  input: import('./types.js').ChildConversationInput;
+  ref: import('./types.js').ChildTurnRef;
+  texts: string[];
+}
+
+function makeChildDriver() {
+  const children = new Map<string, ScriptedChild>();
+  const prepared: import('./types.js').ChildSpec[] = [];
+  const persisted: import('./types.js').ChildSnapshot[] = [];
+  const deleted = new Set<string>();
+  const eventListeners = new Set<(t: import('./types.js').ChildTurnRef, e: AgentEvent) => void>();
+  const finishListeners = new Set<
+    (
+      t: import('./types.js').ChildTurnRef,
+      o: import('./types.js').ChildTurnOutcome,
+      error?: string,
+    ) => void
+  >();
+  let seq = 0;
+
+  const driver: import('./types.js').ChildTurnDriver = {
+    prepareChild(spec) {
+      prepared.push(spec);
+    },
+    createChild(input) {
+      children.set(input.id, {
+        input,
+        ref: { agentId: input.agentId, conversationId: input.id, turnId: '' },
+        texts: [],
+      });
+    },
+    startTurn({ agentId, conversationId, text }) {
+      const child = children.get(conversationId);
+      if (!child) throw new Error(`no child ${conversationId}`);
+      const turnId = `child-turn-${++seq}`;
+      child.ref = { agentId, conversationId, turnId };
+      child.texts.push(text);
+      return { turnId };
+    },
+    cancelTurn: () => Promise.resolve(),
+    updateChild() {},
+    listChildren(parentConversationId) {
+      return persisted.filter((c) => c.parentConversationId === parentConversationId);
+    },
+    isChildAlive: (id) => children.has(id) && !deleted.has(id),
+    onEvent(listener) {
+      eventListeners.add(listener);
+      return () => eventListeners.delete(listener);
+    },
+    onFinish(listener) {
+      finishListeners.add(listener);
+      return () => finishListeners.delete(listener);
+    },
+  };
+
+  const ids = () => [...children.keys()];
+  return {
+    driver,
+    children,
+    prepared,
+    persisted,
+    ids,
+    /** The child created most recently. */
+    last: () => children.get(ids()[ids().length - 1] as string) as ScriptedChild,
+    emit(id: string, event: AgentEvent) {
+      const child = children.get(id);
+      if (!child) throw new Error(`no child ${id}`);
+      for (const listener of [...eventListeners]) listener(child.ref, event);
+    },
+    finish(id: string, outcome: import('./types.js').ChildTurnOutcome = 'completed') {
+      const child = children.get(id);
+      if (!child) throw new Error(`no child ${id}`);
+      for (const listener of [...finishListeners]) listener(child.ref, outcome);
+    },
+    tombstone(id: string) {
+      deleted.add(id);
+    },
+  };
+}
+
+const PARENT = { agentId: AGENT_ID, agentName: 'Agent One', conversationId: CONVO_ID };
+
+function setupChildTurn(
+  caps?: Partial<import('./types.js').SwarmCaps>,
+  opts: { childHeartbeatMs?: number } = {},
+) {
+  const d = makeChildDriver();
+  const coordinator = new SwarmCoordinator({
+    childDriver: d.driver,
+    defaultCaps: caps,
+    ...opts,
+  });
+  const attachment = coordinator.attach(baseAttach({ messageId: 'parent-turn-1' }));
+  const events: AgentEvent[] = [];
+  void (async () => {
+    while (true) {
+      const r = await attachment.channel.take();
+      if (r.done) return;
+      events.push(r.value);
+    }
+  })();
+  return { d, coordinator, attachment, events };
+}
+
+describe('SwarmCoordinator children as conversations', () => {
+  it('spawnChild creates the child conversation and starts a turn with the prompt', () => {
+    const { d, coordinator } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0, workspace: '/repo' },
+      { role: 'scout', brief: 'survey the repo', description: 'survey repo', name: 'scout' },
+    );
+
+    expect(subagentId).toMatch(/^sub_[0-9A-HJKMNP-TV-Z]{26}$/);
+    const child = d.children.get(subagentId) as ScriptedChild;
+    expect(child.input).toMatchObject({
+      id: subagentId,
+      agentId: AGENT_ID,
+      agentName: 'Agent One',
+      parentConversationId: CONVO_ID,
+      parentTurnId: 'parent-turn-1',
+      subagent: {
+        type: 'general-purpose',
+        name: 'scout',
+        status: 'running',
+        description: 'survey repo',
+        prompt: 'survey the repo',
+        depth: 1,
+      },
+    });
+    expect(child.texts).toEqual(['survey the repo']);
+    expect(d.prepared[0]).toMatchObject({
+      childConversationId: subagentId,
+      parentConversationId: CONVO_ID,
+      workspace: '/repo',
+    });
+  });
+
+  it('the parent channel receives subagent_started, progress and subagent_finished', async () => {
+    const { d, coordinator, events } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'go' },
+    );
+    d.emit(subagentId, { type: 'tool_use_start', id: 't1', name: 'read', input: {} });
+    d.emit(subagentId, { type: 'tool_use_start', id: 't2', name: 'grep', input: {} });
+    d.emit(subagentId, {
+      type: 'response',
+      content: 'the report',
+      usage: { inputTokens: 1, outputTokens: 2 },
+    });
+    d.finish(subagentId);
+    await coordinator.waitChild(subagentId);
+    await flush();
+
+    expect(events.find((e) => e.type === 'subagent_started')).toMatchObject({
+      subagentId,
+      depth: 1,
+    });
+    // Throttled to 1/s: the second tool call in the same millisecond is dropped.
+    const progress = events.filter((e) => e.type === 'subagent_progress');
+    expect(progress).toHaveLength(1);
+    expect(progress[0]).toMatchObject({ toolCallCount: 1 });
+    expect(events.find((e) => e.type === 'subagent_finished')).toMatchObject({
+      subagentId,
+      status: 'done',
+      report: 'the report',
+      toolCallCount: 2,
+    });
+  });
+
+  it('waitChild resolves the terminal snapshot', async () => {
+    const { d, coordinator } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'go', name: 'scout' },
+    );
+    setTimeout(() => {
+      d.emit(subagentId, {
+        type: 'response',
+        content: 'found it',
+        usage: { inputTokens: 5, outputTokens: 6 },
+      });
+      d.finish(subagentId);
+    }, 1);
+
+    const snap = await coordinator.waitChild(subagentId);
+    expect(snap).toMatchObject({
+      subagentId,
+      name: 'scout',
+      status: 'done',
+      report: 'found it',
+      usage: { inputTokens: 5, outputTokens: 6 },
+      depth: 1,
+    });
+  });
+
+  it('refuses a spawn past maxDepth with "depth limit reached"', () => {
+    const { coordinator } = setupChildTurn({ maxDepth: 2 });
+    // depth 1 and 2 are inside the ceiling...
+    expect(() =>
+      coordinator.spawnChild({ ...PARENT, turnId: 't', depth: 1 }, { role: 'a', brief: 'b' }),
+    ).not.toThrow();
+    // ...depth 3 is not.
+    expect(() =>
+      coordinator.spawnChild({ ...PARENT, turnId: 't', depth: 2 }, { role: 'a', brief: 'b' }),
+    ).toThrow(/depth limit reached/);
+  });
+
+  it('maxDepth 0 refuses every spawn — "may not nest at all" is expressible', () => {
+    const { coordinator } = setupChildTurn({ maxDepth: 0 });
+    expect(() =>
+      coordinator.spawnChild({ ...PARENT, turnId: 't', depth: 0 }, { role: 'a', brief: 'b' }),
+    ).toThrow(/depth limit reached/);
+  });
+
+  it('enforces the per-conversation, per-turn and global caps', () => {
+    const { coordinator } = setupChildTurn({ maxConcurrentWorkers: 2, maxWorkersPerRun: 3 });
+    const spawn = () =>
+      coordinator.spawnChild({ ...PARENT, turnId: 't', depth: 0 }, { role: 'a', brief: 'b' });
+    spawn();
+    spawn();
+    expect(spawn).toThrow(/too many workers running at once \(max 2\)/);
+
+    const global = new SwarmCoordinator({
+      childDriver: makeChildDriver().driver,
+      globalMaxConcurrentWorkers: 1,
+    });
+    global.attach(baseAttach());
+    global.spawnChild({ ...PARENT, turnId: 't', depth: 0 }, { role: 'a', brief: 'b' });
+    expect(() =>
+      global.spawnChild({ ...PARENT, turnId: 't', depth: 0 }, { role: 'a', brief: 'b' }),
+    ).toThrow(/global worker limit \(1\)/);
+  });
+
+  it('cancelChild cascades to a grandchild', async () => {
+    const { d, coordinator } = setupChildTurn();
+    const { subagentId: childId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'lead', brief: 'delegate', description: 'delegate' },
+    );
+    // The child opens a turn on ITS OWN conversation and spawns a grandchild
+    // against it — nesting is an ordinary spawn one level down.
+    coordinator.attach(baseAttach({ conversationId: childId, messageId: 'child-turn-1' }));
+    const { subagentId: grandchildId } = coordinator.spawnChild(
+      {
+        agentId: AGENT_ID,
+        agentName: 'Agent One',
+        conversationId: childId,
+        turnId: 'child-turn-1',
+        depth: 1,
+      },
+      { role: 'helper', brief: 'help', description: 'help' },
+    );
+
+    expect(coordinator.childrenOf(childId).map((c) => c.subagentId)).toEqual([grandchildId]);
+    expect(d.children.get(grandchildId)?.input.subagent.depth).toBe(2);
+
+    await coordinator.cancelChild(childId, 'parent cancelled');
+
+    expect(coordinator.findChild(CONVO_ID, childId)?.status).toBe('cancelled');
+    expect(coordinator.findChild(childId, grandchildId)?.status).toBe('cancelled');
+  });
+
+  it('cancels a child whose conversation was deleted out from under it', async () => {
+    const { d, coordinator } = setupChildTurn(undefined, { childHeartbeatMs: 2 });
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'go' },
+    );
+    d.tombstone(subagentId);
+    // The liveness poll rides the heartbeat (2ms here, 10s in production).
+    await vi.waitFor(
+      () => {
+        expect(coordinator.findChild(CONVO_ID, subagentId)?.status).toBe('cancelled');
+      },
+      { timeout: 200, interval: 5 },
+    );
+  });
+
+  it('findChild resolves a child spawned in an EARLIER turn', () => {
+    const { d, coordinator, attachment } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'go', name: 'scout' },
+    );
+    d.finish(subagentId);
+    attachment.finalize({ consumerAlive: true });
+
+    // Turn two opens a fresh run on the same conversation. The old lookup saw
+    // the live run OR history, never both, so `scout` became unaddressable the
+    // moment this attach happened.
+    coordinator.attach(baseAttach({ messageId: 'parent-turn-2' }));
+    coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-2', depth: 0 },
+      { role: 'other', brief: 'go', description: 'go' },
+    );
+
+    expect(coordinator.findChild(CONVO_ID, 'scout')?.subagentId).toBe(subagentId);
+    expect(coordinator.findWorker(AGENT_ID, CONVO_ID, 'scout')?.subagentId).toBe(subagentId);
+    expect(coordinator.childrenOf(CONVO_ID)).toHaveLength(2);
+  });
+
+  it('childrenOf merges persisted rows this process has no handle for', () => {
+    const { d, coordinator } = setupChildTurn();
+    d.persisted.push({
+      subagentId: 'sub_FROMBEFORERESTART0000000000',
+      workerId: 'sub_FROMBEFORERESTART0000000000',
+      parentConversationId: CONVO_ID,
+      parentTurnId: 'older-turn',
+      role: 'ghost',
+      status: 'interrupted',
+      brief: 'b',
+      model: 'm',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      subagentType: 'general-purpose',
+      description: 'ghost',
+      name: 'ghost',
+      toolCallCount: 0,
+      background: true,
+      oneShot: false,
+      depth: 1,
+    });
+    coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'live', brief: 'go', description: 'go', name: 'live' },
+    );
+
+    expect(coordinator.childrenOf(CONVO_ID).map((c) => c.name)).toEqual(['ghost', 'live']);
+    expect(coordinator.findChild(CONVO_ID, 'ghost')?.status).toBe('interrupted');
+  });
+
+  it('spawn_worker maps onto the SAME child lifetime, not a second one', () => {
+    const { d, coordinator } = setupChildTurn();
+    const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+      role: 'legacy',
+      brief: 'do the legacy thing',
+    });
+
+    expect(workerId).toMatch(/^sub_/);
+    expect(d.children.get(workerId)?.input.parentTurnId).toBe('parent-turn-1');
+    expect(coordinator.childrenOf(CONVO_ID).map((c) => c.subagentId)).toEqual([workerId]);
+    expect(coordinator.checkWorkers(AGENT_ID, CONVO_ID)).toMatchObject([
+      { workerId, role: 'legacy', status: 'running' },
+    ]);
   });
 });
