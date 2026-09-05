@@ -51,6 +51,16 @@ extension AppDependenciesFactory {
   /// `#if DEBUG` like the scenario support it sits beside, so it cannot
   /// affect a Release build.
   enum UITestLaunchOptions {
+    /// A conversation to open on launch, so the chat surface — the one that
+    /// needs a tap to reach and therefore could not be captured at all — is
+    /// reachable from `simctl`. Takes precedence over `initialTab`, since
+    /// opening a conversation implies the Conversations tab.
+    static var initialConversationID: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_CONVERSATION"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-conversation")
+    }
+
     static var initialTab: AppTab? {
       let environment = ProcessInfo.processInfo.environment
       guard

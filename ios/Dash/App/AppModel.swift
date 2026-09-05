@@ -110,6 +110,25 @@ final class AppModel {
     return .conversations
   }
 
+  #if DEBUG
+    /// Opens a conversation named by a launch option, so the chat surface can
+    /// be captured without a test runner.
+    ///
+    /// Sets BOTH navigation states rather than routing through
+    /// `openConversation(_:presentation:)`: that needs a
+    /// `NavigationPresentation`, which only the view knows, and the whole
+    /// point here is to work before any view has laid out. `conversationPath`
+    /// drives compact, `splitConversationSelection` drives regular — writing
+    /// both means the same launch works on iPhone and iPad.
+    private func applyUITestInitialRoute() {
+      guard let id = UITestLaunchOptions.initialConversationID else { return }
+      let destination = ConversationRoute.transcript(id)
+      selectedTab = .conversations
+      conversationPath = [destination]
+      splitConversationSelection = destination
+    }
+  #endif
+
   init(dependencies: AppDependencies) {
     self.dependencies = dependencies
     #if DEBUG
@@ -874,6 +893,9 @@ final class AppModel {
     // debug-only initial-tab override set in `init`. See
     // `defaultTabAfterActivation`.
     selectedTab = defaultTabAfterActivation
+    #if DEBUG
+      applyUITestInitialRoute()
+    #endif
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
       conversationPath.removeAll()
       agentPath.removeAll()
