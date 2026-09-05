@@ -13,6 +13,7 @@ import type {
 import { ChildTurnStartError } from '@dash/swarm';
 import { type ConversationService, ConversationServiceError } from './conversation-service.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import { grantFromSpec } from './subagent-resume.js';
 
 export interface ChildTurnDriverOptions {
   conversations: ConversationService;
@@ -59,6 +60,14 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
         title: input.title,
         subagent: toSubagentInfo(input.subagent),
       });
+      // The child's GRANT, beside the row rather than in it: `subagent_meta` is
+      // the mobile contract's user-visible half and carries no tool or MCP
+      // field, so without this a resume has nothing to rebuild a spec from
+      // (design §5.2). Written on the idempotent create a RESUME performs too,
+      // so a grant narrowed by the parent's current config replaces the stored
+      // one instead of drifting behind it.
+      const spec = specs.get(input.id);
+      if (spec) conversations.putSubagentGrant(input.id, grantFromSpec(spec));
     },
 
     startTurn({ agentId, conversationId, text }): { turnId: string } {

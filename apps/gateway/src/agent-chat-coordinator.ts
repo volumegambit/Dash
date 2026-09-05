@@ -150,6 +150,12 @@ export interface AgentChatAttachOverrides {
    * past the model its own definition pinned.
    */
   orchestratorFallbackModels?: string[] | undefined;
+  /**
+   * Same contract as the fallback chain, for the same reason: the agent-level
+   * `subagents.allowedModels` is an operator grant to the TOP-LEVEL agent, so
+   * leaving the key out would let a grandchild request any model on it.
+   */
+  allowedModels?: string[] | undefined;
   orchestratorTools?: string[];
   orchestratorMcpTools?: string[];
   workspace?: string;

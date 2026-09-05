@@ -37,6 +37,7 @@ import {
   MAX_QUEUED_NOTIFICATIONS,
   type PendingNotification,
   type PersistedTurnFrame,
+  type SubagentGrant,
   type UpdateSubagentInput,
 } from './conversation-service.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
@@ -112,6 +113,7 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, ddl:
   ['conversations', 'subagent_name', 'TEXT'],
   ['conversations', 'subagent_status', 'TEXT'],
   ['conversations', 'subagent_meta', 'TEXT'],
+  ['conversations', 'subagent_grant', 'TEXT'],
   ['conversation_messages', 'origin', "TEXT NOT NULL DEFAULT 'user'"],
 ];
 
@@ -162,6 +164,7 @@ interface ConversationRow {
   subagent_name: string | null;
   subagent_status: SubagentStatus | null;
   subagent_meta: string | null;
+  subagent_grant: string | null;
 }
 
 /**
@@ -1080,6 +1083,21 @@ export class SqliteConversationService implements ConversationService {
         });
       return this.mapConversation(this.requireConversationRow(value.id));
     })(input);
+  }
+
+  putSubagentGrant(id: string, grant: SubagentGrant | undefined): void {
+    // No revision bump and no `updated_at` touch: the grant is gateway-internal
+    // (it is not in `ConversationSummary`), so a client's optimistic-concurrency
+    // token must not move because a child was re-prepared.
+    this.db
+      .prepare('UPDATE conversations SET subagent_grant = @grant WHERE id = @id')
+      .run({ id, grant: grant ? JSON.stringify(grant) : null });
+  }
+
+  getSubagentGrant(id: string): SubagentGrant | undefined {
+    const row = this.selectConversationRow(id);
+    if (!row?.subagent_grant) return undefined;
+    return JSON.parse(row.subagent_grant) as SubagentGrant;
   }
 
   updateSubagent(id: string, patch: UpdateSubagentInput): ConversationSummary {

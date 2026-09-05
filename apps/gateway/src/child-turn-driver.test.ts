@@ -85,6 +85,31 @@ describe('createChildTurnDriver', () => {
     return driver;
   }
 
+  /** The row-creating half of a spawn, matching {@link specFor}. */
+  function childInput(childId: string, parentConversationId: string) {
+    return {
+      id: childId,
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId,
+      parentTurnId: 'parent-turn-1',
+      title: 'survey repo',
+      subagent: {
+        type: 'general-purpose',
+        name: 'scout',
+        status: 'running' as const,
+        description: 'survey repo',
+        prompt: 'survey the repo',
+        model: 'test/model',
+        background: false,
+        depth: 1,
+        startedAt: '2026-09-05T00:00:00.000Z',
+        toolCallCount: 0,
+        oneShot: false,
+      },
+    };
+  }
+
   function parentConversation() {
     return conversations.create({
       agentId: 'agent-01',
@@ -129,6 +154,55 @@ describe('createChildTurnDriver', () => {
       subagent: { type: 'general-purpose', name: 'scout', status: 'running', depth: 1 },
     });
     expect(driver.listChildren(parent.id).map((c) => c.subagentId)).toEqual([childId]);
+  });
+
+  /**
+   * Task C4 ruling 1: `subagent_meta` carries the USER-visible half of a child
+   * and structurally cannot carry its GRANT, so resume had nothing to rebuild a
+   * spec from. The driver persists the grant beside the row on every
+   * `createChild` — including the idempotent one a RESUME performs, which is
+   * what re-narrows a stored grant that the parent has since lost tools from.
+   */
+  it('persists the prepared spec GRANT beside the child row', () => {
+    const parent = parentConversation();
+    const driver = makeDriver();
+    const childId = childConversationId();
+    driver.prepareChild({
+      ...specFor(childId, parent.id),
+      tools: ['read', 'grep'],
+      mcpTools: ['github__pr'],
+      spawnableTypes: ['Explore'],
+      canSpawn: true,
+      skipMemory: true,
+      maxTurns: 4,
+      systemPrompt: 'the definition body',
+    });
+    driver.createChild(childInput(childId, parent.id));
+
+    expect(conversations.getSubagentGrant(childId)).toEqual({
+      tools: ['read', 'grep'],
+      mcpTools: ['github__pr'],
+      spawnableTypes: ['Explore'],
+      canSpawn: true,
+      workspace: '/repo',
+      depth: 1,
+      skipMemory: true,
+      maxTurns: 4,
+      systemPrompt: 'the definition body',
+    });
+  });
+
+  it('re-narrows the persisted grant when a resume prepares a smaller one', () => {
+    const parent = parentConversation();
+    const driver = makeDriver();
+    const childId = childConversationId();
+    driver.prepareChild({ ...specFor(childId, parent.id), tools: ['read', 'bash'] });
+    driver.createChild(childInput(childId, parent.id));
+    // The resume: the parent has since lost `bash`, so the child's grant does.
+    driver.prepareChild({ ...specFor(childId, parent.id), tools: ['read'] });
+    driver.createChild(childInput(childId, parent.id));
+
+    expect(conversations.getSubagentGrant(childId)?.tools).toEqual(['read']);
   });
 
   it('round-trips the workspace an isolated child actually ran in', () => {

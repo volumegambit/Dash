@@ -64,6 +64,36 @@ export interface CreateSubagentConversationInput {
   subagent: SubagentInfo;
 }
 
+/**
+ * The half of a child that `SubagentInfo` structurally cannot carry: its
+ * resolved GRANT — what tools, MCP servers, spawnable types and workspace the
+ * spawn actually gave it, plus the definition body it ran under.
+ *
+ * Gateway-internal on purpose: it is NOT part of the mobile contract's
+ * `SubagentInfo` and never reaches a client. It exists so a child can be
+ * RESUMED after its in-memory spec is gone (it finished, it was LRU-evicted, or
+ * the gateway restarted) — the resume rebuilds a spec from this and
+ * re-intersects it against what the parent holds at that moment.
+ */
+export interface SubagentGrant {
+  /** Built-in tool names the child was granted. */
+  tools: string[];
+  /** Fully-qualified `server__tool` names. Absent = no MCP. */
+  mcpTools?: string[];
+  /** `agent(a, b)` — the types this child may itself spawn. Unset = all. */
+  spawnableTypes?: string[];
+  /** Whether the child holds `agent` / `send_message` at all. */
+  canSpawn?: boolean;
+  /** Where it ran — its own worktree when it was isolated. */
+  workspace: string;
+  depth: number;
+  /** The definition body (plus any preloaded skills) it ran under. */
+  systemPrompt?: string;
+  /** Explore / Plan: no MEMORY.md read. */
+  skipMemory?: boolean;
+  maxTurns?: number;
+}
+
 export interface UpdateSubagentInput {
   status?: SubagentStatus;
   info?: Partial<SubagentInfo>;
@@ -141,6 +171,15 @@ export interface ConversationService {
   finishTurn(input: FinishTurnInput): PersistedTurnFrame;
   createSubagent(input: CreateSubagentConversationInput): ConversationSummary;
   updateSubagent(id: string, patch: UpdateSubagentInput): ConversationSummary;
+  /**
+   * Record (or clear) a child's resolved {@link SubagentGrant}. Written on
+   * every spawn AND on every resume, so a grant that has been narrowed since
+   * the child last ran is what the next rebuild reads. Never bumps the
+   * conversation revision: no client sees this field.
+   */
+  putSubagentGrant(id: string, grant: SubagentGrant | undefined): void;
+  /** The child's resolved grant, or undefined for a row written without one. */
+  getSubagentGrant(id: string): SubagentGrant | undefined;
   /**
    * Children of a conversation, oldest first. BOUNDED: `limit` defaults to
    * {@link DEFAULT_SUBAGENT_LIST_LIMIT} and keeps the NEWEST children, because
