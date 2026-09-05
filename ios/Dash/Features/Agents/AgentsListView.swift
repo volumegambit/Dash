@@ -27,22 +27,51 @@ struct AgentsListView: View {
               presentation: presentation
             )
           } label: {
-            HStack(spacing: 12) {
+            // Two lines, matching the conversation list (UI-quality goal,
+            // Phase C). This was three: name / model / status — and the
+            // status line read "Ready" on every agent that was not disabled,
+            // so the badge meant to flag the unusual case cost a line on
+            // every row where nothing was wrong. Three agents filled a
+            // column that now holds eight.
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+              // `firstTextBaseline`, not centre: against a multi-line row the
+              // glyph used to float halfway down instead of sitting with the
+              // name it describes.
               Image(systemName: agent.status.systemImage)
                 .foregroundStyle(agent.status.color)
                 .frame(width: 28)
                 .accessibilityHidden(true)
-              VStack(alignment: .leading, spacing: 4) {
+              VStack(alignment: .leading, spacing: 3) {
                 Text(agent.name)
                   .font(.headline)
                   .foregroundStyle(.primary)
-                Text(agent.config.model)
-                  .font(.subheadline)
-                  .foregroundStyle(.secondary)
                   .lineLimit(1)
-                Text(agent.status.displayName)
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
+                  .truncationMode(.tail)
+                HStack(spacing: 0) {
+                  // Provider prefix dropped: in a sidebar-width column
+                  // "anthropic/claude-sonnet-4-5 · Disabled" truncated to
+                  // "anthropi...nnet-4-5 · Disabled", which is unreadable.
+                  // The prefix is the least distinguishing part of the id —
+                  // the same reason `ToolPresentation.shortenCommand` drops
+                  // a binary's directory. `ModelCatalog.label` uses this
+                  // fallback too.
+                  Text(agent.config.model.split(separator: "/").last.map(String.init)
+                    ?? agent.config.model)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                  // Only the states worth reacting to. `registered` ("Ready")
+                  // is nearly every agent, so naming it says nothing.
+                  if agent.status != .registered {
+                    Text(verbatim: " · ")
+                      .font(.subheadline)
+                      .foregroundStyle(.secondary)
+                    Text(agent.status.displayName)
+                      .font(.subheadline.weight(.medium))
+                      .foregroundStyle(agent.status.color)
+                  }
+                }
+                .lineLimit(1)
+                .truncationMode(.middle)
               }
               Spacer()
               Image(systemName: "chevron.right")
@@ -58,8 +87,17 @@ struct AgentsListView: View {
             isSelected(agent.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
           )
           .accessibilityElement(children: .combine)
+          // Explicit, because the visual row now hides the status for
+          // `registered` agents. `children: .combine` would drop it from the
+          // spoken label with it; VoiceOver users lose nothing here.
+          .accessibilityLabel(
+            "\(agent.name), \(agent.config.model), \(agent.status.displayName)"
+          )
           .accessibilityAddTraits(isSelected(agent.id) ? .isSelected : [])
           .accessibilityIdentifier("agent.row.\(agent.id)")
+          // Squares the separator with the row instead of leaving it inset
+          // under the text column — same fix as `ConversationListView`.
+          .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
         }
       }
     }

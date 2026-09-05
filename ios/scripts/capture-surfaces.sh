@@ -54,6 +54,21 @@ APP="$DERIVED/Build/Products/Debug-iphonesimulator/Dash.app"
 [ -d "$APP" ] || { echo "no app at $APP — run without --no-build" >&2; exit 1; }
 
 xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
+# Uninstall before installing, so a run can never serve a previously-installed
+# binary. Cheap insurance: this script's whole value is that a capture is
+# trustworthy, and a stale screenshot reports the old UI as the new one.
+#
+# Safe to uninstall: every surface below launches with its own
+# DASH_UI_TEST_DATA_IDENTIFIER, so there is no app data worth preserving.
+#
+# NOTE on `--no-build`: this script `cd`s to `ios/`, so `$DERIVED` is
+# `ios/build/CaptureDerivedData`. A build run by hand from the repo root with
+# `-derivedDataPath build/...` lands somewhere else entirely, and `--no-build`
+# will then capture whatever this script last built. Three "the fix didn't
+# work" rounds were spent on that. Use `--no-build` only to re-capture a build
+# this script produced.
+xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+xcrun simctl uninstall "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 xcrun simctl install "$UDID" "$APP"
 
 # name|scenario|extra env
