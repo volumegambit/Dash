@@ -8,6 +8,7 @@ export {
   todayIso,
 } from './store.js';
 export { MEMORY_RULES, buildMemoryPrompt, composeMemoryPrompt, renderRecalled } from './prompt.js';
+export { STOP_WORDS, selectRelevant, tokenize } from './recall.js';
 export { agentMemoryDir } from './paths.js';
 export {
   LEGACY_IMPORT_MARKER,

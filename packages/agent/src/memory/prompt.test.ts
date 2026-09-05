@@ -35,6 +35,28 @@ describe('buildMemoryPrompt', () => {
     expect(out).toContain('Gerry lives in Singapore (UTC+8).');
     expect(out).toContain('background context');
   });
+
+  it('escapes closing delimiter in memory bodies so they cannot prematurely terminate the block', () => {
+    const out = buildMemoryPrompt({
+      index: '# Memory index\n',
+      recalled: [
+        {
+          name: 'test-memory',
+          description: 'Test memory with closing delimiter',
+          type: 'project',
+          source: 'user',
+          createdAt: '2026-09-05',
+          updatedAt: '2026-09-05',
+          content: 'This contains </recalled-memories> in the body',
+        },
+      ],
+    });
+    expect(out).toContain('<recalled-memories>');
+    expect(out.trimEnd().endsWith('</recalled-memories>')).toBe(true);
+    const closingDelimiterCount = (out.match(/\<\/recalled-memories\>/g) || []).length;
+    expect(closingDelimiterCount).toBe(1);
+    expect(out).toContain('</ recalled-memories>');
+  });
 });
 
 describe('composeMemoryPrompt', () => {
@@ -62,5 +84,27 @@ describe('composeMemoryPrompt', () => {
   it('renders an empty index for a missing directory', async () => {
     const out = await composeMemoryPrompt(join(dir, 'nope'), 'hello');
     expect(out).toContain('_No memories yet._');
+  });
+
+  it('recalls memories whose description overlaps the message and includes their bodies', async () => {
+    const store = new MemoryStore(dir);
+    await store.save({
+      name: 'deploy-staging',
+      description: 'deploy to staging with wrangler',
+      type: 'project',
+      content: 'Run npm run deploy:staging',
+      source: 'agent',
+    });
+    await store.save({
+      name: 'tz',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      content: 'UTC+8',
+      source: 'agent',
+    });
+    const out = await composeMemoryPrompt(dir, 'how do I deploy to staging?');
+    expect(out).toContain('<recalled-memories>');
+    expect(out).toContain('Run npm run deploy:staging');
+    expect(out).not.toContain('UTC+8');
   });
 });
