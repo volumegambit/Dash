@@ -218,6 +218,7 @@ function setup(
         agentConfig,
         conversationId: () => conversationId,
         parentTools: () => registry.get(agentId)?.config.tools,
+        parentModel: () => registry.get(agentId)?.config.model ?? agentConfig.model,
       });
       harness.injected = extraTools.map((t) => t.name);
       return makeScriptedBackend(extraTools, scripts, states);
@@ -339,9 +340,11 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     expect(results.wait.details).toMatchObject({
       workers: [{ status: 'done' }, { status: 'done' }],
     });
-    // Default parent grant → the seven-name default reaches the coordinator.
+    // Default parent grant → the seven-name default reaches the coordinator,
+    // plus the two tools every agent holds whatever `config.tools` says (so a
+    // child inheriting them is not an escalation).
     expect(harness.spawnSpy.mock.calls[0]?.[2]).toMatchObject({
-      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'load_skill', 'task'],
     });
 
     // --- event families -------------------------------------------------
@@ -422,7 +425,7 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     await harness.agents.stop();
   });
 
-  it('(f) honours parentTools: tools:[read] grants the child exactly [read]', async () => {
+  it('(f) honours parentTools: tools:[read] grants the child read and nothing more', async () => {
     let result!: ToolResult;
     const harness = setup({ tools: ['read'] }, [
       async (ctx) => {
@@ -434,12 +437,15 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     ]);
     await harness.run();
 
-    // The array the coordinator actually receives from the `agent` tool...
+    // The array the coordinator actually receives from the `agent` tool —
+    // `read` and nothing else from the config, plus the always-available two.
     expect(harness.spawnSpy).toHaveBeenCalledTimes(1);
-    expect(harness.spawnSpy.mock.calls[0]?.[2]).toMatchObject({ tools: ['read'] });
+    expect(harness.spawnSpy.mock.calls[0]?.[2]).toMatchObject({
+      tools: ['read', 'load_skill', 'task'],
+    });
     // ...and what it validated through to the worker spec.
     expect(harness.specs).toHaveLength(1);
-    expect(harness.specs[0].tools).toEqual(['read']);
+    expect(harness.specs[0].tools).toEqual(['read', 'load_skill', 'task']);
     expect(result.details).toMatchObject({ status: 'done' });
 
     await harness.agents.stop();

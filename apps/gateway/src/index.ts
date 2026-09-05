@@ -664,6 +664,11 @@ async function main() {
             agentConfig,
             conversationId: () => backend.getCurrentSessionId() ?? '',
             parentTools: () => registry.get(agentId)?.config.tools,
+            parentModel: () => registry.get(agentId)?.config.model ?? agentConfig.model,
+            // The parent's OWN skill discovery — the same lookup `load_skill`
+            // uses — so a definition's `skills:` preloads the body the parent
+            // would have loaded. Consulted only when a definition names skills.
+            listSkills: () => backend.listSkills(),
           }) as unknown as ExtraTool[]),
         ],
         commandFiles,

@@ -14,6 +14,19 @@ export {
   type SwarmCoordinatorOptions,
 } from './coordinator.js';
 export { scanSubagentOutput, type ScannedOutput } from './output-scan.js';
+export {
+  ALWAYS_AVAILABLE_TOOLS,
+  type ChildToolRequest,
+  DEFAULT_TOOL_NAMES,
+  type ParentToolContext,
+  type ResolveChildModelInput,
+  type ResolvedChildTools,
+  UNIVERSE,
+  parentBuiltinTools,
+  preloadSkills,
+  resolveChildModel,
+  resolveChildTools,
+} from './resolve-spawn.js';
 export { SwarmRun, type SwarmRunOptions } from './run.js';
 export { isTransientAgentEvent } from './transient-events.js';
 export {

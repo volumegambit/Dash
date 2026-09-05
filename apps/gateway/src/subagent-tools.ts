@@ -5,28 +5,19 @@ import {
   createAgentTools,
   createStaticResolver,
   createSwarmTools,
+  parentBuiltinTools,
 } from '@dash/swarm';
 import type { AgentChatCoordinatorSwarm } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 import { isSubagentsEnabled, subagentTypesFor } from './subagent-config.js';
 
 /**
- * The parent tool set assumed for an agent that has no explicit `tools` list.
- * Mirrors `DEFAULT_TOOL_NAMES` in packages/swarm/src/coordinator.ts (a private
- * constant there — duplicated rather than exported so the coordinator's spawn
- * validation and this grant calculation are literally the same list). A child
- * can never be granted a tool outside its parent's set, so getting this wrong
- * would silently under- or over-grant.
+ * A top-level orchestrator is depth 0 and its children are depth 1.
+ * `maxDepth` is the coordinator-side ceiling until **Task C3** owns nesting
+ * (`subagents.maxDepth` is validated and persisted but not yet enforced).
  */
-export const DEFAULT_PARENT_TOOLS = [
-  'read',
-  'bash',
-  'edit',
-  'write',
-  'grep',
-  'find',
-  'ls',
-] as const;
+const ORCHESTRATOR_DEPTH = 0;
+const MAX_DEPTH = 3;
 
 export interface SubagentExtraToolsOptions {
   coordinator: SwarmCoordinator;
@@ -47,10 +38,25 @@ export interface SubagentExtraToolsOptions {
    * A `PUT /agents/:id` that edits `tools` does not evict the pool, and the
    * merge wrapper's `orchestratorTools` (which drives the coordinator's
    * `validateTools`) is a live read too. Reading a stale list here would
-   * advertise a grant the spawn then rejects — the exact mismatch
-   * `grantableTools` exists to prevent. `undefined` → DEFAULT_PARENT_TOOLS.
+   * advertise a grant the spawn then rejects.
+   *
+   * The RAW `config.tools`: `parentBuiltinTools` (the same function the
+   * coordinator bounds a spawn with) turns it into the inheritable set, so
+   * `undefined` means the default grant, not "no tools".
    */
   parentTools: () => string[] | undefined;
+  /**
+   * LIVE read of the parent's model, for `model: inherit` and for the fallback
+   * when a per-call alias is unconfigured.
+   */
+  parentModel: () => string;
+  /**
+   * The parent backend's skill discovery — the SAME lookup `load_skill`
+   * performs, so a definition's `skills:` name resolves exactly as it would in
+   * a prompt. Unset makes a skill-preloading definition refuse to spawn rather
+   * than silently drop the skill body.
+   */
+  listSkills?: () => Promise<Array<{ name: string; content: string }>>;
 }
 
 /**
@@ -82,10 +88,25 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       // Phase A: a background child is cancelled at turn end. Task C4 flips
       // this to 'detached'.
       backgroundMode: 'turn-scoped',
-      // A child may only be granted tools the parent itself holds.
-      parentTools: () => opts.parentTools() ?? [...DEFAULT_PARENT_TOOLS],
-      // A top-level orchestrator is depth 0, so its children are 1.
-      depth: 0,
+      // A child may only be granted tools the parent itself holds, and only
+      // the INHERITABLE ones: `create_skill` / `mcp_add_server` and friends are
+      // configurable on the parent but are never passed down.
+      parentContext: () => ({
+        builtinTools: parentBuiltinTools(opts.parentTools()),
+        // The gateway does not thread the orchestrator's MCP tools into
+        // `attach()` yet, and the coordinator's `validateMcpTools` fails closed
+        // on an empty list, so advertising any here would promise a grant the
+        // spawn refuses. Fill this in with the same list `attach()` gets.
+        mcpTools: [],
+        depth: ORCHESTRATOR_DEPTH,
+        maxDepth: MAX_DEPTH,
+      }),
+      parentModel: () => opts.parentModel(),
+      // No config surface for `subagents.modelAliases` yet: an alias in a
+      // per-call `model:` resolves to nothing, warns, and inherits the parent
+      // model. Wire this to the config block when that key lands.
+      modelAliases: () => ({}),
+      listSkills: opts.listSkills,
     }),
   ];
 }
