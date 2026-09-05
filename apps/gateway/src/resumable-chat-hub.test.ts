@@ -156,6 +156,7 @@ describe('ResumableChatHub', () => {
   let conversations: SqliteConversationService;
   let harness: ReturnType<typeof makeAgentHarness>;
   let autoTitle: ConversationAutoTitleService;
+  let memorySweep: { schedule: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
   let onChanged: ReturnType<typeof vi.fn>;
   let swarmCancel: ReturnType<typeof vi.fn>;
   let hub: ReturnType<typeof createResumableChatHub>;
@@ -177,6 +178,10 @@ describe('ResumableChatHub', () => {
       schedule: vi.fn(),
       flush: vi.fn().mockResolvedValue(undefined),
     };
+    memorySweep = {
+      schedule: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
     onChanged = vi.fn();
     swarmCancel = vi.fn().mockReturnValue(true);
     scripts = [];
@@ -184,6 +189,7 @@ describe('ResumableChatHub', () => {
       conversations,
       agents: harness.agents,
       autoTitle,
+      memorySweep,
       swarmCoordinator: { cancelTurn: swarmCancel },
       onChanged,
     });
@@ -938,6 +944,43 @@ describe('ResumableChatHub', () => {
       status: 'idle',
       activeTurnId: null,
     });
+  });
+
+  it('schedules a memory sweep after a completed turn but not a failed or cancelled one', async () => {
+    const completed = createConversation();
+    const completedStream = register(completed.id);
+    const completedSink = makeSink();
+    hub.start(sendFrame(completed, 'turn-completed'), completedSink);
+    completedStream.finish();
+    await waitForFrames(completedSink, 2);
+
+    await vi.waitFor(() =>
+      expect(memorySweep.schedule).toHaveBeenCalledWith({
+        agentId: completed.agentId,
+        conversationId: completed.id,
+        turnId: 'turn-completed',
+      }),
+    );
+    expect(memorySweep.schedule).toHaveBeenCalledOnce();
+    memorySweep.schedule.mockClear();
+
+    const failed = createConversation();
+    const failedStream = register(failed.id);
+    const failedSink = makeSink();
+    hub.start(sendFrame(failed, 'turn-failed'), failedSink);
+    failedStream.fail(new Error('Provider exploded'));
+    await waitForFrames(failedSink, 2);
+    await vi.waitFor(() => expect(failedStream.return).toHaveBeenCalledOnce());
+    expect(memorySweep.schedule).not.toHaveBeenCalled();
+
+    const cancelled = createConversation();
+    const cancelledStream = register(cancelled.id);
+    const cancelledSink = makeSink();
+    hub.start(sendFrame(cancelled, 'turn-cancelled'), cancelledSink);
+    await hub.cancel('turn-cancelled', cancelledSink);
+    cancelledStream.finish();
+    await vi.waitFor(() => expect(cancelledStream.return).toHaveBeenCalledOnce());
+    expect(memorySweep.schedule).not.toHaveBeenCalled();
   });
 
   it.each([

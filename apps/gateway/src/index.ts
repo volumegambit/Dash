@@ -51,6 +51,8 @@ import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
+import { extractMemoriesWithModel, shouldSweepModel } from './memory-sweep-extract.js';
+import { createMemorySweepService } from './memory-sweep.js';
 import { migrateIncludeBundled } from './migrate-include-bundled.js';
 import { ModelsStore } from './models-store.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
@@ -684,10 +686,39 @@ async function main() {
     onChanged: emitConversationChanged,
     logger,
   });
+  // Post-turn memory sweep. Extraction runs on the agent's OWN model (same
+  // resolution, provider allow-list and credentials as the chat loop), so turn
+  // text never leaves the provider the agent is already talking to.
+  const memorySweep = createMemorySweepService({
+    conversations: conversationService,
+    memoryStore: (agentId) => agents.memoryStore(agentId),
+    shouldSweep: (agentId) => {
+      const entry = registry.get(agentId);
+      if (!entry || entry.config.memory?.enabled === false) return false;
+      return shouldSweepModel(entry.config.memory?.sweep, entry.config.model);
+    },
+    async extract({ agentId, userText, assistantText, index }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      return extractMemoriesWithModel({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        userText,
+        assistantText,
+        index,
+      });
+    },
+    logger,
+  });
   const resumableChatHub = createResumableChatHub({
     conversations: conversationService,
     agents,
     autoTitle: conversationAutoTitle,
+    memorySweep,
     swarmCoordinator,
     onChanged: emitConversationChanged,
   });
@@ -1061,6 +1092,7 @@ async function main() {
     await safeStep('mcpManager.stop', () => mcpManager.stop());
     await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
     await safeStep('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
+    await safeStep('memorySweep.flush', () => memorySweep.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.
