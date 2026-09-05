@@ -6,6 +6,8 @@ import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type {
+  MemoryConfig,
+  MemoryType,
   PluginInstallRequest,
   PluginInstallResponse,
   PluginRecord,
@@ -1972,6 +1974,47 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('skills:updateConfig', async (_e, agentId: string, config: SkillsConfig) =>
     (await getSkillsClient()).updateSkillsConfig(agentId, config),
+  );
+
+  // -----------------------------------------------------------------------
+  // Agent memory (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('memory:list', async (_e, agentId: string) =>
+    (await getSkillsClient()).memories(agentId),
+  );
+
+  ipcMain.handle('memory:get', async (_e, agentId: string, name: string) => {
+    try {
+      return await (await getSkillsClient()).memory(agentId, name);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('404')) return null;
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'memory:put',
+    async (
+      _e,
+      agentId: string,
+      name: string,
+      input: { description: string; type: MemoryType; content: string },
+    ) => {
+      await (await getSkillsClient()).putMemory(agentId, name, input);
+    },
+  );
+
+  ipcMain.handle('memory:remove', async (_e, agentId: string, name: string) =>
+    (await getSkillsClient()).removeMemory(agentId, name),
+  );
+
+  ipcMain.handle('memory:getConfig', async (_e, agentId: string) =>
+    (await getSkillsClient()).memoryConfig(agentId),
+  );
+
+  ipcMain.handle('memory:updateConfig', async (_e, agentId: string, patch: Partial<MemoryConfig>) =>
+    (await getSkillsClient()).updateMemoryConfig(agentId, patch),
   );
 
   // -----------------------------------------------------------------------

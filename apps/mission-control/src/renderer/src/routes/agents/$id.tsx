@@ -16,9 +16,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAgentsStore } from '../../stores/agents.js';
 import { useChannelsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
+import { MemoryTab } from './-components/MemoryTab.js';
 import { SkillsTab } from './-components/SkillsTab.js';
 
-type TabId = 'overview' | 'configuration' | 'channels' | 'skills';
+type TabId = 'overview' | 'configuration' | 'channels' | 'skills' | 'memory';
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
@@ -143,6 +144,7 @@ export function AgentDetail(): JSX.Element {
     { id: 'configuration', label: 'Configuration' },
     { id: 'channels', label: 'Channels' },
     { id: 'skills', label: 'Skills' },
+    { id: 'memory', label: 'Memory' },
   ];
 
   return (
@@ -284,6 +286,7 @@ export function AgentDetail(): JSX.Element {
         )}
         {activeTab === 'channels' && <ChannelsTab connectedChannels={connectedChannels} />}
         {activeTab === 'skills' && <SkillsTab agentId={id} />}
+        {activeTab === 'memory' && <MemoryTab agentId={id} />}
       </div>
     </div>
   );
