@@ -50,6 +50,15 @@ export const DEFAULT_CANCEL_STOP_GRACE_MS = 5_000;
 export const DEFAULT_SUBAGENT_TYPE = 'general-purpose';
 
 /**
+ * The marker a `max_turns` report leads with. A capped child is stopped
+ * mid-thought, so its report is whatever it had said by then: the marker tells
+ * the orchestrator (and the user) that the text below it is INCOMPLETE and that
+ * the child is still addressable — `send_message` resumes it with a fresh
+ * budget rather than the work being lost.
+ */
+const MAX_TURNS_PARTIAL_MARKER = '[partial: maxTurns reached; resumable with send_message]';
+
+/**
  * The legacy `worker_done` event is a MIRROR of `subagent_finished` kept for the
  * iOS app and Mission Control, whose decoders only understand
  * `done | failed | cancelled`. Until those clients migrate, the newer terminal
@@ -102,6 +111,12 @@ export class WorkerHandle {
   /** 1 for a direct child of the orchestrator. */
   readonly depth: number;
   private readonly isolation?: 'worktree';
+  /**
+   * Cap on the child's OWN tool calls, when its definition set one. Enforced
+   * here because the pi backend has no `maxSteps`/`maxTurns` of any kind: the
+   * handle counts `tool_use_start` and aborts. Undefined = uncapped.
+   */
+  private readonly maxTurns?: number;
   /**
    * Where the child actually ran.
    *
@@ -160,6 +175,7 @@ export class WorkerHandle {
     this.oneShot = opts.spec.oneShot ?? false;
     this.depth = opts.spec.depth ?? 1;
     this.isolation = opts.spec.isolation;
+    this.maxTurns = opts.spec.maxTurns;
     this.workspace = opts.spec.isolation === 'worktree' ? undefined : opts.spec.workspace;
     // Resolved here rather than in runSegment: a background child can be
     // snapshotted before its first segment runs, and a cancel during
@@ -436,6 +452,15 @@ export class WorkerHandle {
     this.lastEventSummary = summarize(event);
     if (event.type === 'tool_use_start') {
       this.toolCallCount++;
+      // The cap is on calls the child COMPLETES within budget: with maxTurns: 2
+      // the second call is allowed and the third trips. Abort first so the
+      // child stops working, then finalize — runSegment's post-processEvent
+      // `finalized` check keeps this segment from also finalizing as `done`.
+      if (this.maxTurns !== undefined && this.maxTurns > 0 && this.toolCallCount > this.maxTurns) {
+        this.backend?.abort();
+        this.finalizeMaxTurns();
+        return;
+      }
     }
     if (event.type === 'response') {
       this.usage.inputTokens += event.usage.inputTokens;
@@ -472,8 +497,25 @@ export class WorkerHandle {
   }
 
   /**
+   * Terminal transition for a child that ran out of turn budget. Unlike
+   * `failed`, the work is not lost: the report keeps whatever the child had
+   * produced, behind a marker saying so, and the child stays resumable via
+   * `send_message` (which starts a fresh segment).
+   */
+  private finalizeMaxTurns(): void {
+    if (this.finalized) return;
+    this.finalized = true;
+    this.status = 'max_turns';
+    this.report = `${MAX_TURNS_PARTIAL_MARKER}\n\n${this.report ?? ''}`;
+    this.endedAt = Date.now();
+    this.stopHeartbeat();
+    this.clearQuestion();
+    this.finalizeTerminal('max_turns', this.report);
+  }
+
+  /**
    * The ONE terminal transition, shared by finalizeDone / finalizeFailed /
-   * cancel. Every terminal path emits `worker_done` and its `subagent_finished`
+   * finalizeMaxTurns / cancel. Every terminal path emits `worker_done` and its `subagent_finished`
    * twin, runs the `subagentStop` hook, notifies the spawner, calls onTerminal
    * and resolves the terminal promise — in that order, exactly once.
    *

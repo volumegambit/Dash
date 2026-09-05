@@ -1023,3 +1023,176 @@ describe('WorkerHandle terminal transition parity', () => {
     }
   });
 });
+
+/**
+ * `maxTurns` has no backend counterpart: pi exposes no step/turn cap at all, so
+ * the handle enforces it itself by counting the child's OWN `tool_use_start`
+ * events, aborting the backend and finalizing with a PARTIAL report the user can
+ * resume with `send_message`.
+ */
+describe('WorkerHandle maxTurns enforcement', () => {
+  /** The exact marker a maxTurns report must lead with. */
+  const PARTIAL = '[partial: maxTurns reached; resumable with send_message]';
+
+  function makeCapped(maxTurns: number, overrides: Partial<WorkerHandleOptions> = {}) {
+    return makeHandle({
+      spec: {
+        agentId: 'agent-1',
+        agentName: 'Agent One',
+        runId: RUN_ID,
+        workerId: WORKER_ID,
+        role: ROLE,
+        brief: 'do the thing',
+        model: 'test-model',
+        workspace: '/tmp/ws',
+        tools: [],
+        maxTurns,
+      },
+      ...overrides,
+    });
+  }
+
+  it('finalizes max_turns with a partial resumable report and one backend abort', async () => {
+    const { handle, backend, events } = makeCapped(2);
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit(response('progress so far', 1, 2));
+    await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+    await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+    await seg.emit({ type: 'tool_use_start', id: 't3', name: 'read' });
+    await handle.terminalPromise;
+
+    expect(handle.status).toBe('max_turns');
+    expect(handle.report).toBe(`${PARTIAL}\n\nprogress so far`);
+    expect(handle.snapshot()).toMatchObject({
+      status: 'max_turns',
+      report: `${PARTIAL}\n\nprogress so far`,
+      toolCallCount: 3,
+    });
+    expect(backend.abortCalls).toBe(1);
+    expect(events.find((e) => e.type === 'subagent_finished')).toMatchObject({
+      status: 'max_turns',
+      report: `${PARTIAL}\n\nprogress so far`,
+      toolCallCount: 3,
+      usage: { inputTokens: 1, outputTokens: 2 },
+    });
+  });
+
+  it('allows exactly maxTurns tool calls and trips on the one after', async () => {
+    const { handle, backend } = makeCapped(2);
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+    await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+    // Two calls is the cap, not past it: still running, backend untouched.
+    await vi.waitFor(() => expect(handle.toolCallCount).toBe(2));
+    expect(handle.status).toBe('running');
+    expect(backend.abortCalls).toBe(0);
+
+    await seg.emit({ type: 'tool_use_start', id: 't3', name: 'grep' });
+    await handle.terminalPromise;
+    expect(handle.toolCallCount).toBe(3);
+    expect(handle.status).toBe('max_turns');
+  });
+
+  it('leaves an uncapped worker alone however many tool calls it makes', async () => {
+    const { handle, backend } = makeHandle();
+    handle.start();
+    const seg = await backend.onNextSegment();
+    for (const id of ['t1', 't2', 't3', 't4']) {
+      await seg.emit({ type: 'tool_use_start', id, name: 'read' });
+    }
+    await seg.emit(response('done here'));
+    seg.complete();
+    await handle.terminalPromise;
+    expect(handle.status).toBe('done');
+    expect(handle.toolCallCount).toBe(4);
+    expect(backend.abortCalls).toBe(0);
+  });
+
+  /**
+   * The parked A4 item: `legacyWorkerDoneStatus` had only a unit test because
+   * nothing produced `max_turns` yet. This is the end-to-end proof that the two
+   * terminal events disagree on purpose — the legacy mirror flattens to `failed`
+   * for the iOS / Mission Control decoders, `subagent_finished` tells the truth.
+   */
+  it('mirrors max_turns as failed on worker_done while subagent_finished tells the truth', async () => {
+    const { handle, backend, events } = makeCapped(1);
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit(response('partial work'));
+    await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+    await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+    await handle.terminalPromise;
+
+    expect(events.find((e) => e.type === 'worker_done')).toMatchObject({
+      workerId: WORKER_ID,
+      runId: RUN_ID,
+      status: 'failed',
+      report: `${PARTIAL}\n\npartial work`,
+    });
+    expect(events.find((e) => e.type === 'subagent_finished')).toMatchObject({
+      subagentId: WORKER_ID,
+      status: 'max_turns',
+    });
+    const types = events.map((e) => e.type);
+    expect(types.indexOf('worker_done')).toBeLessThan(types.indexOf('subagent_finished'));
+  });
+
+  it('does not also finalize as done when the aborted segment completes', async () => {
+    let finished = 0;
+    const { handle, backend, events, terminals, stops } = makeCapped(1, {
+      onFinished: () => {
+        finished++;
+      },
+    });
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit(response('half a report'));
+    await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+    await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+    await handle.terminalPromise;
+
+    // The abort is cooperative, so the in-flight segment still finishes. None of
+    // its tail may land: no second terminal, and no overwriting of the partial.
+    await seg.emit(response('a full report'));
+    seg.complete();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(handle.status).toBe('max_turns');
+    expect(handle.snapshot().report).toBe(`${PARTIAL}\n\nhalf a report`);
+    expect(events.filter((e) => e.type === 'worker_done')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'subagent_finished')).toHaveLength(1);
+    expect(terminals).toHaveLength(1);
+    expect(stops).toEqual([{ workerId: WORKER_ID, role: ROLE, status: 'max_turns' }]);
+    expect(finished).toBe(1);
+  });
+
+  it('runs the same terminal sequence as every other terminal status', async () => {
+    const order: string[] = [];
+    const { handle, backend } = makeCapped(1, {
+      emit: (event) => {
+        if (event.type === 'worker_done' || event.type === 'subagent_finished') {
+          order.push(event.type);
+        }
+      },
+      hooks: { subagentStop: (w) => order.push(`subagentStop:${w.status}`) },
+      onTerminal: () => order.push('onTerminal'),
+      onFinished: () => void order.push('onFinished'),
+    });
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit({ type: 'tool_use_start', id: 't1', name: 'read' });
+    await seg.emit({ type: 'tool_use_start', id: 't2', name: 'grep' });
+    await handle.terminalPromise;
+
+    expect(order).toEqual([
+      'worker_done',
+      'subagent_finished',
+      'subagentStop:max_turns',
+      'onFinished',
+      'onTerminal',
+    ]);
+  });
+});
