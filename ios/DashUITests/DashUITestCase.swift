@@ -509,11 +509,27 @@ class DashUITestCase: XCTestCase {
   }
 
   func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
-    let expectation = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "exists == true AND hittable == true"),
-      object: element
-    )
-    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    // Deliberately a hand-rolled poll rather than
+    // `XCTNSPredicateExpectation(NSPredicate(format: "hittable == true"))`.
+    //
+    // Two reasons. First, evaluating `hittable` on an element that is
+    // mid-transition RAISES instead of returning false, and the raise escapes
+    // the predicate and fails the test outright — the hazard `isSafelyHittable`
+    // exists for, and one this helper is fully exposed to since it polls for
+    // the whole of `exposureWait` and its callers pass rows and controls that
+    // animate. Second, a *block* predicate is not a drop-in replacement for a
+    // format predicate here: XCTest re-evaluates it as fast as the UI settles
+    // and every property read inside takes a fresh accessibility snapshot, and
+    // at accessibility text sizes that snapshot is big enough that the extra
+    // traffic made the app's UI queries time out. A fixed 0.25s cadence keeps
+    // the safe probe affordable.
+    let app = XCUIApplication()
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      if isSafelyHittable(element, in: app) { return true }
+      _ = XCTWaiter.wait(for: [XCTestExpectation(description: "settle")], timeout: 0.25)
+    } while Date() < deadline
+    return false
   }
 
   func waitUntilSelected(
