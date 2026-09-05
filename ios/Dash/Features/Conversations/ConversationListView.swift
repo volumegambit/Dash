@@ -91,6 +91,44 @@ enum ComposeAgentSelection {
     guard availableAgents.isEmpty == false else { return nil }
     return availableAgents.first { $0.id == lastUsedAgentID }?.id ?? availableAgents[0].id
   }
+
+  /// Whether compose can run at all right now — i.e. whether `resolve` above
+  /// would return `nil`, or the gateway would refuse the create.
+  ///
+  /// Shared by BOTH compose entry points: `ConversationListView`'s toolbar
+  /// button and `RootView`'s empty-detail "New conversation" button on the
+  /// iPad two-column layout (design §1.1). The iPad button shipped
+  /// always-enabled and silently no-op'd when there was no agent to compose
+  /// under, which is why this predicate lives here rather than staying a
+  /// private computed property on the list view.
+  ///
+  /// Reentrancy is deliberately NOT part of this: each call site owns its own
+  /// in-flight flag, since only that site knows whether its own compose is
+  /// still running.
+  static func isUnavailable(
+    _ agents: [RegisteredAgentDTO],
+    filteredAgentID: String?,
+    mutationsAllowed: Bool
+  ) -> Bool {
+    mutationsAllowed == false
+      || availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty
+  }
+
+  /// The accessibility hint explaining why `isUnavailable` is `true` — empty
+  /// when compose is available, so it can be attached unconditionally.
+  static func unavailableHint(
+    _ agents: [RegisteredAgentDTO],
+    filteredAgentID: String?,
+    mutationsAllowed: Bool
+  ) -> String {
+    if mutationsAllowed == false {
+      return "Connect to the gateway to create a conversation"
+    }
+    if availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty {
+      return "Enable or create an agent before starting a conversation"
+    }
+    return ""
+  }
 }
 
 struct ConversationListView: View {
@@ -380,22 +418,20 @@ struct ConversationListView: View {
 
   // MARK: - Compose-first new chat (Task 3, audit #16)
 
-  private var availableComposeAgents: [RegisteredAgentDTO] {
-    ComposeAgentSelection.availableAgents(feature.agents, filteredAgentID: feature.selectedAgentID)
-  }
-
   private var composeDisabled: Bool {
-    feature.mutationsAllowed == false || availableComposeAgents.isEmpty || isComposing
+    ComposeAgentSelection.isUnavailable(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    ) || isComposing
   }
 
   private var composeDisabledHint: String {
-    if feature.mutationsAllowed == false {
-      return "Connect to the gateway to create a conversation"
-    }
-    if availableComposeAgents.isEmpty {
-      return "Enable or create an agent before starting a conversation"
-    }
-    return ""
+    ComposeAgentSelection.unavailableHint(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    )
   }
 
   /// Replaces `NewConversationView`'s Form (agent `Picker` + "Start

@@ -35,6 +35,11 @@ struct RootView: View {
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
+  /// Covers the async gap between tapping the empty detail's "New
+  /// conversation" button and `openConversation` actually navigating — the
+  /// same window `ConversationListView.isComposing` guards for the list's own
+  /// compose button. See `composeFromEmptyDetail()`.
+  @State private var isComposingFromDetail = false
 
   var body: some View {
     OfflineBanner(banner: appModel.banner) {
@@ -224,8 +229,34 @@ struct RootView: View {
       }
       .buttonStyle(.borderedProminent)
       .frame(minHeight: 44)
+      .disabled(isComposingFromDetail || composeUnavailable)
       .accessibilityIdentifier("detail.newConversation")
+      .accessibilityHint(composeUnavailableHint)
     }
+  }
+
+  /// The empty detail's compose button answers to the SAME availability
+  /// predicate as the conversation list's own compose button
+  /// (`ComposeAgentSelection.isUnavailable`), rather than being permanently
+  /// enabled and silently doing nothing when `composeConversation()` can find
+  /// no agent to compose under. `nil` feature means the list hasn't been
+  /// built yet, which is likewise not composable.
+  private var composeUnavailable: Bool {
+    guard let feature = appModel.conversationListFeature else { return true }
+    return ComposeAgentSelection.isUnavailable(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    )
+  }
+
+  private var composeUnavailableHint: String {
+    guard let feature = appModel.conversationListFeature else { return "" }
+    return ComposeAgentSelection.unavailableHint(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    )
   }
 
   /// The two-column layout's empty-detail compose entry point (iPad goal
@@ -235,6 +266,14 @@ struct RootView: View {
   /// navigation itself, since the feature deliberately holds no `AppModel`
   /// reference.
   private func composeFromEmptyDetail() async {
+    guard isComposingFromDetail == false else { return }
+    // Armed BEFORE the first `await`: `composeConversation()` suspends twice
+    // (`lastUsedAgentID()`, then `create(agentID:)`), and a second tap landing
+    // inside that window would otherwise pass this guard and run a concurrent
+    // create with interleaved `pendingCreateRequestID` / `pendingCreateAgentID`
+    // mutation. Mirrors `ConversationListView.startCompose()`.
+    isComposingFromDetail = true
+    defer { isComposingFromDetail = false }
     guard let feature = appModel.conversationListFeature,
       let id = await feature.composeConversation()
     else { return }
