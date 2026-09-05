@@ -14,3 +14,10 @@ export {
   LEGACY_MEMORY_NAME,
   importLegacyMemoryFile,
 } from './import-legacy.js';
+export {
+  MEMORY_TOOL_NAMES,
+  createForgetMemoryTool,
+  createRecallMemoryTool,
+  createSaveMemoryTool,
+} from './tools.js';
+export type { MemoryToolDetails } from './tools.js';
