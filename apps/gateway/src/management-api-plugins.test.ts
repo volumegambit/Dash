@@ -96,6 +96,7 @@ function wiring(over: Partial<PluginWiringState> = {}): PluginWiringState {
   return {
     skillDirs: [],
     commandFiles: [],
+    agentDefFiles: [],
     hookEngine: { hasHooks: false } as unknown as PluginWiringState['hookEngine'],
     pluginModelCatalog: {} as unknown as PluginWiringState['pluginModelCatalog'],
     mcpConfigs: [],

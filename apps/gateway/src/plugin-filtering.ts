@@ -2,8 +2,8 @@
  * Per-agent plugin visibility filtering (Plan P5, Task 1).
  *
  * Pure function: given an agent's plugin selection plus the gateway-wide plugin
- * wiring contributions, return the subset of skill dirs + command files that
- * agent may see. NO I/O, NO mutation of inputs.
+ * wiring contributions, return the subset of skill dirs, command files and
+ * sub-agent definition files that agent may see. NO I/O, NO mutation of inputs.
  *
  * TRUST IS NOT THIS FUNCTION'S CONCERN. Per-agent `plugins` selection is
  * VISIBILITY / ROUTING ONLY — it decides which already-loaded plugins an agent
@@ -12,12 +12,12 @@
  * vs left as `noop`) is decided gateway-wide upstream, in `loadPlugins` +
  * `rebuildWiringState`. An untrusted plugin's code stays `noop` regardless of
  * any agent selecting it here. This filter only narrows the already-derived,
- * already-trust-gated skill dirs + command files.
+ * already-trust-gated skill dirs, command files and agent definitions.
  */
 
 /**
- * Filter the gateway's plugin skill dirs + command files down to the plugins an
- * agent has selected.
+ * Filter the gateway's plugin skill dirs, command files and sub-agent
+ * definition files down to the plugins an agent has selected.
  *
  * @param agentPlugins   The agent's `GatewayAgentConfig.plugins`. `undefined`
  *   means "all loaded plugins" (backward compat for legacy agents). An explicit
@@ -26,25 +26,42 @@
  *   function does NOT, so callers get exactly what they asked for.)
  * @param allSkillDirs   The flat aggregate of all loaded plugins' skill dirs
  *   (`wiringState.skillDirs`). Drives the OUTPUT ORDER of the filtered dirs.
- * @param allCommandFiles  All loaded plugins' command/agent files, each tagged
+ * @param allCommandFiles  All loaded plugins' `commands/*.md` files, each tagged
  *   with its contributing plugin in `namespace` (`wiringState.commandFiles`).
+ *   These become flat `load_skill`-able skills named `<plugin>:<command>`.
  * @param skillDirsByPlugin  Per-plugin attribution map (plugin name → that
  *   plugin's skill dirs), from `wiringState.skillDirsByPlugin`. Used only for
  *   membership testing — a dir belongs to the result iff some selected plugin
  *   contributed it.
- * @returns `{ skillDirs, commandFiles }` narrowed to the selection. A selected
- *   plugin name that isn't loaded contributes nothing (no throw).
+ * @param allAgentDefFiles  All loaded plugins' `agents/*.md` SUB-AGENT
+ *   DEFINITION files (`wiringState.agentDefFiles`), same `{ file, namespace }`
+ *   shape. Narrowed with the same semantics as `allCommandFiles` (`undefined`
+ *   selection = all, `[]` = none). These are definitions, NOT loadable skills —
+ *   see spec §6.2 — so they are returned in their own array and are never
+ *   folded into `commandFiles`.
+ * @returns `{ skillDirs, commandFiles, agentDefFiles }` narrowed to the
+ *   selection. A selected plugin name that isn't loaded contributes nothing
+ *   (no throw).
  */
 export function filterPluginsByAgent(
   agentPlugins: string[] | undefined,
   allSkillDirs: string[],
   allCommandFiles: Array<{ file: string; namespace: string }>,
   skillDirsByPlugin: Record<string, string[]>,
-): { skillDirs: string[]; commandFiles: Array<{ file: string; namespace: string }> } {
+  allAgentDefFiles: Array<{ file: string; namespace: string }>,
+): {
+  skillDirs: string[];
+  commandFiles: Array<{ file: string; namespace: string }>;
+  agentDefFiles: Array<{ file: string; namespace: string }>;
+} {
   // Backward compat: no per-agent selection → the agent sees everything.
   // Return the inputs as-is (callers treat the result as read-only).
   if (agentPlugins === undefined) {
-    return { skillDirs: allSkillDirs, commandFiles: allCommandFiles };
+    return {
+      skillDirs: allSkillDirs,
+      commandFiles: allCommandFiles,
+      agentDefFiles: allAgentDefFiles,
+    };
   }
 
   // Build the set of skill dirs contributed by the SELECTED plugins. Unknown
@@ -64,9 +81,11 @@ export function filterPluginsByAgent(
   // single pass preserves first-occurrence order.
   const skillDirs = allSkillDirs.filter((dir) => selectedDirs.has(dir));
 
-  // Command files carry their plugin in `namespace` — filter directly.
+  // Command files and agent definitions both carry their plugin in `namespace`
+  // — filter each directly, keeping the two channels separate.
   const selectedNames = new Set(agentPlugins);
   const commandFiles = allCommandFiles.filter((cf) => selectedNames.has(cf.namespace));
+  const agentDefFiles = allAgentDefFiles.filter((af) => selectedNames.has(af.namespace));
 
-  return { skillDirs, commandFiles };
+  return { skillDirs, commandFiles, agentDefFiles };
 }

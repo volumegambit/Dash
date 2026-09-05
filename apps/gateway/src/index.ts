@@ -216,8 +216,9 @@ async function main() {
   });
   const coreProviderIds = [...RESERVED_PROVIDER_IDS];
 
-  // Derive ALL plugin wiring (skill dirs, namespaced command/agent files, hook
-  // engine, model catalog + dropdown models, MCP configs, provider configs with
+  // Derive ALL plugin wiring (skill dirs, namespaced command files, namespaced
+  // sub-agent definition files, hook engine, model catalog + dropdown models,
+  // MCP configs, provider configs with
   // core-collision exclusion, status records) in ONE place. Stored in a MUTABLE
   // holder so a later hot-reload (Task 3) can reassign it; every downstream
   // consumer that must observe reloaded wiring reads through `wiringState.*`
@@ -455,8 +456,10 @@ async function main() {
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
     // Same plugin inputs the backend factory injects (skill dirs merged into
-    // `skills.paths`, command/agent files as extra flat skills) so the HTTP
-    // skills route (GET /agents/:id/skills) lists what chat can actually load.
+    // `skills.paths`, command files as extra flat skills) so the HTTP skills
+    // route (GET /agents/:id/skills) lists what chat can actually load. Plugin
+    // `agents/*.md` are NOT included: they are sub-agent definitions, not
+    // loadable skills (spec §6.2), so they never appear in this listing.
     // Read LIVE through the mutable `wiringState` holder (same as the chat-path
     // backend factory below) so a plugin hot-reload is reflected by the
     // read-only `listSkills` route immediately — no boot snapshot.
@@ -568,6 +571,7 @@ async function main() {
       const {
         skillDirs: allSkillDirs,
         commandFiles: allCommandFiles,
+        agentDefFiles: allAgentDefFiles,
         hookEngine,
         pluginModelCatalog,
       } = wiringState;
@@ -580,11 +584,18 @@ async function main() {
       // skillDirs/commandFiles). pluginModelCatalog is passed AS-IS: the catalog
       // is shared and per-agent routing happens via skill/command filtering.
       // Reload-correct: reads wiringState.* live inside this per-call closure.
+      //
+      // `agentDefFiles` (plugin `agents/*.md`) is narrowed by the SAME selection
+      // but is deliberately NOT handed to the backend: per spec §6.2 those are
+      // sub-agent DEFINITIONS, not loadable skills. The definition registry that
+      // consumes them is built in a later task; until then the narrowed value is
+      // intentionally unused here rather than silently folded into commandFiles.
       const { skillDirs, commandFiles } = filterPluginsByAgent(
         agentConfig.plugins,
         allSkillDirs,
         allCommandFiles,
         wiringState.skillDirsByPlugin,
+        allAgentDefFiles,
       );
 
       // Explicit annotation breaks the circular type inference: the projects

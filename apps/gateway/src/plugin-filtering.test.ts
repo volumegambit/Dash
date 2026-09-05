@@ -12,8 +12,13 @@ const SKILL_DIRS_BY_PLUGIN: Record<string, string[]> = {
 };
 const ALL_COMMAND_FILES = [
   { file: '/plugins/alpha/commands/go.md', namespace: 'alpha' },
-  { file: '/plugins/alpha/agents/helper.md', namespace: 'alpha' },
   { file: '/plugins/beta/commands/build.md', namespace: 'beta' },
+];
+// B2: agent definitions travel in their OWN channel now — they are NOT flat
+// loadable command skills. Same `{ file, namespace }` shape, separate array.
+const ALL_AGENT_DEF_FILES = [
+  { file: '/plugins/alpha/agents/helper.md', namespace: 'alpha' },
+  { file: '/plugins/beta/agents/auditor.md', namespace: 'beta' },
 ];
 
 describe('filterPluginsByAgent', () => {
@@ -23,10 +28,12 @@ describe('filterPluginsByAgent', () => {
       ALL_SKILL_DIRS,
       ALL_COMMAND_FILES,
       SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
     );
     // Same contents — backward compat: no per-agent selection means "all".
     expect(result.skillDirs).toEqual(ALL_SKILL_DIRS);
     expect(result.commandFiles).toEqual(ALL_COMMAND_FILES);
+    expect(result.agentDefFiles).toEqual(ALL_AGENT_DEF_FILES);
   });
 
   it("['alpha'] → only alpha's skill dirs and alpha command files", () => {
@@ -35,10 +42,13 @@ describe('filterPluginsByAgent', () => {
       ALL_SKILL_DIRS,
       ALL_COMMAND_FILES,
       SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
     );
     expect(result.skillDirs).toEqual(ALPHA_SKILLS);
     expect(result.commandFiles).toEqual([
       { file: '/plugins/alpha/commands/go.md', namespace: 'alpha' },
+    ]);
+    expect(result.agentDefFiles).toEqual([
       { file: '/plugins/alpha/agents/helper.md', namespace: 'alpha' },
     ]);
   });
@@ -49,10 +59,14 @@ describe('filterPluginsByAgent', () => {
       ALL_SKILL_DIRS,
       ALL_COMMAND_FILES,
       SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
     );
     expect(result.skillDirs).toEqual(BETA_SKILLS);
     expect(result.commandFiles).toEqual([
       { file: '/plugins/beta/commands/build.md', namespace: 'beta' },
+    ]);
+    expect(result.agentDefFiles).toEqual([
+      { file: '/plugins/beta/agents/auditor.md', namespace: 'beta' },
     ]);
   });
 
@@ -62,10 +76,12 @@ describe('filterPluginsByAgent', () => {
       ALL_SKILL_DIRS,
       ALL_COMMAND_FILES,
       SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
     );
     // skillDirs order follows the flat aggregate, not the selection order.
     expect(result.skillDirs).toEqual(ALL_SKILL_DIRS);
     expect(result.commandFiles).toEqual(ALL_COMMAND_FILES);
+    expect(result.agentDefFiles).toEqual(ALL_AGENT_DEF_FILES);
   });
 
   it('an unknown (not-loaded) plugin name contributes nothing and does not throw', () => {
@@ -74,10 +90,13 @@ describe('filterPluginsByAgent', () => {
       ALL_SKILL_DIRS,
       ALL_COMMAND_FILES,
       SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
     );
     expect(result.skillDirs).toEqual(ALPHA_SKILLS);
     expect(result.commandFiles).toEqual([
       { file: '/plugins/alpha/commands/go.md', namespace: 'alpha' },
+    ]);
+    expect(result.agentDefFiles).toEqual([
       { file: '/plugins/alpha/agents/helper.md', namespace: 'alpha' },
     ]);
   });
@@ -88,9 +107,26 @@ describe('filterPluginsByAgent', () => {
       ALL_SKILL_DIRS,
       ALL_COMMAND_FILES,
       SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
     );
     expect(result.skillDirs).toEqual([]);
     expect(result.commandFiles).toEqual([]);
+    expect(result.agentDefFiles).toEqual([]);
+  });
+
+  it('agent definitions are returned separately and never folded into commandFiles', () => {
+    const result = filterPluginsByAgent(
+      ['alpha'],
+      ALL_SKILL_DIRS,
+      ALL_COMMAND_FILES,
+      SKILL_DIRS_BY_PLUGIN,
+      ALL_AGENT_DEF_FILES,
+    );
+    const helper = '/plugins/alpha/agents/helper.md';
+    // The selected plugin's agent def is present in its own array...
+    expect(result.agentDefFiles.map((f) => f.file)).toEqual([helper]);
+    // ...and absent from the loadable command skills (spec §6.2).
+    expect(result.commandFiles.map((f) => f.file)).not.toContain(helper);
   });
 
   it('dedups skill dirs shared by two selected plugins, preserving first occurrence', () => {
@@ -100,7 +136,7 @@ describe('filterPluginsByAgent', () => {
       alpha: [shared, '/plugins/alpha/only'],
       beta: [shared],
     };
-    const result = filterPluginsByAgent(['alpha', 'beta'], allSkillDirs, [], byPlugin);
+    const result = filterPluginsByAgent(['alpha', 'beta'], allSkillDirs, [], byPlugin, []);
     expect(result.skillDirs).toEqual([shared, '/plugins/alpha/only']);
   });
 
@@ -110,7 +146,7 @@ describe('filterPluginsByAgent', () => {
     const byPlugin: Record<string, string[]> = {
       alpha: ['/plugins/alpha/skills', '/plugins/alpha/dropped'],
     };
-    const result = filterPluginsByAgent(['alpha'], ['/plugins/alpha/skills'], [], byPlugin);
+    const result = filterPluginsByAgent(['alpha'], ['/plugins/alpha/skills'], [], byPlugin, []);
     expect(result.skillDirs).toEqual(['/plugins/alpha/skills']);
   });
 });

@@ -71,11 +71,15 @@ export interface AgentChatCoordinatorOptions {
    */
   getPluginSkillDirs?: () => string[];
   /**
-   * Live getter for the trusted-plugin command/agent files (flat `.md`,
-   * namespaced `<plugin>:<name>`). Loaded via `loadFlatSkills` and merged into
+   * Live getter for the trusted-plugin command files (flat `.md`, namespaced
+   * `<plugin>:<command>`). Loaded via `loadFlatSkills` and merged into
    * `listSkills` so the HTTP skills API matches what chat can load — mirroring
    * `PiAgentBackend.listSkills`. Read PER CALL (not captured) so a plugin
    * hot-reload is reflected without a restart. Undefined → none.
+   *
+   * Commands ONLY. Plugin `agents/*.md` are sub-agent definitions, not loadable
+   * skills (spec §6.2), so the gateway keeps them out of this channel and they
+   * do not appear in `GET /agents/:id/skills`.
    */
   getPluginCommandFiles?: () => FlatSkillFile[];
   /**
@@ -314,8 +318,8 @@ export function createAgentChatCoordinator(
       pluginSkillDirs.some((dir) => location.startsWith(dir.endsWith(sep) ? dir : dir + sep));
     // Mirror PiAgentBackend.listSkills so the HTTP skills API returns exactly
     // what chat can load. Discovery precedence (first wins by name): managed >
-    // config paths > plugin skill dirs. Plugin command/agent files are appended
-    // flat and lose name collisions to discovered skills.
+    // config paths > plugin skill dirs. Plugin command files are appended flat
+    // and lose name collisions to discovered skills.
     const discovered = await discoverSkills({
       managedSkillsDir: options.managedSkillsDir?.(entry.config),
       paths: [...(entry.config.skills?.paths ?? []), ...pluginSkillDirs],
@@ -323,7 +327,7 @@ export function createAgentChatCoordinator(
     const flat = await loadFlatSkills(pluginCommandFiles);
     const seen = new Set(discovered.map((s) => s.name));
     const merged = [...discovered, ...flat.filter((s) => !seen.has(s.name))];
-    // Badge plugin-contributed skills (skill dirs + command/agent files) as
+    // Badge plugin-contributed skills (skill dirs + command files) as
     // 'plugin' and force read-only: a user can't edit/remove them via the
     // managed dir, so MC must not render those affordances (scanned skill dirs
     // default to editable: true, which would otherwise be misleading).

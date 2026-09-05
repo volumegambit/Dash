@@ -504,10 +504,14 @@ describe('AgentChatCoordinator.listSkills', () => {
 });
 
 describe('AgentChatCoordinator.listSkills with plugin contributions', () => {
-  it('surfaces plugin skill dirs and namespaced command/agent files, badged as plugin', async () => {
+  it('surfaces plugin skill dirs and namespaced command files, badged as plugin', async () => {
     // The HTTP skills route must match what chat can actually load: plugin
-    // skill dirs (skills/) and plugin command/agent files (commands/, agents/,
-    // namespaced `<plugin>:<name>`). Mirrors PiAgentBackend.listSkills.
+    // skill dirs (skills/) and plugin command files (commands/, namespaced
+    // `<plugin>:<command>`). Mirrors PiAgentBackend.listSkills.
+    //
+    // B2: plugin `agents/*.md` are sub-agent DEFINITIONS, not loadable skills
+    // (spec §6.2). The gateway keeps them out of `getPluginCommandFiles`, so
+    // this fixture feeds two COMMANDS — no agent file — matching real wiring.
     const root = await mkdtemp(join(tmpdir(), 'dash-coord-plugins-'));
     try {
       const pluginSkillsDir = join(root, 'plugin-skills');
@@ -520,8 +524,8 @@ describe('AgentChatCoordinator.listSkills with plugin contributions', () => {
 
       const cmdFile = join(root, 'deploy.md');
       await writeFile(cmdFile, '---\ndescription: deploy it\n---\n\nrun the deploy\n');
-      const agentFile = join(root, 'reviewer.md');
-      await writeFile(agentFile, '---\ndescription: reviews code\n---\n\nreview\n');
+      const cmdFile2 = join(root, 'triage.md');
+      await writeFile(cmdFile2, '---\ndescription: triage it\n---\n\ntriage\n');
 
       const registry = new AgentRegistry();
       const { id } = registry.register({
@@ -537,21 +541,21 @@ describe('AgentChatCoordinator.listSkills with plugin contributions', () => {
         getPluginSkillDirs: () => [pluginSkillsDir],
         getPluginCommandFiles: () => [
           { file: cmdFile, namespace: 'acme' },
-          { file: agentFile, namespace: 'acme' },
+          { file: cmdFile2, namespace: 'acme' },
         ],
       });
 
       const skills = await agents.listSkills(id);
       const byName = new Map(skills.map((s) => [s.name, s]));
 
-      // Plugin skill dir, <plugin>:<command>, and <plugin>:<agent> all present.
+      // Plugin skill dir and both <plugin>:<command> entries present.
       expect(byName.has('greet')).toBe(true);
       expect(byName.has('acme:deploy')).toBe(true);
-      expect(byName.has('acme:reviewer')).toBe(true);
+      expect(byName.has('acme:triage')).toBe(true);
 
       // All badged 'plugin' and non-editable (read-only in MC — a user can't
       // edit/remove a plugin-contributed skill via the managed dir).
-      for (const name of ['greet', 'acme:deploy', 'acme:reviewer']) {
+      for (const name of ['greet', 'acme:deploy', 'acme:triage']) {
         expect(byName.get(name)?.source).toBe('plugin');
         expect(byName.get(name)?.editable).toBe(false);
       }
