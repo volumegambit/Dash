@@ -122,6 +122,13 @@ extension AppDependenciesFactory {
     /// `dash-approve:v1:` payload instead of requiring a camera — see
     /// `AccountUITests`.
     case approveDevice = "approve-device"
+    /// Transcript-scrolling scenarios (2026-09-05): `sharedConversation` seeded
+    /// with 40 cached messages (ordinals 11–50, enough to overflow any
+    /// supported viewport, iPad landscape included), a further 10-message
+    /// page (ordinals 1–10) behind `longTranscriptOlderCursor` for "Load
+    /// earlier", and a send that streams 60 text deltas over ~7s so a UI test
+    /// can scroll mid-stream. Every other scenario keeps its 2-message thread.
+    case longTranscript = "long-transcript"
 
     /// Explicit enumeration (rather than `self != .unpaired`) so adding a new
     /// signed-out-first case can't silently start it paired by omission.
@@ -129,7 +136,7 @@ extension AppDependenciesFactory {
       switch self {
       case .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
         .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
-        .approveDevice:
+        .approveDevice, .longTranscript:
         return true
       case .unpaired, .signedOut, .accountPicker, .accountPickerError, .accountNotEnrolled:
         return false
@@ -289,8 +296,76 @@ extension AppDependenciesFactory {
     static let onePixelPNG =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
 
+    /// `.longTranscript` paging: the cursor the canonical refresh hands back
+    /// for the 40-message recent page; `refresh(before: thisCursor)` serves
+    /// `longTranscriptOlderMessages` with no further cursor.
+    static let longTranscriptOlderCursor = "long-transcript-older"
+    static let longTranscriptOldestVisibleOrdinal = 11
+    static let longTranscriptNewestOrdinal = 50
+
+    /// Ordinals 11–50: 20 turns. Assistant replies rotate through a short
+    /// paragraph, a bulleted list, a fenced code block and a two-paragraph
+    /// answer so row heights vary the way a real thread's do (that is what
+    /// makes a lazy stack's scroll landing inexact).
+    static let longTranscriptMessages: [ConversationMessageDTO] = longTranscriptTurns(
+      ordinals: longTranscriptOldestVisibleOrdinal...longTranscriptNewestOrdinal
+    )
+
+    /// Ordinals 1–10: the page behind `longTranscriptOlderCursor`.
+    static let longTranscriptOlderMessages: [ConversationMessageDTO] = longTranscriptTurns(
+      ordinals: 1...(longTranscriptOldestVisibleOrdinal - 1)
+    )
+
+    private static func longTranscriptTurns(ordinals: ClosedRange<Int>) -> [ConversationMessageDTO] {
+      ordinals.map { ordinal in
+        let turn = (ordinal + 1) / 2
+        if ordinal.isMultiple(of: 2) == false {
+          return message(
+            id: "long-user-\(ordinal)",
+            turnID: "long-turn-\(turn)",
+            role: .user,
+            status: .completed,
+            text: "Question \(turn): what should we check before the launch?",
+            ordinal: ordinal
+          )
+        }
+        let body: String
+        switch turn % 4 {
+        case 0:
+          body = "Reply \(turn). Verify the rollout checklist and confirm the on-call rota."
+        case 1:
+          body = "Reply \(turn).\n\n- Confirm the rollout checklist\n- Page the on-call engineer\n- Freeze deploys for the window\n- Re-run the smoke suite"
+        case 2:
+          body = "Reply \(turn). Run this first:\n\n```bash\nnpm run build\nnpm test -- --run\nnpm run smoke -- --env=staging\n```\n\nThen watch the error budget for ten minutes."
+        default:
+          body = "Reply \(turn). The launch plan holds as long as the error budget stays above the floor and the on-call engineer has acknowledged the page.\n\nIf either slips, hold the rollout and re-run the smoke suite before trying again."
+        }
+        return message(
+          id: "long-assistant-\(ordinal)",
+          turnID: "long-turn-\(turn)",
+          role: .assistant,
+          status: .completed,
+          events: [
+            .response(
+              content: body,
+              usage: UsageDTO(inputTokens: 8, outputTokens: 40, cacheReadTokens: nil, cacheWriteTokens: nil)
+            )
+          ],
+          ordinal: ordinal
+        )
+      }
+    }
+
+    /// The `.longTranscript` send's reply, streamed as 60 deltas ~120ms apart
+    /// (≈7s): long enough that a UI test — with XCUITest's own several
+    /// seconds of idle-waiting after the send — still catches it mid-stream.
+    static let longTranscriptStreamedReply: String = {
+      (1...60).map { "Streamed chunk \($0) of the reply." }.joined(separator: " ")
+    }()
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
       if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
+      if scenario == .longTranscript { return longTranscriptMessages }
       if scenario == .remoteBusy {
         return [
           message(
@@ -520,7 +595,7 @@ extension AppDependenciesFactory {
 
       case .unpaired, .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
         .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
-        .approveDevice:
+        .approveDevice, .longTranscript:
         // `.approveDevice` never reaches here — `uiTesting`'s ternary routes
         // it to `approveDeviceAccountFactory` first. Listed for exhaustiveness.
         return .unavailable
@@ -672,7 +747,7 @@ extension AppDependenciesFactory {
             conversation: conversation,
             persistence: store,
             synchronizer: store,
-            transport: UITestChatTransport(),
+            transport: UITestChatTransport(scenario: scenario),
             clock: clock,
             announcer: UITestAccessibilityAnnouncer(),
             recoveryChanges: recoveryChanges,
@@ -1462,10 +1537,29 @@ extension AppDependenciesFactory {
     }
 
     func refresh(conversationID: String, before: String?) throws -> ChatCanonicalSnapshot {
-      _ = before
       guard let summary = conversationValues.first(where: { $0.id == conversationID }) else {
         throw GatewayError.notFound
       }
+      // `.longTranscript` is the only scenario with a second page: the
+      // canonical refresh (`before == nil`) advertises it, and asking for it
+      // returns the 10 oldest messages with nothing behind them.
+      if scenario == .longTranscript, conversationID == UITestScenarioFixtures.sharedConversation.id {
+        if before == UITestScenarioFixtures.longTranscriptOlderCursor {
+          return ChatCanonicalSnapshot(
+            summary: summary,
+            messages: UITestScenarioFixtures.longTranscriptOlderMessages,
+            nextCursor: nil,
+            throughSeq: summary.lastSeq
+          )
+        }
+        return ChatCanonicalSnapshot(
+          summary: summary,
+          messages: messages[conversationID] ?? [],
+          nextCursor: UITestScenarioFixtures.longTranscriptOlderCursor,
+          throughSeq: summary.lastSeq
+        )
+      }
+      _ = before
       return ChatCanonicalSnapshot(
         summary: summary,
         messages: messages[conversationID] ?? [],
@@ -1535,6 +1629,7 @@ extension AppDependenciesFactory {
   }
 
   private actor UITestChatTransport: ChatFeatureTransporting {
+    private let scenario: UITestScenario
     private var stream: AsyncThrowingStream<ChatConnectionEvent, Error>
     private var continuation: AsyncThrowingStream<ChatConnectionEvent, Error>.Continuation
     private var scriptTask: Task<Void, Never>?
@@ -1542,7 +1637,8 @@ extension AppDependenciesFactory {
     private var nextSequence = 1
     private var isTerminal = false
 
-    init() {
+    init(scenario: UITestScenario) {
+      self.scenario = scenario
       let pair = AsyncThrowingStream<ChatConnectionEvent, Error>.makeStream()
       stream = pair.stream
       continuation = pair.continuation
@@ -1620,6 +1716,10 @@ extension AppDependenciesFactory {
     }
 
     private func runScript(turnID: String, conversationID: String) async {
+      if scenario == .longTranscript {
+        await runLongStreamScript(turnID: turnID, conversationID: conversationID)
+        return
+      }
       guard await pause(.milliseconds(150)) else { return }
       yield(
         .accepted(
@@ -1738,6 +1838,48 @@ extension AppDependenciesFactory {
             cacheReadTokens: 4,
             cacheWriteTokens: nil
           )
+        )
+      )
+      yield(
+        .done(
+          id: turnID,
+          conversationId: conversationID,
+          seq: takeSequence(),
+          outcome: .completed
+        )
+      )
+      isTerminal = true
+      activeTurnID = nil
+    }
+
+    /// `.longTranscript`'s send: the same ack shape as the default script,
+    /// then `longTranscriptStreamedReply` in 60 word-group deltas ~120ms
+    /// apart (≈7s), so a UI test has time to scroll while the reply streams.
+    private func runLongStreamScript(turnID: String, conversationID: String) async {
+      guard await pause(.milliseconds(150)) else { return }
+      yield(
+        .accepted(
+          id: turnID,
+          conversationId: conversationID,
+          userMessageId: "user-ui-turn",
+          assistantMessageId: "assistant-ui-turn",
+          revision: 2,
+          seq: takeSequence()
+        )
+      )
+      let reply = UITestScenarioFixtures.longTranscriptStreamedReply
+      let chunks = reply.components(separatedBy: "Streamed").dropFirst().map { "Streamed" + $0 }
+      for chunk in chunks {
+        guard await pause(.milliseconds(120)) else { return }
+        yieldEvent(turnID: turnID, conversationID: conversationID, .textDelta(text: chunk))
+      }
+      guard await pause(.milliseconds(120)) else { return }
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .response(
+          content: reply,
+          usage: UsageDTO(inputTokens: 12, outputTokens: 180, cacheReadTokens: nil, cacheWriteTokens: nil)
         )
       )
       yield(
