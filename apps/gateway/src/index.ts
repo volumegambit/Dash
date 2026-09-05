@@ -218,13 +218,13 @@ async function main() {
 
   // Derive ALL plugin wiring (skill dirs, namespaced command files, namespaced
   // sub-agent definition files, hook engine, model catalog + dropdown models,
-  // MCP configs, provider configs with
-  // core-collision exclusion, status records) in ONE place. Stored in a MUTABLE
-  // holder so a later hot-reload (Task 3) can reassign it; every downstream
-  // consumer that must observe reloaded wiring reads through `wiringState.*`
-  // LAZILY (at backend/hook construction time) rather than capturing a field
-  // into a boot-time const. The hook engine is built with the same
-  // `{ logger, dataDir }` the gateway used previously, so behavior is identical.
+  // MCP configs, provider configs with core-collision exclusion, status
+  // records) in ONE place. Stored in a MUTABLE holder so a later hot-reload
+  // (Task 3) can reassign it; every downstream consumer that must observe
+  // reloaded wiring reads through `wiringState.*` LAZILY (at backend/hook
+  // construction time) rather than capturing a field into a boot-time const.
+  // The hook engine is built with the same `{ logger, dataDir }` the gateway
+  // used previously, so behavior is identical.
   //
   // MUST be `let` (not `const`): the `onWiringRebuilt` callback below reassigns
   // this holder on every plugin hot-reload.
