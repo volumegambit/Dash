@@ -39,6 +39,12 @@ enum AgentRoute: Hashable, Sendable {
   }
 }
 
+/// iPad two-column layout (design §1.1): what the sidebar column can push
+/// on top of the conversation list. Settings is a sheet, not a route.
+enum SidebarRoute: Hashable, Sendable {
+  case agents
+}
+
 enum NavigationPresentation: Equatable, Sendable {
   case compact
   case regular

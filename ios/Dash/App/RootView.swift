@@ -34,6 +34,8 @@ struct RootView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
+  @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
+
   var body: some View {
     OfflineBanner(banner: appModel.banner) {
       if appModel.selectedProfile == nil {
@@ -45,6 +47,9 @@ struct RootView: View {
       }
     }
     .tint(DashTheme.accent)
+    .onChange(of: navigationPresentation) { _, presentation in
+      appModel.reconcileNavigation(for: presentation)
+    }
     .alert("Agent update failed", isPresented: agentMutationErrorPresented) {
       Button("OK") { appModel.agentsFeature?.mutationError = nil }
     } message: {
@@ -129,62 +134,111 @@ struct RootView: View {
     }
   }
 
-  private var regularNavigation: some View {
-    @Bindable var appModel = appModel
-    let selection = Binding<AppTab?>(
-      get: { appModel.selectedTab },
-      set: { tab in
-        if let tab { appModel.selectedTab = tab }
+  /// iPad two-column layout (design §1.1): the sidebar's local push stack —
+  /// `[.agents]` while Agents is showing, empty (root = the conversation
+  /// list) otherwise. `SidebarFooterView`'s Conversations row sets
+  /// `selectedTab = .conversations` directly, which this binding's `get`
+  /// turns into an empty path — i.e. popping the stack to its root — for
+  /// free, no separate "pop" case needed.
+  private var sidebarPath: Binding<[SidebarRoute]> {
+    Binding(
+      get: { appModel.selectedTab == .agents ? [.agents] : [] },
+      set: { path in
+        appModel.selectedTab = path.contains(.agents) ? .agents : .conversations
       }
     )
-    return NavigationSplitView {
-      List(AppTab.allCases, selection: selection) { tab in
-        Label(tab.title, systemImage: tab.systemImage)
-          .frame(minWidth: 44, minHeight: 44)
-          .accessibilityIdentifier(tab.accessibilityID)
-          .tag(tab)
+  }
+
+  /// Settings is a sheet on the two-column layout, not a third column or a
+  /// pushed route — presented whenever `selectedTab == .settings`, and
+  /// dismissing it (swipe-down or the sheet's own dismiss) sends the tab
+  /// back to Conversations rather than leaving `selectedTab` stuck on a tab
+  /// with no on-screen representation.
+  private var isSettingsPresented: Binding<Bool> {
+    Binding(
+      get: { appModel.selectedTab == .settings },
+      set: { presented in if presented == false { appModel.selectedTab = .conversations } }
+    )
+  }
+
+  private var regularNavigation: some View {
+    NavigationSplitView(columnVisibility: $columnVisibility) {
+      // `SidebarFooterView` is attached via `.sidebarFooter(...)` to EACH
+      // page inside the stack (the conversation-list root AND the pushed
+      // Agents destination) rather than once on the `NavigationStack`
+      // itself: each pushed page becomes its own full-bleed UIKit
+      // navigation-controller page, so a `.safeAreaInset` (or a VStack
+      // sibling — tried first, same result) attached to the stack
+      // container only ever decorates its ROOT page and disappears the
+      // moment anything is pushed — confirmed via the accessibility
+      // hierarchy dump showing zero `tab.*` elements once Agents was
+      // pushed. Attaching the inset per-page keeps the footer's identity
+      // (and the `tab.*` identifiers `DashUITestCase.selectTab` looks for)
+      // present on every page of the sidebar stack.
+      NavigationStack(path: sidebarPath) {
+        conversationListRoot
+          .sidebarFooter(selectedTab: appModel.selectedTab) { tab in
+            appModel.selectedTab = tab
+          }
+          .navigationDestination(for: SidebarRoute.self) { route in
+            switch route {
+            case .agents:
+              agentsListRoot
+                .sidebarFooter(selectedTab: appModel.selectedTab) { tab in
+                  appModel.selectedTab = tab
+                }
+            }
+          }
       }
-      .navigationTitle(Self.title)
-    } content: {
-      NavigationStack {
-        switch appModel.selectedTab {
-        case .conversations:
-          conversationListRoot
-        case .agents:
-          agentsListRoot
-        case .settings:
-          FeatureSlotView(title: "Settings", systemImage: "gearshape")
-        }
-      }
-      .navigationDestination(for: ConversationRoute.self) { route in
-        conversationDestination(route)
-      }
-      .navigationDestination(for: AgentRoute.self) { route in
-        agentDestination(route)
-      }
+      .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
     } detail: {
       NavigationStack {
         switch appModel.selectedTab {
-        case .conversations:
-          if let selection = appModel.splitConversationSelection {
-            conversationDestination(selection)
-          } else {
-            ContentUnavailableView(
-              "Select a conversation",
-              systemImage: "bubble.left.and.bubble.right"
-            )
-          }
         case .agents:
           if let selection = appModel.splitAgentSelection {
             agentDestination(selection)
           } else {
             ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
           }
-        case .settings:
-          settingsRoot
+        case .conversations, .settings:
+          if let selection = appModel.splitConversationSelection {
+            conversationDestination(selection)
+          } else {
+            emptyDetail
+          }
         }
       }
     }
+    .navigationSplitViewStyle(.balanced)
+    .sheet(isPresented: isSettingsPresented) {
+      NavigationStack { settingsRoot }
+    }
+  }
+
+  private var emptyDetail: some View {
+    ContentUnavailableView {
+      Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
+    } actions: {
+      Button("New conversation") {
+        Task { await composeFromEmptyDetail() }
+      }
+      .buttonStyle(.borderedProminent)
+      .frame(minHeight: 44)
+      .accessibilityIdentifier("detail.newConversation")
+    }
+  }
+
+  /// The two-column layout's empty-detail compose entry point (iPad goal
+  /// Phase A, Task 2): delegates agent resolution and conversation
+  /// creation to `ConversationListFeature.composeConversation()` — the same
+  /// path `ConversationListView.startCompose()` uses — then owns
+  /// navigation itself, since the feature deliberately holds no `AppModel`
+  /// reference.
+  private func composeFromEmptyDetail() async {
+    guard let feature = appModel.conversationListFeature,
+      let id = await feature.composeConversation()
+    else { return }
+    appModel.openConversation(id, presentation: .regular)
   }
 
   @ViewBuilder
@@ -417,21 +471,5 @@ private struct FeatureSlotView: View {
 extension AppTab {
   fileprivate var accessibilityID: String {
     "tab.\(rawValue)"
-  }
-
-  fileprivate var title: LocalizedStringKey {
-    switch self {
-    case .conversations: "Conversations"
-    case .agents: "Agents"
-    case .settings: "Settings"
-    }
-  }
-
-  fileprivate var systemImage: String {
-    switch self {
-    case .conversations: "bubble.left.and.bubble.right"
-    case .agents: "person.2"
-    case .settings: "gearshape"
-    }
   }
 }

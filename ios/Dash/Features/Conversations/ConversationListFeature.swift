@@ -815,6 +815,29 @@ final class ConversationListFeature {
     await lastUsedAgentStore.setAgentID(agentID, gatewayID: gatewayID)
   }
 
+  /// Feature-level extract of `ConversationListView.startCompose()`'s
+  /// create-with-last-used-agent path (iPad goal Phase A, Task 2) so a
+  /// second call site — `RootView`'s empty-detail "New conversation" button
+  /// on the regular/iPad layout — can start a conversation the same way
+  /// without duplicating agent resolution here. Returns the new
+  /// conversation's id, or `nil` when there's no available agent or
+  /// creation fails; navigation and any composing-state UI stay the
+  /// caller's responsibility, which is why this takes no `AppModel`.
+  func composeConversation() async -> String? {
+    guard
+      let agentID = ComposeAgentSelection.resolve(
+        availableAgents: ComposeAgentSelection.availableAgents(
+          agents,
+          filteredAgentID: selectedAgentID
+        ),
+        lastUsedAgentID: await lastUsedAgentID()
+      )
+    else { return nil }
+    guard let conversationID = await create(agentID: agentID) else { return nil }
+    await recordLastUsedAgent(agentID)
+    return conversationID
+  }
+
   func consume(_ snapshot: SyncSnapshot?) {
     guard let snapshot else { return }
     let wasOnline = mutationsAllowed

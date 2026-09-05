@@ -351,24 +351,49 @@ class DashUITestCase: XCTestCase {
     return fallback ?? regularLabel
   }
 
+  /// How long every `waitUntilExposed` check inside `revealSidebarIfNeeded`
+  /// gets. A single XCUITest element query round-trips in roughly a second on
+  /// a contended host, so the sub-second timeouts this used to pass expired
+  /// before `XCTNSPredicateExpectation` ever evaluated its predicate once:
+  /// the check reported "not exposed" no matter what was on screen, and the
+  /// caller always fell through to tapping a control it did not need.
+  ///
+  /// That misfire is destructive on the iPad two-column layout (design
+  /// §1.1), where Agents is a PUSH inside the sidebar's own `NavigationStack`
+  /// rather than a separate column: the unnecessary "BackButton" tap popped
+  /// the very page `selectTab("tab.agents")` had just navigated to, so
+  /// `agent.list` was gone by the time it was checked for. Giving each check
+  /// a full poll cycle lets it see the already-correct screen and return
+  /// without touching anything.
+  private static let exposureWait: TimeInterval = 2
+
   func revealSidebarIfNeeded(
     toExpose identifier: String,
     in app: XCUIApplication,
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
-    if waitUntilExposed(identifier, in: app, timeout: 0.25) { return }
+    if waitUntilExposed(identifier, in: app, timeout: Self.exposureWait) { return }
 
+    // iOS 26 publishes `BackButton`/`ToggleSidebar` identifiers; iOS 18
+    // exposes the back control only as an unidentified leading button, so on
+    // compact width the interactive left-edge swipe is the only reliable
+    // pop — and it is a no-op on a root screen.
     let controls = [
       app.buttons.matching(identifier: "BackButton").firstMatch,
       app.buttons.matching(identifier: "ToggleSidebar").firstMatch,
     ]
+    let isCompact = app.windows.firstMatch.frame.width < 700
     for _ in 0..<4 {
-      if waitUntilExposed(identifier, in: app, timeout: 0.5) { return }
-      guard let control = controls.first(where: { $0.exists && $0.isHittable }) else {
-        break
+      if waitUntilExposed(identifier, in: app, timeout: Self.exposureWait) { return }
+      if let control = controls.first(where: { $0.exists && $0.isHittable }) {
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        continue
       }
-      control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+      guard isCompact, app.navigationBars.firstMatch.exists else { break }
+      let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.5))
+      let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+      start.press(forDuration: 0.05, thenDragTo: end)
     }
     XCTAssertTrue(
       waitUntilExposed(identifier, in: app, timeout: 3),
@@ -536,6 +561,80 @@ class DashUITestCase: XCTestCase {
     let frame = element.frame
     XCTAssertGreaterThanOrEqual(frame.minX, appFrame.minX - 1, file: file, line: line)
     XCTAssertLessThanOrEqual(frame.maxX, appFrame.maxX + 1, file: file, line: line)
+  }
+
+  /// Scrolls the Settings list until `identifier` is on screen and hittable.
+  ///
+  /// Settings is a full-height column on compact width but a form SHEET on the
+  /// iPad two-column layout (design §1.1), and a sheet is a much shorter
+  /// viewport — rows below its fold are neither hittable nor reliably present
+  /// in the accessibility hierarchy at all. Swiping the list itself (rather
+  /// than the app) also keeps the gesture off the sheet's own drag-to-dismiss
+  /// area.
+  func scrollSettingsToElement(
+    _ identifier: String,
+    in app: XCUIApplication,
+    maxSwipes: Int = 6,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    let settingsList = element("settings.list", in: app, file: file, line: line)
+    let window = app.windows.firstMatch
+    XCTAssertTrue(
+      window.waitForExistence(timeout: 2),
+      "Expected the app window before scrolling settings",
+      file: file,
+      line: line
+    )
+    let value = app.descendants(matching: .any)[identifier]
+
+    func isExposed() -> Bool {
+      guard value.exists, value.isHittable else { return false }
+      return value.frame.intersects(settingsList.frame) && value.frame.intersects(window.frame)
+    }
+
+    for _ in 0..<maxSwipes where isExposed() == false {
+      settingsList.swipeUp()
+    }
+    XCTAssertTrue(
+      isExposed(),
+      "Expected \(identifier) to be exposed and hittable after \(maxSwipes) settings-list swipes",
+      file: file,
+      line: line
+    )
+    return value
+  }
+
+  /// Returns the conversation list's `.searchable` search field, first
+  /// scrolling the list back to the top if the search bar is hidden.
+  ///
+  /// UIKit hides a `.searchable` search bar as soon as its list scrolls
+  /// (`hidesSearchBarWhenScrolling`). On the iPad two-column layout (design
+  /// §1.1) the conversation list IS the split view's sidebar, and that column
+  /// can settle a few points scrolled once it has laid out, so the search bar
+  /// is sometimes already hidden by the time a test looks for it and never
+  /// comes back on its own — the same lookup passes or fails purely on
+  /// timing. Scrolling back to the top is what a person would do to reach it,
+  /// and it makes the lookup deterministic.
+  func revealSearchField(
+    in app: XCUIApplication,
+    maxSwipes: Int = 4,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    let field = app.searchFields.firstMatch
+    let list = app.descendants(matching: .any)["conversation.list"]
+    for _ in 0..<maxSwipes where field.exists == false {
+      guard list.exists else { break }
+      list.swipeDown()
+    }
+    XCTAssertTrue(
+      field.waitForExistence(timeout: 5),
+      "Expected the conversation search field after \(maxSwipes) downward swipes",
+      file: file,
+      line: line
+    )
+    return field
   }
 
   func scrollToElement(

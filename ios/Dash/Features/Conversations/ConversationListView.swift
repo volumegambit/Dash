@@ -410,29 +410,16 @@ struct ConversationListView: View {
   /// `AgentPickerSheet`'s doc comment.
   private func startCompose() async {
     guard isComposing == false else { return }
-    // Armed BEFORE the first `await` below: `lastUsedAgentID()` suspends, and
-    // a second tap landing in that window would otherwise pass the reentrancy
-    // guard and compose twice.
+    // Armed BEFORE the first `await` below: `composeConversation()` suspends,
+    // and a second tap landing in that window would otherwise pass the
+    // reentrancy guard and compose twice.
     isComposing = true
     defer { isComposing = false }
-    guard
-      let agentID = ComposeAgentSelection.resolve(
-        availableAgents: availableComposeAgents,
-        lastUsedAgentID: await feature.lastUsedAgentID()
-      )
-    else { return }
-    // Review fix I2: `create(agentID:)` now returns the resolved
-    // conversation id directly (or `nil` on ANY failure, including a rare
-    // tombstone-reconciliation race) rather than this call re-reading
-    // `feature.selectedID`/`mutationError` afterward — a prior version of
-    // this compared the resolved `selectedID` against its value BEFORE the
-    // call, which broke because `create(agentID:)` is idempotent per agent
-    // (composing twice with the same default/last-used agent legitimately
-    // resolves to the conversation that was already selected, which the old
-    // "did it change" check wrongly treated as failure — caught by
-    // `testAgentChipSwitchesConversationAndPersistsLastUsedAgent`).
-    guard let conversationID = await feature.create(agentID: agentID) else { return }
-    await feature.recordLastUsedAgent(agentID)
+    // `ConversationListFeature.composeConversation()` (iPad goal Phase A,
+    // Task 2) owns the last-used-agent resolution and idempotent create —
+    // see its doc comment for why callers just check the returned id rather
+    // than re-reading `feature.selectedID`/`mutationError` afterward.
+    guard let conversationID = await feature.composeConversation() else { return }
     // Phase 4 minor 2 (iOS half; web: `ConversationList.tsx` `handleCreate`):
     // drop any active search, otherwise the conversation about to be opened
     // is filtered out of the list beside it — selected, being typed into,

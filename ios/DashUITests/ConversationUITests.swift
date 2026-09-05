@@ -539,8 +539,7 @@ final class ConversationUITests: DashUITestCase {
     // the identifier (which would fail its own existence assertion first).
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
 
@@ -580,8 +579,7 @@ final class ConversationUITests: DashUITestCase {
     revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
     XCTAssertTrue(row.waitForNonExistence(timeout: 5))
