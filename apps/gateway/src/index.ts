@@ -26,13 +26,7 @@ import {
 } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
-import {
-  SwarmCoordinator,
-  builtinSubagentTypes,
-  createAgentTools,
-  createStaticResolver,
-  createSwarmTools,
-} from '@dash/swarm';
+import { SwarmCoordinator } from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -75,19 +69,10 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { isSubagentsEnabled, subagentTypesFor } from './subagent-config.js';
+import { isSubagentsEnabled } from './subagent-config.js';
+import { createSubagentExtraTools } from './subagent-tools.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
-
-/**
- * The parent tool set assumed for an agent that has no explicit `tools` list.
- * Mirrors `DEFAULT_TOOL_NAMES` in packages/swarm/src/coordinator.ts (a private
- * constant there — duplicated rather than exported so the coordinator's spawn
- * validation and this grant calculation are literally the same list). A child
- * can never be granted a tool outside its parent's set, so getting this wrong
- * would silently under- or over-grant.
- */
-const DEFAULT_PARENT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -658,45 +643,22 @@ async function main() {
             // deep-link) must pass config.name.
             getAgentId: () => agentConfig.name,
           }),
+          // The sub-agent bundle (legacy swarm four + `agent`/`send_message`),
+          // empty when this agent has sub-agents off. Built by the shared
+          // helper so the gate, the type narrowing and the parent-tool grant
+          // are the same code the integration test drives.
+          //
           // SwarmExtraTool is a structural copy of ExtraTool (details? is
           // optional there, required here) — the same duck-typed shape the
           // worker side casts in swarm-wiring.ts. Cast so the combined array
           // matches the backend's ExtraTool[] slot.
-          ...(isSubagentsEnabled(agentConfig)
-            ? ([
-                ...createSwarmTools({
-                  coordinator: swarmCoordinator,
-                  agentId,
-                  conversationId: () => backend.getCurrentSessionId() ?? '',
-                }),
-                ...createAgentTools({
-                  coordinator: swarmCoordinator,
-                  agentId,
-                  conversationId: () => backend.getCurrentSessionId() ?? '',
-                  // Narrowed to `subagents.allowedTypes` when set, so the
-                  // roster the model sees and the set it can resolve match.
-                  resolver: createStaticResolver(
-                    subagentTypesFor(agentConfig, builtinSubagentTypes()),
-                  ),
-                  // Phase A: a background child is cancelled at turn end. Task
-                  // C4 flips this to 'detached'.
-                  backgroundMode: 'turn-scoped',
-                  // A child may only be granted tools the parent itself holds.
-                  // LIVE registry read, not the `agentConfig` snapshot: a PUT
-                  // that edits `tools` does NOT evict the pool, and the merge
-                  // wrapper's `orchestratorTools` (which drives the
-                  // coordinator's validateTools) is a live read too. Reading a
-                  // stale list here would advertise a grant the spawn then
-                  // rejects — the exact mismatch grantableTools exists to
-                  // prevent. The fallback mirrors SwarmCoordinator's
-                  // DEFAULT_TOOL_NAMES (packages/swarm/src/coordinator.ts).
-                  parentTools: () =>
-                    registry.get(agentId)?.config.tools ?? [...DEFAULT_PARENT_TOOLS],
-                  // A top-level orchestrator is depth 0, so its children are 1.
-                  depth: 0,
-                }),
-              ] as unknown as ExtraTool[])
-            : []),
+          ...(createSubagentExtraTools({
+            coordinator: swarmCoordinator,
+            agentId,
+            agentConfig,
+            conversationId: () => backend.getCurrentSessionId() ?? '',
+            parentTools: () => registry.get(agentId)?.config.tools,
+          }) as unknown as ExtraTool[]),
         ],
         commandFiles,
         // Plugin hook engine — composes tool hooks onto pi's agent and fires
