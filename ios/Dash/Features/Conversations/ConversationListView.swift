@@ -37,6 +37,58 @@ struct ConversationRowActionPolicy: Equatable {
 /// it's directly unit-testable (`@testable import Dash`) the same way
 /// `ChatTranscriptSignature.of(_:)` is — SwiftUI's `.searchable` binding
 /// itself isn't unit-testable, but the actual filtering decision is a pure
+/// Compact age for a conversation row's trailing timestamp (list density
+/// 2026-09-05).
+///
+/// Replaces `Text(date, style: .relative)`, which rendered "7 hrs, 39 min" —
+/// long enough to crowd the title, and precise to the minute for something
+/// eight hours old, which nobody reads. `.relative` is also a *self-updating*
+/// text style: SwiftUI drives it on a timer, so every visible row re-rendered
+/// once a minute forever to change a digit. And it can only ever count
+/// elapsed units, so it has no way to say "Yesterday" or "Wed".
+///
+/// The ladder is elapsed-first for the first day (`now` -> `39m` -> `7h`),
+/// then calendar-based (`Yesterday` -> `Wed` -> `26 Aug`). Elapsed wins
+/// inside the first 24 hours deliberately: 20 hours before noon is late
+/// yesterday afternoon, and "20h" locates that better than "Yesterday" does.
+///
+/// Pure and fully injectable (`now`/`calendar`/`locale`) so it is directly
+/// unit-testable — see `ConversationTimestampTests`. Uses `Date.FormatStyle`
+/// rather than a cached `DateFormatter`: the latter is a mutable reference
+/// type that Swift 6 strict concurrency will not let this share.
+enum ConversationTimestamp {
+  static func label(
+    for date: Date,
+    now: Date = Date(),
+    calendar: Calendar = .current,
+    locale: Locale = .current
+  ) -> String {
+    let elapsed = now.timeIntervalSince(date)
+
+    // A device clock behind the gateway's makes `elapsed` negative; clamp
+    // rather than render "-3m".
+    guard elapsed >= 60 else { return "now" }
+    if elapsed < 3600 { return "\(Int(elapsed / 60))m" }
+    if elapsed < 86_400 { return "\(Int(elapsed / 3600))h" }
+    if calendar.isDateInYesterday(date) { return "Yesterday" }
+
+    let style = Date.FormatStyle(
+      locale: locale,
+      calendar: calendar,
+      timeZone: calendar.timeZone
+    )
+
+    let days = calendar.dateComponents([.day], from: date, to: now).day ?? 0
+    if days < 7 {
+      return date.formatted(style.weekday(.abbreviated))
+    }
+
+    let dated = style.day().month(.abbreviated)
+    let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+    return date.formatted(sameYear ? dated : dated.year())
+  }
+}
+
 /// function of `(conversations, query)`. Case-insensitive `Locale`-aware
 /// match over title + `lastMessagePreview`, mirroring the web conversation
 /// search's client-side filter (Task 1, audit #8, `ConversationList.tsx`).
@@ -128,98 +180,13 @@ struct ConversationListView: View {
         emptyState
           .listRowBackground(Color.clear)
       } else if feature.conversations.isEmpty == false {
-        Section("Conversations") {
-          ForEach(filteredConversations) { conversation in
-            conversationRow(conversation)
-              .task {
-                // Review fix (audit #9): pass the FILTERED list a search is
-                // actively rendering from, not the canonical
-                // `feature.conversations` — see `loadOlderIfNeeded`'s doc
-                // comment for why the canonical list silently stalls
-                // pagination once a query hides its tail rows.
-                await feature.loadOlderIfNeeded(
-                  currentID: conversation.id,
-                  visibleConversations: filteredConversations
-                )
-              }
-              .contextMenu {
-                let actions = actionPolicy(for: conversation)
-
-                if actions.showsRename {
-                  Button {
-                    renameTarget = conversation
-                    renameTitle = conversation.summary.title
-                  } label: {
-                    Label("Rename", systemImage: "pencil")
-                  }
-                  .disabled(actions.canRename == false)
-                  .accessibilityHint(actions.renameDisabledHint)
-                }
-
-                if actions.showsDelete {
-                  Button(role: .destructive) {
-                    deleteTarget = conversation
-                  } label: {
-                    Label("Delete", systemImage: "trash")
-                  }
-                  .disabled(actions.canDelete == false)
-                  .accessibilityHint(actions.deleteDisabledHint)
-                }
-              }
-              // Audit #10: same `ConversationRowActionPolicy` the context
-              // menu above uses — availability, disabled state, and hints
-              // stay identical across both entry points.
-              .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                let actions = actionPolicy(for: conversation)
-                if actions.showsRename {
-                  Button {
-                    renameTarget = conversation
-                    renameTitle = conversation.summary.title
-                  } label: {
-                    Label("Rename", systemImage: "pencil")
-                  }
-                  .disabled(actions.canRename == false)
-                  .accessibilityHint(actions.renameDisabledHint)
-                  .tint(DashTheme.accent)
-                }
-              }
-              .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                let actions = actionPolicy(for: conversation)
-                if actions.showsDelete {
-                  Button(role: .destructive) {
-                    deleteTarget = conversation
-                  } label: {
-                    Label("Delete", systemImage: "trash")
-                  }
-                  .disabled(actions.canDelete == false)
-                  .accessibilityHint(actions.deleteDisabledHint)
-                }
-              }
-          }
-
-          if filteredConversations.isEmpty {
-            ContentUnavailableView.search(text: searchText)
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
-              // Review fix (audit #9): with zero locally-matching rows
-              // there's no row left to hang the usual near-the-tail
-              // pagination trigger off, so eagerly keep loading older pages
-              // while this empty-results state is showing — an unloaded
-              // page might still contain a match. Keyed on `nextCursor` so
-              // it re-fires after each successful page load and stops on
-              // its own once a match appears (this view disappears) or
-              // pages run out (`nextCursor` settles at `nil`).
-              .task(id: feature.nextCursor) {
-                await feature.loadOlderForEmptySearchResults()
-              }
-          } else if feature.isLoadingOlder {
-            HStack {
-              Spacer()
-              ProgressView("Loading older conversations")
-              Spacer()
-            }
-            .listRowSeparator(.hidden)
-          }
+        // The nav title already says "Conversations"; a section header
+        // repeating it only earns its place when "Needs Recovery" is also
+        // on screen and the two need telling apart.
+        if feature.recoverablePendingSends.isEmpty {
+          Section { conversationSectionContent }
+        } else {
+          Section("Conversations") { conversationSectionContent }
         }
       }
     }
@@ -476,6 +443,102 @@ struct ConversationListView: View {
     }
   }
 
+
+  @ViewBuilder
+  private var conversationSectionContent: some View {
+    ForEach(filteredConversations) { conversation in
+      conversationRow(conversation)
+        .task {
+          // Review fix (audit #9): pass the FILTERED list a search is
+          // actively rendering from, not the canonical
+          // `feature.conversations` — see `loadOlderIfNeeded`'s doc
+          // comment for why the canonical list silently stalls
+          // pagination once a query hides its tail rows.
+          await feature.loadOlderIfNeeded(
+            currentID: conversation.id,
+            visibleConversations: filteredConversations
+          )
+        }
+        .contextMenu {
+          let actions = actionPolicy(for: conversation)
+
+          if actions.showsRename {
+            Button {
+              renameTarget = conversation
+              renameTitle = conversation.summary.title
+            } label: {
+              Label("Rename", systemImage: "pencil")
+            }
+            .disabled(actions.canRename == false)
+            .accessibilityHint(actions.renameDisabledHint)
+          }
+
+          if actions.showsDelete {
+            Button(role: .destructive) {
+              deleteTarget = conversation
+            } label: {
+              Label("Delete", systemImage: "trash")
+            }
+            .disabled(actions.canDelete == false)
+            .accessibilityHint(actions.deleteDisabledHint)
+          }
+        }
+        // Audit #10: same `ConversationRowActionPolicy` the context
+        // menu above uses — availability, disabled state, and hints
+        // stay identical across both entry points.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+          let actions = actionPolicy(for: conversation)
+          if actions.showsRename {
+            Button {
+              renameTarget = conversation
+              renameTitle = conversation.summary.title
+            } label: {
+              Label("Rename", systemImage: "pencil")
+            }
+            .disabled(actions.canRename == false)
+            .accessibilityHint(actions.renameDisabledHint)
+            .tint(DashTheme.accent)
+          }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+          let actions = actionPolicy(for: conversation)
+          if actions.showsDelete {
+            Button(role: .destructive) {
+              deleteTarget = conversation
+            } label: {
+              Label("Delete", systemImage: "trash")
+            }
+            .disabled(actions.canDelete == false)
+            .accessibilityHint(actions.deleteDisabledHint)
+          }
+        }
+    }
+
+    if filteredConversations.isEmpty {
+      ContentUnavailableView.search(text: searchText)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        // Review fix (audit #9): with zero locally-matching rows
+        // there's no row left to hang the usual near-the-tail
+        // pagination trigger off, so eagerly keep loading older pages
+        // while this empty-results state is showing — an unloaded
+        // page might still contain a match. Keyed on `nextCursor` so
+        // it re-fires after each successful page load and stops on
+        // its own once a match appears (this view disappears) or
+        // pages run out (`nextCursor` settles at `nil`).
+        .task(id: feature.nextCursor) {
+          await feature.loadOlderForEmptySearchResults()
+        }
+    } else if feature.isLoadingOlder {
+      HStack {
+        Spacer()
+        ProgressView("Loading older conversations")
+        Spacer()
+      }
+      .listRowSeparator(.hidden)
+    }
+  }
+
   private func conversationRow(_ conversation: CachedConversation) -> some View {
     Button {
       appModel.openConversation(
@@ -483,35 +546,68 @@ struct ConversationListView: View {
         presentation: presentation
       )
     } label: {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .firstTextBaseline) {
+      // Two lines, Mail-style (list density 2026-09-05). This was four —
+      // an unbounded-height title, the agent, the preview, and a status
+      // badge — which fit about four and a half conversations on a phone.
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          // `lineLimit(1)`: titles are generated from the conversation and
+          // run long ("I can't check your emails — I don't have access to
+          // your"), so an unbounded title silently doubled a row's height.
           Text(conversation.summary.title)
             .font(.headline)
             .foregroundStyle(.primary)
-          Spacer()
-          Text(conversation.summary.updatedAt, style: .relative)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          Text(ConversationTimestamp.label(for: conversation.summary.updatedAt))
             .font(.caption)
             .foregroundStyle(.secondary)
+            .layoutPriority(1)
         }
-        Text(conversation.summary.agentName)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-        if let preview = conversation.summary.lastMessagePreview, preview.isEmpty == false {
-          Text(preview)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-        }
-        HStack {
-          StatusBadge(
-            title: LocalizedStringKey(conversation.summary.status.displayName),
-            systemImage: conversation.summary.status.systemImage,
-            color: conversation.summary.status.color
-          )
-          if feature.isAuthoritative == false {
-            Label("Cached", systemImage: "internaldrive")
-              .font(.caption)
+
+        // Agent and preview shared one style (`.subheadline`/`.secondary`),
+        // so four grey lines of equal weight stacked up with nothing to
+        // scan by. One line, with the agent carrying the emphasis: it is
+        // the stable identifier you look for, the preview is the detail.
+        // The agent takes the emphasis (Messages puts the sender here) and
+        // the preview stays `.secondary`. Demoting the preview to
+        // `.tertiary` would have read as cleaner hierarchy but is roughly
+        // 3.6:1 against this app's black ground — under the 4.5:1 body-text
+        // floor. Weight and colour carry the hierarchy instead of dimming.
+        HStack(spacing: 0) {
+          Text(conversation.summary.agentName)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
+          if let preview = conversation.summary.lastMessagePreview, preview.isEmpty == false {
+            Text(verbatim: " · ")
+              .font(.subheadline)
               .foregroundStyle(.secondary)
+            Text(preview)
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .lineLimit(1)
+        .truncationMode(.tail)
+
+        // Only states that change what you would do next. `idle` was
+        // rendered on every row, and a badge that is always present
+        // carries no information while costing every row a line.
+        if conversation.summary.status != .idle || feature.isAuthoritative == false {
+          HStack {
+            if conversation.summary.status != .idle {
+              StatusBadge(
+                title: LocalizedStringKey(conversation.summary.status.displayName),
+                systemImage: conversation.summary.status.systemImage,
+                color: conversation.summary.status.color
+              )
+            }
+            if feature.isAuthoritative == false {
+              Label("Cached", systemImage: "internaldrive")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
           }
         }
       }
@@ -525,6 +621,9 @@ struct ConversationListView: View {
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
     .accessibilityIdentifier("conversation.row.\(conversation.id)")
+    // Left the separator starting a third of the way across the row,
+    // aligned under the status badge rather than under the text column.
+    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
   }
 
   private func recoveryRow(_ recovery: RecoverablePendingSend) -> some View {
