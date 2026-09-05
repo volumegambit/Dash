@@ -4612,6 +4612,17 @@ struct ChatFeatureTests {
     #expect(second.isShutdown)
   }
 
+  @Test("scroll anchor is remembered across re-hosting and cleared on leave")
+  func scrollAnchorLifecycle() async {
+    let feature = makeFeature()
+    feature.scrollAnchorMessageID = "msg-7"
+    #expect(feature.scrollAnchorMessageID == "msg-7")
+    await feature.disappear()
+    #expect(feature.scrollAnchorMessageID == "msg-7", "re-hosting keeps the anchor")
+    feature.clearScrollAnchor()
+    #expect(feature.scrollAnchorMessageID == nil)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),

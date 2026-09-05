@@ -178,6 +178,12 @@ struct ChatView: View {
       Task {
         await feature.disappear()
         guard stillNavigatedTo == false else { return }
+        // Scroll anchor (iPad goal Phase A, Task 4): only drop the
+        // remembered position when the conversation is genuinely being
+        // left, mirroring the compose-cleanup branch right below — a
+        // transient re-host (size-class flip) also fires `onDisappear` but
+        // keeps `stillNavigatedTo == true`, so the anchor survives it.
+        feature.clearScrollAnchor()
         await appModel.conversationListFeature?.discardIfUnusedComposeCreation(
           id: conversationID,
           hasActivity: hasActivity
@@ -341,13 +347,37 @@ struct ChatView: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isNearBottom)
         .onAppear {
-          scrollToBottom(proxy, animated: false)
+          // Scroll anchor (iPad goal Phase A, Task 4): a re-host (size-class
+          // flip) recreates this view's local `@State`, so `isNearBottom`
+          // resets to its `true` default — but the ScrollView itself starts
+          // at content offset 0 (its top), so the very first
+          // `onScrollGeometryChange`/preference report reflects reality
+          // before this closure decides what to do. If the feature
+          // remembers an anchor and we're not sitting at the bottom,
+          // restore it; otherwise keep the existing pinned-to-bottom
+          // behavior.
+          if let anchor = feature.scrollAnchorMessageID, isNearBottom == false {
+            proxy.scrollTo(anchor, anchor: .top)
+          } else {
+            scrollToBottom(proxy, animated: false)
+          }
         }
         .onChange(of: transcriptSignature) { oldValue, newValue in
           guard oldValue != newValue, isNearBottom else { return }
           scrollToBottom(proxy, animated: true)
         }
     }
+  }
+
+  /// Two-way binding onto `feature.scrollAnchorMessageID` for
+  /// `scrollPosition(id:anchor:)` below: SwiftUI both reads it (to restore
+  /// position on a re-host) and writes it (as the user scrolls, tracking
+  /// the topmost visible message) through this binding.
+  private var anchorBinding: Binding<String?> {
+    Binding(
+      get: { feature.scrollAnchorMessageID },
+      set: { feature.scrollAnchorMessageID = $0 }
+    )
   }
 
   /// Keeps `isNearBottom` accurate on every supported OS version (audit #4,
@@ -447,12 +477,14 @@ struct ChatView: View {
             }
           )
       }
+      .scrollTargetLayout()
       .frame(maxWidth: DashTheme.Layout.readableWidth)
       .padding(.horizontal)
       .padding(.vertical, 12)
       .frame(maxWidth: .infinity)
     }
     .scrollDismissesKeyboard(.interactively)
+    .scrollPosition(id: anchorBinding, anchor: .top)
     .accessibilityIdentifier("chat.transcript")
   }
 

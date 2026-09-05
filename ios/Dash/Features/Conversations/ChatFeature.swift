@@ -573,6 +573,16 @@ final class ChatFeature {
   private(set) var retryAt: Date?
   private(set) var pendingSendRecovery: RecoverablePendingSend?
 
+  /// Scroll anchor (iPad goal Phase A, Task 4): the id of the last visible
+  /// transcript message, tracked by `ChatView`'s `scrollPosition(id:)`
+  /// binding. View-owned, not persisted — it only needs to survive a
+  /// re-host of `ChatView` within the same process, which is exactly what
+  /// this cached-per-conversation `ChatFeature` instance already does (see
+  /// `AppModel.chatFeatures`). Cleared by `clearScrollAnchor()`, which
+  /// `ChatView`'s `onDisappear` only calls when the conversation is
+  /// genuinely being left, not on a transient re-host.
+  var scrollAnchorMessageID: String?
+
   var canSend: Bool {
     guard
       sendAuthorityIsAvailable,
@@ -820,6 +830,15 @@ final class ChatFeature {
     guard isCurrentAttachmentIntent(attachmentIntent, attached: false) else { return }
     guard state.activeTurnID == nil else { return }
     await suspendForDetachment()
+  }
+
+  /// Drops the remembered scroll position. Callers must only do this when
+  /// the conversation is genuinely being left (see `ChatView`'s
+  /// `onDisappear` and its `stillNavigatedTo` check) — a transient re-host
+  /// must leave `scrollAnchorMessageID` intact so the transcript can
+  /// restore its position.
+  func clearScrollAnchor() {
+    scrollAnchorMessageID = nil
   }
 
   func loadOlder() async {
