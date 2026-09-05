@@ -34,7 +34,13 @@ export function SetupWizard({ needsSetup, onComplete }: SetupWizardProps): JSX.E
   const [provider, setProvider] = useState<RuntimePluginProvider | null>(null);
 
   return (
-    <div className="flex h-full items-center justify-center bg-background text-foreground">
+    // `h-screen`, not `h-full`: this renders straight from the route with no
+    // sized ancestor, so `h-full` collapsed to content height and the
+    // `items-center` did nothing — the card sat at the top of the window with
+    // roughly half of it empty below (captured via the renderer harness,
+    // 2026-09-05). The loading state beside it in `__root.tsx` already uses
+    // `h-screen`; this matches it.
+    <div className="flex h-screen items-center justify-center bg-background text-foreground">
       <div className="w-full max-w-md px-4">
         {step === 'keychain-consent' && (
           <KeychainConsentStep
