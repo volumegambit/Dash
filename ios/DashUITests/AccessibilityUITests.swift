@@ -93,10 +93,16 @@ final class AccessibilityUITests: DashUITestCase {
     let message = element("chat.message.assistant-ui-turn", in: app)
     XCTAssertEqual(message.label, "Assistant message, streaming")
     XCTAssertFalse(app.descendants(matching: .any)["chat.final.response"].exists)
-    XCTAssertTrue(element("chat.question.ui-question", in: app).buttons["Ship it"].isEnabled)
-    XCTAssertEqual(element("chat.tool.ui-tool", in: app).label, "Tool Search, Tool succeeded")
+    // 20s, not the helper's default 8: these cards only exist once the
+    // scripted stream has delivered them, and a contended CI runner can take
+    // longer than the default to get there (passes locally on the same iPad).
+    XCTAssertTrue(
+      element("chat.question.ui-question", in: app, timeout: 20).buttons["Ship it"].isEnabled)
     XCTAssertEqual(
-      element("chat.worker.ui-worker", in: app).label, "Worker researcher, Worker running")
+      element("chat.tool.ui-tool", in: app, timeout: 20).label, "Tool Search, Tool succeeded")
+    XCTAssertEqual(
+      element("chat.worker.ui-worker", in: app, timeout: 20).label,
+      "Worker researcher, Worker running")
 
     let final = element("chat.final.response", in: app, timeout: 8)
     XCTAssertEqual(final.label, "Recovered exactly once.")
