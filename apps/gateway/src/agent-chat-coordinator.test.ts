@@ -729,6 +729,52 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await agents.stop();
   });
 
+  // The orchestrator's MCP grant must reach attach(), or the coordinator's
+  // validateMcpTools bound stays empty and refuses every MCP-carrying spawn —
+  // the exact half-wired state that kept the MCP path dormant.
+  it('passes the swarm gate orchestratorMcpTools straight into attach()', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'orch-agent',
+      model: MODEL,
+      systemPrompt: 'x',
+      swarm: { enabled: true },
+    });
+    const { factory } = makeWorkerFactory();
+    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const attachSpy = vi.spyOn(coordinator, 'attach');
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend([]),
+      swarm: {
+        coordinator,
+        isEnabled: () => true,
+        orchestratorMcpTools: (agentId) => (agentId === id ? ['github__pr'] : []),
+      },
+    });
+
+    for await (const _ of agents.chat({ agentId: id, conversationId: 'c1', text: 'hi' })) {
+      /* drain */
+    }
+    expect(attachSpy.mock.calls[0]?.[0].orchestratorMcpTools).toEqual(['github__pr']);
+    await agents.stop();
+  });
+
+  it('leaves attach() undeclared when the gate reports no MCP tools', async () => {
+    const { id, coordinator, controller, agents } = setup({ swarmEnabled: true });
+    const attachSpy = vi.spyOn(coordinator, 'attach');
+    const gen = agents.chat({ agentId: id, conversationId: 'c1', text: 'hi' });
+    const first = gen.next();
+    controller.end();
+    await first;
+    while (!(await gen.next()).done) {
+      /* drain */
+    }
+    expect(attachSpy.mock.calls[0]?.[0].orchestratorMcpTools).toBeUndefined();
+    await agents.stop();
+  });
+
   // (b) Adversarial interleaving: every orchestrator AND worker event appears
   // exactly once; each source's relative order is preserved.
   it('(b) interleaves orchestrator and worker events with no loss, per-source order preserved', async () => {

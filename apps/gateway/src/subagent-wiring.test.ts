@@ -1,17 +1,22 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { AgentBackend, DashAgentConfig, DashAgentConfigResolver } from '@dash/agent';
+import type {
+  AgentBackend,
+  AgentState,
+  DashAgentConfig,
+  DashAgentConfigResolver,
+} from '@dash/agent';
 import type { SwarmExtraTool, WorkerSpec } from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
 import {
-  type GatewayWorkerFactoryDeps,
-  buildWorkerBackendArgs,
+  type ChildBackendDeps,
+  buildChildBackendOptions,
   buildWorkerPreamble,
   createGatewayWorkerFactory,
   workerSessionDir,
-} from './swarm-wiring.js';
+} from './subagent-wiring.js';
 
 /**
  * Capture every resolver `createGatewayWorkerFactory` hands to `DashAgent`,
@@ -19,12 +24,23 @@ import {
  * inspected without booting pi. `PiAgentBackend` is stubbed for the same
  * reason; everything else in @dash/agent stays real.
  */
-const captured = vi.hoisted(() => ({ resolvers: [] as DashAgentConfigResolver[] }));
+const captured = vi.hoisted(() => ({
+  resolvers: [] as DashAgentConfigResolver[],
+  states: [] as AgentState[],
+}));
 
 vi.mock('@dash/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@dash/agent')>();
   class FakePiAgentBackend {
+    readonly name = 'piagent';
+    static fromOptions(): FakePiAgentBackend {
+      return new FakePiAgentBackend();
+    }
     async start(): Promise<void> {}
+    run(state: AgentState): AsyncGenerator<never> {
+      captured.states.push(state);
+      return (async function* empty() {})();
+    }
     abort(): void {}
     async stop(): Promise<void> {}
   }
@@ -62,9 +78,28 @@ function makeSpec(overrides: Partial<WorkerSpec> = {}): WorkerSpec {
   };
 }
 
-const deps: GatewayWorkerFactoryDeps = {
+const parentSkillDirs = ['/parent/skills', '/plugin/skills'];
+const parentSkillFiles = [{ file: '/plugin/commands/triage.md', namespace: 'demo' }];
+const hookRunner = {
+  hasHooks: true,
+  runPreToolUse: async () => ({ block: false }),
+  runPostToolUse: async () => ({ block: false }),
+  runSessionStart: async () => ({}),
+  runStop: async () => ({}),
+};
+const pluginModelCatalog = { resolve: () => null };
+/** Structural stand-in for the gateway's shared McpManager. */
+// biome-ignore lint/suspicious/noExplicitAny: only identity is asserted
+const mcpManager = { getTools: () => [] } as any;
+
+const deps: ChildBackendDeps = {
   credentialProvider: async () => ({ anthropic: 'sk-test' }),
   dataDir: '/data/dir',
+  mcpManager,
+  pluginModelCatalog,
+  hookRunner,
+  getParentSkillDirs: () => parentSkillDirs,
+  getExtraSkillFiles: () => parentSkillFiles,
 };
 
 describe('buildWorkerPreamble', () => {
@@ -130,6 +165,7 @@ describe('createGatewayWorkerFactory config resolver', () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'swarm-factory-'));
     captured.resolvers.length = 0;
+    captured.states.length = 0;
   });
 
   afterEach(async () => {
@@ -155,6 +191,52 @@ describe('createGatewayWorkerFactory config resolver', () => {
     expect(config.model).toBe('anthropic/claude-sonnet-4-20250514');
     expect(config.systemPrompt).toBe(buildWorkerPreamble(makeSpec()));
   });
+
+  /**
+   * Ruling 1: the `memory.enabled` flag is INERT unless the child config also
+   * carries a `workspace` — `DashAgent.chat` gates the preamble on BOTH. These
+   * two drive the real factory end to end (real DashAgent, real
+   * buildMemoryPreamble, a real MEMORY.md on disk) and read the system prompt
+   * the backend was actually handed.
+   */
+  async function systemPromptFor(spec: WorkerSpec): Promise<string> {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
+    const worker = await factory(spec);
+    for await (const _ of worker.chat('go')) {
+      /* the fake backend yields nothing */
+    }
+    const state = captured.states.at(-1);
+    if (!state) throw new Error('the worker backend never ran');
+    return state.systemPrompt;
+  }
+
+  it('a general-purpose child reads the project MEMORY.md', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'swarm-ws-'));
+    try {
+      await writeFile(join(workspace, 'MEMORY.md'), '- 2026-09-05: ship the thing.\n');
+      const prompt = await systemPromptFor(
+        makeSpec({ subagentType: 'general-purpose', workspace }),
+      );
+      expect(prompt).toContain('ship the thing.');
+      expect(prompt).toContain('persistent memory file');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('a skipMemory child (Explore / Plan) does NOT read it', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'swarm-ws-'));
+    try {
+      await writeFile(join(workspace, 'MEMORY.md'), '- 2026-09-05: ship the thing.\n');
+      const prompt = await systemPromptFor(
+        makeSpec({ subagentType: 'Explore', skipMemory: true, workspace }),
+      );
+      expect(prompt).not.toContain('ship the thing.');
+      expect(prompt).not.toContain('persistent memory file');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('workerSessionDir', () => {
@@ -166,52 +248,131 @@ describe('workerSessionDir', () => {
   });
 });
 
-describe('buildWorkerBackendArgs (stripped path)', () => {
-  it('passes config with worker model / preamble / tools only', () => {
+describe('buildChildBackendOptions (definition-driven path)', () => {
+  it('passes config with the child model / preamble / tools', () => {
     const spec = makeSpec();
-    const args = buildWorkerBackendArgs(spec, deps);
-    const config = args[0];
+    const { config } = buildChildBackendOptions(spec, deps);
     expect(config.model).toBe(spec.model);
     expect(config.systemPrompt).toBe(buildWorkerPreamble(spec));
-    expect(config.tools).toBe(spec.tools);
-    // No MCP/skills leak into the config object either.
+    expect(config.tools).toEqual(spec.tools);
     expect(config.mcpServers).toBeUndefined();
-    expect(config.skills).toBeUndefined();
   });
 
-  it('forwards the credential provider and the worker session dir', () => {
+  it('forwards the credential provider and the child session dir', () => {
     const spec = makeSpec();
-    const args = buildWorkerBackendArgs(spec, deps);
-    expect(args[1]).toBe(deps.credentialProvider); // providerApiKeysSource
-    expect(args[2]).toBe(deps.logger); // logger (undefined here)
-    expect(args[3]).toBe(workerSessionDir(deps.dataDir, spec)); // sessionDir
-  });
-
-  it('strips every MCP / skills / hooks / model-catalog slot to undefined', () => {
-    const spec = makeSpec();
-    const args = buildWorkerBackendArgs(spec, deps);
-    expect(args[4]).toBeUndefined(); // managedSkillsDir
-    expect(args[5]).toBeUndefined(); // mcpManager
-    expect(args[6]).toBeUndefined(); // mcpConfigStore
-    expect(args[7]).toBeUndefined(); // mcpAgentContext
-    expect(args[9]).toBeUndefined(); // extraSkillFiles / command files
-    expect(args[10]).toBeUndefined(); // hookRunner
-    expect(args[11]).toBeUndefined(); // pluginModelCatalog
+    const options = buildChildBackendOptions(spec, deps);
+    expect(options.providerApiKeysSource).toBe(deps.credentialProvider);
+    expect(options.logger).toBe(deps.logger);
+    expect(options.sessionDir).toBe(workerSessionDir(deps.dataDir, spec));
   });
 
   it('forwards ONLY spec.extraTools as the backend extra tools', () => {
     const spec = makeSpec();
-    const args = buildWorkerBackendArgs(spec, deps);
-    // Same array reference — the coordinator-built ask_orchestrator tool.
-    expect(args[8]).toBe(spec.extraTools);
-    expect((args[8] as unknown[]).length).toBe(1);
+    const options = buildChildBackendOptions(spec, deps);
+    expect(options.extraTools).toBe(spec.extraTools);
+    expect(options.extraTools?.length).toBe(1);
   });
 
   it('forwards a provided logger', () => {
     const logger = { info() {}, warn() {}, error() {} };
     const spec = makeSpec();
-    const args = buildWorkerBackendArgs(spec, { ...deps, logger });
-    expect(args[2]).toBe(logger);
+    expect(buildChildBackendOptions(spec, { ...deps, logger }).logger).toBe(logger);
+  });
+
+  // --- Ruling 3: load_skill must actually resolve for a granted child ------
+
+  it('gives the child the parent skill dirs and extra skill files', () => {
+    const options = buildChildBackendOptions(makeSpec(), deps);
+    expect(options.config.skills?.paths).toEqual(parentSkillDirs);
+    expect(options.extraSkillFiles).toEqual(parentSkillFiles);
+  });
+
+  it('never gives the child a writable managed skills dir', () => {
+    // create_skill / install_skill / remove_skill all gate on managedSkillsDir
+    // in buildCustomTools, so leaving it undefined is what makes the child
+    // read-only over skills — no allow-list entry can re-enable them.
+    expect(buildChildBackendOptions(makeSpec(), deps).managedSkillsDir).toBeUndefined();
+    const greedy = makeSpec({ tools: ['read', 'create_skill', 'install_skill', 'remove_skill'] });
+    expect(buildChildBackendOptions(greedy, deps).managedSkillsDir).toBeUndefined();
+  });
+
+  // --- Ruling 4: the child inherits the parent's hook runner ---------------
+
+  it('gives the child the parent hook runner and plugin model catalog', () => {
+    const options = buildChildBackendOptions(makeSpec(), deps);
+    expect(options.hookRunner).toBe(hookRunner);
+    expect(options.pluginModelCatalog).toBe(pluginModelCatalog);
+  });
+
+  // --- Ruling 2: the MCP half stops being dormant --------------------------
+
+  it('grants the mcpManager plus a server + tool allow-list when spec.mcpTools is set', () => {
+    const spec = makeSpec({ mcpTools: ['github__pr', 'github__issue'] });
+    const { config, mcpManager: manager } = buildChildBackendOptions(spec, deps);
+    expect(manager).toBe(mcpManager);
+    expect(config.assignedMcpServers).toEqual(['github']);
+    expect(config.mcpToolAllowlist).toEqual(['github__pr', 'github__issue']);
+    // `mcp` is the gate buildCustomTools reads before registering ANY MCP tool.
+    expect(config.tools).toContain('mcp');
+  });
+
+  it('derives one server entry per distinct prefix', () => {
+    const spec = makeSpec({ mcpTools: ['github__pr', 'linear__issue', 'github__merge'] });
+    const { config } = buildChildBackendOptions(spec, deps);
+    expect(config.assignedMcpServers).toEqual(['github', 'linear']);
+  });
+
+  it('a child with no mcpTools gets no manager, no servers and no mcp gate', () => {
+    const { config, mcpManager: manager } = buildChildBackendOptions(makeSpec(), deps);
+    expect(manager).toBeUndefined();
+    expect(config.assignedMcpServers).toBeUndefined();
+    expect(config.mcpToolAllowlist).toBeUndefined();
+    expect(config.tools).not.toContain('mcp');
+  });
+
+  it('an empty mcpTools array is treated as no MCP at all', () => {
+    const { config, mcpManager: manager } = buildChildBackendOptions(
+      makeSpec({ mcpTools: [] }),
+      deps,
+    );
+    expect(manager).toBeUndefined();
+    expect(config.tools).not.toContain('mcp');
+  });
+
+  it('never gives the child the MCP MANAGEMENT slots', () => {
+    // mcp_add_server / mcp_list_servers / mcp_remove_server all require BOTH
+    // mcpConfigStore and mcpAgentContext; withholding them makes the whole
+    // management family unreachable for a child, however its tools list reads.
+    const spec = makeSpec({
+      mcpTools: ['github__pr'],
+      tools: ['read', 'mcp_add_server', 'mcp_remove_server'],
+    });
+    const options = buildChildBackendOptions(spec, deps);
+    expect(options.mcpConfigStore).toBeUndefined();
+    expect(options.mcpAgentContext).toBeUndefined();
+  });
+
+  it('the tool allow-list is exactly the resolved grant, never the whole server', () => {
+    // The B4 invariant, restated for MCP: `github__pr` must not drag
+    // `github__merge` along just because they share a server.
+    const spec = makeSpec({ mcpTools: ['github__pr'] });
+    const { config } = buildChildBackendOptions(spec, deps);
+    expect(config.mcpToolAllowlist).toEqual(['github__pr']);
+    expect(config.mcpToolAllowlist).not.toContain('github__merge');
+  });
+});
+
+describe('buildChildBackendOptions memory policy', () => {
+  it('sets the child workspace so the memory preamble can resolve', () => {
+    const spec = makeSpec({ workspace: '/ws/project' });
+    expect(buildChildBackendOptions(spec, deps).config.workspace).toBe('/ws/project');
+  });
+
+  it('marks memory off for skipMemory children and on for the rest', () => {
+    expect(buildChildBackendOptions(makeSpec({ skipMemory: true }), deps).config.memory).toEqual({
+      enabled: false,
+    });
+    expect(buildChildBackendOptions(makeSpec(), deps).config.memory).toEqual({ enabled: true });
   });
 });
 

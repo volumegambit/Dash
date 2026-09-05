@@ -46,6 +46,16 @@ export interface SubagentExtraToolsOptions {
    */
   parentTools: () => string[] | undefined;
   /**
+   * LIVE read of the fully-qualified `server__tool` names the parent itself
+   * holds. Live for the same reason as `parentTools`: the merge wrapper's
+   * `orchestratorMcpTools` (which drives `validateMcpTools`) is a live read,
+   * and the two MUST agree — a context that advertises more than the
+   * attachment declared makes every MCP-carrying spawn fail closed.
+   *
+   * Unset (or `[]`) means the parent has no MCP tools, so no child gets any.
+   */
+  parentMcpTools?: () => string[];
+  /**
    * LIVE read of the parent's model, for `model: inherit` and for the fallback
    * when a per-call alias is unconfigured.
    */
@@ -93,11 +103,12 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       // configurable on the parent but are never passed down.
       parentContext: () => ({
         builtinTools: parentBuiltinTools(opts.parentTools()),
-        // The gateway does not thread the orchestrator's MCP tools into
-        // `attach()` yet, and the coordinator's `validateMcpTools` fails closed
-        // on an empty list, so advertising any here would promise a grant the
-        // spawn refuses. Fill this in with the same list `attach()` gets.
-        mcpTools: [],
+        // The SAME list `attach()` receives as `orchestratorMcpTools` (both are
+        // built by `orchestratorMcpToolNames` in the gateway entrypoint). The
+        // coordinator's `validateMcpTools` fails closed on anything the
+        // attachment did not declare, so a divergence here would refuse every
+        // MCP-carrying spawn.
+        mcpTools: opts.parentMcpTools?.() ?? [],
         depth: ORCHESTRATOR_DEPTH,
         maxDepth: MAX_DEPTH,
       }),
@@ -127,6 +138,7 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
 export function createSwarmGate(
   coordinator: SwarmCoordinator,
   registry: AgentRegistry,
+  listMcpToolNames: () => string[] = () => [],
 ): AgentChatCoordinatorSwarm {
   return {
     coordinator,
@@ -134,5 +146,29 @@ export function createSwarmGate(
       const entry = registry.get(agentId);
       return !!entry && isSubagentsEnabled(entry.config);
     },
+    orchestratorMcpTools: (agentId) =>
+      orchestratorMcpToolNames(registry.get(agentId)?.config, listMcpToolNames),
   };
+}
+
+/**
+ * The fully-qualified `server__tool` names an orchestrator actually holds.
+ *
+ * Mirrors `PiAgentBackend.buildCustomTools` exactly: MCP tools are registered
+ * only when the agent's tool list names the `mcp` gate — which is NOT one of
+ * the default tools, so an agent that configured none gets an empty list — and
+ * the gateway constructs its chat-path backends without `assignedMcpServers`,
+ * so a gated agent sees every tool of the shared manager.
+ *
+ * This is the ONE definition of the parent's MCP grant. Both the `attach()`
+ * bound (`orchestratorMcpTools`, checked by `validateMcpTools`) and the spawn
+ * resolver's `ParentToolContext.mcpTools` read it, so the child grant can never
+ * be resolved against a wider set than the coordinator will accept.
+ */
+export function orchestratorMcpToolNames(
+  config: GatewayAgentConfig | undefined,
+  listMcpToolNames: () => string[],
+): string[] {
+  if (!config?.tools?.includes('mcp')) return [];
+  return listMcpToolNames();
 }

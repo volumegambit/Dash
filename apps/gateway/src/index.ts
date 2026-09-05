@@ -69,8 +69,12 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
-import { createGatewayWorkerFactory } from './swarm-wiring.js';
+import {
+  createSubagentExtraTools,
+  createSwarmGate,
+  orchestratorMcpToolNames,
+} from './subagent-tools.js';
+import { createGatewayWorkerFactory } from './subagent-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 async function main() {
@@ -386,6 +390,42 @@ async function main() {
     swarmPokeLastEmit.set(runId, now);
     eventBus.emit({ type: 'swarm:run-changed', agentId, runId });
   };
+  /**
+   * The names of the MCP tools the shared manager currently exposes. Read
+   * LIVE (never snapshotted) so a server added or removed mid-session is
+   * reflected on the next spawn.
+   */
+  const listMcpToolNames = (): string[] => mcpManager.getTools().map((t) => t.name);
+  /**
+   * The READ-ONLY skill roots a child of `spec.agentName` may discover: that
+   * agent's configured skill paths, the plugin skill dirs its `plugins`
+   * selection allows, and the agent's own managed skills dir — the last one as
+   * a READ path only, so `load_skill` resolves the parent's managed skills
+   * while `create_skill` / `install_skill` / `remove_skill` (which gate on the
+   * backend's `managedSkillsDir` slot) stay unreachable for the child.
+   *
+   * Per-parent, not gateway-wide: a child of agent A must not discover agent
+   * B's managed skills. Reads `wiringState` LIVE inside the closure (same
+   * reload contract as the chat-path backend factory).
+   */
+  const parentSkillWiring = (spec: { agentName: string }) => {
+    const parentConfig = registry.findByName(spec.agentName)?.config;
+    const { skillDirs, commandFiles } = filterPluginsByAgent(
+      parentConfig?.plugins,
+      wiringState.skillDirs,
+      wiringState.commandFiles,
+      wiringState.skillDirsByPlugin,
+      wiringState.agentDefFiles,
+    );
+    return {
+      paths: [
+        ...(parentConfig?.skills?.paths ?? []),
+        ...skillDirs,
+        resolve(dataDir, 'skills', spec.agentName),
+      ],
+      commandFiles,
+    };
+  };
   const swarmCoordinator = new SwarmCoordinator({
     workerFactory: createGatewayWorkerFactory({
       credentialProvider: swarmCredentialProvider,
@@ -393,7 +433,24 @@ async function main() {
       // No logger: the gateway's StructuredLogger (from @dash/logging) is not
       // assignable to @dash/agent's Logger (different `error` arity), and the
       // chat-path PiAgentBackend is likewise constructed with an undefined
-      // logger — workers stay consistent with that.
+      // logger — children stay consistent with that.
+      //
+      // The shared MCP manager. `buildChildBackendOptions` hands it on ONLY to
+      // a child whose resolved grant names MCP tools, and narrows that child to
+      // exactly those tools (assignedMcpServers + mcpToolAllowlist).
+      mcpManager,
+      // Plugin wiring read LAZILY through getters: a reload reassigns
+      // `wiringState`, and a child spawned afterwards must observe the new hook
+      // engine / model catalog. Capturing either into a boot-time const would
+      // make reload a silent no-op for children.
+      get pluginModelCatalog() {
+        return wiringState.pluginModelCatalog;
+      },
+      get hookRunner() {
+        return wiringState.hookEngine;
+      },
+      getParentSkillDirs: (spec) => parentSkillWiring(spec).paths,
+      getExtraSkillFiles: (spec) => parentSkillWiring(spec).commandFiles,
     }),
     // EventLogStore.append is synchronous (returns the assigned seq); the swarm
     // sink expects a Promise. Wrap so the coordinator's fire-and-forget
@@ -471,7 +528,7 @@ async function main() {
     // true for every agent that has not explicitly turned them off. Built by
     // the shared helper so the integration test drives THIS predicate rather
     // than a copy of it.
-    swarm: createSwarmGate(swarmCoordinator, registry),
+    swarm: createSwarmGate(swarmCoordinator, registry, listMcpToolNames),
     // Default delegation mode follows the orchestrator model's catalog tier
     // (0 = frontier → 'auto'). Reads the LIVE wiring so a plugin reload that
     // ships a new catalog is observed without a restart; an unknown model
@@ -656,7 +713,7 @@ async function main() {
           //
           // SwarmExtraTool is a structural copy of ExtraTool (details? is
           // optional there, required here) — the same duck-typed shape the
-          // worker side casts in swarm-wiring.ts. Cast so the combined array
+          // child side casts in subagent-wiring.ts. Cast so the combined array
           // matches the backend's ExtraTool[] slot.
           ...(createSubagentExtraTools({
             coordinator: swarmCoordinator,
@@ -664,6 +721,11 @@ async function main() {
             agentConfig,
             conversationId: () => backend.getCurrentSessionId() ?? '',
             parentTools: () => registry.get(agentId)?.config.tools,
+            // The parent's OWN MCP grant, read live and through the SAME helper
+            // the merge wrapper's attach() bound uses, so the roster, the
+            // resolved child grant and the coordinator's re-check agree.
+            parentMcpTools: () =>
+              orchestratorMcpToolNames(registry.get(agentId)?.config, listMcpToolNames),
             parentModel: () => registry.get(agentId)?.config.model ?? agentConfig.model,
             // The parent's OWN skill discovery — the same lookup `load_skill`
             // uses — so a definition's `skills:` preloads the body the parent

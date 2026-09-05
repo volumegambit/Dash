@@ -54,6 +54,13 @@ export type BackendFactory = (
 export interface AgentChatCoordinatorSwarm {
   coordinator: SwarmCoordinator;
   isEnabled(agentId: string): boolean;
+  /**
+   * The fully-qualified `server__tool` names this orchestrator holds, read PER
+   * TURN. Bounds every MCP grant a spawn may request (`validateMcpTools`) and
+   * MUST be the same list the `agent` tool's `ParentToolContext.mcpTools`
+   * reports — see `orchestratorMcpToolNames`. Omitted → no child gets MCP.
+   */
+  orchestratorMcpTools?(agentId: string): string[];
 }
 
 export interface AgentChatCoordinatorOptions {
@@ -423,6 +430,10 @@ export function createAgentChatCoordinator(
         orchestratorModel: entry.config.model,
         orchestratorFallbackModels: entry.config.fallbackModels,
         orchestratorTools: entry.config.tools,
+        // The orchestrator's MCP grant, bounding what a spawn may request. Read
+        // per turn from the same helper the `agent` tool's parent context uses,
+        // so the roster, the resolved grant and this re-check cannot diverge.
+        orchestratorMcpTools: swarm.orchestratorMcpTools?.(request.agentId),
         // Workers sandbox to the orchestrator's workspace (not the gateway's
         // process cwd). Absent → spawnWorker falls back to process.cwd().
         workspace: entry.config.workspace,

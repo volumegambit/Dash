@@ -7,8 +7,8 @@ import {
   type WorkerSpec,
   parentBuiltinTools,
 } from '@dash/swarm';
-import type { GatewayAgentConfig } from './agent-registry.js';
-import { createSubagentExtraTools } from './subagent-tools.js';
+import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
+import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
 
 /**
  * The gateway's sub-agent tool wiring. The point of these tests is that the
@@ -60,7 +60,14 @@ const MC_PARENT_TOOLS = ['read', 'bash', 'create_skill', 'mcp', 'mcp_add_server'
 /** What that parent can actually pass on: the managers are never inheritable. */
 const INHERITABLE = ['read', 'bash', 'load_skill', 'task'];
 
-function setup(parentTools: string[] | undefined = MC_PARENT_TOOLS) {
+/** The MCP tools the orchestrator itself holds, in the gateway's naming. */
+const PARENT_MCP = ['github__pr', 'github__merge'];
+
+function setup(
+  parentTools: string[] | undefined = MC_PARENT_TOOLS,
+  opts: { parentMcp?: string[]; attachMcp?: string[] } = {},
+) {
+  const parentMcp = opts.parentMcp ?? [];
   const specs: WorkerSpec[] = [];
   const factory: WorkerFactory = (spec) => {
     specs.push(spec);
@@ -73,6 +80,7 @@ function setup(parentTools: string[] | undefined = MC_PARENT_TOOLS) {
     conversationId: 'c',
     orchestratorModel: 'orch-model',
     orchestratorTools: parentTools,
+    orchestratorMcpTools: opts.attachMcp ?? parentMcp,
   });
   const tools = createSubagentExtraTools({
     coordinator,
@@ -80,6 +88,7 @@ function setup(parentTools: string[] | undefined = MC_PARENT_TOOLS) {
     agentConfig: config({ tools: parentTools }),
     conversationId: () => 'c',
     parentTools: () => parentTools,
+    parentMcpTools: () => parentMcp,
     parentModel: () => 'orch-model',
     listSkills: async () => [{ name: 'house-style', content: 'Two spaces.' }],
   });
@@ -133,5 +142,74 @@ describe('createSubagentExtraTools parent wiring', () => {
       .find((l) => l.startsWith('- general-purpose:'));
     expect(line).toContain(`(Tools: ${INHERITABLE.join(', ')})`);
     attachment.finalize({ consumerAlive: true });
+  });
+});
+
+describe('orchestrator MCP tools reach the spawn path', () => {
+  it('puts the LIVE parent MCP list into the parent context', () => {
+    setup(MC_PARENT_TOOLS, { parentMcp: PARENT_MCP });
+    const opts = seenAgentToolOptions[0] as CreateAgentToolsOptions;
+    expect(opts.parentContext?.().mcpTools).toEqual(PARENT_MCP);
+  });
+
+  it('a child inheriting the whole grant is spawned WITH the parent MCP tools', async () => {
+    const { attachment, specs, agent } = setup(MC_PARENT_TOOLS, { parentMcp: PARENT_MCP });
+    await agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true });
+    expect(specs[0].mcpTools).toEqual(PARENT_MCP);
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('BOTH halves must be threaded: the coordinator refuses a grant attach did not declare', async () => {
+    // The context says the parent holds them; the attachment says it holds
+    // none. validateMcpTools is the defence-in-depth re-check, and it fails
+    // closed — this is exactly the regression an index.ts that wires only one
+    // of the two call sites would ship.
+    const { attachment, agent } = setup(MC_PARENT_TOOLS, {
+      parentMcp: PARENT_MCP,
+      attachMcp: [],
+    });
+    await expect(
+      agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true }),
+    ).rejects.toThrow('the orchestrator does not have it');
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('a parent with no MCP tools still grants none', async () => {
+    const { attachment, specs, agent } = setup();
+    await agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true });
+    expect(specs[0].mcpTools).toBeUndefined();
+    attachment.finalize({ consumerAlive: true });
+  });
+});
+
+describe('createSwarmGate', () => {
+  function gateFor(over: Partial<GatewayAgentConfig> = {}) {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'orch', model: 'm', systemPrompt: 's', ...over });
+    const coordinator = new SwarmCoordinator({
+      workerFactory: () => Promise.resolve(new IdleBackend()),
+    });
+    const gate = createSwarmGate(coordinator, registry, () => PARENT_MCP);
+    return { gate, id };
+  }
+
+  it('reports the orchestrator MCP tools for an agent that holds the mcp tool', () => {
+    const { gate, id } = gateFor({ tools: ['read', 'mcp'] });
+    expect(gate.orchestratorMcpTools?.(id)).toEqual(PARENT_MCP);
+  });
+
+  it('reports none for an agent whose tool list omits mcp', () => {
+    const { gate, id } = gateFor({ tools: ['read'] });
+    expect(gate.orchestratorMcpTools?.(id)).toEqual([]);
+  });
+
+  it('reports none for the DEFAULT grant (mcp is not a default tool)', () => {
+    const { gate, id } = gateFor();
+    expect(gate.orchestratorMcpTools?.(id)).toEqual([]);
+  });
+
+  it('reports none for an unknown agent id', () => {
+    const { gate } = gateFor({ tools: ['read', 'mcp'] });
+    expect(gate.orchestratorMcpTools?.('nope')).toEqual([]);
   });
 });
