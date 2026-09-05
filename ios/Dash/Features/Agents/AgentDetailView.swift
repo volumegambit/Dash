@@ -164,11 +164,22 @@ struct AgentDetailView: View {
 
   @ViewBuilder
   private func integrationsSection(_ agent: RegisteredAgentDTO) -> some View {
-    Section("Integrations") {
-      optionalList("MCP servers", agent.config.mcpServers)
-      optionalList("Skill paths", agent.config.skills?.paths)
-      optionalList("Skill URLs", agent.config.skills?.urls)
+    // Only when there is something to integrate. Every value inside is
+    // optional, so an agent with no MCP servers and no skills rendered a
+    // bare "Integrations" header over nothing — a section title is a promise
+    // that content follows.
+    if hasIntegrations(agent) {
+      Section("Integrations") {
+        optionalList("MCP servers", agent.config.mcpServers)
+        optionalList("Skill paths", agent.config.skills?.paths)
+        optionalList("Skill URLs", agent.config.skills?.urls)
+      }
     }
+  }
+
+  private func hasIntegrations(_ agent: RegisteredAgentDTO) -> Bool {
+    let lists = [agent.config.mcpServers, agent.config.skills?.paths, agent.config.skills?.urls]
+    return lists.contains { ($0?.isEmpty == false) }
   }
 
   @ViewBuilder

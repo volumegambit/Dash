@@ -61,6 +61,23 @@ extension AppDependenciesFactory {
         ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-conversation")
     }
 
+    /// An agent to open on launch, so agent detail — reachable only by
+    /// selecting a row — can be captured.
+    static var initialAgentID: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_AGENT"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-agent")
+    }
+
+    /// A sheet to present on launch. Sheets are view state, not `AppModel`
+    /// state, so the presenting view reads this itself — see `ChatView`.
+    /// Values: `model-picker`.
+    static var initialSheet: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_SHEET"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-sheet")
+    }
+
     static var initialTab: AppTab? {
       let environment = ProcessInfo.processInfo.environment
       guard

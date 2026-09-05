@@ -37,7 +37,19 @@ struct ChatView: View {
   /// same `resendFromMessage(id:editedText:)` a Retry does.
   @State private var editingMessage: EditingMessage?
   // Change model from the conversation (goal 2026-09-04).
-  @State private var isModelPickerPresented = false
+  // Seeded from a debug launch option so the model sheet — presented from
+  // this view's own state, not `AppModel` — can be captured without a tap.
+  // In a Release build `UITestLaunchOptions` does not exist and this is
+  // always `false`.
+  @State private var isModelPickerPresented = ChatView.initialModelPickerPresented
+
+  private static var initialModelPickerPresented: Bool {
+    #if DEBUG
+      return UITestLaunchOptions.initialSheet == "model-picker"
+    #else
+      return false
+    #endif
+  }
   @State private var modelChangeToast: AgentsFeature.ModelChange?
 
   /// Chat-screen toolbar (audit #15): rename/delete reuse the exact

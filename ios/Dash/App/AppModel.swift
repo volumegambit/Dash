@@ -121,6 +121,13 @@ final class AppModel {
     /// drives compact, `splitConversationSelection` drives regular — writing
     /// both means the same launch works on iPhone and iPad.
     private func applyUITestInitialRoute() {
+      if let id = UITestLaunchOptions.initialAgentID {
+        let destination = AgentRoute.detail(id)
+        selectedTab = .agents
+        agentPath = [destination]
+        splitAgentSelection = destination
+        return
+      }
       guard let id = UITestLaunchOptions.initialConversationID else { return }
       let destination = ConversationRoute.transcript(id)
       selectedTab = .conversations
