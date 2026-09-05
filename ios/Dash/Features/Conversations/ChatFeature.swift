@@ -583,6 +583,19 @@ final class ChatFeature {
   /// genuinely being left, not on a transient re-host.
   var scrollAnchorMessageID: String?
 
+  /// Whether the transcript was sitting at (or within
+  /// `ChatScrollGeometry.nearBottomThreshold` of) its bottom when it was
+  /// last observed — the other half of the re-host restore decision (Task 4
+  /// review fix, Important 2), consumed by `ChatScrollRestoration.decide`.
+  ///
+  /// This lives here, next to the anchor, for the same reason the anchor
+  /// does: `ChatView`'s own `isNearBottom` is view `@State` and is
+  /// re-initialized to `true` by the very re-host the restore has to survive,
+  /// so deriving "was the user pinned?" from it reads `true` for everybody
+  /// and makes the restore branch dead code. `true` by default: a transcript
+  /// nobody has scrolled yet is pinned to the bottom.
+  private(set) var scrollWasPinnedToBottom = true
+
   var canSend: Bool {
     guard
       sendAuthorityIsAvailable,
@@ -836,9 +849,23 @@ final class ChatFeature {
   /// the conversation is genuinely being left (see `ChatView`'s
   /// `onDisappear` and its `stillNavigatedTo` check) — a transient re-host
   /// must leave `scrollAnchorMessageID` intact so the transcript can
-  /// restore its position.
+  /// restore its position. Also resets `scrollWasPinnedToBottom` to its
+  /// pinned default, so a later return to this conversation starts at the
+  /// bottom rather than inheriting a stale "was scrolled away" intent with
+  /// no anchor to go with it.
   func clearScrollAnchor() {
     scrollAnchorMessageID = nil
+    scrollWasPinnedToBottom = true
+  }
+
+  /// Records the transcript's current pinned-to-bottom state so it outlives
+  /// `ChatView` (Task 4 review fix, Important 2). Called from `ChatView`'s
+  /// `onChange(of: isNearBottom)` — the two-arm
+  /// `onScrollGeometryChange`/`PreferenceKey` mechanism (audit #4) stays the
+  /// single source of that signal; this only mirrors it somewhere that
+  /// survives a re-host.
+  func recordScrollPinnedToBottom(_ pinned: Bool) {
+    scrollWasPinnedToBottom = pinned
   }
 
   func loadOlder() async {

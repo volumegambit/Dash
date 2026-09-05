@@ -7,6 +7,12 @@ struct ChatView: View {
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   @State private var isNearBottom = true
+  /// Whether `transcript`'s `onAppear` has already taken its
+  /// `ChatScrollRestoration` decision for THIS host (iPad goal Phase A, Task
+  /// 4 review fix, Important 2). Local `@State` on purpose: it is a
+  /// per-host latch, so resetting to `false` on every re-host is the correct
+  /// behavior, unlike the pinned-vs-anchored intent it guards.
+  @State private var hasRestoredScrollPosition = false
   // iOS 17 fallback geometry (audit #4): the transcript scroll view's own
   // visible-viewport height, kept fresh by `ScrollViewportHeightKey` below
   // whenever the ScrollView's bounds change (rotation, keyboard, split-view
@@ -347,20 +353,44 @@ struct ChatView: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isNearBottom)
         .onAppear {
-          // Scroll anchor (iPad goal Phase A, Task 4): a re-host (size-class
-          // flip) recreates this view's local `@State`, so `isNearBottom`
-          // resets to its `true` default — but the ScrollView itself starts
-          // at content offset 0 (its top), so the very first
-          // `onScrollGeometryChange`/preference report reflects reality
-          // before this closure decides what to do. If the feature
-          // remembers an anchor and we're not sitting at the bottom,
-          // restore it; otherwise keep the existing pinned-to-bottom
-          // behavior.
-          if let anchor = feature.scrollAnchorMessageID, isNearBottom == false {
-            proxy.scrollTo(anchor, anchor: .top)
-          } else {
+          // Scroll anchor (iPad goal Phase A, Task 4; review fix, Important
+          // 2): the restore decision is taken from state that SURVIVES a
+          // re-host — `feature.scrollAnchorMessageID` and
+          // `feature.scrollWasPinnedToBottom` — never from the local
+          // `isNearBottom` `@State`, which resets to its `true` default on
+          // exactly the re-host this feature exists for and is not
+          // guaranteed to have been refreshed by
+          // `onScrollGeometryChange`/`onPreferenceChange` before this
+          // closure runs. The choice itself is `ChatScrollRestoration`'s,
+          // so it is unit-testable without rendering SwiftUI.
+          switch ChatScrollRestoration.decide(
+            anchor: feature.scrollAnchorMessageID,
+            wasPinnedToBottom: feature.scrollWasPinnedToBottom,
+            messageIDs: Set(feature.state.messages.map(\.id))
+          ) {
+          case .bottom:
+            // Clear the anchor before pinning so the declarative
+            // `.scrollPosition(id:)` binding below cannot immediately pull
+            // the transcript back up to a stale position (the Minor note's
+            // "two mechanisms on one ScrollView": this is how they are kept
+            // in agreement rather than by adding a third).
+            feature.scrollAnchorMessageID = nil
             scrollToBottom(proxy, animated: false)
+          case .message(let id):
+            proxy.scrollTo(id, anchor: .top)
           }
+          hasRestoredScrollPosition = true
+        }
+        .onChange(of: isNearBottom) { _, nearBottom in
+          // Mirror the pinned-vs-scrolled-away intent onto the feature, which
+          // outlives this view. Gated on the restore having already run: a
+          // fresh host starts at content offset 0, so a geometry report that
+          // lands BEFORE `onAppear` describes the un-restored ScrollView, not
+          // where the user actually was. Ignoring those leaves the feature
+          // holding its pre-re-host value, which is precisely the truth the
+          // restore needs.
+          guard hasRestoredScrollPosition else { return }
+          feature.recordScrollPinnedToBottom(nearBottom)
         }
         .onChange(of: transcriptSignature) { oldValue, newValue in
           guard oldValue != newValue, isNearBottom else { return }
@@ -444,6 +474,7 @@ struct ChatView: View {
           MessageListView(
             messages: feature.state.messages,
             isAnsweringEnabled: feature.canAnswerQuestions,
+            isScrollTarget: true,
             onAnswer: { questionID, answer in
               Task { await feature.answer(questionID: questionID, answer: answer) }
             },
@@ -477,7 +508,13 @@ struct ChatView: View {
             }
           )
       }
-      .scrollTargetLayout()
+      // NOTE (Task 4 review fix, Important 1): `.scrollTargetLayout()`
+      // deliberately does NOT live here. This stack's direct arranged
+      // children are `olderMessagesControl`, `MessageListView` as one opaque
+      // box, and the bottom sentinel — none of which carry a
+      // `ChatMessageState.id`. The tag lives on `MessageListView`'s own
+      // `LazyVStack` instead (`isScrollTarget: true` below), which is the
+      // container that actually holds `ForEach(messages)`.
       .frame(maxWidth: DashTheme.Layout.readableWidth)
       .padding(.horizontal)
       .padding(.vertical, 12)
@@ -774,6 +811,42 @@ enum ChatScrollGeometry {
     threshold: CGFloat = nearBottomThreshold
   ) -> Bool {
     sentinelMinY <= viewportHeight + threshold
+  }
+}
+
+/// What a freshly-hosted `ChatView` should do with its transcript's scroll
+/// position (iPad goal Phase A, Task 4 review fix, Important 2 + 3).
+///
+/// Spec §1.3 requires that a re-hosted `ChatView` restore its position
+/// instead of jumping, and that a transcript that was pinned to the bottom
+/// stay pinned. Both halves reduce to one decision, and that decision is
+/// pure — so it lives here, testable as a table, rather than inline in an
+/// `onAppear` closure where the only way to observe it is to render SwiftUI
+/// and watch a scroll view move.
+///
+/// Deliberately NOT a function of `ChatView.isNearBottom`: that is view
+/// `@State`, which is destroyed and re-initialized to `true` by exactly the
+/// re-host this decision serves. The inputs are instead the two facts that
+/// survive on `ChatFeature` (cached per conversation by `AppModel`), plus
+/// the message ids currently in the transcript — an anchor that no longer
+/// exists (edit & resend truncation, a cache reload that dropped it) must
+/// fall back to the bottom rather than silently scroll nowhere and strand
+/// the user at the top.
+enum ChatScrollRestoration: Equatable {
+  /// Pin to the bottom sentinel — the pre-existing behavior, and the
+  /// fallback whenever there is nothing trustworthy to restore.
+  case bottom
+  /// Restore the remembered message to the top of the viewport.
+  case message(id: String)
+
+  static func decide(
+    anchor: String?,
+    wasPinnedToBottom: Bool,
+    messageIDs: Set<String>
+  ) -> ChatScrollRestoration {
+    guard wasPinnedToBottom == false else { return .bottom }
+    guard let anchor, messageIDs.contains(anchor) else { return .bottom }
+    return .message(id: anchor)
   }
 }
 

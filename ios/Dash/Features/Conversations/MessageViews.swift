@@ -27,6 +27,24 @@ func userMessageID(forTurnID turnID: String, in messages: [ChatMessageState]) ->
 struct MessageListView: View {
   let messages: [ChatMessageState]
   let isAnsweringEnabled: Bool
+  /// Scroll anchor (iPad goal Phase A, Task 4 review fix, Important 1):
+  /// tags THIS view's `LazyVStack` — the one that actually holds
+  /// `ForEach(messages)` — as the enclosing `ScrollView`'s scroll-target
+  /// layout, so `ChatView`'s `.scrollPosition(id:anchor:)` binding resolves
+  /// real `ChatMessageState.id`s. It previously sat on `ChatView`'s OUTER
+  /// `LazyVStack`, whose direct arranged children are only
+  /// `olderMessagesControl` / this whole view as one opaque box / the bottom
+  /// sentinel; `scrollTargetLayout()` does not descend into a nested
+  /// `LazyVStack` inside a custom `View` struct. Measured consequence (see
+  /// the task-4 report): with the tag on the outer stack the RESTORE
+  /// direction still worked — `.scrollPosition(id:)` will scroll to any
+  /// `.id()`-tagged view in the scroll view — but the TRACKING direction was
+  /// dead, so `scrollAnchorMessageID` stayed `nil` forever and there was
+  /// never anything to restore.
+  /// Opt-in (default `false`) rather than unconditional because it is only
+  /// meaningful inside a `ScrollView` that reads it; `ChatView`'s transcript
+  /// is the one place that does.
+  let isScrollTarget: Bool
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
@@ -36,12 +54,14 @@ struct MessageListView: View {
   init(
     messages: [ChatMessageState],
     isAnsweringEnabled: Bool = true,
+    isScrollTarget: Bool = false,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in }
   ) {
     self.messages = messages
     self.isAnsweringEnabled = isAnsweringEnabled
+    self.isScrollTarget = isScrollTarget
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
@@ -81,6 +101,7 @@ struct MessageListView: View {
         )
       }
     }
+    .modifier(ScrollTargetLayoutIfNeeded(isEnabled: isScrollTarget))
     // `messageEntranceSignature(for:)` (review fix, chat-ux Phase 3 Task 4,
     // audit #18) — NOT `messages` itself (would animate on every streamed
     // token mutating the LAST message's own properties) and NOT
@@ -94,6 +115,25 @@ struct MessageListView: View {
     // that: a prepend never changes it, so no animation; see the function's
     // own doc comment for why an append always does.
     .animation(reduceMotion ? nil : .default, value: messageEntranceSignature(for: messages))
+  }
+}
+
+/// Applies `scrollTargetLayout()` only when the caller is inside a
+/// `ScrollView` that uses `.scrollPosition(id:)` (iPad goal Phase A, Task 4
+/// review fix, Important 1). A `ViewModifier` rather than an inline `if` in
+/// the `ViewBuilder` so the `LazyVStack`'s view identity — and therefore the
+/// `ForEach` rows' `@State`/transition bookkeeping — is unaffected by the
+/// flag.
+private struct ScrollTargetLayoutIfNeeded: ViewModifier {
+  let isEnabled: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content.scrollTargetLayout()
+    } else {
+      content
+    }
   }
 }
 

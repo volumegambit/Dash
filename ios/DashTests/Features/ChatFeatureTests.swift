@@ -4623,6 +4623,26 @@ struct ChatFeatureTests {
     #expect(feature.scrollAnchorMessageID == nil)
   }
 
+  @Test(
+    "the pinned-to-bottom intent lives on the feature, so it survives a re-host too (Task 4 review fix, Important 2)"
+  )
+  func scrollPinnedIntentLifecycle() async {
+    let feature = makeFeature()
+    #expect(feature.scrollWasPinnedToBottom, "a transcript nobody scrolled is pinned")
+
+    feature.recordScrollPinnedToBottom(false)
+    feature.scrollAnchorMessageID = "msg-7"
+    await feature.disappear()
+    #expect(
+      feature.scrollWasPinnedToBottom == false,
+      "re-hosting must not resurrect the pinned default — that is what ChatView's own @State does"
+    )
+
+    feature.clearScrollAnchor()
+    #expect(feature.scrollWasPinnedToBottom, "genuinely leaving resets to the pinned default")
+    #expect(feature.scrollAnchorMessageID == nil)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
