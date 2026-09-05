@@ -96,6 +96,8 @@ struct ContractFixtureTests {
       #"{"type":"skill_loaded","name":"mobile"}"#,
       #"{"type":"skill_created","name":"mobile","description":"Mobile help"}"#,
       #"{"type":"mcp_server_error","server":"linear","error":"offline"}"#,
+      #"{"type":"memory_saved","name":"user-timezone","description":"Gerry is in Singapore","memoryType":"user","action":"created"}"#,
+      #"{"type":"memory_forgotten","name":"old-fact"}"#,
     ]
 
     for sample in samples {
@@ -108,6 +110,36 @@ struct ContractFixtureTests {
       let sourceJSON = try canonicalJSON(source)
       #expect(encodedJSON == sourceJSON, "round-trip failed for \(sample)")
     }
+  }
+
+  /// Agent memory Phase D: the wire field for the memory bucket is
+  /// `memoryType` (`type` is the discriminator) and `action` is
+  /// `created`/`updated`. Assert the decoded payload, not just round-tripping.
+  @Test("memory events decode their bucket and action")
+  func memoryEventPayloads() throws {
+    let saved = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(
+        #"{"type":"memory_saved","name":"a","description":"d","memoryType":"feedback","action":"updated"}"#
+          .utf8
+      )
+    )
+    guard case let .memorySaved(name, description, memoryType, action) = saved else {
+      Issue.record("memory_saved did not decode")
+      return
+    }
+    #expect(name == "a")
+    #expect(description == "d")
+    #expect(memoryType == .feedback)
+    #expect(action == .updated)
+
+    let forgotten = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(#"{"type":"memory_forgotten","name":"old-fact"}"#.utf8)
+    )
+    #expect(forgotten == .memoryForgotten(name: "old-fact"))
+
+    #expect(MemoryTypeDTO.allCases.map(\.rawValue) == ["user", "feedback", "project", "reference"])
   }
 
   @Test("all positive REST fixtures decode")

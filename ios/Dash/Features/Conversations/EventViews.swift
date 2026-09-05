@@ -515,7 +515,7 @@ struct StatusRowView: View {
   let row: StatusRowState
 
   var body: some View {
-    Label {
+    let content = Label {
       VStack(alignment: .leading, spacing: 2) {
         Text(row.title)
           .font(.callout.weight(.medium))
@@ -529,6 +529,12 @@ struct StatusRowView: View {
       Image(systemName: row.kind.systemImage)
     }
     .accessibilityElement(children: .combine)
+
+    if let identifier = row.kind.accessibilityIdentifier {
+      content.accessibilityIdentifier(identifier)
+    } else {
+      content
+    }
   }
 }
 
@@ -627,7 +633,17 @@ extension StatusRowKind {
     case .skillLoaded: "books.vertical"
     case .skillCreated: "wand.and.stars"
     case .mcpError: "network.badge.shield.half.filled"
+    case .memorySaved, .memoryForgotten: "brain.head.profile"
     case .unknown: "questionmark.diamond"
+    }
+  }
+
+  /// Only the memory rows carry an identifier today; `StatusRowView` combines
+  /// its children into a single accessibility element, so this lands on a leaf.
+  fileprivate var accessibilityIdentifier: String? {
+    switch self {
+    case .memorySaved, .memoryForgotten: "chat.memoryChip"
+    default: nil
     }
   }
 }
