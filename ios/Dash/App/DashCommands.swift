@@ -78,7 +78,21 @@ struct ChatCommandActions: Equatable {
 
   @MainActor func send() { Task { await feature.send() } }
   @MainActor func stop() { Task { await feature.cancel() } }
-  @MainActor func copyLastResponse() { UIPasteboard.general.string = feature.lastAssistantText }
+
+  /// Re-guards on top of `canCopy` (Task 5 review fix, Important 1) rather
+  /// than trusting the menu's enabled state: `canCopy` is a cheap
+  /// approximation of "the flattened text is non-empty" (see
+  /// `ChatFeature.canCopyLastAssistantText`), not a byte-exact one, so this
+  /// is the last line of defense against writing an empty string to
+  /// `UIPasteboard.general.string` — which would silently wipe the user's
+  /// system clipboard and, via Handoff, their Universal Clipboard.
+  @MainActor func copyLastResponse() {
+    guard
+      let text = feature.lastAssistantText,
+      text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    else { return }
+    UIPasteboard.general.string = text
+  }
 
   static func == (lhs: ChatCommandActions, rhs: ChatCommandActions) -> Bool {
     lhs.feature === rhs.feature

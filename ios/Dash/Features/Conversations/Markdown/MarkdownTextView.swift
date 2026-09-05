@@ -94,6 +94,48 @@ func markdownPlainTextAccessibilityLabel(for text: String) -> String {
   accessibilityLines(for: segmentMarkdown(text)).joined(separator: "\n")
 }
 
+/// Cheap agreement check for "would `markdownPlainTextAccessibilityLabel`
+/// produce anything to read" — used by `ChatFeature.canCopyLastAssistantText`
+/// so ⌘⇧C's enabled/disabled state agrees with what its action actually
+/// copies (Task 5 review, Important 1). Deliberately does NOT call
+/// `attributedInlineMarkdown`, which parses an `AttributedString(markdown:)`
+/// and runs an `NSDataDetector` pass per block — that is the cost that
+/// starved the main thread when it ran once per streamed frame (see
+/// `canCopyLastAssistantText`'s doc comment). Walking the already-cheap,
+/// single-pass `segmentMarkdown` output and trimming each block's RAW text
+/// is an approximation, not a byte-exact replica of the flattener: a block
+/// whose raw text is non-empty but whose inline markdown happens to parse to
+/// nothing (e.g. a lone unmatched `**`) would still read as "has text" here.
+/// That residual gap is why `copyLastResponse()` also guards at the write —
+/// this function only has to get the common cases right (in particular,
+/// `.horizontalRule`-only replies, which `accessibilityLines` drops
+/// entirely) for the predicate to stop contradicting the action.
+func markdownBlocksHaveVisibleText(_ blocks: [MarkdownBlock]) -> Bool {
+  blocks.contains { block in
+    switch block {
+    case .paragraph(let text), .heading(_, let text), .blockquote(let text):
+      return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    case .fencedCode(_, let code):
+      return code.isEmpty == false
+    case .horizontalRule:
+      return false
+    case .table(let table):
+      let hasHeaderText = table.header.contains {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      }
+      let hasRowText = table.rows.contains { row in
+        row.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+      }
+      return hasHeaderText || hasRowText
+    case .list(let list):
+      return list.items.contains { item in
+        item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+          || markdownBlocksHaveVisibleText(item.children)
+      }
+    }
+  }
+}
+
 private func accessibilityLines(for blocks: [MarkdownBlock]) -> [String] {
   blocks.flatMap { block -> [String] in
     switch block {

@@ -627,26 +627,44 @@ final class ChatFeature {
   }
 
   /// The newest assistant reply's raw markdown, or `nil` when no assistant
-  /// message has produced text yet.
+  /// message has produced text yet, or its text is empty/whitespace-only.
   private var lastAssistantMarkdown: String? {
     guard
       let text = state.messages.last(where: { $0.role == .assistant })?.assistant?.text,
-      text.isEmpty == false
+      text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     else { return nil }
     return text
   }
 
   /// Whether ⌘⇧C (`KeyboardCommand.copyLastResponse`) has anything to copy.
   ///
-  /// Deliberately NOT `lastAssistantText != nil`: `ChatView` reads this on
-  /// every body pass to fill `ChatCommandActions.canCopy`, and body passes
-  /// happen once per streamed frame. Routing that through the markdown
-  /// flattener re-parsed the whole reply on every frame, which starved the
-  /// main thread badly enough that typing into the composer stopped landing
-  /// (three `chat.composer` UI tests failed on "receive typed text"). This
-  /// only looks at whether the string is empty.
+  /// MUST agree with `lastAssistantText`'s emptiness (Task 5 review fix,
+  /// Important 1): `copyLastResponse()` writes `lastAssistantText` straight
+  /// to `UIPasteboard.general.string`, so if this predicate says "copyable"
+  /// while the flattened text is actually empty, ⌘⇧C silently wipes the
+  /// user's clipboard — and, via Handoff, their Universal Clipboard — on a
+  /// keypress that looked enabled. That was reachable with no race at all:
+  /// a reply that is only a thematic break (`"---"`) is non-empty raw
+  /// markdown but flattens to `""`, because `markdownPlainTextAccessibilityLabel`
+  /// drops horizontal rules entirely.
+  ///
+  /// This is NOT simply `lastAssistantText != nil`, though: that would
+  /// re-parse the whole reply through `attributedInlineMarkdown` (which
+  /// builds an `AttributedString(markdown:)` and runs an `NSDataDetector`
+  /// pass) every time this predicate is read, and per the design's own
+  /// tradeoff (see `ChatCommandActions`'s doc comment) enablement is
+  /// re-derived through `@Observable` whenever `state.messages` mutates —
+  /// i.e. potentially once per streamed frame while a reply is still
+  /// arriving. That cost is what previously starved the main thread badly
+  /// enough that typing into the composer stopped landing. Instead this
+  /// reuses `segmentMarkdown`'s cheap, single-pass block split and
+  /// `markdownBlocksHaveVisibleText`'s raw-text check, which approximates
+  /// "will this flatten to nothing" without the expensive inline parse.
+  /// `copyLastResponse()` still guards again at the write for the residual
+  /// gap between "approximately agrees" and "byte-for-byte agrees".
   var canCopyLastAssistantText: Bool {
-    lastAssistantMarkdown != nil
+    guard let markdown = lastAssistantMarkdown else { return false }
+    return markdownBlocksHaveVisibleText(segmentMarkdown(markdown))
   }
 
   /// The newest assistant reply as plain text, for ⌘⇧C. Computed on demand —

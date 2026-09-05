@@ -4643,6 +4643,114 @@ struct ChatFeatureTests {
     #expect(feature.scrollAnchorMessageID == nil)
   }
 
+  // MARK: - lastAssistantText / canCopyLastAssistantText (Task 5 review fix, Important 1 & 3)
+  //
+  // `⌘⇧C` writes `lastAssistantText` straight to `UIPasteboard.general.string`
+  // with no guard, so if `canCopyLastAssistantText` (the predicate that
+  // enables the menu item) and `lastAssistantText` (what the action writes)
+  // ever disagree about what counts as "empty", the command is enabled and
+  // silently wipes the user's system clipboard — and, via Handoff, their
+  // Universal Clipboard. Before this fix that disagreement was reachable
+  // with no race at all: the predicate tested the RAW markdown for
+  // non-emptiness while the action flattened it through
+  // `markdownPlainTextAccessibilityLabel`, which drops thematic breaks
+  // entirely (`MarkdownBlocksTests.plainTextAccessibilityLabelDropsHorizontalRules`).
+  // A reply that is only `"---"` is non-empty raw markdown but flattens to
+  // `""`.
+
+  @Test(
+    "⌘⇧C's predicate agrees with what it would actually copy: a reply that is only a thematic break must not read as copyable (Task 5 review fix, Important 1)"
+  )
+  func copyLastResponsePredicateAgreesWithFlattenedEmptiness() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "---")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.state.messages.last?.assistant?.text == "---")
+    #expect(
+      feature.canCopyLastAssistantText == (feature.lastAssistantText?.isEmpty == false),
+      """
+      the predicate and the action disagreed about emptiness here before the \
+      Important 1 fix (canCopy == true, lastAssistantText == ""), which is \
+      exactly the shape of the clipboard-wiping bug
+      """
+    )
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == "")
+  }
+
+  @Test("⌘⇧C stays enabled and copies the flattened text for a reply with real content")
+  func copyLastResponsePredicateEnabledForRealText() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "**Ship it**")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText)
+    #expect(feature.lastAssistantText == "Ship it")
+  }
+
+  @Test("⌘⇧C stays disabled for a whitespace-only reply")
+  func copyLastResponsePredicateDisabledForWhitespaceOnlyReply() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "   \n  ")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == nil)
+  }
+
+  @Test("⌘⇧C stays disabled before any assistant message has produced text")
+  func copyLastResponsePredicateDisabledWithNoAssistantMessage() async {
+    let feature = makeFeature()
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == nil)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
