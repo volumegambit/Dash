@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatDetails,
   insertNewlineAtSelection,
+  resultSummary,
   shortenCommand,
   summarize,
   truncate,
@@ -184,5 +185,69 @@ describe('truncate path detection', () => {
     const path = `/Users/gerry/${'a'.repeat(60)}/ChatView.swift`;
     expect(truncate(path).endsWith('/ChatView.swift')).toBe(true);
     expect(truncate(path)).toContain('…');
+  });
+});
+
+describe('resultSummary', () => {
+  it('is empty while the tool is still running', () => {
+    expect(resultSummary('bash', undefined)).toBe('');
+  });
+
+  it('shows the first line of an error, truncated', () => {
+    expect(resultSummary('bash', 'ENOENT: no such file\n  at open()', true)).toBe(
+      'ENOENT: no such file',
+    );
+  });
+
+  it('says "failed" when an error has no text', () => {
+    expect(resultSummary('bash', '   ', true)).toBe('failed');
+  });
+
+  it('stays silent for TodoWrite, whose header already carries progress', () => {
+    expect(resultSummary('TodoWrite', 'ok')).toBe('');
+  });
+
+  it('counts a read result in lines, ignoring the XML envelope', () => {
+    const content = '<path>a.ts</path>\n<content>\nline one\nline two\n</content>';
+    expect(resultSummary('read', content)).toBe('2 lines');
+  });
+
+  it('uses the singular for one line', () => {
+    expect(resultSummary('read', 'only line')).toBe('1 line');
+  });
+
+  it("prefers ls's own entry count over a line count", () => {
+    expect(resultSummary('ls', '(30 entries)\nsrc/\npackage.json')).toBe('30 entries');
+  });
+
+  it('counts grep matches and names the empty case', () => {
+    expect(resultSummary('grep', 'a.ts:1: hit\nb.ts:9: hit')).toBe('2 matches');
+    expect(resultSummary('grep', '')).toBe('no matches');
+  });
+
+  it('counts web_search results from the numbered list it emits', () => {
+    const content = '1. [One](https://a)\n   snip\n\n2. [Two](https://b)\n   snip';
+    expect(resultSummary('web_search', content)).toBe('2 results');
+  });
+
+  it('reports a web_fetch body as a size', () => {
+    expect(resultSummary('web_fetch', 'x'.repeat(2048))).toBe('2.0 KB');
+  });
+
+  it('reports an edit as a diff stat', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n-old\n+new\n+also new';
+    expect(resultSummary('edit', 'ok', false, { diff })).toBe('+2 -1');
+  });
+
+  it('falls back to a line count for an unknown tool', () => {
+    expect(resultSummary('some_mcp_tool', 'a\nb\nc')).toBe('3 lines');
+  });
+
+  it('echoes a short single-line result verbatim', () => {
+    expect(resultSummary('bash', 'done')).toBe('done');
+  });
+
+  it('names an empty result', () => {
+    expect(resultSummary('bash', '\n\n')).toBe('no output');
   });
 });
