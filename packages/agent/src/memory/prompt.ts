@@ -16,7 +16,10 @@ export function renderRecalled(records: MemoryRecord[]): string {
   if (records.length === 0) return '';
   const body = records
     .map((r) => {
-      const escaped = r.content.replace(/\<\/recalled-memories\>/g, '</ recalled-memories>');
+      const escaped = r.content.replace(
+        /<\s*\/\s*recalled-memories\s*>/gi,
+        '&lt;/recalled-memories&gt;',
+      );
       return `### ${r.name} (${r.type})\n${escaped.trim()}`;
     })
     .join('\n\n');
