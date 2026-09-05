@@ -70,5 +70,8 @@ enum DashTheme {
     static let shadow = 0.18
     static let scrim = 0.7
     static let contentSecondary = 0.8
+    /// Text that is present but subordinate on a strong ground — a diff's
+    /// `@@` hunk header, which orients the reader without being content.
+    static let contentTertiary = 0.55
   }
 }

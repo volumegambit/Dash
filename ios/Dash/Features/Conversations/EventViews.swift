@@ -594,15 +594,15 @@ struct ToolDiffView: View {
     switch kind {
     case .added: DashTheme.success
     case .removed: DashTheme.danger
-    case .hunk: DashTheme.codeForeground.opacity(0.55)
+    case .hunk: DashTheme.codeForeground.opacity(DashTheme.Opacity.contentTertiary)
     case .context: DashTheme.codeForeground
     }
   }
 
   private func background(for kind: ToolPresentation.DiffLine.Kind) -> Color {
     switch kind {
-    case .added: DashTheme.success.opacity(0.12)
-    case .removed: DashTheme.danger.opacity(0.12)
+    case .added: DashTheme.success.opacity(DashTheme.Opacity.fillMuted)
+    case .removed: DashTheme.danger.opacity(DashTheme.Opacity.fillMuted)
     default: Color.clear
     }
   }
