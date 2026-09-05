@@ -226,6 +226,11 @@ function mapSubagent(row: ConversationRow): SubagentInfo {
     toolCallCount: meta.toolCallCount ?? 0,
     ...(meta.report !== undefined ? { report: meta.report } : {}),
     oneShot: meta.oneShot ?? false,
+    // Only known once the child's backend has been built (an isolated child's
+    // worktree path is minted there), so an unset value stays absent rather
+    // than defaulting to the parent workspace — which is exactly what
+    // isolation exists to deny.
+    ...(meta.workspace !== undefined ? { workspace: meta.workspace } : {}),
   };
 }
 

@@ -164,6 +164,13 @@ export interface SubagentInfo {
   toolCallCount: number;
   report?: string;
   oneShot: boolean;
+  /**
+   * The directory the child ACTUALLY ran in — its own checkout when
+   * `isolation: 'worktree'` gave it one, the shared workspace otherwise.
+   * Optional: it is only known once the child's backend has been built, so a
+   * row read between `createSubagent` and the first turn has none.
+   */
+  workspace?: string;
 }
 
 export interface ConversationSummary {

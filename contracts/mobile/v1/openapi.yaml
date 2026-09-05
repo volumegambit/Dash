@@ -843,6 +843,7 @@ components:
         toolCallCount: { type: integer, minimum: 0 }
         report: { type: string }
         oneShot: { type: boolean }
+        workspace: { type: string, minLength: 1 }
     ConversationSummary:
       type: object
       additionalProperties: false
