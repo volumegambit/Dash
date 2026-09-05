@@ -915,6 +915,13 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!entry) return c.json({ error: 'not found' }, 404);
     const parsed = await parseJsonBody<{ enabled?: boolean; sweep?: 'auto' | 'on' | 'off' }>(c);
     if (!parsed.ok) return parsed.response;
+    // `parseJsonBody` only rejects UNPARSEABLE JSON: `null`, `[]` and `"str"`
+    // all parse fine. Reading a property off them below would throw outside any
+    // try (and the app registers no onError), so Hono would answer 500 for what
+    // is a client mistake. Check the shape before touching a single key.
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
     if (parsed.body.enabled !== undefined && typeof parsed.body.enabled !== 'boolean') {
       return c.json({ error: 'enabled must be a boolean' }, 400);
     }
@@ -927,8 +934,18 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const memory: NonNullable<GatewayAgentConfig['memory']> = { ...entry.config.memory };
     if (parsed.body.enabled !== undefined) memory.enabled = parsed.body.enabled;
     if (parsed.body.sweep !== undefined) memory.sweep = parsed.body.sweep;
+    const wasEnabled = resolveMemoryConfig(entry.config.memory).enabled;
     agentRegistry.update(id, { memory });
     await agentRegistry.save();
+    // Same reason `PUT /agents/:id` evicts on a swarm change: the memory TOOLS
+    // (save_memory/recall_memory/forget_memory) are registered when the backend
+    // is built, not per turn, so a warm conversation would keep them live after
+    // a disable — letting the model write memories the operator can then
+    // neither list nor delete. Eviction forces the next turn to rebuild.
+    // `sweep` needs no eviction: it is read from the registry per turn.
+    if (resolveMemoryConfig(memory).enabled !== wasEnabled) {
+      await agents.evict(id);
+    }
     return c.json(resolveMemoryConfig(memory));
   });
 
@@ -941,6 +958,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       content: string;
     }>(c);
     if (!parsed.ok) return parsed.response;
+    // See the PATCH handler: `null`, `[]` and `"str"` are all valid JSON, and
+    // destructuring `null` below throws a TypeError outside the try -> 500.
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
     const { description, type, content } = parsed.body;
     // The store reaches for `.trim()` on these two, so a non-string would
     // surface as a TypeError -> 500. Reject it as the client error it is. An

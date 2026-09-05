@@ -2256,6 +2256,62 @@ describe('memory routes', () => {
     expect(agents.saveMemory).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for a non-object JSON body on PUT and PATCH', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    // All three parse as valid JSON, so only a shape check catches them. Without
+    // one, destructuring/property access on the body throws a TypeError outside
+    // the handler's try, and Hono answers with a non-JSON 500.
+    for (const body of ['null', '[]', '"a string"']) {
+      const put = await app.request(`/agents/${id}/memory/a`, {
+        method: 'PUT',
+        headers: JSON_AUTH,
+        body,
+      });
+      expect(put.status, `PUT ${body}`).toBe(400);
+      expect(await put.json()).toMatchObject({ error: expect.any(String) });
+
+      const patch = await app.request(`/agents/${id}/memory/config`, {
+        method: 'PATCH',
+        headers: JSON_AUTH,
+        body,
+      });
+      expect(patch.status, `PATCH ${body}`).toBe(400);
+      expect(await patch.json()).toMatchObject({ error: expect.any(String) });
+    }
+    expect(agents.saveMemory).not.toHaveBeenCalled();
+    expect(agentRegistry.save).not.toHaveBeenCalled();
+  });
+
+  it('evicts the warm backend when a memory config patch changes enabled', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+
+    // Memory tools are wired into the backend at construction time, so a
+    // disable must evict the warm entry or an existing conversation keeps live
+    // save_memory/recall_memory/forget_memory tools.
+    const disabled = await app.request(`/agents/${id}/memory/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+    expect(agents.evict).toHaveBeenCalledWith(id);
+    expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
+    );
+
+    // A sweep-only patch leaves the tool wiring alone, so no eviction.
+    vi.mocked(agents.evict).mockClear();
+    const swept = await app.request(`/agents/${id}/memory/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ sweep: 'off' }),
+    });
+    expect(swept.status).toBe(200);
+    expect(agents.evict).not.toHaveBeenCalled();
+  });
+
   it('takes the memory name from the path, never from the body', async () => {
     const { app, agentRegistry, agents } = createApp();
     const { id } = registerAgent(agentRegistry);
