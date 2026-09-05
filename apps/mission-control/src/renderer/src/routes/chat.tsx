@@ -55,6 +55,7 @@ import { EmptyChatState } from './chat.empty-state.js';
 import {
   type TodoItem,
   formatDetails,
+  insertNewlineAtSelection,
   isTodoWrite,
   parseTodos,
   summarize,
@@ -2594,6 +2595,25 @@ export function Chat(): JSX.Element {
                     resizeTextarea();
                   }}
                   onKeyDown={(e) => {
+                    // Shift+Tab inserts a newline instead of moving focus
+                    // backwards. Plain Tab is left alone on purpose:
+                    // overriding both would make the composer a focus trap
+                    // for keyboard and screen-reader users.
+                    if (e.key === 'Tab' && e.shiftKey) {
+                      e.preventDefault();
+                      const field = e.currentTarget;
+                      const next = insertNewlineAtSelection(
+                        field.value,
+                        field.selectionStart,
+                        field.selectionEnd,
+                      );
+                      setInput(next.value);
+                      requestAnimationFrame(() => {
+                        field.setSelectionRange(next.caret, next.caret);
+                        resizeTextarea();
+                      });
+                      return;
+                    }
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleSend();

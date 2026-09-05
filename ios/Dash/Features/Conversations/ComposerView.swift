@@ -55,11 +55,27 @@ struct ComposerView: View {
           .focused($isDraftFocused)
           .accessibilityIdentifier("chat.composer")
           .keyboardShortcut("l", modifiers: .command)
-          .submitLabel(.send)
-          .onSubmit {
-            guard feature.canSend else { return }
-            actionFeedbackTick += 1
-            Task { await feature.send() }
+          // Return inserts a newline; ⌘Return sends (the send button already
+          // carries that shortcut). Previously `.onSubmit` fired on every
+          // Return, and SwiftUI's `onSubmit` has no modifier awareness — so
+          // with a hardware keyboard there was NO way to type a newline in
+          // the composer at all. `.submitLabel(.send)` goes with it, so the
+          // software keyboard's return key stops advertising a send it no
+          // longer performs.
+          .onKeyPress(keys: [.tab], phases: .down) { press in
+            guard press.modifiers.contains(.shift) else { return .ignored }
+            guard feature.draftEditingAllowed else { return .ignored }
+            // Appends rather than splitting at the caret: SwiftUI's
+            // `TextField` does not expose a selection, and reaching one
+            // would mean replacing the whole input with a `UITextView`
+            // wrapper. Return already gives a caret-correct newline here,
+            // so this is the redundant convenience path.
+            //
+            // Through `updateDraft`, not `state.draft` directly — that is
+            // the path `draftBinding` uses, and the one that persists the
+            // per-conversation draft.
+            Task { await feature.updateDraft(feature.state.draft + "\n") }
+            return .handled
           }
 
         primaryAction

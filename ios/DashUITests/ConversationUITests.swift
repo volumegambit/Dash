@@ -537,6 +537,30 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(changed.label, "GPT-5 mini")
   }
 
+  /// Composer newline keys (2026-09-05). Verifies the two halves of the
+  /// change that no unit test can reach: that SwiftUI's `onKeyPress` fires
+  /// at all for a focused `TextField` (the risky assumption), and that
+  /// removing `.onSubmit` stopped Return from sending.
+  func testShiftTabInsertsANewlineInsteadOfSending() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
+    composer.tap()
+    composer.typeText("first")
+    composer.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: .shift)
+    composer.typeText("second")
+
+    let value = composer.value as? String ?? ""
+    XCTAssertTrue(
+      value.contains("\n"),
+      "Expected Shift+Tab to insert a newline. Composer value: \(value)"
+    )
+    XCTAssertTrue(value.contains("first"), "Composer value: \(value)")
+    XCTAssertTrue(value.contains("second"), "Composer value: \(value)")
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)

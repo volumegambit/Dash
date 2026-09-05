@@ -149,3 +149,31 @@ export function formatDetails(input: string): { key: string; value: string }[] {
     return { key, value: String(val) };
   });
 }
+
+/**
+ * Splices a newline into `value` at the caret/selection, returning the new
+ * value and where the caret should land.
+ *
+ * Deliberately duplicated in the web app's `ui/composer.ts`: the two apps
+ * share no UI package, and a cross-package dependency for eight lines of
+ * index arithmetic would cost more than the duplication does. If a third
+ * consumer appears, that is the moment to extract it.
+ */
+export function insertNewlineAtSelection(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+): { value: string; caret: number } {
+  const max = value.length;
+  const rawStart = Number.isFinite(selectionStart) ? selectionStart : max;
+  const rawEnd = Number.isFinite(selectionEnd) ? selectionEnd : max;
+  const a = Math.min(Math.max(rawStart, 0), max);
+  const b = Math.min(Math.max(rawEnd, 0), max);
+  const start = Math.min(a, b);
+  const end = Math.max(a, b);
+
+  return {
+    value: `${value.slice(0, start)}\n${value.slice(end)}`,
+    caret: start + 1,
+  };
+}
