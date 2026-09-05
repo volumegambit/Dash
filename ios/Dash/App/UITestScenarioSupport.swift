@@ -69,6 +69,30 @@ extension AppDependenciesFactory {
       else { return nil }
       return AppTab(rawValue: raw)
     }
+
+    /// Start every tool card expanded, so a capture can show the tool BODIES.
+    ///
+    /// The same gap `initialConversationID` closed one level down: a tool
+    /// card's body is behind a tap, `simctl` has no tap, and so the per-tool
+    /// result rendering — the thing the 2026-09-05 tool-use goal is about —
+    /// could not be looked at on any iOS screen. Collapsed rows were
+    /// auditable; the bodies were not.
+    /// Which batch of the tool gallery to render in the chat fixture, or nil
+    /// for the ordinary fixture. Four batches, because a phone screen fits
+    /// about four EXPANDED tool cards and the point is to see the bodies.
+    static var toolGallery: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_TOOL_GALLERY"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tool-gallery")
+    }
+
+    static var expandTools: Bool {
+      let environment = ProcessInfo.processInfo.environment
+      if let raw = environment["DASH_UI_TEST_EXPAND_TOOLS"] {
+        return raw == "1" || raw.lowercased() == "true"
+      }
+      return ProcessInfo.processInfo.arguments.contains("--dash-ui-test-expand-tools")
+    }
   }
 
   extension Array where Element == String {
@@ -289,7 +313,150 @@ extension AppDependenciesFactory {
     static let onePixelPNG =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
 
+    /// One assistant message per gallery batch, so `capture-surfaces.sh` can
+    /// render every tool type's BODY and the per-type result treatment can be
+    /// audited from pixels rather than from reading `resultView`.
+    ///
+    /// Single-line string literals with escapes throughout, deliberately: a
+    /// Swift `"""` block would be re-indented by the formatter and the
+    /// leading whitespace of a numbered-source fixture is load-bearing.
+    static func toolGalleryMessages(_ batch: String) -> [ConversationMessageDTO] {
+      let events: [AgentEvent]
+      switch batch {
+      case "files":
+        events = [
+          .toolUseStart(
+            id: "g-read", name: "read",
+            input: .object(["path": .string("apps/web/src/ui/blocks/tool-presentation.ts")])),
+          .toolResult(
+            id: "g-read", name: "read",
+            content:
+              "<path>apps/web/src/ui/blocks/tool-presentation.ts</path>\n<content>\n   1\texport function normalizeTool(name: string): string {\n   2\t  switch (name) {\n   3\t    case 'read_file':\n   4\t      return 'read';\n   5\t    default:\n   6\t      return name;\n   7\t  }\n   8\t}\n</content>",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-write", name: "write",
+            input: .object([
+              "path": .string("docs/notes.md"),
+              "content": .string("# Notes\n\nFirst line.\nSecond line.\n"),
+            ])),
+          .toolResult(
+            id: "g-write", name: "write", content: "Wrote 4 lines to docs/notes.md",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-edit", name: "edit",
+            input: .object(["path": .string("apps/web/src/ui/blocks/ContentBlocks.tsx")])),
+          .toolResult(
+            id: "g-edit", name: "edit", content: "ok", isError: false,
+            details: .object([
+              "diff": .string(
+                "--- a/apps/web/src/ui/blocks/ContentBlocks.tsx\n+++ b/apps/web/src/ui/blocks/ContentBlocks.tsx\n@@ -12,7 +12,8 @@\n   const summary = summarize(tool.name, tool.input);\n-  const details = formatVisibleDetails(tool.name, tool.input);\n+  const outcome = resultSummary(tool.name, result?.content);\n+  const details = formatVisibleDetails(tool.name, tool.input);")
+            ])),
+        ]
+      case "shell":
+        events = [
+          .toolUseStart(
+            id: "g-bash", name: "bash",
+            input: .object(["command": .string("/opt/homebrew/bin/npm run lint")])),
+          .toolResult(
+            id: "g-bash", name: "bash",
+            content:
+              "> dash@0.2.0 lint\n> biome check .\n\nChecked 942 files in 609ms. No fixes applied.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-quiet", name: "bash",
+            input: .object(["command": .string("mkdir -p build/captures")])),
+          .toolResult(id: "g-quiet", name: "bash", content: "", isError: false, details: nil),
+          .toolUseStart(id: "g-ls", name: "ls", input: .object(["path": .string("apps/web/src")])),
+          .toolResult(
+            id: "g-ls", name: "ls",
+            content: "(5 entries)\nui/\nintegration/\nmain.tsx\nstyles.css\nvite-env.d.ts",
+            isError: false, details: nil),
+        ]
+      case "search":
+        events = [
+          .toolUseStart(
+            id: "g-grep", name: "grep", input: .object(["pattern": .string("resultSummary")])),
+          .toolResult(
+            id: "g-grep", name: "grep",
+            content:
+              "apps/web/src/ui/blocks/tool-presentation.ts:214: export function resultSummary(\napps/web/src/ui/blocks/ContentBlocks.tsx:191:  const outcome = resultSummary(\nios/Dash/Features/Conversations/ToolPresentation.swift:318:  static func resultSummary(",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-search", name: "web_search",
+            input: .object(["query": .string("swiftui observable macro")])),
+          .toolResult(
+            id: "g-search", name: "web_search",
+            content:
+              "1. [Observation | Apple Developer](https://developer.apple.com/documentation/observation)\n   The Observation framework provides a robust, type-safe model.\n\n2. [Migrating to the Observable macro](https://developer.apple.com/videos/wwdc)\n   Replace ObservableObject with the @Observable macro.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-fetch", name: "web_fetch",
+            input: .object([
+              "url": .string("https://developer.apple.com/documentation/observation")
+            ])),
+          .toolResult(
+            id: "g-fetch", name: "web_fetch",
+            content: String(repeating: "Observation framework documentation body. ", count: 40),
+            isError: false, details: nil),
+        ]
+      default:
+        events = [
+          .toolUseStart(
+            id: "g-todo", name: "TodoWrite",
+            input: .object([
+              "todos": .array([
+                .object([
+                  "content": .string("Port resultSummary to iOS"), "status": .string("completed"),
+                ]),
+                .object([
+                  "content": .string("Audit each tool type from a rendered screen"),
+                  "status": .string("in_progress"),
+                ]),
+                .object([
+                  "content": .string("Write the per-type design"), "status": .string("pending"),
+                ]),
+              ])
+            ])),
+          .toolResult(id: "g-todo", name: "TodoWrite", content: "ok", isError: false, details: nil),
+          .toolUseStart(
+            id: "g-skill", name: "load_skill",
+            input: .object(["name": .string("frontend-design")])),
+          .toolResult(
+            id: "g-skill", name: "load_skill", content: "Loaded skill 'frontend-design'.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-mcp", name: "linear__search_issues",
+            input: .object([
+              "query": .string("tool card"), "limit": .number(5),
+              "filter": .object(["state": .string("open")]),
+            ])),
+          .toolResult(
+            id: "g-mcp", name: "linear__search_issues",
+            content: "DASH-412  Tool rows unreadable\nDASH-418  Diff not rendered on iOS",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-fail", name: "read",
+            input: .object(["path": .string("/Users/gerry/missing.swift")])),
+          .toolResult(
+            id: "g-fail", name: "read", content: "ENOENT: no such file or directory",
+            isError: true, details: nil),
+          .toolUseStart(
+            id: "g-run", name: "bash", input: .object(["command": .string("npm test")])),
+        ]
+      }
+      return [
+        message(
+          id: "gallery-assistant", turnID: "gallery-turn", role: .assistant, status: .completed,
+          events: events, ordinal: 1)
+      ]
+    }
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
+      #if DEBUG
+        if let batch = UITestLaunchOptions.toolGallery {
+          return toolGalleryMessages(batch)
+        }
+      #endif
       if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
       if scenario == .remoteBusy {
         return [
