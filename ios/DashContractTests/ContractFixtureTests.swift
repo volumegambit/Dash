@@ -142,6 +142,43 @@ struct ContractFixtureTests {
     #expect(MemoryTypeDTO.allCases.map(\.rawValue) == ["user", "feedback", "project", "reference"])
   }
 
+  /// Agent memory: the bucket list is a product-level enum expected to grow, and
+  /// every other client renders an unrecognised bucket rather than failing. On
+  /// iOS a thrown `DecodingError` is fatal well beyond the chip — the frame
+  /// decoder maps it to `GatewayError.updateRequired` and tears down the whole
+  /// receive loop, and a history page decodes `[AgentEvent]` as a unit. So an
+  /// unknown `memoryType`/`action` must degrade THE EVENT to `.unknown`.
+  @Test("unknown memory bucket or action degrades to an unknown event")
+  func memoryEventUnknownEnumValuesDegrade() throws {
+    let futureBucket = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(
+        #"{"type":"memory_saved","name":"a","description":"d","memoryType":"future_bucket","action":"created"}"#
+          .utf8
+      )
+    )
+    guard case let .unknown(type, raw) = futureBucket else {
+      Issue.record("unknown memoryType did not degrade to .unknown: \(futureBucket)")
+      return
+    }
+    #expect(type == "memory_saved")
+    #expect(raw.objectValue?["memoryType"] == .string("future_bucket"))
+
+    let futureAction = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(
+        #"{"type":"memory_saved","name":"a","description":"d","memoryType":"user","action":"archived"}"#
+          .utf8
+      )
+    )
+    guard case let .unknown(actionType, actionRaw) = futureAction else {
+      Issue.record("unknown action did not degrade to .unknown: \(futureAction)")
+      return
+    }
+    #expect(actionType == "memory_saved")
+    #expect(actionRaw.objectValue?["action"] == .string("archived"))
+  }
+
   @Test("all positive REST fixtures decode")
   func positiveRESTFixtures() throws {
     _ = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")

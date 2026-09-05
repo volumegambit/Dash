@@ -310,13 +310,22 @@ enum AgentEvent: Codable, Hashable, Sendable {
         error: try required(payload.error, "error", type)
       )
     case "memory_saved":
+      // The memory bucket list is a product-level enum that is expected to grow,
+      // and every other client renders an unrecognised bucket rather than
+      // failing. Throwing here would be fatal far beyond this one chip: the
+      // frame decoder maps any DecodingError to GatewayError.updateRequired and
+      // tears down the whole receive loop, and a history page decodes
+      // [AgentEvent] as a unit. So degrade THE EVENT to .unknown instead — the
+      // raw object is preserved and re-encoded verbatim.
       let memoryTypeValue: String = try required(payload.memoryType, "memoryType", type)
       guard let memoryType = MemoryTypeDTO(rawValue: memoryTypeValue) else {
-        throw corrupt("memoryType", type)
+        self = .unknown(type: type, raw: raw)
+        return
       }
       let actionValue: String = try required(payload.action, "action", type)
       guard let action = MemorySaveAction(rawValue: actionValue) else {
-        throw corrupt("action", type)
+        self = .unknown(type: type, raw: raw)
+        return
       }
       self = .memorySaved(
         name: try required(payload.name, "name", type),
