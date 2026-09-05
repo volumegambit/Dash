@@ -542,13 +542,6 @@ final class ConversationUITests: DashUITestCase {
   /// this the card body was the literal string "Todos: [3 items]".
   func testTaskCardShowsTheChecklistExpandedByDefault() {
     let app = launch(scenario: "streaming-reconnect")
-
-  /// Composer newline keys (2026-09-05). Verifies the two halves of the
-  /// change that no unit test can reach: that SwiftUI's `onKeyPress` fires
-  /// at all for a focused `TextField` (the risky assumption), and that
-  /// removing `.onSubmit` stopped Return from sending.
-  func testShiftTabInsertsANewlineInsteadOfSending() {
-    let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
     let composer = element("chat.composer", in: app)
@@ -568,7 +561,19 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(app.staticTexts["Done: Draft the plan"].exists)
     XCTAssertTrue(app.staticTexts["In progress: Check launch readiness"].exists)
     XCTAssertTrue(app.staticTexts["Pending: Ship it"].exists)
+  }
 
+  /// Composer newline keys (2026-09-05). Verifies the two halves of the
+  /// change that no unit test can reach: that SwiftUI's `onKeyPress` fires
+  /// at all for a focused `TextField` (the risky assumption), and that
+  /// removing `.onSubmit` stopped Return from sending.
+  func testShiftTabInsertsANewlineInsteadOfSending() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
+    composer.tap()
     composer.typeText("first")
     composer.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: .shift)
     composer.typeText("second")
