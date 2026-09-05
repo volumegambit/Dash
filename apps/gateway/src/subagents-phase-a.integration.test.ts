@@ -10,8 +10,7 @@ import {
 import { type MockInstance, describe, expect, it, vi } from 'vitest';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
-import { isSubagentsEnabled } from './subagent-config.js';
-import { createSubagentExtraTools } from './subagent-tools.js';
+import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
 
 /**
  * Phase A end-to-end proof: an agent registered with NEITHER a `swarm` block
@@ -77,12 +76,26 @@ function makeWorkerFactory(
   reportFor: (spec: WorkerSpec) => string,
   /** Resolved once a background child has issued its ask_orchestrator question. */
   asked: Deferred,
-): { factory: WorkerFactory; specs: WorkerSpec[] } {
+  /**
+   * 'ask' → a background child asks the orchestrator, is answered, and reports.
+   * 'hang' → it never reports, so the turn ends while it is still running and
+   * the turn-scoped cancellation path is the only thing that can terminalize it.
+   */
+  backgroundBehaviour: 'ask' | 'hang' = 'ask',
+): { factory: WorkerFactory; specs: WorkerSpec[]; releaseHung(): void } {
   const specs: WorkerSpec[] = [];
+  const hung: Deferred[] = [];
   const factory: WorkerFactory = async (spec) => {
     specs.push(spec);
     const backend: WorkerBackend = {
       async *chat(_message: string): AsyncGenerator<AgentEvent> {
+        if (spec.background && backgroundBehaviour === 'hang') {
+          const gate = deferred();
+          hung.push(gate);
+          // Released only by the test teardown; the worker never reports.
+          await gate.promise;
+          return;
+        }
         if (spec.background) {
           const ask = spec.extraTools.find((t) => t.name === 'ask_orchestrator');
           if (!ask) throw new Error('ask_orchestrator was not injected into the worker');
@@ -104,7 +117,13 @@ function makeWorkerFactory(
     };
     return backend;
   };
-  return { factory, specs };
+  return {
+    factory,
+    specs,
+    releaseHung: () => {
+      for (const gate of hung) gate.resolve();
+    },
+  };
 }
 
 /**
@@ -155,6 +174,9 @@ interface Harness {
   /** The `AgentState` each turn was resolved with (systemPrompt lives here). */
   states: AgentState[];
   specs: WorkerSpec[];
+  coordinator: SwarmCoordinator;
+  /** Releases any background child parked by the 'hang' behaviour. */
+  releaseHung(): void;
   /** Extra-tool names the backend factory injected, or [] when the gate is off. */
   injected: string[];
   spawnSpy: MockInstance<SwarmCoordinator['spawnWorker']>;
@@ -165,6 +187,7 @@ function setup(
   config: Partial<GatewayAgentConfig>,
   scripts: Script[],
   asked: Deferred = deferred(),
+  backgroundBehaviour: 'ask' | 'hang' = 'ask',
 ): Harness {
   const registry = new AgentRegistry();
   const { id } = registry.register({
@@ -173,9 +196,10 @@ function setup(
     systemPrompt: 'You are helpful.',
     ...config,
   });
-  const { factory, specs } = makeWorkerFactory(
+  const { factory, specs, releaseHung } = makeWorkerFactory(
     (spec) => (spec.background ? BACKGROUND_REPORT : FOREGROUND_REPORT),
     asked,
+    backgroundBehaviour,
   );
   const coordinator = new SwarmCoordinator({ workerFactory: factory });
   const spawnSpy = vi.spyOn(coordinator, 'spawnWorker');
@@ -198,14 +222,10 @@ function setup(
       harness.injected = extraTools.map((t) => t.name);
       return makeScriptedBackend(extraTools, scripts, states);
     },
-    // Byte-identical to index.ts's swarm gate.
-    swarm: {
-      coordinator,
-      isEnabled: (agentId) => {
-        const entry = registry.get(agentId);
-        return !!entry && isSubagentsEnabled(entry.config);
-      },
-    },
+    // THE gate index.ts uses — not a copy of it. A regression that narrows
+    // this predicate takes the non-swarm fast path for a default agent, so no
+    // attach() happens and every `agent` call then fails to spawn.
+    swarm: createSwarmGate(coordinator, registry),
   });
 
   return {
@@ -214,6 +234,8 @@ function setup(
     agents,
     states,
     specs,
+    coordinator,
+    releaseHung,
     spawnSpy,
     get injected() {
       return harness.injected;
@@ -420,6 +442,70 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     expect(harness.specs[0].tools).toEqual(['read']);
     expect(result.details).toMatchObject({ status: 'done' });
 
+    await harness.agents.stop();
+  });
+
+  it('background children are TURN-SCOPED: a still-running child dies at turn end', async () => {
+    let launched!: ToolResult;
+    const harness = setup(
+      {},
+      [
+        async (ctx) => {
+          launched = await ctx.call('agent', {
+            prompt: 'Watch forever.',
+            description: 'watch forever',
+            name: 'stray',
+            run_in_background: true,
+          });
+          // The turn ends here. `stray` never reports and is never collected
+          // with wait_workers — turn-end cancellation is the ONLY thing that
+          // can terminalize it in Phase A.
+        },
+      ],
+      deferred(),
+      'hang',
+    );
+
+    const events = await harness.run();
+    const strayId = (launched.details as { subagentId: string }).subagentId;
+
+    // 1) The tool told the model the child is turn-scoped. Task C4 flips
+    //    `backgroundMode` to 'detached', which replaces this sentence with
+    //    "You will be notified when it completes." — landing that change early
+    //    (before detached children are actually kept alive) must fail here.
+    expect(launched.content[0]?.text).toBe(
+      'Agent stray launched in the background. Note: in this gateway version a ' +
+        'background agent is scoped to this turn — collect it with wait_workers ' +
+        'before you finish, or it is cancelled when your turn ends.',
+    );
+
+    // 2) It was genuinely still running when the turn ended (never reported).
+    expect(harness.specs).toHaveLength(1);
+    expect(harness.specs[0]).toMatchObject({ name: 'stray', background: true });
+
+    // 3) The turn-end finalize cancelled it, and both families said so ON the
+    //    stream the consumer drains (teardown-before-drain).
+    const finished = events.filter(
+      (e): e is Extract<AgentEvent, { type: 'subagent_finished' }> =>
+        e.type === 'subagent_finished' && e.subagentId === strayId,
+    );
+    expect(finished).toHaveLength(1);
+    expect(finished[0].status).toBe('cancelled');
+    const done = events.filter(
+      (e): e is Extract<AgentEvent, { type: 'worker_done' }> =>
+        e.type === 'worker_done' && e.workerId === strayId,
+    );
+    expect(done).toHaveLength(1);
+    expect(done[0].status).toBe('cancelled');
+
+    // 4) No worker leaked past the turn: the live run is gone and the roster
+    //    the next turn would see reports the child as terminal.
+    expect(harness.coordinator.getLiveRun(harness.agentId, CONVERSATION)).toBeUndefined();
+    expect(harness.coordinator.rosterFor(harness.agentId, CONVERSATION)).toEqual([
+      { id: strayId, name: 'stray', type: 'general-purpose', status: 'cancelled' },
+    ]);
+
+    harness.releaseHung();
     await harness.agents.stop();
   });
 });

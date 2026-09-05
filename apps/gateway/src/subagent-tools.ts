@@ -6,7 +6,8 @@ import {
   createStaticResolver,
   createSwarmTools,
 } from '@dash/swarm';
-import type { GatewayAgentConfig } from './agent-registry.js';
+import type { AgentChatCoordinatorSwarm } from './agent-chat-coordinator.js';
+import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 import { isSubagentsEnabled, subagentTypesFor } from './subagent-config.js';
 
 /**
@@ -87,4 +88,30 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       depth: 0,
     }),
   ];
+}
+
+/**
+ * The chat coordinator's swarm merge wiring: the coordinator plus the LIVE
+ * registry read that decides whether a turn attaches a swarm run at all.
+ *
+ * This is the FOURTH `isSubagentsEnabled` gate (with the delegation section,
+ * the `attach()` gate re-read, and the tool bundle above) and the only one a
+ * test could previously only re-specify rather than drive. It is exported so
+ * `index.ts` and the Phase A integration test share one predicate: an
+ * `isEnabled` that regressed to `swarm?.enabled === true` here would take the
+ * non-swarm fast path for every default agent — no `attach()`, so the tools,
+ * injected through the independent gate above, would fail every delegation
+ * with "swarm turn is closed — cannot spawn".
+ */
+export function createSwarmGate(
+  coordinator: SwarmCoordinator,
+  registry: AgentRegistry,
+): AgentChatCoordinatorSwarm {
+  return {
+    coordinator,
+    isEnabled: (agentId) => {
+      const entry = registry.get(agentId);
+      return !!entry && isSubagentsEnabled(entry.config);
+    },
+  };
 }

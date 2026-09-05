@@ -69,8 +69,7 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { isSubagentsEnabled } from './subagent-config.js';
-import { createSubagentExtraTools } from './subagent-tools.js';
+import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
@@ -466,14 +465,10 @@ async function main() {
     // Swarm merge wiring. `isEnabled` is a live registry read so a mid-turn
     // PUT /agents/:id that flips the sub-agent gate takes effect on the next
     // chat. Sub-agents are ON by default (see isSubagentsEnabled), so this is
-    // true for every agent that has not explicitly turned them off.
-    swarm: {
-      coordinator: swarmCoordinator,
-      isEnabled: (id) => {
-        const entry = registry.get(id);
-        return !!entry && isSubagentsEnabled(entry.config);
-      },
-    },
+    // true for every agent that has not explicitly turned them off. Built by
+    // the shared helper so the integration test drives THIS predicate rather
+    // than a copy of it.
+    swarm: createSwarmGate(swarmCoordinator, registry),
     // Default delegation mode follows the orchestrator model's catalog tier
     // (0 = frontier → 'auto'). Reads the LIVE wiring so a plugin reload that
     // ships a new catalog is observed without a restart; an unknown model
