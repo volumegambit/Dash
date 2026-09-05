@@ -250,3 +250,140 @@ export function formatVisibleDetails(
   if (normalized === 'write') return all.filter(({ key }) => !WRITE_SKIP_KEYS.has(key));
   return all;
 }
+
+/** Remove the chrome some tools wrap their result body in, so a line count
+ * counts the body and not the envelope.
+ *
+ * `<path>`/`<type>` are dropped ELEMENT AND CONTENT — they are metadata the
+ * collapsed header already shows, and leaving the text behind would make a
+ * two-line file read as four. The remaining tags are pure wrappers, so only
+ * the tags go. Mirrors Mission Control's `stripXmlTags`
+ * (`components/ToolResult.tsx`), which has done this for its own rendering
+ * since before the port. */
+export function stripResultChrome(content: string): string {
+  return content
+    .replace(/<(path|type)>[\s\S]*?<\/\1>\n?/g, '')
+    .replace(/<\/?(?:entries|content|results)>\n?/g, '')
+    .replace(/^FilePath:.*\n?/m, '')
+    .replace(/^\(\d+ entries?\)\n?/m, '')
+    .trim();
+}
+
+/** Lines in `content`, ignoring leading and trailing blank lines. 0 for
+ * blank input — a trailing newline is an artifact of command output, not a
+ * line of it. */
+export function countLines(content: string): number {
+  const trimmed = content.trim();
+  return trimmed ? trimmed.split('\n').length : 0;
+}
+
+function firstLine(content: string): string {
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Human byte size: `512 B`, `4.2 KB`, `1.3 MB`. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** `+added -removed` from an edit tool's `details.diff`, or '' when there is
+ * no usable diff. `+++`/`---` are unified-diff FILE HEADERS, not content, so
+ * they are excluded — counting them would report every one-line edit as
+ * `+2 -2`. The hyphen is ASCII U+002D, not a U+2212 minus: three platforms
+ * render this string and an encoding is one more thing they could disagree
+ * about. */
+export function diffStat(details: unknown): string {
+  if (typeof details !== 'object' || details === null) return '';
+  const diff = (details as { diff?: unknown }).diff;
+  if (typeof diff !== 'string' || !diff) return '';
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) added++;
+    else if (line.startsWith('-')) removed++;
+  }
+  if (added === 0 && removed === 0) return '';
+  return `+${added} -${removed}`;
+}
+
+/** What came back, for the right edge of a collapsed tool row — the half of
+ * the card `summarize` cannot answer, because `summarize` reads only the
+ * tool's INPUT.
+ *
+ * Heuristic by necessity: the backend flattens a tool's content blocks into
+ * one opaque string (`packages/agent/src/backends/piagent.ts`), so there is
+ * no structured result to read. Every branch below is keyed to a shape this
+ * repo's own tools actually emit — `web_search`'s numbered list comes from
+ * `formatResults` in `packages/agent/src/tools/web-search.ts`, `ls`'s
+ * `(N entries)` from the listing tool. The fallback is deliberately dull:
+ * a third-party MCP tool's output is only reliably "some text", and
+ * "N lines" is true of any text.
+ *
+ * Twin of `ToolPresentation.resultSummary` on iOS and of the copy in
+ * Mission Control's `chat.helpers.ts`; the first two are pinned against
+ * each other by `scripts/fixtures/rendering-fixtures.json`. */
+export function resultSummary(
+  name: string,
+  content: string | undefined,
+  isError = false,
+  details?: unknown,
+): string {
+  if (content === undefined) return '';
+
+  if (isError) {
+    const line = firstLine(content);
+    return line ? middleTruncate(line, 40) : 'failed';
+  }
+
+  // A task card's header already reads "2/3 done" plus the active item, and
+  // its body is a rendered checklist. An outcome would be a third account of
+  // the same thing.
+  if (isTodoWrite(name)) return '';
+
+  const normalized = normalizeTool(name);
+  if (normalized === 'edit') return diffStat(details);
+
+  const body = stripResultChrome(content);
+
+  switch (normalized) {
+    case 'read':
+      return plural(countLines(body), 'line', 'lines');
+    case 'ls': {
+      // The listing tool states its own count; trust it over a line count,
+      // which would also count any header or trailing note.
+      const declared = content.match(/\((\d+) entries?\)/);
+      const count = declared ? Number(declared[1]) : countLines(body);
+      return plural(count, 'entry', 'entries');
+    }
+    case 'grep':
+    case 'find': {
+      const count = countLines(body);
+      return count === 0 ? 'no matches' : plural(count, 'match', 'matches');
+    }
+    case 'web_search': {
+      const count = (body.match(/^\d+\. \[/gm) ?? []).length;
+      return count === 0 ? 'no results' : plural(count, 'result', 'results');
+    }
+    case 'web_fetch':
+      return formatBytes(new TextEncoder().encode(body).length);
+    default: {
+      const count = countLines(body);
+      if (count === 0) return 'no output';
+      // One short line IS the outcome — "ok", "done", an exit message. Saying
+      // "1 line" instead would be strictly less information for the same width.
+      if (count === 1 && body.length <= 40) return body;
+      return plural(count, 'line', 'lines');
+    }
+  }
+}
