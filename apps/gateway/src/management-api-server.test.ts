@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
+import { MemoryOpError } from '@dash/agent';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -156,6 +157,11 @@ function makeAgents(): AgentChatCoordinator {
       verdict: { verdict: 'safe', reasons: [] },
     }),
     removeSkill: vi.fn().mockResolvedValue({ name: 'x' }),
+    memoryStore: vi.fn().mockReturnValue(null),
+    listMemories: vi.fn().mockResolvedValue([]),
+    getMemory: vi.fn().mockResolvedValue(null),
+    saveMemory: vi.fn().mockResolvedValue({ record: { name: 'a' }, action: 'created' }),
+    removeMemory: vi.fn().mockResolvedValue(true),
     stats: vi.fn().mockReturnValue({ size: 0, maxSize: 0, pinned: 0, agents: {} }),
     stop: vi.fn().mockResolvedValue(undefined),
   };
@@ -2034,6 +2040,280 @@ describe('skill routes', () => {
     });
     expect(patched.status).toBe(200);
     expect(await patched.json()).toEqual({ paths: ['/extra/skills'] });
+  });
+});
+
+describe('memory routes', () => {
+  const JSON_AUTH = { ...AUTH, 'Content-Type': 'application/json' };
+
+  function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'x',
+      model: 'm',
+      systemPrompt: 'p',
+    });
+  }
+
+  const INFO = {
+    name: 'a',
+    description: 'd',
+    type: 'user',
+    source: 'agent',
+    createdAt: '2026-09-05',
+    updatedAt: '2026-09-05',
+    size: 3,
+  };
+  const RECORD = { ...INFO, content: 'c' };
+  const PUT_BODY = JSON.stringify({ description: 'd', type: 'user', content: 'c' });
+  const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+
+  it('lists, gets, puts and deletes memories', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+
+    mock(agents.listMemories).mockResolvedValue([INFO]);
+    const list = await app.request(`/agents/${id}/memory`, { headers: AUTH });
+    expect(list.status).toBe(200);
+    expect(await list.json()).toHaveLength(1);
+    expect(agents.listMemories).toHaveBeenCalledWith(id);
+
+    mock(agents.getMemory).mockResolvedValueOnce(RECORD);
+    const got = await app.request(`/agents/${id}/memory/a`, { headers: AUTH });
+    expect(got.status).toBe(200);
+    expect(await got.json()).toEqual(RECORD);
+    mock(agents.getMemory).mockResolvedValueOnce(null);
+    expect((await app.request(`/agents/${id}/memory/zzz`, { headers: AUTH })).status).toBe(404);
+
+    mock(agents.saveMemory).mockResolvedValue({ record: RECORD, action: 'created' });
+    const put = await app.request(`/agents/${id}/memory/a`, {
+      method: 'PUT',
+      headers: JSON_AUTH,
+      body: PUT_BODY,
+    });
+    expect(put.status).toBe(200);
+    expect(await put.json()).toEqual({ record: RECORD, action: 'created' });
+    expect(agents.saveMemory).toHaveBeenCalledWith(id, {
+      name: 'a',
+      description: 'd',
+      type: 'user',
+      content: 'c',
+    });
+
+    mock(agents.removeMemory).mockResolvedValueOnce(true);
+    const del = await app.request(`/agents/${id}/memory/a`, { method: 'DELETE', headers: AUTH });
+    expect(del.status).toBe(200);
+    expect(await del.json()).toEqual({ name: 'a' });
+    mock(agents.removeMemory).mockResolvedValueOnce(false);
+    expect(
+      (await app.request(`/agents/${id}/memory/a`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(404);
+  });
+
+  it('maps MemoryOpError codes to 400/404/409, a disabled store to 503, anything else to 500', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    const put = () =>
+      app.request(`/agents/${id}/memory/a`, { method: 'PUT', headers: JSON_AUTH, body: PUT_BODY });
+
+    mock(agents.saveMemory).mockRejectedValueOnce(new MemoryOpError('invalid', 'bad name'));
+    expect((await put()).status).toBe(400);
+    mock(agents.saveMemory).mockRejectedValueOnce(new MemoryOpError('not_found', 'gone'));
+    expect((await put()).status).toBe(404);
+    mock(agents.saveMemory).mockRejectedValueOnce(new MemoryOpError('limit', 'full'));
+    const limited = await put();
+    expect(limited.status).toBe(409);
+    expect((await limited.json()).error).toBe('full');
+    mock(agents.saveMemory).mockRejectedValueOnce(
+      new Error(`Memory is disabled for agent '${id}'`),
+    );
+    expect((await put()).status).toBe(503);
+    mock(agents.saveMemory).mockRejectedValueOnce(new Error('boom'));
+    expect((await put()).status).toBe(500);
+
+    // DELETE runs through the same mapper.
+    mock(agents.removeMemory).mockRejectedValueOnce(
+      new Error(`Memory is disabled for agent '${id}'`),
+    );
+    expect(
+      (await app.request(`/agents/${id}/memory/a`, { method: 'DELETE', headers: AUTH })).status,
+    ).toBe(503);
+  });
+
+  it('exposes the read + delete routes under /mobile/v1 but not the write/config routes', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+
+    mock(agents.listMemories).mockResolvedValue([INFO]);
+    const list = await app.request(`/mobile/v1/agents/${id}/memory`, { headers: MOBILE_AUTH });
+    expect(list.status).toBe(200);
+    expect(await list.json()).toHaveLength(1);
+
+    mock(agents.getMemory).mockResolvedValueOnce(RECORD);
+    expect(
+      (await app.request(`/mobile/v1/agents/${id}/memory/a`, { headers: MOBILE_AUTH })).status,
+    ).toBe(200);
+
+    mock(agents.removeMemory).mockResolvedValueOnce(true);
+    expect(
+      (
+        await app.request(`/mobile/v1/agents/${id}/memory/a`, {
+          method: 'DELETE',
+          headers: MOBILE_AUTH,
+        })
+      ).status,
+    ).toBe(200);
+
+    // Loopback-only: Mission Control is the only client that writes/configures.
+    const put = await app.request(`/mobile/v1/agents/${id}/memory/a`, {
+      method: 'PUT',
+      headers: MOBILE_JSON_HEADERS,
+      body: PUT_BODY,
+    });
+    expect(put.status).toBe(404);
+    const patch = await app.request(`/mobile/v1/agents/${id}/memory/config`, {
+      method: 'PATCH',
+      headers: MOBILE_JSON_HEADERS,
+      body: JSON.stringify({ sweep: 'off' }),
+    });
+    expect(patch.status).toBe(404);
+  });
+
+  it('serves GET /agents/:id/memory/config as the config, not as a memory named "config"', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${id}/memory/config`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enabled: true, sweep: 'auto' });
+    // Route-order proof: the `/agents/:id/memory/:name` handler must never see
+    // this request. If `config` were registered after `:name`, Hono would run
+    // `:name` first and this would 404 (getMemory returns null by default).
+    expect(agents.getMemory).not.toHaveBeenCalled();
+  });
+
+  it('patches the memory config, merging over the stored block and persisting', async () => {
+    const { app, agentRegistry } = createApp();
+    const { id } = registerAgent(agentRegistry);
+
+    const patched = await app.request(`/agents/${id}/memory/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ sweep: 'off' }),
+    });
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toEqual({ enabled: true, sweep: 'off' });
+    expect(agentRegistry.get(id)?.config.memory).toEqual({ sweep: 'off' });
+    expect(agentRegistry.save).toHaveBeenCalled();
+
+    // Merge, not replace: `sweep` survives an `enabled`-only patch.
+    const disabled = await app.request(`/agents/${id}/memory/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(await disabled.json()).toEqual({ enabled: false, sweep: 'off' });
+    expect(agentRegistry.get(id)?.config.memory).toEqual({ enabled: false, sweep: 'off' });
+
+    // And the resolved shape is readable afterwards.
+    expect(
+      await (await app.request(`/agents/${id}/memory/config`, { headers: AUTH })).json(),
+    ).toEqual({ enabled: false, sweep: 'off' });
+  });
+
+  it('rejects an invalid sweep with 400 and does not persist', async () => {
+    const { app, agentRegistry } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${id}/memory/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ sweep: 'sometimes' }),
+    });
+    expect(res.status).toBe(400);
+    expect(agentRegistry.get(id)?.config.memory).toBeUndefined();
+    expect(agentRegistry.save).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a malformed JSON body on PUT and PATCH', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    expect(
+      (
+        await app.request(`/agents/${id}/memory/a`, {
+          method: 'PUT',
+          headers: JSON_AUTH,
+          body: 'not json',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await app.request(`/agents/${id}/memory/config`, {
+          method: 'PATCH',
+          headers: JSON_AUTH,
+          body: 'not json',
+        })
+      ).status,
+    ).toBe(400);
+    expect(agents.saveMemory).not.toHaveBeenCalled();
+  });
+
+  it('takes the memory name from the path, never from the body', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    const res = await app.request(`/agents/${id}/memory/a`, {
+      method: 'PUT',
+      headers: JSON_AUTH,
+      // A `name` in the body must not redirect the write to another memory.
+      body: JSON.stringify({ name: 'hijacked', description: 'd', type: 'user', content: 'c' }),
+    });
+    expect(res.status).toBe(200);
+    expect(agents.saveMemory).toHaveBeenCalledWith(id, {
+      name: 'a',
+      description: 'd',
+      type: 'user',
+      content: 'c',
+    });
+  });
+
+  it('rejects a non-string description or content with 400, not 500', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    for (const body of [
+      { type: 'user', content: 'c' },
+      { description: 'd', type: 'user', content: 42 },
+    ]) {
+      const res = await app.request(`/agents/${id}/memory/a`, {
+        method: 'PUT',
+        headers: JSON_AUTH,
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(agents.saveMemory).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an unknown agent on every memory route', async () => {
+    const { app, agents } = createApp();
+    const responses = await Promise.all([
+      app.request('/agents/nope/memory', { headers: AUTH }),
+      app.request('/agents/nope/memory/a', { headers: AUTH }),
+      app.request('/agents/nope/memory/a', { method: 'DELETE', headers: AUTH }),
+      app.request('/agents/nope/memory/config', { headers: AUTH }),
+      app.request('/agents/nope/memory/config', {
+        method: 'PATCH',
+        headers: JSON_AUTH,
+        body: JSON.stringify({ sweep: 'off' }),
+      }),
+      app.request('/agents/nope/memory/a', {
+        method: 'PUT',
+        headers: JSON_AUTH,
+        body: PUT_BODY,
+      }),
+    ]);
+    for (const res of responses) expect(res.status).toBe(404);
+    expect(agents.listMemories).not.toHaveBeenCalled();
+    expect(agents.getMemory).not.toHaveBeenCalled();
+    expect(agents.removeMemory).not.toHaveBeenCalled();
+    expect(agents.saveMemory).not.toHaveBeenCalled();
   });
 });
 
