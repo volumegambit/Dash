@@ -47,8 +47,10 @@ export class DashAgent {
     // Note: Skills are injected by pi's system prompt builder via the DashResourceLoader,
     // not here. The backend's listSkills() feeds into resourceLoader.getSkills().
 
-    // Memory preamble goes last — it's dynamic context from past conversations
-    if (config.workspace) {
+    // Memory preamble goes last — it's dynamic context from past conversations.
+    // `memory.enabled === false` opts out (turn-scoped subagents); an absent
+    // `memory` block keeps the historical behaviour.
+    if (config.workspace && config.memory?.enabled !== false) {
       const preamble = await buildMemoryPreamble(config.workspace);
       systemPrompt = `${systemPrompt}\n\n${preamble}`;
     }

@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { AgentBackend, DashAgentConfig, DashAgentConfigResolver } from '@dash/agent';
 import type { SwarmExtraTool, WorkerSpec } from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
@@ -8,8 +9,33 @@ import {
   type GatewayWorkerFactoryDeps,
   buildWorkerBackendArgs,
   buildWorkerPreamble,
+  createGatewayWorkerFactory,
   workerSessionDir,
 } from './swarm-wiring.js';
+
+/**
+ * Capture every resolver `createGatewayWorkerFactory` hands to `DashAgent`,
+ * so the factory's *actual* static config resolver can be invoked and
+ * inspected without booting pi. `PiAgentBackend` is stubbed for the same
+ * reason; everything else in @dash/agent stays real.
+ */
+const captured = vi.hoisted(() => ({ resolvers: [] as DashAgentConfigResolver[] }));
+
+vi.mock('@dash/agent', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@dash/agent')>();
+  class FakePiAgentBackend {
+    async start(): Promise<void> {}
+    abort(): void {}
+    async stop(): Promise<void> {}
+  }
+  class RecordingDashAgent extends actual.DashAgent {
+    constructor(backend: AgentBackend, resolver: DashAgentConfigResolver) {
+      super(backend, resolver);
+      captured.resolvers.push(resolver);
+    }
+  }
+  return { ...actual, PiAgentBackend: FakePiAgentBackend, DashAgent: RecordingDashAgent };
+});
 
 function makeSpec(overrides: Partial<WorkerSpec> = {}): WorkerSpec {
   const askOrchestrator: SwarmExtraTool = {
@@ -56,6 +82,78 @@ describe('buildWorkerPreamble', () => {
   it('ends with the # Task heading immediately followed by the brief', () => {
     const spec = makeSpec({ brief: 'BRIEF_BODY' });
     expect(buildWorkerPreamble(spec).endsWith('# Task\nBRIEF_BODY')).toBe(true);
+  });
+
+  it('preamble uses subagent identity and definition body when present', () => {
+    const spec = makeSpec({
+      workerId: 'w1',
+      subagentType: 'Explore',
+      name: 'mapper',
+      description: 'map',
+      systemPrompt: 'BODY',
+      depth: 1,
+      brief: 'map it',
+    });
+    const text = buildWorkerPreamble(spec);
+    expect(text).toContain('You are "mapper", an Explore agent (id w1, depth 1)');
+    expect(text).toContain('BODY');
+    expect(text).toContain('# Task\nmap it');
+    expect(text).not.toContain('ephemeral worker agent in a swarm');
+  });
+
+  it('legacy spawn_worker specs keep the old preamble verbatim', () => {
+    const spec = makeSpec({ workerId: 'w1', role: 'lister' });
+    expect(buildWorkerPreamble(spec)).toMatch(
+      /^You are "lister" \(worker w1\), an ephemeral worker agent in a swarm/,
+    );
+  });
+
+  it('picks the article from the type name and defaults name/depth', () => {
+    const plan = buildWorkerPreamble(makeSpec({ workerId: 'w2', subagentType: 'Plan' }));
+    expect(plan).toContain('You are "Plan", a Plan agent (id w2, depth 1)');
+    const generic = buildWorkerPreamble(
+      makeSpec({ workerId: 'w3', subagentType: 'general-purpose', name: 'gp', depth: 2 }),
+    );
+    expect(generic).toContain('You are "gp", a general-purpose agent (id w3, depth 2)');
+  });
+
+  it('omits the definition body cleanly when the spec has none', () => {
+    const text = buildWorkerPreamble(makeSpec({ subagentType: 'Explore', brief: 'B' }));
+    expect(text.endsWith('# Task\nB')).toBe(true);
+    expect(text).not.toContain('\n\n\n');
+  });
+});
+
+describe('createGatewayWorkerFactory config resolver', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'swarm-factory-'));
+    captured.resolvers.length = 0;
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function resolveFor(spec: WorkerSpec): Promise<DashAgentConfig> {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
+    await factory(spec);
+    const resolver = captured.resolvers.at(-1);
+    if (!resolver) throw new Error('factory did not construct a DashAgent');
+    return resolver();
+  }
+
+  it('skipMemory children get a resolver that marks memory off', async () => {
+    const config = await resolveFor(makeSpec({ skipMemory: true }));
+    expect(config.memory).toEqual({ enabled: false });
+  });
+
+  it('normal children get a resolver with memory on', async () => {
+    const config = await resolveFor(makeSpec());
+    expect(config.memory).toEqual({ enabled: true });
+    expect(config.model).toBe('anthropic/claude-sonnet-4-20250514');
+    expect(config.systemPrompt).toBe(buildWorkerPreamble(makeSpec()));
   });
 });
 

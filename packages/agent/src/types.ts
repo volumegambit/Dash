@@ -146,6 +146,14 @@ export interface DashAgentConfig {
   mcpServers?: import('@dash/mcp').McpServerConfig[];
   /** Names of MCP servers assigned to this agent from the gateway pool */
   assignedMcpServers?: string[];
+  /**
+   * Memory-preamble policy. Omitted (or `enabled` left unset) keeps the
+   * default: whenever `workspace` is set, the workspace MEMORY.md preamble is
+   * appended to the system prompt. `{ enabled: false }` opts out entirely —
+   * used for turn-scoped subagents (Explore / Plan) whose findings belong in
+   * the report they hand their parent, not in a memory file.
+   */
+  memory?: { enabled?: boolean };
 }
 
 export interface AgentState {

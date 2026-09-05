@@ -113,6 +113,63 @@ describe('DashAgent.chat()', () => {
     expect(capturedSystemPrompt).toContain('You are a helpful assistant.');
   });
 
+  it('skips the memory preamble when config.memory.enabled is false', async () => {
+    await writeFile(join(tempDir, 'MEMORY.md'), 'Remember: user likes TypeScript');
+
+    let capturedSystemPrompt = '';
+    const backend = makeBackend([], (state) => {
+      capturedSystemPrompt = state.systemPrompt;
+    });
+
+    const agent = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-3-haiku',
+        systemPrompt: 'You are a helpful assistant.',
+        workspace: tempDir,
+        memory: { enabled: false },
+      }),
+    );
+
+    await collect(agent.chat('ch', 'conv1', 'hello'));
+
+    expect(capturedSystemPrompt).toBe('You are a helpful assistant.');
+  });
+
+  it('keeps the memory preamble when config.memory.enabled is not false', async () => {
+    await writeFile(join(tempDir, 'MEMORY.md'), 'Remember: user likes TypeScript');
+
+    const prompts: string[] = [];
+    const backend = makeBackend([], (state) => {
+      prompts.push(state.systemPrompt);
+    });
+
+    const enabled = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-3-haiku',
+        systemPrompt: 'You are a helpful assistant.',
+        workspace: tempDir,
+        memory: { enabled: true },
+      }),
+    );
+    const unset = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-3-haiku',
+        systemPrompt: 'You are a helpful assistant.',
+        workspace: tempDir,
+        memory: {},
+      }),
+    );
+
+    await collect(enabled.chat('ch', 'conv1', 'hello'));
+    await collect(unset.chat('ch', 'conv2', 'hello'));
+
+    expect(prompts[0]).toContain('Remember: user likes TypeScript');
+    expect(prompts[1]).toContain('Remember: user likes TypeScript');
+  });
+
   // ------------------------------------------------------------------
   // Config resolver semantics — the whole point of the resolver API
   // is that a config change visible to the resolver takes effect on

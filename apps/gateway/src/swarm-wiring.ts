@@ -28,21 +28,92 @@ export interface GatewayWorkerFactoryDeps {
 }
 
 /**
- * The exact worker system-prompt preamble. Identity + swarm rules, then the
- * orchestrator-issued brief under a `# Task` heading. Kept verbatim so the
- * worker reliably (a) reports back in its FINAL message, (b) uses
- * `ask_orchestrator` for blocking decisions, and (c) respects the shared
- * workspace.
+ * Rules for a LEGACY `spawn_worker` worker (a spec with no `subagentType`).
+ * Wording is frozen: these strings are concatenated back into exactly the
+ * preamble workers have always received.
+ */
+const LEGACY_WORKER_RULES = [
+  '- Complete the task below and put your full findings in your FINAL message — it is your ' +
+    'report to the orchestrator.',
+  '- If you are blocked and need a decision, call the ask_orchestrator tool once and continue ' +
+    'with its answer.',
+  '- You share the workspace with other workers. Only touch files your task requires.',
+];
+
+/** Rules for a definition-driven child spawned through the `agent` tool. */
+const CHILD_AGENT_RULES = [
+  '- Put your complete findings in your FINAL message — it is your report; the parent sees ' +
+    'nothing else.',
+  '- If you are blocked on a decision only the parent can make, call ask_orchestrator once and ' +
+    'continue with its answer.',
+  '- You share the workspace with the parent and sibling agents. Only touch files your task ' +
+    'requires.',
+  '- Never claim to be the user or the parent.',
+];
+
+/**
+ * `a` / `an` for a subagent type name, chosen by its leading letter so the
+ * identity line reads correctly for both built-in and user-defined types:
+ * "an Explore agent", "a Plan agent", "a general-purpose agent".
+ */
+function articleFor(typeName: string): string {
+  return /^[aeiou]/i.test(typeName) ? 'an' : 'a';
+}
+
+/**
+ * The child's system-prompt preamble: identity + rules, then the definition
+ * body (`spec.systemPrompt`, when the spec came from a subagent definition),
+ * then the parent-issued brief under a `# Task` heading.
+ *
+ * Two shapes, decided by `spec.subagentType`:
+ * - ABSENT — a legacy `spawn_worker` spec. Returns the original swarm-worker
+ *   preamble byte-for-byte (orchestrator wording, three rules, no body).
+ * - PRESENT — a definition-driven child of the `agent` tool. Identity carries
+ *   the addressable name, the type, the worker id and the depth; the rules
+ *   name the parent rather than an orchestrator; the definition body is
+ *   inserted verbatim between the rules and the task.
  */
 export function buildWorkerPreamble(spec: WorkerSpec): string {
-  return `You are "${spec.role}" (worker ${spec.workerId}), an ephemeral worker agent in a swarm run by an orchestrator.
-Rules:
-- Complete the task below and put your full findings in your FINAL message — it is your report to the orchestrator.
-- If you are blocked and need a decision, call the ask_orchestrator tool once and continue with its answer.
-- You share the workspace with other workers. Only touch files your task requires.
+  const task = `# Task\n${spec.brief}`;
 
-# Task
-${spec.brief}`;
+  if (!spec.subagentType) {
+    const identity = [
+      `You are "${spec.role}" (worker ${spec.workerId}), an ephemeral worker agent in a swarm`,
+      'run by an orchestrator.',
+    ].join(' ');
+    return `${identity}\nRules:\n${LEGACY_WORKER_RULES.join('\n')}\n\n${task}`;
+  }
+
+  const who = spec.name ?? spec.subagentType;
+  const identity = [
+    `You are "${who}", ${articleFor(spec.subagentType)} ${spec.subagentType} agent`,
+    `(id ${spec.workerId}, depth ${spec.depth ?? 1}) working on one task`,
+    'delegated by a parent agent.',
+  ].join(' ');
+  const body = spec.systemPrompt?.trim();
+  const sections = [`${identity}\nRules:\n${CHILD_AGENT_RULES.join('\n')}`];
+  if (body) sections.push(body);
+  sections.push(task);
+  return sections.join('\n\n');
+}
+
+/**
+ * The `DashAgentConfig` a spawned child runs under — the single source of
+ * truth for both the backend's construction-time config and the `DashAgent`
+ * config resolver the factory installs, so the two can never disagree.
+ *
+ * `memory.enabled` is `false` for children the definition marks `skipMemory`
+ * (Explore / Plan): they are turn-scoped researchers whose findings belong in
+ * their report, not in the workspace MEMORY.md. Every other child keeps the
+ * normal memory behaviour.
+ */
+export function buildWorkerAgentConfig(spec: WorkerSpec): DashAgentConfig {
+  return {
+    model: spec.model,
+    systemPrompt: buildWorkerPreamble(spec),
+    tools: spec.tools,
+    memory: { enabled: !spec.skipMemory },
+  };
 }
 
 /**
@@ -73,13 +144,8 @@ export function buildWorkerBackendArgs(
   spec: WorkerSpec,
   deps: GatewayWorkerFactoryDeps,
 ): ConstructorParameters<typeof PiAgentBackend> {
-  const config: DashAgentConfig = {
-    model: spec.model,
-    systemPrompt: buildWorkerPreamble(spec),
-    tools: spec.tools,
-  };
   return [
-    config,
+    buildWorkerAgentConfig(spec),
     deps.credentialProvider,
     deps.logger, // logger
     workerSessionDir(deps.dataDir, spec), // sessionDir
@@ -113,12 +179,11 @@ export function createGatewayWorkerFactory(deps: GatewayWorkerFactoryDeps): Work
     const backend = new PiAgentBackend(...buildWorkerBackendArgs(spec, deps));
     await backend.start(spec.workspace);
 
-    const preamble = buildWorkerPreamble(spec);
-    const agent = new DashAgent(backend, async () => ({
-      model: spec.model,
-      systemPrompt: preamble,
-      tools: spec.tools,
-    }));
+    // Static resolver: a worker's model / preamble / tools / memory policy are
+    // fixed for the life of the spawn, so resolve once and hand back the same
+    // config on every turn.
+    const config = buildWorkerAgentConfig(spec);
+    const agent = new DashAgent(backend, async () => config);
 
     return {
       chat: (message: string) => agent.chat('swarm', `${spec.runId}-${spec.workerId}`, message),
