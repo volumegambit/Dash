@@ -2,6 +2,7 @@ import type { ConversationContent, MobileAgentEvent } from '@dash/mobile-contrac
 import { type ReactNode, useState } from 'react';
 import { Markdown } from './Markdown.js';
 import {
+  type TodoItem,
   formatVisibleDetails,
   isTodoWrite,
   normalizeTool,
