@@ -7,7 +7,13 @@ export {
   serializeMemory,
   todayIso,
 } from './store.js';
-export { MEMORY_RULES, buildMemoryPrompt, composeMemoryPrompt, renderRecalled } from './prompt.js';
+export {
+  MEMORY_RULES,
+  MEMORY_RULES_READONLY,
+  buildMemoryPrompt,
+  composeMemoryPrompt,
+  renderRecalled,
+} from './prompt.js';
 export { STOP_WORDS, selectRelevant, tokenize } from './recall.js';
 export { agentMemoryDir } from './paths.js';
 export {

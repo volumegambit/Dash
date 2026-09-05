@@ -2,7 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MEMORY_RULES, buildMemoryPrompt, composeMemoryPrompt } from './prompt.js';
+import {
+  MEMORY_RULES,
+  MEMORY_RULES_READONLY,
+  buildMemoryPrompt,
+  composeMemoryPrompt,
+} from './prompt.js';
 import { MemoryStore } from './store.js';
 
 describe('buildMemoryPrompt', () => {
@@ -131,5 +136,65 @@ describe('composeMemoryPrompt', () => {
     expect(out).toContain('<recalled-memories>');
     expect(out).toContain('Run npm run deploy:staging');
     expect(out).not.toContain('UTC+8');
+  });
+});
+
+describe('read-only memory rules (tools: false)', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dash-memory-readonly-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('never names a memory tool', () => {
+    for (const name of ['save_memory', 'recall_memory', 'forget_memory']) {
+      expect(MEMORY_RULES_READONLY).not.toContain(name);
+    }
+    expect(MEMORY_RULES_READONLY).toContain('read-only');
+  });
+
+  it('buildMemoryPrompt uses the writable rules by default and with tools: true', () => {
+    expect(buildMemoryPrompt({ index: '# Memory index\n' })).toContain(MEMORY_RULES);
+    expect(buildMemoryPrompt({ index: '# Memory index\n', tools: true })).toContain(MEMORY_RULES);
+  });
+
+  it('buildMemoryPrompt swaps in the read-only rules when tools is false', () => {
+    const out = buildMemoryPrompt({ index: '# Memory index\n', tools: false });
+    expect(out.startsWith('<memory>\n')).toBe(true);
+    expect(out).toContain(MEMORY_RULES_READONLY);
+    expect(out).not.toContain(MEMORY_RULES);
+    expect(out).not.toContain('save_memory');
+    expect(out).not.toContain('recall_memory');
+    expect(out).not.toContain('forget_memory');
+    expect(out).toContain('# Memory index');
+  });
+
+  it('still renders the index and recalled memories under the read-only rules', async () => {
+    const store = new MemoryStore(dir);
+    await store.save({
+      name: 'deploy-staging',
+      description: 'deploy to staging with wrangler',
+      type: 'project',
+      content: 'Run npm run deploy:staging',
+      source: 'agent',
+    });
+    const out = await composeMemoryPrompt(dir, 'how do I deploy to staging?', { tools: false });
+    expect(out).toContain(MEMORY_RULES_READONLY);
+    expect(out).not.toContain('save_memory');
+    expect(out).toContain('- **deploy-staging** — deploy to staging with wrangler');
+    expect(out).toContain('Run npm run deploy:staging');
+  });
+
+  it('composeMemoryPrompt keeps the writable rules when opts is omitted or tools: true', async () => {
+    expect(await composeMemoryPrompt(dir, 'hello')).toContain(MEMORY_RULES);
+    expect(await composeMemoryPrompt(dir, 'hello', { tools: true })).toContain(MEMORY_RULES);
+  });
+
+  it('falls back to the read-only rules on a storage failure too', async () => {
+    const out = await composeMemoryPrompt(join(dir, 'missing'), 'hello', { tools: false });
+    expect(out).toContain(MEMORY_RULES_READONLY);
+    expect(out).toContain('_No memories yet._');
   });
 });

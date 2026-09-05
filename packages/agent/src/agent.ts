@@ -51,7 +51,11 @@ export class DashAgent {
     // rebuilt on every turn from the resolver read, so toggling memory in the
     // registry takes effect on the next message without a pool eviction.
     if (config.memory) {
-      const memoryPrompt = await composeMemoryPrompt(config.memory.dir, userMessage);
+      const memoryPrompt = await composeMemoryPrompt(config.memory.dir, userMessage, {
+        // `tools: false` (swarm workers) inherit the memory read-only, so the
+        // rules must not tell them to call tools they were never registered.
+        tools: config.memory.tools !== false,
+      });
       systemPrompt = `${systemPrompt}\n\n${memoryPrompt}`;
     }
 

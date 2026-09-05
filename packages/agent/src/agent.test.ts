@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DashAgent } from './agent.js';
+import { MEMORY_RULES, MEMORY_RULES_READONLY } from './memory/prompt.js';
 import { MemoryStore } from './memory/store.js';
 import type { AgentEvent, AgentState, DashAgentConfig, RunOptions } from './types.js';
 
@@ -182,6 +183,42 @@ describe('DashAgent memory prompt', () => {
 
     expect(seen[0]).toContain('base\n\n<memory>');
     expect(seen[0]).toContain('- **user-timezone** — Gerry is in Singapore');
+  });
+
+  it('uses the read-only memory rules when config.memory.tools is false', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+
+    const agent = new DashAgent(backend, async () => ({
+      model: 'm',
+      systemPrompt: 'base',
+      memory: { dir, tools: false },
+    }));
+
+    await collect(agent.chat('ch', 'conv', 'hi'));
+
+    expect(seen[0]).toContain('base\n\n<memory>');
+    expect(seen[0]).toContain(MEMORY_RULES_READONLY);
+    expect(seen[0]).not.toContain('save_memory');
+  });
+
+  it('keeps the writable memory rules when config.memory.tools is unset or true', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+
+    const agent = new DashAgent(backend, async () => ({
+      model: 'm',
+      systemPrompt: 'base',
+      memory: { dir, tools: true },
+    }));
+
+    await collect(agent.chat('ch', 'conv', 'hi'));
+
+    expect(seen[0]).toContain(MEMORY_RULES);
   });
 
   it('adds no memory block when config.memory is absent, even with a workspace', async () => {

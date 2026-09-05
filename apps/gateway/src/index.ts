@@ -383,6 +383,13 @@ async function main() {
     workerFactory: createGatewayWorkerFactory({
       credentialProvider: swarmCredentialProvider,
       dataDir,
+      // Workers inherit the ORCHESTRATOR's memory read-only (prompt only, no
+      // memory tools). Keyed by registry id, same as the chat path above, and
+      // off entirely for agents that opted out with `memory.enabled === false`.
+      memoryDir: (id) =>
+        registry.get(id)?.config.memory?.enabled === false
+          ? undefined
+          : agentMemoryDir(dataDir, id),
       // No logger: the gateway's StructuredLogger (from @dash/logging) is not
       // assignable to @dash/agent's Logger (different `error` arity), and the
       // chat-path PiAgentBackend is likewise constructed with an undefined
