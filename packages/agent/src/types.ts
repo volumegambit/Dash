@@ -1,3 +1,5 @@
+import type { MemoryType } from './memory/types.js';
+
 // --- LLM provider types (formerly from @dash/llm) ---
 
 export interface ToolUseBlock {
@@ -85,6 +87,14 @@ export type AgentEvent =
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_loaded'; name: string }
   | { type: 'skill_created'; name: string; description: string }
+  | {
+      type: 'memory_saved';
+      name: string;
+      description: string;
+      memoryType: MemoryType;
+      action: 'created' | 'updated';
+    }
+  | { type: 'memory_forgotten'; name: string }
   | { type: 'mcp_server_error'; server: string; error: string };
 
 export interface DashAgentConfig {
