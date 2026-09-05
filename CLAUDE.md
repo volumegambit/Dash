@@ -110,6 +110,7 @@ The exhaustive manual test plan lives at `apps/mission-control/TEST_PLAN.md`. It
 - Messaging Apps changes → Sections 20, 20B
 - Settings / gateway changes → Section 22
 - Cross-cutting UI changes → Section 23 (UI consistency audit)
+- Agent memory / Memory tab changes → Section 32
 
 **Maintaining the test plan:** When implementing new MC features or changing existing ones, update `apps/mission-control/TEST_PLAN.md` to cover the new/changed behavior. Add new sections or extend existing ones as needed.
 
