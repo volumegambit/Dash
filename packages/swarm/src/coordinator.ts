@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import { ALWAYS_AVAILABLE_TOOLS, UNIVERSE, parentBuiltinTools } from './resolve-spawn.js';
-import { type RunSnapshot, type RunSummary, type RunWorkerSnapshot, SwarmRun } from './run.js';
+import {
+  type RunSnapshot,
+  type RunSummary,
+  type RunWorkerSnapshot,
+  SwarmRun,
+  type SwarmRunOptions,
+} from './run.js';
 import { createAskOrchestratorTool } from './tools.js';
 import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
 import { DEFAULT_SUBAGENT_TYPE, type WorkerHandleOptions } from './worker-handle.js';
@@ -99,6 +105,13 @@ export interface SwarmCoordinatorOptions {
   hooks?: WorkerHandleOptions['hooks'];
   /** Called on run state transitions (spawn, worker terminal, finalize). */
   onRunChanged?(agentId: string, runId: string): void;
+  /**
+   * Called once per worker terminal transition (done, failed, cancelled) with
+   * that worker's spec. The gateway hangs worktree cleanup off this: the spawn
+   * side created the child's checkout in `workerFactory`, and every terminal
+   * path — cancels included — has to be able to take it down again.
+   */
+  onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
 }
 
 function key(agentId: string, conversationId: string): string {
@@ -130,6 +143,7 @@ export class SwarmCoordinator {
   private readonly defaultCaps: Partial<SwarmCaps>;
   private readonly hooks?: WorkerHandleOptions['hooks'];
   private readonly onRunChanged?: (agentId: string, runId: string) => void;
+  private readonly onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
 
   /** Live turns keyed by `${agentId}/${conversationId}`. */
   private readonly live = new Map<string, LiveTurn>();
@@ -143,6 +157,7 @@ export class SwarmCoordinator {
     this.defaultCaps = opts.defaultCaps ?? {};
     this.hooks = opts.hooks;
     this.onRunChanged = opts.onRunChanged;
+    this.onWorkerFinished = opts.onWorkerFinished;
   }
 
   // --- attachment / ownership ---
@@ -698,6 +713,7 @@ export class SwarmCoordinator {
       channel: turn.preRunChannel,
       orchestratorAbort: turn.opts.orchestratorAbort,
       onWorkerTerminal: (r) => this.onRunChanged?.(turn.opts.agentId, r.runId),
+      onWorkerFinished: (spec) => this.onWorkerFinished?.(spec),
     });
     turn.run = run;
     return run;

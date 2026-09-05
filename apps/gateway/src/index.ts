@@ -75,7 +75,7 @@ import {
   createSwarmGate,
   orchestratorMcpToolNames,
 } from './subagent-tools.js';
-import { createGatewayWorkerFactory } from './subagent-wiring.js';
+import { createGatewayWorkerFactory, createWorktreeCleanupHook } from './subagent-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 async function main() {
@@ -450,6 +450,15 @@ async function main() {
     globalMaxConcurrentWorkers: swarmConfig.maxConcurrentWorkersGlobal,
     defaultCaps: swarmConfig.defaults,
     onRunChanged: emitSwarmRunChanged,
+    // Worktree isolation, finish half: an `isolation: worktree` child got its
+    // own checkout from the factory above, and this takes it down again on
+    // EVERY terminal path (cancels included). A worktree the child left dirty
+    // is kept and its path logged — the child's uncommitted work is the one
+    // thing cleanup must never destroy.
+    onWorkerFinished: createWorktreeCleanupHook({
+      dataDir,
+      warn: (message) => logger.warn(message),
+    }),
     // Fire the SubagentStart/SubagentStop plugin hook events around worker
     // lifecycles (swarm design §6). The WorkerHandle seam is a synchronous
     // void callback, so the async engine runs fire-and-forget — a Subagent

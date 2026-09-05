@@ -1,6 +1,6 @@
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
-import type { SwarmCaps, WorkerBackend, WorkerStatus } from './types.js';
+import type { SwarmCaps, WorkerBackend, WorkerSpec, WorkerStatus } from './types.js';
 import { WorkerHandle, type WorkerHandleOptions, legacyWorkerDoneStatus } from './worker-handle.js';
 
 /** A worker as seen by the panel/management API. */
@@ -23,6 +23,12 @@ export interface RunWorkerSnapshot {
   toolCallCount: number;
   background: boolean;
   oneShot: boolean;
+  /**
+   * The directory the worker ran in — its own worktree when it was isolated,
+   * the shared workspace otherwise. Optional because a snapshot rebuilt from
+   * the durable event log (crash recovery) predates the field.
+   */
+  workspace?: string;
 }
 
 /** Lightweight run listing (panel). */
@@ -66,6 +72,11 @@ export interface SwarmRunOptions {
   orchestratorAbort?: () => void;
   /** Invoked whenever a worker's status becomes terminal. */
   onWorkerTerminal?(run: SwarmRun): void;
+  /**
+   * Invoked once per worker terminal transition with that worker's spec, so the
+   * spawner can undo per-child setup (the gateway's worktree isolation).
+   */
+  onWorkerFinished?(spec: Omit<WorkerSpec, 'extraTools'>): void | Promise<void>;
 }
 
 /**
@@ -92,6 +103,9 @@ export class SwarmRun {
   private readonly wallClockTimer: ReturnType<typeof setTimeout>;
   private readonly orchestratorAbort?: () => void;
   private readonly onWorkerTerminal?: (run: SwarmRun) => void;
+  private readonly onWorkerFinished?: (
+    spec: Omit<WorkerSpec, 'extraTools'>,
+  ) => void | Promise<void>;
 
   private finalizedAt?: number;
 
@@ -103,6 +117,7 @@ export class SwarmRun {
     this.caps = opts.caps;
     this.orchestratorAbort = opts.orchestratorAbort;
     this.onWorkerTerminal = opts.onWorkerTerminal;
+    this.onWorkerFinished = opts.onWorkerFinished;
 
     const timer = setTimeout(() => this.onWallClock(), this.caps.maxRunSeconds * 1000);
     if (typeof timer === 'object' && 'unref' in timer) timer.unref();
@@ -165,6 +180,7 @@ export class SwarmRun {
       maxSteers: handleOpts.maxSteers ?? this.caps.maxSteersPerWorker,
       emit: (event) => this.channel.push(event),
       onTerminal: () => this.onWorkerTerminal?.(this),
+      onFinished: (spec) => this.onWorkerFinished?.(spec),
     });
     this.handles.set(handle.workerId, handle);
     this.order.push(handle.workerId);

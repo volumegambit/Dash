@@ -1,5 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
-import type { WorkerBackend } from './types.js';
+import type { WorkerBackend, WorkerSpec } from './types.js';
 import { WorkerHandle, type WorkerHandleOptions, legacyWorkerDoneStatus } from './worker-handle.js';
 
 /** A deferred promise, resolved/rejected externally. */
@@ -28,6 +28,8 @@ interface SegmentController {
 }
 
 class FakeBackend implements WorkerBackend {
+  /** Where the child actually ran; set when isolation gave it its own worktree. */
+  workspace?: string;
   segments: SegmentController[] = [];
   abortCalls = 0;
   stopCalls = 0;
@@ -723,5 +725,108 @@ describe('WorkerHandle', () => {
       expect(legacyWorkerDoneStatus('interrupted')).toBe('failed');
       expect(legacyWorkerDoneStatus('max_turns')).toBe('failed');
     });
+  });
+});
+
+/**
+ * Ruling 5: worktree cleanup is wired to `onFinished`, so the hook has to fire
+ * on EVERY terminal path — a cancelled child that skipped it would leave a
+ * directory behind on every cancel.
+ */
+describe('WorkerHandle onFinished', () => {
+  function finishing() {
+    const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
+    const made = makeHandle({ onFinished: (spec) => specs.push(spec) });
+    return { ...made, specs };
+  }
+
+  it('fires with the spec when the worker finishes normally', async () => {
+    const { handle, backend, specs } = finishing();
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit(response('report'));
+    seg.complete();
+    await handle.terminalPromise;
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({ workerId: WORKER_ID, workspace: '/tmp/ws' });
+  });
+
+  it('fires when the worker fails', async () => {
+    const { handle, backend, specs } = finishing();
+    handle.start();
+    const seg = await backend.onNextSegment();
+    await seg.emit({ type: 'error', error: new Error('boom') });
+    await handle.terminalPromise;
+    expect(specs).toHaveLength(1);
+  });
+
+  it('fires when the worker is cancelled', async () => {
+    const { handle, backend, specs } = finishing();
+    handle.start();
+    await backend.onNextSegment();
+    handle.cancel('user cancelled');
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({ workerId: WORKER_ID });
+  });
+
+  it('fires when the backend never constructs', async () => {
+    const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
+    const { handle } = makeHandle({
+      backendPromise: Promise.reject(new Error('no backend')),
+      onFinished: (spec) => specs.push(spec),
+    });
+    handle.start();
+    await handle.terminalPromise;
+    expect(specs).toHaveLength(1);
+  });
+
+  it('fires exactly once even when cancel lands after a normal finish', async () => {
+    const { handle, backend, specs } = finishing();
+    handle.start();
+    const seg = await backend.onNextSegment();
+    seg.complete();
+    await handle.terminalPromise;
+    handle.cancel('too late');
+    expect(specs).toHaveLength(1);
+  });
+
+  it('a throwing hook never breaks the terminal transition', async () => {
+    const { handle, backend } = makeHandle({
+      onFinished: () => {
+        throw new Error('hook exploded');
+      },
+    });
+    handle.start();
+    const seg = await backend.onNextSegment();
+    seg.complete();
+    await handle.terminalPromise;
+    expect(handle.status).toBe('done');
+  });
+});
+
+describe('WorkerHandle snapshot workspace', () => {
+  it('reports the spec workspace when the backend claims none', async () => {
+    const { handle, backend } = makeHandle();
+    handle.start();
+    const seg = await backend.onNextSegment();
+    seg.complete();
+    await handle.terminalPromise;
+    expect(handle.snapshot().workspace).toBe('/tmp/ws');
+  });
+
+  /**
+   * An isolated child runs in its own worktree, not the parent's workspace. The
+   * backend is the only thing that knows the resolved path, so the handle takes
+   * it from there and surfaces it in the snapshot the `agent` tool reports on.
+   */
+  it('reports the backend workspace when the child was isolated', async () => {
+    const backend = new FakeBackend();
+    backend.workspace = '/data/worktrees/researcher/w-1';
+    const { handle } = makeHandle({ backendPromise: Promise.resolve(backend) });
+    handle.start();
+    const seg = await backend.onNextSegment();
+    seg.complete();
+    await handle.terminalPromise;
+    expect(handle.snapshot().workspace).toBe('/data/worktrees/researcher/w-1');
   });
 });

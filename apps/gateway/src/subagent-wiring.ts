@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
   DashAgent,
@@ -14,6 +14,11 @@ import {
 } from '@dash/agent';
 import type { McpManager } from '@dash/mcp';
 import type { WorkerBackend, WorkerFactory, WorkerSpec } from '@dash/swarm';
+import {
+  childWorktreePath,
+  cleanupChildWorktree,
+  createChildWorktree,
+} from './subagent-worktree.js';
 
 /**
  * The credential + session-dir floor every spawned child needs, whatever its
@@ -262,11 +267,28 @@ export function buildChildBackendOptions(
  */
 export function createGatewayWorkerFactory(deps: ChildBackendDeps): WorkerFactory {
   return async (spec: WorkerSpec): Promise<WorkerBackend> => {
-    const options = buildChildBackendOptions(spec, deps);
+    // Isolation FIRST, before anything is constructed: `createChildWorktree`
+    // throws on a non-git workspace, and a child that cannot be isolated must
+    // not be started sharing the parent's directory instead. Everything
+    // downstream — the child's config.workspace, its memory read, the tool
+    // sandbox pi enforces — is then derived from the isolated path, so there is
+    // no second place that could still point at the parent.
+    const workspace =
+      spec.isolation === 'worktree'
+        ? (
+            await createChildWorktree({
+              workspace: spec.workspace,
+              dataDir: deps.dataDir,
+              agentName: spec.agentName,
+              childId: spec.workerId,
+            })
+          ).path
+        : spec.workspace;
+    const options = buildChildBackendOptions({ ...spec, workspace }, deps);
     await mkdir(workerSessionDir(deps.dataDir, spec), { recursive: true });
 
     const backend = PiAgentBackend.fromOptions(options);
-    await backend.start(spec.workspace);
+    await backend.start(workspace);
 
     // Static resolver: a child's model / preamble / tools / memory policy are
     // fixed for the life of the spawn, so hand back the SAME config object the
@@ -274,9 +296,92 @@ export function createGatewayWorkerFactory(deps: ChildBackendDeps): WorkerFactor
     const agent = new DashAgent(backend, async () => options.config);
 
     return {
+      // Where the child ACTUALLY ran. The swarm surfaces it in the worker
+      // snapshot and the `agent` tool reports it in its details, so a user can
+      // always see the worktree an isolated child worked in (design 5.2).
+      workspace,
       chat: (message: string) => agent.chat('swarm', `${spec.runId}-${spec.workerId}`, message),
       abort: () => backend.abort(),
       stop: () => backend.stop(),
     };
+  };
+}
+
+/** What the finish-time worktree cleanup needs from the gateway. */
+export interface WorktreeCleanupDeps {
+  /** Gateway data dir root; worktrees live under `<dataDir>/worktrees`. */
+  dataDir: string;
+  /** Where a kept (dirty) worktree or a cleanup failure is reported. */
+  warn?: (message: string) => void;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The fields of a finished worker spec the cleanup reads. */
+type FinishedWorkerSpec = Pick<WorkerSpec, 'agentName' | 'isolation' | 'workspace' | 'workerId'>;
+
+/**
+ * Take down the worktree of one finished child, if it had one.
+ *
+ * NEVER throws — it runs on the worker's terminal transition, where a rejection
+ * would either be swallowed unlogged or take down a path that has already
+ * reported the child's result. Two outcomes are deliberate rather than
+ * exceptional:
+ *
+ * - CLEAN worktree → removed, `{ removed: true }`.
+ * - DIRTY worktree → KEPT, `{ removed: false }`, and the path is warned about.
+ *   The child produced uncommitted work; deleting it would be the one
+ *   unrecoverable thing this code could do. The user gets the path instead.
+ *
+ * `undefined` means there was nothing to do (the child was not isolated) or the
+ * cleanup itself failed (already logged).
+ */
+export async function cleanupWorktreeForSpec(
+  spec: FinishedWorkerSpec,
+  deps: WorktreeCleanupDeps,
+): Promise<{ removed: boolean; path: string } | undefined> {
+  if (spec.isolation !== 'worktree') return undefined;
+  const path = childWorktreePath({
+    dataDir: deps.dataDir,
+    agentName: spec.agentName,
+    childId: spec.workerId,
+  });
+  // Nothing to take down: the spawn failed at (or before) isolation — a non-git
+  // workspace is the common case — so this is not worth a warning.
+  if (!(await pathExists(path))) return undefined;
+  try {
+    const { removed } = await cleanupChildWorktree({ workspace: spec.workspace, path });
+    if (!removed) {
+      deps.warn?.(
+        `[swarm] agent ${spec.workerId} left uncommitted work in its worktree; keeping ${path}`,
+      );
+    }
+    return { removed, path };
+  } catch (err) {
+    deps.warn?.(
+      `[swarm] could not clean up the worktree ${path} of agent ${spec.workerId}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * The `onWorkerFinished` hook the swarm coordinator calls on EVERY terminal
+ * path — done, failed, cancelled, interrupted, max_turns. Anything less would
+ * leak a directory per cancelled child.
+ */
+export function createWorktreeCleanupHook(
+  deps: WorktreeCleanupDeps,
+): (spec: FinishedWorkerSpec) => Promise<void> {
+  return async (spec) => {
+    await cleanupWorktreeForSpec(spec, deps);
   };
 }

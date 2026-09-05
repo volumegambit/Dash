@@ -332,6 +332,10 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
           usage: snap.usage,
           toolCallCount: snap.toolCallCount,
           elapsedMs: (snap.endedAt ?? now) - (snap.startedAt ?? now),
+          // Where the child worked. For an `isolation: worktree` child this is
+          // its own checkout — the only pointer a user gets to work it left
+          // behind uncommitted (design 5.2).
+          ...(snap.workspace !== undefined ? { workspace: snap.workspace } : {}),
           scannerMatched: scanned.matched,
           ...(modelResult.warning && { warning: modelResult.warning }),
         },

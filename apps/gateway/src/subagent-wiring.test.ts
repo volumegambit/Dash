@@ -1,6 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import type {
   AgentBackend,
   AgentState,
@@ -15,9 +17,12 @@ import {
   type ChildBackendDeps,
   buildChildBackendOptions,
   buildWorkerPreamble,
+  cleanupWorktreeForSpec,
   createGatewayWorkerFactory,
+  createWorktreeCleanupHook,
   workerSessionDir,
 } from './subagent-wiring.js';
+import { WORKTREE_REQUIRES_GIT, childWorktreePath } from './subagent-worktree.js';
 
 /**
  * Capture every resolver `createGatewayWorkerFactory` hands to `DashAgent`,
@@ -29,6 +34,7 @@ const captured = vi.hoisted(() => ({
   resolvers: [] as DashAgentConfigResolver[],
   states: [] as AgentState[],
   options: [] as unknown[],
+  starts: [] as string[],
 }));
 
 vi.mock('@dash/agent', async (importOriginal) => {
@@ -39,7 +45,9 @@ vi.mock('@dash/agent', async (importOriginal) => {
       captured.options.push(options);
       return new FakePiAgentBackend();
     }
-    async start(): Promise<void> {}
+    async start(workspace: string): Promise<void> {
+      captured.starts.push(workspace);
+    }
     run(state: AgentState): AsyncGenerator<never> {
       captured.states.push(state);
       return (async function* empty() {})();
@@ -170,6 +178,7 @@ describe('createGatewayWorkerFactory config resolver', () => {
     captured.resolvers.length = 0;
     captured.states.length = 0;
     captured.options.length = 0;
+    captured.starts.length = 0;
   });
 
   afterEach(async () => {
@@ -516,5 +525,192 @@ describe('resolveSwarmConfig (gateway defaults merge)', () => {
     resolveSwarmConfig({ maxConcurrentWorkersGlobal: 99, defaults: { maxRunSeconds: 1 } });
     expect(DEFAULT_SWARM_CONFIG.maxConcurrentWorkersGlobal).toBe(16);
     expect(DEFAULT_SWARM_CONFIG.defaults.maxRunSeconds).toBe(1800);
+  });
+});
+
+const execFileAsync = promisify(execFile);
+/** Own identity + no global config, so the suite runs the same everywhere. */
+const GIT_IDENTITY = ['-c', 'user.email=t@example.com', '-c', 'user.name=Test'];
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync('git', [...GIT_IDENTITY, '-C', cwd, ...args]);
+  return stdout;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Real `git` under a real temp repo: slower than vitest's 5s default.
+describe('worktree isolation wiring', { timeout: 30_000 }, () => {
+  let workspace: string;
+  let dataDir: string;
+
+  beforeEach(async () => {
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
+    vi.stubEnv('GIT_CONFIG_SYSTEM', '/dev/null');
+    captured.options.length = 0;
+    captured.starts.length = 0;
+    workspace = await mkdtemp(join(tmpdir(), 'wire-ws-'));
+    dataDir = await mkdtemp(join(tmpdir(), 'wire-data-'));
+    await git(workspace, 'init', '-b', 'main');
+    await writeFile(join(workspace, 'base.txt'), 'base\n');
+    await git(workspace, 'add', '-A');
+    await git(workspace, 'commit', '-m', 'first');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(workspace, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('an isolated child is started in its own worktree, not the parent workspace', async () => {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+    const spec = makeSpec({ workspace, isolation: 'worktree' });
+    const worker = await factory(spec);
+
+    const expected = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+    expect(captured.starts.at(-1)).toBe(expected);
+    expect((captured.options.at(-1) as PiAgentBackendOptions).config.workspace).toBe(expected);
+    expect(worker.workspace).toBe(expected);
+    expect(await pathExists(join(expected, 'base.txt'))).toBe(true);
+  });
+
+  it('a normal child still runs in the shared workspace', async () => {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+    const worker = await factory(makeSpec({ workspace }));
+    expect(captured.starts.at(-1)).toBe(workspace);
+    expect(worker.workspace).toBe(workspace);
+    expect(await pathExists(join(dataDir, 'worktrees'))).toBe(false);
+  });
+
+  it('an isolated child of a non-git workspace fails to spawn with the exact message', async () => {
+    const plain = await mkdtemp(join(tmpdir(), 'wire-plain-'));
+    try {
+      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+      await expect(factory(makeSpec({ workspace: plain, isolation: 'worktree' }))).rejects.toThrow(
+        WORKTREE_REQUIRES_GIT,
+      );
+      // Nothing was constructed or started for the doomed child.
+      expect(captured.starts).toHaveLength(0);
+    } finally {
+      await rm(plain, { recursive: true, force: true });
+    }
+  });
+
+  describe('cleanupWorktreeForSpec', () => {
+    const finishedSpec = (over: Partial<WorkerSpec> = {}) => {
+      const { extraTools: _extraTools, ...rest } = makeSpec({
+        workspace,
+        isolation: 'worktree',
+        ...over,
+      });
+      return rest;
+    };
+
+    it('removes the worktree of a child that left it clean', async () => {
+      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+      const spec = makeSpec({ workspace, isolation: 'worktree' });
+      await factory(spec);
+      const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+
+      await expect(cleanupWorktreeForSpec(finishedSpec(), { dataDir })).resolves.toEqual({
+        removed: true,
+        path,
+      });
+      expect(await pathExists(path)).toBe(false);
+    });
+
+    /** Ruling 2: dirty means the child did work — keep it and surface the path. */
+    it('keeps a dirty worktree and warns with its path', async () => {
+      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+      const spec = makeSpec({ workspace, isolation: 'worktree' });
+      await factory(spec);
+      const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+      await writeFile(join(path, 'findings.md'), '# work in progress\n');
+
+      const warnings: string[] = [];
+      await expect(
+        cleanupWorktreeForSpec(finishedSpec(), { dataDir, warn: (m) => warnings.push(m) }),
+      ).resolves.toEqual({ removed: false, path });
+      expect(await pathExists(path)).toBe(true);
+      expect(warnings.join('\n')).toContain(path);
+    });
+
+    it('does nothing for a child that was not isolated', async () => {
+      const { extraTools: _extraTools, ...spec } = makeSpec({ workspace });
+      await expect(cleanupWorktreeForSpec(spec, { dataDir })).resolves.toBeUndefined();
+    });
+
+    /**
+     * A spawn that never got as far as creating the worktree (the non-git
+     * refusal is the common case) still finalizes the worker, so cleanup runs
+     * against a path that was never there. That is normal, not a warning.
+     */
+    it('says nothing when the worktree was never created', async () => {
+      const warnings: string[] = [];
+      await expect(
+        cleanupWorktreeForSpec(finishedSpec({ workerId: 'never-created' }), {
+          dataDir,
+          warn: (m) => warnings.push(m),
+        }),
+      ).resolves.toBeUndefined();
+      expect(warnings).toEqual([]);
+    });
+
+    it('logs rather than throws when the path is not a worktree at all', async () => {
+      const path = childWorktreePath({ dataDir, agentName: 'researcher', childId: 'w-13' });
+      await mkdir(path, { recursive: true });
+      const warnings: string[] = [];
+      await expect(
+        cleanupWorktreeForSpec(finishedSpec({ workerId: 'w-13' }), {
+          dataDir,
+          warn: (m) => warnings.push(m),
+        }),
+      ).resolves.toBeUndefined();
+      expect(warnings.join('\n')).toContain(path);
+    });
+  });
+
+  /**
+   * Ruling 5: the hook the swarm calls on EVERY terminal path. A cancelled
+   * child must take its worktree down too, or every cancel leaks a directory.
+   */
+  it('the cleanup hook removes the worktree of a cancelled child', async () => {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+    const spec = makeSpec({ workspace, isolation: 'worktree' });
+    const worker = await factory(spec);
+    const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+    expect(await pathExists(path)).toBe(true);
+
+    const hook = createWorktreeCleanupHook({ dataDir });
+    // Exactly what a cancel does: abort the child, then fire the terminal hook.
+    worker.abort();
+    const { extraTools: _extraTools, ...finished } = spec;
+    await hook(finished);
+
+    expect(await pathExists(path)).toBe(false);
+  });
+
+  it('the cleanup hook resolves rather than rejecting when git fails', async () => {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+    await factory(makeSpec({ workspace, isolation: 'worktree' }));
+
+    const warnings: string[] = [];
+    const hook = createWorktreeCleanupHook({ dataDir, warn: (m) => warnings.push(m) });
+    // The worktree is real and clean, but the repo it belongs to is gone: the
+    // `git worktree remove` fails and must not escape as a rejection.
+    const { extraTools: _extraTools, ...finished } = makeSpec({
+      workspace: '/no/such/workspace',
+      isolation: 'worktree',
+    });
+    await expect(hook(finished)).resolves.toBeUndefined();
+    expect(warnings).not.toHaveLength(0);
   });
 });

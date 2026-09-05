@@ -5,6 +5,13 @@ export interface WorkerBackend {
   chat(message: string): AsyncGenerator<AgentEvent>;
   abort(): void;
   stop(): Promise<void>;
+  /**
+   * The directory the child ACTUALLY runs in. Normally the parent's workspace,
+   * but an `isolation: 'worktree'` child runs in its own checkout, whose path
+   * only the factory knows. Reported in the worker snapshot so the `agent`
+   * tool's details can tell a user where the child worked.
+   */
+  workspace?: string;
 }
 
 export interface WorkerSpec {

@@ -11,6 +11,18 @@ export interface WorkerHandleOptions {
   /** Heartbeat interval while running. Default 10_000ms. */
   heartbeatMs?: number;
   onTerminal(handle: WorkerHandle): void;
+  /**
+   * Fired ONCE, on every terminal path (done, failed, cancelled — and any
+   * future terminal status, which must route through one of the finalizers).
+   * Carries the spec so the spawner can undo whatever it set up for this child:
+   * the gateway removes an `isolation: worktree` checkout here, and a hook that
+   * only ran on the happy path would leak one directory per cancelled child.
+   *
+   * Never awaited (cancel() must stay synchronous) and never trusted: a
+   * rejection or a synchronous throw is swallowed rather than allowed to break
+   * the terminal transition.
+   */
+  onFinished?(spec: Omit<WorkerSpec, 'extraTools'>): void | Promise<void>;
   hooks?: {
     subagentStart?(w: { workerId: string; role: string }): void;
     subagentStop?(w: { workerId: string; role: string; status: string }): void;
@@ -75,6 +87,12 @@ export class WorkerHandle {
   /** 1 for a direct child of the orchestrator. */
   readonly depth: number;
   private readonly isolation?: 'worktree';
+  /**
+   * Where the child actually ran. Starts as the spec's workspace and is
+   * replaced by the backend's own once it resolves — an isolated child runs in
+   * a worktree whose path only the worker factory knows.
+   */
+  private workspace: string;
 
   status: WorkerStatus = 'spawning';
   report?: string;
@@ -121,6 +139,7 @@ export class WorkerHandle {
     this.oneShot = opts.spec.oneShot ?? false;
     this.depth = opts.spec.depth ?? 1;
     this.isolation = opts.spec.isolation;
+    this.workspace = opts.spec.workspace;
     this.runId = opts.spec.runId;
     this.heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
 
@@ -297,6 +316,7 @@ export class WorkerHandle {
       role: this.role,
       status: 'cancelled',
     });
+    this.notifyFinished();
     this.opts.onTerminal(this);
     this.terminal.resolve();
 
@@ -320,6 +340,7 @@ export class WorkerHandle {
     toolCallCount: number;
     background: boolean;
     oneShot: boolean;
+    workspace: string;
   } {
     return {
       workerId: this.workerId,
@@ -337,6 +358,7 @@ export class WorkerHandle {
       toolCallCount: this.toolCallCount,
       background: this.background,
       oneShot: this.oneShot,
+      workspace: this.workspace,
     };
   }
 
@@ -352,6 +374,7 @@ export class WorkerHandle {
       return;
     }
     this.backend = backend;
+    if (backend.workspace) this.workspace = backend.workspace;
     // A cancel() may have landed while awaiting construction.
     if (this.finalized) return;
 
@@ -416,6 +439,7 @@ export class WorkerHandle {
     });
     this.emitFinished(this.status, this.report ?? '');
     this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status: 'done' });
+    this.notifyFinished();
     this.opts.onTerminal(this);
     this.terminal.resolve();
   }
@@ -443,8 +467,26 @@ export class WorkerHandle {
     });
     this.emitFinished(this.status, message);
     this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status: 'failed' });
+    this.notifyFinished();
     this.opts.onTerminal(this);
     this.terminal.resolve();
+  }
+
+  /**
+   * The spawner-facing terminal notification. Called from EVERY finalizer, in
+   * their synchronous blocks, and deliberately fire-and-forget: `cancel()` is
+   * documented never to await, and a spawner's cleanup must not be able to
+   * break — or delay — the worker's terminal transition.
+   */
+  private notifyFinished(): void {
+    const hook = this.opts.onFinished;
+    if (!hook) return;
+    try {
+      void Promise.resolve(hook(this.opts.spec)).catch(() => {});
+    } catch {
+      // A synchronous throw from the hook is the spawner's problem, not the
+      // worker's: the terminal transition has already been reported.
+    }
   }
 
   private isTerminal(): boolean {

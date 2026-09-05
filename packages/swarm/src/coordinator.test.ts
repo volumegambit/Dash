@@ -256,6 +256,34 @@ describe('SwarmCoordinator', () => {
     });
   });
 
+  /**
+   * The seam worktree cleanup hangs off: the gateway builds the child's
+   * worktree in its `workerFactory` and needs a matching notification on EVERY
+   * terminal path to take it down again.
+   */
+  describe('onWorkerFinished', () => {
+    it('reports each finished worker spec to the coordinator-level hook', async () => {
+      const finished: Array<Omit<WorkerSpec, 'extraTools'>> = [];
+      const factory: WorkerFactory = () => Promise.resolve(new ScriptedBackend([]));
+      const coord = new SwarmCoordinator({
+        workerFactory: factory,
+        onWorkerFinished: (spec) => finished.push(spec),
+      });
+      const a = coord.attach(baseAttach({ workspace: '/repo' }));
+      void drain(a.channel);
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', isolation: 'worktree' });
+      await flush();
+
+      expect(finished).toHaveLength(1);
+      expect(finished[0]).toMatchObject({
+        agentName: 'Agent One',
+        workspace: '/repo',
+        isolation: 'worktree',
+      });
+      expect(finished[0].workerId).toBeTruthy();
+    });
+  });
+
   // Behavior 2: lazy run + closed-turn refusal.
   describe('lazy run creation', () => {
     it('first spawnWorker creates the run under the live attachment', () => {

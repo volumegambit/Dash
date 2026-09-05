@@ -52,6 +52,7 @@ function makeCoordinator(overrides: Partial<Record<string, unknown>> = {}) {
       role: 'r',
       brief: 'b',
       model: 'm',
+      workspace: '/data/worktrees/researcher/w1',
     })),
     findWorker: vi.fn(() => undefined),
     sendToWorker: vi.fn(() => ({ ok: true, status: 'running' })),
@@ -102,6 +103,40 @@ describe('agent tool', () => {
     );
     expect(r.content[0].text).toContain('<\\system-reminder>');
     expect(r.details).toMatchObject({ subagentId: 'w1', status: 'done', toolCallCount: 2 });
+  });
+
+  /**
+   * Design 5.2 lists `workspace` in the foreground details. It is the only way a
+   * user can see WHERE an isolated child worked — including the worktree a dirty
+   * child left behind for them to pick up.
+   */
+  it('foreground details carry the workspace the child actually ran in', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools(base(c));
+    const r = await agent.execute('t1', { prompt: 'do', description: 'do it' });
+    expect(r.details).toMatchObject({ workspace: '/data/worktrees/researcher/w1' });
+  });
+
+  it('foreground details omit the workspace when the snapshot has none', async () => {
+    const c = makeCoordinator({
+      waitWorker: vi.fn(async (_a: string, _c: string, id: string) => ({
+        workerId: id,
+        status: 'done',
+        report: 'r',
+        toolCallCount: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        subagentType: 'general-purpose',
+        description: 'd',
+        background: false,
+        oneShot: false,
+        role: 'r',
+        brief: 'b',
+        model: 'm',
+      })),
+    });
+    const [agent] = createAgentTools(base(c));
+    const r = await agent.execute('t1', { prompt: 'do', description: 'do it' });
+    expect(r.details).not.toHaveProperty('workspace');
   });
 
   it('Explore gets the read-only intersection, plus skipMemory/oneShot', async () => {
