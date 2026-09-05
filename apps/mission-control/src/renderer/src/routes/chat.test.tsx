@@ -609,6 +609,47 @@ describe('MessageBubble unresolved tool calls', () => {
   });
 });
 
+describe('MessageBubble tool rows (tool-use UX 2026-09-05)', () => {
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  it('shows what a tool call returned in the collapsed header', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'grep', input: { pattern: 'foo' } },
+          { type: 'tool_result', id: 't1', name: 'grep', content: 'a.ts:1: foo\nb.ts:2: foo' },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('2 matches');
+  });
+
+  it('opens a failed tool call without a click', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'bash', input: { command: 'nope' } },
+          {
+            type: 'tool_result',
+            id: 't1',
+            name: 'bash',
+            content: 'command not found',
+            isError: true,
+          },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('command not found');
+  });
+});
+
 describe('MessageBubble auto-retry rendering', () => {
   function assistantMessage(events: Record<string, unknown>[]) {
     return {

@@ -58,6 +58,7 @@ import {
   insertNewlineAtSelection,
   isTodoWrite,
   parseTodos,
+  resultSummary,
   summarize,
   toolLabel,
   truncate,
@@ -507,9 +508,13 @@ function ToolBlock({
     toolDetails != null &&
     typeof toolDetails === 'object' &&
     'diff' in toolDetails;
-  const [open, setOpen] = useState(hasDiff);
+  // An edit's diff opens because it is the point of the call. A failure opens
+  // because it is the one case where the detail is necessary, and it was the
+  // one case that took a click to reach (tool-use UX 2026-09-05).
+  const [open, setOpen] = useState(hasDiff || isError === true);
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
+  const outcome = resultSummary(name, result, isError, toolDetails);
   const normalizedName = name === 'read_file' ? 'read' : name;
   const isBash = normalizedName === 'bash' || name === 'execute_command';
   const isWrite = normalizedName === 'write' || name === 'write_file';
@@ -582,30 +587,42 @@ function ToolBlock({
   if (effectiveSummary && highlightedSummary) {
     summaryNode = (
       <span
-        className="ml-1 font-mono text-muted"
+        className="ml-1 min-w-0 truncate font-mono text-muted"
         dangerouslySetInnerHTML={{ __html: highlightedSummary }}
       />
     );
   } else if (effectiveSummary) {
-    summaryNode = <span className="ml-1 text-muted">{effectiveSummary}</span>;
+    summaryNode = <span className="ml-1 min-w-0 truncate text-muted">{effectiveSummary}</span>;
   }
 
   return (
     <div
       className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
     >
+      {/* Flex, not the block it was: the outcome is pushed to the right edge
+          with `ml-auto` so a run of calls reads as a column of results, and
+          `min-w-0 truncate` on the summary means a long command ellipsizes
+          rather than shoving the outcome out of the row. The glyph and label
+          keep their own widths via `shrink-0`. */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="w-full px-3 py-1.5 text-left hover:text-foreground"
+        className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
       >
         {isError ? (
-          <XCircle size={10} className="inline text-red mr-1.5" />
+          <XCircle size={10} className="shrink-0 text-red mr-1.5" />
         ) : (
-          <Circle size={8} className="inline text-green fill-green mr-1.5" />
+          <Circle size={8} className="shrink-0 text-green fill-green mr-1.5" />
         )}
-        <span className="font-mono">{toolLabel(name)}</span>
+        <span className="shrink-0 font-mono">{toolLabel(name)}</span>
         {summaryNode}
+        {outcome && (
+          <span
+            className={`ml-auto shrink-0 pl-3 ${isError ? 'text-red' : 'text-muted opacity-75'}`}
+          >
+            {outcome}
+          </span>
+        )}
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">

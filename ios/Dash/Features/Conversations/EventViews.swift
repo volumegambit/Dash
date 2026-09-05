@@ -249,7 +249,7 @@ struct ToolCardView: View {
   @State private var isExpanded: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// Task cards open expanded; every other tool card stays collapsed.
+  /// Task cards and failed cards open; every other tool card stays collapsed.
   ///
   /// The rest of the tool cards hide diagnostic detail — a command's
   /// arguments, a file's contents — that you only want on demand. A task
@@ -257,9 +257,15 @@ struct ToolCardView: View {
   /// read at a glance, and it was the only one whose contents you could not
   /// see at all: `formatDetails` renders the `todos` array as the literal
   /// string "[3 items]".
+  ///
+  /// A failure is the opposite case (tool-use UX 2026-09-05): it is the one
+  /// card whose body you always want, and until now it sat behind the same
+  /// tap as a successful `read`. Matches web's `ToolUseBlock` and MC's
+  /// `ToolBlock`.
   init(tool: ToolCardState) {
     self.tool = tool
-    _isExpanded = State(initialValue: ToolPresentation.isTodoWrite(tool.name))
+    _isExpanded = State(
+      initialValue: ToolPresentation.isTodoWrite(tool.name) || tool.status == .failed)
   }
 
   var body: some View {
@@ -334,13 +340,18 @@ struct ToolCardView: View {
           .truncationMode(.tail)
       }
       Spacer(minLength: 4)
+      // What the call returned, at the right edge — the half of the row
+      // `summarize` cannot answer. Only while collapsed: once open, the body
+      // below shows the result itself.
       if let outcome = ToolPresentation.resultSummary(
         name: tool.name, content: tool.content, isError: tool.status == .failed,
         details: tool.details), !isExpanded
       {
         Text(outcome)
           .font(.caption2)
-          .foregroundStyle(.tertiary)
+          .foregroundStyle(tool.status == .failed ? AnyShapeStyle(DashTheme.danger) : AnyShapeStyle(.tertiary))
+          .lineLimit(1)
+          .truncationMode(.tail)
           .layoutPriority(1)
       }
       // The cards were silently expandable: nothing on a collapsed row said
