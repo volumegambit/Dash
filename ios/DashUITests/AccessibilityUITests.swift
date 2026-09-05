@@ -48,7 +48,16 @@ final class AccessibilityUITests: DashUITestCase {
     app = launch(scenario: "paired-online", contentSize: Self.accessibilityXXXL)
     selectTab("tab.conversations", in: app)
     revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
-    assertFitsHorizontally(element("conversation.list", in: app), in: app)
+    // The sidebar is checked on the rendered TEXT of a conversation row rather
+    // than on `conversation.list`'s frame. `NavigationSplitView` overhangs the
+    // sidebar column's host view -- and every cell, row button and section
+    // header inside it -- 100 pt past the window's leading edge on iPadOS 18.4,
+    // with a compensating safe-area inset, so all of those frames measure the
+    // system's column geometry instead of this app's layout. The row's labels
+    // are the sidebar content a user actually reads and the thing Dynamic Type
+    // grows, so they are what a clip at XXXL would show up in. See
+    // `assertTextFitsHorizontally`.
+    assertTextFitsHorizontally(element("conversation.row.shared-plan", in: app), in: app)
     element("conversation.row.shared-plan", in: app).tap()
     dismissSplitOverlayIfPresent(in: app)
     assertFitsHorizontally(element("chat.transcript", in: app), in: app)

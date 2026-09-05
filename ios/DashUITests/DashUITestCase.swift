@@ -622,6 +622,48 @@ class DashUITestCase: XCTestCase {
     XCTAssertLessThanOrEqual(frame.maxX, appFrame.maxX + 1, file: file, line: line)
   }
 
+  /// Asserts that every glyph `element` renders lies inside the window
+  /// horizontally.
+  ///
+  /// Use this instead of `assertFitsHorizontally` when the element under test
+  /// is a CONTAINER whose frame the system, not the app, positions. A `List`
+  /// and its cells expand into safe areas by design, so their frames describe
+  /// the safe area rather than where anything is drawn. On iPadOS 18.4
+  /// `NavigationSplitView` puts its sidebar column's host view 100 pt off the
+  /// window's leading edge -- `(-100, 0, column + 100, height)` -- with a
+  /// matching 100 pt leading safe-area inset that puts the drawn content back,
+  /// so `conversation.list`, its cells and the row buttons inside them all
+  /// report `minX == -100` while every glyph sits at `x >= 16`. That overhang
+  /// is the system's column geometry, not this app's layout: it is identical at
+  /// the DEFAULT text size, widening the column moves it instead of removing
+  /// it, and a bare `List { Text("hello") }` as the entire sidebar reproduces
+  /// it exactly (sixteen variants measured; see task-2-report.md).
+  ///
+  /// This is not a relaxation of `assertFitsHorizontally`. There is no
+  /// tolerance -- each text element is held to the same window edge plus or
+  /// minus 1 pt -- and checking the glyphs individually is what actually
+  /// detects the failure the assertion exists for: text grown by Dynamic Type
+  /// past the width of its column. A container's frame never showed that,
+  /// because the container keeps its layout width while its contents overflow.
+  func assertTextFitsHorizontally(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertTrue(element.exists, file: file, line: line)
+    let texts = element.descendants(matching: .staticText).allElementsBoundByIndex
+    XCTAssertFalse(
+      texts.isEmpty,
+      "Expected \(element) to render some text to check for clipping",
+      file: file,
+      line: line
+    )
+    for text in texts where text.frame.isEmpty == false {
+      assertFitsHorizontally(text, in: app, file: file, line: line)
+    }
+  }
+
   /// Scrolls the Settings list until `identifier` is on screen and hittable.
   ///
   /// Settings is a full-height column on compact width but a form SHEET on the
