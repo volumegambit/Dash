@@ -54,7 +54,7 @@ import {
 import { EmptyChatState } from './chat.empty-state.js';
 import {
   type TodoItem,
-  formatDetails,
+  formatVisibleDetails,
   insertNewlineAtSelection,
   isTodoWrite,
   parseTodos,
@@ -513,14 +513,7 @@ function ToolBlock({
   const normalizedName = name === 'read_file' ? 'read' : name;
   const isBash = normalizedName === 'bash' || name === 'execute_command';
   const isWrite = normalizedName === 'write' || name === 'write_file';
-  const READ_HIDDEN_KEYS = new Set(['path', 'offset', 'limit']);
-  const allDetails = formatDetails(input);
-  const details =
-    normalizedName === 'read'
-      ? allDetails.filter(({ key }) => !READ_HIDDEN_KEYS.has(key))
-      : isWrite
-        ? allDetails.filter(({ key }) => key !== 'content')
-        : allDetails;
+  const details = formatVisibleDetails(name, input);
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
 
   // Parse Write tool content for rich display

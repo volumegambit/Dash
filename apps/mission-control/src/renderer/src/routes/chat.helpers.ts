@@ -224,6 +224,45 @@ export function insertNewlineAtSelection(
   };
 }
 
+const READ_SKIP_KEYS = new Set(['path', 'offset', 'limit']);
+const WRITE_SKIP_KEYS = new Set(['content']);
+const PLACEHOLDER_VALUE = /^(\{object\}|\[\d+ items?\])$/;
+
+/** `formatDetails`, filtered down to the rows that tell the reader
+ * something.
+ *
+ * This also moves the per-tool key skipping out of `ToolBlock`'s render
+ * body, where it rebuilt a `Set` on every render, and adds the two
+ * 2026-09-05 rules:
+ *
+ * 1. A row whose value is EXACTLY the header summary is pure duplication;
+ *    the header sits directly above it. Equality against `summarize` rather
+ *    than "drop the primary key" is self-correcting — a command long enough
+ *    to be truncated or shortened does not match, so its row survives and
+ *    the full value stays reachable.
+ * 2. A row whose value is `{object}` or `[N items]` reports the input's
+ *    TYPE and never its content.
+ *
+ * Twin of tool-presentation.ts `formatVisibleDetails` and of the filtering
+ * fused into iOS's `formatDetails`. See that file for the accepted parity
+ * hazard in rule 1's fallback. */
+export function formatVisibleDetails(
+  name: string,
+  input: string,
+): { key: string; value: string }[] {
+  const normalized = normalizeTool(name);
+  const skip =
+    normalized === 'read' ? READ_SKIP_KEYS : normalized === 'write' ? WRITE_SKIP_KEYS : null;
+  const summary = summarize(name, input);
+
+  return formatDetails(input).filter(({ key, value }) => {
+    if (skip?.has(key)) return false;
+    if (summary && value === summary) return false;
+    if (PLACEHOLDER_VALUE.test(value)) return false;
+    return true;
+  });
+}
+
 /** Remove the chrome some tools wrap their result body in, so a line count
  * counts the body and not the envelope.
  *

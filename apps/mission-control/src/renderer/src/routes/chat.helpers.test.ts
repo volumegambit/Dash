@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatDetails,
+  formatVisibleDetails,
   insertNewlineAtSelection,
   resultSummary,
   shortenCommand,
@@ -249,5 +250,33 @@ describe('resultSummary', () => {
 
   it('names an empty result', () => {
     expect(resultSummary('bash', '\n\n')).toBe('no output');
+  });
+});
+
+describe('formatVisibleDetails', () => {
+  it('drops a row that repeats the header summary verbatim', () => {
+    expect(formatVisibleDetails('bash', JSON.stringify({ command: 'ls -la' }))).toEqual([]);
+  });
+
+  it('applies the read skips the ToolBlock call site used to do inline', () => {
+    const input = JSON.stringify({ path: 'a.ts', offset: 0, limit: 10, encoding: 'utf8' });
+    expect(formatVisibleDetails('read', input)).toEqual([{ key: 'encoding', value: 'utf8' }]);
+  });
+
+  it('applies the write skips, and path repeats the header summary', () => {
+    const input = JSON.stringify({ path: 'a.ts', content: 'hello' });
+    expect(formatVisibleDetails('write', input)).toEqual([]);
+  });
+
+  it('drops rows whose value is only a type placeholder', () => {
+    const input = JSON.stringify({ schema: { a: 1 }, items: [1, 2, 3] });
+    expect(formatVisibleDetails('some_tool', input)).toEqual([]);
+  });
+
+  it('keeps the row when the header shortened the executable', () => {
+    const command = '/opt/homebrew/bin/gog gmail list';
+    expect(formatVisibleDetails('bash', JSON.stringify({ command }))).toEqual([
+      { key: 'command', value: command },
+    ]);
   });
 });
