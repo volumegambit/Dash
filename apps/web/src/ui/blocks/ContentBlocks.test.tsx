@@ -224,6 +224,45 @@ describe('ContentBlocks', () => {
     expect(screen.queryByTestId('unknown-block')).toBeNull();
   });
 
+  it('renders memory events as a chip instead of unknown content', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'Noted. ' },
+        {
+          type: 'memory_saved',
+          name: 'user-timezone',
+          description: 'Gerry is in Singapore',
+          memoryType: 'user',
+          action: 'created',
+        },
+        {
+          type: 'memory_saved',
+          name: 'user-timezone',
+          description: 'Gerry is in Singapore (UTC+8)',
+          memoryType: 'user',
+          action: 'updated',
+        },
+        { type: 'memory_forgotten', name: 'old-fact' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('Noted.')).toBeTruthy();
+    expect(screen.getByText('Remembered: Gerry is in Singapore')).toBeTruthy();
+    expect(screen.getByText('Updated memory: Gerry is in Singapore (UTC+8)')).toBeTruthy();
+    expect(screen.getByText('Forgot: old-fact')).toBeTruthy();
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
+  });
+
+  it('renders a fallback unknown-block for a malformed memory event', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'memory_saved', name: 'user-timezone', action: 'created' }],
+    };
+    expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
+    expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
   it('renders a fallback unknown-block for an unrecognized event type, without throwing', () => {
     const content: ConversationContent = {
       type: 'assistant',

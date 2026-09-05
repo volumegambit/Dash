@@ -149,6 +149,43 @@ Loading a skill is automatic — whenever skills are available, the agent can pu
   </Tab>
 </Tabs>
 
+## Memory
+
+Reading and writing memory is automatic — whenever memory is on for an agent, it gets the three tools below without any per-agent tool selection, the same way `load_skill` is always available. See [Memory](/memory) for the full picture.
+
+<Tabs>
+  <Tab title="save_memory">
+    Save or update one memory that should persist across conversations.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `name` | `string` | yes | Stable slug for this fact (lowercase letters, digits, hyphens, max 64 chars). Reusing an existing name updates it instead of creating a duplicate. |
+    | `description` | `string` | yes | One line shown in the memory index — written so a later turn can tell whether to recall it |
+    | `type` | `string` | yes | `user`, `feedback`, `project`, or `reference` |
+    | `content` | `string` | yes | The fact itself, as markdown, up to 2 KB |
+
+    Never available to sub-agents or swarm workers — they inherit the parent agent's memory read-only.
+  </Tab>
+  <Tab title="recall_memory">
+    Read the full content of one memory from the index by name.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `name` | `string` | yes | The memory name from the index |
+
+    Not available to sub-agents or swarm workers either — they see the memory index and whatever is automatically recalled for their brief, but cannot look up additional memories on demand.
+  </Tab>
+  <Tab title="forget_memory">
+    Delete one memory by name when it is wrong or no longer applies.
+
+    | Parameter | Type | Required | Description |
+    |-----------|------|----------|-------------|
+    | `name` | `string` | yes | The memory name to remove |
+
+    Never available to sub-agents or swarm workers — they inherit the parent agent's memory read-only.
+  </Tab>
+</Tabs>
+
 ## Integrations
 
 <Tabs>

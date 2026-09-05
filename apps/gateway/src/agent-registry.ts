@@ -32,6 +32,17 @@ export interface GatewayAgentConfig {
   /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
   swarm?: AgentSwarmConfig;
   /**
+   * Per-agent automated memory. `undefined` = enabled with sweep 'auto'
+   * (backward compat — legacy agents persisted before the memory system have
+   * no key and MUST read as enabled, never as off).
+   * `enabled: false` disables the memory prompt, the tools and the sweep.
+   * `sweep`: 'auto' (on for non-frontier providers), 'on', 'off'.
+   *
+   * Flows through `update()` exactly like `swarm`: a partial-update patch
+   * replaces the object wholesale (it is NOT deep-merged).
+   */
+  memory?: { enabled?: boolean; sweep?: 'auto' | 'on' | 'off' };
+  /**
    * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
    * (backward compat — legacy agents persisted before P5 have no key and MUST
    * load as `undefined`, never `[]`/`null`). An explicit `[]` means "none".

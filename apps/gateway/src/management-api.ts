@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentClient } from '@dash/agent';
+import type { AgentClient, MemoryType } from '@dash/agent';
+import { MemoryOpError } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
@@ -823,7 +824,171 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         }
       });
     });
+
+    // --- Memory: reads + delete ---
+    // Mounted on `target`, so these exist on the loopback administrative API
+    // *and* under `/mobile/v1` — the iOS client browses and deletes memories.
+    // The write (PUT) and config routes are deliberately loopback-only and are
+    // registered directly on `app` just below this function's call sites.
+    target.get('/agents/:id/memory', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      // Reads never throw: the coordinator's management path still lists what
+      // is on disk for a memory-disabled agent (so the Memory tab stays
+      // honest), and degrades to empty for an unknown agent or an embedding
+      // with no memory directory.
+      return c.json(await agents.listMemories(id));
+    });
+
+    target.get('/agents/:id/memory/:name', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const record = await agents.getMemory(id, c.req.param('name'));
+      if (!record) return c.json({ error: 'not found' }, 404);
+      return c.json(record);
+    });
+
+    target.delete('/agents/:id/memory/:name', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const name = c.req.param('name');
+      try {
+        const removed = await agents.removeMemory(id, name);
+        if (!removed) return c.json({ error: 'not found' }, 404);
+        return c.json({ name });
+      } catch (err) {
+        const m = mapMemoryError(err);
+        return c.json(m.body, m.status);
+      }
+    });
   }
+
+  // --- Memory routes: mapper + the loopback-only half ---
+
+  /**
+   * Status mapping for the memory routes, mirroring `mapSkillError` but keyed
+   * on the `code` carried by `MemoryOpError`: `invalid` -> 400 (bad name/type/
+   * oversized content), `not_found` -> 404, `limit` -> 409 (per-agent cap).
+   * The coordinator's save path throws a plain Error when memory is disabled
+   * for the agent, and every memory path throws when the embedding has no
+   * memory directory at all; those are configuration states, not client
+   * mistakes, so they surface as 503.
+   */
+  const mapMemoryError = (
+    err: unknown,
+  ): { status: 400 | 404 | 409 | 500 | 503; body: { error: string } } => {
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof MemoryOpError) {
+      const status: 400 | 404 | 409 =
+        err.code === 'invalid' ? 400 : err.code === 'not_found' ? 404 : 409;
+      return { status, body: { error: message } };
+    }
+    if (message.includes('Memory is disabled') || message.includes('Memory is not configured')) {
+      return { status: 503, body: { error: message } };
+    }
+    return { status: 500, body: { error: message } };
+  };
+
+  /** `memory` absent means enabled with sweep 'auto' (legacy agents). */
+  const resolveMemoryConfig = (
+    memory: GatewayAgentConfig['memory'],
+  ): { enabled: boolean; sweep: 'auto' | 'on' | 'off' } => ({
+    enabled: memory?.enabled !== false,
+    sweep: memory?.sweep ?? 'auto',
+  });
+
+  // ROUTE ORDER IS LOAD-BEARING. Hono runs *every* handler whose pattern
+  // matches, in registration order, stopping at the first that returns a
+  // Response. `mountAgentRoutes` registers `GET /agents/:id/memory/:name` on
+  // `app`, so these `/agents/:id/memory/config` routes MUST be registered
+  // BEFORE that call — otherwise `:name` wins and `/memory/config` 404s as
+  // "no memory named config". Covered by the route-order test in
+  // management-api-server.test.ts.
+  //
+  // These three routes are loopback-only (never mounted on `mobileV1`):
+  // Mission Control is the only client that edits or configures memory.
+  app.get('/agents/:id/memory/config', (c) => {
+    const entry = agentRegistry.get(c.req.param('id'));
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json(resolveMemoryConfig(entry.config.memory));
+  });
+
+  app.patch('/agents/:id/memory/config', async (c) => {
+    const id = c.req.param('id');
+    const entry = agentRegistry.get(id);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{ enabled?: boolean; sweep?: 'auto' | 'on' | 'off' }>(c);
+    if (!parsed.ok) return parsed.response;
+    // `parseJsonBody` only rejects UNPARSEABLE JSON: `null`, `[]` and `"str"`
+    // all parse fine. Reading a property off them below would throw outside any
+    // try (and the app registers no onError), so Hono would answer 500 for what
+    // is a client mistake. Check the shape before touching a single key.
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
+    if (parsed.body.enabled !== undefined && typeof parsed.body.enabled !== 'boolean') {
+      return c.json({ error: 'enabled must be a boolean' }, 400);
+    }
+    if (parsed.body.sweep !== undefined && !['auto', 'on', 'off'].includes(parsed.body.sweep)) {
+      return c.json({ error: 'sweep must be auto, on or off' }, 400);
+    }
+    // Merge, don't replace: a patch that only carries `sweep` must not drop a
+    // previously stored `enabled` (and vice versa). Keys are copied one by one
+    // rather than spreading the raw body so unknown fields never reach disk.
+    const memory: NonNullable<GatewayAgentConfig['memory']> = { ...entry.config.memory };
+    if (parsed.body.enabled !== undefined) memory.enabled = parsed.body.enabled;
+    if (parsed.body.sweep !== undefined) memory.sweep = parsed.body.sweep;
+    const wasEnabled = resolveMemoryConfig(entry.config.memory).enabled;
+    agentRegistry.update(id, { memory });
+    await agentRegistry.save();
+    // Same reason `PUT /agents/:id` evicts on a swarm change: the memory TOOLS
+    // (save_memory/recall_memory/forget_memory) are registered when the backend
+    // is built, not per turn, so a warm conversation would keep them live after
+    // a disable unless evicted. Eviction forces the next turn to rebuild them
+    // against the new config. `sweep` needs no eviction: it is read from the
+    // registry per turn.
+    if (resolveMemoryConfig(memory).enabled !== wasEnabled) {
+      await agents.evict(id);
+    }
+    return c.json(resolveMemoryConfig(memory));
+  });
+
+  app.put('/agents/:id/memory/:name', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{
+      description: string;
+      type: MemoryType;
+      content: string;
+    }>(c);
+    if (!parsed.ok) return parsed.response;
+    // See the PATCH handler: `null`, `[]` and `"str"` are all valid JSON, and
+    // destructuring `null` below throws a TypeError outside the try -> 500.
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
+    const { description, type, content } = parsed.body;
+    // The store reaches for `.trim()` on these two, so a non-string would
+    // surface as a TypeError -> 500. Reject it as the client error it is. An
+    // invalid `type` needs no guard here: the store's own check raises
+    // MemoryOpError('invalid'), which the mapper already turns into a 400.
+    if (typeof description !== 'string' || typeof content !== 'string') {
+      return c.json({ error: 'description and content must be strings' }, 400);
+    }
+    try {
+      // Fields are passed explicitly rather than spread: the memory name comes
+      // from the path, and a `name` in the body must not be able to redirect
+      // the write to a different memory. The store validates the rest and the
+      // per-agent cap; failures arrive as MemoryOpError. Writes are always
+      // `source: 'user'` — the coordinator stamps that.
+      return c.json(
+        await agents.saveMemory(id, { name: c.req.param('name'), description, type, content }),
+      );
+    } catch (err) {
+      const m = mapMemoryError(err);
+      return c.json(m.body, m.status);
+    }
+  });
 
   mountAgentRoutes(app, AGENT_CREATE_KEYS, AGENT_UPDATE_KEYS);
   mountAgentRoutes(mobileV1, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);

@@ -41,6 +41,23 @@ struct ContractFixtureTests {
     #expect(page.items.isEmpty == false)
   }
 
+  @Test("the memory list fixture decodes with bare ISO dates and grouped types")
+  func memoryListFixture() throws {
+    let memories = try FixtureLoader.decode([MemoryInfoDTO].self, "memory-list.json")
+
+    #expect(memories.count == 2)
+    #expect(memories.map(\.name) == ["user-timezone", "repo-pnpm"])
+    #expect(memories.map(\.type) == [.user, .project])
+    #expect(memories.map(\.source) == ["agent", "sweep"])
+    // `createdAt`/`updatedAt` are bare `YYYY-MM-DD` days, not RFC 3339
+    // timestamps, so they stay `String` — `ContractCoding`'s date strategy
+    // would reject them.
+    #expect(memories[0].createdAt == "2026-09-05")
+    #expect(memories[0].updatedAt == "2026-09-05")
+    #expect(memories[0].size == 24)
+    #expect(memories[0].id == memories[0].name)
+  }
+
   @Test("contract coding round-trips JSON and RFC 3339 dates")
   func codingPrimitives() throws {
     let json = Data(#"{"a":[null,true,1,"x"],"o":{"n":2}}"#.utf8)
@@ -96,6 +113,8 @@ struct ContractFixtureTests {
       #"{"type":"skill_loaded","name":"mobile"}"#,
       #"{"type":"skill_created","name":"mobile","description":"Mobile help"}"#,
       #"{"type":"mcp_server_error","server":"linear","error":"offline"}"#,
+      #"{"type":"memory_saved","name":"user-timezone","description":"Gerry is in Singapore","memoryType":"user","action":"created"}"#,
+      #"{"type":"memory_forgotten","name":"old-fact"}"#,
     ]
 
     for sample in samples {
@@ -108,6 +127,73 @@ struct ContractFixtureTests {
       let sourceJSON = try canonicalJSON(source)
       #expect(encodedJSON == sourceJSON, "round-trip failed for \(sample)")
     }
+  }
+
+  /// Agent memory Phase D: the wire field for the memory bucket is
+  /// `memoryType` (`type` is the discriminator) and `action` is
+  /// `created`/`updated`. Assert the decoded payload, not just round-tripping.
+  @Test("memory events decode their bucket and action")
+  func memoryEventPayloads() throws {
+    let saved = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(
+        #"{"type":"memory_saved","name":"a","description":"d","memoryType":"feedback","action":"updated"}"#
+          .utf8
+      )
+    )
+    guard case let .memorySaved(name, description, memoryType, action) = saved else {
+      Issue.record("memory_saved did not decode")
+      return
+    }
+    #expect(name == "a")
+    #expect(description == "d")
+    #expect(memoryType == .feedback)
+    #expect(action == .updated)
+
+    let forgotten = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(#"{"type":"memory_forgotten","name":"old-fact"}"#.utf8)
+    )
+    #expect(forgotten == .memoryForgotten(name: "old-fact"))
+
+    #expect(MemoryTypeDTO.allCases.map(\.rawValue) == ["user", "feedback", "project", "reference"])
+  }
+
+  /// Agent memory: the bucket list is a product-level enum expected to grow, and
+  /// every other client renders an unrecognised bucket rather than failing. On
+  /// iOS a thrown `DecodingError` is fatal well beyond the chip — the frame
+  /// decoder maps it to `GatewayError.updateRequired` and tears down the whole
+  /// receive loop, and a history page decodes `[AgentEvent]` as a unit. So an
+  /// unknown `memoryType`/`action` must degrade THE EVENT to `.unknown`.
+  @Test("unknown memory bucket or action degrades to an unknown event")
+  func memoryEventUnknownEnumValuesDegrade() throws {
+    let futureBucket = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(
+        #"{"type":"memory_saved","name":"a","description":"d","memoryType":"future_bucket","action":"created"}"#
+          .utf8
+      )
+    )
+    guard case let .unknown(type, raw) = futureBucket else {
+      Issue.record("unknown memoryType did not degrade to .unknown: \(futureBucket)")
+      return
+    }
+    #expect(type == "memory_saved")
+    #expect(raw.objectValue?["memoryType"] == .string("future_bucket"))
+
+    let futureAction = try ContractCoding.decoder().decode(
+      AgentEvent.self,
+      from: Data(
+        #"{"type":"memory_saved","name":"a","description":"d","memoryType":"user","action":"archived"}"#
+          .utf8
+      )
+    )
+    guard case let .unknown(actionType, actionRaw) = futureAction else {
+      Issue.record("unknown action did not degrade to .unknown: \(futureAction)")
+      return
+    }
+    #expect(actionType == "memory_saved")
+    #expect(actionRaw.objectValue?["action"] == .string("archived"))
   }
 
   @Test("all positive REST fixtures decode")
@@ -367,6 +453,12 @@ struct ContractFixtureTests {
     case ("json", "openapi", "MobileAgentList"):
       if fixture.valid {
         _ = try FixtureLoader.decode([RegisteredAgentDTO].self, fixture.file)
+      } else {
+        _ = try FixtureLoader.data(fixture.file)
+      }
+    case ("json", "openapi", "MemoryInfoList"):
+      if fixture.valid {
+        _ = try FixtureLoader.decode([MemoryInfoDTO].self, fixture.file)
       } else {
         _ = try FixtureLoader.data(fixture.file)
       }

@@ -144,6 +144,57 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  # The three memory operations answer 404 with `MemoryNotFound`, NOT the
+  # `NotFound` (`MobileApiError`) envelope every other operation in this
+  # namespace uses. That is deliberate: the gateway handlers emit the bare
+  # `{ "error": "not found" }` body, and this document describes what is
+  # actually on the wire. See the `MemoryNotFound` response for the full note.
+  /agents/{id}/memory:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      operationId: listMobileAgentMemories
+      responses:
+        '200':
+          description: Memories the agent has saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryInfoList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/MemoryNotFound'
+  /agents/{id}/memory/{name}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/MemoryName'
+    get:
+      operationId: getMobileAgentMemory
+      responses:
+        '200':
+          description: The full memory record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/MemoryNotFound'
+    delete:
+      operationId: deleteMobileAgentMemory
+      responses:
+        '200':
+          description: The deleted memory's name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/MemoryNotFound'
   /models:
     get:
       operationId: listMobileModels
@@ -350,6 +401,11 @@ components:
       in: path
       required: true
       schema: { type: string, minLength: 1 }
+    MemoryName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
     ConversationId:
       name: id
       in: path
@@ -398,6 +454,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MobileApiError'
+    MemoryNotFound:
+      description: >-
+        The agent, or the named memory, does not exist. DELIBERATE DIVERGENCE:
+        the memory routes reply with the gateway's bare `{ "error": ... }` body
+        instead of the `MobileApiError` envelope the rest of this namespace
+        uses, so they are documented with their own schema rather than
+        `NotFound`. Clients must not expect `code`/`retryable` here; iOS maps
+        the 404 status before it reads the body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryNotFoundError'
     Gone:
       description: The conversation was previously deleted and cannot be mutated.
       content:
@@ -560,6 +628,52 @@ components:
       required: [ok]
       properties:
         ok: { const: true }
+    MemoryInfo:
+      type: object
+      additionalProperties: false
+      required: [name, description, type, source, createdAt, updatedAt, size]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        type: { enum: [user, feedback, project, reference] }
+        source: { enum: [agent, sweep, user, import] }
+        # Bare calendar days, not RFC 3339 timestamps.
+        createdAt: { type: string, format: date }
+        updatedAt: { type: string, format: date }
+        size: { type: integer, minimum: 0 }
+    MemoryInfoList:
+      type: array
+      items:
+        $ref: '#/components/schemas/MemoryInfo'
+    MemoryRecord:
+      type: object
+      additionalProperties: false
+      required: [name, description, type, source, createdAt, updatedAt, content]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        type: { enum: [user, feedback, project, reference] }
+        source: { enum: [agent, sweep, user, import] }
+        createdAt: { type: string, format: date }
+        updatedAt: { type: string, format: date }
+        content: { type: string }
+    MemoryDeleteResponse:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+    MemoryNotFoundError:
+      description: >-
+        The 404 body of the three memory routes, exactly as the gateway emits
+        it. Intentionally NOT `MobileApiError`: there is no `code` and no
+        `retryable`, so a client that decoded this as the standard envelope
+        would fail to parse it.
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { type: string, minLength: 1 }
     MobileModel:
       type: object
       additionalProperties: false
