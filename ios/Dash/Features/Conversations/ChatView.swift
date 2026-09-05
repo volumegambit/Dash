@@ -338,9 +338,35 @@ struct ChatView: View {
     )
   }
 
+  /// UI-test probe (Task 4 review fix, Important 1): surfaces the id
+  /// `.scrollPosition(id:)` is currently tracking so a real-swipe UI test can
+  /// assert it is a genuine `ChatMessageState.id` rather than one of the
+  /// outer stack's children. DEBUG-only AND gated on the single
+  /// `long-transcript` scenario, so no shipping build and no other UI suite
+  /// ever sees this element. Invisible rather than hidden: `.hidden()` /
+  /// zero opacity would also remove it from the accessibility tree, which is
+  /// the one thing it exists for.
+  #if DEBUG
+    @ViewBuilder
+    private var scrollAnchorProbe: some View {
+      if UITestProbe.isScrollAnchorProbeEnabled {
+        Text(feature.scrollAnchorMessageID ?? "none")
+          .font(.system(size: 1))
+          .foregroundStyle(.clear)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("chat.scrollAnchor")
+      }
+    }
+  #endif
+
   private var transcript: some View {
     ScrollViewReader { proxy in
       scrollView
+        .overlay(alignment: .topLeading) {
+          #if DEBUG
+            scrollAnchorProbe
+          #endif
+        }
         .overlay(alignment: .bottomTrailing) {
           if isNearBottom == false {
             JumpToBottomButton {

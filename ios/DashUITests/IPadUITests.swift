@@ -51,4 +51,55 @@ final class IPadUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).waitForExistence(timeout: 5))
     waitUntilSelected(element("conversation.row.shared-plan", in: app))
   }
+
+  /// The only end-to-end check that `.scrollPosition(id:)` genuinely TRACKS
+  /// real message ids (Task 4 review fix, Important 1 + 3). SwiftUI only
+  /// writes the topmost visible id back into the binding for touch-driven
+  /// scrolling, so no unit test can reach it; this swipes for real and reads
+  /// the DEBUG `chat.scrollAnchor` probe. Asserting the probe begins with
+  /// `filler-` is asserting the tracked value is a genuine
+  /// `ChatMessageState.id` rather than `"none"` — which is all the
+  /// OUTER-stack `.scrollTargetLayout()` placement ever produced (verified:
+  /// reverting the placement fails this test with `got "none"`).
+  ///
+  /// Uses the `long-transcript` scenario because `paired-online`'s
+  /// two-message fixture cannot overflow the viewport, so there is nothing to
+  /// scroll away from — the reason the rotation test above was green before
+  /// any implementation existed.
+  ///
+  /// Scope honesty: the post-rotation assertion is a no-jump integration
+  /// guard, NOT proof of the restore branch. A full-screen iPad rotation does
+  /// not re-host `ChatView` (measured: forcing `decide` to always return
+  /// `.bottom` still passes this test), so SwiftUI preserves the offset
+  /// natively here. A genuine re-host needs a horizontal size-class flip
+  /// (Split View / Stage Manager), which XCUITest cannot drive. The restore
+  /// decision itself is covered by `ChatScrollRestorationTests`' table and by
+  /// `TranscriptScrollTargetTests`.
+  func testScrollingAwayFromTheBottomSurvivesRotation() throws {
+    let app = launch(scenario: "long-transcript")
+    try XCTSkipUnless(app.windows.firstMatch.frame.width >= 700, "iPad-only")
+    openFirstConversation(in: app)
+
+    let transcript = element("chat.transcript", in: app)
+    transcript.swipeDown()
+    transcript.swipeDown()
+    transcript.swipeDown()
+
+    let anchored = waitForTrackedScrollAnchor(prefix: "filler-", in: app)
+    let anchoredRow = app.descendants(matching: .any)["chat.message.\(anchored)"]
+    XCTAssertTrue(anchoredRow.waitForExistence(timeout: 5))
+
+    XCUIDevice.shared.orientation = .landscapeLeft
+    addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+
+    XCTAssertTrue(element("chat.transcript", in: app).waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      waitUntilHittable(anchoredRow, timeout: 8),
+      """
+      Expected the message the user was reading (\(anchored)) to still be on \
+      screen after rotating — a jump back to the newest message is the exact \
+      regression spec §1.3 forbids.
+      """
+    )
+  }
 }

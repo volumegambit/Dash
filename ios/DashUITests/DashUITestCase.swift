@@ -532,6 +532,37 @@ class DashUITestCase: XCTestCase {
     return false
   }
 
+  /// Polls `ChatView`'s DEBUG `chat.scrollAnchor` probe (only rendered by the
+  /// `long-transcript` scenario) until it reports a real `ChatMessageState.id`
+  /// — i.e. until `.scrollPosition(id:)` has tracked a transcript row rather
+  /// than `"none"` or one of the outer stack's non-message children. Returns
+  /// the tracked id (Task 4 review fix, Important 1).
+  func waitForTrackedScrollAnchor(
+    prefix: String,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 10,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> String {
+    let probe = element("chat.scrollAnchor", in: app, file: file, line: line)
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label BEGINSWITH %@", prefix),
+      object: probe
+    )
+    XCTAssertEqual(
+      XCTWaiter.wait(for: [expectation], timeout: timeout),
+      .completed,
+      """
+      Expected .scrollPosition(id:) to track a real message id after scrolling, \
+      got "\(probe.label)". A value of "none" means the scroll anchor is never \
+      populated — the tracking direction is dead.
+      """,
+      file: file,
+      line: line
+    )
+    return probe.label
+  }
+
   func waitUntilSelected(
     _ element: XCUIElement,
     timeout: TimeInterval = 5,

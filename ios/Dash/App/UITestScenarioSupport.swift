@@ -40,6 +40,23 @@ extension AppDependenciesFactory {
     }
   }
 
+  /// Whether `ChatView` should render its `chat.scrollAnchor` probe — the
+  /// only way a UI test can observe that `.scrollPosition(id:)` is genuinely
+  /// tracking real `ChatMessageState.id`s (Task 4 review fix, Important 1).
+  /// Scoped to the single scenario that needs it, so no other UI suite ever
+  /// sees the extra accessibility element.
+  enum UITestProbe {
+    @MainActor
+    static let isScrollAnchorProbeEnabled: Bool = {
+      let environment = ProcessInfo.processInfo.environment
+      let arguments = ProcessInfo.processInfo.arguments
+      let raw =
+        environment["DASH_UI_TEST_SCENARIO"]
+        ?? arguments.uiTestValue(after: "--dash-ui-test-scenario")
+      return raw == UITestScenario.longTranscript.rawValue
+    }()
+  }
+
   enum UITestScenarioError: Error, Equatable, Sendable {
     case unsupported(String)
   }
@@ -62,6 +79,16 @@ extension AppDependenciesFactory {
     /// silently reopening a pre-existing, already-populated thread.
     case composeNewChat = "compose-new-chat"
     case settingsForget = "settings-forget"
+    /// Scroll anchor (iPad goal Phase A, Task 4 review fix, Important 3): the
+    /// same paired/online world as `.pairedOnline`, but with a transcript
+    /// long enough to actually scroll. Its own case rather than filler added
+    /// to `.pairedOnline` because that was tried once and broke every test
+    /// built on the shared fixture — see
+    /// `ConversationUITests.testJumpToBottomStaysHiddenThroughoutANormalPinnedStreamingTurn`'s
+    /// doc comment. This is also the only scenario that renders the
+    /// `chat.scrollAnchor` probe (`ChatView.scrollAnchorProbe`), so no other
+    /// suite sees an extra accessibility element.
+    case longTranscript = "long-transcript"
     /// Signed-out entry point (`SignInView`) — functionally identical to
     /// `.unpaired`, kept as its own case so `AccountUITests` reads
     /// independently of the older pairing-flow suite.
@@ -89,7 +116,7 @@ extension AppDependenciesFactory {
       switch self {
       case .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
         .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
-        .approveDevice:
+        .longTranscript, .approveDevice:
         return true
       case .unpaired, .signedOut, .accountPicker, .accountPickerError, .accountNotEnrolled:
         return false
@@ -251,6 +278,7 @@ extension AppDependenciesFactory {
 
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
       if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
+      if scenario == .longTranscript { return longTranscriptMessages }
       if scenario == .remoteBusy {
         return [
           message(
@@ -297,6 +325,23 @@ extension AppDependenciesFactory {
           ordinal: 2
         ),
       ]
+    }
+
+    /// A transcript tall enough that the viewport shows only a fraction of
+    /// it, so a UI test can genuinely scroll away from the bottom (Task 4
+    /// review fix, Important 3). All-`user` rows on purpose: an assistant row
+    /// carries the `chat.final.response` identifier, and a transcript full of
+    /// those would make "the" final response ambiguous the same way filler in
+    /// `.pairedOnline` once did.
+    static let longTranscriptMessages: [ConversationMessageDTO] = (1...40).map { index in
+      message(
+        id: "filler-\(index)",
+        turnID: "filler-turn-\(index)",
+        role: .user,
+        status: .completed,
+        text: "Filler message number \(index)",
+        ordinal: index
+      )
     }
 
     static func agent(
@@ -480,7 +525,7 @@ extension AppDependenciesFactory {
 
       case .unpaired, .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
         .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
-        .approveDevice:
+        .longTranscript, .approveDevice:
         // `.approveDevice` never reaches here — `uiTesting`'s ternary routes
         // it to `approveDeviceAccountFactory` first. Listed for exhaustiveness.
         return .unavailable

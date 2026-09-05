@@ -20,6 +20,7 @@ import Testing
           "agents",
           "compose-new-chat",
           "settings-forget",
+          "long-transcript",
           "signed-out",
           "account-picker",
           "account-picker-error",
