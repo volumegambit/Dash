@@ -270,6 +270,23 @@ describe('subagent definition registry', () => {
     expect(entries[1]).toMatchObject({ source: 'builtin', shadowedBy: winner });
   });
 
+  it('does not cache a failed build', async () => {
+    let broken = true;
+    const registry = createSubagentDefinitionRegistry({
+      dataDir,
+      getPluginAgentDefFiles: () => pluginFiles,
+      getAgentConfig: (id) => {
+        if (broken) throw new Error('registry is mid-write');
+        return configs[id];
+      },
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    await expect(registry.resolverFor(AGENT_ID)).rejects.toThrow('registry is mid-write');
+    broken = false;
+    const resolver = await registry.resolverFor(AGENT_ID);
+    expect(resolver.list().map((t) => t.name)).toContain('Explore');
+  });
+
   it('falls back to the built-ins for an unknown agent id', async () => {
     const resolver = await makeRegistry().resolverFor('nope');
     expect(resolver.list().map((t) => t.name)).toEqual(['general-purpose', 'Explore', 'Plan']);

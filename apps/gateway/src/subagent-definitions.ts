@@ -81,7 +81,13 @@ export interface SubagentDefinitionRegistry {
   resolverFor(agentId: string): Promise<SubagentTypeResolver>;
   /** The same set as a list, plus shadowing + `allowedTypes` diagnostics. */
   listFor(agentId: string): Promise<SubagentTypeListing>;
-  /** Drop the cache for one agent (or all) and notify listeners. */
+  /**
+   * Drop the cache for one agent (or all) and notify `onChange` listeners.
+   * CALLERS OWN THE TRIGGERS (Task B8): a plugin hot-reload, a write to the
+   * per-agent dir, and a `PUT /agents/:id` that changes `workspace`, `plugins`
+   * or the `subagents` block all have to call this — the build snapshots each
+   * of those inputs.
+   */
   invalidate(agentId?: string): void;
   perAgentDir(agentName: string): string;
   onChange(listener: (agentId: string | undefined) => void): () => void;
@@ -132,7 +138,6 @@ async function readDefinitionsFrom(
   dir: string,
   source: AgentDefinition['source'],
   warn: (msg: string) => void,
-  namespace?: string,
 ): Promise<AgentDefinition[]> {
   let names: string[];
   try {
@@ -141,13 +146,19 @@ async function readDefinitionsFrom(
       .filter((e) => e.isFile() && e.name.endsWith('.md'))
       .map((e) => e.name)
       .sort();
-  } catch {
+  } catch (err) {
+    // An absent (or not-a-directory) definition dir is the NORMAL case and is
+    // silent. Anything else — a permissions problem, say — would otherwise
+    // erase the agent's whole roster with no trace, so it is warned.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      warn(`[subagents] skipping ${dir}: ${(err as Error).message}`);
+    }
     return [];
   }
   const out: AgentDefinition[] = [];
   for (const name of names) {
-    const file = join(dir, name);
-    const definition = await readDefinitionFile(file, source, warn, namespace);
+    const definition = await readDefinitionFile(join(dir, name), source, warn);
     if (definition) out.push(definition);
   }
   return out;
@@ -256,16 +267,18 @@ export function createSubagentDefinitionRegistry(
     // --- RULING 3: roster token budget (spec §5.4). Warn ONCE naming the
     // biggest offenders; never truncate, never throw — a silently shortened
     // roster is worse than an over-long one the operator can see and fix. ---
-    const visible = new Set(types.map((t) => t.name));
     warnIfOverBudget(config.name, types, warn);
 
+    // The listing follows the resolver: a name `allowedTypes` hid is absent
+    // from both, shadowed entries included.
+    const visible = new Set(types.map((t) => t.name));
     const listing: ListedSubagentType[] = [];
     for (const [name, winner] of winners) {
       if (!visible.has(name)) continue;
       listing.push(winner);
-      const loserOf = winner.location ?? winner.source;
+      const shadowedBy = winner.location ?? winner.source;
       for (const loser of shadowed.get(name) ?? []) {
-        listing.push({ ...loser, shadowedBy: loserOf });
+        listing.push({ ...loser, shadowedBy });
       }
     }
 
@@ -277,6 +290,11 @@ export function createSubagentDefinitionRegistry(
     if (cached) return cached;
     const built = build(agentId);
     cache.set(agentId, built);
+    // A FAILED build must not be cached forever: drop it so the next call
+    // retries. Callers still see this rejection; this handler only evicts.
+    built.catch(() => {
+      if (cache.get(agentId) === built) cache.delete(agentId);
+    });
     return built;
   }
 
