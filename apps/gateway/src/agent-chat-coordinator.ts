@@ -184,6 +184,21 @@ export interface AgentChatCoordinator {
    * while mid-stream conversations finish on their old wiring undisturbed.
    */
   evictAll(): Promise<void>;
+  /**
+   * Re-render the custom tools of every WARM backend for `agentId`, in place.
+   *
+   * Unlike `evict`, this keeps the conversation (and its pi session) alive: the
+   * backend rebuilds its tool list and pokes it back into the live session, so
+   * a schema that is rendered lazily — the sub-agent roster in the `agent`
+   * tool's `subagent_type` description — picks up a definition change without
+   * losing the conversation. Backends that do not implement
+   * `refreshCustomTools` are skipped.
+   *
+   * TAKES EFFECT ON THE NEXT MODEL TURN: a turn already in flight keeps the
+   * tools it started with. Pinned (mid-stream) entries are refreshed too — the
+   * poke is a registry swap, not an interruption.
+   */
+  refreshCustomTools(agentId: string): Promise<void>;
   /** List the skills available to an agent (plugin + per-agent). */
   listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
   /** Get one skill (with content) by name, or null. */
@@ -615,6 +630,12 @@ export function createAgentChatCoordinator(
 
     async evictAll() {
       await pool.evictIdle();
+    },
+
+    async refreshCustomTools(agentId) {
+      await pool.forAgent(agentId, async (entry) => {
+        entry.backend.refreshCustomTools?.();
+      });
     },
 
     stats() {

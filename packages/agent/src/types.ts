@@ -294,6 +294,15 @@ export interface AgentBackend {
   abort(): void;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
+  /**
+   * Re-render the backend's custom tool list into its LIVE session, for
+   * backends whose host can change a tool's schema mid-conversation (the
+   * sub-agent roster in the `agent` tool's `subagent_type` description, an MCP
+   * server added by `mcp_add_server`). Optional: a backend that freezes its
+   * tools at start has nothing to do, and every caller treats absence as a
+   * no-op. Takes effect on the NEXT model turn, never the in-flight one.
+   */
+  refreshCustomTools?(): void;
 }
 
 /**

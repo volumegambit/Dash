@@ -666,7 +666,7 @@ export class PiAgentBackend implements AgentBackend {
 
     // MCP management tools (add/remove/list servers)
     if (this.mcpManager && this.mcpConfigStore && this.mcpAgentContext) {
-      const onToolsChanged = () => this.syncMcpToolsToSession();
+      const onToolsChanged = () => this.refreshCustomTools();
 
       if (allowedNames.has('mcp_add_server')) {
         customs.push(
@@ -718,14 +718,24 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Sync MCP tools into the live Pi session after mcp_add_server / mcp_remove_server.
+   * Re-render every custom tool into the LIVE Pi session.
    *
-   * Pi's AgentSession freezes customTools at construction time. When the agent
-   * adds or removes an MCP server mid-conversation, the new tools aren't visible
-   * to the LLM. This method rebuilds the custom tool list and pokes it into the
-   * session's internal registry so tools are available on the next LLM turn.
+   * Pi's AgentSession freezes `customTools` at construction, and
+   * `buildCustomTools` copies each tool's `parameters` BY VALUE while wrapping
+   * it — so anything that changes a tool's schema or the set of tools after
+   * `start()` is invisible to the model until the list is rebuilt and poked
+   * back in. Two hosts need that:
+   *
+   *   - `mcp_add_server` / `mcp_remove_server`, which change WHICH tools exist;
+   *   - the gateway's sub-agent definition registry, which changes the roster
+   *     rendered into the `agent` tool's `subagent_type` description (that
+   *     `parameters` is a getter precisely so this rebuild re-reads it).
+   *
+   * TIMING: the rebuilt registry is consulted when the session assembles the
+   * NEXT model turn. A turn already in flight keeps the tools it started with.
+   * No-op before `start()` (there is no session to poke).
    */
-  private syncMcpToolsToSession(): void {
+  refreshCustomTools(): void {
     if (!this.session) return;
 
     const customTools = this.buildCustomTools();
@@ -734,7 +744,7 @@ export class PiAgentBackend implements AgentBackend {
     );
 
     // Pi's _customTools and _refreshToolRegistry are private, but we need to
-    // update them at runtime to register dynamically-added MCP server tools.
+    // update them at runtime to re-register the rebuilt tool list.
     // biome-ignore lint/suspicious/noExplicitAny: accessing private Pi session internals for dynamic tool sync
     const session = this.session as any;
     session._customTools = customTools;

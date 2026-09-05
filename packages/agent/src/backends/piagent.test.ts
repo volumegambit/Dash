@@ -1773,3 +1773,85 @@ describe('mcpToolAllowlist', () => {
     expect(active).not.toContain('github__pr');
   });
 });
+
+/**
+ * `refreshCustomTools` is the ONLY way a tool whose schema is rendered lazily
+ * reaches the model after `start()`. pi's `AgentSession` freezes `customTools`
+ * at construction and `buildCustomTools` copies each tool's `parameters` BY
+ * VALUE while wrapping it — so a host that mutates a roster (the gateway's
+ * sub-agent definition registry) or the tool set (`mcp_add_server`) is invisible
+ * until the list is rebuilt and poked back into the session's registry.
+ */
+describe('PiAgentBackend.refreshCustomTools', () => {
+  /** A session stub that records what gets poked into its private slots. */
+  async function mockSessionCapturingCustomTools(): Promise<Record<string, unknown>> {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const session: Record<string, unknown> = {
+      dispose: vi.fn(),
+      subscribe: vi.fn(),
+      prompt: vi.fn(),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      agent: { setSystemPrompt: vi.fn() },
+      getActiveToolNames: vi.fn(() => []),
+      setActiveToolsByName: vi.fn(),
+      _refreshToolRegistry: vi.fn(),
+    };
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+      session: session as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+    return session;
+  }
+
+  /** An extra tool whose `parameters` is a GETTER, as the `agent` tool's is. */
+  function rosterTool(roster: { text: string }) {
+    return {
+      name: 'agent',
+      label: 'Agent',
+      description: 'delegate',
+      get parameters() {
+        return { type: 'object', properties: { subagent_type: { description: roster.text } } };
+      },
+      execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }], details: {} }),
+    };
+  }
+
+  function rosterOf(session: Record<string, unknown>): string | undefined {
+    const tools = session._customTools as Array<{ name: string; parameters: unknown }> | undefined;
+    const agent = tools?.find((t) => t.name === 'agent');
+    const params = agent?.parameters as
+      | { properties?: { subagent_type?: { description?: string } } }
+      | undefined;
+    return params?.properties?.subagent_type?.description;
+  }
+
+  it('re-renders a lazily-built tool schema into the live session', async () => {
+    const roster = { text: 'general-purpose' };
+    const session = await mockSessionCapturingCustomTools();
+    const backend = PiAgentBackend.fromOptions({
+      config: { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: '' },
+      providerApiKeysSource: {},
+      // biome-ignore lint/suspicious/noExplicitAny: structural ExtraTool in a test
+      extraTools: [rosterTool(roster) as any],
+    });
+    await backend.start('/tmp/test');
+
+    // The roster the definition registry serves changes...
+    roster.text = 'general-purpose, reviewer';
+    backend.refreshCustomTools();
+
+    expect(session._refreshToolRegistry).toHaveBeenCalledTimes(1);
+    expect(rosterOf(session)).toBe('general-purpose, reviewer');
+  });
+
+  it('is a no-op before start() (there is no session to poke)', () => {
+    const backend = PiAgentBackend.fromOptions({
+      config: { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: '' },
+      providerApiKeysSource: {},
+    });
+    expect(() => backend.refreshCustomTools()).not.toThrow();
+  });
+});

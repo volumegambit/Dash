@@ -197,6 +197,94 @@ function makeEventLogSink() {
   return { sink, appends };
 }
 
+describe('AgentChatCoordinator.refreshCustomTools', () => {
+  /**
+   * The sub-agent roster is rendered lazily into the `agent` tool's schema, so
+   * a definition write has to reach the WARM backends of that agent — an
+   * `evict` would take the conversation down with it. This is the seam the
+   * definition registry's `onChange` drives; without it a roster change is
+   * invisible until the gateway restarts.
+   */
+  function makeRefreshableBackend() {
+    const refreshCustomTools = vi.fn();
+    const backend: AgentBackend = {
+      name: 'refreshable-backend',
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      abort: vi.fn(),
+      refreshCustomTools,
+      async *run(): AsyncGenerator<AgentEvent> {
+        yield { type: 'text_delta', text: 'warm' };
+      },
+    };
+    return { backend, refreshCustomTools };
+  }
+
+  it('pokes every warm backend of the agent and leaves the conversation warm', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'roster-agent',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'You are helpful.',
+    });
+    const first = makeRefreshableBackend();
+    const second = makeRefreshableBackend();
+    const backends = [first.backend, second.backend];
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backends.shift() ?? first.backend,
+    });
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-a', text: 'warm' }));
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-b', text: 'warm' }));
+
+    await agents.refreshCustomTools(id);
+
+    expect(first.refreshCustomTools).toHaveBeenCalledTimes(1);
+    expect(second.refreshCustomTools).toHaveBeenCalledTimes(1);
+    // NOT an eviction: the warm entries survive, so the next turn continues the
+    // same pi session with the new roster rather than starting a fresh one.
+    expect(first.backend.stop).not.toHaveBeenCalled();
+    expect(agents.stats().size).toBe(2);
+
+    await agents.stop();
+  });
+
+  it('leaves another agent alone and tolerates a backend without the hook', async () => {
+    const registry = new AgentRegistry();
+    const mine = registry.register({
+      name: 'mine',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'p',
+    });
+    const other = registry.register({
+      name: 'other',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'p',
+    });
+    const refreshable = makeRefreshableBackend();
+    // No `refreshCustomTools`: the hook is optional on AgentBackend and a
+    // backend that freezes its tools must not make the refresh throw.
+    const plain = makeMockBackend([{ type: 'text_delta', text: 'warm' }]);
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async (_config, _conversationId, agentId) =>
+        agentId === mine.id ? refreshable.backend : plain,
+    });
+    await drain(agents.chat({ agentId: mine.id, conversationId: 'c1', text: 'warm' }));
+    await drain(agents.chat({ agentId: other.id, conversationId: 'c2', text: 'warm' }));
+
+    await expect(agents.refreshCustomTools(other.id)).resolves.toBeUndefined();
+    expect(refreshable.refreshCustomTools).not.toHaveBeenCalled();
+
+    await agents.refreshCustomTools(mine.id);
+    expect(refreshable.refreshCustomTools).toHaveBeenCalledTimes(1);
+
+    await agents.stop();
+  });
+});
+
 describe('AgentChatCoordinator', () => {
   it('answers questions and hard-cancels through an existing warm conversation', async () => {
     const registry = new AgentRegistry();
