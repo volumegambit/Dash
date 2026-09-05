@@ -1831,11 +1831,11 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 ### 32.5 Automatic memory toggle
 1. On the Memory tab, note the **"Automatic memory"** checkbox — checked by default.
 2. Uncheck it.
-3. Reload the agent detail page and re-open the Memory tab. **Verify:** the memory list is now empty (**"No memories yet. The agent saves them as it learns."**) — unchecking the box does not update the list in place; only a reload/re-open of the tab reflects the disabled state. This does **not** mean the memories were deleted — see step 6.
-4. Go to **Chat** with this agent and, in an **existing** conversation, ask it to remember something new, e.g. `Remember that I use vim.`
-5. **Verify:** no memory chip appears for that turn and the agent does not claim to have saved anything — memory is unavailable to it starting with the very next message, with no app restart or new conversation needed.
-6. Return to the Memory tab and re-check **"Automatic memory"**.
-7. **Verify:** the original memories from before step 2 reappear exactly as they were. Turning automatic memory off only hid the index, recall, tools and sweep together — it never deleted the underlying files.
+3. Reload the agent detail page and re-open the Memory tab. **Verify:** the memory list still shows the same memories as before (e.g. the "favorite color" memory from Bootstrap) — unchecking does **not** clear or empty the list. This is intentional: the files are still on disk, and the tab deliberately keeps them visible and deletable while memory is off, so you can clean them up (or copy their content) before deleting the agent.
+4. Go to **Chat** with this agent and, in a **new** conversation, ask it something only the memory could answer, e.g. `What's my favorite color?`. **Verify:** it does not answer correctly and does not claim to recall anything from memory — memory stopped being used starting with the very next message after step 2, with no app restart needed.
+5. In that same conversation, ask it to remember something new, e.g. `Remember that I use vim.` **Verify:** no memory chip appears for that turn and the agent does not claim to have saved anything.
+6. Return to the Memory tab, open one of the still-listed memories (32.2), and click **Save** (change nothing or change something — either way). **Verify:** the save fails: an error banner appears above the list (its text names the agent's memory as disabled) and the editor stays open rather than closing — a disabled agent's memory can still be read and deleted, but not written. This is expected behavior, not a bug to file.
+7. Re-check **"Automatic memory"**. **Verify:** the memory list and its contents are unchanged from before step 2 (nothing was lost while the toggle was off), the edit from step 6 now saves successfully when you click **Save** again, and repeating the recall question from step 4 in a new conversation now gets the correct answer — memory is back in the prompt.
 
 ### 32.6 Post-turn sweep setting
 1. On the Memory tab, note the **"Post-turn sweep"** dropdown — it offers **Auto (non-frontier models)**, **On**, and **Off**, defaulting to Auto.

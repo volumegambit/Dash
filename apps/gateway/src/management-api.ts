@@ -833,9 +833,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     target.get('/agents/:id/memory', async (c) => {
       const id = c.req.param('id');
       if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-      // Reads never throw for a memory-disabled agent — the coordinator
-      // degrades to an empty list, which renders as "no memories" rather than
-      // an error banner.
+      // Reads never throw: the coordinator's management path still lists what
+      // is on disk for a memory-disabled agent (so the Memory tab stays
+      // honest), and degrades to empty for an unknown agent or an embedding
+      // with no memory directory.
       return c.json(await agents.listMemories(id));
     });
 
@@ -943,9 +944,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     // Same reason `PUT /agents/:id` evicts on a swarm change: the memory TOOLS
     // (save_memory/recall_memory/forget_memory) are registered when the backend
     // is built, not per turn, so a warm conversation would keep them live after
-    // a disable — letting the model write memories the operator can then
-    // neither list nor delete. Eviction forces the next turn to rebuild.
-    // `sweep` needs no eviction: it is read from the registry per turn.
+    // a disable unless evicted. Eviction forces the next turn to rebuild them
+    // against the new config. `sweep` needs no eviction: it is read from the
+    // registry per turn.
     if (resolveMemoryConfig(memory).enabled !== wasEnabled) {
       await agents.evict(id);
     }
