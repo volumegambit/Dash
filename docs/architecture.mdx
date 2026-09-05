@@ -258,7 +258,7 @@ clients when to refresh summaries; they do not replace replay for chat content.
 
 When an agent has [swarm](/configuration#swarm) enabled, a single chat turn can fan out into an **orchestrator** plus several short-lived **worker** subagents that run in parallel. The orchestrator is the agent you're chatting with; a worker is a stripped-down agent — no MCP, no skills, no plugin tools — that shares the orchestrator's workspace but runs in its own isolated context from a self-contained brief.
 
-**Turn-scoped.** A swarm run lives **within one chat turn**. The gateway's swarm coordinator keys each run by `agentId/conversationId`: only the live turn can spawn or finalize it, and when the turn ends the run is finalized, any still-running workers are settled, and its worker pool is torn down. Workers do not outlive the message that spawned them.
+**Turn-scoped, unless you ask for background.** A swarm run lives **within one chat turn**. The gateway's swarm coordinator keys each run by `agentId/conversationId`: only the live turn can spawn or finalize it, and when the turn ends the run is finalized and every still-running **foreground** worker is settled. A worker launched in the **background** is the exception: it keeps running after the turn ends, stays addressable by name, and reports back on its own. Each worker is bounded by its own wall clock (`maxRunSeconds`) whether or not its turn is still open, and cancelling a background worker (or deleting the conversation it belongs to) stops it.
 
 **Data flow.**
 

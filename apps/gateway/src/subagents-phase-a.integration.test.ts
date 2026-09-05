@@ -85,8 +85,8 @@ function makeWorkerFactory(
   asked: Deferred,
   /**
    * 'ask' → a background child asks the orchestrator, is answered, and reports.
-   * 'hang' → it never reports, so the turn ends while it is still running and
-   * the turn-scoped cancellation path is the only thing that can terminalize it.
+   * 'hang' → it never reports, so the turn ends while it is still running —
+   * which is how the detachment case is driven.
    */
   backgroundBehaviour: 'ask' | 'hang' = 'ask',
 ): { factory: WorkerFactory; specs: WorkerSpec[]; releaseHung(): void } {
