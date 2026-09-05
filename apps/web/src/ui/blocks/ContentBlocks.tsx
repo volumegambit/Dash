@@ -1,7 +1,14 @@
 import type { ConversationContent, MobileAgentEvent } from '@dash/mobile-contract';
 import { type ReactNode, useState } from 'react';
 import { Markdown } from './Markdown.js';
-import { formatVisibleDetails, normalizeTool, summarize, toolLabel } from './tool-presentation.js';
+import {
+  formatVisibleDetails,
+  isTodoWrite,
+  normalizeTool,
+  parseTodos,
+  summarize,
+  toolLabel,
+} from './tool-presentation.js';
 
 export interface ContentBlocksProps {
   content: ConversationContent;
@@ -130,6 +137,36 @@ function ToolResultView({ content, isError }: { content: string; isError?: boole
   );
 }
 
+/** A TodoWrite call's checklist.
+ *
+ * Glyph vocabulary matches Mission Control's `STATUS_INDICATOR` and the iOS
+ * `TodoListView`, so the same plan reads identically on all three clients.
+ * `data-status` carries the state for styling and for tests, rather than
+ * relying on a glyph character. */
+function TodoList({ todos }: { todos: TodoItem[] }): ReactNode {
+  const done = todos.filter((t) => t.status === 'completed').length;
+  return (
+    <div className="tool-todos" data-testid="tool-todos">
+      <p className="tool-todos-count">
+        {done}/{todos.length} completed
+      </p>
+      {todos.map((todo) => (
+        <div
+          key={todo.id ?? todo.content}
+          className="tool-todo"
+          data-testid="tool-todo-item"
+          data-status={todo.status}
+        >
+          <span className="tool-todo-glyph" aria-hidden="true">
+            {todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'}
+          </span>
+          <span className="tool-todo-content">{todo.content}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** MC `ToolBlock` treatment (spec appendix §3): collapsed-by-default card
  * with a status-glyph + mono tool label + inline `summarize()` summary in
  * the header; expanded body shows `formatVisibleDetails` key/value rows
@@ -141,7 +178,14 @@ function ToolUseBlock({
   tool: PendingTool;
   result?: { content: string; isError?: boolean };
 }): ReactNode {
-  const [open, setOpen] = useState(false);
+  const todos = isTodoWrite(tool.name) ? parseTodos(tool.input) : null;
+  // Task cards open expanded; every other tool card stays collapsed. The rest
+  // hide diagnostic detail you want on demand — a command's arguments, a
+  // file's contents. A task list is the agent's plan for the turn, which is
+  // the one tool body read at a glance, and it was the only one whose
+  // contents were not shown at all: `formatDetails` renders the `todos` array
+  // as the literal string "[3 items]". Matches iOS `ToolCardView`.
+  const [open, setOpen] = useState(todos !== null);
   const status: ToolStatus = !result ? 'running' : result.isError ? 'failed' : 'succeeded';
   const summary = summarize(tool.name, tool.input);
   const details = formatVisibleDetails(tool.name, tool.input);
@@ -169,14 +213,18 @@ function ToolUseBlock({
       </button>
       {open && (
         <div className="tool-card-body">
-          {details.length > 0 && (
-            <div className="tool-card-details">
-              {details.map(({ key, value }) => (
-                <p key={key} className="tool-card-detail">
-                  <span className="tool-card-detail-key">{key}</span>: {value}
-                </p>
-              ))}
-            </div>
+          {todos ? (
+            <TodoList todos={todos} />
+          ) : (
+            details.length > 0 && (
+              <div className="tool-card-details">
+                {details.map(({ key, value }) => (
+                  <p key={key} className="tool-card-detail">
+                    <span className="tool-card-detail-key">{key}</span>: {value}
+                  </p>
+                ))}
+              </div>
+            )
           )}
           {result && <ToolResultView content={result.content} isError={result.isError} />}
         </div>

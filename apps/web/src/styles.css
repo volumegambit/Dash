@@ -1119,6 +1119,47 @@ textarea:focus-visible {
   text-transform: capitalize;
 }
 
+.tool-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-todos-count {
+  margin: 0 0 4px;
+  color: var(--text-muted);
+}
+
+.tool-todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.tool-todo-glyph {
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+/* Glyph colour by state; the task text mutes and strikes only when done, so
+   an in-progress item stays the most readable thing in the list. */
+.tool-todo[data-status="completed"] .tool-todo-glyph {
+  color: var(--success, #22c55e);
+}
+
+.tool-todo[data-status="completed"] .tool-todo-content {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.tool-todo[data-status="in_progress"] .tool-todo-glyph {
+  color: var(--accent);
+}
+
+.tool-todo[data-status="pending"] .tool-todo-glyph {
+  color: var(--text-muted);
+}
+
 .tool-status-dot {
   display: inline-block;
   flex-shrink: 0;

@@ -22,14 +22,16 @@
  * there is cosmetic, not a semantic mismatch — same reasoning holds for
  * fixtures with a single primary-key match, which is the common case.)
  *
- * Scope note: like iOS Task 2, this task does not port MC's edit-diff
- * auto-open, directory-listing/numbered-source result detection, or
- * TodoWrite checklist body — those are out of scope per the design doc's
- * "Out of scope" section and the iOS precedent (see task-2 progress notes).
- * `summarize()` still special-cases TodoWrite's "{done}/{total} done" header
- * text (that's cheap and highly legible), but the expanded body for a
- * TodoWrite tool falls through to the generic details + result rendering,
- * same as any other tool.
+ * Scope note: this task does not port MC's edit-diff auto-open or its
+ * directory-listing/numbered-source result detection — still out of scope per
+ * the design doc.
+ *
+ * The TodoWrite checklist body WAS in that list and no longer is: it landed
+ * 2026-09-05 (UI-quality goal, Phase D) and `ContentBlocks.tsx` renders it via
+ * `parseTodos`. Deferring it had left `parseTodos` here parsed, unit-tested,
+ * and called by no view on web OR iOS for months, while Mission Control
+ * rendered the list — a divergence no test on any client could see.
+ * `summarize()` still owns the "{done}/{total} done" header text.
  */
 
 /** Normalize legacy tool names (read_file, write_file, etc.) to canonical names. */

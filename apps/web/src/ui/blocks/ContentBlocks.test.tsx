@@ -81,6 +81,74 @@ describe('ContentBlocks', () => {
     expect(result.className).toContain('tool-result-short');
   });
 
+  it('renders a TodoWrite call as a checklist, open without a click', () => {
+    // Parity gap closed 2026-09-05: `parseTodos` had been ported to web and
+    // unit-tested since the original port, and no view called it — a task
+    // card showed "2/3 done" and, expanded, the literal string
+    // "Todos: [3 items]". iOS and Mission Control both render the list.
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        {
+          type: 'tool_use_start',
+          id: 'call-1',
+          name: 'todowrite',
+          input: {
+            todos: [
+              { content: 'Draft the plan', status: 'completed' },
+              { content: 'Check launch readiness', status: 'in_progress' },
+              { content: 'Ship it', status: 'pending' },
+            ],
+          },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+
+    // No click: the agent's plan is the one tool body worth showing by default.
+    const list = screen.getByTestId('tool-todos');
+    expect(list).toBeTruthy();
+    expect(list.textContent).toContain('Draft the plan');
+    expect(list.textContent).toContain('Check launch readiness');
+    expect(list.textContent).toContain('Ship it');
+    // Never the array-length placeholder the generic renderer produced.
+    expect(screen.queryByText(/\[3 items\]/)).toBeNull();
+  });
+
+  it('marks todo status so completed and active items are distinguishable', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        {
+          type: 'tool_use_start',
+          id: 'call-1',
+          name: 'TodoWrite',
+          input: {
+            todos: [
+              { content: 'Done thing', status: 'completed' },
+              { content: 'Doing thing', status: 'in_progress' },
+            ],
+          },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+
+    const items = screen.getAllByTestId('tool-todo-item');
+    expect(items).toHaveLength(2);
+    expect(items[0].getAttribute('data-status')).toBe('completed');
+    expect(items[1].getAttribute('data-status')).toBe('in_progress');
+  });
+
+  it('leaves non-todo tool cards collapsed by default', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } }],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-todos')).toBeNull();
+  });
+
   it('renders an in-progress (running) tool card when no tool-result has arrived yet', () => {
     const content: ConversationContent = {
       type: 'assistant',
