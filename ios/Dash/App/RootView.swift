@@ -137,15 +137,29 @@ struct RootView: View {
         if let tab { appModel.selectedTab = tab }
       }
     )
-    return NavigationSplitView {
-      List(AppTab.allCases, selection: selection) { tab in
-        Label(tab.title, systemImage: tab.systemImage)
-          .frame(minWidth: 44, minHeight: 44)
-          .accessibilityIdentifier(tab.accessibilityID)
-          .tag(tab)
-      }
-      .navigationTitle(Self.title)
-    } content: {
+    // Settings is two columns, everything else is three (UI-quality goal).
+    //
+    // Settings had no middle pane to fill, so the content column rendered a
+    // `FeatureSlotView` placeholder: the word "Settings" appeared three
+    // times at regular width — sidebar row, placeholder, and the detail's
+    // own navigation title — around a dead column. The tab's selection and
+    // both navigation paths live on `AppModel`, not in view state, so
+    // building a different split view for this tab costs nothing but the
+    // transition.
+    if appModel.selectedTab == .settings {
+      return AnyView(
+        NavigationSplitView {
+          tabSidebar(selection: selection)
+        } detail: {
+          NavigationStack { settingsRoot }
+        }
+      )
+    }
+
+    return AnyView(
+      NavigationSplitView {
+        tabSidebar(selection: selection)
+      } content: {
       NavigationStack {
         switch appModel.selectedTab {
         case .conversations:
@@ -153,7 +167,8 @@ struct RootView: View {
         case .agents:
           agentsListRoot
         case .settings:
-          FeatureSlotView(title: "Settings", systemImage: "gearshape")
+          // Unreachable: `.settings` takes the two-column branch above.
+          EmptyView()
         }
       }
       .navigationDestination(for: ConversationRoute.self) { route in
@@ -181,10 +196,21 @@ struct RootView: View {
             ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
           }
         case .settings:
-          settingsRoot
+          EmptyView()
         }
       }
     }
+    )
+  }
+
+  private func tabSidebar(selection: Binding<AppTab?>) -> some View {
+    List(AppTab.allCases, selection: selection) { tab in
+      Label(tab.title, systemImage: tab.systemImage)
+        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityIdentifier(tab.accessibilityID)
+        .tag(tab)
+    }
+    .navigationTitle(Self.title)
   }
 
   @ViewBuilder
