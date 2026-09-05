@@ -1087,4 +1087,67 @@ struct ModelCatalogTests {
     #expect(ModelCatalog.label(for: "vendor/new-model", in: models) == "new-model")
     #expect(ModelCatalog.label(for: "bare", in: models) == "bare")
   }
+
+  // MARK: - providerDisplayName (chat UI polish 2026-09-05)
+
+  @Test(
+    "providerDisplayName renders the bundled core providers the way their vendors write them",
+    arguments: [
+      ("anthropic", "Anthropic"),
+      ("openai", "OpenAI"),
+      ("google", "Google"),
+      ("moonshotai", "Moonshot AI"),
+      ("openrouter", "OpenRouter"),
+    ]
+  )
+  func providerDisplayNameCoreProviders(id: String, expected: String) {
+    #expect(ModelCatalog.providerDisplayName(id) == expected)
+  }
+
+  @Test("providerDisplayName capitalizes an unknown plugin provider")
+  func providerDisplayNameUnknownProvider() {
+    // Plugins register arbitrary provider ids at runtime (only the five in
+    // `RESERVED_PROVIDER_IDS`, packages/plugins/src/loader.ts, are reserved),
+    // so the map can never be exhaustive. An unmapped id still has to read as
+    // a name rather than a slug.
+    #expect(ModelCatalog.providerDisplayName("acme") == "Acme")
+  }
+
+  @Test("providerDisplayName is idempotent for an already-cased id")
+  func providerDisplayNameAlreadyCased() {
+    // The gateway sends whatever the catalog declares, which for some
+    // providers is already display-cased — running it through the map a
+    // second time must not mangle it.
+    #expect(ModelCatalog.providerDisplayName("OpenAI") == "OpenAI")
+    #expect(ModelCatalog.providerDisplayName("Anthropic") == "Anthropic")
+  }
+
+  @Test("providerDisplayName preserves dotted ids rather than mangling them")
+  func providerDisplayNameDottedID() {
+    #expect(ModelCatalog.providerDisplayName("z.ai") == "Z.ai")
+  }
+
+  @Test("providerDisplayName passes an empty id through unchanged")
+  func providerDisplayNameEmpty() {
+    #expect(ModelCatalog.providerDisplayName("") == "")
+  }
+
+  @Test("grouped orders providers by display name, not by raw id")
+  func groupedSortsByDisplayName() {
+    let mixed = [
+      ModelDTO(value: "z.ai/glm-5.2", label: "GLM 5.2", provider: "z.ai"),
+      ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "openai"),
+      ModelDTO(value: "anthropic/claude-opus-5", label: "Claude Opus 5", provider: "anthropic"),
+    ]
+    #expect(ModelCatalog.grouped(mixed, query: "").map(\.provider) == ["anthropic", "openai", "z.ai"])
+  }
+
+  @Test("grouped filters on the provider's display name too")
+  func groupedFiltersOnDisplayName() {
+    // The section header on screen reads "Moonshot AI"; searching the words
+    // the user just read must not come back empty because the id is
+    // `moonshotai`.
+    let kimi = [ModelDTO(value: "moonshotai/kimi-k2.5", label: "Kimi K2.5", provider: "moonshotai")]
+    #expect(ModelCatalog.grouped(kimi, query: "Moonshot AI").map(\.provider) == ["moonshotai"])
+  }
 }

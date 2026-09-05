@@ -88,8 +88,8 @@ struct ChatView: View {
     .navigationTitle(feature.state.conversation.title)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        modelButton
+      ToolbarItem(placement: .principal) {
+        conversationHeader
       }
       ToolbarItem(placement: .topBarTrailing) {
         conversationOptionsMenu
@@ -531,18 +531,51 @@ struct ChatView: View {
       || currentModel.isEmpty
   }
 
+  /// Title over model, both centered (chat UI polish 2026-09-05).
+  ///
+  /// The model used to be a `.topBarTrailing` item capped at `maxWidth: 140`
+  /// alongside the options menu, which left `.navigationTitle` roughly ten
+  /// characters on a 393pt phone — "I can't che…". Two trailing controls plus
+  /// a title is one item too many for a compact-width navigation bar, and the
+  /// one that lost was the screen's own identity.
+  ///
+  /// A `.principal` item is the iOS 18-compatible way to get a subtitle
+  /// (`.navigationSubtitle` is iOS 26, and this target still builds against
+  /// the CI-pinned iOS 18 SDK). `.navigationTitle` stays set even though the
+  /// principal view supersedes it visually — the navigation stack still reads
+  /// it for the back button of anything pushed from here.
+  private var conversationHeader: some View {
+    VStack(spacing: 0) {
+      Text(feature.state.conversation.title)
+        .font(.headline)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .accessibilityAddTraits(.isHeader)
+      modelButton
+    }
+    .frame(maxWidth: 240)
+  }
+
   private var modelButton: some View {
     Button {
       isModelPickerPresented = true
     } label: {
-      HStack(spacing: 4) {
+      HStack(spacing: 3) {
         Text(currentModelLabel)
-          .font(.footnote)
+          .font(.caption2)
           .lineLimit(1)
+          .truncationMode(.middle)
         Image(systemName: "chevron.down")
-          .font(.caption2.weight(.semibold))
+          .font(.system(size: 8, weight: .semibold))
       }
-      .frame(maxWidth: 140, minHeight: 44)
+      .foregroundStyle(modelChangeDisabled ? Color.secondary : DashTheme.accent)
+      // Deliberately short of the 44pt minimum: a navigation-bar subtitle
+      // that tall would double the bar's height. The horizontal padding
+      // widens the target in the axis that has room, and the control is a
+      // shortcut — the same change is reachable at full size from the
+      // agent editor.
+      .padding(.horizontal, 8)
+      .padding(.vertical, 2)
       .contentShape(Rectangle())
     }
     .disabled(modelChangeDisabled)
