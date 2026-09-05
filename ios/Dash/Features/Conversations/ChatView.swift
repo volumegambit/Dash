@@ -116,7 +116,14 @@ struct ChatView: View {
         ) { change in
           showModelChangeToast(change)
         }
-        .presentationDetents([.medium, .large])
+        // `.medium` on a phone, where it covers half the screen and the
+        // transcript stays visible behind it. On iPad `.medium` is a short
+        // centred card showing about three models — it undercut the density
+        // work this very sheet had just received (captured 2026-09-05), so
+        // regular width goes straight to `.large`.
+        .presentationDetents(
+          horizontalSizeClass == .regular ? [.large] : [.medium, .large]
+        )
       }
     }
     .overlay(alignment: .top) {

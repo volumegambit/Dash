@@ -48,6 +48,12 @@ struct AgentDetailView: View {
               .frame(minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
+            // Same measure as the gateway picker and sign-in. A primary
+            // action stretched across ~700pt of an 11-inch iPad detail column
+            // reads as an unfinished phone layout; the constraint is what the
+            // other pre-connection screens already use.
+            .frame(maxWidth: 520)
+            .frame(maxWidth: .infinity)
             .disabled(feature.mutationsAllowed == false || isWorking)
             .accessibilityHint(
               feature.mutationsAllowed ? "" : "Connect to the gateway to start a conversation"
