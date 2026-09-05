@@ -1831,7 +1831,7 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 ### 32.5 Automatic memory toggle
 1. On the Memory tab, note the **"Automatic memory"** checkbox — checked by default.
 2. Uncheck it.
-3. **Verify:** the memory list immediately becomes empty (**"No memories yet…"**) with no reload needed. This does **not** mean the memories were deleted — see step 6.
+3. Reload the agent detail page and re-open the Memory tab. **Verify:** the memory list is now empty (**"No memories yet. The agent saves them as it learns."**) — unchecking the box does not update the list in place; only a reload/re-open of the tab reflects the disabled state. This does **not** mean the memories were deleted — see step 6.
 4. Go to **Chat** with this agent and, in an **existing** conversation, ask it to remember something new, e.g. `Remember that I use vim.`
 5. **Verify:** no memory chip appears for that turn and the agent does not claim to have saved anything — memory is unavailable to it starting with the very next message, with no app restart or new conversation needed.
 6. Return to the Memory tab and re-check **"Automatic memory"**.
@@ -1848,7 +1848,7 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 ### 32.7 Switching agents — no bleed-through
 1. Open the first agent's Memory tab (with its memories from Bootstrap) and confirm its memories are visible.
 2. Navigate directly to the second agent's Memory tab (created in Bootstrap step 4 — no memories, default config).
-3. **Verify:** at no point — including the brief loading moment — do the first agent's memory rows appear under the second agent. The second agent's tab settles on its own state: **"No memories yet…"** and default config (**Automatic memory** checked, sweep **Auto**), even though you changed those settings for the first agent in 32.5/32.6.
+3. **Verify:** at no point — including the brief loading moment — do the first agent's memory rows appear under the second agent. The second agent's tab settles on its own state: **"No memories yet. The agent saves them as it learns."** and default config (**Automatic memory** checked, sweep **Auto**), even though you changed those settings for the first agent in 32.5/32.6.
 4. Navigate back to the first agent's Memory tab.
 5. **Verify:** its memories and whatever config values you last saved for it (32.5/32.6) are still exactly as you left them — switching away and back does not reset or mix state between agents.
 
@@ -1865,7 +1865,7 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 ### 32.9 200-memory cap (optional — expensive to set up)
 **Precondition:** an agent already at the 200-memory cap. There is no bulk-create shortcut in the UI — reaching 200 means asking the agent to remember roughly 200 distinct one-line facts over chat (or reusing an agent left over from a long-running prior QA pass that is already there). Skip this section if no such agent is available.
 1. With the agent at 200 memories, ask it to remember one more new fact.
-2. **Verify:** no "Remembered" chip appears for that turn. Expand the tool-use block for the save attempt — it still renders in the normal (non-error) style, since the failure is carried in the tool's own reply text rather than as a red error block — and confirm the text reads **"This agent already has 200 memories; update or forget one first."**
+2. **Verify:** no "Remembered" chip appears for that turn. Expand the tool-use block for the save attempt — it still renders in the normal (non-error) style, since the failure is carried in the tool's own reply text rather than as a red error block — and confirm the text reads **"Error: This agent already has 200 memories; update or forget one first"** — the `Error: ` prefix is part of the tool's literal reply text, not an indication of error styling (there is none here).
 3. Open the Memory tab and edit an *existing* memory (32.2 — same name, not a new one), then Save.
 4. **Verify:** editing an existing memory at the cap still succeeds — the cap only blocks creating a 201st memory, not updating one of the 200 that already exist.
 
