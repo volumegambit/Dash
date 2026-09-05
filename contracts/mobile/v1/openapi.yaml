@@ -144,6 +144,52 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /agents/{id}/memory:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      operationId: listMobileAgentMemories
+      responses:
+        '200':
+          description: Memories the agent has saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryInfoList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agents/{id}/memory/{name}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/MemoryName'
+    get:
+      operationId: getMobileAgentMemory
+      responses:
+        '200':
+          description: The full memory record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteMobileAgentMemory
+      responses:
+        '200':
+          description: The deleted memory's name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /models:
     get:
       operationId: listMobileModels
@@ -347,6 +393,11 @@ components:
   parameters:
     AgentId:
       name: id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    MemoryName:
+      name: name
       in: path
       required: true
       schema: { type: string, minLength: 1 }
@@ -560,6 +611,41 @@ components:
       required: [ok]
       properties:
         ok: { const: true }
+    MemoryInfo:
+      type: object
+      additionalProperties: false
+      required: [name, description, type, source, createdAt, updatedAt, size]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        type: { enum: [user, feedback, project, reference] }
+        source: { enum: [agent, sweep, user, import] }
+        # Bare calendar days, not RFC 3339 timestamps.
+        createdAt: { type: string, format: date }
+        updatedAt: { type: string, format: date }
+        size: { type: integer, minimum: 0 }
+    MemoryInfoList:
+      type: array
+      items:
+        $ref: '#/components/schemas/MemoryInfo'
+    MemoryRecord:
+      type: object
+      additionalProperties: false
+      required: [name, description, type, source, createdAt, updatedAt, content]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        type: { enum: [user, feedback, project, reference] }
+        source: { enum: [agent, sweep, user, import] }
+        createdAt: { type: string, format: date }
+        updatedAt: { type: string, format: date }
+        content: { type: string }
+    MemoryDeleteResponse:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
     MobileModel:
       type: object
       additionalProperties: false

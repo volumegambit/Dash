@@ -77,6 +77,24 @@ actor GatewayAPI {
     )
   }
 
+  /// Read + delete only: the memory PUT and config routes are loopback-only
+  /// by design, so the phone can browse and forget but never write.
+  func listMemories(agentID: String) async throws -> [MemoryInfoDTO] {
+    try await transport.send(
+      GatewayRequest(method: .get, path: mobilePath("agents", agentID, "memory"))
+    )
+  }
+
+  func deleteMemory(agentID: String, name: String) async throws {
+    let _: MemoryDeleteResponseDTO = try await transport.send(
+      GatewayRequest(
+        method: .delete,
+        path: mobilePath("agents", agentID, "memory", name),
+        resourceID: agentID
+      )
+    )
+  }
+
   func models() async throws -> ModelsResponseDTO {
     try await transport.send(
       GatewayRequest(method: .get, path: mobilePath("models"))

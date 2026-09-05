@@ -1516,6 +1516,17 @@ private actor AppModelAgentsService: AgentsServicing {
 
   func delete(id: String) { _ = id }
 
+  func memories(for agentID: String) -> [MemoryInfoDTO] {
+    _ = agentID
+    return []
+  }
+
+  func deleteMemory(agentID: String, name: String) throws {
+    _ = agentID
+    _ = name
+    throw GatewayError.updateRequired
+  }
+
   func startConversation(agentID: String) throws -> ConversationSummaryDTO {
     _ = agentID
     throw GatewayError.updateRequired

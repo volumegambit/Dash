@@ -224,6 +224,45 @@ extension AppDependenciesFactory {
       ),
     ]
 
+    /// Agent memory (Task 19): seeded per agent so the detail screen's
+    /// Memory section has both a `user` and a `project` bucket to group.
+    static let memories: [String: [MemoryInfoDTO]] = [
+      "research-agent": [
+        memory(
+          name: "user-timezone",
+          description: "Gerry is in Singapore (UTC+8)",
+          type: .user,
+          source: "agent",
+          size: 24
+        ),
+        memory(
+          name: "repo-pnpm",
+          description: "The repo uses pnpm",
+          type: .project,
+          source: "sweep",
+          size: 18
+        ),
+      ]
+    ]
+
+    static func memory(
+      name: String,
+      description: String,
+      type: MemoryTypeDTO,
+      source: String,
+      size: Int
+    ) -> MemoryInfoDTO {
+      MemoryInfoDTO(
+        name: name,
+        description: description,
+        type: type,
+        source: source,
+        createdAt: "2026-09-05",
+        updatedAt: "2026-09-05",
+        size: size
+      )
+    }
+
     static let models: [ModelDTO] = [
       ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "OpenAI"),
       ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI"),
@@ -953,6 +992,7 @@ extension AppDependenciesFactory {
     private var pendingSends: [String: PendingChatSend] = [:]
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
+    private var memoryValues: [String: [MemoryInfoDTO]] = UITestScenarioFixtures.memories
     private var didFailSleepingAgentEnable = false
 
     init(scenario: UITestScenario, dataIdentifier: String) {
@@ -998,6 +1038,7 @@ extension AppDependenciesFactory {
       pendingSends.removeAll()
       cursors.removeAll()
       retainedRequests.removeAll()
+      memoryValues.removeAll()
       _ = dataIdentifier
     }
 
@@ -1286,6 +1327,21 @@ extension AppDependenciesFactory {
         throw GatewayError.notFound
       }
       agentValues.removeAll { $0.id == id }
+      memoryValues[id] = nil
+    }
+
+    func memories(for agentID: String) -> [MemoryInfoDTO] {
+      memoryValues[agentID] ?? []
+    }
+
+    func deleteMemory(agentID: String, name: String) throws {
+      guard var values = memoryValues[agentID],
+        values.contains(where: { $0.name == name })
+      else {
+        throw GatewayError.notFound
+      }
+      values.removeAll { $0.name == name }
+      memoryValues[agentID] = values
     }
 
     func startConversation(agentID: String) throws -> ConversationSummaryDTO {

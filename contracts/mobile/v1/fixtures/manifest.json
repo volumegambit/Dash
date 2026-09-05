@@ -56,6 +56,12 @@
       "valid": true
     },
     {
+      "file": "memory-list.json",
+      "document": "openapi",
+      "schema": "MemoryInfoList",
+      "valid": true
+    },
+    {
       "file": "models-list.json",
       "document": "openapi",
       "schema": "MobileModelsResponse",

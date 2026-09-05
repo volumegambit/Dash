@@ -87,6 +87,32 @@ struct GatewayAPITests {
     #expect(requests[5].httpBody == nil)
   }
 
+  @Test("memory reads and delete ride the mobile namespace with percent-encoded names")
+  func memoryRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "memory-list.json")
+    URLProtocolStub.enqueue(status: 200, data: Data(#"{"name":"user-timezone"}"#.utf8))
+    URLProtocolStub.enqueue(status: 404, data: Data(#"{"error":"not found"}"#.utf8))
+    let api = makeAPI()
+
+    let memories = try await api.listMemories(agentID: "a")
+    try await api.deleteMemory(agentID: "a", name: "user-timezone")
+    await #expect(throws: GatewayError.notFound) {
+      // The gateway answers the memory routes with a bare `{ error }` body
+      // instead of the `MobileApiError` envelope; status mapping wins, so it
+      // still surfaces as `.notFound`.
+      try await api.deleteMemory(agentID: "a", name: "gone/1")
+    }
+
+    #expect(memories.map(\.name) == ["user-timezone", "repo-pnpm"])
+    #expect(memories.map(\.type) == [.user, .project])
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "DELETE", "DELETE"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/agents/a/memory")
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/agents/a/memory/user-timezone")
+    #expect(try encodedPath(requests[2]) == "/mobile/v1/agents/a/memory/gone%2F1")
+    #expect(requests[1].httpBody == nil)
+  }
+
   @Test("relay auth is present on HTTP")
   func relayHeaders() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "agents-list.json")

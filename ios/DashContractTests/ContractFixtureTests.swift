@@ -41,6 +41,23 @@ struct ContractFixtureTests {
     #expect(page.items.isEmpty == false)
   }
 
+  @Test("the memory list fixture decodes with bare ISO dates and grouped types")
+  func memoryListFixture() throws {
+    let memories = try FixtureLoader.decode([MemoryInfoDTO].self, "memory-list.json")
+
+    #expect(memories.count == 2)
+    #expect(memories.map(\.name) == ["user-timezone", "repo-pnpm"])
+    #expect(memories.map(\.type) == [.user, .project])
+    #expect(memories.map(\.source) == ["agent", "sweep"])
+    // `createdAt`/`updatedAt` are bare `YYYY-MM-DD` days, not RFC 3339
+    // timestamps, so they stay `String` — `ContractCoding`'s date strategy
+    // would reject them.
+    #expect(memories[0].createdAt == "2026-09-05")
+    #expect(memories[0].updatedAt == "2026-09-05")
+    #expect(memories[0].size == 24)
+    #expect(memories[0].id == memories[0].name)
+  }
+
   @Test("contract coding round-trips JSON and RFC 3339 dates")
   func codingPrimitives() throws {
     let json = Data(#"{"a":[null,true,1,"x"],"o":{"n":2}}"#.utf8)
@@ -436,6 +453,12 @@ struct ContractFixtureTests {
     case ("json", "openapi", "MobileAgentList"):
       if fixture.valid {
         _ = try FixtureLoader.decode([RegisteredAgentDTO].self, fixture.file)
+      } else {
+        _ = try FixtureLoader.data(fixture.file)
+      }
+    case ("json", "openapi", "MemoryInfoList"):
+      if fixture.valid {
+        _ = try FixtureLoader.decode([MemoryInfoDTO].self, fixture.file)
       } else {
         _ = try FixtureLoader.data(fixture.file)
       }

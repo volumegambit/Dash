@@ -78,3 +78,24 @@ struct ModelsResponseDTO: Codable, Hashable, Sendable {
   let fetchedAt: Date
   let supportedModelsReviewedAt: String
 }
+
+/// A memory row as the mobile memory routes serve it. `type` reuses
+/// `MemoryTypeDTO` (declared in `AgentEvent.swift`, where the `memory_saved`
+/// event needs it) so the buckets can never drift apart. `createdAt` and
+/// `updatedAt` are bare `YYYY-MM-DD` days on the wire, not RFC 3339
+/// timestamps, so they stay `String` — `ContractCoding`'s date strategy
+/// would reject them.
+struct MemoryInfoDTO: Codable, Hashable, Identifiable, Sendable {
+  var id: String { name }
+  let name: String
+  let description: String
+  let type: MemoryTypeDTO
+  let source: String
+  let createdAt: String
+  let updatedAt: String
+  let size: Int
+}
+
+struct MemoryDeleteResponseDTO: Codable, Hashable, Sendable {
+  let name: String
+}

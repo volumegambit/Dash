@@ -101,6 +101,31 @@ export interface MobileActionResponse {
   ok: true;
 }
 
+/** Agent memory (`GET`/`DELETE` only on mobile; writes stay loopback-only). */
+export type MobileMemoryType = 'user' | 'feedback' | 'project' | 'reference';
+
+export type MobileMemorySource = 'agent' | 'sweep' | 'user' | 'import';
+
+export interface MobileMemoryInfo {
+  name: string;
+  description: string;
+  type: MobileMemoryType;
+  source: MobileMemorySource;
+  /** Bare `YYYY-MM-DD` day, not an RFC 3339 timestamp. */
+  createdAt: string;
+  /** Bare `YYYY-MM-DD` day, not an RFC 3339 timestamp. */
+  updatedAt: string;
+  size: number;
+}
+
+export interface MobileMemoryRecord extends Omit<MobileMemoryInfo, 'size'> {
+  content: string;
+}
+
+export interface MobileMemoryDeleteResponse {
+  name: string;
+}
+
 export interface MobileModel {
   value: string;
   label: string;
