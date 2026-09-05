@@ -1,3 +1,4 @@
+import { escapeClosingTag } from './escape.js';
 import { MEMORY_LIMITS, MEMORY_TYPES, type MemoryInfo, type MemoryType } from './types.js';
 
 const HEADING = '# Memory index';
@@ -12,9 +13,18 @@ const GROUP_TITLE: Record<MemoryType, string> = {
  * Render MEMORY.md: one line per memory, grouped by type. Never contains
  * memory bodies — the index is pointers only. When the output would exceed
  * `maxChars`, trailing lines are dropped and a final "…and N more" line is
- * appended so the model knows to use recall_memory.
+ * appended so the model knows to use recall_memory. Pass `tools: false` (an
+ * agent that inherits this memory read-only, i.e. a swarm worker) to drop the
+ * tool name from that footer: those agents have no `recall_memory` to call.
+ *
+ * Descriptions are untrusted (model-written, sweep-derived from user chat, or
+ * PUT over HTTP), so a `</memory>` in one must not close the block this index
+ * is rendered into — see {@link escapeClosingTag}.
  */
-export function renderIndex(memories: MemoryInfo[], opts: { maxChars?: number } = {}): string {
+export function renderIndex(
+  memories: MemoryInfo[],
+  opts: { maxChars?: number; tools?: boolean } = {},
+): string {
   const maxChars = opts.maxChars ?? MEMORY_LIMITS.indexMaxChars;
   if (memories.length === 0) return `${HEADING}\n\n_No memories yet._\n`;
 
@@ -23,7 +33,8 @@ export function renderIndex(memories: MemoryInfo[], opts: { maxChars?: number } 
     const group = memories.filter((m) => m.type === type);
     if (group.length === 0) continue;
     lines.push(`## ${GROUP_TITLE[type]}`);
-    for (const m of group) lines.push(`- **${m.name}** — ${m.description}`);
+    for (const m of group)
+      lines.push(`- **${m.name}** — ${escapeClosingTag(m.description, 'memory')}`);
     lines.push('');
   }
   const full = lines.join('\n');
@@ -32,7 +43,10 @@ export function renderIndex(memories: MemoryInfo[], opts: { maxChars?: number } 
   // Drop memory lines from the end until the "and N more" footer fits.
   let dropped = 0;
   const isMemoryLine = (l: string) => l.startsWith('- **');
-  const footer = (n: number) => `- …and ${n} more — use recall_memory\n`;
+  const footer = (n: number) =>
+    opts.tools === false
+      ? `- …and ${n} more, not shown\n`
+      : `- …and ${n} more — use recall_memory\n`;
   const out = lines.slice();
   while (out.length > 2) {
     const candidate = `${out.join('\n')}\n${footer(dropped)}`;

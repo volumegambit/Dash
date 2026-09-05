@@ -1,3 +1,4 @@
+import { escapeClosingTag } from './escape.js';
 import { renderIndex } from './index-render.js';
 import { selectRelevant } from './recall.js';
 import { MemoryStore } from './store.js';
@@ -28,10 +29,7 @@ export function renderRecalled(records: MemoryRecord[]): string {
   if (records.length === 0) return '';
   const body = records
     .map((r) => {
-      const escaped = r.content.replace(
-        /<\s*\/\s*recalled-memories\s*>/gi,
-        '&lt;/recalled-memories&gt;',
-      );
+      const escaped = escapeClosingTag(r.content, 'recalled-memories');
       return `### ${r.name} (${r.type})\n${escaped.trim()}`;
     })
     .join('\n\n');
@@ -73,8 +71,15 @@ export async function composeMemoryPrompt(
       const record = await store.get(info.name);
       if (record) recalled.push(record);
     }
-    return buildMemoryPrompt({ index: renderIndex(infos), recalled, tools: opts?.tools });
+    return buildMemoryPrompt({
+      index: renderIndex(infos, { tools: opts?.tools }),
+      recalled,
+      tools: opts?.tools,
+    });
   } catch {
-    return buildMemoryPrompt({ index: renderIndex([]), tools: opts?.tools });
+    return buildMemoryPrompt({
+      index: renderIndex([], { tools: opts?.tools }),
+      tools: opts?.tools,
+    });
   }
 }
