@@ -379,7 +379,9 @@ final class ConversationUITests: DashUITestCase {
     // hierarchy), so a strict single-match lookup throws "multiple matching
     // elements".
     let options = app.buttons.matching(identifier: "chat.options").firstMatch
-    XCTAssertTrue(options.waitForExistence(timeout: 5))
+    // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
+    // `hittable == false` yet taps fine; the wait is for a slow CI runner.
+    XCTAssertTrue(options.waitForExistence(timeout: 8))
     XCTAssertEqual(options.label, "Conversation options")
     XCTAssertTrue(options.isEnabled)
     options.tap()
@@ -387,7 +389,7 @@ final class ConversationUITests: DashUITestCase {
     let renameItem = app.buttons["Rename"].firstMatch
     let deleteItem = app.buttons["Delete"].firstMatch
     let shareItem = app.buttons["Share Transcript"].firstMatch
-    XCTAssertTrue(renameItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(renameItem.waitForExistence(timeout: 8))
     XCTAssertTrue(renameItem.isEnabled)
     XCTAssertTrue(deleteItem.exists)
     XCTAssertTrue(deleteItem.isEnabled)
@@ -404,9 +406,13 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    app.buttons.matching(identifier: "chat.options").firstMatch.tap()
+    let options = app.buttons.matching(identifier: "chat.options").firstMatch
+    // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
+    // `hittable == false` yet taps fine; the wait is for a slow CI runner.
+    XCTAssertTrue(options.waitForExistence(timeout: 8))
+    options.tap()
     let renameItem = app.buttons["Rename"].firstMatch
-    XCTAssertTrue(renameItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(renameItem.waitForExistence(timeout: 8))
     renameItem.tap()
 
     let renameAlert = app.alerts["Rename conversation"]
@@ -437,9 +443,13 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    app.buttons.matching(identifier: "chat.options").firstMatch.tap()
+    let options = app.buttons.matching(identifier: "chat.options").firstMatch
+    // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
+    // `hittable == false` yet taps fine; the wait is for a slow CI runner.
+    XCTAssertTrue(options.waitForExistence(timeout: 8))
+    options.tap()
     let deleteItem = app.buttons["Delete"].firstMatch
-    XCTAssertTrue(deleteItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(deleteItem.waitForExistence(timeout: 8))
     deleteItem.tap()
 
     // Final-review fix m6: the dialog's title is now the plan's verbatim,
@@ -453,10 +463,7 @@ final class ConversationUITests: DashUITestCase {
       "Expected the delete confirmation's destructive action to be available"
     )
 
-    let dismissRegion = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
-    XCTAssertTrue(dismissRegion.waitForExistence(timeout: 3))
-    dismissRegion.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
-    XCTAssertTrue(deleteConfirmation.waitForNonExistence(timeout: 5))
+    dismissConfirmation(deleteConfirmation, in: app)
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
