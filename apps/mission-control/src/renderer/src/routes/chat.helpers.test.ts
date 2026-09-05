@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDetails, summarize } from './chat.helpers.js';
+import { formatDetails, insertNewlineAtSelection, summarize } from './chat.helpers.js';
 
 describe('summarize', () => {
   it('extracts command for bash', () => {
@@ -108,5 +108,39 @@ describe('formatDetails', () => {
 
   it('returns fallback for number JSON value', () => {
     expect(formatDetails('42')).toEqual([{ key: 'input', value: '42' }]);
+  });
+});
+
+describe('insertNewlineAtSelection', () => {
+  it('appends when the caret is at the end', () => {
+    expect(insertNewlineAtSelection('ab', 2, 2)).toEqual({ value: 'ab\n', caret: 3 });
+  });
+
+  it('splits at the caret rather than appending', () => {
+    expect(insertNewlineAtSelection('ab', 1, 1)).toEqual({ value: 'a\nb', caret: 2 });
+  });
+
+  it('replaces a selection', () => {
+    expect(insertNewlineAtSelection('abcd', 1, 3)).toEqual({ value: 'a\nd', caret: 2 });
+  });
+
+  it('handles an empty draft', () => {
+    expect(insertNewlineAtSelection('', 0, 0)).toEqual({ value: '\n', caret: 1 });
+  });
+
+  it('clamps indices outside the value', () => {
+    expect(insertNewlineAtSelection('ab', 5, 9)).toEqual({ value: 'ab\n', caret: 3 });
+    expect(insertNewlineAtSelection('ab', -3, -1)).toEqual({ value: '\nab', caret: 1 });
+  });
+
+  it('tolerates a backwards selection', () => {
+    expect(insertNewlineAtSelection('abcd', 3, 1)).toEqual({ value: 'a\nd', caret: 2 });
+  });
+
+  it('falls back to the end when the selection is not a number', () => {
+    expect(insertNewlineAtSelection('ab', Number.NaN, Number.NaN)).toEqual({
+      value: 'ab\n',
+      caret: 3,
+    });
   });
 });

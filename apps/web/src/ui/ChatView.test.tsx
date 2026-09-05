@@ -387,6 +387,40 @@ describe('ChatView', () => {
     );
   });
 
+  it('inserts a newline on Shift+Tab instead of sending or moving focus', async () => {
+    const { sockets } = await renderConnected();
+
+    const input = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'first' } });
+    input.setSelectionRange(5, 5);
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true });
+
+    await waitFor(() => expect(input.value).toBe('first\n'));
+    // The point of the change: it must not have sent.
+    expect(sockets[0].sent).toHaveLength(0);
+  });
+
+  it('splits at the caret on Shift+Tab rather than appending', async () => {
+    await renderConnected();
+
+    const input = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'abcd' } });
+    input.setSelectionRange(2, 2);
+    fireEvent.keyDown(input, { key: 'Tab', shiftKey: true });
+
+    await waitFor(() => expect(input.value).toBe('ab\ncd'));
+  });
+
+  it('leaves plain Tab alone so the composer is not a focus trap', async () => {
+    await renderConnected();
+
+    const input = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'first' } });
+    fireEvent.keyDown(input, { key: 'Tab' });
+
+    await waitFor(() => expect(input.value).toBe('first'));
+  });
+
   it('sends the drafted message and clears the input on accept', async () => {
     const { sockets } = await renderConnected();
 
