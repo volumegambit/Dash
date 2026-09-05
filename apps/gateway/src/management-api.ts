@@ -182,6 +182,7 @@ const AGENT_CREATE_KEYS = new Set([
   'maxTokens',
   'mcpServers',
   'swarm',
+  'subagents',
   'plugins',
   'providers',
 ]);
@@ -247,6 +248,41 @@ function validateAgentSwarm(value: unknown): void {
   }
 }
 
+function validateAgentSubagents(value: unknown): void {
+  const allowed = new Set([
+    'enabled',
+    'delegation',
+    'allowedTypes',
+    'allowedModels',
+    'maxConcurrent',
+    'maxPerTurn',
+    'maxRunSeconds',
+    'maxDepth',
+  ]);
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error('subagents contains unknown or invalid fields');
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error('subagents.enabled must be a boolean');
+  }
+  if (
+    value.delegation !== undefined &&
+    value.delegation !== 'auto' &&
+    value.delegation !== 'explicit'
+  ) {
+    throw new Error('subagents.delegation must be "auto" or "explicit"');
+  }
+  for (const key of ['maxConcurrent', 'maxPerTurn', 'maxRunSeconds', 'maxDepth'] as const) {
+    const item = value[key];
+    if (item !== undefined && (!Number.isInteger(item) || (item as number) < 1)) {
+      throw new Error(`subagents.${key} must be a positive integer`);
+    }
+  }
+  for (const key of ['allowedTypes', 'allowedModels'] as const) {
+    if (value[key] !== undefined) requireAgentStringArray(value[key], `subagents.${key}`);
+  }
+}
+
 function validateAgentField(key: string, value: unknown): void {
   if (key === 'name' || key === 'model') {
     if (typeof value !== 'string' || value.trim().length === 0) {
@@ -286,6 +322,7 @@ function validateAgentField(key: string, value: unknown): void {
     return;
   }
   if (key === 'swarm') validateAgentSwarm(value);
+  if (key === 'subagents') validateAgentSubagents(value);
 }
 
 function parseAgentCreateRequest(
@@ -680,11 +717,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           400,
         );
       }
-      // Snapshot the pre-update swarm block so we can detect a swarm-config change
-      // after the update and evict warm backends (a running orchestrator caches
-      // its swarm gate/caps; eviction forces the next chat to rebuild with the new
-      // config). Deep-compared via JSON.stringify — the block is plain data.
-      const oldSwarm = JSON.stringify(entry.config.swarm);
+      // Snapshot the pre-update swarm AND subagents blocks so we can detect a
+      // sub-agent config change after the update and evict warm backends (a
+      // running orchestrator caches its gate/caps and its injected tools;
+      // eviction forces the next chat to rebuild with the new config). BOTH
+      // blocks must be covered — a `subagents`-only edit (delegation mode,
+      // caps, allowedTypes) would otherwise silently not take effect on a warm
+      // conversation. Deep-compared via JSON.stringify — both are plain data.
+      const oldSubagentBlocks = JSON.stringify([entry.config.swarm, entry.config.subagents]);
       let updated: RegisteredAgent;
       try {
         updated = agentRegistry.update(id, body);
@@ -701,7 +741,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           agent: entry.name,
           fields: Object.keys(body),
         });
-        if (JSON.stringify(updated.config.swarm) !== oldSwarm) {
+        if (
+          JSON.stringify([updated.config.swarm, updated.config.subagents]) !== oldSubagentBlocks
+        ) {
           await agents.evict(id);
         }
         return c.json(stripSecrets(updated));

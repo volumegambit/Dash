@@ -24,6 +24,12 @@ import type {
 } from '@dash/agent';
 import type { SwarmCoordinator } from '@dash/swarm';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
+import {
+  buildDelegationSection,
+  effectiveDelegation,
+  isSubagentsEnabled,
+  subagentCapsFromConfig,
+} from './subagent-config.js';
 
 /**
  * Builds the backend for one agent conversation. Receives the registry
@@ -78,6 +84,14 @@ export interface AgentChatCoordinatorOptions {
    * returns true. Undefined → swarm is off for every agent (plain fast path).
    */
   swarm?: AgentChatCoordinatorSwarm;
+  /**
+   * Resolve a model id's provider-catalog tier (0 = frontier). Drives the
+   * DEFAULT delegation mode for an agent that did not set
+   * `subagents.delegation`. Undefined (or an unknown model) → treated as
+   * non-frontier, i.e. `'explicit'`. Read per turn so a model change — or a
+   * catalog reload — is reflected without a pool eviction.
+   */
+  modelTier?: (model: string) => number | undefined;
 }
 
 export interface ChatRequest {
@@ -205,12 +219,26 @@ export function createAgentChatCoordinator(
    *
    * Throws if the agent no longer exists — the caller (either the
    * factory or the resolver) decides how to handle that.
+   *
+   * `conversationId` scopes the delegation roster: the "your agents" list only
+   * ever names children of THIS conversation, which are exactly the valid
+   * `send_message` targets.
    */
-  function buildDashConfig(agentId: string): DashAgentConfig {
+  function buildDashConfig(agentId: string, conversationId: string): DashAgentConfig {
     const entry = registry.get(agentId);
     if (!entry) throw new Error(`Agent '${agentId}' not found`);
     // Prepend agent identity so the model knows its name
-    const systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
+    let systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
+    // Append the delegation section LAST, rebuilt on every turn: it carries the
+    // live child roster, which changes within a conversation as children spawn
+    // and finish, and the delegation mode, which follows a live model change.
+    // Gated on the agent's own config so a mid-conversation
+    // `subagents.enabled: false` stops advertising the tools immediately.
+    if (options.swarm && isSubagentsEnabled(entry.config)) {
+      const mode = effectiveDelegation(entry.config, options.modelTier?.(entry.config.model));
+      const roster = options.swarm.coordinator.rosterFor(agentId, conversationId);
+      systemPrompt = `${systemPrompt}\n\n${buildDelegationSection(mode, roster)}`;
+    }
     // `workspace` is intentionally NOT included here: it's passed to
     // `backend.start(workspace)` at pool-entry creation time (so the
     // backend can set up its tools against the right dir) and is
@@ -264,7 +292,7 @@ export function createAgentChatCoordinator(
       // (pi session's registered tools, MCP managers) still requires
       // eviction — that's an acceptable trade-off because those
       // changes are infrequent and the warm pool protects throughput.
-      const agent = new DashAgent(backend, async () => buildDashConfig(agentId));
+      const agent = new DashAgent(backend, async () => buildDashConfig(agentId, conversationId));
       registry.setActive(agentId);
       return { backend, agent };
     },
@@ -377,8 +405,11 @@ export function createAgentChatCoordinator(
             disabled: e?.status === 'disabled',
           };
         },
-        caps: entry.config.swarm,
-        allowedModels: entry.config.swarm?.allowedModels,
+        // Caps come from the `subagents` block first, falling back to the legacy
+        // `swarm` names (see subagentCapsFromConfig). Passing the raw swarm block
+        // here would silently ignore every `subagents.max*` an operator set.
+        caps: subagentCapsFromConfig(entry.config),
+        allowedModels: entry.config.subagents?.allowedModels ?? entry.config.swarm?.allowedModels,
         orchestratorModel: entry.config.model,
         orchestratorFallbackModels: entry.config.fallbackModels,
         orchestratorTools: entry.config.tools,

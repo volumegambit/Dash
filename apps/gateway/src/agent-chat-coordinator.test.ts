@@ -960,3 +960,100 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await agents.stop();
   });
 });
+
+// The delegation section (Task A6) is appended to the resolved systemPrompt on
+// every turn, so a change to the roster or the delegation mode reaches a WARM
+// backend on the next message without a pool eviction.
+describe('AgentChatCoordinator delegation section', () => {
+  const MODEL = 'anthropic/claude-sonnet-4-20250514';
+
+  /**
+   * Minimal coordinator stub: the delegation section only needs `rosterFor`.
+   * `isEnabled` is false so `chat()` stays on the plain fast path — the section
+   * is gated on the agent's own `subagents`/`swarm` config, not on the merge.
+   */
+  function stubSwarm(roster: Array<{ id: string; name?: string; type: string; status: string }>): {
+    swarm: AgentChatCoordinatorSwarm;
+    calls: Array<[string, string]>;
+  } {
+    const calls: Array<[string, string]> = [];
+    const coordinator = {
+      rosterFor: (agentId: string, conversationId: string) => {
+        calls.push([agentId, conversationId]);
+        return roster;
+      },
+    } as unknown as SwarmCoordinator;
+    return { swarm: { coordinator, isEnabled: () => false }, calls };
+  }
+
+  it('appends the roster-bearing delegation section to the resolved system prompt', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'orch', model: MODEL, systemPrompt: 'base prompt' });
+    const { backend, states } = makeStateCapturingBackend();
+    const { swarm, calls } = stubSwarm([
+      { id: 'w1', name: 'mapper', type: 'Explore', status: 'running' },
+    ]);
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+      swarm,
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-a', text: 'hi' }));
+
+    expect(states[0].systemPrompt).toContain('base prompt');
+    expect(states[0].systemPrompt).toContain('# Delegation');
+    expect(states[0].systemPrompt).toContain('- mapper (Explore, running)');
+    expect(states[0].systemPrompt.trimEnd().endsWith('- mapper (Explore, running)')).toBe(true);
+    // The roster is scoped to THIS conversation.
+    expect(calls).toEqual([[id, 'conv-a']]);
+    await agents.stop();
+  });
+
+  it('uses the explicit-mode guidance for a non-frontier model and auto for tier 0', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'orch', model: MODEL, systemPrompt: 'p' });
+    const { backend, states } = makeStateCapturingBackend();
+    const { swarm } = stubSwarm([]);
+    const tiers = new Map<string, number>([[MODEL, 1]]);
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+      swarm,
+      modelTier: (model) => tiers.get(model),
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-b', text: 'hi' }));
+    expect(states[0].systemPrompt).toContain('only when the user asks');
+
+    // Same WARM backend, model promoted to tier 0 → the next turn flips to auto.
+    tiers.set(MODEL, 0);
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-b', text: 'again' }));
+    expect(states[1].systemPrompt).toContain('Delegate proactively');
+    await agents.stop();
+  });
+
+  it('omits the section for an agent with sub-agents disabled', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'orch',
+      model: MODEL,
+      systemPrompt: 'p',
+      subagents: { enabled: false },
+    });
+    const { backend, states } = makeStateCapturingBackend();
+    const { swarm } = stubSwarm([]);
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+      swarm,
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-c', text: 'hi' }));
+    expect(states[0].systemPrompt).not.toContain('# Delegation');
+    await agents.stop();
+  });
+});

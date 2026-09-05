@@ -18,6 +18,38 @@ export interface AgentSwarmConfig {
   allowedModels?: string[];
 }
 
+/**
+ * Per-agent sub-agent configuration — the Claude-Code-parity `agent` /
+ * `send_message` tooling that supersedes the raw `swarm` block. Every field is
+ * optional and absence is meaningful:
+ *
+ * - `enabled` unset falls back to the legacy `swarm.enabled`, then to `true`.
+ *   That is what makes sub-agents ON by default for agents registered before
+ *   this block existed while still honouring an operator who deliberately
+ *   turned the swarm off. See {@link isSubagentsEnabled}.
+ * - `delegation` unset is derived from the orchestrator's model tier (tier 0 /
+ *   frontier → `'auto'`, anything else → `'explicit'`).
+ * - The caps map onto {@link AgentSwarmConfig}'s equivalents and win over them
+ *   (see `subagentCapsFromConfig`).
+ *
+ * Persisted verbatim on the agent config (the registry round-trips the whole
+ * config object as JSON).
+ */
+export interface AgentSubagentsConfig {
+  /** Gate. Unset → `swarm.enabled` → `true`. */
+  enabled?: boolean;
+  /** Unset → derived from the model tier. */
+  delegation?: 'auto' | 'explicit';
+  /** Sub-agent type ids this orchestrator may spawn. Unset → all built-ins. */
+  allowedTypes?: string[];
+  /** Models a child may be given. Unset → falls back to `swarm.allowedModels`. */
+  allowedModels?: string[];
+  maxConcurrent?: number;
+  maxPerTurn?: number;
+  maxRunSeconds?: number;
+  maxDepth?: number;
+}
+
 export interface GatewayAgentConfig {
   name: string;
   model: string;
@@ -31,6 +63,8 @@ export interface GatewayAgentConfig {
   mcpServers?: string[];
   /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
   swarm?: AgentSwarmConfig;
+  /** Per-agent sub-agent gating, delegation mode + caps. See {@link AgentSubagentsConfig}. */
+  subagents?: AgentSubagentsConfig;
   /**
    * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
    * (backward compat — legacy agents persisted before P5 have no key and MUST

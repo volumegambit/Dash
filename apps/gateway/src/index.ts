@@ -18,10 +18,21 @@ import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
 import { gatewayDir, migrateLegacyLayout, workspacesDir } from '@dash/paths';
-import { PluginConfigStore, RESERVED_PROVIDER_IDS, loadPlugins } from '@dash/plugins';
+import {
+  PluginConfigStore,
+  RESERVED_PROVIDER_IDS,
+  findCatalogPattern,
+  loadPlugins,
+} from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
-import { SwarmCoordinator, createSwarmTools } from '@dash/swarm';
+import {
+  SwarmCoordinator,
+  builtinSubagentTypes,
+  createAgentTools,
+  createStaticResolver,
+  createSwarmTools,
+} from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -64,8 +75,19 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
+import { isSubagentsEnabled } from './subagent-config.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
+
+/**
+ * The parent tool set assumed for an agent that has no explicit `tools` list.
+ * Mirrors `DEFAULT_TOOL_NAMES` in packages/swarm/src/coordinator.ts (a private
+ * constant there — duplicated rather than exported so the coordinator's spawn
+ * validation and this grant calculation are literally the same list). A child
+ * can never be granted a tool outside its parent's set, so getting this wrong
+ * would silently under- or over-grant.
+ */
+const DEFAULT_PARENT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -457,10 +479,30 @@ async function main() {
     getPluginSkillDirs: () => wiringState.skillDirs,
     getPluginCommandFiles: () => wiringState.commandFiles,
     // Swarm merge wiring. `isEnabled` is a live registry read so a mid-turn
-    // PUT /agents/:id that flips swarm.enabled takes effect on the next chat.
+    // PUT /agents/:id that flips the sub-agent gate takes effect on the next
+    // chat. Sub-agents are ON by default (see isSubagentsEnabled), so this is
+    // true for every agent that has not explicitly turned them off.
     swarm: {
       coordinator: swarmCoordinator,
-      isEnabled: (id) => registry.get(id)?.config.swarm?.enabled === true,
+      isEnabled: (id) => {
+        const entry = registry.get(id);
+        return !!entry && isSubagentsEnabled(entry.config);
+      },
+    },
+    // Default delegation mode follows the orchestrator model's catalog tier
+    // (0 = frontier → 'auto'). Reads the LIVE wiring so a plugin reload that
+    // ships a new catalog is observed without a restart; an unknown model
+    // yields undefined, which resolves to 'explicit'.
+    modelTier: (model) => {
+      const slash = model.indexOf('/');
+      if (slash <= 0) return undefined;
+      const providerId = model.slice(0, slash);
+      const modelId = model.slice(slash + 1);
+      for (const { catalog } of wiringState.pluginProviderConfigs) {
+        if (catalog.id !== providerId) continue;
+        return findCatalogPattern(catalog, modelId)?.tier;
+      }
+      return undefined;
     },
     createBackend: async (agentConfig, conversationId, agentId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
@@ -620,12 +662,30 @@ async function main() {
           // optional there, required here) — the same duck-typed shape the
           // worker side casts in swarm-wiring.ts. Cast so the combined array
           // matches the backend's ExtraTool[] slot.
-          ...(agentConfig.swarm?.enabled
-            ? (createSwarmTools({
-                coordinator: swarmCoordinator,
-                agentId,
-                conversationId: () => backend.getCurrentSessionId() ?? '',
-              }) as unknown as ExtraTool[])
+          ...(isSubagentsEnabled(agentConfig)
+            ? ([
+                ...createSwarmTools({
+                  coordinator: swarmCoordinator,
+                  agentId,
+                  conversationId: () => backend.getCurrentSessionId() ?? '',
+                }),
+                ...createAgentTools({
+                  coordinator: swarmCoordinator,
+                  agentId,
+                  conversationId: () => backend.getCurrentSessionId() ?? '',
+                  resolver: createStaticResolver(builtinSubagentTypes()),
+                  // Phase A: a background child is cancelled at turn end. Task
+                  // C4 flips this to 'detached'.
+                  backgroundMode: 'turn-scoped',
+                  // A child may only be granted tools the parent itself holds.
+                  // The fallback mirrors SwarmCoordinator's DEFAULT_TOOL_NAMES
+                  // (packages/swarm/src/coordinator.ts) — the list a worker
+                  // spawned without an explicit grant receives.
+                  parentTools: () => agentConfig.tools ?? [...DEFAULT_PARENT_TOOLS],
+                  // A top-level orchestrator is depth 0, so its children are 1.
+                  depth: 0,
+                }),
+              ] as unknown as ExtraTool[])
             : []),
         ],
         commandFiles,

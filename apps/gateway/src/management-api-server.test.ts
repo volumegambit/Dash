@@ -521,6 +521,7 @@ describe('createGatewayManagementApp', () => {
         maxTokens: 1,
         mcpServers: [],
         swarm: {},
+        subagents: {},
         plugins: [],
         providers: [],
       };
@@ -743,6 +744,109 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ model: 'gpt-4' }),
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // Per-agent `subagents` block (Task A6). Validation lives next to the swarm
+  // block's; the PUT eviction snapshot must cover BOTH blocks so a delegation /
+  // caps change actually reaches warm backends.
+  describe('agent subagents block', () => {
+    it('rejects an unknown delegation mode', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ subagents: { delegation: 'sometimes' } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({
+        code: 'validation_failed',
+        error: 'subagents.delegation must be "auto" or "explicit"',
+      });
+      expect(agentRegistry.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects unknown subagents keys and non-integer caps', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      for (const [value, message] of [
+        [{ nope: 1 }, 'subagents contains unknown or invalid fields'],
+        [{ enabled: 'yes' }, 'subagents.enabled must be a boolean'],
+        [{ maxConcurrent: 0 }, 'subagents.maxConcurrent must be a positive integer'],
+        [{ maxDepth: 1.5 }, 'subagents.maxDepth must be a positive integer'],
+        [{ allowedTypes: [''] }, 'subagents.allowedTypes must be an array of nonblank strings'],
+      ] as const) {
+        const res = await app.request(`/agents/${entry.id}`, {
+          method: 'PUT',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ subagents: value }),
+        });
+        expect(res.status, message).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'validation_failed', error: message });
+      }
+    });
+
+    it('stores a valid subagents block and evicts warm backends when it changes', async () => {
+      const { app, agentRegistry, agents } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ subagents: { enabled: false, allowedTypes: ['Explore'] } }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).config.subagents).toEqual({
+        enabled: false,
+        allowedTypes: ['Explore'],
+      });
+      // The block changed → the warm backend caches the delegation section and
+      // caps, so it must be rebuilt on the next chat.
+      expect(agents.evict).toHaveBeenCalledWith(entry.id);
+
+      // An unrelated field change leaves the block identical → no eviction.
+      vi.mocked(agents.evict).mockClear();
+      const noop = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ systemPrompt: 'q' }),
+      });
+      expect(noop.status).toBe(200);
+      expect(agents.evict).not.toHaveBeenCalled();
+    });
+
+    it('POST /agents accepts subagents and round-trips it through GET', async () => {
+      const { app } = createApp();
+      const created = await app.request('/agents', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'deleg',
+          model: 'claude',
+          systemPrompt: 'hi',
+          subagents: { delegation: 'auto', maxPerTurn: 4 },
+        }),
+      });
+      expect(created.status).toBe(201);
+      const body = await created.json();
+      expect(body.config.subagents).toEqual({ delegation: 'auto', maxPerTurn: 4 });
+      const fetched = await app.request(`/agents/${body.id}`, { headers: AUTH });
+      expect((await fetched.json()).config.subagents).toEqual({
+        delegation: 'auto',
+        maxPerTurn: 4,
+      });
     });
   });
 
