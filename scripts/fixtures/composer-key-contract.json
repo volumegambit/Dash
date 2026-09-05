@@ -1,0 +1,79 @@
+{
+  "note": "Cross-client composer key contract (UI-quality goal, Phase D). The single source of truth for what each key does in the message composer on each client. Consumed by apps/web/src/ui/ChatView.test.tsx and, for the shared decision logic, by the iOS suite. Add a row here BEFORE changing a composer key handler on any client.",
+  "why": "Shift+Enter inserted a newline on web and Mission Control and was silently impossible on iOS for months: SwiftUI's onSubmit fires on every Return with no modifier awareness, so a hardware keyboard could not type a newline at all. Every test on every client passed. A per-client handler tested only against itself cannot see that. These rows are deliberately allowed to differ per client where the platform demands it (iOS Return), so the fixture documents intended divergence rather than pretending the clients are identical \u2014 what it forbids is UNINTENDED divergence.",
+  "actions": {
+    "send": "submits the draft",
+    "newline": "inserts a line break into the draft, does not submit",
+    "focus": "leaves the key to the platform's focus traversal, does not touch the draft"
+  },
+  "cases": [
+    {
+      "name": "plain Return",
+      "key": "Enter",
+      "shift": false,
+      "meta": false,
+      "ios": "newline",
+      "web": "send",
+      "mc": "send",
+      "note": "iOS deliberately differs: on a hardware keyboard Return is the natural newline and Cmd+Return sends, matching the send button's existing shortcut. Changed 2026-09-05.",
+      "mechanism": {
+        "ios": "native",
+        "web": "handler",
+        "mc": "handler"
+      }
+    },
+    {
+      "name": "Shift+Return",
+      "key": "Enter",
+      "shift": true,
+      "meta": false,
+      "ios": "newline",
+      "web": "newline",
+      "mc": "newline",
+      "note": "The row that was broken on iOS and correct everywhere else. All three rely on the platform's own newline: the handler's job is to DECLINE the key, which is exactly what iOS's onSubmit could not do.",
+      "mechanism": {
+        "ios": "native",
+        "web": "native",
+        "mc": "native"
+      }
+    },
+    {
+      "name": "Cmd+Return",
+      "key": "Enter",
+      "shift": false,
+      "meta": true,
+      "ios": "send",
+      "web": "send",
+      "mc": "send"
+    },
+    {
+      "name": "Shift+Tab",
+      "key": "Tab",
+      "shift": true,
+      "meta": false,
+      "ios": "newline",
+      "web": "newline",
+      "mc": "newline",
+      "note": "User-requested override of reverse focus traversal, 2026-09-05.",
+      "mechanism": {
+        "ios": "handler",
+        "web": "handler",
+        "mc": "handler"
+      }
+    },
+    {
+      "name": "plain Tab",
+      "key": "Tab",
+      "shift": false,
+      "meta": false,
+      "ios": "focus",
+      "web": "focus",
+      "mc": "focus",
+      "note": "Deliberately NOT overridden. Taking both Tab directions would leave keyboard and screen-reader users no way out of the composer."
+    }
+  ],
+  "mechanisms": {
+    "handler": "the client's own key handler prevents the default and splices the newline itself \u2014 assertable by inspecting the draft",
+    "native": "the handler declines the key and the platform's own text input inserts the break \u2014 NOT assertable from a synthetic keydown, because DOM test environments do not perform default actions. Tests assert the negative instead: nothing was sent, and the default was not prevented."
+  }
+}
