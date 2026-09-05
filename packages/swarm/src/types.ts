@@ -8,7 +8,20 @@ export interface WorkerSpec {
   role: string;
   brief: string;
   model: string;
+  /**
+   * Where the child RUNS, and what its tools are sandboxed to. For an
+   * `isolation: 'worktree'` child that is its own checkout — which is what a
+   * RESUMED one already carries, since the path is known by then.
+   */
   workspace: string;
+  /**
+   * The repository an `isolation: 'worktree'` checkout is cut FROM: the
+   * parent's workspace. Distinct from {@link WorkerSpec.workspace} on purpose —
+   * `git worktree add` runs IN the repo, and a resumed isolated child's
+   * `workspace` is the checkout, not the repo. Unset on a fresh spawn, where
+   * the two are the same directory.
+   */
+  isolationSource?: string;
   tools: string[];
   /**
    * Fully-qualified `server__tool` MCP names this child may call, resolved by

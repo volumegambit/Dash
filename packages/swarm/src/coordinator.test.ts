@@ -2459,3 +2459,42 @@ describe('SwarmCoordinator C4 review fixes', () => {
     expect(() => coordinator.sendToChild(CONVO_ID, 'scout', 'second steer')).toThrow(/steer cap/);
   });
 });
+
+describe('SwarmCoordinator cross-conversation scoping', () => {
+  /**
+   * Round 2 observation: the registry is global (a child id is unique) but a
+   * READ of it is not — naming another conversation's child must not hand back
+   * its status or its report, however addressable that child is in this
+   * process. `findChild` and `checkWorkers` scope through `childrenOf`; these
+   * two now do too.
+   */
+  function twoConversations() {
+    const d = makeChildDriver();
+    const coordinator = new SwarmCoordinator({ childDriver: d.driver });
+    coordinator.attach(baseAttach({ conversationId: 'convo-a', messageId: 'a-1' }));
+    const { subagentId: theirs } = coordinator.spawnChild(
+      { ...PARENT, conversationId: 'convo-a', turnId: 'a-1', depth: 0 },
+      { role: 'theirs', brief: 'b', description: 'd', name: 'theirs' },
+    );
+    coordinator.attach(baseAttach({ conversationId: 'convo-b', messageId: 'b-1' }));
+    coordinator.spawnChild(
+      { ...PARENT, conversationId: 'convo-b', turnId: 'b-1', depth: 0 },
+      { role: 'mine', brief: 'b', description: 'd', name: 'mine' },
+    );
+    return { d, coordinator, theirs };
+  }
+
+  it('wait_workers does not resolve another conversation child by id', async () => {
+    const { coordinator, theirs } = twoConversations();
+    await expect(
+      coordinator.waitWorkers(AGENT_ID, 'convo-b', { workerIds: [theirs] }),
+    ).resolves.toEqual([]);
+  });
+
+  it('waitWorker does not resolve another conversation child by id', async () => {
+    const { coordinator, theirs } = twoConversations();
+    await expect(coordinator.waitWorker(AGENT_ID, 'convo-b', theirs)).rejects.toThrow(
+      /unknown worker/,
+    );
+  });
+});

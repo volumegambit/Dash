@@ -275,13 +275,6 @@ export interface AgentChatCoordinator {
 }
 
 /**
- * A promise that resolves the moment `signal` aborts (immediately if it is
- * already aborted). Used as a dedicated arm of the merge race so an aborted
- * turn breaks the loop WITHOUT waiting for the next orchestrator/worker event
- * before running teardown. The listener is `once` and self-cleans; the promise
- * never rejects (abort is a normal control-flow signal here, not an error).
- */
-/**
  * The fields of a child's per-turn overrides that its BACKEND is built from.
  * Two turns with the same signature can share one warm backend; anything else
  * has to rebuild. Deliberately not the whole object: `orchestratorFallbackModels`
@@ -297,6 +290,13 @@ function signatureOf(overrides: Partial<AgentChatAttachOverrides>): string {
   ]);
 }
 
+/**
+ * A promise that resolves the moment `signal` aborts (immediately if it is
+ * already aborted). Used as a dedicated arm of the merge race so an aborted
+ * turn breaks the loop WITHOUT waiting for the next orchestrator/worker event
+ * before running teardown. The listener is `once` and self-cleans; the promise
+ * never rejects (abort is a normal control-flow signal here, not an error).
+ */
 function abortRace(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise<void>((resolve) => {
@@ -493,11 +493,28 @@ export function createAgentChatCoordinator(
       if (childSignature) {
         const warm = pool.get(request.agentId, request.conversationId);
         if (warm && warm.signature !== childSignature) {
-          pool.dropConversation(request.agentId, request.conversationId);
+          // REFUSED means a turn is still streaming on the wide backend, and
+          // the only two answers that are safe are "run it on a rebuilt
+          // backend" or "do not run it". Labelling the entry with the narrow
+          // signature anyway — while leaving the wide backend in place — turns
+          // a transient overlap into a permanent one: every later turn would
+          // match the label and never rebuild.
+          if (!pool.dropConversation(request.agentId, request.conversationId)) {
+            yield {
+              type: 'error',
+              error: new Error(
+                `sub-agent ${request.conversationId} is still running under an earlier grant`,
+              ),
+            };
+            return;
+          }
         }
       }
 
       const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
+      // Only ever labels an entry this turn is entitled to label: either it was
+      // just created, or it already carried this signature, or the stale one
+      // was actually dropped above.
       if (childSignature) poolEntry.signature = childSignature;
       pool.pin(request.agentId, request.conversationId);
 

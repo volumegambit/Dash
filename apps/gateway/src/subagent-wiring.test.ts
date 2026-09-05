@@ -15,7 +15,9 @@ import type {
 import { ChildHandle, type ChildSpec, type SwarmExtraTool, type WorkerSpec } from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
+import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { type WorkerBackend, createFakeChildDriver } from './fake-child-driver.js';
+import { grantFromSpec, reconstructChildSpec } from './subagent-resume.js';
 import {
   type ChildBackendDeps,
   buildChildBackendOptions,
@@ -599,18 +601,80 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     expect(await pathExists(join(resumed.workspace, 'findings.md'))).toBe(true);
   });
 
-  it('a resumed isolated child whose worktree was cleaned up gets a fresh one', async () => {
-    const spec = makeSpec({ workspace, isolation: 'worktree' });
-    await createChildBackend(spec, { ...deps, dataDir });
-    const { extraTools: _extraTools, ...finished } = spec;
-    await cleanupWorktreeForSpec({ ...finished, workerStatus: 'done' }, { dataDir });
-    const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
-    expect(await pathExists(path)).toBe(false);
+  /**
+   * The REAL resume path, end to end: the spec comes out of
+   * `reconstructChildSpec` (whose isolated-child `workspace` IS the worktree
+   * path), not from a hand-built one that still names the source repo. This is
+   * the guaranteed state after a gateway restart, and it died with
+   * WORKTREE_REQUIRES_GIT because the deleted worktree path was being passed to
+   * `git worktree add` as the repository.
+   */
+  it('recreates the worktree of a resumed isolated child from its parent repo', async () => {
+    const convoDir = await mkdtemp(join(tmpdir(), 'wire-convos-'));
+    const conversations = new SqliteConversationService({ dataDir: convoDir });
+    try {
+      const spec = makeSpec({ workspace, isolation: 'worktree' });
+      const first = await createChildBackend(spec, { ...deps, dataDir });
+      // Every terminal status but max_turns removes it.
+      const { extraTools: _extraTools, ...finished } = spec;
+      await cleanupWorktreeForSpec({ ...finished, workerStatus: 'done' }, { dataDir });
+      expect(await pathExists(first.workspace)).toBe(false);
 
-    const resumed = await createChildBackend(spec, { ...deps, dataDir });
+      // Exactly what the gateway rebuilds for a resume.
+      const parent = conversations.create({
+        agentId: spec.agentId,
+        agentName: spec.agentName,
+        requestId: 'req-1',
+      });
+      conversations.createSubagent({
+        id: spec.workerId,
+        agentId: spec.agentId,
+        agentName: spec.agentName,
+        parentConversationId: parent.id,
+        parentTurnId: 'parent-turn-1',
+        title: 'survey repo',
+        subagent: {
+          type: 'general-purpose',
+          status: 'done',
+          description: 'survey repo',
+          prompt: spec.brief,
+          model: spec.model,
+          background: false,
+          isolation: 'worktree',
+          depth: 1,
+          startedAt: '2026-09-05T00:00:00.000Z',
+          toolCallCount: 0,
+          oneShot: false,
+          workspace: first.workspace,
+        },
+      });
+      conversations.putSubagentGrant(spec.workerId, grantFromSpec({ ...finished, workspace }));
+      const rebuilt = reconstructChildSpec(spec.workerId, {
+        conversations,
+        liveSpec: () => undefined,
+        agentConfig: () => ({
+          name: spec.agentName,
+          model: spec.model,
+          systemPrompt: 'sp',
+          workspace,
+          tools: ['read', 'bash'],
+        }),
+        agentMcpTools: () => [],
+      });
+      if (!rebuilt) throw new Error('the resume spec could not be rebuilt');
+      expect(rebuilt.workspace).toBe(first.workspace);
 
-    expect(resumed.workspace).toBe(path);
-    expect(await pathExists(join(path, 'base.txt'))).toBe(true);
+      const resumed = await createChildBackend(
+        { ...rebuilt, extraTools: [] },
+        { ...deps, dataDir },
+      );
+
+      expect(resumed.workspace).toBe(first.workspace);
+      expect(await pathExists(join(resumed.workspace, 'base.txt'))).toBe(true);
+    } finally {
+      conversations.close();
+      await rm(convoDir, { recursive: true, force: true });
+    }
   });
 
   it('a normal child still runs in the shared workspace', async () => {

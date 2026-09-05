@@ -5,7 +5,14 @@ export interface PoolEntry {
   backend: AgentBackend;
   agent: DashAgent;
   lastActive: number;
-  pinned: boolean;
+  /**
+   * How many turns are in flight on this entry. A COUNT, not a flag: two turns
+   * can overlap on one conversation (the legacy chat path, the management API
+   * and the channel bridge all reach `chat()` without the hub's turn lease),
+   * and with a boolean the first to finish would unpin an entry the second is
+   * still streaming — leaving `dropConversation` free to stop a live backend.
+   */
+  pins: number;
   /**
    * What this entry was BUILT from, when the caller's backend depends on
    * something that can change between turns. A backend binds its tool set (and
@@ -85,7 +92,7 @@ export class ConversationPool {
       backend,
       agent,
       lastActive: Date.now(),
-      pinned: false,
+      pins: 0,
     };
     this.pool.set(k, entry);
     return entry;
@@ -94,7 +101,7 @@ export class ConversationPool {
   private async evictLRU(): Promise<boolean> {
     let oldest: { key: string; time: number } | null = null;
     for (const [key, entry] of this.pool) {
-      if (entry.pinned) continue;
+      if (entry.pins > 0) continue;
       if (!oldest || entry.lastActive < oldest.time) {
         oldest = { key, time: entry.lastActive };
       }
@@ -112,12 +119,12 @@ export class ConversationPool {
 
   pin(agentName: string, conversationId: string): void {
     const entry = this.pool.get(this.key(agentName, conversationId));
-    if (entry) entry.pinned = true;
+    if (entry) entry.pins++;
   }
 
   unpin(agentName: string, conversationId: string): void {
     const entry = this.pool.get(this.key(agentName, conversationId));
-    if (entry) entry.pinned = false;
+    if (entry && entry.pins > 0) entry.pins--;
   }
 
   get(agentName: string, conversationId: string): PoolEntry | undefined {
@@ -142,7 +149,10 @@ export class ConversationPool {
   dropConversation(agentName: string, conversationId: string): boolean {
     const k = this.key(agentName, conversationId);
     const entry = this.pool.get(k);
-    if (!entry || entry.pinned) return false;
+    // NEVER drop an entry with a live turn on it: `stop()` would be called on a
+    // backend that is still streaming. The caller decides what to do with the
+    // refusal — it must not assume the entry was replaced.
+    if (!entry || entry.pins > 0) return false;
     this.pool.delete(k);
     void Promise.resolve(entry.backend.stop()).catch(() => {});
     return true;
@@ -153,7 +163,7 @@ export class ConversationPool {
     const toEvict: string[] = [];
     for (const [key, entry] of this.pool) {
       if (key.startsWith(prefix)) {
-        if (entry.pinned) {
+        if (entry.pins > 0) {
           entry.backend.abort();
         }
         await entry.backend.stop();
@@ -179,7 +189,7 @@ export class ConversationPool {
   async evictIdle(): Promise<void> {
     const toEvict: string[] = [];
     for (const [key, entry] of this.pool) {
-      if (entry.pinned) continue;
+      if (entry.pins > 0) continue;
       await entry.backend.stop();
       toEvict.push(key);
     }
@@ -210,7 +220,7 @@ export class ConversationPool {
     for (const [key, entry] of this.pool) {
       const agentName = key.split('/')[0];
       agents[agentName] = (agents[agentName] ?? 0) + 1;
-      if (entry.pinned) pinned++;
+      if (entry.pins > 0) pinned++;
     }
     return { size: this.pool.size, maxSize: this.maxSize, pinned, agents };
   }

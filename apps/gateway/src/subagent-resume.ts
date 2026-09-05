@@ -163,6 +163,11 @@ export function reconstructChildSpec(
     // left behind is); everyone else resumes in whatever its parent's workspace
     // is NOW, which is not necessarily the one it ran in.
     workspace: narrowed.workspace ?? info.workspace ?? grant.workspace,
+    // An isolated child's worktree is cut from its PARENT's current repo, which
+    // is not where the child itself runs — see `WorkerSpec.isolationSource`.
+    ...(info.isolation === 'worktree' && parent.workspace !== undefined
+      ? { isolationSource: parent.workspace }
+      : {}),
     tools: narrowed.tools,
     mcpTools: narrowed.mcpTools,
     spawnableTypes: grant.spawnableTypes,
@@ -193,7 +198,17 @@ export function reconstructChildSpec(
  */
 export function childAttachOverrides(
   spec: Omit<ChildSpec, 'extraTools'>,
+  /**
+   * Where an `isolation: 'worktree'` child's checkout lives. Needed because a
+   * LIVE isolated child's spec still names the repo — its worktree is minted
+   * later, by the runtime — so without this a grandchild spawned during its
+   * turn would be sandboxed in the very repo its parent was isolated FROM. The
+   * path is deterministic, so it can be named before it exists.
+   */
+  worktreePath?: (spec: Omit<ChildSpec, 'extraTools'>) => string,
 ): AgentChatAttachOverrides {
+  const workspace =
+    spec.isolation === 'worktree' && worktreePath ? worktreePath(spec) : spec.workspace;
   return {
     orchestratorModel: spec.model,
     orchestratorFallbackModels: undefined,
@@ -204,6 +219,6 @@ export function childAttachOverrides(
     orchestratorMcpTools: spec.mcpTools ?? [],
     // Its own worktree when it was isolated, so a grandchild is sandboxed where
     // its parent actually ran.
-    workspace: spec.workspace,
+    workspace,
   };
 }

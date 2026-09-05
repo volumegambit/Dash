@@ -298,7 +298,11 @@ export async function createChildBackend(
     spec.isolation === 'worktree'
       ? (
           await ensureChildWorktree({
-            workspace: spec.workspace,
+            // The REPO, never `spec.workspace`: a resumed isolated child's
+            // workspace is already its own (possibly deleted) worktree path,
+            // and `git worktree add` has to run in the repository it is cut
+            // from. They are the same directory on a fresh spawn.
+            workspace: spec.isolationSource ?? spec.workspace,
             dataDir: deps.dataDir,
             agentName: spec.agentName,
             childId: spec.workerId,

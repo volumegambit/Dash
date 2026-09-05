@@ -1408,6 +1408,90 @@ describe('child conversations on the shared pool', () => {
     expect(builtWith).toEqual([['read', 'bash'], ['read']]);
   });
 
+  /**
+   * Round 2, item 1. The drop is REFUSED for a pinned (mid-turn) entry, and
+   * writing the new signature anyway turns a transient overlap into a
+   * permanent stale backend: the wide entry is re-labelled narrow, so every
+   * later turn matches and never rebuilds. A turn that cannot be given a
+   * correctly-bounded backend is refused instead.
+   */
+  it('refuses — and does not relabel — when the stale child entry cannot be dropped', async () => {
+    let grant = ['read', 'bash'];
+    const builtWith: string[][] = [];
+    // A child backend whose run() blocks until the test releases it, so the
+    // first turn is still in flight (pinned) when the second arrives.
+    let release!: () => void;
+    let runs = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { agents, agentId } = makeChildAgents({
+      childRuntime: async () => {
+        const tools = [...grant];
+        builtWith.push(tools);
+        return {
+          backend: {
+            name: 'gated-child',
+            start: async () => {},
+            stop: async () => {},
+            abort: () => {},
+            async *run(): AsyncGenerator<AgentEvent> {
+              // Only the FIRST turn is held open (that is what pins the entry);
+              // a second turn that wrongly reuses this backend must complete,
+              // so the assertion below reads as a wrong ANSWER rather than a
+              // timeout.
+              const mine = ++runs;
+              yield { type: 'text_delta', text: `run-${mine}` };
+              if (mine === 1) await gate;
+              yield {
+                type: 'response',
+                content: 'done',
+                usage: { inputTokens: 1, outputTokens: 1 },
+              };
+            },
+          },
+          resolveConfig: () => ({ model: 'test/child-model', systemPrompt: 'child', tools }),
+          workspace: '/data/worktrees/parent-agent/sub_1',
+        };
+      },
+      childAttachOptions: () => ({
+        orchestratorModel: 'test/child-model',
+        orchestratorFallbackModels: undefined,
+        orchestratorTools: [...grant],
+        orchestratorMcpTools: [],
+        workspace: '/data/worktrees/parent-agent/sub_1',
+      }),
+    });
+
+    // Turn one is left mid-stream: its pool entry is pinned.
+    const first = agents.chat({ agentId, conversationId: 'sub_child', text: 'go' });
+    expect((await first.next()).value).toMatchObject({ type: 'text_delta' });
+
+    // The operator removes `bash`; a second turn arrives without the hub lease.
+    grant = ['read'];
+    const events: AgentEvent[] = [];
+    for await (const event of agents.chat({
+      agentId,
+      conversationId: 'sub_child',
+      text: 'overlapping',
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error' });
+    expect((events[0] as { error: Error }).error.message).toMatch(/still running/);
+    // It did NOT run on the wide backend...
+    expect(builtWith).toEqual([['read', 'bash']]);
+
+    // ...and, the point of the finding: the entry was not relabelled, so once
+    // the first turn finishes the next one rebuilds instead of matching.
+    release();
+    await drain(first);
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'after' }));
+    expect(builtWith).toEqual([['read', 'bash'], ['read']]);
+  });
+
   it('reuses the warm child entry when the grant is unchanged', async () => {
     let runtimeCalls = 0;
     const { agents, agentId } = makeChildAgents({

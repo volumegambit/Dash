@@ -736,8 +736,13 @@ export class SwarmCoordinator {
      * The children this call is waiting on: this turn's run, plus — for ids the
      * caller NAMED — the cross-turn registry. A detached background child is
      * not in the current run, and answering `[]` ("nothing to wait for") for
-     * one is the single answer that is wrong: it is the same child
-     * `findChild`, `checkWorkers` and `waitWorker` all resolve.
+     * one is the single answer that is wrong: it is the same child `findChild`
+     * and `checkWorkers` resolve.
+     *
+     * SCOPED to this conversation, like those two are (they read
+     * `childrenOf(conversationId)`): an id is a `sub_<ulid>` a model can
+     * repeat, and a caller must not be able to read another conversation's
+     * child report by naming it.
      */
     const referenced = (): Array<{
       workerId: string;
@@ -753,9 +758,11 @@ export class SwarmCoordinator {
       const seen = new Set(out.map((w) => w.workerId));
       for (const id of p.workerIds) {
         if (seen.has(id)) continue;
+        const handle = this.children.get(id);
         const snapshot =
-          this.children.get(id)?.snapshot() ??
-          this.childrenOf(conversationId).find((c) => c.subagentId === id);
+          handle?.parentConversationId === conversationId
+            ? handle.snapshot()
+            : this.childrenOf(conversationId).find((c) => c.subagentId === id);
         if (!snapshot) continue;
         out.push({
           workerId: snapshot.subagentId,
@@ -843,8 +850,11 @@ export class SwarmCoordinator {
     workerId: string,
     signal?: AbortSignal,
   ): Promise<ChildSnapshot> {
+    // Scoped to the conversation, like `findChild` / `checkWorkers`: an id
+    // belonging to a DIFFERENT conversation's child is not this caller's to
+    // read, however addressable it is in this process.
     const handle = this.children.get(workerId);
-    if (handle) {
+    if (handle?.parentConversationId === conversationId) {
       if (!TERMINAL_STATUSES.has(handle.status)) {
         // A FOREGROUND child belongs to the turn, so a closing run settles the
         // wait with whatever snapshot it has (the run cancels it a moment later

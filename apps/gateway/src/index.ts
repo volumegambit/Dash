@@ -73,6 +73,7 @@ import { safeStep } from './shutdown.js';
 import {
   buildChildDelegationSection,
   isSubagentsEnabled,
+  subagentCapsFromConfig,
   subagentMaxDepth,
 } from './subagent-config.js';
 import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
@@ -93,6 +94,7 @@ import {
   createChildBackend,
   createWorktreeCleanupHook,
 } from './subagent-wiring.js';
+import { childWorktreePath } from './subagent-worktree.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 /**
@@ -531,6 +533,14 @@ async function main() {
   const swarmCoordinator: SwarmCoordinator = new SwarmCoordinator({
     childDriver: childTurnDriver,
     reconstructChildSpec,
+    // Per-agent `subagents.max*` normally reach the coordinator through
+    // `attach({ caps })`. A resume can happen with no live parent turn, and
+    // falling back to the gateway defaults there would silently ignore every
+    // cap the operator set on the agent.
+    resolveCaps: (agentId) => {
+      const config = registry.get(agentId)?.config;
+      return config ? subagentCapsFromConfig(config) : undefined;
+    },
     // EventLogStore.append is synchronous (returns the assigned seq); the swarm
     // sink expects a Promise. Wrap so the coordinator's fire-and-forget
     // out-of-band append is type-correct and never throws into the loop.
@@ -721,7 +731,11 @@ async function main() {
      */
     childAttachOptions: (_agentId, conversationId) => {
       const spec = swarmCoordinator.childSpec(conversationId);
-      if (spec) return childAttachOverrides(spec);
+      if (spec) {
+        return childAttachOverrides(spec, (s) =>
+          childWorktreePath({ dataDir, agentName: s.agentName, childId: s.workerId }),
+        );
+      }
       const convo = conversationService.get(conversationId, { includeDeleted: true });
       if (convo?.kind !== 'subagent') return undefined;
       throw new Error(SPEC_LESS_CHILD_TURN(conversationId));

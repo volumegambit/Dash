@@ -241,6 +241,32 @@ describe('reconstructChildSpec', () => {
     );
   });
 
+  /**
+   * Round 2, item 2. `workspace` and the repo a worktree is CUT FROM are two
+   * different directories for a resumed isolated child: its `workspace` is
+   * already its own worktree path, and `git worktree add` has to run in the
+   * repo. Passing the worktree path as the repo is why a resumed isolated
+   * child whose worktree had been cleaned up died with WORKTREE_REQUIRES_GIT.
+   */
+  it("hands back the REPO an isolated child's worktree is cut from, not its worktree", () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_A', { isolation: 'worktree' });
+    conversations.updateSubagent('sub_A', {
+      info: { workspace: '/data/worktrees/Helper/sub_A' },
+    });
+    agents.set(AGENT_ID, config({ tools: agentTools, workspace: '/repo-new' }));
+
+    const rebuilt = reconstructChildSpec('sub_A', deps());
+    expect(rebuilt?.workspace).toBe('/data/worktrees/Helper/sub_A');
+    expect(rebuilt?.isolationSource).toBe('/repo-new');
+  });
+
+  it('leaves isolationSource unset for a child that was never isolated', () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_A');
+    expect(reconstructChildSpec('sub_A', deps())?.isolationSource).toBeUndefined();
+  });
+
   /** Review item 5: the operator's off switch has to reach a resumable child. */
   it('refuses to rebuild once the operator turns sub-agents off', () => {
     const parent = parentConversation();
@@ -290,6 +316,26 @@ describe('childAttachOverrides', () => {
     expect(overrides.orchestratorFallbackModels).toBeUndefined();
     expect('allowedModels' in overrides).toBe(true);
     expect(overrides.allowedModels).toBeUndefined();
+  });
+
+  /**
+   * Round 2 observation: a LIVE isolated child's spec still carries the PARENT's
+   * repo as its workspace (the worktree is minted later, by the runtime), so a
+   * grandchild spawned during its turn was sandboxed in the repo its parent was
+   * isolated FROM. The worktree path is deterministic, so the overrides can
+   * name it before it exists.
+   */
+  it("sandboxes a grandchild in the isolated parent's worktree, not the repo", () => {
+    const live = { ...spec, isolation: 'worktree' as const, workspace: '/repo' };
+    const overrides = childAttachOverrides(
+      live,
+      (s) => `/data/worktrees/${s.agentName}/${s.workerId}`,
+    );
+    expect(overrides.workspace).toBe('/data/worktrees/Helper/sub_A');
+  });
+
+  it('leaves a non-isolated child in its own workspace', () => {
+    expect(childAttachOverrides(spec, () => '/never').workspace).toBe('/repo');
   });
 
   it('sends an EMPTY MCP list for a child with no MCP grant (unset would inherit)', () => {
