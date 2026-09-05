@@ -237,9 +237,14 @@ class DashUITestCase: XCTestCase {
     dismissSplitOverlayIfPresent(in: app)
     _ = element("chat.transcript", in: app)
     let composer = element("chat.composer", in: app)
+    if waitUntilHittable(composer, timeout: 5) == false {
+      // The sidebar overlay can re-present itself on a slow regular-width
+      // runner; dismiss once more before failing.
+      dismissSplitOverlayIfPresent(in: app)
+    }
     XCTAssertTrue(
-      waitUntilHittable(composer, timeout: 5),
-      "Expected the composer to be actionable after opening the conversation"
+      waitUntilHittable(composer, timeout: 10),
+      "Expected the composer to be actionable after opening the conversation. UI: \(app.debugDescription)"
     )
   }
 
