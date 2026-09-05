@@ -1,24 +1,22 @@
 import type { FlatSkillFile } from '@dash/agent';
 import {
+  type ChildSpec,
+  type ResolvedSubagentType,
   type SubagentTypeResolver,
   type SwarmCoordinator,
   type SwarmExtraTool,
   createAgentTools,
+  createStaticResolver,
   createSwarmTools,
   parentBuiltinTools,
 } from '@dash/swarm';
 import type { AgentChatCoordinatorSwarm } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 import { filterPluginsByAgent } from './plugin-filtering.js';
-import { isSubagentsEnabled } from './subagent-config.js';
+import { isSubagentsEnabled, subagentMaxDepth } from './subagent-config.js';
 
-/**
- * A top-level orchestrator is depth 0 and its children are depth 1.
- * `maxDepth` is the coordinator-side ceiling until **Task C3** owns nesting
- * (`subagents.maxDepth` is validated and persisted but not yet enforced).
- */
+/** A top-level orchestrator is depth 0 and its children are depth 1. */
 const ORCHESTRATOR_DEPTH = 0;
-const MAX_DEPTH = 3;
 
 export interface SubagentExtraToolsOptions {
   coordinator: SwarmCoordinator;
@@ -124,7 +122,11 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
         // MCP-carrying spawn.
         mcpTools: opts.parentMcpTools?.() ?? [],
         depth: ORCHESTRATOR_DEPTH,
-        maxDepth: MAX_DEPTH,
+        // The CONFIGURED ceiling, not a constant. `resolveChildTools` uses it
+        // to decide whether a child is handed `agent` / `send_message` at all,
+        // and the coordinator refuses a spawn past the same number — so an
+        // operator's `subagents.maxDepth` is both advertised and enforced.
+        maxDepth: subagentMaxDepth(opts.agentConfig),
       }),
       parentModel: () => opts.parentModel(),
       // No config surface for `subagents.modelAliases` yet: an alias in a
@@ -134,6 +136,60 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       listSkills: opts.listSkills,
     }),
   ];
+}
+
+/** What {@link createChildSpawnTools} needs to arm a child for nesting. */
+export interface ChildSpawnToolsOptions {
+  coordinator: SwarmCoordinator;
+  /** The REGISTRY agent id — the child belongs to the same agent as its parent. */
+  agentId: string;
+  /** The child's resolved spec: its grant, its depth, its conversation. */
+  spec: ChildSpec;
+  /** The configured nesting ceiling for this agent. */
+  maxDepth: number;
+  /** The agent's full roster; narrowed here to the child's `spawnableTypes`. */
+  types: ResolvedSubagentType[];
+  /** The child backend's skill discovery, for a definition that preloads skills. */
+  listSkills?: () => Promise<Array<{ name: string; content: string }>>;
+}
+
+/**
+ * The `agent` / `send_message` pair a CHILD gets, so nesting works (design
+ * §5.2). Empty in two cases, and both are load-bearing:
+ *
+ * 1. The child's resolved grant said no (`canSpawn` false — its definition
+ *    denied `agent`, or the parent did not hold it either).
+ * 2. The child has ALREADY reached the ceiling. A depth-`maxDepth` child is
+ *    not handed tools it would only be refused for using: the coordinator
+ *    throws `depth limit reached` on the spawn, and advertising a tool whose
+ *    every call fails is how a model burns a turn discovering the limit.
+ *
+ * The roster is narrowed to `spawnableTypes` so `agent(a, b)` in a definition
+ * means what it says, and the parent context is the CHILD's own grant — a
+ * grandchild is bounded by its parent, never by the top-level agent.
+ */
+export function createChildSpawnTools(opts: ChildSpawnToolsOptions): SwarmExtraTool[] {
+  const depth = opts.spec.depth ?? 1;
+  if (!opts.spec.canSpawn || depth >= opts.maxDepth) return [];
+  const allowed = opts.spec.spawnableTypes;
+  const types =
+    allowed === undefined ? opts.types : opts.types.filter((t) => allowed.includes(t.name));
+  return createAgentTools({
+    coordinator: opts.coordinator,
+    agentId: opts.agentId,
+    conversationId: () => opts.spec.childConversationId,
+    resolver: createStaticResolver(types),
+    backgroundMode: 'turn-scoped',
+    parentContext: () => ({
+      builtinTools: opts.spec.tools,
+      mcpTools: opts.spec.mcpTools ?? [],
+      depth,
+      maxDepth: opts.maxDepth,
+    }),
+    parentModel: () => opts.spec.model,
+    modelAliases: () => ({}),
+    listSkills: opts.listSkills,
+  });
 }
 
 /**

@@ -54,7 +54,13 @@ export type TurnOutcome = 'completed' | 'cancelled' | 'failed';
  */
 export interface TurnObserver {
   onEvent(turn: ObservedTurn, event: AgentEvent): void;
-  onFinish(turn: ObservedTurn, outcome: TurnOutcome): void;
+  /**
+   * `error` carries the failure text of a `'failed'` turn. `runTurn` throws on
+   * an `error` event BEFORE it reaches `onEvent`, so without it an observer
+   * would know a turn failed and never learn why — and a sub-agent's report is
+   * exactly that text.
+   */
+  onFinish(turn: ObservedTurn, outcome: TurnOutcome, error?: string): void;
 }
 
 export interface StartSystemTurnInput {
@@ -283,14 +289,14 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     }
   };
 
-  const notifyFinish = (live: LiveTurn, outcome: TurnOutcome): void => {
+  const notifyFinish = (live: LiveTurn, outcome: TurnOutcome, error?: string): void => {
     if (live.finishNotified) return;
     live.finishNotified = true;
     if (observers.size === 0) return;
     const turn = observedTurn(live);
     for (const observer of [...observers]) {
       try {
-        observer.onFinish(turn, outcome);
+        observer.onFinish(turn, outcome, error);
       } catch (error) {
         console.error('[resumable-chat-hub] turn observer onFinish threw', error);
       }
@@ -376,16 +382,17 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       if (!live.cancelled) finish(live, 'completed');
     } catch (error) {
       if (!live.cancelled) {
+        const message = error instanceof Error ? error.message : String(error);
         const persisted = conversations.finishTurn({
           conversationId: live.conversationId,
           turnId: live.turnId,
           outcome: 'failed',
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
           retryable: false,
         });
         live.terminal = true;
         broadcast(live, frameFromPersisted(live, persisted));
-        notifyFinish(live, 'failed');
+        notifyFinish(live, 'failed', message);
         options.onChanged?.(persisted.conversation);
       }
     } finally {

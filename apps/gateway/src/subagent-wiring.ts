@@ -199,13 +199,23 @@ export function buildChildAgentConfig(spec: WorkerSpec, deps: ChildBackendDeps):
 }
 
 /**
- * Absolute session dir for a single worker:
- * `<dataDir>/sessions/<agentName>/.swarm/<runId>/<workerId>`. The `.swarm`
- * segment keeps worker sessions out of the agent's normal conversation
- * listing while still living under the agent's session tree.
+ * Absolute pi session dir for one child:
+ * `<dataDir>/sessions/<agentName>/<childConversationId>` (design §7.4).
+ *
+ * The same shape a USER conversation gets, because a child now IS a
+ * conversation — that is what lets its transcript be replayed, addressed by
+ * id, and re-warmed on resume through the ordinary path. The `.swarm/<runId>/`
+ * namespace this replaces is no longer written; existing `.swarm/` directories
+ * are left alone rather than migrated (they belong to runs that are over).
+ *
+ * `spec.workerId` IS the child conversation id — the coordinator mints one
+ * `sub_<ulid>` and uses it for both.
  */
-export function workerSessionDir(dataDir: string, spec: WorkerSpec): string {
-  return resolve(dataDir, 'sessions', spec.agentName, '.swarm', spec.runId, spec.workerId);
+export function childSessionDir(
+  dataDir: string,
+  spec: Pick<WorkerSpec, 'agentName' | 'workerId'>,
+): string {
+  return resolve(dataDir, 'sessions', spec.agentName, spec.workerId);
 }
 
 /**
@@ -243,7 +253,7 @@ export function buildChildBackendOptions(
     config: buildChildAgentConfig(spec, deps),
     providerApiKeysSource: deps.credentialProvider,
     logger: deps.logger,
-    sessionDir: workerSessionDir(deps.dataDir, spec),
+    sessionDir: childSessionDir(deps.dataDir, spec),
     // managedSkillsDir — NEVER: read-only over skills (see the table above).
     mcpManager: hasMcp ? deps.mcpManager : undefined,
     // mcpConfigStore / mcpAgentContext — NEVER: no MCP management for a child.
@@ -257,43 +267,65 @@ export function buildChildBackendOptions(
   };
 }
 
+/** A constructed, started child backend plus the config it was built from. */
+export interface ChildRuntime {
+  backend: PiAgentBackend;
+  /** The child's FIXED config; the pool hands it back on every turn. */
+  config: DashAgentConfig;
+  /** Where the child actually runs — its own worktree when it was isolated. */
+  workspace: string;
+}
+
 /**
- * Build the gateway's swarm `WorkerFactory`. Each call spawns a child
- * `PiAgentBackend` from `buildChildBackendOptions`, starts it on the child's
- * shared workspace, and wraps it in a `DashAgent` whose config resolver returns
- * the child's fixed model / preamble / tools. The returned `WorkerBackend`
- * adapts `DashAgent.chat` to the single-message worker turn contract and
- * delegates abort/stop straight to the backend.
+ * Build and start ONE child's `PiAgentBackend` (design §6.4, §7.1). This is
+ * what the gateway's pool backend factory calls when the conversation it was
+ * asked for has `kind: 'subagent'`: the child rides the SHARED
+ * `ConversationPool` like any conversation, and only its construction differs.
+ *
+ * Isolation happens FIRST, before anything else is constructed:
+ * `createChildWorktree` throws on a non-git workspace, and a child that cannot
+ * be isolated must not be started sharing the parent's directory instead.
+ * Everything downstream — `config.workspace`, the memory read, the tool sandbox
+ * pi enforces — derives from the returned path, so there is no second place
+ * that could still point at the parent.
+ */
+export async function createChildBackend(
+  spec: WorkerSpec,
+  deps: ChildBackendDeps,
+): Promise<ChildRuntime> {
+  const workspace =
+    spec.isolation === 'worktree'
+      ? (
+          await createChildWorktree({
+            workspace: spec.workspace,
+            dataDir: deps.dataDir,
+            agentName: spec.agentName,
+            childId: spec.workerId,
+          })
+        ).path
+      : spec.workspace;
+  const options = buildChildBackendOptions({ ...spec, workspace }, deps);
+  await mkdir(childSessionDir(deps.dataDir, spec), { recursive: true });
+
+  const backend = PiAgentBackend.fromOptions(options);
+  await backend.start(workspace);
+  return { backend, config: options.config, workspace };
+}
+
+/**
+ * Build the gateway's swarm `WorkerFactory` — the IN-PROCESS child transport.
+ * Superseded by the conversation-backed child driver (a child is a real
+ * conversation now) and retired with `WorkerFactory` itself in Task C4; kept so
+ * an embedder without a conversation store still has a working child.
  */
 export function createGatewayWorkerFactory(deps: ChildBackendDeps): WorkerFactory {
   return async (spec: WorkerSpec): Promise<WorkerBackend> => {
-    // Isolation FIRST, before anything is constructed: `createChildWorktree`
-    // throws on a non-git workspace, and a child that cannot be isolated must
-    // not be started sharing the parent's directory instead. Everything
-    // downstream — the child's config.workspace, its memory read, the tool
-    // sandbox pi enforces — is then derived from the isolated path, so there is
-    // no second place that could still point at the parent.
-    const workspace =
-      spec.isolation === 'worktree'
-        ? (
-            await createChildWorktree({
-              workspace: spec.workspace,
-              dataDir: deps.dataDir,
-              agentName: spec.agentName,
-              childId: spec.workerId,
-            })
-          ).path
-        : spec.workspace;
-    const options = buildChildBackendOptions({ ...spec, workspace }, deps);
-    await mkdir(workerSessionDir(deps.dataDir, spec), { recursive: true });
-
-    const backend = PiAgentBackend.fromOptions(options);
-    await backend.start(workspace);
+    const { backend, config, workspace } = await createChildBackend(spec, deps);
 
     // Static resolver: a child's model / preamble / tools / memory policy are
     // fixed for the life of the spawn, so hand back the SAME config object the
     // backend was constructed with on every turn — the two cannot disagree.
-    const agent = new DashAgent(backend, async () => options.config);
+    const agent = new DashAgent(backend, async () => config);
 
     return {
       // Where the child ACTUALLY ran. The swarm surfaces it in the worker

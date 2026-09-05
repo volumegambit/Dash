@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@dash/agent';
 import {
+  type ChildSpec,
   type CreateAgentToolsOptions,
   SwarmCoordinator,
   type WorkerBackend,
@@ -10,8 +11,10 @@ import {
   parentBuiltinTools,
 } from '@dash/swarm';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
+import { subagentCapsFromConfig } from './subagent-config.js';
 import {
   childSkillWiring,
+  createChildSpawnTools,
   createSubagentExtraTools,
   createSwarmGate,
   orchestratorMcpToolNames,
@@ -326,5 +329,131 @@ describe('childSkillWiring', () => {
       paths: [],
       commandFiles: [],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The nesting ceiling (Task C3). `subagents.maxDepth` was validated and
+// persisted by Task A6 and left inert; these are the two places it now bites.
+// ---------------------------------------------------------------------------
+
+function childSpec(over: Partial<ChildSpec> = {}): ChildSpec {
+  return {
+    agentId: 'a',
+    agentName: 'orch',
+    runId: 'parent-turn-1',
+    workerId: 'sub_00000000000000000000000001',
+    childConversationId: 'sub_00000000000000000000000001',
+    parentConversationId: 'c',
+    parentTurnId: 'parent-turn-1',
+    role: 'scout',
+    brief: 'b',
+    model: 'orch-model',
+    workspace: '/repo',
+    tools: ['read'],
+    extraTools: [],
+    subagentType: 'general-purpose',
+    canSpawn: true,
+    depth: 1,
+    ...over,
+  };
+}
+
+describe('subagents.maxDepth', () => {
+  it('reaches the coordinator as a cap, and 0 survives the mapping', () => {
+    expect(subagentCapsFromConfig(config())).not.toHaveProperty('maxDepth');
+    expect(subagentCapsFromConfig(config({ subagents: { maxDepth: 2 } })).maxDepth).toBe(2);
+    // `0` is "may not nest at all" and must not be dropped as falsy.
+    expect(subagentCapsFromConfig(config({ subagents: { maxDepth: 0 } })).maxDepth).toBe(0);
+  });
+
+  it('is the ceiling the agent tool advertises, not a constant 3', () => {
+    setup();
+    const opts = seenAgentToolOptions[0] as CreateAgentToolsOptions;
+    expect(opts.parentContext?.().maxDepth).toBe(3);
+
+    seenAgentToolOptions.length = 0;
+    const coordinator = new SwarmCoordinator({
+      workerFactory: () => Promise.resolve(new IdleBackend()),
+    });
+    createSubagentExtraTools({
+      coordinator,
+      agentId: 'a',
+      agentConfig: config({ subagents: { maxDepth: 1 } }),
+      resolver: createStaticResolver(builtinSubagentTypes()),
+      conversationId: () => 'c',
+      parentTools: () => undefined,
+      parentModel: () => 'orch-model',
+    });
+    expect((seenAgentToolOptions[0] as CreateAgentToolsOptions).parentContext?.().maxDepth).toBe(1);
+  });
+});
+
+describe('createChildSpawnTools', () => {
+  const coordinator = () =>
+    new SwarmCoordinator({ workerFactory: () => Promise.resolve(new IdleBackend()) });
+
+  it('arms a child below the ceiling with agent + send_message', () => {
+    const tools = createChildSpawnTools({
+      coordinator: coordinator(),
+      agentId: 'a',
+      spec: childSpec({ depth: 1 }),
+      maxDepth: 3,
+      types: builtinSubagentTypes(),
+    });
+    expect(tools.map((t) => t.name)).toEqual(['agent', 'send_message']);
+  });
+
+  it('gives a child AT the ceiling no spawn tools at all', () => {
+    const tools = createChildSpawnTools({
+      coordinator: coordinator(),
+      agentId: 'a',
+      spec: childSpec({ depth: 3 }),
+      maxDepth: 3,
+      types: builtinSubagentTypes(),
+    });
+    expect(tools).toEqual([]);
+  });
+
+  it('gives a child whose grant denied spawning no spawn tools', () => {
+    const tools = createChildSpawnTools({
+      coordinator: coordinator(),
+      agentId: 'a',
+      spec: childSpec({ canSpawn: false }),
+      maxDepth: 3,
+      types: builtinSubagentTypes(),
+    });
+    expect(tools).toEqual([]);
+  });
+
+  it("bounds the child's own context by the CHILD's grant and depth", () => {
+    seenAgentToolOptions.length = 0;
+    createChildSpawnTools({
+      coordinator: coordinator(),
+      agentId: 'a',
+      spec: childSpec({ depth: 2, tools: ['read', 'grep'], mcpTools: ['github__pr'] }),
+      maxDepth: 3,
+      types: builtinSubagentTypes(),
+    });
+    const opts = seenAgentToolOptions[0] as CreateAgentToolsOptions;
+    expect(opts.parentContext?.()).toEqual({
+      builtinTools: ['read', 'grep'],
+      mcpTools: ['github__pr'],
+      depth: 2,
+      maxDepth: 3,
+    });
+  });
+
+  it('narrows the roster to the types the definition allowed', () => {
+    seenAgentToolOptions.length = 0;
+    createChildSpawnTools({
+      coordinator: coordinator(),
+      agentId: 'a',
+      spec: childSpec({ spawnableTypes: ['Explore'] }),
+      maxDepth: 3,
+      types: builtinSubagentTypes(),
+    });
+    const opts = seenAgentToolOptions[0] as CreateAgentToolsOptions;
+    expect(opts.resolver.list().map((t) => t.name)).toEqual(['Explore']);
   });
 });

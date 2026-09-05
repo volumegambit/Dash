@@ -86,6 +86,17 @@ export function buildDelegationSection(
 }
 
 /**
+ * The nesting ceiling for this agent's descendants. A direct child is depth 1,
+ * so the default 3 admits depths 1-3; `0` means "may not nest at all" and is a
+ * legitimate configured value, which is why this cannot be a `||` fallback.
+ */
+export const DEFAULT_SUBAGENT_MAX_DEPTH = 3;
+
+export function subagentMaxDepth(config: GatewayAgentConfig): number {
+  return config.subagents?.maxDepth ?? DEFAULT_SUBAGENT_MAX_DEPTH;
+}
+
+/**
  * Map the agent's config onto the coordinator's `SwarmCaps` overrides. The
  * `subagents` names win over their `swarm` equivalents when both are set; an
  * absent field is LEFT OUT entirely (not set to `undefined`) so the
@@ -108,6 +119,9 @@ export function subagentCapsFromConfig(config: GatewayAgentConfig): Partial<Swar
   if (swarm?.maxSteersPerWorker !== undefined) {
     caps.maxSteersPerWorker = swarm.maxSteersPerWorker;
   }
+  // The nesting ceiling the coordinator ENFORCES. `0` is meaningful, so the
+  // check is on `undefined` rather than falsiness.
+  if (subagents?.maxDepth !== undefined) caps.maxDepth = subagents.maxDepth;
   return caps;
 }
 

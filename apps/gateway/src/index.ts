@@ -35,6 +35,7 @@ import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
 import { mountChatWs } from './chat-ws.js';
+import { createChildTurnDriver } from './child-turn-driver.js';
 import {
   parseFlags,
   resolveSwarmConfig,
@@ -67,18 +68,23 @@ import {
   reloadPluginsUnderMutex,
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
-import { createResumableChatHub } from './resumable-chat-hub.js';
+import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { isSubagentsEnabled } from './subagent-config.js';
+import { isSubagentsEnabled, subagentMaxDepth } from './subagent-config.js';
 import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
 import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import {
   childSkillWiring,
+  createChildSpawnTools,
   createSubagentExtraTools,
   createSwarmGate,
   orchestratorMcpToolNames,
 } from './subagent-tools.js';
-import { createGatewayWorkerFactory, createWorktreeCleanupHook } from './subagent-wiring.js';
+import {
+  type ChildBackendDeps,
+  createChildBackend,
+  createWorktreeCleanupHook,
+} from './subagent-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 async function main() {
@@ -444,32 +450,54 @@ async function main() {
       resolve(dataDir, 'skills', config.name),
     );
   };
+  /**
+   * Everything a child's backend is built from — the credential source, the
+   * data dir, the narrowed MCP/skill/hook wiring. Read by the pool's child
+   * branch below, which is now the ONLY place the gateway constructs a child
+   * (`createGatewayWorkerFactory`, the in-process transport, is unused here and
+   * goes away with `WorkerFactory` in Task C4).
+   */
+  const childBackendDeps: ChildBackendDeps = {
+    credentialProvider: swarmCredentialProvider,
+    dataDir,
+    // No logger: the gateway's StructuredLogger (from @dash/logging) is not
+    // assignable to @dash/agent's Logger (different `error` arity), and the
+    // chat-path PiAgentBackend is likewise constructed with an undefined
+    // logger — children stay consistent with that.
+    //
+    // The shared MCP manager. `buildChildBackendOptions` hands it on ONLY to
+    // a child whose resolved grant names MCP tools, and narrows that child to
+    // exactly those tools (assignedMcpServers + mcpToolAllowlist).
+    mcpManager,
+    // Plugin wiring read LAZILY through getters: a reload reassigns
+    // `wiringState`, and a child spawned afterwards must observe the new hook
+    // engine / model catalog. Capturing either into a boot-time const would
+    // make reload a silent no-op for children.
+    get pluginModelCatalog() {
+      return wiringState.pluginModelCatalog;
+    },
+    get hookRunner() {
+      return wiringState.hookEngine;
+    },
+    getParentSkillDirs: (spec) => parentSkillWiring(spec).paths,
+    getExtraSkillFiles: (spec) => parentSkillWiring(spec).commandFiles,
+  };
+
+  /**
+   * The child transport (design §7.1): a child is a real conversation whose
+   * turns run through the SAME `ResumableChatHub` as a user's. The hub is
+   * constructed later in this file, so it is read through a late-bound getter
+   * and its observer is attached once it exists.
+   */
+  const hubRef: { current?: ResumableChatHub } = {};
+  const childTurnDriver = createChildTurnDriver({
+    conversations: conversationService,
+    hub: () => hubRef.current,
+    warn: (message) => logger.warn(message),
+  });
+
   const swarmCoordinator = new SwarmCoordinator({
-    workerFactory: createGatewayWorkerFactory({
-      credentialProvider: swarmCredentialProvider,
-      dataDir,
-      // No logger: the gateway's StructuredLogger (from @dash/logging) is not
-      // assignable to @dash/agent's Logger (different `error` arity), and the
-      // chat-path PiAgentBackend is likewise constructed with an undefined
-      // logger — children stay consistent with that.
-      //
-      // The shared MCP manager. `buildChildBackendOptions` hands it on ONLY to
-      // a child whose resolved grant names MCP tools, and narrows that child to
-      // exactly those tools (assignedMcpServers + mcpToolAllowlist).
-      mcpManager,
-      // Plugin wiring read LAZILY through getters: a reload reassigns
-      // `wiringState`, and a child spawned afterwards must observe the new hook
-      // engine / model catalog. Capturing either into a boot-time const would
-      // make reload a silent no-op for children.
-      get pluginModelCatalog() {
-        return wiringState.pluginModelCatalog;
-      },
-      get hookRunner() {
-        return wiringState.hookEngine;
-      },
-      getParentSkillDirs: (spec) => parentSkillWiring(spec).paths,
-      getExtraSkillFiles: (spec) => parentSkillWiring(spec).commandFiles,
-    }),
+    childDriver: childTurnDriver,
     // EventLogStore.append is synchronous (returns the assigned seq); the swarm
     // sink expects a Promise. Wrap so the coordinator's fire-and-forget
     // out-of-band append is type-correct and never throws into the loop.
@@ -570,6 +598,82 @@ async function main() {
         return findCatalogPattern(catalog, modelId)?.tier;
       }
       return undefined;
+    },
+    /**
+     * Children ride the SHARED pool (design §7.1, revised): the pool asks for a
+     * backend the same way it does for a user conversation, and this branch is
+     * the only thing that makes the answer a definition-driven child backend
+     * built from the child's resolved spec instead of the agent's normal one.
+     *
+     * The spec comes from the coordinator, which holds it for as long as the
+     * child is live. A child conversation with no live spec is one this process
+     * did not spawn (a row left by a previous gateway); resuming it rebuilds
+     * the spec from its definition, which is Task C4's job — until then this
+     * fails loudly rather than silently warming the PARENT's backend on the
+     * child's conversation.
+     */
+    childRuntime: async (agentId, conversationId) => {
+      // `includeDeleted`: a cascading parent delete can tombstone a child
+      // mid-turn, and a tombstoned child must still be recognised AS a child —
+      // falling through would warm the agent's normal backend on the child's
+      // conversation id, which is the one thing this branch exists to prevent.
+      const convo = conversationService.get(conversationId, { includeDeleted: true });
+      if (convo?.kind !== 'subagent') return undefined;
+      const spec = swarmCoordinator.childSpec(conversationId);
+      if (!spec) {
+        throw new Error(
+          `sub-agent conversation ${conversationId} has no live spec (resume is not wired yet)`,
+        );
+      }
+      // Nesting: a child below the ceiling gets its OWN `agent`/`send_message`,
+      // bounded by its own grant. `subagentRosters` is the same registry the
+      // parent's roster came from, narrowed to the child's `spawnableTypes`.
+      const parentConfig = registry.get(agentId)?.config;
+      const spawnTools = parentConfig
+        ? createChildSpawnTools({
+            coordinator: swarmCoordinator,
+            agentId,
+            spec,
+            maxDepth: subagentMaxDepth(parentConfig),
+            types: (await subagentRosters.resolverFor(agentId)).list(),
+          })
+        : [];
+      const runtime = await createChildBackend(
+        { ...spec, extraTools: [...spec.extraTools, ...spawnTools] },
+        childBackendDeps,
+      );
+      // Record WHERE it ran. For an isolated child this is the only pointer a
+      // user ever gets to the worktree it left work in, and the parent's report
+      // reads it back out of `subagent_meta`. Never fatal: a cascading parent
+      // delete can tombstone the row between the spawn and here, and losing the
+      // path is not worth failing a turn that is otherwise ready to run.
+      try {
+        conversationService.updateSubagent(conversationId, {
+          info: { workspace: runtime.workspace },
+        });
+      } catch (err) {
+        logger.warn(
+          `[subagents] could not record the workspace of ${conversationId}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return runtime;
+    },
+    // A nested spawn is validated against the CHILD's grant, not the top-level
+    // agent's — otherwise a grandchild could hold tools its parent never had.
+    childAttachOptions: (_agentId, conversationId) => {
+      const spec = swarmCoordinator.childSpec(conversationId);
+      if (!spec) return undefined;
+      return {
+        orchestratorModel: spec.model,
+        orchestratorTools: spec.tools,
+        // Unset means NONE (fail-closed), so an empty list is what a child with
+        // no MCP grant must send — omitting the key would inherit the agent's.
+        orchestratorMcpTools: spec.mcpTools ?? [],
+        // The child's workspace: its own worktree when it was isolated, so a
+        // grandchild is sandboxed where its parent actually ran.
+        workspace: spec.workspace,
+      };
     },
     createBackend: async (agentConfig, conversationId, agentId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
@@ -828,6 +932,11 @@ async function main() {
     swarmCoordinator,
     onChanged: emitConversationChanged,
   });
+  // Close the child transport's late binding: from here a spawn can start a
+  // real child turn, and the coordinator observes those turns' events and
+  // completions through the hub.
+  hubRef.current = resumableChatHub;
+  childTurnDriver.attachObserver();
 
   // --- Plugin hot-reload trigger ---
   //

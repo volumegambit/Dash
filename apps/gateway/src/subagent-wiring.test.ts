@@ -23,10 +23,10 @@ import {
   type ChildBackendDeps,
   buildChildBackendOptions,
   buildWorkerPreamble,
+  childSessionDir,
   cleanupWorktreeForSpec,
   createGatewayWorkerFactory,
   createWorktreeCleanupHook,
-  workerSessionDir,
 } from './subagent-wiring.js';
 import { WORKTREE_REQUIRES_GIT, childWorktreePath } from './subagent-worktree.js';
 
@@ -296,12 +296,13 @@ describe('createGatewayWorkerFactory config resolver', () => {
   });
 });
 
-describe('workerSessionDir', () => {
-  it('resolves to sessions/<agentName>/.swarm/<runId>/<workerId>', () => {
+describe('childSessionDir', () => {
+  it('resolves to sessions/<agentName>/<childConversationId> — no .swarm namespace', () => {
     const spec = makeSpec();
-    expect(workerSessionDir('/data/dir', spec)).toBe(
-      resolve('/data/dir', 'sessions', 'researcher', '.swarm', 'run-abc', 'w-01'),
+    expect(childSessionDir('/data/dir', spec)).toBe(
+      resolve('/data/dir', 'sessions', 'researcher', 'w-01'),
     );
+    expect(childSessionDir('/data/dir', spec)).not.toContain('.swarm');
   });
 });
 
@@ -320,7 +321,7 @@ describe('buildChildBackendOptions (definition-driven path)', () => {
     const options = buildChildBackendOptions(spec, deps);
     expect(options.providerApiKeysSource).toBe(deps.credentialProvider);
     expect(options.logger).toBe(deps.logger);
-    expect(options.sessionDir).toBe(workerSessionDir(deps.dataDir, spec));
+    expect(options.sessionDir).toBe(childSessionDir(deps.dataDir, spec));
   });
 
   it('forwards ONLY spec.extraTools as the backend extra tools', () => {

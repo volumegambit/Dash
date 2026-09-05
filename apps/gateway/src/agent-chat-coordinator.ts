@@ -103,6 +103,42 @@ export interface AgentChatCoordinatorOptions {
    * catalog reload — is reflected without a pool eviction.
    */
   modelTier?: (model: string) => number | undefined;
+  /**
+   * The child runtime for a `kind: 'subagent'` conversation, or `undefined`
+   * for an ordinary one. Children ride the SHARED `ConversationPool` (design
+   * §7.1): the pool asks for a backend exactly as it does for a user
+   * conversation, and only THIS hook decides that the answer is a
+   * definition-driven child backend instead of the agent's normal one. Routing
+   * them through the pool is what removes a second backend-ownership path and
+   * makes nesting fall out of the ordinary `chat()` merge wrapper.
+   *
+   * The backend it returns is already STARTED on `workspace` (which may be the
+   * child's own worktree), and `config` is FIXED for the child's life — the
+   * agent's live registry config would be the wrong prompt, model and tools.
+   */
+  childRuntime?: (
+    agentId: string,
+    conversationId: string,
+  ) => Promise<{ backend: AgentBackend; config: DashAgentConfig; workspace: string } | undefined>;
+  /**
+   * Per-turn `attach()` overrides for a child conversation: the child's OWN
+   * model, tool grant, MCP grant and workspace. Without them a nested spawn
+   * would be validated against the top-level agent's grant, so a grandchild
+   * could hold tools its parent was never given.
+   */
+  childAttachOptions?: (
+    agentId: string,
+    conversationId: string,
+  ) => Partial<AgentChatAttachOverrides> | undefined;
+}
+
+/** The `attach()` fields a child turn overrides. See `childAttachOptions`. */
+export interface AgentChatAttachOverrides {
+  orchestratorModel: string;
+  orchestratorFallbackModels?: string[];
+  orchestratorTools?: string[];
+  orchestratorMcpTools?: string[];
+  workspace?: string;
 }
 
 export interface ChatRequest {
@@ -293,6 +329,18 @@ export function createAgentChatCoordinator(
     backendFactory: async (agentId, conversationId) => {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      // A sub-agent conversation gets its own definition-driven backend, built
+      // and started by the caller (it owns worktree isolation and the child's
+      // session dir). Everything else about the pool entry — pinning,
+      // eviction, LRU — is identical to a user conversation's.
+      const child = await options.childRuntime?.(agentId, conversationId);
+      if (child) {
+        registry.setActive(agentId);
+        return {
+          backend: child.backend,
+          agent: new DashAgent(child.backend, async () => child.config),
+        };
+      }
       // Thread the registry `agentId` (not `entry.config.name`) into the
       // factory: it is the key the pool and the SwarmCoordinator address a turn
       // by, so swarm-tool injection must use it to stay consistent with the
@@ -452,6 +500,10 @@ export function createAgentChatCoordinator(
         // Workers sandbox to the orchestrator's workspace (not the gateway's
         // process cwd). Absent → spawnWorker falls back to process.cwd().
         workspace: entry.config.workspace,
+        // A CHILD's turn spawning grandchildren is bounded by the CHILD's own
+        // grant, not the top-level agent's. Applied last so it wins over the
+        // registry reads above; absent for an ordinary conversation.
+        ...(options.childAttachOptions?.(request.agentId, request.conversationId) ?? {}),
       });
 
       const gen = poolEntry.agent.chat(
