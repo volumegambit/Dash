@@ -61,6 +61,7 @@ import {
   resultSummary,
   summarize,
   toolLabel,
+  toolNamespace,
   truncate,
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
@@ -490,7 +491,11 @@ function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
   );
 }
 
-function ToolBlock({
+// Exported for the dev-only tool-card gallery
+// (`src/renderer/gallery.html`). ToolBlock takes plain props and touches no
+// store or IPC, so it renders standalone — which is what finally makes this
+// client's tool rows checkable from a rendered screen rather than assertions.
+export function ToolBlock({
   name,
   input,
   result,
@@ -522,6 +527,9 @@ function ToolBlock({
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
   const outcome = resultSummary(name, result, isError, toolDetails);
+  // Without this an MCP tool lost its server entirely: `linear__search_issues`
+  // rendered as just "Search Issues", which is ambiguous across servers.
+  const namespace = toolNamespace(name);
   const normalizedName = name === 'read_file' ? 'read' : name;
   const isBash = normalizedName === 'bash' || name === 'execute_command';
   const isWrite = normalizedName === 'write' || name === 'write_file';
@@ -621,9 +629,16 @@ function ToolBlock({
         ) : (
           <Circle size={8} className="shrink-0 text-green fill-green mr-1.5" />
         )}
+        {namespace && (
+          <span className="shrink-0 font-mono text-muted opacity-70">{namespace}&nbsp;·&nbsp;</span>
+        )}
         <span className="shrink-0 font-mono">{toolLabel(name)}</span>
         {summaryNode}
-        {outcome && (
+        {/* Only while collapsed, matching web and iOS. Expanded, the body
+            below shows the result itself, so a failed card printed its error
+            twice — right-aligned in the header and again underneath. Seen in
+            the gallery, which is the first rendered look this client has had. */}
+        {outcome && !open && (
           <span
             className={`ml-auto shrink-0 pl-3 ${isError ? 'text-red' : 'text-muted opacity-75'}`}
           >

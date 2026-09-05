@@ -631,6 +631,45 @@ describe('MessageBubble tool rows (tool-use UX 2026-09-05)', () => {
     expect(container.textContent).toContain('2 matches');
   });
 
+  it("shows a failed call's error once, not in the header too", () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'bash', input: { command: 'nope' } },
+          {
+            type: 'tool_result',
+            id: 't1',
+            name: 'bash',
+            content: 'command not found',
+            isError: true,
+          },
+        ])}
+      />,
+    );
+    // Expanded by default, so the outcome is hidden and only the body shows it.
+    const occurrences = (container.textContent ?? '').split('command not found').length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('shows an MCP tool as its server plus a readable name', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'tool_use_start',
+            id: 't1',
+            name: 'linear__search_issues',
+            input: { query: 'x' },
+          },
+          { type: 'tool_result', id: 't1', name: 'linear__search_issues', content: 'DASH-1' },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('Linear');
+    expect(container.textContent).toContain('Search Issues');
+    expect(container.textContent).not.toContain('linear__search_issues');
+  });
+
   it('opens a failed tool call without a click', () => {
     const { container } = render(
       <MessageBubble
