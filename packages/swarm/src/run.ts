@@ -171,6 +171,19 @@ export class SwarmRun {
     this.order.push(handle.workerId);
   }
 
+  /**
+   * Un-adopt a child whose registration failed. `adopt` has already put it in
+   * `handles`/`order`, so without this the phantom stays in the run: the
+   * coordinator's `terminalizePhantom` emits one `worker_done` for it and the
+   * run's later `cancelAll` emits a SECOND for the same id, on top of a
+   * phantom row in every `snapshot()`.
+   */
+  forget(workerId: string): void {
+    this.handles.delete(workerId);
+    const index = this.order.indexOf(workerId);
+    if (index >= 0) this.order.splice(index, 1);
+  }
+
   /** Fires `onWorkerTerminal`; the coordinator wires this to a child's terminal. */
   noteTerminal(): void {
     this.onWorkerTerminal?.(this);

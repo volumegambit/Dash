@@ -70,7 +70,11 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { isSubagentsEnabled, subagentMaxDepth } from './subagent-config.js';
+import {
+  buildChildDelegationSection,
+  isSubagentsEnabled,
+  subagentMaxDepth,
+} from './subagent-config.js';
 import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
 import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import {
@@ -86,6 +90,15 @@ import {
   createWorktreeCleanupHook,
 } from './subagent-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
+
+/**
+ * The one refusal message for a turn on a sub-agent conversation this process
+ * holds no resolved spec for. Both guards use it so the pool-miss path and the
+ * warm-entry path cannot drift into saying different things — or, worse, into
+ * one of them not saying anything.
+ */
+const SPEC_LESS_CHILD_TURN = (conversationId: string): string =>
+  `sub-agent conversation ${conversationId} has no live spec (resume is not wired yet)`;
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -621,9 +634,7 @@ async function main() {
       if (convo?.kind !== 'subagent') return undefined;
       const spec = swarmCoordinator.childSpec(conversationId);
       if (!spec) {
-        throw new Error(
-          `sub-agent conversation ${conversationId} has no live spec (resume is not wired yet)`,
-        );
+        throw new Error(SPEC_LESS_CHILD_TURN(conversationId));
       }
       // Nesting: a child below the ceiling gets its OWN `agent`/`send_message`,
       // bounded by its own grant. `subagentRosters` is the same registry the
@@ -642,6 +653,23 @@ async function main() {
         { ...spec, extraTools: [...spec.extraTools, ...spawnTools] },
         childBackendDeps,
       );
+      // An ARMED child gets its own `# Delegation` section, rebuilt per turn so
+      // its roster names the children it has actually spawned. A static config
+      // would pin an empty roster forever, which is the same as not having one:
+      // the `agent` tool's schema lists spawnable TYPES, never live children, so
+      // without this an armed child holds `send_message` and no target ids.
+      const childDepth = spec.depth ?? 1;
+      const resolveConfig =
+        spawnTools.length === 0
+          ? () => runtime.config
+          : () => ({
+              ...runtime.config,
+              systemPrompt: `${runtime.config.systemPrompt}\n\n${buildChildDelegationSection(
+                childDepth,
+                parentConfig ? subagentMaxDepth(parentConfig) : childDepth,
+                swarmCoordinator.rosterFor(agentId, conversationId),
+              )}`,
+            });
       // Record WHERE it ran. For an isolated child this is the only pointer a
       // user ever gets to the worktree it left work in, and the parent's report
       // reads it back out of `subagent_meta`. Never fatal: a cascading parent
@@ -657,23 +685,43 @@ async function main() {
             `${err instanceof Error ? err.message : String(err)}`,
         );
       }
-      return runtime;
+      return { backend: runtime.backend, workspace: runtime.workspace, resolveConfig };
     },
-    // A nested spawn is validated against the CHILD's grant, not the top-level
-    // agent's — otherwise a grandchild could hold tools its parent never had.
+    /**
+     * A nested spawn is validated against the CHILD's grant, not the top-level
+     * agent's — otherwise a grandchild could hold tools its parent never had.
+     *
+     * FAILS CLOSED, and does so independently of the pool. `childRuntime` above
+     * only runs on a pool MISS, so a finished child whose backend is still warm
+     * would otherwise take this turn with the agent's grant in force: tool and
+     * MCP escalation is blocked by the child's captured `parentContext`, but
+     * `spawnChild` reads `workspace` from the attachment, so a grandchild would
+     * be sandboxed in the agent's real repo instead of inside its parent's
+     * worktree. The reconstruction that would let this succeed needs the
+     * child's tool grant, which `subagent_meta` structurally does not carry —
+     * so the honest answer until resume lands (C4) is to refuse the turn.
+     */
     childAttachOptions: (_agentId, conversationId) => {
       const spec = swarmCoordinator.childSpec(conversationId);
-      if (!spec) return undefined;
-      return {
-        orchestratorModel: spec.model,
-        orchestratorTools: spec.tools,
-        // Unset means NONE (fail-closed), so an empty list is what a child with
-        // no MCP grant must send — omitting the key would inherit the agent's.
-        orchestratorMcpTools: spec.mcpTools ?? [],
-        // The child's workspace: its own worktree when it was isolated, so a
-        // grandchild is sandboxed where its parent actually ran.
-        workspace: spec.workspace,
-      };
+      if (spec) {
+        return {
+          orchestratorModel: spec.model,
+          // Explicitly cleared: the agent's fallback chain would widen a
+          // grandchild's model grant past what the child's definition pinned.
+          orchestratorFallbackModels: undefined,
+          orchestratorTools: spec.tools,
+          // Unset means NONE (fail-closed), so an empty list is what a child
+          // with no MCP grant must send — omitting the key inherits the
+          // agent's.
+          orchestratorMcpTools: spec.mcpTools ?? [],
+          // The child's workspace: its own worktree when it was isolated, so a
+          // grandchild is sandboxed where its parent actually ran.
+          workspace: spec.workspace,
+        };
+      }
+      const convo = conversationService.get(conversationId, { includeDeleted: true });
+      if (convo?.kind !== 'subagent') return undefined;
+      throw new Error(SPEC_LESS_CHILD_TURN(conversationId));
     },
     createBackend: async (agentConfig, conversationId, agentId) => {
       const sessionDir = resolve(dataDir, 'sessions', agentConfig.name, conversationId);
@@ -937,6 +985,17 @@ async function main() {
   // completions through the hub.
   hubRef.current = resumableChatHub;
   childTurnDriver.attachObserver();
+
+  // A deleted conversation cascades to its descendants' rows, so the
+  // coordinator's in-memory child registry for it is addressing nothing. Drop
+  // it rather than letting a gateway that has served thousands of conversations
+  // hold a handle — with its resolved spec and its full report string — for
+  // every one of them.
+  eventBus.subscribe((event) => {
+    if (event.type === 'conversation:deleted') {
+      swarmCoordinator.forgetConversation(event.conversationId);
+    }
+  });
 
   // --- Plugin hot-reload trigger ---
   //

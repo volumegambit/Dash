@@ -53,6 +53,26 @@ const HARD_DEFAULT_CAPS: SwarmCaps = {
  */
 const MAX_RETAINED_CHILDREN_PER_PARENT = 64;
 
+/**
+ * How many PARENT conversations keep a child bucket in memory. Without a bound
+ * across conversations the per-parent bound is no bound at all: a gateway that
+ * has served thousands of conversations, each of which spawned one child,
+ * retains every one of those handles — with its resolved spec and its full
+ * report string — for the process's lifetime. Buckets are evicted
+ * least-recently-spawned first and ONLY when every child in them is terminal.
+ */
+const MAX_TRACKED_PARENT_CONVERSATIONS = 256;
+
+/**
+ * How many TERMINAL children the delegation roster names, on top of every live
+ * one. The roster is rebuilt and inlined into the parent's system prompt on
+ * EVERY turn, so an unbounded list is a token and latency cost that grows
+ * monotonically with the age of a conversation — the one dimension no test
+ * exercises. Live children are never dropped: they are the `send_message`
+ * targets the roster exists to advertise.
+ */
+const ROSTER_MAX_TERMINAL_CHILDREN = 10;
+
 const DEFAULT_GLOBAL_MAX_CONCURRENT = 16;
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
 /** waitWorker waits on one named child for as long as the turn can live. */
@@ -490,7 +510,7 @@ export class SwarmCoordinator {
       // the driver refused outright. The worker_spawned card is already on the
       // stream: terminalize the phantom before rethrowing so no client is left
       // with a card that can never complete.
-      this.forgetChild(parent.conversationId, childId);
+      this.forgetChild(parent.conversationId, childId, run);
       this.terminalizePhantom(run, childId, p, err);
       throw err;
     }
@@ -771,17 +791,28 @@ export class SwarmCoordinator {
     return this.findChild(conversationId, nameOrId);
   }
 
-  /** The conversation's children as an addressable roster (for the agent tool). */
+  /**
+   * The conversation's children as an addressable roster (for the agent tool
+   * and the delegation section). BOUNDED — every non-terminal child plus the
+   * most recent {@link ROSTER_MAX_TERMINAL_CHILDREN} terminal ones, in spawn
+   * order. See that constant for why the unbounded list was a regression.
+   */
   rosterFor(
     _agentId: string,
     conversationId: string,
+    limit = ROSTER_MAX_TERMINAL_CHILDREN,
   ): Array<{ id: string; name?: string; type: string; status: WorkerStatus }> {
-    return this.childrenOf(conversationId).map((c) => ({
-      id: c.subagentId,
-      name: c.name,
-      type: c.subagentType,
-      status: c.status,
-    }));
+    const children = this.childrenOf(conversationId);
+    const terminal = children.filter((c) => TERMINAL_STATUSES.has(c.status));
+    const keep = new Set(terminal.slice(Math.max(0, terminal.length - limit)));
+    return children
+      .filter((c) => !TERMINAL_STATUSES.has(c.status) || keep.has(c))
+      .map((c) => ({
+        id: c.subagentId,
+        name: c.name,
+        type: c.subagentType,
+        status: c.status,
+      }));
   }
 
   sendToWorker(
@@ -1141,17 +1172,78 @@ export class SwarmCoordinator {
       this.children.delete(evicted.subagentId);
       this.childSpecs.delete(evicted.subagentId);
     }
+    // Delete-then-set moves the key to the BACK of the map's insertion order,
+    // which is what makes `evictColdParents` a recency eviction rather than a
+    // first-conversation-ever eviction.
+    this.childrenByParent.delete(parentConversationId);
     this.childrenByParent.set(parentConversationId, list);
+    this.evictColdParents();
   }
 
   /** Drop every trace of a child whose registration failed. */
-  private forgetChild(parentConversationId: string, subagentId: string): void {
+  private forgetChild(parentConversationId: string, subagentId: string, run?: SwarmRun): void {
     this.children.delete(subagentId);
     this.childSpecs.delete(subagentId);
+    // `adopt` already put it in the run; leaving it there gives the phantom a
+    // second `worker_done` from the run's cancel sweep and a row in every
+    // snapshot of a child that never started.
+    run?.forget(subagentId);
     const list = this.childrenByParent.get(parentConversationId);
     if (!list) return;
     const index = list.findIndex((h) => h.subagentId === subagentId);
     if (index >= 0) list.splice(index, 1);
+  }
+
+  /**
+   * Drop the in-memory registry of a conversation's children — used when the
+   * conversation is deleted (the delete cascades to the children's own rows,
+   * so nothing is left to address) and by the cross-conversation LRU below.
+   *
+   * Recurses: a child's conversation can itself be a parent, and the delete
+   * cascaded to those rows too. NEVER cancels — a caller that wants live
+   * children stopped calls {@link cancelChild}; this only forgets.
+   */
+  forgetConversation(conversationId: string): void {
+    const handles = this.childrenByParent.get(conversationId);
+    if (!handles) return;
+    this.childrenByParent.delete(conversationId);
+    for (const handle of handles) {
+      this.children.delete(handle.subagentId);
+      this.childSpecs.delete(handle.subagentId);
+      this.forgetConversation(handle.subagentId);
+    }
+  }
+
+  /**
+   * Evict the least-recently-spawned parent buckets past
+   * {@link MAX_TRACKED_PARENT_CONVERSATIONS}. A bucket holding ANY non-terminal
+   * child is skipped, whatever its age: the caps count those handles and a
+   * cancel cascade walks them, so dropping one would lose a live child.
+   */
+  private evictColdParents(): void {
+    if (this.childrenByParent.size <= MAX_TRACKED_PARENT_CONVERSATIONS) return;
+    // Map iteration is insertion order, and `indexChild` re-inserts on every
+    // spawn, so the front of this list is the least recently active parent.
+    for (const [parent] of [...this.childrenByParent]) {
+      if (this.childrenByParent.size <= MAX_TRACKED_PARENT_CONVERSATIONS) return;
+      if (this.hasLiveDescendant(parent)) continue;
+      this.forgetConversation(parent);
+    }
+  }
+
+  /**
+   * Any non-terminal child ANYWHERE beneath this conversation. The check is
+   * recursive because `forgetConversation` is: a terminal child can still have
+   * a background grandchild running under it, and evicting the bucket would
+   * drop that grandchild from the global registry — under-counting the caps
+   * and leaving nothing for a cancel cascade to find.
+   */
+  private hasLiveDescendant(conversationId: string): boolean {
+    for (const handle of this.childrenByParent.get(conversationId) ?? []) {
+      if (!TERMINAL_STATUSES.has(handle.status)) return true;
+      if (this.hasLiveDescendant(handle.subagentId)) return true;
+    }
+    return false;
   }
 
   /** One child's terminal transition: tell the run, then release the runtime. */

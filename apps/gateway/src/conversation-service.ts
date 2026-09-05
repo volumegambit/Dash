@@ -23,6 +23,15 @@ export const DEFAULT_CONVERSATION_TITLE = 'New Conversation';
  */
 export const MAX_QUEUED_NOTIFICATIONS = 100;
 
+/**
+ * Default page size for {@link ConversationService.listSubagents}. The caller
+ * that matters is the sub-agent coordinator's cross-turn registry, read on
+ * every parent turn; an unbounded `SELECT *` over a conversation that has
+ * spawned children for weeks is a scan plus one report-bearing JSON parse per
+ * row, on the latency path of every message.
+ */
+export const DEFAULT_SUBAGENT_LIST_LIMIT = 100;
+
 export interface CreateConversationInput extends ConversationCreateRequest {
   agentName: string;
 }
@@ -132,7 +141,13 @@ export interface ConversationService {
   finishTurn(input: FinishTurnInput): PersistedTurnFrame;
   createSubagent(input: CreateSubagentConversationInput): ConversationSummary;
   updateSubagent(id: string, patch: UpdateSubagentInput): ConversationSummary;
-  listSubagents(parentConversationId: string): ConversationSummary[];
+  /**
+   * Children of a conversation, oldest first. BOUNDED: `limit` defaults to
+   * {@link DEFAULT_SUBAGENT_LIST_LIMIT} and keeps the NEWEST children, because
+   * every row read parses that child's whole `subagent_meta` blob — its report
+   * included — and callers read this per parent turn.
+   */
+  listSubagents(parentConversationId: string, limit?: number): ConversationSummary[];
   listInterruptedSubagents(): ConversationSummary[];
   enqueueNotification(
     notification: Omit<PendingNotification, 'id' | 'createdAt'>,

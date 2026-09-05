@@ -113,18 +113,27 @@ export interface AgentChatCoordinatorOptions {
    * makes nesting fall out of the ordinary `chat()` merge wrapper.
    *
    * The backend it returns is already STARTED on `workspace` (which may be the
-   * child's own worktree), and `config` is FIXED for the child's life — the
-   * agent's live registry config would be the wrong prompt, model and tools.
+   * child's own worktree). Its config comes back as a RESOLVER, not a value:
+   * the child's model, prompt and tools are fixed for its life, but a nesting
+   * child's delegation roster names its own children, which change within its
+   * conversation exactly as a parent's do.
    */
   childRuntime?: (
     agentId: string,
     conversationId: string,
-  ) => Promise<{ backend: AgentBackend; config: DashAgentConfig; workspace: string } | undefined>;
+  ) => Promise<
+    { backend: AgentBackend; resolveConfig: () => DashAgentConfig; workspace: string } | undefined
+  >;
   /**
    * Per-turn `attach()` overrides for a child conversation: the child's OWN
    * model, tool grant, MCP grant and workspace. Without them a nested spawn
    * would be validated against the top-level agent's grant, so a grandchild
    * could hold tools its parent was never given.
+   *
+   * THROWING is the fail-closed answer for a child conversation that cannot be
+   * bounded, and `chat()` calls this BEFORE it warms or pins a pool entry — so
+   * whether the guard fires can never depend on whether the child's backend
+   * happens to still be cached.
    */
   childAttachOptions?: (
     agentId: string,
@@ -135,7 +144,12 @@ export interface AgentChatCoordinatorOptions {
 /** The `attach()` fields a child turn overrides. See `childAttachOptions`. */
 export interface AgentChatAttachOverrides {
   orchestratorModel: string;
-  orchestratorFallbackModels?: string[];
+  /**
+   * Set it — including to `undefined`. Leaving the key OUT lets the top-level
+   * agent's fallback chain stay in force, which widens a child's nested spawn
+   * past the model its own definition pinned.
+   */
+  orchestratorFallbackModels?: string[] | undefined;
   orchestratorTools?: string[];
   orchestratorMcpTools?: string[];
   workspace?: string;
@@ -338,7 +352,7 @@ export function createAgentChatCoordinator(
         registry.setActive(agentId);
         return {
           backend: child.backend,
-          agent: new DashAgent(child.backend, async () => child.config),
+          agent: new DashAgent(child.backend, async () => child.resolveConfig()),
         };
       }
       // Thread the registry `agentId` (not `entry.config.name`) into the
@@ -430,6 +444,20 @@ export function createAgentChatCoordinator(
         return;
       }
 
+      // The child bound, resolved BEFORE anything is warmed or pinned. The
+      // ordering is the point, not a nicety: `childRuntime` only runs on a pool
+      // MISS, so a finished child whose entry is still warm would otherwise
+      // reach `attach()` with the TOP-LEVEL agent's grant — and a grandchild
+      // spawned from that turn would be sandboxed in the agent's real
+      // workspace rather than inside its parent's worktree isolation.
+      let childOverrides: Partial<AgentChatAttachOverrides> | undefined;
+      try {
+        childOverrides = options.childAttachOptions?.(request.agentId, request.conversationId);
+      } catch (error) {
+        yield { type: 'error', error: error instanceof Error ? error : new Error(String(error)) };
+        return;
+      }
+
       const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
       pool.pin(request.agentId, request.conversationId);
 
@@ -503,7 +531,7 @@ export function createAgentChatCoordinator(
         // A CHILD's turn spawning grandchildren is bounded by the CHILD's own
         // grant, not the top-level agent's. Applied last so it wins over the
         // registry reads above; absent for an ordinary conversation.
-        ...(options.childAttachOptions?.(request.agentId, request.conversationId) ?? {}),
+        ...(childOverrides ?? {}),
       });
 
       const gen = poolEntry.agent.chat(

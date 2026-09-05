@@ -1275,3 +1275,140 @@ describe('AgentChatCoordinator delegation section', () => {
     await agents.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Child conversations on the shared pool (Task C3 review fixes).
+// ---------------------------------------------------------------------------
+
+describe('child conversations on the shared pool', () => {
+  function makeChildAgents(opts: {
+    childRuntime: NonNullable<Parameters<typeof createAgentChatCoordinator>[0]['childRuntime']>;
+    childAttachOptions: NonNullable<
+      Parameters<typeof createAgentChatCoordinator>[0]['childAttachOptions']
+    >;
+  }) {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'parent-agent',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'You are helpful.',
+      workspace: '/agent/repo',
+      fallbackModels: ['anthropic/claude-haiku-4-20250514'],
+      tools: ['read', 'bash'],
+    });
+    const attaches: Array<Record<string, unknown>> = [];
+    const swarm: AgentChatCoordinatorSwarm = {
+      coordinator: {
+        attach: (o: Record<string, unknown>) => {
+          attaches.push(o);
+          return {
+            runIdHint: 'r',
+            // Drained immediately: this harness is about what `attach` was
+            // GIVEN, not about interleaving worker events.
+            channel: { take: () => Promise.resolve({ done: true, value: undefined }) },
+            closed: new AbortController().signal,
+            live: true,
+            finalize: () => {},
+          };
+        },
+        rosterFor: () => [],
+      } as unknown as SwarmCoordinator,
+      isEnabled: () => true,
+      orchestratorMcpTools: () => ['github__pr'],
+    };
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend([{ type: 'text_delta', text: 'parent' }]),
+      swarm,
+      childRuntime: opts.childRuntime,
+      childAttachOptions: opts.childAttachOptions,
+    });
+    return { agents, agentId: id, attaches };
+  }
+
+  const childBackend = () => makeMockBackend([{ type: 'text_delta', text: 'child' }]);
+
+  it('a nested spawn is attached with the CHILD grant, clearing the agent fallbacks', async () => {
+    const { agents, agentId, attaches } = makeChildAgents({
+      childRuntime: async () => ({
+        backend: childBackend(),
+        resolveConfig: () => ({ model: 'test/child-model', systemPrompt: 'child' }),
+        workspace: '/data/worktrees/parent-agent/sub_1',
+      }),
+      childAttachOptions: () => ({
+        orchestratorModel: 'test/child-model',
+        orchestratorFallbackModels: undefined,
+        orchestratorTools: ['read'],
+        orchestratorMcpTools: [],
+        workspace: '/data/worktrees/parent-agent/sub_1',
+      }),
+    });
+
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'go' }));
+
+    expect(attaches[0]).toMatchObject({
+      orchestratorModel: 'test/child-model',
+      orchestratorTools: ['read'],
+      orchestratorMcpTools: [],
+      workspace: '/data/worktrees/parent-agent/sub_1',
+    });
+    // The agent's own fallback chain must NOT survive onto a child's turn: a
+    // grandchild could otherwise be pinned to a model the child's definition
+    // never allowed.
+    expect(attaches[0].orchestratorFallbackModels).toBeUndefined();
+  });
+
+  it('refuses a spec-less child turn even when its pool entry is still WARM', async () => {
+    // The regression this covers: `childRuntime` only runs on a pool MISS, so a
+    // guard that lives only there stops firing the moment the entry is cached —
+    // exactly the state a FINISHED child is in (its spec is dropped on terminal,
+    // its warm backend is left to the pool's LRU).
+    let specLive = true;
+    let runtimeCalls = 0;
+    const { agents, agentId, attaches } = makeChildAgents({
+      childRuntime: async () => {
+        runtimeCalls++;
+        if (!specLive) throw new Error('no live spec');
+        return {
+          backend: childBackend(),
+          resolveConfig: () => ({ model: 'test/child-model', systemPrompt: 'child' }),
+          workspace: '/data/worktrees/parent-agent/sub_1',
+        };
+      },
+      childAttachOptions: () => {
+        if (!specLive) throw new Error('sub-agent conversation sub_child has no live spec');
+        return {
+          orchestratorModel: 'test/child-model',
+          orchestratorFallbackModels: undefined,
+          orchestratorTools: ['read'],
+          orchestratorMcpTools: [],
+          workspace: '/data/worktrees/parent-agent/sub_1',
+        };
+      },
+    });
+
+    // Turn one warms the entry while the spec is live.
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'go' }));
+    expect(runtimeCalls).toBe(1);
+
+    // The child finishes: its spec is gone, its pool entry is not.
+    specLive = false;
+    const events: AgentEvent[] = [];
+    for await (const event of agents.chat({
+      agentId,
+      conversationId: 'sub_child',
+      text: 'a user typed into the finished child',
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'error' });
+    expect((events[0] as { error: Error }).error.message).toMatch(/no live spec/);
+    // The refusal beat the pool: no second turn attached with the AGENT's grant
+    // (whose workspace is the real repo, outside the child's worktree).
+    expect(attaches).toHaveLength(1);
+    expect(runtimeCalls).toBe(1);
+  });
+});

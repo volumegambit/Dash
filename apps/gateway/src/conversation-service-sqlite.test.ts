@@ -1127,6 +1127,31 @@ describe('SqliteConversationService subagent persistence', () => {
     expect(service.listSubagents('missing-parent')).toEqual([]);
   });
 
+  it('bounds listSubagents to the NEWEST children, still oldest-first', () => {
+    const parent = createParent();
+    for (let i = 0; i < 5; i++) {
+      service.createSubagent({
+        id: `sub_page${i}`,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: `Child ${i}`,
+        subagent: subagentInfo(),
+      });
+    }
+
+    // Every row read parses that child's whole `subagent_meta` — its report
+    // included — and the sub-agent registry reads this per parent turn, so an
+    // unbounded SELECT * grows with the age of a conversation.
+    expect(service.listSubagents(parent.id, 2).map((item) => item.id)).toEqual([
+      'sub_page3',
+      'sub_page4',
+    ]);
+    expect(service.listSubagents(parent.id, 0)).toEqual([]);
+    expect(service.listSubagents(parent.id).map((item) => item.id)).toHaveLength(5);
+  });
+
   it('merges a subagent patch without dropping the untouched fields', () => {
     const parent = createParent();
     service.createSubagent({

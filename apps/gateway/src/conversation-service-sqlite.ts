@@ -30,6 +30,7 @@ import {
   type CreateConversationInput,
   type CreateSubagentConversationInput,
   DEFAULT_CONVERSATION_TITLE,
+  DEFAULT_SUBAGENT_LIST_LIMIT,
   type FinishTurnInput,
   type ListConversationsInput,
   type ListMessagesInput,
@@ -1122,15 +1123,23 @@ export class SqliteConversationService implements ConversationService {
     })();
   }
 
-  listSubagents(parentConversationId: string): ConversationSummary[] {
+  listSubagents(
+    parentConversationId: string,
+    limit: number = DEFAULT_SUBAGENT_LIST_LIMIT,
+  ): ConversationSummary[] {
+    // Ordered DESC under the LIMIT so the page keeps the NEWEST children, then
+    // reversed back to the oldest-first order every caller reads. Taking the
+    // oldest `limit` instead would hide exactly the children still worth
+    // addressing.
     const rows = this.db
       .prepare(`
         SELECT * FROM conversations
         WHERE kind = 'subagent' AND parent_conversation_id = ? AND deleted_at IS NULL
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
       `)
-      .all(parentConversationId) as ConversationRow[];
-    return rows.map((row) => this.mapConversation(row));
+      .all(parentConversationId, Math.max(0, limit)) as ConversationRow[];
+    return rows.reverse().map((row) => this.mapConversation(row));
   }
 
   listInterruptedSubagents(): ConversationSummary[] {

@@ -1838,3 +1838,183 @@ describe('SwarmCoordinator children as conversations', () => {
     ]);
   });
 });
+
+describe('SwarmCoordinator registry and roster bounds', () => {
+  /** Spawn `n` children on the live turn and drive each to `done`. */
+  function spawnAndFinish(
+    coordinator: SwarmCoordinator,
+    d: ReturnType<typeof makeChildDriver>,
+    n: number,
+    namePrefix = 'c',
+  ): string[] {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const { subagentId } = coordinator.spawnChild(
+        { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+        { role: 'r', brief: 'b', description: 'd', name: `${namePrefix}${i}` },
+      );
+      d.finish(subagentId);
+      ids.push(subagentId);
+    }
+    return ids;
+  }
+
+  it('rosterFor keeps every LIVE child but only the most recent terminal ones', () => {
+    const { d, coordinator } = setupChildTurn();
+    spawnAndFinish(coordinator, d, 15, 'old');
+    // Two that never finish. They are the `send_message` targets the roster
+    // exists to advertise, so no bound may drop them.
+    coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'r', brief: 'b', description: 'd', name: 'live-a' },
+    );
+    coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'r', brief: 'b', description: 'd', name: 'live-b' },
+    );
+
+    expect(coordinator.childrenOf(CONVO_ID)).toHaveLength(17);
+    const roster = coordinator.rosterFor(AGENT_ID, CONVO_ID);
+    // 10 most recent terminal + both live ones — not all 17.
+    expect(roster).toHaveLength(12);
+    expect(roster.filter((r) => r.status === 'running').map((r) => r.name)).toEqual([
+      'live-a',
+      'live-b',
+    ]);
+    expect(roster.map((r) => r.name)).toContain('old14');
+    expect(roster.map((r) => r.name)).not.toContain('old0');
+  });
+
+  it('forgetConversation drops a deleted conversation, its children and its grandchildren', () => {
+    const { d, coordinator } = setupChildTurn();
+    const [childId] = spawnAndFinish(coordinator, d, 1, 'child');
+    coordinator.attach(baseAttach({ conversationId: childId, messageId: 'child-turn-1' }));
+    const { subagentId: grandchildId } = coordinator.spawnChild(
+      {
+        agentId: AGENT_ID,
+        agentName: 'Agent One',
+        conversationId: childId,
+        turnId: 'child-turn-1',
+        depth: 1,
+      },
+      { role: 'r', brief: 'b', description: 'd', name: 'grandchild' },
+    );
+    d.finish(grandchildId);
+    expect(coordinator.findChild(CONVO_ID, 'child0')).toBeDefined();
+    expect(coordinator.findChild(childId, 'grandchild')).toBeDefined();
+
+    coordinator.forgetConversation(CONVO_ID);
+
+    // The conversation delete cascaded to both rows, so nothing is addressable
+    // and nothing is retained.
+    expect(coordinator.findChild(CONVO_ID, 'child0')).toBeUndefined();
+    expect(coordinator.findChild(childId, 'grandchild')).toBeUndefined();
+    expect(coordinator.childSpec(childId)).toBeUndefined();
+    expect(coordinator.childSpec(grandchildId)).toBeUndefined();
+  });
+
+  it('evicts cold parent buckets across conversations, never a bucket with a live child', () => {
+    const d = makeChildDriver();
+    const coordinator = new SwarmCoordinator({ childDriver: d.driver });
+    // One conversation whose child never finishes, spawned FIRST so it is the
+    // oldest bucket and the eviction sweep reaches it first.
+    coordinator.attach(baseAttach({ conversationId: 'convo-live' }));
+    coordinator.spawnChild(
+      { ...PARENT, conversationId: 'convo-live', turnId: 't', depth: 0 },
+      { role: 'r', brief: 'b', description: 'd', name: 'never-finishes' },
+    );
+    // Then 300 conversations that each spawn one child and finish it.
+    for (let i = 0; i < 300; i++) {
+      const conversationId = `convo-${i}`;
+      coordinator.attach(baseAttach({ conversationId }));
+      const { subagentId } = coordinator.spawnChild(
+        { ...PARENT, conversationId, turnId: 't', depth: 0 },
+        { role: 'r', brief: 'b', description: 'd' },
+      );
+      d.finish(subagentId);
+    }
+
+    // Bounded, and the live bucket survived every sweep.
+    expect(coordinator.childrenOf('convo-0')).toEqual([]);
+    expect(coordinator.childrenOf('convo-live')).toHaveLength(1);
+    expect(coordinator.findChild('convo-live', 'never-finishes')?.status).toBe('running');
+    expect(coordinator.childrenOf('convo-299')).toHaveLength(1);
+  });
+
+  it('a child whose registration fails leaves no phantom in the run', async () => {
+    const { d, coordinator, events } = setupChildTurn();
+    coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'real', brief: 'b', description: 'd' },
+    );
+    const run = coordinator.getLiveRun(AGENT_ID, CONVO_ID);
+    if (!run) throw new Error('expected a live run');
+    const realCount = run.snapshot().workers.length;
+    d.driver.prepareChild = () => {
+      throw new Error('driver refused');
+    };
+
+    expect(() =>
+      coordinator.spawnChild(
+        { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+        { role: 'ghost', brief: 'b', description: 'd' },
+      ),
+    ).toThrow(/driver refused/);
+
+    // The run must not carry a child that never started: it would show up in
+    // every snapshot and get a SECOND worker_done from the cancel sweep.
+    expect(run.snapshot().workers).toHaveLength(realCount);
+    run.finalize('turn over');
+    await flush();
+    const spawned = events.find((e) => e.type === 'worker_spawned' && e.role === 'ghost');
+    const ghostId = spawned && 'workerId' in spawned ? spawned.workerId : '';
+    expect(ghostId).toBeTruthy();
+    // Exactly one: the phantom's own terminal pair, not a second from the
+    // run's cancel sweep finding a child that never started.
+    expect(events.filter((e) => e.type === 'worker_done' && e.workerId === ghostId)).toHaveLength(
+      1,
+    );
+  });
+});
+
+describe('SwarmCoordinator eviction never loses a live descendant', () => {
+  it('keeps a cold parent bucket whose GRANDCHILD is still running', () => {
+    const d = makeChildDriver();
+    const coordinator = new SwarmCoordinator({ childDriver: d.driver });
+    // A terminal child of the oldest conversation, with a grandchild that is
+    // still going. Evicting the bucket would drop the grandchild from the
+    // global registry: the caps would under-count it and a cancel cascade
+    // would never reach it.
+    coordinator.attach(baseAttach({ conversationId: 'convo-cold' }));
+    const { subagentId: childId } = coordinator.spawnChild(
+      { ...PARENT, conversationId: 'convo-cold', turnId: 't', depth: 0 },
+      { role: 'r', brief: 'b', description: 'd', name: 'terminal-child' },
+    );
+    coordinator.attach(baseAttach({ conversationId: childId, messageId: 'child-turn' }));
+    const { subagentId: grandchildId } = coordinator.spawnChild(
+      {
+        agentId: AGENT_ID,
+        agentName: 'Agent One',
+        conversationId: childId,
+        turnId: 'child-turn',
+        depth: 1,
+      },
+      { role: 'r', brief: 'b', description: 'd', name: 'live-grandchild' },
+    );
+    d.finish(childId);
+
+    for (let i = 0; i < 300; i++) {
+      const conversationId = `filler-${i}`;
+      coordinator.attach(baseAttach({ conversationId }));
+      const { subagentId } = coordinator.spawnChild(
+        { ...PARENT, conversationId, turnId: 't', depth: 0 },
+        { role: 'r', brief: 'b', description: 'd' },
+      );
+      d.finish(subagentId);
+    }
+
+    expect(coordinator.findChild('convo-cold', 'terminal-child')).toBeDefined();
+    expect(coordinator.findChild(childId, 'live-grandchild')?.subagentId).toBe(grandchildId);
+    expect(coordinator.activeWorkerCount()).toBe(1);
+  });
+});

@@ -62,11 +62,12 @@ const EXPLICIT_GUIDANCE =
  * are spawned and finish.
  *
  * Each child is listed by the name the model addresses it with (falling back to
- * its worker id when it was spawned unnamed) plus its status. The heading leans
- * on the status rather than claiming every entry is addressable: `rosterFor`
- * falls back to the most recent FINALIZED run's workers, so on turn N+1 the
- * list can still name turn N's terminal children, and `send_message` to those
- * fails.
+ * its subagent id when it was spawned unnamed) plus its status. The heading
+ * leans on the status rather than claiming every entry is addressable:
+ * `rosterFor` now spans EVERY turn of the conversation and the persisted store
+ * (bounded to the live children plus the most recent terminal ones), so the
+ * list names children from earlier turns and `send_message` to a terminal one
+ * fails until resume lands.
  */
 export function buildDelegationSection(
   mode: 'auto' | 'explicit',
@@ -134,6 +135,38 @@ export function subagentCapsFromConfig(config: GatewayAgentConfig): Partial<Swar
  * Applied where the resolver is built (gateway `createBackend`) so the roster
  * the model is shown and the set it can actually resolve are the same list.
  */
+/**
+ * The `# Delegation` section a NESTING CHILD gets, appended to its own system
+ * prompt on every one of its turns.
+ *
+ * A child bypasses `buildDashConfig` entirely — its model, prompt and tool
+ * grant are fixed by its spec, not by the agent's live registry entry — so
+ * without this an armed child held `send_message` with no way to learn a target
+ * id: the `agent` tool's schema advertises the spawnable TYPES, never the
+ * children it has actually spawned. It only ever reaches a child that was armed
+ * (see `createChildSpawnTools`); telling an unarmed one about an `agent` tool
+ * it does not have would be worse than saying nothing.
+ */
+export function buildChildDelegationSection(
+  depth: number,
+  maxDepth: number,
+  roster: DelegationRosterEntry[],
+): string {
+  const rosterLines = roster.length
+    ? roster.map((r) => `- ${r.name ?? r.id} (${r.type}, ${r.status})`).join('\n')
+    : '- none yet';
+  return [
+    '# Delegation',
+    'You have an `agent` tool of your own. Delegate a self-contained piece of ' +
+      'your task when it can run independently, or when a search would fill ' +
+      'your context with file dumps. Everything an agent of yours reports ' +
+      'comes back to YOU, and it is your report to your parent that matters.',
+    `You are at depth ${depth} of ${maxDepth}; your agents cannot nest past that.`,
+    'Your agents in this conversation (running ones are `send_message` targets):',
+    rosterLines,
+  ].join('\n');
+}
+
 export function subagentTypesFor(
   config: GatewayAgentConfig,
   all: ResolvedSubagentType[],

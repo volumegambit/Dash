@@ -2,6 +2,7 @@ import { builtinSubagentTypes, createStaticResolver } from '@dash/swarm';
 import { describe, expect, it } from 'vitest';
 import type { GatewayAgentConfig } from './agent-registry.js';
 import {
+  buildChildDelegationSection,
   buildDelegationSection,
   effectiveDelegation,
   isSubagentsEnabled,
@@ -86,5 +87,23 @@ describe('subagent config', () => {
       }),
     ).toEqual({ maxConcurrentWorkers: 2, maxWorkersPerRun: 5 });
     expect(subagentCapsFromConfig(base)).toEqual({});
+  });
+});
+
+describe('buildChildDelegationSection', () => {
+  it("names the child's OWN children, so send_message has a target to name", () => {
+    const section = buildChildDelegationSection(1, 3, [
+      { id: 'sub_a', name: 'scout', type: 'Explore', status: 'running' },
+      { id: 'sub_b', type: 'general-purpose', status: 'done' },
+    ]);
+    expect(section).toContain('# Delegation');
+    expect(section).toContain('- scout (Explore, running)');
+    // An unnamed child is addressable by its id, which the roster must print.
+    expect(section).toContain('- sub_b (general-purpose, done)');
+    expect(section).toContain('depth 1 of 3');
+  });
+
+  it('says so when a nesting child has spawned nothing yet', () => {
+    expect(buildChildDelegationSection(2, 3, [])).toContain('- none yet');
   });
 });
