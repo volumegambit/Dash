@@ -31,6 +31,36 @@ extension AppDependenciesFactory {
 }
 
 #if DEBUG
+  /// Debug-only launch options that put a specific screen on-screen without a
+  /// test runner (UI-quality goal, Phase B).
+  ///
+  /// Most of this app's surfaces could not be looked at. `simctl` has no tap
+  /// command, `devicectl` has no screenshot subcommand, the `dash://` scheme
+  /// only handles `oauth-callback`, and `AppModel.selectedTab` is plain
+  /// in-memory state — so the only reachable screen was whatever the app
+  /// happened to launch into. Three redesigned screens shipped on 2026-09-05
+  /// verified by assertions alone because of it.
+  ///
+  /// With this, `simctl launch` plus `simctl io <udid> screenshot` captures
+  /// any tab:
+  ///
+  ///     SIMCTL_CHILD_DASH_UI_TEST_SCENARIO=paired-online \
+  ///     SIMCTL_CHILD_DASH_UI_TEST_TAB=settings \
+  ///     xcrun simctl launch <udid> app.dash.ios
+  ///
+  /// `#if DEBUG` like the scenario support it sits beside, so it cannot
+  /// affect a Release build.
+  enum UITestLaunchOptions {
+    static var initialTab: AppTab? {
+      let environment = ProcessInfo.processInfo.environment
+      guard
+        let raw = environment["DASH_UI_TEST_TAB"]
+          ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
+      else { return nil }
+      return AppTab(rawValue: raw)
+    }
+  }
+
   extension Array where Element == String {
     fileprivate func uiTestValue(after option: String) -> String? {
       guard let index = firstIndex(of: option) else { return nil }
