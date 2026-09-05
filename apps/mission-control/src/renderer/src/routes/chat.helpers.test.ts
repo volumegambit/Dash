@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  composerKeyAction,
+  composerKeyMechanism,
   formatDetails,
   formatVisibleDetails,
   insertNewlineAtSelection,
@@ -288,4 +292,44 @@ describe('formatVisibleDetails', () => {
       { key: 'filter', value: '{"state":"open"}' },
     ]);
   });
+});
+
+// Cross-client composer key contract (UI-quality goal, Phase D). Checks the
+// `mc` column of the same fixture the web and iOS suites use. Mission Control
+// was the last client whose handler was tested only against itself — the
+// condition that let Shift+Enter be correct here and impossible on iOS for
+// months with every suite green.
+describe('composer key contract (mc column)', () => {
+  const contract = JSON.parse(
+    // `import.meta.dirname` rather than `new URL(..., import.meta.url)`: this
+    // file can run under a DOM environment whose URL polyfill rejects `file:`.
+    readFileSync(
+      join(import.meta.dirname, '../../../../../../scripts/fixtures/composer-key-contract.json'),
+      'utf8',
+    ),
+  ) as {
+    cases: {
+      name: string;
+      key: string;
+      shift: boolean;
+      meta: boolean;
+      mc: 'send' | 'newline' | 'focus';
+      mechanism?: { mc: 'handler' | 'native' };
+    }[];
+  };
+
+  it('carries rows, so a truncated fixture cannot pass everything', () => {
+    expect(contract.cases.length).toBeGreaterThanOrEqual(5);
+  });
+
+  for (const testCase of contract.cases) {
+    it(`${testCase.name} -> ${testCase.mc}`, () => {
+      expect(composerKeyAction(testCase.key, testCase.shift, testCase.meta)).toBe(testCase.mc);
+      if (testCase.mechanism?.mc) {
+        expect(composerKeyMechanism(testCase.key, testCase.shift, testCase.meta)).toBe(
+          testCase.mechanism.mc,
+        );
+      }
+    });
+  }
 });

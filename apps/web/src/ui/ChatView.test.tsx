@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   ConversationMessage,
   ConversationPage,
@@ -385,6 +387,66 @@ describe('ChatView', () => {
     await waitFor(() =>
       expect(screen.getByText("Your gateway 'acme' is unreachable.")).toBeTruthy(),
     );
+  });
+
+  // Cross-client composer key contract (UI-quality goal, Phase D). Driven by
+  // scripts/fixtures/composer-key-contract.json, the same file the iOS suite
+  // reads, so a handler change on one client that silently diverges from the
+  // agreed contract fails here instead of being noticed months later by a
+  // human with a hardware keyboard.
+  describe('composer key contract', () => {
+    const contract = JSON.parse(
+      // `import.meta.dirname`, not `new URL(..., import.meta.url)`: this file
+      // runs under happy-dom, whose global `URL` polyfill rejects `file:`.
+      // Same reason as blocks/rendering-parity.test.ts.
+      readFileSync(
+        join(import.meta.dirname, '../../../../scripts/fixtures/composer-key-contract.json'),
+        'utf8',
+      ),
+    ) as {
+      cases: {
+        name: string;
+        key: string;
+        shift: boolean;
+        meta: boolean;
+        web: 'send' | 'newline' | 'focus';
+        mechanism?: { web: 'handler' | 'native' };
+      }[];
+    };
+
+    for (const testCase of contract.cases) {
+      it(`${testCase.name} -> ${testCase.web}`, async () => {
+        const { sockets } = await renderConnected();
+        const input = screen.getByLabelText('Message') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft' } });
+        input.setSelectionRange(5, 5);
+
+        const notCancelled = fireEvent.keyDown(input, {
+          key: testCase.key,
+          shiftKey: testCase.shift,
+          metaKey: testCase.meta,
+        });
+
+        if (testCase.web === 'send') {
+          await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+          expect(input.value).not.toContain('\n');
+        } else if (testCase.web === 'newline' && testCase.mechanism?.web === 'native') {
+          // The platform inserts the break, so there is nothing in the draft
+          // to assert — a synthetic keydown performs no default action. What
+          // IS assertable, and what actually broke on iOS, is that the
+          // handler declined the key: nothing sent, default not prevented.
+          expect(sockets[0].sent).toHaveLength(0);
+          expect(notCancelled).toBe(true);
+        } else if (testCase.web === 'newline') {
+          await waitFor(() => expect(input.value).toContain('\n'));
+          expect(sockets[0].sent).toHaveLength(0);
+        } else {
+          // `focus`: the handler must not touch the draft or submit.
+          expect(input.value).toBe('draft');
+          expect(sockets[0].sent).toHaveLength(0);
+        }
+      });
+    }
   });
 
   it('inserts a newline on Shift+Tab instead of sending or moving focus', async () => {

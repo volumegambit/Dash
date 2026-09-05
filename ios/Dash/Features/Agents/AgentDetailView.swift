@@ -48,6 +48,12 @@ struct AgentDetailView: View {
               .frame(minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
+            // Same measure as the gateway picker and sign-in. A primary
+            // action stretched across ~700pt of an 11-inch iPad detail column
+            // reads as an unfinished phone layout; the constraint is what the
+            // other pre-connection screens already use.
+            .frame(maxWidth: 520)
+            .frame(maxWidth: .infinity)
             .disabled(feature.mutationsAllowed == false || isWorking)
             .accessibilityHint(
               feature.mutationsAllowed ? "" : "Connect to the gateway to start a conversation"
@@ -164,11 +170,22 @@ struct AgentDetailView: View {
 
   @ViewBuilder
   private func integrationsSection(_ agent: RegisteredAgentDTO) -> some View {
-    Section("Integrations") {
-      optionalList("MCP servers", agent.config.mcpServers)
-      optionalList("Skill paths", agent.config.skills?.paths)
-      optionalList("Skill URLs", agent.config.skills?.urls)
+    // Only when there is something to integrate. Every value inside is
+    // optional, so an agent with no MCP servers and no skills rendered a
+    // bare "Integrations" header over nothing — a section title is a promise
+    // that content follows.
+    if hasIntegrations(agent) {
+      Section("Integrations") {
+        optionalList("MCP servers", agent.config.mcpServers)
+        optionalList("Skill paths", agent.config.skills?.paths)
+        optionalList("Skill URLs", agent.config.skills?.urls)
+      }
     }
+  }
+
+  private func hasIntegrations(_ agent: RegisteredAgentDTO) -> Bool {
+    let lists = [agent.config.mcpServers, agent.config.skills?.paths, agent.config.skills?.urls]
+    return lists.contains { ($0?.isEmpty == false) }
   }
 
   @ViewBuilder

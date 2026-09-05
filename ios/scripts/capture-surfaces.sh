@@ -87,6 +87,8 @@ SURFACES=(
   "signin|signed-out|"
   "gateway-picker|account-picker|"
   "recovery|pending-recovery|DASH_UI_TEST_TAB=conversations"
+  "agent-detail|paired-online|DASH_UI_TEST_AGENT=research-agent"
+  "model-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=model-picker"
 )
 
 # Tool gallery: every tool type, cards forced EXPANDED, four batches because a
@@ -105,7 +107,11 @@ for entry in "${SURFACES[@]}"; do
     "SIMCTL_CHILD_DASH_UI_TEST_SCENARIO=$scenario"
     "SIMCTL_CHILD_DASH_UI_TEST_DATA_IDENTIFIER=capture-$name"
   )
-  if [ -n "$extra" ]; then env_args+=("SIMCTL_CHILD_$extra"); fi
+  # `extra` may carry several `KEY=VALUE` pairs separated by `;`.
+  if [ -n "$extra" ]; then
+    IFS=';' read -ra pairs <<< "$extra"
+    for pair in "${pairs[@]}"; do env_args+=("SIMCTL_CHILD_$pair"); done
+  fi
 
   if ! env "${env_args[@]}" xcrun simctl launch "$UDID" "$BUNDLE_ID" >/dev/null 2>&1; then
     echo "  !! $name — launch failed (scenario '$scenario' may not exist)"

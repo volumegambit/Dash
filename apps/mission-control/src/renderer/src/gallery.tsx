@@ -1,8 +1,8 @@
 /**
  * Dev-only tool-card gallery for Mission Control.
  *
- *   npx vite --root apps/mission-control/src/renderer --port 5200
- *   http://localhost:5200/gallery.html
+ *   npx vite --config apps/mission-control/vite.harness.config.ts
+ *   http://localhost:5233/gallery.html
  *
  * Why this exists: across two rounds of tool-use UX work this client was the
  * only surface never looked at. iOS has `capture-surfaces.sh` and its debug
@@ -11,6 +11,14 @@
  * assertions. It renders `ToolBlock` directly, which takes plain props and
  * touches no store or IPC, against THE SAME fixtures the other two galleries
  * use, so all three clients can be compared per tool type.
+ *
+ * Served by `vite.harness.config.ts`, which a concurrent session added for the
+ * whole-app renderer harness. The two are complementary and share the
+ * plumbing deliberately: the harness mounts the REAL app against a stubbed
+ * `window.api` and can reach any screen; this page renders `ToolBlock`
+ * directly against fixed per-tool-type fixtures, which is deterministic and
+ * covers tool shapes the stub does not produce. A second vite config for the
+ * same app would have been duplication, so this one was deleted in the merge.
  *
  * Not part of `electron-vite build` — that builds index.html and
  * companion.html. Dev-server only.
