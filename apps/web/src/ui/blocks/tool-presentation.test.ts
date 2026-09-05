@@ -193,17 +193,14 @@ describe('formatVisibleDetails', () => {
     expect(result).toEqual([{ key: 'reason', value: 'checking contents' }]);
   });
 
-  it('skips content for write', () => {
+  it('skips content for write, and path too — path is the header summary', () => {
     const result = formatVisibleDetails('write', { path: 'a.txt', content: 'hello world' });
-    expect(result).toEqual([{ key: 'path', value: 'a.txt' }]);
+    expect(result).toEqual([]);
   });
 
-  it('does not filter for other tools', () => {
+  it('keeps every row of another tool except the header duplicate', () => {
     const result = formatVisibleDetails('bash', { command: 'ls', path: '/tmp' });
-    expect(result).toEqual([
-      { key: 'command', value: 'ls' },
-      { key: 'path', value: '/tmp' },
-    ]);
+    expect(result).toEqual([{ key: 'path', value: '/tmp' }]);
   });
 });
 
@@ -337,5 +334,34 @@ describe('resultSummary', () => {
 
   it('names an empty result', () => {
     expect(resultSummary('bash', '\n\n')).toBe('no output');
+  });
+});
+
+describe('formatVisibleDetails filtering', () => {
+  it('drops a row that repeats the header summary verbatim', () => {
+    expect(formatVisibleDetails('bash', { command: 'ls -la' })).toEqual([]);
+  });
+
+  it('keeps the row when the header truncated the value', () => {
+    const command = `echo ${'a'.repeat(100)}`;
+    const rows = formatVisibleDetails('bash', { command });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe('command');
+    expect(rows[0].value).not.toBe(summarize('bash', { command }));
+  });
+
+  it('keeps the row when the header shortened the executable', () => {
+    const command = '/opt/homebrew/bin/gog gmail list';
+    expect(formatVisibleDetails('bash', { command })).toEqual([{ key: 'command', value: command }]);
+  });
+
+  it('drops rows whose value is only a type placeholder', () => {
+    expect(formatVisibleDetails('some_tool', { schema: { a: 1 }, items: [1, 2, 3] })).toEqual([]);
+  });
+
+  it('keeps ordinary rows alongside a dropped duplicate', () => {
+    expect(formatVisibleDetails('grep', { pattern: 'foo', path: 'src' })).toEqual([
+      { key: 'path', value: 'src' },
+    ]);
   });
 });

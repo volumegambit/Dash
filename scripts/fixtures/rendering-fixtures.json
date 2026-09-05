@@ -321,21 +321,16 @@
       ]
     },
     {
-      "name": "details: 5-item array formats as [5 items]",
+      "name": "details: an array row is a type placeholder and is dropped",
       "kind": "details",
       "toolName": "bash",
       "input": {
         "files": ["a", "b", "c", "d", "e"]
       },
-      "expectedDetails": [
-        {
-          "key": "files",
-          "value": "[5 items]"
-        }
-      ]
+      "expectedDetails": []
     },
     {
-      "name": "details: nested object formats as {object}",
+      "name": "details: an object row is a type placeholder and is dropped",
       "kind": "details",
       "toolName": "bash",
       "input": {
@@ -344,12 +339,7 @@
           "b": 2
         }
       },
-      "expectedDetails": [
-        {
-          "key": "opts",
-          "value": "{object}"
-        }
-      ]
+      "expectedDetails": []
     },
     {
       "name": "details: integer formats without decimal",
@@ -439,22 +429,17 @@
       ]
     },
     {
-      "name": "details: write skips content, keeps other keys",
+      "name": "details: write skips content, and path repeats the header summary",
       "kind": "details",
       "toolName": "write",
       "input": {
         "path": "a.txt",
         "content": "hello world"
       },
-      "expectedDetails": [
-        {
-          "key": "path",
-          "value": "a.txt"
-        }
-      ]
+      "expectedDetails": []
     },
     {
-      "name": "details: non-read/write tools are not filtered",
+      "name": "details: a non-read/write tool keeps every row but the header duplicate",
       "kind": "details",
       "toolName": "bash",
       "input": {
@@ -462,10 +447,6 @@
         "path": "/tmp"
       },
       "expectedDetails": [
-        {
-          "key": "command",
-          "value": "ls"
-        },
         {
           "key": "path",
           "value": "/tmp"
@@ -633,6 +614,41 @@
       "toolName": "TodoWrite",
       "resultContent": "ok",
       "expectedResultSummary": null
+    },
+    {
+      "name": "details: a row repeating the header summary is dropped",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "command": "ls -la"
+      },
+      "expectedDetails": []
+    },
+    {
+      "name": "details: a truncated summary leaves its row in place",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "command": "/opt/homebrew/bin/gog gmail list"
+      },
+      "expectedDetails": [
+        {
+          "key": "command",
+          "value": "/opt/homebrew/bin/gog gmail list"
+        }
+      ]
+    },
+    {
+      "name": "details: type placeholders are dropped",
+      "kind": "details",
+      "toolName": "some_tool",
+      "input": {
+        "schema": {
+          "a": 1
+        },
+        "items": [1, 2, 3]
+      },
+      "expectedDetails": []
     }
   ]
 }
