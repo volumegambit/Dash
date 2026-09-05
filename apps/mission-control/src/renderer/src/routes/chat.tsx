@@ -512,6 +512,13 @@ function ToolBlock({
   // because it is the one case where the detail is necessary, and it was the
   // one case that took a click to reach (tool-use UX 2026-09-05).
   const [open, setOpen] = useState(hasDiff || isError === true);
+  // useState's initial value is only read on this instance's FIRST render,
+  // and a tool card is first rendered while the call is still running — no
+  // isError yet. Without this, "failures open" would hold for a reloaded
+  // transcript and silently not hold live, which is the case that matters.
+  useEffect(() => {
+    if (isError) setOpen(true);
+  }, [isError]);
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
   const outcome = resultSummary(name, result, isError, toolDetails);

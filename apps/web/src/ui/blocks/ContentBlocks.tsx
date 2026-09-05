@@ -1,5 +1,5 @@
 import type { ConversationContent, MobileAgentEvent } from '@dash/mobile-contract';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { Markdown } from './Markdown.js';
 import {
   type TodoItem,
@@ -191,6 +191,15 @@ function ToolUseBlock({
   // else hides diagnostic detail you want on demand — a command's arguments,
   // a file's contents. Matches iOS `ToolCardView`.
   const [open, setOpen] = useState(todos !== null || status === 'failed');
+  // `useState`'s initial value is only read on the FIRST render of this
+  // component instance, and a tool card is first rendered while the call is
+  // still running — status 'running', so open false. Without this, "failures
+  // open by default" would hold for a reloaded transcript and silently not
+  // hold live, which is the case that matters. Re-runs only when `status`
+  // changes, so a user who collapses a failed card keeps it collapsed.
+  useEffect(() => {
+    if (status === 'failed') setOpen(true);
+  }, [status]);
   const summary = summarize(tool.name, tool.input);
   const outcome = resultSummary(tool.name, result?.content, result?.isError, result?.details);
   const details = formatVisibleDetails(tool.name, tool.input);

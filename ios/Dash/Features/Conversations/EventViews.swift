@@ -305,6 +305,15 @@ struct ToolCardView: View {
           .strokeBorder(DashTheme.danger.opacity(DashTheme.Opacity.fillEmphasis))
       }
     }
+    // `State(initialValue:)` in `init` is only read the first time SwiftUI
+    // creates this view's identity, and a tool card is first created while
+    // the call is still running. Without this, "failures open" would hold
+    // for a reloaded transcript and silently not hold live, which is the
+    // case that matters. Only fires on a transition INTO .failed, so a user
+    // who collapses a failed card keeps it collapsed.
+    .onChange(of: tool.status) { _, status in
+      if status == .failed { isExpanded = true }
+    }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
     .accessibilityIdentifier("chat.tool.\(tool.id)")
@@ -339,7 +348,10 @@ struct ToolCardView: View {
           .lineLimit(1)
           .truncationMode(.tail)
       }
-      Spacer(minLength: 4)
+      // 8, not 4: on the captured 393pt phone the Edit row's path runs the
+      // full width and the outcome ends up almost touching it. The gap is
+      // what makes the outcome read as a separate column down a run of rows.
+      Spacer(minLength: 8)
       // What the call returned, at the right edge — the half of the row
       // `summarize` cannot answer. Only while collapsed: once open, the body
       // below shows the result itself.

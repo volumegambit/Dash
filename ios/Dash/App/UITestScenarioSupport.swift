@@ -321,6 +321,34 @@ extension AppDependenciesFactory {
           role: .assistant,
           status: .completed,
           events: [
+            // Tool-use UX (2026-09-05): a run of four calls — a plain
+            // success, a grep with a countable result, an edit carrying a
+            // diff, and a failure — so `capture-surfaces.sh`'s `chat` shot
+            // actually shows the tool rows. Before this the only reachable
+            // chat capture had no tool calls in it at all, which is how three
+            // screens shipped in the first place without being looked at.
+            .toolUseStart(
+              id: "cap-1", name: "bash",
+              input: .object(["command": .string("/opt/homebrew/bin/npm run build")])),
+            .toolResult(
+              id: "cap-1", name: "bash", content: "built in 4.2s", isError: false, details: nil),
+            .toolUseStart(
+              id: "cap-2", name: "grep", input: .object(["pattern": .string("resultSummary")])),
+            .toolResult(
+              id: "cap-2", name: "grep",
+              content: "a.ts:1: hit\nb.ts:9: hit\nc.ts:14: hit", isError: false, details: nil),
+            .toolUseStart(
+              id: "cap-3", name: "edit",
+              input: .object(["path": .string("apps/web/src/ui/blocks/ContentBlocks.tsx")])),
+            .toolResult(
+              id: "cap-3", name: "edit", content: "ok", isError: false,
+              details: .object(["diff": .string("--- a/x\n+++ b/x\n-old\n+new\n+more")])),
+            .toolUseStart(
+              id: "cap-4", name: "read",
+              input: .object(["path": .string("/Users/gerry/missing.swift")])),
+            .toolResult(
+              id: "cap-4", name: "read", content: "ENOENT: no such file or directory",
+              isError: true, details: nil),
             .response(
               // iOS markdown parity (2026-09-04): a GFM table rides along so
               // the table renderer is exercised by DashUI; the sentence other

@@ -317,6 +317,35 @@ describe('ContentBlocks', () => {
     expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
     expect(screen.getByTestId('unknown-block')).toBeTruthy();
   });
+
+  // The card is created while the call is still running, so its useState
+  // initial value is computed with status 'running'. A failure that arrives
+  // afterwards must still open it, or "failures open by default" only holds
+  // for a reloaded transcript and silently fails live — the case that matters.
+  it('opens a call that fails after it was already rendered as running', () => {
+    const running: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } }],
+    };
+    const { rerender } = render(<ContentBlocks content={running} />);
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+
+    const failed: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'bash',
+          content: 'command not found',
+          isError: true,
+        },
+      ],
+    };
+    rerender(<ContentBlocks content={failed} />);
+    expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
+  });
 });
 
 describe('paragraph keys', () => {
