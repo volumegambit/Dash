@@ -7,10 +7,34 @@ import type {
   ChildTurnDriver,
   ChildTurnOutcome,
   ChildTurnRef,
-  WorkerBackend,
-  WorkerFactory,
+  WorkerSpec,
   WorkerStatus,
-} from './types.js';
+} from '@dash/swarm';
+
+/**
+ * TEST SUPPORT ONLY — imported by `*.test.ts` files and nothing else (the
+ * gateway bundle's entry is `index.ts`, which never reaches this module).
+ *
+ * Production runs a child as a real conversation through
+ * {@link createChildTurnDriver}, and since Task C4 that is the ONLY
+ * {@link ChildTurnDriver} there is: the in-process `WorkerFactory` /
+ * `WorkerHandle` path was retired so there are not two child lifetimes. This
+ * fake TRANSPORT lets a test drive the coordinator's child state machine
+ * (`ChildHandle`) without a conversation store. It is a near-copy of the swarm
+ * package's own test transport, which cannot be shared across the package
+ * boundary because `@dash/swarm` only publishes its product surface.
+ */
+
+/** One conversational segment of a fake child. Duck-typed over DashAgent.chat. */
+export interface WorkerBackend {
+  chat(message: string): AsyncGenerator<AgentEvent>;
+  abort(): void;
+  stop(): Promise<void>;
+  /** Where the child ran (an isolated child's own checkout). */
+  workspace?: string;
+}
+
+export type WorkerFactory = (spec: WorkerSpec) => Promise<WorkerBackend>;
 
 interface ChildEntry {
   spec: ChildSpec;
@@ -23,21 +47,15 @@ interface ChildEntry {
   turnSeq: number;
 }
 
-/**
- * A {@link ChildTurnDriver} that runs children as in-process
- * {@link WorkerBackend}s — the pre-Phase-C transport, kept behind the driver
- * seam so the coordinator has exactly ONE child lifetime.
- *
- * The gateway does not use this: it wires a driver over `ResumableChatHub` and
- * `ConversationService`, so a real child is a real conversation. This exists
- * for embedders (and the swarm package's own tests) that have a
- * {@link WorkerFactory} and no conversation store, and is retired with the
- * factory itself in Task C4.
- *
- * It is a TRANSPORT only. Status, caps, steers, the report and every terminal
- * transition live in `ChildHandle`, identically for both drivers.
- */
-export function createInProcessChildDriver(factory: WorkerFactory): ChildTurnDriver {
+/** A fake conversation-less {@link ChildTurnDriver} over {@link WorkerBackend}s. */
+export function createFakeChildDriver(factory: WorkerFactory): ChildTurnDriver & {
+  /**
+   * Rows a resumed / restarted child is read back from, standing in for the
+   * conversation store. Empty by default, so a test that does not opt in sees
+   * exactly the children the coordinator still holds handles for.
+   */
+  persisted: ChildSnapshot[];
+} {
   const entries = new Map<string, ChildEntry>();
   const eventListeners = new Set<(turn: ChildTurnRef, event: AgentEvent) => void>();
   const finishListeners = new Set<
@@ -58,8 +76,7 @@ export function createInProcessChildDriver(factory: WorkerFactory): ChildTurnDri
       backend = await entry.backendPromise;
     } catch (err) {
       // Surfaced as an `error` EVENT (not just a failed outcome) so the handle
-      // reports the construction failure's message verbatim, exactly as the
-      // pre-driver `WorkerHandle` did.
+      // reports the construction failure's message verbatim.
       const error = err instanceof Error ? err : new Error(String(err));
       emitEvent(turn, { type: 'error', error });
       emitFinish(turn, 'failed', error.message);
@@ -89,7 +106,11 @@ export function createInProcessChildDriver(factory: WorkerFactory): ChildTurnDri
     emitFinish(turn, 'completed');
   };
 
+  const persisted: ChildSnapshot[] = [];
+
   return {
+    persisted,
+
     prepareChild(spec: ChildSpec): void {
       entries.set(spec.childConversationId, {
         spec,
@@ -136,16 +157,19 @@ export function createInProcessChildDriver(factory: WorkerFactory): ChildTurnDri
     },
 
     /**
-     * Always empty: this driver has no store behind it, so every child it knows
-     * about is one the coordinator still holds a live handle for. Cross-turn
-     * and cross-restart resolution is the conversation-backed driver's job.
+     * Only what a test seeded into {@link persisted}: this driver has no store
+     * behind it, so by default every child it knows about is one the
+     * coordinator still holds a live handle for.
      */
-    listChildren(): ChildSnapshot[] {
-      return [];
+    listChildren(parentConversationId: string): ChildSnapshot[] {
+      return persisted.filter((row) => row.parentConversationId === parentConversationId);
     },
 
     isChildAlive(childConversationId: string): boolean {
-      return entries.get(childConversationId)?.alive ?? false;
+      const entry = entries.get(childConversationId);
+      if (entry) return entry.alive;
+      // A resumable child with no live entry: alive iff a row says so.
+      return persisted.some((row) => row.subagentId === childConversationId);
     },
 
     workspaceOf(childConversationId: string): string | undefined {

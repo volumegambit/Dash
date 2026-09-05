@@ -1,8 +1,8 @@
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import type { ChildHandle } from './child-handle.js';
+import { legacyWorkerDoneStatus } from './subagent-status.js';
 import type { SwarmCaps, WorkerSpec, WorkerStatus } from './types.js';
-import { legacyWorkerDoneStatus } from './worker-handle.js';
 
 /** A worker as seen by the panel/management API. */
 export interface RunWorkerSnapshot {

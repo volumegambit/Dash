@@ -1,7 +1,12 @@
 import type { AgentEvent } from '@dash/agent';
 import { SwarmCoordinator } from './coordinator.js';
 import type { AttachOptions } from './coordinator.js';
-import type { SwarmEventLogSink, WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
+import type { SwarmEventLogSink, WorkerSpec } from './types.js';
 
 /** A deferred promise, resolved/rejected externally. */
 function deferred<T>() {
@@ -204,7 +209,7 @@ function setupLiveTurn(opts: { script?: AgentEvent[] } = {}) {
     specs.push(spec);
     return Promise.resolve(new ScriptedBackend(script));
   };
-  const coordinator = new SwarmCoordinator({ workerFactory: factory });
+  const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
   const attachment = coordinator.attach(baseAttach());
   const events: AgentEvent[] = [];
   void (async () => {
@@ -222,7 +227,7 @@ describe('SwarmCoordinator', () => {
   describe('ownership', () => {
     it('a second attach on a live key is non-authoritative (dead channel, aborted closed, no-op finalize)', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const b = coord.attach(baseAttach());
 
@@ -238,7 +243,7 @@ describe('SwarmCoordinator', () => {
 
     it("second attach's finalize does not cancel the first attachment's workers; spawn still routes to A", async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -258,7 +263,7 @@ describe('SwarmCoordinator', () => {
 
   /**
    * The seam worktree cleanup hangs off: the gateway builds the child's
-   * worktree in its `workerFactory` and needs a matching notification on EVERY
+   * worktree when it built the child and needs a matching notification on EVERY
    * terminal path to take it down again.
    */
   describe('onWorkerFinished', () => {
@@ -266,7 +271,7 @@ describe('SwarmCoordinator', () => {
       const finished: Array<Omit<WorkerSpec, 'extraTools'>> = [];
       const factory: WorkerFactory = () => Promise.resolve(new ScriptedBackend([]));
       const coord = new SwarmCoordinator({
-        workerFactory: factory,
+        childDriver: createFakeChildDriver(factory),
         onWorkerFinished: (spec) => {
           finished.push(spec);
         },
@@ -290,7 +295,7 @@ describe('SwarmCoordinator', () => {
   describe('lazy run creation', () => {
     it('first spawnWorker creates the run under the live attachment', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       expect(coord.getRuns(AGENT_ID)).toHaveLength(0);
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
@@ -299,7 +304,7 @@ describe('SwarmCoordinator', () => {
 
     it('spawnWorker throws "swarm turn is closed" when there is no live attachment', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).toThrow(
         /swarm turn is closed/,
       );
@@ -309,7 +314,7 @@ describe('SwarmCoordinator', () => {
 
     it('spawnWorker throws after the attachment is finalized (no zombie run)', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       a.finalize({ consumerAlive: true });
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).toThrow(
@@ -322,21 +327,21 @@ describe('SwarmCoordinator', () => {
   describe('gate re-read', () => {
     it('throws when the agent gate reports disabled', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ getAgentGate: () => ({ enabled: true, disabled: true }) }));
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).toThrow();
     });
 
     it('throws when the agent gate reports not enabled', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ getAgentGate: () => ({ enabled: false, disabled: false }) }));
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).toThrow();
     });
 
     it('allows when the gate is enabled and not disabled', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ getAgentGate: () => ({ enabled: true, disabled: false }) }));
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).not.toThrow();
     });
@@ -347,7 +352,7 @@ describe('SwarmCoordinator', () => {
     it('throws at maxWorkersPerRun (total), message includes the cap', async () => {
       const { factory, backends } = makeFactory();
       const coord = new SwarmCoordinator({
-        workerFactory: factory,
+        childDriver: createFakeChildDriver(factory),
         defaultCaps: { maxWorkersPerRun: 2, maxConcurrentWorkers: 100 },
       });
       coord.attach(baseAttach());
@@ -367,7 +372,7 @@ describe('SwarmCoordinator', () => {
     it('throws at maxConcurrentWorkers with "wait for workers to finish"', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({
-        workerFactory: factory,
+        childDriver: createFakeChildDriver(factory),
         defaultCaps: { maxConcurrentWorkers: 1, maxWorkersPerRun: 100 },
       });
       coord.attach(baseAttach());
@@ -380,7 +385,7 @@ describe('SwarmCoordinator', () => {
     it('enforces a global concurrent ceiling across all runs', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({
-        workerFactory: factory,
+        childDriver: createFakeChildDriver(factory),
         globalMaxConcurrentWorkers: 1,
         defaultCaps: { maxConcurrentWorkers: 100, maxWorkersPerRun: 100 },
       });
@@ -396,7 +401,7 @@ describe('SwarmCoordinator', () => {
   describe('model validation', () => {
     it('accepts the orchestrator model, fallbacks, and allowedModels; rejects others', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(
         baseAttach({
           orchestratorModel: 'orch',
@@ -423,7 +428,7 @@ describe('SwarmCoordinator', () => {
   describe('tool validation', () => {
     it('accepts a subset of the default tool names', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       expect(() =>
         coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['read', 'grep'] }),
@@ -432,7 +437,7 @@ describe('SwarmCoordinator', () => {
 
     it('rejects a tool the orchestrator itself does not have', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorTools: ['read', 'grep'] }));
       expect(() =>
         coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['bash'] }),
@@ -441,7 +446,7 @@ describe('SwarmCoordinator', () => {
 
     it('rejects mcp-prefixed, _skill-suffixed, and unknown tools naming the offender', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorTools: undefined }));
       expect(() =>
         coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['mcp__x'] }),
@@ -456,7 +461,7 @@ describe('SwarmCoordinator', () => {
 
     it('accepts the always-available tools, which no config.tools list has to name', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorTools: ['read'] }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, {
         role: 'r',
@@ -468,7 +473,7 @@ describe('SwarmCoordinator', () => {
 
     it('an OMITTED tools list defaults to the read-only subset the PARENT holds', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       // `spawn_worker`'s `tools` is optional: a worker spawned without one must
       // not be handed tools the orchestrator itself lacks.
       coord.attach(baseAttach({ orchestratorTools: ['bash'] }));
@@ -478,7 +483,7 @@ describe('SwarmCoordinator', () => {
 
     it('the omitted-tools default is still the read-only four for a default parent', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorTools: undefined }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls']);
@@ -486,7 +491,7 @@ describe('SwarmCoordinator', () => {
 
     it('an EXPLICIT empty grant stays empty — it is not widened to the default', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(
         baseAttach({ orchestratorTools: ['bash'], orchestratorMcpTools: ['github__pr'] }),
       );
@@ -502,7 +507,7 @@ describe('SwarmCoordinator', () => {
 
     it('bounds the child grant by parentBuiltinTools — the same list the agent tool reads', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorTools: ['read', 'grep'] }));
       // web_search is in UNIVERSE but the parent does not hold it.
       expect(() =>
@@ -515,7 +520,7 @@ describe('SwarmCoordinator', () => {
   describe('mcp tool validation', () => {
     it('passes through MCP tools the parent holds', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorMcpTools: ['github__pr', 'slack__post'] }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, {
         role: 'r',
@@ -528,7 +533,7 @@ describe('SwarmCoordinator', () => {
 
     it('refuses an MCP tool the parent does not hold', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ orchestratorMcpTools: ['github__pr'] }));
       expect(() =>
         coord.spawnWorker(AGENT_ID, CONVO_ID, {
@@ -542,7 +547,7 @@ describe('SwarmCoordinator', () => {
 
     it('fails closed when the attachment declared no MCP tools at all', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       expect(() =>
         coord.spawnWorker(AGENT_ID, CONVO_ID, {
@@ -556,7 +561,7 @@ describe('SwarmCoordinator', () => {
 
     it('carries spawnableTypes and canSpawn onto the worker spec', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, {
         role: 'r',
@@ -571,7 +576,7 @@ describe('SwarmCoordinator', () => {
 
     it('uses the default subset when tools is omitted', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls']);
@@ -582,7 +587,7 @@ describe('SwarmCoordinator', () => {
   describe('sync registration', () => {
     it('emits worker_spawned + agent_spawned synchronously before any await', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const seen: AgentEvent[] = [];
       // Take twice; the events must already be buffered synchronously.
@@ -607,7 +612,7 @@ describe('SwarmCoordinator', () => {
       const { factory, setGate } = makeFactory();
       const gate = deferred<void>();
       setGate(gate.promise);
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const spawned = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       // spawnWorker reports 'spawning' to the tool caller.
@@ -627,7 +632,7 @@ describe('SwarmCoordinator', () => {
   describe('waitWorkers', () => {
     it('resolves with statuses when all referenced workers become terminal', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       const seg = await backends[0].onNextSegment();
@@ -646,7 +651,7 @@ describe('SwarmCoordinator', () => {
 
     it('resolves as soon as any referenced worker becomes waiting_input', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -668,7 +673,7 @@ describe('SwarmCoordinator', () => {
       vi.useFakeTimers();
       try {
         const { factory, backends } = makeFactory();
-        const coord = new SwarmCoordinator({ workerFactory: factory });
+        const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
         coord.attach(baseAttach());
         const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
         await backends[0].onNextSegment();
@@ -688,7 +693,7 @@ describe('SwarmCoordinator', () => {
 
     it('returns statuses when the attachment closes (finalize) while waiting', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -700,7 +705,7 @@ describe('SwarmCoordinator', () => {
 
     it('throws Error("aborted") when the passed signal aborts', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -719,7 +724,7 @@ describe('SwarmCoordinator', () => {
       try {
         const { factory, backends } = makeFactory();
         const coord = new SwarmCoordinator({
-          workerFactory: factory,
+          childDriver: createFakeChildDriver(factory),
           defaultCaps: { maxRunSeconds: 10 },
         });
         const a = coord.attach(baseAttach({ orchestratorAbort }));
@@ -741,7 +746,7 @@ describe('SwarmCoordinator', () => {
     it('is idempotent and only effective from the owning attachment', () => {
       const { factory } = makeFactory();
       const orchestratorAbort = vi.fn();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach({ orchestratorAbort }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       a.finalize({ consumerAlive: true });
@@ -751,7 +756,7 @@ describe('SwarmCoordinator', () => {
 
     it('pushes worker_done{cancelled} to the channel before closing it (consumerAlive)', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -763,7 +768,7 @@ describe('SwarmCoordinator', () => {
 
     it('returns synchronously even when a backend stop() hangs forever', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -778,7 +783,10 @@ describe('SwarmCoordinator', () => {
     it('appends terminal worker_done to the eventLog ONLY on consumer-gone finalize', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
-      const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: sink });
+      const coord = new SwarmCoordinator({
+        childDriver: createFakeChildDriver(factory),
+        eventLog: sink,
+      });
       const a = coord.attach(baseAttach({ messageId: 'm-1' }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -796,7 +804,10 @@ describe('SwarmCoordinator', () => {
     it('does not re-append a worker_done that already rode the live stream (completed before WS cancel)', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
-      const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: sink });
+      const coord = new SwarmCoordinator({
+        childDriver: createFakeChildDriver(factory),
+        eventLog: sink,
+      });
       coord.attach(baseAttach({ messageId: 'm-1' }));
 
       // Worker A completes normally: its worker_done{done} was pushed to the
@@ -829,7 +840,10 @@ describe('SwarmCoordinator', () => {
     it('NEVER appends to the eventLog on consumerAlive finalize (avoids double-log)', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
-      const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: sink });
+      const coord = new SwarmCoordinator({
+        childDriver: createFakeChildDriver(factory),
+        eventLog: sink,
+      });
       const a = coord.attach(baseAttach({ messageId: 'm-1' }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -841,7 +855,10 @@ describe('SwarmCoordinator', () => {
     it('does not append on consumer-gone finalize when no messageId is set', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
-      const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: sink });
+      const coord = new SwarmCoordinator({
+        childDriver: createFakeChildDriver(factory),
+        eventLog: sink,
+      });
       const a = coord.attach(baseAttach()); // no messageId
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -852,7 +869,7 @@ describe('SwarmCoordinator', () => {
 
     it('clears the live attachment so subsequent spawn throws', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       a.finalize({ consumerAlive: true });
@@ -866,7 +883,7 @@ describe('SwarmCoordinator', () => {
   describe('ring buffer', () => {
     it('retains the last 20 runs per agent; the 21st run evicts the 1st', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const runIds: string[] = [];
       for (let i = 0; i < 21; i++) {
         const a = coord.attach(baseAttach({ conversationId: `c-${i}` }));
@@ -916,7 +933,7 @@ describe('SwarmCoordinator', () => {
 
     it('a restored snapshot is listed by getRuns and retrievable by getRun', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
 
       coord.restoreFinalizedRun(restoredSnapshot());
 
@@ -929,7 +946,7 @@ describe('SwarmCoordinator', () => {
 
     it('restored snapshots count toward the per-agent ring buffer cap', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       for (let i = 0; i < 21; i++) {
         coord.restoreFinalizedRun({ ...restoredSnapshot(), runId: `run-${i}` });
       }
@@ -943,7 +960,7 @@ describe('SwarmCoordinator', () => {
   describe('panel ops', () => {
     it('cancelWorker on a terminal worker returns {ok:false, reason:"worker terminal"}', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       const seg = await backends[0].onNextSegment();
@@ -955,7 +972,7 @@ describe('SwarmCoordinator', () => {
 
     it('sendPanelMessage on a finalized run returns {ok:false, reason:"run finalized"}', () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       const runId = a.runIdHint;
@@ -966,7 +983,7 @@ describe('SwarmCoordinator', () => {
 
     it('cancelWorker on a live worker returns {ok:true} and aborts the backend', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -980,7 +997,7 @@ describe('SwarmCoordinator', () => {
   describe('cancelRunsFor and stop', () => {
     it('cancelRunsFor finalizes all runs for the agent (consumer-gone)', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ conversationId: 'c1' }));
       coord.attach(baseAttach({ conversationId: 'c2' }));
       coord.spawnWorker(AGENT_ID, 'c1', { role: 'r', brief: 'b' });
@@ -997,7 +1014,7 @@ describe('SwarmCoordinator', () => {
 
     it('cancelTurn finalizes only the keyed conversation and reports whether one existed', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ conversationId: 'c1' }));
       coord.attach(baseAttach({ conversationId: 'c2' }));
       coord.spawnWorker(AGENT_ID, 'c1', { role: 'r', brief: 'b' });
@@ -1019,7 +1036,7 @@ describe('SwarmCoordinator', () => {
 
     it('stop finalizes runs across all agents', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ agentId: 'a1', conversationId: 'c1' }));
       coord.attach(baseAttach({ agentId: 'a2', conversationId: 'c2' }));
       coord.spawnWorker('a1', 'c1', { role: 'r', brief: 'b' });
@@ -1038,7 +1055,10 @@ describe('SwarmCoordinator', () => {
     it('fires on spawn, worker terminal, and finalize', async () => {
       const { factory, backends } = makeFactory();
       const onRunChanged = vi.fn();
-      const coord = new SwarmCoordinator({ workerFactory: factory, onRunChanged });
+      const coord = new SwarmCoordinator({
+        childDriver: createFakeChildDriver(factory),
+        onRunChanged,
+      });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       expect(onRunChanged).toHaveBeenCalledWith(AGENT_ID, a.runIdHint);
@@ -1073,7 +1093,7 @@ describe('SwarmCoordinator', () => {
     it('fires subagentStart on spawn and subagentStop{done} when the worker completes', async () => {
       const { factory, backends } = makeFactory();
       const { starts, stops, hooks } = makeHookRecorder();
-      const coord = new SwarmCoordinator({ workerFactory: factory, hooks });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory), hooks });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, {
         role: 'researcher',
@@ -1091,7 +1111,7 @@ describe('SwarmCoordinator', () => {
     it('fires subagentStop{cancelled} when finalize cancels a live worker', async () => {
       const { factory, backends } = makeFactory();
       const { stops, hooks } = makeHookRecorder();
-      const coord = new SwarmCoordinator({ workerFactory: factory, hooks });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory), hooks });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'coder', brief: 'b' });
       await backends[0].onNextSegment();
@@ -1102,7 +1122,10 @@ describe('SwarmCoordinator', () => {
     it('fires subagentStop{failed} when the backend errors', async () => {
       const { starts, stops, hooks } = makeHookRecorder();
       const failingFactory: WorkerFactory = () => Promise.reject(new Error('backend boom'));
-      const coord = new SwarmCoordinator({ workerFactory: failingFactory, hooks });
+      const coord = new SwarmCoordinator({
+        childDriver: createFakeChildDriver(failingFactory),
+        hooks,
+      });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'tester', brief: 'b' });
       expect(starts).toEqual([{ workerId, role: 'tester' }]);
@@ -1116,7 +1139,7 @@ describe('SwarmCoordinator', () => {
   describe('sendToWorker', () => {
     it('steers a live worker returning {ok:true}', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
@@ -1130,7 +1153,7 @@ describe('SwarmCoordinator', () => {
   describe('ask_orchestrator threading', () => {
     it('the spec handed to the factory carries exactly one extraTool named ask_orchestrator', () => {
       const { factory, specs } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       expect(specs).toHaveLength(1);
@@ -1160,7 +1183,7 @@ describe('SwarmCoordinator', () => {
         return Promise.resolve(backend);
       };
 
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
 
@@ -1204,7 +1227,7 @@ describe('SwarmCoordinator', () => {
         return Promise.resolve(backend);
       };
 
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
 
@@ -1308,7 +1331,7 @@ describe('SwarmCoordinator', () => {
 
     it('waitWorker ignores waiting_input; wait_workers still returns early', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       const seg = await backends[0].onNextSegment();
@@ -1403,7 +1426,7 @@ describe('SwarmCoordinator', () => {
   describe('named children (review fixes)', () => {
     it('waitWorker returns the snapshot it has when the run closes non-terminal', async () => {
       const { factory, backends } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();

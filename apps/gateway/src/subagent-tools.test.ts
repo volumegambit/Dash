@@ -3,14 +3,17 @@ import {
   type ChildSpec,
   type CreateAgentToolsOptions,
   SwarmCoordinator,
-  type WorkerBackend,
-  type WorkerFactory,
   type WorkerSpec,
   builtinSubagentTypes,
   createStaticResolver,
   parentBuiltinTools,
 } from '@dash/swarm';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import { subagentCapsFromConfig } from './subagent-config.js';
 import {
   childSkillWiring,
@@ -85,7 +88,7 @@ function setup(
     specs.push(spec);
     return Promise.resolve(new IdleBackend());
   };
-  const coordinator = new SwarmCoordinator({ workerFactory: factory });
+  const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
   const attachment = coordinator.attach({
     agentId: 'a',
     agentName: 'orch',
@@ -223,7 +226,7 @@ describe('createSwarmGate', () => {
     const registry = new AgentRegistry();
     const { id } = registry.register({ name: 'orch', model: 'm', systemPrompt: 's', ...over });
     const coordinator = new SwarmCoordinator({
-      workerFactory: () => Promise.resolve(new IdleBackend()),
+      childDriver: createFakeChildDriver(() => Promise.resolve(new IdleBackend())),
     });
     const gate = createSwarmGate(coordinator, registry, () => tools);
     return { gate, id };
@@ -374,7 +377,7 @@ describe('subagents.maxDepth', () => {
 
     seenAgentToolOptions.length = 0;
     const coordinator = new SwarmCoordinator({
-      workerFactory: () => Promise.resolve(new IdleBackend()),
+      childDriver: createFakeChildDriver(() => Promise.resolve(new IdleBackend())),
     });
     createSubagentExtraTools({
       coordinator,
@@ -391,7 +394,9 @@ describe('subagents.maxDepth', () => {
 
 describe('createChildSpawnTools', () => {
   const coordinator = () =>
-    new SwarmCoordinator({ workerFactory: () => Promise.resolve(new IdleBackend()) });
+    new SwarmCoordinator({
+      childDriver: createFakeChildDriver(() => Promise.resolve(new IdleBackend())),
+    });
 
   it('arms a child below the ceiling with agent + send_message', () => {
     const tools = createChildSpawnTools({

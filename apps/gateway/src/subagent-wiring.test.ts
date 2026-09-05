@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { DashAgent } from '@dash/agent';
 import type {
   AgentBackend,
   AgentEvent,
@@ -11,30 +12,26 @@ import type {
   DashAgentConfigResolver,
   PiAgentBackendOptions,
 } from '@dash/agent';
-import {
-  type SwarmExtraTool,
-  type WorkerBackend,
-  WorkerHandle,
-  type WorkerSpec,
-} from '@dash/swarm';
+import { ChildHandle, type ChildSpec, type SwarmExtraTool, type WorkerSpec } from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
+import { type WorkerBackend, createFakeChildDriver } from './fake-child-driver.js';
 import {
   type ChildBackendDeps,
   buildChildBackendOptions,
   buildWorkerPreamble,
   childSessionDir,
   cleanupWorktreeForSpec,
-  createGatewayWorkerFactory,
+  createChildBackend,
   createWorktreeCleanupHook,
 } from './subagent-wiring.js';
 import { WORKTREE_REQUIRES_GIT, childWorktreePath } from './subagent-worktree.js';
 
 /**
- * Capture every resolver `createGatewayWorkerFactory` hands to `DashAgent`,
- * so the factory's *actual* static config resolver can be invoked and
- * inspected without booting pi. `PiAgentBackend` is stubbed for the same
- * reason; everything else in @dash/agent stays real.
+ * Capture what `createChildBackend` hands `PiAgentBackend.fromOptions` (and the
+ * state a `DashAgent` over that backend runs with), so the child contract can
+ * be inspected without booting pi. `PiAgentBackend` is stubbed for that reason;
+ * everything else in @dash/agent stays real.
  */
 const captured = vi.hoisted(() => ({
   resolvers: [] as DashAgentConfigResolver[],
@@ -176,7 +173,7 @@ describe('buildWorkerPreamble', () => {
   });
 });
 
-describe('createGatewayWorkerFactory config resolver', () => {
+describe('createChildBackend child config', () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -192,29 +189,23 @@ describe('createGatewayWorkerFactory config resolver', () => {
   });
 
   async function resolveFor(spec: WorkerSpec): Promise<DashAgentConfig> {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
-    await factory(spec);
-    const resolver = captured.resolvers.at(-1);
-    if (!resolver) throw new Error('factory did not construct a DashAgent');
-    return resolver();
+    return (await createChildBackend(spec, { ...deps, dataDir: dir })).config;
   }
 
   /**
-   * The factory seam: without this, a regression that constructed the backend
+   * The construction seam: without this, a regression that built the backend
    * with (say) an unconditional `mcpManager` would pass every other test here,
    * because they all check `buildChildBackendOptions` in isolation.
    */
   it('hands PiAgentBackend.fromOptions exactly what buildChildBackendOptions built', async () => {
     const spec = makeSpec({ mcpTools: ['github__pr'] });
-    const factoryDeps = { ...deps, dataDir: dir };
-    const factory = createGatewayWorkerFactory(factoryDeps);
-    await factory(spec);
-    expect(captured.options.at(-1)).toEqual(buildChildBackendOptions(spec, factoryDeps));
+    const childDeps = { ...deps, dataDir: dir };
+    await createChildBackend(spec, childDeps);
+    expect(captured.options.at(-1)).toEqual(buildChildBackendOptions(spec, childDeps));
   });
 
   it('does not pass the mcpManager to a child with no MCP grant', async () => {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
-    await factory(makeSpec());
+    await createChildBackend(makeSpec(), { ...deps, dataDir: dir });
     expect((captured.options.at(-1) as PiAgentBackendOptions).mcpManager).toBeUndefined();
   });
 
@@ -238,9 +229,10 @@ describe('createGatewayWorkerFactory config resolver', () => {
    * the backend was actually handed.
    */
   async function systemPromptFor(spec: WorkerSpec): Promise<string> {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
-    const worker = await factory(spec);
-    for await (const _ of worker.chat('go')) {
+    const child = await createChildBackend(spec, { ...deps, dataDir: dir });
+    // Exactly what the pool builds for a child conversation.
+    const agent = new DashAgent(child.backend, async () => child.config);
+    for await (const _ of agent.chat('swarm', spec.workerId, 'go')) {
       /* the fake backend yields nothing */
     }
     const state = captured.states.at(-1);
@@ -578,32 +570,32 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
   });
 
   it('an isolated child is started in its own worktree, not the parent workspace', async () => {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
     const spec = makeSpec({ workspace, isolation: 'worktree' });
-    const worker = await factory(spec);
+    const child = await createChildBackend(spec, { ...deps, dataDir });
 
     const expected = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
     expect(captured.starts.at(-1)).toBe(expected);
     expect((captured.options.at(-1) as PiAgentBackendOptions).config.workspace).toBe(expected);
-    expect(worker.workspace).toBe(expected);
+    expect(child.workspace).toBe(expected);
     expect(await pathExists(join(expected, 'base.txt'))).toBe(true);
   });
 
   it('a normal child still runs in the shared workspace', async () => {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
-    const worker = await factory(makeSpec({ workspace }));
+    const child = await createChildBackend(makeSpec({ workspace }), { ...deps, dataDir });
     expect(captured.starts.at(-1)).toBe(workspace);
-    expect(worker.workspace).toBe(workspace);
+    expect(child.workspace).toBe(workspace);
     expect(await pathExists(join(dataDir, 'worktrees'))).toBe(false);
   });
 
   it('an isolated child of a non-git workspace fails to spawn with the exact message', async () => {
     const plain = await mkdtemp(join(tmpdir(), 'wire-plain-'));
     try {
-      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
-      await expect(factory(makeSpec({ workspace: plain, isolation: 'worktree' }))).rejects.toThrow(
-        WORKTREE_REQUIRES_GIT,
-      );
+      await expect(
+        createChildBackend(makeSpec({ workspace: plain, isolation: 'worktree' }), {
+          ...deps,
+          dataDir,
+        }),
+      ).rejects.toThrow(WORKTREE_REQUIRES_GIT);
       // Nothing was constructed or started for the doomed child.
       expect(captured.starts).toHaveLength(0);
     } finally {
@@ -622,9 +614,8 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     };
 
     it('removes the worktree of a child that left it clean', async () => {
-      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
       const spec = makeSpec({ workspace, isolation: 'worktree' });
-      await factory(spec);
+      await createChildBackend(spec, { ...deps, dataDir });
       const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
 
       await expect(cleanupWorktreeForSpec(finishedSpec(), { dataDir })).resolves.toEqual({
@@ -636,9 +627,8 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
 
     /** Ruling 2: dirty means the child did work — keep it and surface the path. */
     it('keeps a dirty worktree and warns with its path', async () => {
-      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
       const spec = makeSpec({ workspace, isolation: 'worktree' });
-      await factory(spec);
+      await createChildBackend(spec, { ...deps, dataDir });
       const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
       await writeFile(join(path, 'findings.md'), '# work in progress\n');
 
@@ -660,9 +650,8 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
       await writeFile(join(workspace, '.gitignore'), 'docs/plans/\nnode_modules/\n');
       await git(workspace, 'add', '-A');
       await git(workspace, 'commit', '-m', 'ignore plans');
-      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
       const spec = makeSpec({ workspace, isolation: 'worktree' });
-      await factory(spec);
+      await createChildBackend(spec, { ...deps, dataDir });
       const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
       await mkdir(join(path, 'docs', 'plans'), { recursive: true });
       await writeFile(join(path, 'docs', 'plans', '2026-09-05-thing.md'), '# the plan\n');
@@ -680,9 +669,8 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
       await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
       await git(workspace, 'add', '-A');
       await git(workspace, 'commit', '-m', 'ignore deps');
-      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
       const spec = makeSpec({ workspace, isolation: 'worktree' });
-      await factory(spec);
+      await createChildBackend(spec, { ...deps, dataDir });
       const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
       await mkdir(join(path, 'node_modules'), { recursive: true });
       await writeFile(join(path, 'node_modules', 'x.js'), 'x\n');
@@ -735,15 +723,14 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
    * child must take its worktree down too, or every cancel leaks a directory.
    */
   it('the cleanup hook removes the worktree of a cancelled child', async () => {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
     const spec = makeSpec({ workspace, isolation: 'worktree' });
-    const worker = await factory(spec);
+    const child = await createChildBackend(spec, { ...deps, dataDir });
     const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
     expect(await pathExists(path)).toBe(true);
 
     const hook = createWorktreeCleanupHook({ dataDir });
     // Exactly what a cancel does: abort the child, then fire the terminal hook.
-    worker.abort();
+    child.backend.abort();
     const { extraTools: _extraTools, ...finished } = spec;
     await hook(finished);
 
@@ -751,8 +738,10 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
   });
 
   it('the cleanup hook resolves rather than rejecting when git fails', async () => {
-    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
-    await factory(makeSpec({ workspace, isolation: 'worktree' }));
+    await createChildBackend(makeSpec({ workspace, isolation: 'worktree' }), {
+      ...deps,
+      dataDir,
+    });
 
     const warnings: string[] = [];
     const hook = createWorktreeCleanupHook({ dataDir, warn: (m) => warnings.push(m) });
@@ -770,7 +759,7 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
    * Ruling 2 of task B7. `max_turns` is the second terminal status produced by
    * a cooperative abort rather than by the child finishing, and the finalizer's
    * contract is that EVERY terminal path notifies the spawner. These two pin
-   * that end to end — a real worktree, a real WorkerHandle tripping its cap,
+   * that end to end — a real worktree, a real ChildHandle tripping its cap,
    * and the real cleanup hook — so a future refactor that hand-rolls the
    * max_turns transition cannot silently start leaking a directory per capped
    * child.
@@ -795,9 +784,8 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     }
 
     async function runCapped(dir: string) {
-      const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
       const spec = makeSpec({ workspace, isolation: 'worktree', maxTurns: 1 });
-      await factory(spec);
+      await createChildBackend(spec, { ...deps, dataDir: dir });
       const path = childWorktreePath({ dataDir: dir, agentName: spec.agentName, childId: 'w-01' });
       expect(await pathExists(path)).toBe(true);
       return { spec, path };
@@ -808,10 +796,18 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
       backend: WorkerBackend,
       onFinished: (s: Omit<WorkerSpec, 'extraTools'>) => Promise<void>,
     ) {
-      const { extraTools: _extraTools, ...handleSpec } = spec;
-      const handle = new WorkerHandle({
+      const { extraTools: _extraTools, ...rest } = spec;
+      const handleSpec: Omit<ChildSpec, 'extraTools'> = {
+        ...rest,
+        childConversationId: rest.workerId,
+        parentConversationId: 'parent-convo',
+        parentTurnId: 'parent-turn',
+      };
+      const driver = createFakeChildDriver(() => Promise.resolve(backend));
+      driver.prepareChild({ ...handleSpec, extraTools: [] });
+      const handle = new ChildHandle({
         spec: handleSpec,
-        backendPromise: Promise.resolve(backend),
+        driver,
         emit: () => {},
         maxSteers: 3,
         onTerminal: () => {},

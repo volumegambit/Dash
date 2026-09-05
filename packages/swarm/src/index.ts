@@ -11,7 +11,6 @@ export {
   DEFAULT_CHILD_CANCEL_GRACE_MS,
 } from './child-handle.js';
 export { CHILD_CONVERSATION_ID_RE, childConversationId } from './child-id.js';
-export { createInProcessChildDriver } from './in-process-child-driver.js';
 export {
   type AttachOptions,
   type ChildSpawnRequest,
@@ -45,7 +44,7 @@ export {
   type CreateSwarmToolsOptions,
   type QuestionHost,
 } from './tools.js';
-export { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
+export { DEFAULT_SUBAGENT_TYPE, legacyWorkerDoneStatus } from './subagent-status.js';
 export { ChildTurnStartError } from './types.js';
 export type {
   ChildConversationInput,
@@ -59,8 +58,7 @@ export type {
   SwarmCaps,
   SwarmEventLogSink,
   SwarmExtraTool,
-  WorkerBackend,
-  WorkerFactory,
+  SwarmHooks,
   WorkerSpec,
   WorkerStatus,
 } from './types.js';

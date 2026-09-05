@@ -466,9 +466,7 @@ async function main() {
   /**
    * Everything a child's backend is built from — the credential source, the
    * data dir, the narrowed MCP/skill/hook wiring. Read by the pool's child
-   * branch below, which is now the ONLY place the gateway constructs a child
-   * (`createGatewayWorkerFactory`, the in-process transport, is unused here and
-   * goes away with `WorkerFactory` in Task C4).
+   * branch below, which is the ONLY place the gateway constructs a child.
    */
   const childBackendDeps: ChildBackendDeps = {
     credentialProvider: swarmCredentialProvider,
@@ -531,7 +529,7 @@ async function main() {
       warn: (message) => logger.warn(message),
     }),
     // Fire the SubagentStart/SubagentStop plugin hook events around worker
-    // lifecycles (swarm design §6). The WorkerHandle seam is a synchronous
+    // lifecycles (swarm design §6). The ChildHandle seam is a synchronous
     // void callback, so the async engine runs fire-and-forget — a Subagent
     // hook can observe (log, notify, audit) but never block a worker. Read
     // the engine LIVE through the mutable `wiringState` holder (same reload

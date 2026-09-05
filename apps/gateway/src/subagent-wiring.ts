@@ -1,7 +1,6 @@
 import { access, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
-  DashAgent,
   type DashAgentConfig,
   type ExtraTool,
   type FlatSkillFile,
@@ -13,7 +12,7 @@ import {
   type ProviderApiKeysSource,
 } from '@dash/agent';
 import type { McpManager } from '@dash/mcp';
-import type { WorkerBackend, WorkerFactory, WorkerSpec } from '@dash/swarm';
+import type { WorkerSpec } from '@dash/swarm';
 import {
   childWorktreePath,
   cleanupChildWorktree,
@@ -310,33 +309,6 @@ export async function createChildBackend(
   const backend = PiAgentBackend.fromOptions(options);
   await backend.start(workspace);
   return { backend, config: options.config, workspace };
-}
-
-/**
- * Build the gateway's swarm `WorkerFactory` — the IN-PROCESS child transport.
- * Superseded by the conversation-backed child driver (a child is a real
- * conversation now) and retired with `WorkerFactory` itself in Task C4; kept so
- * an embedder without a conversation store still has a working child.
- */
-export function createGatewayWorkerFactory(deps: ChildBackendDeps): WorkerFactory {
-  return async (spec: WorkerSpec): Promise<WorkerBackend> => {
-    const { backend, config, workspace } = await createChildBackend(spec, deps);
-
-    // Static resolver: a child's model / preamble / tools / memory policy are
-    // fixed for the life of the spawn, so hand back the SAME config object the
-    // backend was constructed with on every turn — the two cannot disagree.
-    const agent = new DashAgent(backend, async () => config);
-
-    return {
-      // Where the child ACTUALLY ran. The swarm surfaces it in the worker
-      // snapshot and the `agent` tool reports it in its details, so a user can
-      // always see the worktree an isolated child worked in (design 5.2).
-      workspace,
-      chat: (message: string) => agent.chat('swarm', `${spec.runId}-${spec.workerId}`, message),
-      abort: () => backend.abort(),
-      stop: () => backend.stop(),
-    };
-  };
 }
 
 /** What the finish-time worktree cleanup needs from the gateway. */

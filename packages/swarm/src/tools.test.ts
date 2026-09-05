@@ -1,9 +1,14 @@
 import type { AgentEvent } from '@dash/agent';
+import { ChildHandle } from './child-handle.js';
 import { SwarmCoordinator } from './coordinator.js';
 import type { AttachOptions } from './coordinator.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import { createAskOrchestratorTool, createSwarmTools } from './tools.js';
-import type { SwarmExtraTool, WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
-import { WorkerHandle } from './worker-handle.js';
+import type { SwarmExtraTool, WorkerSpec } from './types.js';
 
 const AGENT_ID = 'agent-1';
 const CONVO_ID = 'convo-1';
@@ -61,7 +66,7 @@ function baseAttach(overrides: Partial<AttachOptions> = {}): AttachOptions {
 /** Build a coordinator + live attachment + the orchestrator tools over it. */
 function setup(overrides: Partial<AttachOptions> = {}) {
   const { factory, backends, specs } = makeFactory();
-  const coord = new SwarmCoordinator({ workerFactory: factory });
+  const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
   const attachment = coord.attach(baseAttach(overrides));
   const tools = createSwarmTools({
     coordinator: coord,
@@ -141,7 +146,7 @@ describe('createSwarmTools', () => {
 
     it('throws when a per-run cap is exceeded (maxWorkersPerRun)', async () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ caps: { maxWorkersPerRun: 1 } }));
       const tools = createSwarmTools({
         coordinator: coord,
@@ -155,7 +160,7 @@ describe('createSwarmTools', () => {
 
     it('throws when the swarm turn is closed (no live attachment)', async () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const tools = createSwarmTools({
         coordinator: coord,
         agentId: AGENT_ID,
@@ -251,24 +256,28 @@ describe('createSwarmTools', () => {
   });
 });
 
-/** A minimal WorkerHandle harness for the worker-side ask_orchestrator tool. */
+/** A minimal ChildHandle harness for the child-side ask_orchestrator tool. */
 function makeHandle() {
   const emitted: AgentEvent[] = [];
   let terminalCalls = 0;
-  const handle = new WorkerHandle({
+  // Never started: the child stays 'spawning', which is all the question path
+  // needs (and keeps the driver out of it entirely).
+  const handle = new ChildHandle({
     spec: {
       agentId: AGENT_ID,
       agentName: 'Agent One',
       runId: 'run-1',
       workerId: 'w-1',
+      childConversationId: 'w-1',
+      parentConversationId: CONVO_ID,
+      parentTurnId: 'turn-1',
       role: 'worker',
       brief: 'do the thing',
       model: 'orch-model',
       workspace: '/tmp',
       tools: [],
     },
-    // Never resolves: the worker stays 'spawning' until start()/cancel drive it.
-    backendPromise: new Promise<WorkerBackend>(() => {}),
+    driver: createFakeChildDriver(() => Promise.resolve(new IdleBackend())),
     emit: (e) => emitted.push(e),
     maxSteers: 10,
     onTerminal: () => {

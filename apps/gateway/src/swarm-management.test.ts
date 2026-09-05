@@ -2,12 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
-import {
-  type SwarmAttachment,
-  SwarmCoordinator,
-  type WorkerBackend,
-  type WorkerSpec,
-} from '@dash/swarm';
+import { type SwarmAttachment, SwarmCoordinator, type WorkerSpec } from '@dash/swarm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -18,6 +13,11 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import type { DynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 
@@ -299,7 +299,7 @@ describe('swarm management routes', () => {
     agentIdCounter = 0;
     const fake = makeFakeWorkerFactory();
     workers = fake.workers;
-    coordinator = new SwarmCoordinator({ workerFactory: fake.factory });
+    coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(fake.factory) });
   });
 
   afterEach(() => {
@@ -642,7 +642,7 @@ describe('lifecycle cascades', () => {
   beforeEach(() => {
     agentIdCounter = 0;
     const fake = makeFakeWorkerFactory();
-    coordinator = new SwarmCoordinator({ workerFactory: fake.factory });
+    coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(fake.factory) });
   });
 
   afterEach(() => {

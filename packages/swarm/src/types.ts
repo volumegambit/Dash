@@ -1,19 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
 
-/** One conversational segment of a worker. Duck-typed over DashAgent.chat. */
-export interface WorkerBackend {
-  chat(message: string): AsyncGenerator<AgentEvent>;
-  abort(): void;
-  stop(): Promise<void>;
-  /**
-   * The directory the child ACTUALLY runs in. Normally the parent's workspace,
-   * but an `isolation: 'worktree'` child runs in its own checkout, whose path
-   * only the factory knows. Reported in the worker snapshot so the `agent`
-   * tool's details can tell a user where the child worked.
-   */
-  workspace?: string;
-}
-
 export interface WorkerSpec {
   agentId: string; // registry id (run keying)
   agentName: string; // config.name (session dir)
@@ -47,7 +33,15 @@ export interface WorkerSpec {
   depth?: number; // 1 for a direct child
 }
 
-export type WorkerFactory = (spec: WorkerSpec) => Promise<WorkerBackend>;
+/**
+ * Plugin hook seam fired around a child's lifecycle. Synchronous and
+ * fire-and-forget: a hook may observe (log, notify, audit) a child, never block
+ * one.
+ */
+export interface SwarmHooks {
+  subagentStart?(w: { workerId: string; role: string }): void;
+  subagentStop?(w: { workerId: string; role: string; status: string }): void;
+}
 
 /** Structural copy of @dash/agent ExtraTool (types.ts:103-116) to stay duck-typed. */
 export interface SwarmExtraTool {
@@ -76,6 +70,13 @@ export interface SwarmCaps {
   maxConcurrentWorkers: number; // 8
   maxWorkersPerRun: number; // 24
   maxSteersPerWorker: number; // 10
+  /**
+   * The per-CHILD wall clock, in seconds. Per child rather than per run since
+   * Task C4: a background child outlives the turn that spawned it, so a
+   * run-scoped clock would either kill a detached child when its parent's turn
+   * ended or never fire for it at all. The run keeps its own timer for the
+   * ORCHESTRATOR's turn, bounded by the same number.
+   */
   maxRunSeconds: number; // 1800
   /**
    * How deep descendants may nest. A direct child is depth 1, so `maxDepth: 3`

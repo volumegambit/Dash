@@ -1,4 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
+import { DEFAULT_SUBAGENT_TYPE, legacyWorkerDoneStatus } from './subagent-status.js';
 import type {
   ChildSnapshot,
   ChildSpec,
@@ -6,7 +7,6 @@ import type {
   ChildTurnOutcome,
   WorkerStatus,
 } from './types.js';
-import { DEFAULT_SUBAGENT_TYPE, legacyWorkerDoneStatus } from './worker-handle.js';
 
 export interface ChildHandleOptions {
   spec: Omit<ChildSpec, 'extraTools'>;
@@ -26,7 +26,7 @@ export interface ChildHandleOptions {
   /**
    * Fired ONCE on every terminal path, carrying the spec so the spawner can
    * undo what it set up (the gateway removes an `isolation: worktree`
-   * checkout). Never awaited and never trusted — see {@link WorkerHandle}.
+   * checkout). Never awaited and never trusted.
    */
   onFinished?(spec: Omit<ChildSpec, 'extraTools'> & { workerStatus: string }): void | Promise<void>;
   /** How long `cancel()` gives the driver's abort to settle. */
@@ -50,7 +50,12 @@ const PROGRESS_THROTTLE_MS = 1_000;
 /** Bound on how long a cancel waits for the driver's abort before notifying. */
 export const DEFAULT_CHILD_CANCEL_GRACE_MS = 5_000;
 
-/** Lead-in of a `max_turns` report; see {@link WorkerHandle}. */
+/**
+ * The marker a `max_turns` report leads with. A capped child is stopped
+ * mid-thought, so its report is whatever it had said by then: the marker tells
+ * the parent (and the user) that the text below it is INCOMPLETE and that the
+ * child is still addressable — `send_message` resumes it with a fresh budget.
+ */
 const MAX_TURNS_PARTIAL_MARKER = '[partial: maxTurns reached; resumable with send_message]';
 
 /** The report of a child whose conversation was deleted out from under it. */
@@ -65,14 +70,13 @@ interface QuestionWaiter {
 }
 
 /**
- * One child, as a state machine over its own CONVERSATION rather than over an
- * in-process backend. Where `WorkerHandle` iterated `backend.chat()`, this
- * starts a turn through the {@link ChildTurnDriver} and folds the turn's
- * observed events and its completion back into the same status machine — so a
- * child persists, replays, and survives a restart (design §7.1).
+ * One child, as a state machine over its own CONVERSATION. It starts a turn
+ * through the {@link ChildTurnDriver} and folds that turn's observed events and
+ * its completion back into a status machine — so a child persists, replays, and
+ * survives a restart (design §7.1).
  *
- * The two synchronous-discipline invariants of `WorkerHandle` carry over
- * unchanged and are the reason the terminal transition is one function:
+ * Two synchronous-discipline invariants hold, and are the reason the terminal
+ * transition is one function:
  *
  *  1. The terminal transition (run when a turn completes) reads the steer queue
  *     and applies its effect in ONE synchronous block. `send()` likewise checks
@@ -270,7 +274,11 @@ export class ChildHandle {
     return true;
   }
 
-  /** Used by the ask_orchestrator tool; see {@link WorkerHandle.waitForQuestion}. */
+  /**
+   * Park the child in `waiting_input` until the parent answers (the
+   * `ask_orchestrator` tool). Rejects on timeout, on abort, and on every
+   * terminal transition, so the child's tool call never outlives the child.
+   */
   waitForQuestion(
     question: string,
     signal: AbortSignal | undefined,

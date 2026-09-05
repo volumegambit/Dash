@@ -1,6 +1,11 @@
 import type { AgentEvent } from '@dash/agent';
 import { createAgentTools } from './agent-tool.js';
 import { SwarmCoordinator } from './coordinator.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import { type ParentToolContext, parentBuiltinTools } from './resolve-spawn.js';
 import {
   type ResolvedSubagentType,
@@ -8,7 +13,7 @@ import {
   builtinSubagentTypes,
   createStaticResolver,
 } from './subagent-types.js';
-import type { WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
+import type { WorkerSpec } from './types.js';
 
 /** The orchestrator's default grant (resolve-spawn.ts DEFAULT_TOOL_NAMES). */
 const PARENT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
@@ -618,7 +623,7 @@ describe('agent tool against a real SwarmCoordinator', () => {
       specs.push(spec);
       return Promise.resolve(new IdleBackend());
     };
-    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
     const attachment = coordinator.attach({
       agentId: 'a',
       agentName: 'A',

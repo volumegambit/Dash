@@ -2,18 +2,18 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
-import {
-  SwarmCoordinator,
-  type SwarmEventLogSink,
-  type WorkerBackend,
-  type WorkerFactory,
-} from '@dash/swarm';
+import { SwarmCoordinator, type SwarmEventLogSink } from '@dash/swarm';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type AgentChatCoordinatorSwarm,
   createAgentChatCoordinator,
 } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import { isSubagentsEnabled } from './subagent-config.js';
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
@@ -766,7 +766,10 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
       ...(opts.workspace !== undefined ? { workspace: opts.workspace } : {}),
     });
     const { factory, release, specs } = makeWorkerFactory();
-    const coordinator = new SwarmCoordinator({ workerFactory: factory, eventLog: opts.eventLog });
+    const coordinator = new SwarmCoordinator({
+      childDriver: createFakeChildDriver(factory),
+      eventLog: opts.eventLog,
+    });
     const { backend, controller } = makeScriptedBackend();
     const swarm: AgentChatCoordinatorSwarm = {
       coordinator,
@@ -795,7 +798,7 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
       swarm: { enabled: false },
     });
     const { factory } = makeWorkerFactory();
-    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
     const attachSpy = vi.spyOn(coordinator, 'attach');
     const agents = createAgentChatCoordinator({
       registry,
@@ -829,7 +832,7 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
       swarm: { enabled: true },
     });
     const { factory } = makeWorkerFactory();
-    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
     const attachSpy = vi.spyOn(coordinator, 'attach');
     const agents = createAgentChatCoordinator({
       registry,
@@ -1073,7 +1076,7 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     // NOTE: no `swarm`, no `subagents`. Do not add either to this fixture.
     const { id } = registry.register({ name: 'default-agent', model: MODEL, systemPrompt: 'x' });
     const { factory, release } = makeWorkerFactory();
-    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
     const { backend, controller } = makeScriptedBackend();
     const agents = createAgentChatCoordinator({
       registry,

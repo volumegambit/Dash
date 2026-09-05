@@ -4,14 +4,17 @@ import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/age
 import {
   SwarmCoordinator,
   type SwarmExtraTool,
-  type WorkerBackend,
-  type WorkerFactory,
   type WorkerSpec,
   scanSubagentOutput,
 } from '@dash/swarm';
 import { type MockInstance, describe, expect, it, vi } from 'vitest';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
 import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
@@ -205,7 +208,7 @@ function setup(
     asked,
     backgroundBehaviour,
   );
-  const coordinator = new SwarmCoordinator({ workerFactory: factory });
+  const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
   const spawnSpy = vi.spyOn(coordinator, 'spawnWorker');
   const states: AgentState[] = [];
   const harness = { injected: [] as string[] };

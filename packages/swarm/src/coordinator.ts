@@ -3,7 +3,6 @@ import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import { ChildHandle } from './child-handle.js';
 import { childConversationId } from './child-id.js';
-import { createInProcessChildDriver } from './in-process-child-driver.js';
 import { ALWAYS_AVAILABLE_TOOLS, UNIVERSE, parentBuiltinTools } from './resolve-spawn.js';
 import {
   type RunSnapshot,
@@ -12,6 +11,7 @@ import {
   SwarmRun,
   type SwarmRunOptions,
 } from './run.js';
+import { DEFAULT_SUBAGENT_TYPE } from './subagent-status.js';
 import { createAskOrchestratorTool } from './tools.js';
 import type {
   ChildSnapshot,
@@ -19,10 +19,9 @@ import type {
   ChildTurnDriver,
   SwarmCaps,
   SwarmEventLogSink,
-  WorkerFactory,
+  SwarmHooks,
   WorkerStatus,
 } from './types.js';
-import { DEFAULT_SUBAGENT_TYPE, type WorkerHandleOptions } from './worker-handle.js';
 
 export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
 
@@ -176,17 +175,14 @@ interface LiveTurn {
 export interface SwarmCoordinatorOptions {
   /**
    * Runs children as CONVERSATIONS (design §7.1). The gateway implements it
-   * over `ResumableChatHub` + `ConversationService`; supply it and children
-   * persist, replay and stay addressable after the turn that spawned them.
+   * over `ResumableChatHub` + `ConversationService`, so a child persists,
+   * replays and stays addressable after the turn that spawned it.
    *
-   * Omitted, the coordinator falls back to
-   * {@link createInProcessChildDriver} over `workerFactory` — the same
-   * `ChildHandle` lifetime over an in-process backend, kept for embedders with
-   * no conversation store. One of the two is required.
+   * The ONLY child transport. Task C4 retired the in-process
+   * `WorkerFactory` / `WorkerHandle` path it used to share the coordinator
+   * with, so there is exactly one child lifetime.
    */
-  childDriver?: ChildTurnDriver;
-  /** Legacy in-process transport. Required unless `childDriver` is supplied. */
-  workerFactory?: WorkerFactory;
+  childDriver: ChildTurnDriver;
   /**
    * Each child's heartbeat interval, which is also its liveness poll: a child
    * whose conversation was deleted (a cascading parent delete) is cancelled on
@@ -198,13 +194,13 @@ export interface SwarmCoordinatorOptions {
   eventLog?: SwarmEventLogSink;
   globalMaxConcurrentWorkers?: number;
   defaultCaps?: Partial<SwarmCaps>;
-  hooks?: WorkerHandleOptions['hooks'];
+  hooks?: SwarmHooks;
   /** Called on run state transitions (spawn, worker terminal, finalize). */
   onRunChanged?(agentId: string, runId: string): void;
   /**
    * Called once per worker terminal transition (done, failed, cancelled) with
    * that worker's spec. The gateway hangs worktree cleanup off this: the spawn
-   * side created the child's checkout in `workerFactory`, and every terminal
+   * side created the child's checkout when it built the backend, and every terminal
    * path — cancels included — has to be able to take it down again.
    */
   onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
@@ -237,7 +233,7 @@ export class SwarmCoordinator {
   private readonly eventLog?: SwarmEventLogSink;
   private readonly globalMax: number;
   private readonly defaultCaps: Partial<SwarmCaps>;
-  private readonly hooks?: WorkerHandleOptions['hooks'];
+  private readonly hooks?: SwarmHooks;
   private readonly childHeartbeatMs?: number;
   private readonly onRunChanged?: (agentId: string, runId: string) => void;
   private readonly onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
@@ -258,11 +254,7 @@ export class SwarmCoordinator {
   private readonly childSpecs = new Map<string, ChildSpec>();
 
   constructor(opts: SwarmCoordinatorOptions) {
-    const workerFactory = opts.workerFactory;
-    if (!opts.childDriver && !workerFactory) {
-      throw new Error('SwarmCoordinator needs a childDriver or a workerFactory');
-    }
-    this.driver = opts.childDriver ?? createInProcessChildDriver(workerFactory as WorkerFactory);
+    this.driver = opts.childDriver;
     this.eventLog = opts.eventLog;
     this.globalMax = opts.globalMaxConcurrentWorkers ?? DEFAULT_GLOBAL_MAX_CONCURRENT;
     this.defaultCaps = opts.defaultCaps ?? {};
@@ -1084,7 +1076,7 @@ export class SwarmCoordinator {
 
   /**
    * Emit the terminal pair for a worker whose `worker_spawned` card reached the
-   * stream but whose registration failed. Mirrors WorkerHandle's ordering:
+   * stream but whose registration failed. Mirrors ChildHandle's ordering:
    * legacy `worker_done` first, then `subagent_finished`.
    */
   private terminalizePhantom(
