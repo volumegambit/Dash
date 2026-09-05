@@ -787,12 +787,22 @@ class DashUITestCase: XCTestCase {
 /// `DashUITestCase.exposureWait` — will eventually sample it. The failure is
 /// therefore a property of the poll window, not of the app.
 ///
-/// So ask `isHittable` only when the element's frame is real and lies inside
-/// the window, which is precisely the state in which XCUITest can always
-/// derive a hit point from the frame. Anything else counts as "not exposed
-/// yet", which is what a mid-transition control genuinely is, and the caller
-/// keeps waiting. Nothing is weakened for settled UI: a settled control is
-/// inside the window, so `isHittable` is still consulted and still decides.
+/// So ask `isHittable` only when the element's frame is real and OVERLAPS the
+/// window, rather than requiring the window to fully contain it. Full
+/// containment was tried first and is too strong: at accessibility XXXL a
+/// conversation row is taller than the visible viewport, so its frame can
+/// never be fully inside the window even though the row is genuinely on
+/// screen and tappable (`AccessibilityUITests.testAccessibilityXXXL`) — the
+/// stricter guard reported it as permanently "not exposed" and
+/// `revealSidebarIfNeeded` never returned. An element whose frame is entirely
+/// outside the window — the actual mid-transition case above, where a
+/// tab-bar button slides fully off before it settles — has no overlap at all
+/// and is still correctly rejected here without ever reaching `isHittable`.
+/// Once there is real overlap, `isHittable` itself resolves the activation
+/// point from the visible, on-screen portion, so it neither raises nor lies
+/// about a partially-visible control. Nothing is weakened for settled UI: a
+/// settled control fully overlaps the window too, so `isHittable` is still
+/// consulted and still decides.
 ///
 /// Free function rather than a `DashUITestCase` member because
 /// `DashUITestCase` is `@MainActor` and the `NSPredicate` block that needs
@@ -804,8 +814,10 @@ private func isSafelyHittable(_ element: XCUIElement, in app: XCUIApplication) -
     return false
   }
   let window = app.windows.firstMatch.frame
-  // 1pt of slack: a settled control may round a hair past the window edge.
-  guard window.isEmpty == false, window.insetBy(dx: -1, dy: -1).contains(frame) else {
+  // 1pt of slack: a settled control may round a hair past the window edge,
+  // which would otherwise make two touching-but-not-overlapping rects report
+  // no intersection.
+  guard window.isEmpty == false, window.insetBy(dx: -1, dy: -1).intersects(frame) else {
     return false
   }
   return element.isHittable
