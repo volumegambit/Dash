@@ -54,6 +54,7 @@ const gatewayConversation: McConversationView = {
   lastMessagePreview: 'cached transcript',
   createdAt: '2026-07-12T00:00:00Z',
   updatedAt: '2026-07-12T00:00:02Z',
+  kind: 'user',
   origin: 'gateway',
   offline: false,
   readOnly: false,

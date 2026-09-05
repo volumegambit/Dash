@@ -28,6 +28,7 @@ function conversation(
     lastMessagePreview: null,
     createdAt: updatedAt,
     updatedAt,
+    kind: 'user',
     origin,
     offline: false,
     readOnly: false,

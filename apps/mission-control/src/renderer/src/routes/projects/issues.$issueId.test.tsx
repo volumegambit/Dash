@@ -83,6 +83,7 @@ const mcConversation: McConversationView = {
   lastMessagePreview: null,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
+  kind: 'user',
   origin: 'gateway',
   offline: false,
   readOnly: false,

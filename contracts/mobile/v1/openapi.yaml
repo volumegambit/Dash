@@ -811,10 +811,36 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/MobileAgentEvent'
+    SubagentInfo:
+      type: object
+      additionalProperties: false
+      required: [type, status, description, prompt, model, background, depth, startedAt, toolCallCount, oneShot]
+      properties:
+        type: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1 }
+        status: { enum: [running, waiting_input, done, failed, cancelled, interrupted, max_turns] }
+        description: { type: string }
+        prompt: { type: string }
+        model: { type: string }
+        background: { type: boolean }
+        isolation: { const: worktree }
+        depth: { type: integer, minimum: 0 }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        usage:
+          type: object
+          additionalProperties: false
+          required: [inputTokens, outputTokens]
+          properties:
+            inputTokens: { type: integer, minimum: 0 }
+            outputTokens: { type: integer, minimum: 0 }
+        toolCallCount: { type: integer, minimum: 0 }
+        report: { type: string }
+        oneShot: { type: boolean }
     ConversationSummary:
       type: object
       additionalProperties: false
-      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt]
+      required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, kind]
       properties:
         id: { type: string, format: uuid }
         agentId: { type: string, minLength: 1 }
@@ -832,6 +858,11 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         deletedAt: { type: string, format: date-time }
+        kind: { enum: [user, subagent] }
+        parentConversationId: { type: string, minLength: 1 }
+        parentTurnId: { type: string, minLength: 1 }
+        subagent:
+          $ref: '#/components/schemas/SubagentInfo'
     ConversationMessage:
       type: object
       additionalProperties: false
@@ -847,6 +878,7 @@ components:
           $ref: '#/components/schemas/ConversationContent'
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        origin: { enum: [user, notification, parent] }
     ConversationPage:
       type: object
       additionalProperties: false

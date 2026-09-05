@@ -86,6 +86,7 @@ function legacyView(record: McConversation): McConversationView {
     lastMessagePreview: '',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    kind: 'user',
     origin: 'local',
     offline: false,
     readOnly: false,

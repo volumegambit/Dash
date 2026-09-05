@@ -1,0 +1,36 @@
+{
+  "id": "018f0f4a-5c42-7a8b-9c01-5234567890ab",
+  "agentId": "agent-01",
+  "agentName": "Mobile Helper",
+  "title": "Review the diff",
+  "revision": 3,
+  "status": "running",
+  "activeTurnId": "018f0f4a-5c42-7a8b-9c01-6234567890ab",
+  "owningIssueId": null,
+  "projectId": null,
+  "lastSeq": 12,
+  "lastMessagePreview": "Review the diff and report findings",
+  "createdAt": "2026-07-12T00:01:00.000Z",
+  "updatedAt": "2026-07-12T00:01:30.000Z",
+  "kind": "subagent",
+  "parentConversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+  "parentTurnId": "018f0f4a-5c42-7a8b-9c01-2234567890ab",
+  "subagent": {
+    "type": "code-reviewer",
+    "name": "reviewer",
+    "status": "running",
+    "description": "Review the diff",
+    "prompt": "Review the diff and report findings",
+    "model": "anthropic/claude-opus-4",
+    "background": true,
+    "isolation": "worktree",
+    "depth": 1,
+    "startedAt": "2026-07-12T00:01:00.000Z",
+    "usage": {
+      "inputTokens": 1204,
+      "outputTokens": 318
+    },
+    "toolCallCount": 7,
+    "oneShot": false
+  }
+}

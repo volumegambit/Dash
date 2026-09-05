@@ -86,6 +86,12 @@
       "valid": true
     },
     {
+      "file": "conversation-summary-subagent.json",
+      "document": "openapi",
+      "schema": "ConversationSummary",
+      "valid": true
+    },
+    {
       "file": "conversations-page.json",
       "document": "openapi",
       "schema": "ConversationPage",
@@ -331,6 +337,12 @@
     },
     {
       "file": "invalid/conversation-summary-bad-status.json",
+      "document": "openapi",
+      "schema": "ConversationSummary",
+      "valid": false
+    },
+    {
+      "file": "invalid/conversation-summary-bad-subagent-status.json",
       "document": "openapi",
       "schema": "ConversationSummary",
       "valid": false

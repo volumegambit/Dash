@@ -8,6 +8,16 @@ export type ConversationMessageStatus =
   | 'failed'
   | 'interrupted';
 export type ConversationRole = 'user' | 'assistant';
+export type ConversationKind = 'user' | 'subagent';
+export type ConversationMessageOrigin = 'user' | 'notification' | 'parent';
+export type SubagentStatus =
+  | 'running'
+  | 'waiting_input'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+  | 'max_turns';
 export type MobileImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
 export interface FixtureManifest {
@@ -129,6 +139,33 @@ export type ConversationContent =
   | { type: 'user'; text: string; images?: MobileImage[] }
   | { type: 'assistant'; events: MobileAgentEvent[] };
 
+export interface SubagentUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Everything a client needs to render a sub-agent row without fetching the
+ * child transcript. `depth` is 1 for a child of a user conversation.
+ */
+export interface SubagentInfo {
+  type: string;
+  name?: string;
+  status: SubagentStatus;
+  description: string;
+  prompt: string;
+  model: string;
+  background: boolean;
+  isolation?: 'worktree';
+  depth: number;
+  startedAt: string;
+  endedAt?: string;
+  usage?: SubagentUsage;
+  toolCallCount: number;
+  report?: string;
+  oneShot: boolean;
+}
+
 export interface ConversationSummary {
   id: string;
   agentId: string;
@@ -144,6 +181,11 @@ export interface ConversationSummary {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
+  /** `'subagent'` rows are children; the conversation list shows `'user'` only. */
+  kind: ConversationKind;
+  parentConversationId?: string;
+  parentTurnId?: string;
+  subagent?: SubagentInfo;
 }
 
 export interface ConversationMessage {
@@ -156,6 +198,8 @@ export interface ConversationMessage {
   content: ConversationContent;
   createdAt: string;
   updatedAt: string;
+  /** Who caused this turn. Absent on pre-`origin` clients; treat as `'user'`. */
+  origin?: ConversationMessageOrigin;
 }
 
 export interface ConversationPage {

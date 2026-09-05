@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SubagentInfo } from '@dash/mobile-contract';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { ConversationServiceError, DEFAULT_CONVERSATION_TITLE } from './conversation-service.js';
@@ -109,8 +110,12 @@ describe('SqliteConversationService schema', () => {
       lastMessagePreview: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      kind: 'user',
     });
     expect('deletedAt' in created).toBe(false);
+    // A user conversation carries no child linkage at all.
+    expect('parentConversationId' in created).toBe(false);
+    expect('subagent' in created).toBe(false);
 
     expect(
       service.create({
@@ -887,5 +892,449 @@ describe('SqliteConversationService durable turns', () => {
     const tombstone = service.delete(conversation.id, cancellation.conversation.revision);
     expect(tombstone).toMatchObject({ status: 'deleted', revision: 4 });
     expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toEqual([]);
+  });
+});
+
+/**
+ * Task C1 — the storage layer for sub-agent conversations. These tests pin the
+ * four controller rulings: additive+idempotent migrations, children hidden from
+ * the default `list()`, a hard cap on the notification queue, and an `origin`
+ * that defaults to `'user'` so every pre-existing message row keeps its meaning.
+ */
+describe('SqliteConversationService subagent persistence', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let uuidCounter: number;
+  let timestamp: string;
+
+  function subagentInfo(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
+    return {
+      type: 'code-reviewer',
+      status: 'running',
+      description: 'Review the diff',
+      prompt: 'Review the diff and report findings',
+      model: 'anthropic/claude-opus-4',
+      background: true,
+      depth: 1,
+      startedAt: '2026-09-04T00:00:00.000Z',
+      toolCallCount: 0,
+      oneShot: false,
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-subagents-'));
+    uuidCounter = 0;
+    timestamp = '2026-09-04T00:00:00.000Z';
+    service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => timestamp,
+      uuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
+    });
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function createParent(requestId = 'parent-01') {
+    return service.create({ agentId: 'agent-01', agentName: 'Helper', requestId });
+  }
+
+  it('adds the subagent columns to a pre-existing database and re-opens idempotently', async () => {
+    // Ruling 1: the DB already exists in the field, so the migration has to be a
+    // guarded ALTER over the *old* table shape, and opening the same file twice
+    // must not attempt the ALTER again (SQLite would throw "duplicate column").
+    service.close();
+    const legacyDir = await mkdtemp(join(tmpdir(), 'conversation-legacy-'));
+    const legacy = new Database(join(legacyDir, 'agent-stream-events.db'));
+    legacy.exec(`
+      CREATE TABLE conversations (
+        id                  TEXT PRIMARY KEY,
+        create_request_id   TEXT NOT NULL UNIQUE,
+        agent_id            TEXT NOT NULL,
+        agent_name_snapshot TEXT NOT NULL,
+        title               TEXT NOT NULL DEFAULT 'New Conversation',
+        revision            INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+        status              TEXT NOT NULL CHECK (status IN ('idle','running','interrupted','archived','deleted')),
+        active_turn_id      TEXT,
+        owning_issue_id     TEXT,
+        project_id          TEXT,
+        last_seq            INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL,
+        deleted_at          TEXT
+      );
+      CREATE TABLE conversation_messages (
+        id              TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        turn_id         TEXT NOT NULL,
+        ordinal         INTEGER NOT NULL CHECK (ordinal > 0),
+        role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
+        content         TEXT NOT NULL,
+        status          TEXT NOT NULL CHECK (status IN ('accepted','streaming','completed','cancelled','failed','interrupted')),
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        UNIQUE(conversation_id, ordinal),
+        UNIQUE(conversation_id, turn_id, role),
+        UNIQUE(turn_id, role)
+      );
+      INSERT INTO conversations VALUES (
+        'conversation-legacy', 'request-legacy', 'agent-legacy', 'Legacy', 'Old chat',
+        3, 'idle', NULL, NULL, NULL, 7,
+        '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:01.000Z', NULL
+      );
+      INSERT INTO conversation_messages VALUES (
+        'message-legacy', 'conversation-legacy', 'turn-legacy', 1, 'user',
+        '{"type":"user","text":"legacy question"}', 'completed',
+        '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'
+      );
+    `);
+    legacy.close();
+
+    const first = new SqliteConversationService({ dataDir: legacyDir });
+    // Ruling 4: the pre-existing rows keep their meaning under the new columns.
+    expect(first.get('conversation-legacy')).toMatchObject({
+      kind: 'user',
+      title: 'Old chat',
+      revision: 3,
+    });
+    expect(
+      first.listMessages({ conversationId: 'conversation-legacy', limit: 10 }).items[0],
+    ).toMatchObject({ origin: 'user' });
+    first.close();
+
+    // Second open over the same file: the guard must skip every ALTER.
+    const second = new SqliteConversationService({ dataDir: legacyDir });
+    expect(second.get('conversation-legacy')).toMatchObject({ kind: 'user' });
+    const db = (second as unknown as { db: DatabaseType }).db;
+    const columns = (db.pragma('table_info(conversations)') as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    for (const added of [
+      'kind',
+      'parent_conversation_id',
+      'parent_turn_id',
+      'depth',
+      'subagent_type',
+      'subagent_name',
+      'subagent_status',
+      'subagent_meta',
+    ]) {
+      expect(columns.filter((name) => name === added)).toEqual([added]);
+    }
+    expect(
+      (db.pragma('table_info(conversation_messages)') as Array<{ name: string }>).filter(
+        (column) => column.name === 'origin',
+      ),
+    ).toHaveLength(1);
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .all('pending_notifications'),
+    ).toHaveLength(1);
+    second.close();
+    await rm(legacyDir, { recursive: true, force: true });
+  });
+
+  it('creates a child conversation carrying its subagent info', () => {
+    const parent = createParent();
+    const created = service.createSubagent({
+      id: 'sub_00000000000000000000000001',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Review the diff',
+      subagent: subagentInfo({ name: 'reviewer' }),
+    });
+
+    expect(created).toMatchObject({
+      id: 'sub_00000000000000000000000001',
+      kind: 'subagent',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Review the diff',
+      status: 'idle',
+      subagent: subagentInfo({ name: 'reviewer' }),
+    });
+    expect(service.get('sub_00000000000000000000000001')).toEqual(created);
+    // Parents stay plain users with no subagent block at all.
+    expect(service.get(parent.id)).toMatchObject({ kind: 'user' });
+    expect('subagent' in (service.get(parent.id) as object)).toBe(false);
+  });
+
+  it('hides children from the default list and reveals them only on request', () => {
+    // Ruling 2: a child's prompt can quote parent context, so the default list
+    // is user-only for privacy, not just for tidiness.
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_child_a',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Child A',
+      subagent: subagentInfo(),
+    });
+
+    expect(service.list({ limit: 10 }).items.map((item) => item.id)).toEqual([parent.id]);
+    expect(service.list({ agentId: 'agent-01', limit: 10 }).items.map((item) => item.id)).toEqual([
+      parent.id,
+    ]);
+    expect(service.list({ limit: 10, kind: 'user' }).items.map((item) => item.id)).toEqual([
+      parent.id,
+    ]);
+    expect(service.list({ limit: 10, kind: 'subagent' }).items.map((item) => item.id)).toEqual([
+      'sub_child_a',
+    ]);
+  });
+
+  it('lists a parent-s children oldest first', () => {
+    const parent = createParent();
+    const other = createParent('parent-02');
+    for (const [index, id] of ['sub_c1', 'sub_c2', 'sub_c3'].entries()) {
+      timestamp = `2026-09-04T00:0${index}:00.000Z`;
+      service.createSubagent({
+        id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: id,
+        subagent: subagentInfo(),
+      });
+    }
+    timestamp = '2026-09-04T00:09:00.000Z';
+    service.createSubagent({
+      id: 'sub_other',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: other.id,
+      parentTurnId: 'turn-parent-02',
+      title: 'Other',
+      subagent: subagentInfo(),
+    });
+
+    expect(service.listSubagents(parent.id).map((item) => item.id)).toEqual([
+      'sub_c1',
+      'sub_c2',
+      'sub_c3',
+    ]);
+    expect(service.listSubagents(other.id).map((item) => item.id)).toEqual(['sub_other']);
+    expect(service.listSubagents('missing-parent')).toEqual([]);
+  });
+
+  it('merges a subagent patch without dropping the untouched fields', () => {
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_patch',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Patch me',
+      subagent: subagentInfo(),
+    });
+
+    const patched = service.updateSubagent('sub_patch', {
+      status: 'done',
+      info: {
+        toolCallCount: 4,
+        endedAt: '2026-09-04T00:05:00.000Z',
+        usage: { inputTokens: 120, outputTokens: 34 },
+        report: 'Found two issues.',
+      },
+    });
+    expect(patched.subagent).toEqual({
+      ...subagentInfo(),
+      status: 'done',
+      toolCallCount: 4,
+      endedAt: '2026-09-04T00:05:00.000Z',
+      usage: { inputTokens: 120, outputTokens: 34 },
+      report: 'Found two issues.',
+    });
+    expect(service.get('sub_patch')).toEqual(patched);
+    expect(() => service.updateSubagent(parent.id, { status: 'done' })).toThrow(
+      ConversationServiceError,
+    );
+  });
+
+  it('lists only the interrupted children', () => {
+    const parent = createParent();
+    for (const [id, status] of [
+      ['sub_running', 'running'],
+      ['sub_interrupted_a', 'interrupted'],
+      ['sub_interrupted_b', 'interrupted'],
+    ] as const) {
+      service.createSubagent({
+        id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: id,
+        subagent: subagentInfo({ status }),
+      });
+    }
+    expect(service.listInterruptedSubagents().map((item) => item.id)).toEqual([
+      'sub_interrupted_a',
+      'sub_interrupted_b',
+    ]);
+  });
+
+  it('records the turn origin on the user message and defaults it to user', () => {
+    // Ruling 4: `origin` is optional at the call site and defaults to 'user'.
+    const parent = createParent();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-plain',
+      text: 'Plain user turn',
+    });
+    service.finishTurn({
+      conversationId: parent.id,
+      turnId: 'turn-plain',
+      outcome: 'completed',
+    });
+    const notified = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-notified',
+      text: '<subagent-finished .../>',
+      origin: 'notification',
+    });
+
+    expect(notified.userMessage.origin).toBe('notification');
+    expect(
+      service
+        .listMessages({ conversationId: parent.id, limit: 10 })
+        .items.filter((message) => message.role === 'user')
+        .map((message) => message.origin),
+    ).toEqual(['user', 'notification']);
+  });
+
+  it('queues notifications up to the cap and drains them in order', () => {
+    // Ruling 3: overflow throws — a dropped notification is a lost child report.
+    const parent = createParent();
+    for (let index = 0; index < 100; index++) {
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_finished',
+        payload: { index },
+      });
+    }
+    expect(() =>
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_finished',
+        payload: { index: 100 },
+      }),
+    ).toThrow(/notification queue full/i);
+
+    const drained = service.drainNotifications(parent.id);
+    expect(drained).toHaveLength(100);
+    expect(drained.map((item) => item.payload.index)).toEqual(
+      Array.from({ length: 100 }, (_unused, index) => index),
+    );
+    expect(drained[0]).toMatchObject({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      createdAt: timestamp,
+    });
+    expect(service.drainNotifications(parent.id)).toEqual([]);
+    // Draining frees the queue again.
+    expect(() =>
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_message',
+        payload: { text: 'hi' },
+      }),
+    ).not.toThrow();
+    expect(service.drainNotifications(parent.id)).toHaveLength(1);
+  });
+
+  it('drops a deleted conversation-s queue and refuses to enqueue behind the tombstone', () => {
+    const parent = createParent();
+    service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { index: 0 },
+    });
+    const tombstone = service.delete(parent.id, parent.revision);
+    expect(tombstone.status).toBe('deleted');
+    expect(service.drainNotifications(parent.id)).toEqual([]);
+    expect(() =>
+      service.enqueueNotification({
+        conversationId: parent.id,
+        kind: 'subagent_finished',
+        payload: {},
+      }),
+    ).toThrow(ConversationServiceError);
+  });
+
+  it('refuses to update a deleted child or to alias a non-subagent id', () => {
+    const parent = createParent();
+    const child = service.createSubagent({
+      id: 'sub_guard',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Guarded',
+      subagent: subagentInfo(),
+    });
+    // createSubagent is idempotent on its own id...
+    expect(
+      service.createSubagent({
+        id: 'sub_guard',
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: 'Different title',
+        subagent: subagentInfo({ status: 'done' }),
+      }),
+    ).toEqual(child);
+    // ...but it must never hand back a user conversation that shares the id.
+    expect(() =>
+      service.createSubagent({
+        id: parent.id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: 'Impostor',
+        subagent: subagentInfo(),
+      }),
+    ).toThrow(ConversationServiceError);
+
+    service.delete(child.id, child.revision);
+    expect(() => service.updateSubagent(child.id, { status: 'done' })).toThrow(
+      ConversationServiceError,
+    );
+  });
+
+  it('keeps each conversation-s notification queue separate', () => {
+    const first = createParent('parent-01');
+    const second = createParent('parent-02');
+    service.enqueueNotification({
+      conversationId: first.id,
+      kind: 'subagent_finished',
+      payload: { from: 'first' },
+    });
+    service.enqueueNotification({
+      conversationId: second.id,
+      kind: 'subagent_message',
+      payload: { from: 'second' },
+    });
+    expect(service.drainNotifications(first.id).map((item) => item.payload.from)).toEqual([
+      'first',
+    ]);
+    expect(service.drainNotifications(second.id).map((item) => item.payload.from)).toEqual([
+      'second',
+    ]);
   });
 });

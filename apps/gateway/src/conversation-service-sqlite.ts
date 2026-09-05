@@ -4,12 +4,16 @@ import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import type {
   ConversationContent,
+  ConversationKind,
   ConversationMessage,
+  ConversationMessageOrigin,
   ConversationMessagePage,
   ConversationPage,
   ConversationPatchRequest,
   ConversationSummary,
   MobileAgentEvent,
+  SubagentInfo,
+  SubagentStatus,
 } from '@dash/mobile-contract';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import {
@@ -24,11 +28,15 @@ import {
   type ConversationService,
   ConversationServiceError,
   type CreateConversationInput,
+  type CreateSubagentConversationInput,
   DEFAULT_CONVERSATION_TITLE,
   type FinishTurnInput,
   type ListConversationsInput,
   type ListMessagesInput,
+  MAX_QUEUED_NOTIFICATIONS,
+  type PendingNotification,
   type PersistedTurnFrame,
+  type UpdateSubagentInput,
 } from './conversation-service.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogEntry, EventLogPayload, EventLogStore } from './event-log-store.js';
@@ -75,7 +83,54 @@ const SCHEMA_SQL = `
     ON conversation_messages(conversation_id, ordinal DESC, id DESC);
   CREATE INDEX IF NOT EXISTS stream_events_turn_idx
     ON agent_stream_events(agent_id, conversation_id, msg_id, seq);
+
+  CREATE TABLE IF NOT EXISTS pending_notifications (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK (kind IN ('subagent_finished','subagent_message')),
+    payload         TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS pending_notifications_queue_idx
+    ON pending_notifications(conversation_id, created_at, id);
 `;
+
+/**
+ * Columns added after the first release. The database already exists in the
+ * field, so these are guarded `ALTER TABLE`s rather than a table rewrite:
+ * `CREATE TABLE IF NOT EXISTS` is a no-op against an older table shape and
+ * would silently leave the new columns missing.
+ */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, ddl: string]> = [
+  ['conversations', 'kind', "TEXT NOT NULL DEFAULT 'user'"],
+  ['conversations', 'parent_conversation_id', 'TEXT'],
+  ['conversations', 'parent_turn_id', 'TEXT'],
+  ['conversations', 'depth', 'INTEGER NOT NULL DEFAULT 0'],
+  ['conversations', 'subagent_type', 'TEXT'],
+  ['conversations', 'subagent_name', 'TEXT'],
+  ['conversations', 'subagent_status', 'TEXT'],
+  ['conversations', 'subagent_meta', 'TEXT'],
+  ['conversation_messages', 'origin', "TEXT NOT NULL DEFAULT 'user'"],
+];
+
+/** Indexes that can only be created once {@link ADDED_COLUMNS} are in place. */
+const MIGRATED_INDEX_SQL = `
+  CREATE INDEX IF NOT EXISTS conversations_kind_list_idx
+    ON conversations(kind, updated_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS conversations_parent_idx
+    ON conversations(parent_conversation_id, created_at, id);
+`;
+
+/**
+ * Add `column` to `table` when it is absent. Idempotent: re-opening the same
+ * file must not re-run the `ALTER`, which SQLite rejects as a duplicate column.
+ */
+function ensureColumn(db: DatabaseType, table: string, column: string, ddl: string): void {
+  const existing = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+  if (existing.some((info) => info.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+}
 
 export interface SqliteConversationServiceOptions {
   dataDir: string;
@@ -98,6 +153,28 @@ interface ConversationRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  kind: ConversationKind;
+  parent_conversation_id: string | null;
+  parent_turn_id: string | null;
+  depth: number;
+  subagent_type: string | null;
+  subagent_name: string | null;
+  subagent_status: SubagentStatus | null;
+  subagent_meta: string | null;
+}
+
+/**
+ * The part of {@link SubagentInfo} that lives in the `subagent_meta` JSON blob.
+ * `type`, `name`, `status` and `depth` are columns so they can be filtered on.
+ */
+type SubagentMeta = Omit<SubagentInfo, 'type' | 'name' | 'status' | 'depth'>;
+
+interface PendingNotificationRow {
+  id: string;
+  conversation_id: string;
+  kind: PendingNotification['kind'];
+  payload: string;
+  created_at: string;
 }
 
 interface ConversationMessageRow {
@@ -110,6 +187,7 @@ interface ConversationMessageRow {
   status: ConversationMessage['status'];
   created_at: string;
   updated_at: string;
+  origin: ConversationMessageOrigin;
 }
 
 function collapsePreview(text: string): string {
@@ -118,6 +196,34 @@ function collapsePreview(text: string): string {
 
 function parseContent(raw: string): ConversationContent {
   return JSON.parse(raw) as ConversationContent;
+}
+
+/** Recombine the columnar fields with the `subagent_meta` blob. */
+function mapSubagent(row: ConversationRow): SubagentInfo {
+  const meta = (row.subagent_meta ? JSON.parse(row.subagent_meta) : {}) as Partial<SubagentMeta>;
+  return {
+    type: row.subagent_type ?? '',
+    ...(row.subagent_name ? { name: row.subagent_name } : {}),
+    status: row.subagent_status ?? 'running',
+    description: meta.description ?? '',
+    prompt: meta.prompt ?? '',
+    model: meta.model ?? '',
+    background: meta.background ?? false,
+    ...(meta.isolation ? { isolation: meta.isolation } : {}),
+    depth: row.depth,
+    startedAt: meta.startedAt ?? row.created_at,
+    ...(meta.endedAt ? { endedAt: meta.endedAt } : {}),
+    ...(meta.usage ? { usage: meta.usage } : {}),
+    toolCallCount: meta.toolCallCount ?? 0,
+    ...(meta.report !== undefined ? { report: meta.report } : {}),
+    oneShot: meta.oneShot ?? false,
+  };
+}
+
+/** Split {@link SubagentInfo} into the JSON blob half, dropping the columns. */
+function subagentMeta(info: SubagentInfo): SubagentMeta {
+  const { type: _type, name: _name, status: _status, depth: _depth, ...meta } = info;
+  return meta;
 }
 
 function sanitizeJsonValue(value: unknown): unknown {
@@ -155,6 +261,10 @@ export class SqliteConversationService implements ConversationService {
     this.db.pragma('synchronous = NORMAL');
     this.eventLog = new SqliteEventLogStore({ database: this.db });
     this.db.exec(SCHEMA_SQL);
+    for (const [table, column, ddl] of ADDED_COLUMNS) {
+      ensureColumn(this.db, table, column, ddl);
+    }
+    this.db.exec(MIGRATED_INDEX_SQL);
     this.now = options.now ?? (() => new Date().toISOString());
     this.uuid = options.uuid ?? randomUUID;
   }
@@ -197,6 +307,7 @@ export class SqliteConversationService implements ConversationService {
       content: parseContent(row.content),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      origin: row.origin,
     };
   }
 
@@ -247,6 +358,10 @@ export class SqliteConversationService implements ConversationService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       ...(row.deleted_at ? { deletedAt: row.deleted_at } : {}),
+      kind: row.kind,
+      ...(row.parent_conversation_id ? { parentConversationId: row.parent_conversation_id } : {}),
+      ...(row.parent_turn_id ? { parentTurnId: row.parent_turn_id } : {}),
+      ...(row.kind === 'subagent' ? { subagent: mapSubagent(row) } : {}),
     };
   }
 
@@ -329,7 +444,12 @@ export class SqliteConversationService implements ConversationService {
       .prepare(`
         SELECT * FROM conversations
         WHERE deleted_at IS NULL
+          AND kind = :kind
           AND (:agentId IS NULL OR agent_id = :agentId)
+          AND (
+            :parentConversationId IS NULL
+            OR parent_conversation_id = :parentConversationId
+          )
           AND (
             :cursorUpdatedAt IS NULL
             OR updated_at < :cursorUpdatedAt
@@ -339,7 +459,11 @@ export class SqliteConversationService implements ConversationService {
         LIMIT :fetchLimit
       `)
       .all({
+        // Children stay hidden unless the caller names their kind (see
+        // ListConversationsInput.kind).
+        kind: input.kind ?? 'user',
         agentId: input.agentId ?? null,
+        parentConversationId: input.parentConversationId ?? null,
         cursorUpdatedAt: cursor?.updatedAt ?? null,
         cursorId: cursor?.id ?? null,
         fetchLimit: input.limit + 1,
@@ -435,6 +559,9 @@ export class SqliteConversationService implements ConversationService {
       this.assertRevision(current, expectedRevision);
       const timestamp = this.now();
       this.db.prepare('DELETE FROM conversation_messages WHERE conversation_id = ?').run(id);
+      // The row survives as a tombstone, so the FK cascade never fires — drop
+      // the queue explicitly or it outlives the conversation forever.
+      this.db.prepare('DELETE FROM pending_notifications WHERE conversation_id = ?').run(id);
       this.eventLog.deleteConversation(current.agent_id, id);
       const tombstoned = this.db
         .prepare(`
@@ -510,6 +637,7 @@ export class SqliteConversationService implements ConversationService {
         content,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        origin: row.origin,
       };
     });
     return {
@@ -605,9 +733,11 @@ export class SqliteConversationService implements ConversationService {
       const assistantContent: ConversationContent = { type: 'assistant', events: [] };
       const insertMessage = this.db.prepare(`
         INSERT INTO conversation_messages (
-          id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at
+          id, conversation_id, turn_id, ordinal, role, content, status,
+          origin, created_at, updated_at
         ) VALUES (
-          @id, @conversationId, @turnId, @ordinal, @role, @content, @status, @now, @now
+          @id, @conversationId, @turnId, @ordinal, @role, @content, @status,
+          @origin, @now, @now
         )
       `);
       insertMessage.run({
@@ -618,6 +748,7 @@ export class SqliteConversationService implements ConversationService {
         role: 'user',
         content: JSON.stringify(userContent),
         status: 'accepted',
+        origin: value.origin ?? 'user',
         now: timestamp,
       });
       insertMessage.run({
@@ -628,6 +759,8 @@ export class SqliteConversationService implements ConversationService {
         role: 'assistant',
         content: JSON.stringify(assistantContent),
         status: 'streaming',
+        // The origin marks who *asked*; the reply is always the agent's own.
+        origin: 'user',
         now: timestamp,
       });
 
@@ -809,6 +942,198 @@ export class SqliteConversationService implements ConversationService {
         payload,
       };
     })(input);
+  }
+
+  /**
+   * Create a child conversation. Idempotent on `id` so a spawn retry (or a
+   * replayed recovery step) returns the existing row instead of colliding.
+   */
+  createSubagent(input: CreateSubagentConversationInput): ConversationSummary {
+    return this.db.transaction((value: CreateSubagentConversationInput) => {
+      const existing = this.selectConversationRow(value.id);
+      if (existing) {
+        if (existing.kind !== 'subagent') {
+          throw new ConversationServiceError(
+            'validation_failed',
+            `Conversation ${value.id} already exists and is not a subagent conversation`,
+            409,
+            false,
+          );
+        }
+        return this.mapConversation(existing);
+      }
+
+      const parent = this.requireConversationRow(value.parentConversationId);
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO conversations (
+            id, create_request_id, agent_id, agent_name_snapshot, title,
+            revision, status, active_turn_id, owning_issue_id, project_id,
+            last_seq, created_at, updated_at, deleted_at,
+            kind, parent_conversation_id, parent_turn_id, depth,
+            subagent_type, subagent_name, subagent_status, subagent_meta
+          ) VALUES (
+            @id, @createRequestId, @agentId, @agentName, @title,
+            1, 'idle', NULL, @owningIssueId, @projectId,
+            0, @createdAt, @updatedAt, NULL,
+            'subagent', @parentConversationId, @parentTurnId, @depth,
+            @subagentType, @subagentName, @subagentStatus, @subagentMeta
+          )
+        `)
+        .run({
+          id: value.id,
+          createRequestId: `subagent:${value.id}`,
+          agentId: value.agentId,
+          agentName: value.agentName,
+          title: value.title.trim() || DEFAULT_CONVERSATION_TITLE,
+          // Children inherit their parent's linkage so project/issue filters
+          // keep working once children become addressable.
+          owningIssueId: parent.owning_issue_id,
+          projectId: parent.project_id,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          parentConversationId: value.parentConversationId,
+          parentTurnId: value.parentTurnId,
+          depth: value.subagent.depth,
+          subagentType: value.subagent.type,
+          subagentName: value.subagent.name ?? null,
+          subagentStatus: value.subagent.status,
+          subagentMeta: JSON.stringify(subagentMeta(value.subagent)),
+        });
+      return this.mapConversation(this.requireConversationRow(value.id));
+    })(input);
+  }
+
+  updateSubagent(id: string, patch: UpdateSubagentInput): ConversationSummary {
+    return this.db.transaction(() => {
+      const current = this.requireConversationRow(id);
+      if (current.kind !== 'subagent') {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Conversation ${id} is not a subagent conversation`,
+          409,
+          false,
+        );
+      }
+      const merged: SubagentInfo = {
+        ...mapSubagent(current),
+        ...(patch.info ?? {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+      };
+      this.db
+        .prepare(`
+          UPDATE conversations
+          SET subagent_type = @subagentType,
+              subagent_name = @subagentName,
+              subagent_status = @subagentStatus,
+              subagent_meta = @subagentMeta,
+              depth = @depth,
+              revision = revision + 1,
+              updated_at = @now
+          WHERE id = @id
+        `)
+        .run({
+          id,
+          subagentType: merged.type,
+          subagentName: merged.name ?? null,
+          subagentStatus: merged.status,
+          subagentMeta: JSON.stringify(subagentMeta(merged)),
+          depth: merged.depth,
+          now: this.now(),
+        });
+      return this.mapConversation(this.requireConversationRow(id));
+    })();
+  }
+
+  listSubagents(parentConversationId: string): ConversationSummary[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM conversations
+        WHERE kind = 'subagent' AND parent_conversation_id = ? AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all(parentConversationId) as ConversationRow[];
+    return rows.map((row) => this.mapConversation(row));
+  }
+
+  listInterruptedSubagents(): ConversationSummary[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM conversations
+        WHERE kind = 'subagent' AND subagent_status = 'interrupted' AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all() as ConversationRow[];
+    return rows.map((row) => this.mapConversation(row));
+  }
+
+  enqueueNotification(
+    notification: Omit<PendingNotification, 'id' | 'createdAt'>,
+  ): PendingNotification {
+    return this.db.transaction(() => {
+      this.requireConversationRow(notification.conversationId);
+      const queued = this.db
+        .prepare('SELECT COUNT(*) AS total FROM pending_notifications WHERE conversation_id = ?')
+        .get(notification.conversationId) as { total: number };
+      if (queued.total >= MAX_QUEUED_NOTIFICATIONS) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Notification queue full for conversation ${notification.conversationId}`,
+          409,
+          false,
+          { conversationId: notification.conversationId, queued: queued.total },
+        );
+      }
+      const id = this.uuid();
+      const createdAt = this.now();
+      const payload = JSON.stringify(sanitizeJsonValue(notification.payload));
+      this.db
+        .prepare(`
+          INSERT INTO pending_notifications (id, conversation_id, kind, payload, created_at)
+          VALUES (@id, @conversationId, @kind, @payload, @createdAt)
+        `)
+        .run({
+          id,
+          conversationId: notification.conversationId,
+          kind: notification.kind,
+          payload,
+          createdAt,
+        });
+      return {
+        id,
+        conversationId: notification.conversationId,
+        kind: notification.kind,
+        // Round-trip so the caller sees exactly what a later drain will yield.
+        payload: JSON.parse(payload) as Record<string, unknown>,
+        createdAt,
+      };
+    })();
+  }
+
+  drainNotifications(conversationId: string): PendingNotification[] {
+    return this.db.transaction(() => {
+      // rowid keeps insertion order stable when several notifications share a
+      // timestamp (they routinely do — a fan-out finishes in one tick).
+      const rows = this.db
+        .prepare(`
+          SELECT * FROM pending_notifications
+          WHERE conversation_id = ?
+          ORDER BY created_at ASC, rowid ASC
+        `)
+        .all(conversationId) as PendingNotificationRow[];
+      if (rows.length === 0) return [];
+      this.db
+        .prepare('DELETE FROM pending_notifications WHERE conversation_id = ?')
+        .run(conversationId);
+      return rows.map((row) => ({
+        id: row.id,
+        conversationId: row.conversation_id,
+        kind: row.kind,
+        payload: JSON.parse(row.payload) as Record<string, unknown>,
+        createdAt: row.created_at,
+      }));
+    })();
   }
 
   trySetAutoTitle(id: string, title: string): ConversationSummary | null {
