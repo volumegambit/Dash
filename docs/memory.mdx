@@ -1,0 +1,67 @@
+---
+title: "Memory"
+description: "How agents remember facts about you and your work across conversations."
+---
+
+Memory lets an agent carry facts forward between conversations — who you are, how you like it to work, what a project needs, or where to find something — without you repeating yourself every time.
+
+## What the agent remembers
+
+Each memory is a single fact with a type:
+
+| Type | What it captures | Example |
+|------|-------------------|---------|
+| `user` | Who the user is | "Works on the platform team, based in Singapore" |
+| `feedback` | Guidance on how to work, including corrections | "Always ask before deleting a file; the user has been burned by this before" |
+| `project` | Ongoing work, goals, or constraints | "Migrating the billing service to the new invoicing API; deadline end of quarter" |
+| `reference` | A pointer to an external resource | "The shared design doc lives at this link" |
+
+The agent decides on its own what's worth remembering — it does not save everything you say. Secrets and credentials are never saved as memories.
+
+## Where it lives
+
+Each agent has its own memory directory:
+
+```
+~/.dash/gateway/memory/<agent-id>/
+```
+
+Every memory is its own markdown file. Alongside them sits `MEMORY.md`, an index that lists every memory's name and description, grouped by type.
+
+<Note>
+`MEMORY.md` is generated automatically and rewritten every time a memory is saved or deleted. Don't hand-edit it — any changes you make will be overwritten on the next update. Manage memories from Mission Control or iOS instead.
+</Note>
+
+## How it is used
+
+The memory index is loaded into the agent's context on every turn, so the agent always knows what it remembers, even without reading the full content. Alongside the index, the agent automatically recalls up to 5 memories whose descriptions look relevant to your message, so the details it's likely to need are already at hand. If something else in memory turns out to matter, the agent can read it in full at any point in the conversation.
+
+## Saving
+
+Most models save, update, and delete their own memories as the conversation happens — no extra setup needed. When it learns something worth keeping, it saves a new memory or updates an existing one with the same name rather than creating a duplicate; if a memory turns out to be wrong, it deletes it. Chat shows a small chip whenever the agent saves or deletes a memory, so you can see it happening.
+
+Some models are less reliable about doing this on their own. For those, Dash can run a lightweight review after each turn that looks at what was just said and saves anything worth keeping. This **post-turn sweep** has three settings, available on the agent's Memory tab in Mission Control:
+
+- **Auto** (default) — the sweep runs for every model except Anthropic, OpenAI, and Google models, which reliably save memories themselves.
+- **On** — the sweep always runs, regardless of model.
+- **Off** — the sweep never runs; only the agent's own saves apply.
+
+The sweep never overwrites a memory you wrote or edited by hand — if it disagrees with one of your entries, it saves its suggestion under a new name instead.
+
+## Inspecting and deleting
+
+The agent's detail page in Mission Control has a **Memory** tab where you can see every memory grouped by type, open one to read or edit its description, type, and content, and delete any memory you no longer want. The tab also shows who wrote each memory — the agent itself, the post-turn sweep, you, or a one-time import — and when it was last updated.
+
+On iOS, the agent's detail screen has a **Memory** section where you can view and delete memories from your phone.
+
+## Sub-agents
+
+When an agent spawns sub-agents or swarm workers, they inherit the parent agent's memory **read-only**: each one sees the memory index and whatever is automatically recalled for its brief, but it has no tool to save, update, delete, or look up additional memories on its own. If a sub-agent learns something worth remembering, it reports that back in its result so the parent agent can decide whether to save it.
+
+## Turning it off
+
+Automatic memory is on by default for every agent. To turn it off, go to the agent's **Memory** tab in Mission Control and switch off **Automatic memory**. This disables the memory index, automatic recall, the agent's own memory tools, and the post-turn sweep together — existing memory files are kept on disk but stop being used until you turn it back on.
+
+## Importing old notes
+
+If an agent's workspace already had a `MEMORY.md` file from before this feature existed, the first time memory runs it is imported automatically as a single memory, so nothing is lost. This happens only once — the original file in the workspace is never modified or deleted, and if you later delete the imported memory it stays deleted.
