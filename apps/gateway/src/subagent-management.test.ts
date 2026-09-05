@@ -144,7 +144,7 @@ describe('mountSubagentDefinitionRoutes', () => {
     it('writes the file into the per-agent dir and the type shows up as source agent', async () => {
       const res = await put('reviewer', VALID);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, name: 'reviewer', definition: 'reviewer' });
+      expect(await res.json()).toEqual({ ok: true, name: 'reviewer' });
 
       const file = join(definitions.perAgentDir('alpha'), 'reviewer.md');
       expect(await readFile(file, 'utf8')).toBe(VALID);
@@ -173,6 +173,34 @@ describe('mountSubagentDefinitionRoutes', () => {
         readFile(join(definitions.perAgentDir('alpha'), 'broken.md'), 'utf8'),
       ).rejects.toThrow();
       expect(invalidated).toEqual([]);
+    });
+
+    it('422s when the frontmatter name does not match the path name', async () => {
+      // The registry keys the roster on the FRONTMATTER name; this API addresses
+      // the FILE. Allowing them to diverge yields a definition the client cannot
+      // address — the listing says `reviewer` (resolving to nothing) while the
+      // roster says `auditor`, and DELETE of either misses.
+      const res = await put('reviewer', VALID.replace('name: reviewer', 'name: auditor'));
+      expect(res.status).toBe(422);
+      expect(((await res.json()) as { error: string }).error).toContain('must match the path name');
+      await expect(
+        readFile(join(definitions.perAgentDir('alpha'), 'reviewer.md'), 'utf8'),
+      ).rejects.toThrow();
+      expect(invalidated).toEqual([]);
+
+      // ...and the roster is untouched, so no second file can claim the name.
+      const types = (await (await app.request('/agents/a1/subagent-types')).json()) as {
+        types: Array<{ name: string }>;
+      };
+      expect(types.types.map((t) => t.name)).not.toContain('auditor');
+    });
+
+    it('still accepts a lowercase override of a built-in (compared pre-canonicalisation)', async () => {
+      // `explore.md` + `name: explore` matches, and the REGISTRY then
+      // canonicalises it onto the built-in `Explore` — the mismatch check must
+      // run before that or every built-in override would 422.
+      const res = await put('explore', '---\nname: explore\ndescription: Mine.\n---\n\nBody.\n');
+      expect(res.status).toBe(200);
     });
 
     it('422s with the parser message when frontmatter is missing entirely', async () => {
@@ -329,8 +357,10 @@ describe('mountSubagentDefinitionRoutes', () => {
       const res = await put('reviewer', VALID);
       expect(res.status).toBe(200);
       await expect(readFile(join(outside, 'reviewer.md'), 'utf8')).rejects.toThrow();
+      // Flattening CHANGED the name, so a digest of the original is appended —
+      // otherwise `../../escape` and a literal `____escape` would share a dir.
       expect(definitions.perAgentDir('../../escape')).toBe(
-        join(dataDir, 'subagents', '____escape'),
+        join(dataDir, 'subagents', '____escape-efbf103b'),
       );
       expect(
         await readFile(join(definitions.perAgentDir('../../escape'), 'reviewer.md'), 'utf8'),

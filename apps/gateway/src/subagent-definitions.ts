@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type AgentDefinition, parseAgentDefinition } from '@dash/agent';
@@ -199,10 +200,21 @@ async function readDefinitionFile(
  * (`name: '../../etc'`). Only traversal is neutralised — separators, `..` and
  * NUL become `_`, a name that is nothing but dots becomes `_` — so ordinary
  * names (including ones with spaces) still map to a readable directory.
+ *
+ * SANITISATION IS LOSSY, AND B8 MADE THIS A WRITE PATH. `a/b` and `a_b` both
+ * flatten to `a_b`, so two distinct agents would share one directory and each
+ * would see (and be able to DELETE) the other's definitions. When — and only
+ * when — flattening actually changed the name, a short digest of the ORIGINAL
+ * is appended, which makes the mapping injective again. Re-keying on the
+ * registry id would also fix it but would fight spec §6.2's `<agentName>`
+ * layout and make every existing directory unreachable; the ordinary name (the
+ * overwhelming majority) is left byte-identical and readable.
  */
 function safeAgentDirName(agentName: string): string {
   const flattened = agentName.replace(/[/\\\0]/g, '_').replace(/\.\./g, '_');
-  return flattened.trim() === '' || /^\.+$/.test(flattened) ? '_' : flattened;
+  const safe = flattened.trim() === '' || /^\.+$/.test(flattened) ? '_' : flattened;
+  if (safe === agentName) return safe;
+  return `${safe}-${createHash('sha256').update(agentName).digest('hex').slice(0, 8)}`;
 }
 
 /**

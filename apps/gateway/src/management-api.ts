@@ -1376,9 +1376,21 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // write definitions through one implementation. Conditional on the registry
   // dep so tests/embedders that don't wire sub-agents still construct the app.
   if (options.subagentDefinitions) {
-    const subagentDeps = { agentRegistry, definitions: options.subagentDefinitions };
-    mountSubagentDefinitionRoutes(app, subagentDeps);
-    mountSubagentDefinitionRoutes(mobileV1, subagentDeps);
+    const definitions = options.subagentDefinitions;
+    mountSubagentDefinitionRoutes(app, { agentRegistry, definitions });
+    mountSubagentDefinitionRoutes(mobileV1, {
+      agentRegistry,
+      definitions,
+      // `/mobile/v1` is a frozen contract: `MobileApiError` is
+      // `additionalProperties: false, required: [code, error, retryable]`, and
+      // the 401 from the middleware above is already typed. Handing the same
+      // namespace a second, untyped error shape makes a strict client decoder
+      // throw on exactly the paths it needs to handle.
+      errorBody: (kind, message) =>
+        kind === 'not_found'
+          ? ({ code: 'not_found', error: message, retryable: false } satisfies MobileApiError)
+          : mobileValidationError(message),
+    });
   }
 
   // --- MCP routes ---

@@ -6,11 +6,30 @@ import type { Hono } from 'hono';
 import type { AgentRegistry } from './agent-registry.js';
 import type { ListedSubagentType, SubagentDefinitionRegistry } from './subagent-definitions.js';
 
+/** The two error kinds these routes can produce, before shaping. */
+export type SubagentRouteErrorKind = 'not_found' | 'validation_failed';
+
 export interface SubagentDefinitionRoutesDeps {
   agentRegistry: AgentRegistry;
   /** The definition registry — the resolver, the listing AND the write root. */
   definitions: SubagentDefinitionRegistry;
+  /**
+   * Shape an error body for THIS mount. Defaults to the loopback management
+   * shape (`{ error }`).
+   *
+   * `/mobile/v1` MUST pass a `MobileApiError` shaper. That namespace is a frozen
+   * versioned contract in which `MobileApiError` is declared
+   * `required: [code, error, retryable]` with `additionalProperties: false`, the
+   * 401 emitted by the surrounding middleware is already typed, and every other
+   * dual-mounted family (`mountConversationRoutes`, `mountAgentRoutes`) returns
+   * the envelope on every error path. A second, untyped shape in the same
+   * namespace makes a strict client decoder throw.
+   */
+  errorBody?: (kind: SubagentRouteErrorKind, message: string) => unknown;
 }
+
+/** The loopback management shape, matching the swarm/skills/plugin routes. */
+const plainErrorBody = (_kind: SubagentRouteErrorKind, message: string) => ({ error: message });
 
 /**
  * The definition file-name grammar. Deliberately IDENTICAL to the `name`
@@ -90,6 +109,9 @@ function toTypeView(type: ListedSubagentType): SubagentTypeView {
  */
 export function mountSubagentDefinitionRoutes(app: Hono, deps: SubagentDefinitionRoutesDeps): void {
   const { agentRegistry, definitions } = deps;
+  const errorBody = deps.errorBody ?? plainErrorBody;
+  const notFound = (message = 'not found') => errorBody('not_found', message);
+  const invalid = (message: string) => errorBody('validation_failed', message);
 
   /**
    * Resolve `<perAgentDir>/<name>.md`, or an error response.
@@ -136,7 +158,7 @@ export function mountSubagentDefinitionRoutes(app: Hono, deps: SubagentDefinitio
   // cause. It is a diagnostic, never an error — the valid entries still apply.
   app.get('/agents/:id/subagent-types', async (c) => {
     const id = c.req.param('id');
-    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    if (!agentRegistry.get(id)) return c.json(notFound(), 404);
     const { types, unknownAllowedTypes } = await definitions.listFor(id);
     return c.json({ types: types.map(toTypeView), unknownAllowedTypes });
   });
@@ -148,7 +170,7 @@ export function mountSubagentDefinitionRoutes(app: Hono, deps: SubagentDefinitio
   app.get('/agents/:id/subagent-definitions', async (c) => {
     const id = c.req.param('id');
     const agentName = agentNameFor(id);
-    if (agentName === undefined) return c.json({ error: 'not found' }, 404);
+    if (agentName === undefined) return c.json(notFound(), 404);
     const dir = definitions.perAgentDir(agentName);
     let names: string[];
     try {
@@ -172,17 +194,17 @@ export function mountSubagentDefinitionRoutes(app: Hono, deps: SubagentDefinitio
   app.get('/agents/:id/subagent-definitions/:name', async (c) => {
     const id = c.req.param('id');
     const agentName = agentNameFor(id);
-    if (agentName === undefined) return c.json({ error: 'not found' }, 404);
+    if (agentName === undefined) return c.json(notFound(), 404);
     const name = c.req.param('name');
     const resolved = resolveDefinitionFile(agentName, name);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+    if (!resolved.ok) return c.json(invalid(resolved.error), 400);
     let raw: string;
     try {
       raw = await readFile(resolved.file, 'utf8');
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') {
-        return c.json({ error: 'not found' }, 404);
+        return c.json(notFound(), 404);
       }
       throw err;
     }
@@ -198,50 +220,65 @@ export function mountSubagentDefinitionRoutes(app: Hono, deps: SubagentDefinitio
   app.put('/agents/:id/subagent-definitions/:name', async (c) => {
     const id = c.req.param('id');
     const agentName = agentNameFor(id);
-    if (agentName === undefined) return c.json({ error: 'not found' }, 404);
+    if (agentName === undefined) return c.json(notFound(), 404);
     const name = c.req.param('name');
     const resolved = resolveDefinitionFile(agentName, name);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+    if (!resolved.ok) return c.json(invalid(resolved.error), 400);
 
     let body: { raw?: unknown };
     try {
       body = (await c.req.json()) as { raw?: unknown };
     } catch {
-      return c.json({ error: 'Invalid JSON' }, 400);
+      return c.json(invalid('Invalid JSON'), 400);
     }
     const raw = body.raw;
     if (typeof raw !== 'string' || raw.trim() === '') {
-      return c.json({ error: 'raw must be a non-empty string' }, 400);
+      return c.json(invalid('raw must be a non-empty string'), 400);
     }
     if (Buffer.byteLength(raw, 'utf8') > MAX_DEFINITION_BYTES) {
-      return c.json({ error: `raw must be at most ${MAX_DEFINITION_BYTES} bytes` }, 400);
+      return c.json(invalid(`raw must be at most ${MAX_DEFINITION_BYTES} bytes`), 400);
     }
 
     const parsed = parseAgentDefinition(raw, { source: 'agent', location: resolved.file });
-    if (!parsed.ok) return c.json({ error: parsed.error }, 422);
+    if (!parsed.ok) return c.json(invalid(parsed.error), 422);
+    // The URL addresses the FILE; the registry keys the roster on the
+    // FRONTMATTER name. Allowing them to diverge produces a definition this API
+    // cannot address: the listing reports `<name>` (which resolves to nothing),
+    // the roster reports the frontmatter name, and DELETE of the roster name
+    // 404s because the caller has to guess the filename. Two files declaring one
+    // frontmatter name is worse still — the registry picks a winner and the
+    // loser's edits land on disk and vanish from the roster. Compared BEFORE the
+    // registry's built-in canonicalisation, so `explore.md` + `name: explore`
+    // (which goes on to shadow the built-in `Explore`) is accepted.
+    if (parsed.definition.name !== name) {
+      return c.json(
+        invalid(`definition name "${parsed.definition.name}" must match the path name "${name}"`),
+        422,
+      );
+    }
 
     await mkdir(resolved.dir, { recursive: true });
     await writeFile(resolved.file, raw, 'utf8');
     // Roster rebuild + warm-backend refresh. Synchronous listener dispatch; the
     // rebuild itself lands on the agent's NEXT model turn.
     definitions.invalidate(id);
-    return c.json({ ok: true, name, definition: parsed.definition.name });
+    return c.json({ ok: true, name });
   });
 
   // DELETE /agents/:id/subagent-definitions/:name → { ok: true, name }
   app.delete('/agents/:id/subagent-definitions/:name', async (c) => {
     const id = c.req.param('id');
     const agentName = agentNameFor(id);
-    if (agentName === undefined) return c.json({ error: 'not found' }, 404);
+    if (agentName === undefined) return c.json(notFound(), 404);
     const name = c.req.param('name');
     const resolved = resolveDefinitionFile(agentName, name);
-    if (!resolved.ok) return c.json({ error: resolved.error }, 400);
+    if (!resolved.ok) return c.json(invalid(resolved.error), 400);
     try {
       await unlink(resolved.file);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR') {
-        return c.json({ error: 'not found' }, 404);
+        return c.json(notFound(), 404);
       }
       throw err;
     }

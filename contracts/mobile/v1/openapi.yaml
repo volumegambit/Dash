@@ -144,6 +144,109 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /agents/{id}/subagent-types:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      operationId: listMobileSubagentTypes
+      description: >-
+        The sub-agent roster this agent can spawn: built-ins, plugin `agents/*.md`,
+        the per-agent definition dir and the workspace dirs, merged by precedence and
+        narrowed by `subagents.allowedTypes`. Entries that LOST a name collision are
+        listed immediately after their winner carrying `shadowedBy`. `systemPrompt` is
+        deliberately absent — fetch the definition body when it is actually needed.
+      responses:
+        '200':
+          description: Resolved sub-agent roster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentTypesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agents/{id}/subagent-definitions:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      operationId: listMobileSubagentDefinitions
+      description: >-
+        The `*.md` files in this agent's own definition directory — the only writable
+        layer. Workspace and plugin definitions are read-only and appear in the roster.
+      responses:
+        '200':
+          description: Per-agent definition files.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentDefinitionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agents/{id}/subagent-definitions/{name}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - $ref: '#/components/parameters/SubagentDefinitionName'
+    get:
+      operationId: getMobileSubagentDefinition
+      responses:
+        '200':
+          description: The definition's raw markdown, byte-for-byte.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentDefinition'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: putMobileSubagentDefinition
+      description: >-
+        Create or replace `<name>.md` in the agent's definition dir. The body is parsed
+        before anything is written; the frontmatter `name` must equal the path `name`
+        (the roster keys on the former and this API addresses the latter, so a
+        divergence produces a definition no client can address).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutSubagentDefinitionRequest'
+      responses:
+        '200':
+          description: Definition written and the agent's roster invalidated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentDefinitionWriteResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    delete:
+      operationId: deleteMobileSubagentDefinition
+      responses:
+        '200':
+          description: Definition removed and the agent's roster invalidated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentDefinitionWriteResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /models:
     get:
       operationId: listMobileModels
@@ -385,6 +488,15 @@ components:
       in: header
       required: true
       schema: { type: string, pattern: '^"(0|[1-9][0-9]*)"$' }
+    SubagentDefinitionName:
+      name: name
+      in: path
+      required: true
+      description: >-
+        The definition's file stem. Same grammar the frontmatter `name` must match, which
+        is also what keeps a path separator, a dot segment or a NUL out of the resolved
+        file path.
+      schema: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
   responses:
     Unauthorized:
       description: Missing or invalid bearer token.
@@ -560,6 +672,81 @@ components:
       required: [ok]
       properties:
         ok: { const: true }
+    SubagentType:
+      type: object
+      additionalProperties: false
+      required: [name, description, source]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: string, minLength: 1 }
+        source: { enum: [builtin, workspace, agent, plugin] }
+        location: { type: string, minLength: 1 }
+        tools: { type: array, items: { type: string, minLength: 1 } }
+        disallowedTools: { type: array, items: { type: string, minLength: 1 } }
+        model: { type: string, minLength: 1 }
+        skills: { type: array, items: { type: string, minLength: 1 } }
+        maxTurns: { type: integer, minimum: 1 }
+        background: { type: boolean }
+        isolation: { const: worktree }
+        shadowedBy:
+          type: string
+          minLength: 1
+          description: >-
+            Present ONLY on a definition that LOST a name collision; the value is the
+            winner's file path (or its source when it has no file).
+    SubagentTypesResponse:
+      type: object
+      additionalProperties: false
+      required: [types, unknownAllowedTypes]
+      properties:
+        types:
+          type: array
+          items: { $ref: '#/components/schemas/SubagentType' }
+        unknownAllowedTypes:
+          type: array
+          items: { type: string, minLength: 1 }
+          description: >-
+            `subagents.allowedTypes` entries matching no resolvable type. Never fatal —
+            the remaining entries still apply — but an orchestrator whose whole list is
+            listed here can spawn nothing, so clients should surface it.
+    SubagentDefinitionsResponse:
+      type: object
+      additionalProperties: false
+      required: [definitions]
+      properties:
+        definitions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, file]
+            properties:
+              name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+              file: { type: string, minLength: 1 }
+    SubagentDefinition:
+      type: object
+      additionalProperties: false
+      required: [name, raw]
+      properties:
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
+        raw: { type: string, minLength: 1 }
+    PutSubagentDefinitionRequest:
+      type: object
+      additionalProperties: false
+      required: [raw]
+      properties:
+        raw:
+          type: string
+          minLength: 1
+          maxLength: 262144
+          description: The definition's full markdown, YAML frontmatter included.
+    SubagentDefinitionWriteResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, name]
+      properties:
+        ok: { const: true }
+        name: { type: string, pattern: '^[a-z0-9][a-z0-9-]*$' }
     MobileModel:
       type: object
       additionalProperties: false

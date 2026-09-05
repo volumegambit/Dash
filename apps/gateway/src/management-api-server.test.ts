@@ -303,6 +303,49 @@ describe('createGatewayManagementApp', () => {
       });
     });
 
+    it('returns the typed MobileApiError envelope on the mobile mount only', async () => {
+      const { app } = withAgent();
+      // The /mobile/v1 contract declares MobileApiError with
+      // additionalProperties:false and required [code, error, retryable], and
+      // the 401 from the surrounding middleware is already typed — a second,
+      // untyped shape in the same namespace breaks a strict client decoder.
+      const mobile404 = await app.request('/mobile/v1/agents/nope/subagent-types', {
+        headers: MOBILE_AUTH,
+      });
+      expect(mobile404.status).toBe(404);
+      expect(await mobile404.json()).toEqual({
+        code: 'not_found',
+        error: 'not found',
+        retryable: false,
+      });
+
+      const mobile400 = await app.request('/mobile/v1/agents/a1/subagent-definitions/UPPER', {
+        headers: MOBILE_AUTH,
+      });
+      expect(mobile400.status).toBe(400);
+      expect(await mobile400.json()).toMatchObject({
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      const mobile422 = await app.request('/mobile/v1/agents/a1/subagent-definitions/broken', {
+        method: 'PUT',
+        headers: MOBILE_JSON_HEADERS,
+        body: JSON.stringify({ raw: 'no frontmatter\n' }),
+      });
+      expect(mobile422.status).toBe(422);
+      expect(await mobile422.json()).toEqual({
+        code: 'validation_failed',
+        error: 'frontmatter is required',
+        retryable: false,
+      });
+
+      // The loopback mount keeps the management shape the swarm/plugin/skills
+      // routes use — it is not part of the frozen mobile contract.
+      const loopback404 = await app.request('/agents/nope/subagent-types', { headers: AUTH });
+      expect(await loopback404.json()).toEqual({ error: 'not found' });
+    });
+
     it('requires the namespace bearer on each mount', async () => {
       const { app } = withAgent();
       expect((await app.request('/agents/a1/subagent-types')).status).toBe(401);

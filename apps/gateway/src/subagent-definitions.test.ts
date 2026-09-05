@@ -369,6 +369,24 @@ describe('subagent definition registry', () => {
   it('exposes the per-agent definition dir', () => {
     expect(makeRegistry().perAgentDir('scout')).toBe(join(dataDir, 'subagents', 'scout'));
   });
+
+  // B3 made the mapping SAFE; B8 made it a WRITE path, which makes it also have
+  // to be INJECTIVE. `a/b` and `a_b` both flatten to `a_b`, so without a
+  // disambiguator two agents would share one writable dir and each could read
+  // and DELETE the other's definitions.
+  it('never maps two distinct agent names onto one directory', () => {
+    const registry = makeRegistry();
+    const flattened = registry.perAgentDir('a/b');
+    const literal = registry.perAgentDir('a_b');
+    expect(flattened).not.toBe(literal);
+    expect(flattened.startsWith(`${join(dataDir, 'subagents', 'a_b')}-`)).toBe(true);
+    // Deterministic: the same name always resolves to the same directory, or a
+    // gateway restart would orphan every definition the operator wrote.
+    expect(registry.perAgentDir('a/b')).toBe(flattened);
+    // The unchanged common case keeps its readable, suffix-free directory.
+    expect(literal).toBe(join(dataDir, 'subagents', 'a_b'));
+    expect(registry.perAgentDir('scout 2')).toBe(join(dataDir, 'subagents', 'scout 2'));
+  });
 });
 
 describe('definitionToType', () => {

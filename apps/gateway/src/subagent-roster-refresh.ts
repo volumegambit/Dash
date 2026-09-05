@@ -101,7 +101,13 @@ export function createSubagentRosterRefresher(
     // Listeners are invoked synchronously from `invalidate()`; chain the async
     // rebuild onto the queue so the mutation that triggered it never waits and
     // never sees a rejection.
-    queue = queue.then(() => refresh(agentId));
+    //
+    // The `.catch` is NOT belt-and-braces. `refresh` handles per-agent failures,
+    // but anything outside that loop (a throwing `listAgentIds`) would poison
+    // the chain permanently: every later `queue.then(...)` would be skipped and
+    // `whenIdle()` would reject into `onWiringRebuilt`, taking plugin
+    // hot-reload down with it. Swallow so the queue stays usable.
+    queue = queue.then(() => refresh(agentId)).catch(() => {});
   });
 
   return {

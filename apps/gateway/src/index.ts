@@ -26,7 +26,7 @@ import {
 } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
-import { SwarmCoordinator } from '@dash/swarm';
+import { SwarmCoordinator, createStaticResolver } from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
@@ -69,6 +69,7 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
+import { isSubagentsEnabled } from './subagent-config.js';
 import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
 import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import {
@@ -685,7 +686,14 @@ async function main() {
       // bundle) because the registry scans directories: the `agent` tool's
       // `parameters` getter is synchronous, so the first build has to happen
       // while the backend is still being constructed.
-      const subagentResolver = await subagentRosters.resolverFor(agentId);
+      //
+      // Gated on the sub-agent switch: `createSubagentExtraTools` returns []
+      // for a disabled agent, so building a roster for one buys nothing and
+      // costs a `readdir` per agent on a cold gateway's first chat — plus a
+      // roster-token-budget warning about an agent that can never spawn.
+      const subagentResolver = isSubagentsEnabled(agentConfig)
+        ? await subagentRosters.resolverFor(agentId)
+        : createStaticResolver([]);
 
       // Explicit annotation breaks the circular type inference: the projects
       // tools close over `backend` (getSessionId) while `backend` is still
@@ -909,7 +917,12 @@ async function main() {
   // on whatever chat happens to arrive first — buried in traffic, hours after
   // the operator edited the config they are about. Priming here puts them in
   // the startup log next to the rest of the boot diagnostics.
-  await subagentRosters.prime(registry.list().map((entry) => entry.id));
+  await subagentRosters.prime(
+    registry
+      .list()
+      .filter((entry) => isSubagentsEnabled(entry.config))
+      .map((entry) => entry.id),
+  );
 
   // Restore persisted channels
   for (const channel of channelRegistry.list()) {

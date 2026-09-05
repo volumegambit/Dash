@@ -1847,6 +1847,22 @@ describe('PiAgentBackend.refreshCustomTools', () => {
     expect(rosterOf(session)).toBe('general-purpose, reviewer');
   });
 
+  it("pi's AgentSession really has the private _refreshToolRegistry we poke", async () => {
+    // The session stub above defines `_refreshToolRegistry` itself, so nothing
+    // in this file observes pi's REAL surface: a pi upgrade that renamed the
+    // method would leave every test green and surface only as a silent
+    // roster-refresh failure at runtime. Assert against the actual prototype
+    // (importActual — the module is mocked for the rest of this file).
+    const pi = await vi.importActual<typeof import('@earendil-works/pi-coding-agent')>(
+      '@earendil-works/pi-coding-agent',
+    );
+    const prototype = (pi.AgentSession as unknown as { prototype: Record<string, unknown> })
+      .prototype;
+    expect(typeof prototype._refreshToolRegistry).toBe('function');
+    // Generous timeout: this is the only test in the file that loads pi's real
+    // module graph (every other one runs against the top-level `vi.mock`).
+  }, 60_000);
+
   it('is a no-op before start() (there is no session to poke)', () => {
     const backend = PiAgentBackend.fromOptions({
       config: { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: '' },
