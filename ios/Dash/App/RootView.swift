@@ -33,8 +33,8 @@ struct RootView: View {
 
   @Environment(AppModel.self) private var appModel
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+  @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
   /// Covers the async gap between tapping the empty detail's "New
   /// conversation" button and `openConversation` actually navigating — the
   /// same window `ConversationListView.isComposing` guards for the list's own
@@ -166,47 +166,8 @@ struct RootView: View {
     )
   }
 
-  /// Width of the sidebar column, widened at accessibility text sizes.
-  ///
-  /// 320 pt is the platform-conventional iPad sidebar width and is what the
-  /// split view chose for itself. At `.accessibility1` and above a 320 pt
-  /// column cannot show a useful conversation row — the title alone wraps to
-  /// three lines — so the column grows to 420 pt, which still leaves the
-  /// detail column 414 pt on an 834 pt-wide iPad, i.e. more than an iPhone
-  /// gets. Below `.accessibility1` nothing changes.
-  private var sidebarColumnWidth: CGFloat {
-    dynamicTypeSize.isAccessibilitySize ? 420 : 320
-  }
-
-  /// The two-column regular layout (design §1.1) is an explicit two-column
-  /// `HStack`, NOT a `NavigationSplitView`.
-  ///
-  /// `NavigationSplitView`'s sidebar column on iPadOS 18.4 positions its host
-  /// view 100 pt off the LEADING edge of the window — width `column + 100`,
-  /// origin `x = -100` — with a matching 100 pt leading safe-area inset that
-  /// puts the visible content back in the right place. A `List` expands into
-  /// safe areas by design, so `conversation.list` reported a frame starting at
-  /// x = -100 and `assertFitsHorizontally` failed.
-  ///
-  /// That overhang is the split view's own geometry, not ours. Measured on
-  /// iPad Pro 11" (M4) / iOS 18.4 at BOTH the default text size and
-  /// `accessibilityXXXL`, and reproduced unchanged with: the entire sidebar
-  /// replaced by a bare `List { Text("hello") }`; the column-width modifier
-  /// removed; the column widened to 420 pt (the overhang grew to match, 520 pt
-  /// at x = -100); no nested `NavigationStack`; no footer safe-area inset; no
-  /// `.balanced` style; `columnVisibility` at `.all`; and with `.clipped()`,
-  /// leading padding, a leading safe-area inset, a `GeometryReader` width
-  /// clamp and an explicit safe-area cancellation applied to the content.
-  /// Sixteen variants, one result. Owning the column layout is the only thing
-  /// that moves it: this version measures `conversation.list` at
-  /// (0, 0, 320, 1210) at the default text size and (0, 0, 420, 1210) at XXXL.
-  ///
-  /// What this gives up is the split view's built-in "Hide Sidebar" toggle.
-  /// Design §1.1 asks for both columns visible at once and nothing in the app
-  /// ever hid the sidebar programmatically (`columnVisibility` was a constant
-  /// `.doubleColumn`), so that affordance is the whole of the trade.
   private var regularNavigation: some View {
-    HStack(spacing: 0) {
+    NavigationSplitView(columnVisibility: $columnVisibility) {
       // `SidebarFooterView` is attached via `.sidebarFooter(...)` to EACH
       // page inside the stack (the conversation-list root AND the pushed
       // Agents destination) rather than once on the `NavigationStack`
@@ -234,10 +195,8 @@ struct RootView: View {
             }
           }
       }
-      .frame(width: sidebarColumnWidth)
-
-      Divider()
-
+      .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
+    } detail: {
       NavigationStack {
         switch appModel.selectedTab {
         case .agents:
@@ -254,8 +213,8 @@ struct RootView: View {
           }
         }
       }
-      .frame(maxWidth: .infinity)
     }
+    .navigationSplitViewStyle(.balanced)
     .sheet(isPresented: isSettingsPresented) {
       NavigationStack { settingsRoot }
     }
