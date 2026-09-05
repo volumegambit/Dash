@@ -1,4 +1,4 @@
-import { buildMemoryPreamble } from './memory.js';
+import { composeMemoryPrompt } from './memory/prompt.js';
 import type {
   AgentBackend,
   AgentEvent,
@@ -47,10 +47,16 @@ export class DashAgent {
     // Note: Skills are injected by pi's system prompt builder via the DashResourceLoader,
     // not here. The backend's listSkills() feeds into resourceLoader.getSkills().
 
-    // Memory preamble goes last — it's dynamic context from past conversations
-    if (config.workspace) {
-      const preamble = await buildMemoryPreamble(config.workspace);
-      systemPrompt = `${systemPrompt}\n\n${preamble}`;
+    // Memory goes last — it is dynamic context from past conversations and is
+    // rebuilt on every turn from the resolver read, so toggling memory in the
+    // registry takes effect on the next message without a pool eviction.
+    if (config.memory) {
+      const memoryPrompt = await composeMemoryPrompt(config.memory.dir, userMessage, {
+        // `tools: false` (swarm workers) inherit the memory read-only, so the
+        // rules must not tell them to call tools they were never registered.
+        tools: config.memory.tools !== false,
+      });
+      systemPrompt = `${systemPrompt}\n\n${memoryPrompt}`;
     }
 
     const state: AgentState = {

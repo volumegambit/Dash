@@ -5,6 +5,7 @@ import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import {
   Ban,
+  Brain,
   Check,
   ChevronDown,
   ChevronUp,
@@ -292,6 +293,24 @@ function renderEvents(
           <span>
             Retrying (attempt {event.attempt}) — {truncate(event.reason, 160)}
           </span>
+        </div>,
+      );
+    } else if (event.type === 'memory_saved' || event.type === 'memory_forgotten') {
+      // Agent memory bookkeeping — a compact chip so the user can see (and
+      // later audit) what the agent chose to remember or forget.
+      flushProse();
+      const label =
+        event.type === 'memory_forgotten'
+          ? `Forgot: ${event.name}`
+          : `${event.action === 'updated' ? 'Updated memory' : 'Remembered'}: ${event.description}`;
+      elements.push(
+        <div
+          key={`memory-${blockCount++}`}
+          className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-sidebar-hover px-2.5 py-1 text-xs text-muted"
+          data-testid="memory-chip"
+        >
+          <Brain size={12} aria-hidden="true" />
+          <span>{label}</span>
         </div>,
       );
     } else if (event.type === 'response' || event.type === 'skill_created') {

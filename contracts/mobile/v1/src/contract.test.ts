@@ -299,6 +299,91 @@ describe('mobile v1 contract fixtures', () => {
     });
   });
 
+  it('documents the read-only mobile memory surface', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<
+        string,
+        Record<string, { responses?: Record<string, unknown>; parameters?: unknown }>
+      >;
+      components?: {
+        parameters?: Record<string, Record<string, unknown>>;
+        schemas?: Record<string, Record<string, unknown>>;
+      };
+    };
+
+    // iOS gets read + delete only; the PUT and config routes stay loopback-only.
+    expect(Object.keys(openapi.paths?.['/agents/{id}/memory'] ?? {})).toEqual([
+      'parameters',
+      'get',
+    ]);
+    expect(Object.keys(openapi.paths?.['/agents/{id}/memory/{name}'] ?? {})).toEqual([
+      'parameters',
+      'get',
+      'delete',
+    ]);
+    expect(openapi.components?.parameters?.MemoryName).toEqual({
+      name: 'name',
+      in: 'path',
+      required: true,
+      schema: { type: 'string', minLength: 1 },
+    });
+    expect(openapi.components?.schemas?.MemoryInfo?.required).toEqual([
+      'name',
+      'description',
+      'type',
+      'source',
+      'createdAt',
+      'updatedAt',
+      'size',
+    ]);
+    // Dates on the wire are bare `YYYY-MM-DD`, not RFC 3339 timestamps.
+    const properties = openapi.components?.schemas?.MemoryInfo?.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(properties.createdAt).toEqual({ type: 'string', format: 'date' });
+    expect(properties.updatedAt).toEqual({ type: 'string', format: 'date' });
+    expect(properties.type).toEqual({ enum: ['user', 'feedback', 'project', 'reference'] });
+    expect(properties.source).toEqual({ enum: ['agent', 'sweep', 'user', 'import'] });
+    expect(openapi.components?.schemas?.MemoryDeleteResponse).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: { name: { type: 'string', minLength: 1 } },
+    });
+  });
+
+  it('documents the memory 404 body the gateway really emits, not MobileApiError', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, Record<string, { responses?: Record<string, unknown> }>>;
+      components?: {
+        responses?: Record<string, { content?: Record<string, { schema?: unknown }> }>;
+        schemas?: Record<string, Record<string, unknown>>;
+      };
+    };
+
+    // The three memory handlers answer `{ "error": "not found" }` — no `code`,
+    // no `retryable`. Pointing them at the shared `NotFound` response would
+    // promise a `MobileApiError` no client could ever decode.
+    for (const [path, method] of [
+      ['/agents/{id}/memory', 'get'],
+      ['/agents/{id}/memory/{name}', 'get'],
+      ['/agents/{id}/memory/{name}', 'delete'],
+    ] as const) {
+      expect(openapi.paths?.[path]?.[method]?.responses?.['404'], `${method} ${path}`).toEqual({
+        $ref: '#/components/responses/MemoryNotFound',
+      });
+    }
+    expect(
+      openapi.components?.responses?.MemoryNotFound?.content?.['application/json']?.schema,
+    ).toEqual({ $ref: '#/components/schemas/MemoryNotFoundError' });
+    const schema = openapi.components?.schemas?.MemoryNotFoundError;
+    expect(schema?.type).toBe('object');
+    expect(schema?.additionalProperties).toBe(false);
+    expect(schema?.required).toEqual(['error']);
+    expect(schema?.properties).toEqual({ error: { type: 'string', minLength: 1 } });
+  });
+
   it('matches every manifest case to its declared schema and polarity', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as object;
     const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as object;

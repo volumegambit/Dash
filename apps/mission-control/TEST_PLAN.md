@@ -1791,6 +1791,84 @@ The panel is the right-side **swarm supervision** drawer. Its affordance is a **
 3. **Verify:** the pinned strip disappears once all cards are terminal.
 4. Re-open the conversation from history. **Verify:** those cards still read **Cancelled** (the end-of-stream terminalization is stable across replay).
 
+## Section 32: Agent Memory — Memory Tab
+
+Covers the per-agent **Memory** tab on the agent detail page: the grouped memory list, editing and deleting a memory, the **Automatic memory** / **Post-turn sweep** config strip, per-agent isolation when switching agents, and the chat chip shown when the agent remembers or forgets something.
+
+**Preconditions:** Gateway running and MC connected (Sections 1–2), at least one AI provider connected (Section 3), and an agent whose model supports tool use. A cheap model keeps this section to ~cents — asking the agent to remember things makes real, small LLM calls. The Memory tab has no manual "add memory" control: memories can only be created by asking the agent to remember something in chat (it saves them itself), or by editing one it already saved.
+
+**Bootstrap (fastest path):**
+1. Create or open an agent (Section 4).
+2. Open a chat with that agent (Section 6) and send: `Remember that my favorite color is teal.` Wait for the reply.
+3. Go to the agent detail page → **Memory** tab (the last tab, after Overview / Configuration / Channels / Skills). **Verify:** at least one memory now appears (see 32.1) — this is the memory used by the rest of this section.
+4. Create a **second** agent (Section 4), left with no memories, for the per-agent isolation check in 32.7.
+
+### 32.1 Opening the tab & the grouped list
+1. Open an agent that already has at least one memory (Bootstrap) and click the **Memory** tab.
+2. **Verify:** briefly, the tab shows only a **"Loading…"** indicator — no memory list and no config strip (Automatic memory / Post-turn sweep) are visible yet.
+3. **Verify:** once loaded, the heading reads **"Memory (N)"** where N is the memory count. An agent with zero memories still shows **"Memory (0)"** once loaded — that's distinct from the loading state's bare **"Memory"** with no count.
+4. **Verify:** memories are grouped under headings in this fixed order: **User**, **Feedback**, **Project**, **Reference**. Any type with no memories has its heading omitted entirely — an agent with only "user"-type memories shows only a **User** group, not empty **Feedback** / **Project** / **Reference** headings.
+5. **Verify:** each row shows, left to right: the memory's machine-generated name (monospace) with its one-line description next to it, then on the right its **source** (one of `agent`, `sweep`, `user`, `import`) and its last-updated timestamp (an ISO-8601 date/time string, e.g. `2026-09-05T00:00:00.000Z` — not a friendly relative date like "2 days ago"), and a **Delete** button.
+6. **Verify:** the memory saved by the agent in the Bootstrap step shows source `agent`.
+
+### 32.2 Editing a memory
+1. Click anywhere on a memory row (not its **Delete** button).
+2. **Verify:** an editor opens below the list, inline in the same tab (not a popup/modal), showing the memory's name (read-only, monospace), an editable **Description** field, a **Type** dropdown (User / Feedback / Project / Reference), a multi-line **Content** field, and **Save** / **Cancel** buttons.
+3. Change the description, pick a different **Type**, edit the content, then click **Save**.
+4. **Verify:** the editor closes, the row now shows the new description under its new type's group heading, its **source** now reads `user`, and its updated-at timestamp changed.
+5. Open the same memory again, change nothing, and click **Cancel**.
+6. **Verify:** the editor closes with no change to the row.
+
+### 32.3 Deleting a memory
+1. Note a memory's name, then click its **Delete** button.
+2. **Verify:** the row disappears immediately with **no confirmation prompt**, and the heading count decreases by one. If that was the last memory of its type, that type's group heading also disappears.
+
+### 32.4 Deleting the memory that is open in the editor
+1. Click a memory row to open its editor (32.2).
+2. With the editor still open, click that same memory's **Delete** button in the list above.
+3. **Verify:** the memory is removed from the list AND the open editor closes automatically — no stray **Save** button is left on screen (saving after this point would otherwise recreate the memory you just deleted).
+
+### 32.5 Automatic memory toggle
+1. On the Memory tab, note the **"Automatic memory"** checkbox — checked by default.
+2. Uncheck it.
+3. Reload the agent detail page and re-open the Memory tab. **Verify:** the memory list still shows the same memories as before (e.g. the "favorite color" memory from Bootstrap) — unchecking does **not** clear or empty the list. This is intentional: the files are still on disk, and the tab deliberately keeps them visible and deletable while memory is off, so you can clean them up (or copy their content) before deleting the agent.
+4. Go to **Chat** with this agent and, in a **new** conversation, ask it something only the memory could answer, e.g. `What's my favorite color?`. **Verify:** it does not answer correctly and does not claim to recall anything from memory — memory stopped being used starting with the very next message after step 2, with no app restart needed.
+5. In that same conversation, ask it to remember something new, e.g. `Remember that I use vim.` **Verify:** no memory chip appears for that turn and the agent does not claim to have saved anything.
+6. Return to the Memory tab, open one of the still-listed memories (32.2), and click **Save** (change nothing or change something — either way). **Verify:** the save fails: an error banner appears above the list (its text names the agent's memory as disabled) and the editor stays open rather than closing — a disabled agent's memory can still be read and deleted, but not written. This is expected behavior, not a bug to file.
+7. Re-check **"Automatic memory"**. **Verify:** the memory list and its contents are unchanged from before step 2 (nothing was lost while the toggle was off), the edit from step 6 now saves successfully when you click **Save** again, and repeating the recall question from step 4 in a new conversation now gets the correct answer — memory is back in the prompt.
+
+### 32.6 Post-turn sweep setting
+1. On the Memory tab, note the **"Post-turn sweep"** dropdown — it offers **Auto (non-frontier models)**, **On**, and **Off**, defaulting to Auto.
+2. Change it to **Off**, then reload the agent detail page and re-open the Memory tab. **Verify:** the dropdown still reads **Off** (the change persisted).
+3. Change it to **On** and reload again. **Verify:** that also persists.
+4. **Verify:** toggling the sweep setting never visibly changes the **Automatic memory** checkbox, and toggling that checkbox (32.5) never changes the sweep dropdown's selection — the two settings save independently.
+
+> Background, for context when reading results: the sweep is what lets the agent pick up new memories from a conversation without it explicitly deciding to save one — it's a pass that runs after each turn. A memory a human created or last edited from this tab (source `user`) is never silently overwritten by the sweep.
+
+### 32.7 Switching agents — no bleed-through
+1. Open the first agent's Memory tab (with its memories from Bootstrap) and confirm its memories are visible.
+2. Navigate directly to the second agent's Memory tab (created in Bootstrap step 4 — no memories, default config).
+3. **Verify:** at no point — including the brief loading moment — do the first agent's memory rows appear under the second agent. The second agent's tab settles on its own state: **"No memories yet. The agent saves them as it learns."** and default config (**Automatic memory** checked, sweep **Auto**), even though you changed those settings for the first agent in 32.5/32.6.
+4. Navigate back to the first agent's Memory tab.
+5. **Verify:** its memories and whatever config values you last saved for it (32.5/32.6) are still exactly as you left them — switching away and back does not reset or mix state between agents.
+
+### 32.8 Chat chip after asking the agent to remember something
+1. With **Automatic memory** back on (32.5) for an agent, open a chat with it (Section 6).
+2. Send a message asking it to remember a new, distinct fact, e.g. `Remember that my dog's name is Biscuit.`
+3. **Verify:** a normal tool-use block for saving the memory appears in the transcript like any other tool call, and — separately — a small pill-shaped chip with a brain icon appears reading **"Remembered: <description>"**, where the description is the agent's own short summary of the fact (exact wording varies by model).
+4. Later in the same conversation, correct that same fact, e.g. `Actually, my dog's name is Waffles.`
+5. **Verify (best effort — depends on the model choosing to update rather than create a new memory):** a chip reading **"Updated memory: <description>"** appears instead of a second "Remembered" chip.
+6. Ask the agent to forget it, e.g. `Forget that fact about my dog.`
+7. **Verify:** a chip reading **"Forgot: <name>"** appears, where `<name>` is the memory's machine-generated name, not its description.
+8. Open the Memory tab for this agent. **Verify:** the forgotten memory is gone from the list.
+
+### 32.9 200-memory cap (optional — expensive to set up)
+**Precondition:** an agent already at the 200-memory cap. There is no bulk-create shortcut in the UI — reaching 200 means asking the agent to remember roughly 200 distinct one-line facts over chat (or reusing an agent left over from a long-running prior QA pass that is already there). Skip this section if no such agent is available.
+1. With the agent at 200 memories, ask it to remember one more new fact.
+2. **Verify:** no "Remembered" chip appears for that turn. Expand the tool-use block for the save attempt — it still renders in the normal (non-error) style, since the failure is carried in the tool's own reply text rather than as a red error block — and confirm the text reads **"Error: This agent already has 200 memories; update or forget one first"** — the `Error: ` prefix is part of the tool's literal reply text, not an indication of error styling (there is none here).
+3. Open the Memory tab and edit an *existing* memory (32.2 — same name, not a new one), then Save.
+4. **Verify:** editing an existing memory at the cap still succeeds — the cap only blocks creating a 201st memory, not updating one of the 200 that already exist.
+
 ## Appendix: Test Run Log
 
 | Run # | Date | Sections Tested | Pass | Fail | Bugs Filed | Notes |

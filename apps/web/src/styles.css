@@ -878,6 +878,26 @@ textarea:focus-visible {
 }
 
 /* ---------------------------------------------------------------------
+ * Memory chip (agent-memory Task 11): the transcript row for `memory_saved`
+ * / `memory_forgotten`, mirroring MC's chip in `chat.tsx`. Pill-shaped on
+ * purpose — it is a status badge, not a content surface, so it opts out of
+ * the hard-corner `--radius: 0` the content blocks use. Muted foreground on
+ * the shared `--border`, no new tokens.
+ * ------------------------------------------------------------------- */
+.chat-memory-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------
  * Message entrance animation (chat-ux Phase 3 Task 4, audit #18; narrowed
  * by Phase 4 Task 1, minor 10): fade+rise for rows that ARRIVE while the
  * transcript is showing — `.chat-message-enter`, which `ChatView`'s

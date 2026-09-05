@@ -13,6 +13,10 @@ import type {
   McpAddServerRequest,
   McpAddServerResponse,
   McpServerInfo,
+  MemoryConfig,
+  MemoryContent,
+  MemoryInfo,
+  MemoryType,
   PluginInstallResponse,
   PluginListResponse,
   PluginRecord,
@@ -182,6 +186,53 @@ export class ManagementClient {
     await this.request<{ name: string }>(
       'DELETE',
       `/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}`,
+    );
+  }
+
+  // --- Agent memory ---
+
+  async memories(agentId: string): Promise<MemoryInfo[]> {
+    return this.request<MemoryInfo[]>('GET', `/agents/${encodeURIComponent(agentId)}/memory`);
+  }
+
+  async memory(agentId: string, name: string): Promise<MemoryContent> {
+    return this.request<MemoryContent>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async putMemory(
+    agentId: string,
+    name: string,
+    input: { description: string; type: MemoryType; content: string },
+  ): Promise<{ record: MemoryContent; action: 'created' | 'updated' }> {
+    return this.requestWithBody<{ record: MemoryContent; action: 'created' | 'updated' }>(
+      'PUT',
+      `/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(name)}`,
+      input,
+    );
+  }
+
+  async removeMemory(agentId: string, name: string): Promise<void> {
+    await this.request<{ name: string }>(
+      'DELETE',
+      `/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async memoryConfig(agentId: string): Promise<MemoryConfig> {
+    return this.request<MemoryConfig>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/memory/config`,
+    );
+  }
+
+  async updateMemoryConfig(agentId: string, patch: Partial<MemoryConfig>): Promise<MemoryConfig> {
+    return this.requestWithBody<MemoryConfig>(
+      'PATCH',
+      `/agents/${encodeURIComponent(agentId)}/memory/config`,
+      patch,
     );
   }
 

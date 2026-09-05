@@ -566,6 +566,35 @@ struct ChatReducerTests {
     #expect(rows[4].detail?.contains("overflow") == true)
   }
 
+  @Test("memory events project remembered/updated/forgotten status rows")
+  func memoryStatusRows() {
+    var state = acceptedState(cursor: 1)
+    let events: [AgentEvent] = [
+      .memorySaved(
+        name: "user-timezone",
+        description: "Gerry is in Singapore",
+        memoryType: .user,
+        action: .created
+      ),
+      .memorySaved(
+        name: "user-timezone",
+        description: "Gerry moved to Tokyo",
+        memoryType: .user,
+        action: .updated
+      ),
+      .memoryForgotten(name: "old-fact"),
+    ]
+
+    for (offset, event) in events.enumerated() {
+      _ = apply(event, seq: offset + 2, to: &state)
+    }
+
+    let rows = state.messages.last?.assistant?.statusRows ?? []
+    #expect(rows.map(\.kind) == [.memorySaved, .memorySaved, .memoryForgotten])
+    #expect(rows.map(\.title) == ["Remembered", "Updated memory", "Forgot memory"])
+    #expect(rows.map(\.detail) == ["Gerry is in Singapore", "Gerry moved to Tokyo", "old-fact"])
+  }
+
   @Test("unknown events expose only their discriminator")
   func unknownEventProjection() {
     var state = acceptedState(cursor: 1)

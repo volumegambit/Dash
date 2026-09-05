@@ -46,3 +46,24 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): 
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
+
+/**
+ * How long shutdown waits for a background queue (auto-title, memory sweep) to
+ * drain before giving up on it. Each pending job sits in a provider completion
+ * with no AbortSignal, so a hung socket would otherwise park shutdown forever
+ * and the process would never reach its database closes.
+ */
+export const FLUSH_TIMEOUT_MS = 5_000;
+
+/**
+ * Best-effort, DEADLINE-BOUNDED flush of a background queue: like
+ * {@link safeStep}, but a flush that never settles is abandoned (and logged)
+ * instead of blocking the rest of the shutdown sequence.
+ */
+export async function safeFlush(
+  label: string,
+  flush: () => Promise<void>,
+  ms: number = FLUSH_TIMEOUT_MS,
+): Promise<void> {
+  await safeStep(label, () => withTimeout(Promise.resolve(flush()), ms, label));
+}

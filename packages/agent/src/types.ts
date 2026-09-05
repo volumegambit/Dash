@@ -1,3 +1,5 @@
+import type { MemoryType } from './memory/types.js';
+
 // --- LLM provider types (formerly from @dash/llm) ---
 
 export interface ToolUseBlock {
@@ -85,6 +87,14 @@ export type AgentEvent =
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_loaded'; name: string }
   | { type: 'skill_created'; name: string; description: string }
+  | {
+      type: 'memory_saved';
+      name: string;
+      description: string;
+      memoryType: MemoryType;
+      action: 'created' | 'updated';
+    }
+  | { type: 'memory_forgotten'; name: string }
   | { type: 'mcp_server_error'; server: string; error: string };
 
 export interface DashAgentConfig {
@@ -101,6 +111,14 @@ export interface DashAgentConfig {
    */
   allowedProviders?: string[];
   workspace?: string;
+  /**
+   * Per-agent automated memory. `dir` is the memory directory
+   * (`<dataDir>/memory/<agentId>`); when set, DashAgent.chat() appends the
+   * memory index + recalled memories to the system prompt every turn and the
+   * backend registers save_memory / recall_memory / forget_memory unless
+   * `tools === false` (swarm workers: read-only inheritance).
+   */
+  memory?: { dir: string; tools?: boolean };
   skills?: {
     paths?: string[];
     urls?: string[];

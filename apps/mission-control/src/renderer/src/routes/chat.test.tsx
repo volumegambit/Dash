@@ -741,3 +741,63 @@ describe('MessageBubble auto-retry rendering', () => {
     expect(container.querySelector('.text-red')).toBeNull();
   });
 });
+
+describe('MessageBubble memory chips', () => {
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  it('renders a Remembered chip for memory_saved and a Forgot chip for memory_forgotten', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'memory_saved',
+            name: 'user-timezone',
+            description: 'Gerry is in Singapore',
+            memoryType: 'user',
+            action: 'created',
+          },
+          {
+            type: 'memory_saved',
+            name: 'user-timezone',
+            description: 'Gerry is in Singapore (UTC+8)',
+            memoryType: 'user',
+            action: 'updated',
+          },
+          { type: 'memory_forgotten', name: 'old-fact' },
+        ])}
+      />,
+    );
+
+    expect(screen.getByText('Remembered: Gerry is in Singapore')).toBeInTheDocument();
+    expect(screen.getByText('Updated memory: Gerry is in Singapore (UTC+8)')).toBeInTheDocument();
+    expect(screen.getByText('Forgot: old-fact')).toBeInTheDocument();
+    expect(screen.queryByText('Activity from a newer Dash version')).not.toBeInTheDocument();
+  });
+
+  it('keeps flushing buffered prose before a memory chip', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'text_delta', text: 'Noted.' },
+          {
+            type: 'memory_saved',
+            name: 'units',
+            description: 'Gerry prefers metric units',
+            memoryType: 'user',
+            action: 'created',
+          },
+        ])}
+      />,
+    );
+
+    expect(container.textContent).toContain('Noted.');
+    expect(screen.getByText('Remembered: Gerry prefers metric units')).toBeInTheDocument();
+  });
+});

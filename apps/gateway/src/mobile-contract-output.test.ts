@@ -406,6 +406,86 @@ describe('mobile harness emitted contract output', () => {
     }
   });
 
+  it('validates real memory list, record, delete, and not-found output', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      // Seeded through the loopback-only write route — the same path Mission
+      // Control uses. `/mobile/v1` deliberately publishes reads + delete only,
+      // so the fixture has to arrive over the administrative surface.
+      const seedResponse = await fetch(
+        `${harness.managementBaseUrl}/agents/${harness.agentId}/memory/user-timezone`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${harness.managementToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            description: 'Gerry is in Singapore (UTC+8)',
+            type: 'user',
+            content: 'The user is in Singapore, UTC+8.',
+          }),
+        },
+      );
+      expect(seedResponse.status).toBe(200);
+
+      const listResponse = await mobileRequest(harness, `/agents/${harness.agentId}/memory`);
+      expect(listResponse.status).toBe(200);
+      const memories = await listResponse.json();
+      expectSchema('openapi', 'MemoryInfoList', memories);
+      expectFixtureKeys('memory-list.json', memories, [
+        'name',
+        'description',
+        'type',
+        'source',
+        'createdAt',
+        'updatedAt',
+        'size',
+      ]);
+
+      const recordResponse = await mobileRequest(
+        harness,
+        `/agents/${harness.agentId}/memory/user-timezone`,
+      );
+      expect(recordResponse.status).toBe(200);
+      expectSchema('openapi', 'MemoryRecord', await recordResponse.json());
+
+      const unauthorizedResponse = await fetch(
+        `${harness.managementBaseUrl}/mobile/v1/agents/${harness.agentId}/memory`,
+      );
+      expect(unauthorizedResponse.status).toBe(401);
+      expectSchema('openapi', 'MobileApiError', await unauthorizedResponse.json());
+
+      // 404s on this surface carry the gateway's bare `{ error }` body, not the
+      // `MobileApiError` envelope the rest of `/mobile/v1` uses — see the
+      // `MemoryNotFound` response in the contract.
+      const missingResponse = await mobileRequest(
+        harness,
+        `/agents/${harness.agentId}/memory/does-not-exist`,
+      );
+      expect(missingResponse.status).toBe(404);
+      expectSchema('openapi', 'MemoryNotFoundError', await missingResponse.json());
+
+      const deleteResponse = await mobileRequest(
+        harness,
+        `/agents/${harness.agentId}/memory/user-timezone`,
+        { method: 'DELETE' },
+      );
+      expect(deleteResponse.status).toBe(200);
+      expectSchema('openapi', 'MemoryDeleteResponse', await deleteResponse.json());
+
+      const deleteAgainResponse = await mobileRequest(
+        harness,
+        `/agents/${harness.agentId}/memory/user-timezone`,
+        { method: 'DELETE' },
+      );
+      expect(deleteAgainResponse.status).toBe(404);
+      expectSchema('openapi', 'MemoryNotFoundError', await deleteAgainResponse.json());
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('validates accepted, event, done, transcript, replay, and probe error output', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
     let chat: FrameInbox | undefined;

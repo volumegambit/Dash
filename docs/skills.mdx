@@ -22,8 +22,8 @@ This two-phase approach keeps token usage low: the agent always sees *what's ava
 
 When an agent processes a message, its system prompt is assembled from multiple sources in this order:
 
-1. **Memory preamble** — if the agent has a workspace, any memory files (like `CLAUDE.md`) are loaded and prepended
-2. **Your system prompt** — the prompt you configured when deploying the agent
+1. **Your system prompt** — the prompt you configured when deploying the agent
+2. **Memory** — the agent's memory index and any recalled memories (see [Memory](/memory))
 3. **Skill index** — a compact listing of available skills with names, descriptions, and triggers
 
 The skill index looks like this in the system prompt:

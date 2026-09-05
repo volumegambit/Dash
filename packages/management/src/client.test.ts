@@ -9,6 +9,8 @@ import { startManagementServer } from './server.js';
 import type {
   InfoResponse,
   InstalledPlugin,
+  MemoryContent,
+  MemoryInfo,
   PluginListResponse,
   PluginRecord,
   PluginSetStateRequest,
@@ -897,6 +899,185 @@ describe('ManagementClient', () => {
       nextResponse = { ok: true };
       await swarmClient.cancelSwarmWorker('a 1', 'r/1', 'w#1');
       expect(recording[0].url).toBe('/agents/a%201/swarm/runs/r%2F1/workers/w%231/cancel');
+    });
+  });
+  describe('Memory methods', () => {
+    interface RecordedRequest {
+      method: string;
+      url: string;
+      body: unknown;
+    }
+
+    let recording: RecordedRequest[];
+    let nextResponse: unknown;
+    let nextStatus: number;
+    let rawServer: Server;
+    let memClose: () => Promise<void>;
+    let memClient: ManagementClient;
+    let memBaseUrl: string;
+
+    beforeEach(async () => {
+      recording = [];
+      nextResponse = {};
+      nextStatus = 200;
+
+      rawServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c as Buffer));
+        req.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          let body: unknown;
+          try {
+            body = raw ? JSON.parse(raw) : undefined;
+          } catch {
+            body = raw;
+          }
+          recording.push({ method: req.method ?? '', url: req.url ?? '', body });
+          if (req.headers.authorization !== `Bearer ${TEST_TOKEN}`) {
+            res.statusCode = 401;
+            res.end('unauthorized');
+            return;
+          }
+          res.statusCode = nextStatus;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify(nextResponse));
+        });
+      });
+
+      await new Promise<void>((resolve) => rawServer.listen(0, resolve));
+      const addr = rawServer.address();
+      const memPort = typeof addr === 'object' && addr ? addr.port : 0;
+      memClose = () =>
+        new Promise<void>((resolve, reject) =>
+          rawServer.close((err) => (err ? reject(err) : resolve())),
+        );
+      memBaseUrl = `http://localhost:${memPort}`;
+      memClient = new ManagementClient(memBaseUrl, TEST_TOKEN);
+    });
+
+    afterEach(async () => {
+      await memClose();
+    });
+
+    const sampleInfo: MemoryInfo = {
+      name: 'user-timezone',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      source: 'agent',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+      size: 42,
+    };
+    const sampleContent: MemoryContent = {
+      name: sampleInfo.name,
+      description: sampleInfo.description,
+      type: sampleInfo.type,
+      source: sampleInfo.source,
+      createdAt: sampleInfo.createdAt,
+      updatedAt: sampleInfo.updatedAt,
+      content: 'Gerry lives in Singapore (UTC+8).',
+    };
+
+    it('calls the memory endpoints with the right methods and paths', async () => {
+      const calls: string[] = [];
+
+      nextResponse = [sampleInfo];
+      await memClient.memories('a1');
+      calls.push(`${recording[0].method} ${recording[0].url}`);
+
+      recording = [];
+      nextResponse = sampleContent;
+      await memClient.memory('a1', 'x');
+      calls.push(`${recording[0].method} ${recording[0].url}`);
+
+      recording = [];
+      nextResponse = { record: sampleContent, action: 'created' };
+      await memClient.putMemory('a1', 'x', { description: 'd', type: 'user', content: 'c' });
+      calls.push(`${recording[0].method} ${recording[0].url}`);
+
+      recording = [];
+      nextResponse = { name: 'x' };
+      await memClient.removeMemory('a1', 'x');
+      calls.push(`${recording[0].method} ${recording[0].url}`);
+
+      recording = [];
+      nextResponse = { enabled: true, sweep: 'auto' };
+      await memClient.memoryConfig('a1');
+      calls.push(`${recording[0].method} ${recording[0].url}`);
+
+      recording = [];
+      nextResponse = { enabled: true, sweep: 'off' };
+      await memClient.updateMemoryConfig('a1', { sweep: 'off' });
+      calls.push(`${recording[0].method} ${recording[0].url}`);
+
+      expect(calls).toEqual([
+        'GET /agents/a1/memory',
+        'GET /agents/a1/memory/x',
+        'PUT /agents/a1/memory/x',
+        'DELETE /agents/a1/memory/x',
+        'GET /agents/a1/memory/config',
+        'PATCH /agents/a1/memory/config',
+      ]);
+    });
+
+    it('memories() returns the MemoryInfo list', async () => {
+      nextResponse = [sampleInfo];
+      const res = await memClient.memories('a1');
+      expect(res).toEqual([sampleInfo]);
+    });
+
+    it('memory() returns the full record including content', async () => {
+      nextResponse = sampleContent;
+      const res = await memClient.memory('a1', 'user-timezone');
+      expect(res.content).toBe('Gerry lives in Singapore (UTC+8).');
+    });
+
+    it('putMemory() sends the JSON body and returns { record, action }', async () => {
+      nextResponse = { record: sampleContent, action: 'updated' };
+      const res = await memClient.putMemory('a1', 'user-timezone', {
+        description: 'Gerry is in Singapore',
+        type: 'user',
+        content: 'Gerry lives in Singapore (UTC+8).',
+      });
+      expect(recording[0].body).toEqual({
+        description: 'Gerry is in Singapore',
+        type: 'user',
+        content: 'Gerry lives in Singapore (UTC+8).',
+      });
+      expect(res.action).toBe('updated');
+      expect(res.record).toEqual(sampleContent);
+    });
+
+    it('updateMemoryConfig() sends the patch body and returns the resolved config', async () => {
+      nextResponse = { enabled: false, sweep: 'off' };
+      const res = await memClient.updateMemoryConfig('a1', { enabled: false });
+      expect(recording[0].body).toEqual({ enabled: false });
+      expect(res).toEqual({ enabled: false, sweep: 'off' });
+    });
+
+    it('URL-encodes agent ids and memory names', async () => {
+      nextResponse = sampleContent;
+      await memClient.memory('a 1', 'user/timezone');
+      expect(recording[0].url).toBe('/agents/a%201/memory/user%2Ftimezone');
+    });
+
+    it('memory() throws when the server returns 404', async () => {
+      nextStatus = 404;
+      nextResponse = { error: 'not found' };
+      await expect(memClient.memory('a1', 'missing')).rejects.toThrow('Management API error 404');
+    });
+
+    it('putMemory() throws when the memory cap returns 409', async () => {
+      nextStatus = 409;
+      nextResponse = { error: 'memory limit reached' };
+      await expect(
+        memClient.putMemory('a1', 'x', { description: 'd', type: 'user', content: 'c' }),
+      ).rejects.toThrow('Management API error 409');
+    });
+
+    it('memories() throws on a non-ok response (auth failure)', async () => {
+      const bad = new ManagementClient(memBaseUrl, 'wrong-token');
+      await expect(bad.memories('a1')).rejects.toThrow('Management API error 401');
     });
   });
 });
