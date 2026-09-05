@@ -34,11 +34,24 @@ struct SettingsView: View {
       Section("Connection") {
         LabeledContent("Type", value: feature.modeText)
         LabeledContent("Status") {
-          StatusBadge(
-            title: LocalizedStringKey(feature.connectionText),
-            systemImage: feature.connectionSystemImage,
-            color: statusColor
-          )
+          // Deliberately NOT `StatusBadge`, which is a SwiftUI `Label`.
+          // A `Label` in `LabeledContent`'s value slot is laid out as a
+          // form-row label rather than sized to its content: it reserved
+          // ~200pt of empty vertical space below "Status", pushing the rest
+          // of the Connection card down (captured on the iPad simulator via
+          // the Phase B launch option, and originally reported from a photo
+          // of a physical iPad). `.fixedSize()` is not the fix either — it
+          // collapses the title away and leaves only the glyph.
+          //
+          // `StatusBadge` stays correct in its own context: `OfflineBanner`
+          // puts it in a plain `HStack`, where `Label` behaves.
+          HStack(spacing: 4) {
+            Image(systemName: feature.connectionSystemImage)
+            Text(feature.connectionText)
+          }
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(statusColor)
+          .accessibilityElement(children: .combine)
         }
         LabeledContent("Last sync") {
           if let lastSync = feature.lastSuccessfulSyncAt {
