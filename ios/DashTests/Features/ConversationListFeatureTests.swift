@@ -1887,6 +1887,36 @@ struct ConversationListFeatureTests {
     #expect(await service.renameCalls.count == 1)
   }
 
+  // MARK: - ListCommandActions identity Equatable (Task 5 review fix, Important 3)
+  //
+  // Same shape and the same reason as `ChatCommandActions` — see its doc
+  // comment in `DashCommandsTests`/`ChatFeatureTests`: `ListCommandActions`
+  // is `Equatable` on `feature`'s identity so `focusedSceneValue` is never
+  // re-applied merely because `ConversationListView`'s body ran again, which
+  // would resign the composer's first responder mid-typing.
+
+  @Test("two ListCommandActions over the same feature compare equal regardless of closures")
+  func listCommandActionsEqualOnFeatureIdentity() {
+    let feature = makeFeature(service: FakeConversationListService())
+    let first = ListCommandActions(
+      feature: feature, newConversation: {}, focusSearch: {}, previous: {}, next: {}
+    )
+    let second = ListCommandActions(
+      feature: feature,
+      newConversation: { Issue.record("should never run") },
+      focusSearch: { Issue.record("should never run") },
+      previous: { Issue.record("should never run") },
+      next: { Issue.record("should never run") }
+    )
+    #expect(first == second)
+
+    let otherFeature = makeFeature(service: FakeConversationListService())
+    let third = ListCommandActions(
+      feature: otherFeature, newConversation: {}, focusSearch: {}, previous: {}, next: {}
+    )
+    #expect(first != third, "a different feature identity must compare unequal")
+  }
+
   private func makeFeature(
     service: FakeConversationListService,
     recoveryService: any ConversationRecoveryServicing = FakeConversationRecoveryService(),

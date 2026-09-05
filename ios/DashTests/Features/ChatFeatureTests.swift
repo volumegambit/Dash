@@ -4751,6 +4751,36 @@ struct ChatFeatureTests {
     #expect(feature.lastAssistantText == nil)
   }
 
+  // MARK: - ChatCommandActions identity Equatable (Task 5 review fix, Important 3)
+  //
+  // `ChatCommandActions` is `Equatable` on `feature`'s IDENTITY (`===`), not
+  // its stored closures, and deliberately so: `focusedSceneValue` re-applies
+  // — and thereby invalidates the scene's focus entry — every time the value
+  // it publishes changes, and a struct that also compared closures would be
+  // a fresh, uncomparable value on every `ChatView` body pass (closures
+  // don't conform to `Equatable`, so that variant wouldn't even compile —
+  // the realistic regression is someone reintroducing a comparable STORED
+  // snapshot field, like `let canSend: Bool`, which DOES compile and quietly
+  // reopens the composer-loses-focus bug). This test pins that two values
+  // built over the same feature compare equal regardless of which closures
+  // they carry.
+
+  @Test("two ChatCommandActions over the same feature compare equal regardless of closures")
+  func chatCommandActionsEqualOnFeatureIdentity() {
+    let feature = makeFeature()
+    let first = ChatCommandActions(feature: feature, focusComposer: {}, close: {})
+    let second = ChatCommandActions(
+      feature: feature,
+      focusComposer: { Issue.record("should never run") },
+      close: { Issue.record("should never run") }
+    )
+    #expect(first == second)
+
+    let otherFeature = makeFeature()
+    let third = ChatCommandActions(feature: otherFeature, focusComposer: {}, close: {})
+    #expect(first != third, "a different feature identity must compare unequal")
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),

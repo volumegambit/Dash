@@ -1261,6 +1261,26 @@ struct AppModelTests {
     #expect(try await factory.signer.signerId() == nil)
   }
 
+  // MARK: - AppCommandActions identity Equatable (Task 5 review fix, Important 3)
+  //
+  // Same shape and the same reason as `ChatCommandActions` — see its doc
+  // comment: `AppCommandActions` is `Equatable` on `appModel`'s identity so
+  // `RootView`'s `focusedSceneValue` is never re-applied merely because its
+  // body ran again, which would resign the composer's first responder
+  // mid-typing.
+
+  @Test("two AppCommandActions over the same app model compare equal")
+  func appCommandActionsEqualOnModelIdentity() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    let first = AppCommandActions(appModel: model)
+    let second = AppCommandActions(appModel: model)
+    #expect(first == second)
+
+    let otherModel = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    let third = AppCommandActions(appModel: otherModel)
+    #expect(first != third, "a different app model identity must compare unequal")
+  }
+
   private func dependencies(
     profile: ConnectionProfileSnapshot?,
     engine: FakeAppSyncEngine,
