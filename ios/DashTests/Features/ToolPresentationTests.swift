@@ -272,6 +272,49 @@ struct ToolPresentationTests {
     )
   }
 
+  // MARK: - activeTodoContent (task cards 2026-09-05)
+
+  private func todos(_ pairs: [(String, String)]) -> JSONValue {
+    .object([
+      "todos": .array(
+        pairs.map { .object(["content": .string($0.0), "status": .string($0.1)]) })
+    ])
+  }
+
+  @Test("activeTodoContent surfaces the one in-progress item")
+  func activeTodoContentInProgress() {
+    let input = todos([("a", "completed"), ("b", "in_progress"), ("c", "pending")])
+    #expect(ToolPresentation.activeTodoContent(input) == "b")
+  }
+
+  @Test("activeTodoContent takes the first when several claim to be in progress")
+  func activeTodoContentFirstOfSeveral() {
+    // The agent is supposed to keep one item in progress; if it does not, the
+    // header still has to pick one deterministically rather than flicker.
+    let input = todos([("a", "in_progress"), ("b", "in_progress")])
+    #expect(ToolPresentation.activeTodoContent(input) == "a")
+  }
+
+  @Test("activeTodoContent is nil when nothing is in progress")
+  func activeTodoContentNoneActive() {
+    #expect(ToolPresentation.activeTodoContent(todos([("a", "completed")])) == nil)
+    #expect(ToolPresentation.activeTodoContent(todos([("a", "pending")])) == nil)
+  }
+
+  @Test("activeTodoContent is nil for input that is not a todo write")
+  func activeTodoContentNotTodos() {
+    #expect(ToolPresentation.activeTodoContent(.object(["command": .string("ls")])) == nil)
+    #expect(ToolPresentation.activeTodoContent(nil) == nil)
+  }
+
+  @Test("activeTodoContent truncates a long task so it cannot crowd the header")
+  func activeTodoContentTruncates() {
+    let long = String(repeating: "x", count: 90)
+    let result = ToolPresentation.activeTodoContent(todos([(long, "in_progress")]))
+    #expect(result?.count == 41)
+    #expect(result?.hasSuffix("…") == true)
+  }
+
   // MARK: - outcomeSummary
 
   @Test("outcomeSummary counts the lines of a multi-line result")

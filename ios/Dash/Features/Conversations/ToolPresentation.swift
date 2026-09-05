@@ -161,6 +161,24 @@ enum ToolPresentation {
     }
   }
 
+  /// The single in-progress task's content, for a collapsed task card's
+  /// header — truncated to 40 characters so it cannot crowd the row.
+  ///
+  /// `summarize` already returns "2/3 done" for a todo write (MC parity, do
+  /// not change it). This is the iOS-only companion: on a phone-width card
+  /// "2/3 done" tells you how far along the agent is but not what it is
+  /// doing, which is the more useful of the two. Mission Control shows the
+  /// same thing on its collapsed pinned panel.
+  ///
+  /// Deterministic when the agent misbehaves and marks several items in
+  /// progress: takes the first in list order, so the header does not flicker
+  /// between them across renders.
+  static func activeTodoContent(_ input: JSONValue?) -> String? {
+    guard let todos = parseTodos(input) else { return nil }
+    guard let active = todos.first(where: { $0.status == "in_progress" }) else { return nil }
+    return middleTruncate(active.content, max: 40)
+  }
+
   // MARK: - Summarize
 
   private static let primaryKeys: [String: [String]] = [

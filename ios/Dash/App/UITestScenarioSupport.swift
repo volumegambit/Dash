@@ -1622,6 +1622,35 @@ extension AppDependenciesFactory {
           details: nil
         )
       )
+      // A TodoWrite call, so the task-card checklist has UI-test coverage
+      // (task cards 2026-09-05). Additive: the `ui-tool` search card above
+      // is untouched, so assertions on it are unaffected.
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .toolUseStart(
+          id: "ui-todo",
+          name: "todowrite",
+          input: .object([
+            "todos": .array([
+              .object(["content": .string("Draft the plan"), "status": .string("completed")]),
+              .object(["content": .string("Check launch readiness"), "status": .string("in_progress")]),
+              .object(["content": .string("Ship it"), "status": .string("pending")]),
+            ])
+          ])
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .toolResult(
+          id: "ui-todo",
+          name: "todowrite",
+          content: "Updated task list",
+          isError: false,
+          details: nil
+        )
+      )
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,

@@ -246,8 +246,21 @@ struct ThinkingView: View {
 struct ToolCardView: View {
   let tool: ToolCardState
 
-  @State private var isExpanded = false
+  @State private var isExpanded: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// Task cards open expanded; every other tool card stays collapsed.
+  ///
+  /// The rest of the tool cards hide diagnostic detail — a command's
+  /// arguments, a file's contents — that you only want on demand. A task
+  /// list is the agent's plan for the turn, which is the one tool body you
+  /// read at a glance, and it was the only one whose contents you could not
+  /// see at all: `formatDetails` renders the `todos` array as the literal
+  /// string "[3 items]".
+  init(tool: ToolCardState) {
+    self.tool = tool
+    _isExpanded = State(initialValue: ToolPresentation.isTodoWrite(tool.name))
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -263,8 +276,14 @@ struct ToolCardView: View {
       .buttonStyle(.plain)
 
       if isExpanded {
-        expandedBody
-          .padding(.top, 6)
+        Group {
+          if let todos = ToolPresentation.parseTodos(tool.input) {
+            TodoListView(todos: todos)
+          } else {
+            expandedBody
+          }
+        }
+        .padding(.top, 6)
       }
     }
     .padding(.horizontal, 10)
@@ -302,6 +321,15 @@ struct ToolCardView: View {
         Text(summary)
           .font(isBash ? .caption.monospaced() : .caption)
           .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      // A collapsed task card said "2/3 done", which is progress without
+      // subject. The in-progress item is the more useful half.
+      if isExpanded == false, let active = ToolPresentation.activeTodoContent(tool.input) {
+        Text(active)
+          .font(.caption)
+          .foregroundStyle(DashTheme.accent)
           .lineLimit(1)
           .truncationMode(.tail)
       }
@@ -410,6 +438,71 @@ struct ToolCardView: View {
 private func capitalizedFirstLetter(_ s: String) -> String {
   guard let first = s.first else { return s }
   return first.uppercased() + s.dropFirst()
+}
+
+/// A TodoWrite tool's checklist (task cards 2026-09-05).
+///
+/// `ToolPresentation.parseTodos` has been ported and unit-tested since the
+/// original MC parity pass, but no iOS view ever called it — the checklist
+/// body was explicitly deferred (the web port carries the same note). So a
+/// task card showed "2/3 done" collapsed and the literal text
+/// "Todos: [3 items]" expanded, which is the agent's plan rendered as its
+/// own array length.
+///
+/// Glyph vocabulary matches Mission Control's `STATUS_INDICATOR` so the same
+/// plan reads identically on both clients.
+struct TodoListView: View {
+  let todos: [ToolPresentation.ToolTodoItem]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      ForEach(Array(todos.enumerated()), id: \.offset) { _, todo in
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Text(glyph(for: todo.status))
+            .font(.caption.monospaced())
+            .foregroundStyle(color(for: todo.status))
+          // Task text WRAPS — unlike every other tool card value, which is
+          // `lineLimit(1)`. A tool summary is a one-line identifier; a task
+          // is a sentence, and on a 393pt phone most of them take two lines.
+          // `fixedSize(vertical:)` stops the enclosing stack from
+          // compressing the wrapped text back to one clipped line.
+          Text(todo.content)
+            .font(.caption)
+            .strikethrough(todo.status == "completed")
+            .foregroundStyle(color(for: todo.status))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label(for: todo.status)): \(todo.content)")
+      }
+    }
+    .accessibilityIdentifier("chat.tool.todos")
+  }
+
+  private func glyph(for status: String) -> String {
+    switch status {
+    case "completed": "✓"
+    case "in_progress": "◉"
+    default: "○"
+    }
+  }
+
+  private func color(for status: String) -> Color {
+    switch status {
+    case "completed": .secondary
+    case "in_progress": DashTheme.accent
+    default: .primary
+    }
+  }
+
+  private func label(for status: String) -> String {
+    switch status {
+    case "completed": "Done"
+    case "in_progress": "In progress"
+    default: "Pending"
+    }
+  }
 }
 
 /// MC design tokens (design doc appendix §0) needed for tool-card chrome

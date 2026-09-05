@@ -537,6 +537,32 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(changed.label, "GPT-5 mini")
   }
 
+  /// Task cards (2026-09-05): the checklist renders, it is open without a
+  /// tap, and completed/in-progress/pending items are all present. Before
+  /// this the card body was the literal string "Todos: [3 items]".
+  func testTaskCardShowsTheChecklistExpandedByDefault() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
+    composer.tap()
+    composer.typeText("go")
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    let todos = app.descendants(matching: .any)["chat.tool.todos"]
+    XCTAssertTrue(
+      todos.waitForExistence(timeout: 10),
+      "Expected the task checklist to render without expanding the card. UI: \(app.debugDescription)"
+    )
+    // Each item is its own combined a11y element, labelled by status.
+    XCTAssertTrue(app.staticTexts["Done: Draft the plan"].exists)
+    XCTAssertTrue(app.staticTexts["In progress: Check launch readiness"].exists)
+    XCTAssertTrue(app.staticTexts["Pending: Ship it"].exists)
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)
