@@ -58,15 +58,41 @@ enum KeyboardCommand: CaseIterable, Sendable {
 /// composer's first responder mid-typing: three UI tests failed on "Expected
 /// chat.composer to receive typed text", and a control run with only this
 /// modifier removed turned them green again. Deriving the flags means the
-/// value is genuinely unchanged for the whole life of a conversation, so it is
-/// applied exactly once — while `DashCommands` still reads live enablement,
-/// because reading `feature.canSend` inside its `body` is an Observation
-/// dependency on the feature itself.
+/// value is genuinely unchanged for the whole life of a conversation, so it
+/// is applied exactly once (see below for what that costs enablement).
 ///
 /// `focusComposer` and `close` stay closures because they touch `ChatView`'s
 /// own `@State` and `AppModel`; they are excluded from `==` and the copies
 /// captured at first application keep working (`@State` storage and `AppModel`
 /// both outlive the view value that captured them).
+///
+/// ### The tradeoff this makes, stated plainly (Task 5 review fix, Important 2)
+///
+/// Being `Equatable` on identity means `DashCommands.body` is GUARANTEED to
+/// re-run when the focused chat changes (a different `ChatCommandActions`
+/// compares unequal, so `focusedSceneValue` re-publishes) or when focus
+/// moves to/from a surface with no chat open (`nil` vs. non-`nil`). What it
+/// does NOT guarantee is a re-run purely because `feature.canSend` /
+/// `.canCancel` / `.canCopyLastAssistantText` changed while the SAME chat
+/// stays focused — that path only fires if SwiftUI wraps `Commands.body` in
+/// Observation's `withObservationTracking` the way it does `View.body`,
+/// which is undocumented for `Commands`. This file cannot prove that either
+/// way without seeing the hold-⌘ overlay live (see `task-5-report.md`), so
+/// menu enablement for `send`/`stop`/`copyLastResponse` is best described as
+/// LIKELY live, not certainly live.
+///
+/// That is an accepted trade, not an oversight: the alternative (a
+/// snapshot struct that changes identity every render, restoring
+/// enablement's old refresh path) is the exact shape of the composer
+/// focus-loss regression above, which is a hard, user-facing, everyday
+/// bug. Stale enablement is at worst a grey-when-it-should-be-black (or
+/// vice versa) menu item until the next real re-run, and every action this
+/// value exposes re-guards on the live feature before doing anything
+/// (`send`/`cancel` on `ChatFeature`; `copyLastResponse()` above re-checks
+/// `canCopy`'s own condition at the write, closing the one path — Important
+/// 1 — that could have turned staleness into data loss). With that guard in
+/// place, staleness is provably cosmetic for all twelve commands, not just
+/// this one.
 struct ChatCommandActions: Equatable {
   let feature: ChatFeature
   let focusComposer: () -> Void
@@ -175,7 +201,14 @@ struct DashCommands: Commands {
       button(.newConversation, enabled: list?.canCompose == true) { list?.newConversation() }
     }
     CommandMenu("Conversation") {
-      button(.focusSearch, enabled: list != nil) { list?.focusSearch() }
+      // Greyed out rather than removed on iOS 17: `dashSearchFocused(_:)` is
+      // the identity modifier there (`View.searchFocused(_:)` is iOS 18+),
+      // so ⌘F would be listed, enabled, and do nothing when pressed. See
+      // `dashSearchFocused(_:)`'s doc comment for why the command stays in
+      // the table on every OS regardless.
+      button(.focusSearch, enabled: list != nil && searchFocusIsAvailable) {
+        list?.focusSearch()
+      }
       button(.previousConversation, enabled: list != nil) { list?.previous() }
       button(.nextConversation, enabled: list != nil) { list?.next() }
       Divider()
@@ -198,6 +231,18 @@ struct DashCommands: Commands {
     }
   }
 
+  /// Whether `dashSearchFocused(_:)` can actually move focus — `false` on
+  /// iOS 17, where it's the identity modifier (folded-in minor 5, Task 5
+  /// review). Used to grey out ⌘F there instead of leaving it enabled and
+  /// silently inert.
+  private var searchFocusIsAvailable: Bool {
+    if #available(iOS 18.0, *) {
+      true
+    } else {
+      false
+    }
+  }
+
   private func button(
     _ command: KeyboardCommand, enabled: Bool, action: @escaping () -> Void
   ) -> some View {
@@ -216,7 +261,7 @@ struct ChatCommandPublisher: View, Equatable {
   let actions: ChatCommandActions
 
   var body: some View {
-    Color.clear.focusedSceneValue(\.chatCommands, actions)
+    Color.clear.allowsHitTesting(false).focusedSceneValue(\.chatCommands, actions)
   }
 }
 
@@ -225,7 +270,7 @@ struct ListCommandPublisher: View, Equatable {
   let actions: ListCommandActions
 
   var body: some View {
-    Color.clear.focusedSceneValue(\.listCommands, actions)
+    Color.clear.allowsHitTesting(false).focusedSceneValue(\.listCommands, actions)
   }
 }
 
@@ -235,7 +280,7 @@ struct AppCommandPublisher: View, Equatable {
   let actions: AppCommandActions?
 
   var body: some View {
-    Color.clear.focusedSceneValue(\.appCommands, actions)
+    Color.clear.allowsHitTesting(false).focusedSceneValue(\.appCommands, actions)
   }
 }
 

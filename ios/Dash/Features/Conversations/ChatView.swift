@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct ChatView: View {
   @Environment(ChatFeature.self) private var feature

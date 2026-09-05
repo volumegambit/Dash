@@ -272,9 +272,10 @@ struct ConversationListView: View {
     .searchable(text: $searchText, prompt: "Search conversations")
     .dashSearchFocused($isSearchFocused)
     // iPad goal Phase B: the list surface's slice of `DashCommands`.
-    // `canCompose` reuses `composeDisabled` so ⌘N is greyed out for exactly
-    // the reasons the toolbar's compose button is — including its
-    // in-flight reentrancy guard.
+    // `canCompose` mirrors `composeDisabled`'s agent-availability check so
+    // ⌘N is greyed out for the same reason the toolbar's compose button is
+    // — see `ListCommandActions.canCompose` for why it deliberately does
+    // NOT also fold in `isComposing`.
     .background {
       ListCommandPublisher(
         actions: ListCommandActions(
