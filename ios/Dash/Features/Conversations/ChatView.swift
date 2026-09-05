@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ChatView: View {
   @Environment(ChatFeature.self) private var feature
@@ -71,6 +72,11 @@ struct ChatView: View {
   }
   @State private var isAgentPickerPresented = false
   @State private var isSwitchingAgent = false
+  /// Bumped by ⌘L (`KeyboardCommand.focusComposer`) and handed to
+  /// `ComposerView`, which owns the `@FocusState` the text field is bound to.
+  /// A counter rather than a flag so a second ⌘L after tapping away still
+  /// changes the value and therefore still fires `ComposerView`'s `onChange`.
+  @State private var composerFocusRequest = 0
 
   var body: some View {
     VStack(spacing: 0) {
@@ -89,7 +95,26 @@ struct ChatView: View {
       transcript
     }
     .safeAreaInset(edge: .bottom, spacing: 0) {
-      ComposerView()
+      ComposerView(focusRequest: composerFocusRequest)
+    }
+    // iPad goal Phase B: the chat surface's slice of `DashCommands`. The
+    // `can*` flags are the same predicates the composer's own send/stop
+    // buttons are disabled by, so the ⌘ overlay and the on-screen controls
+    // can never disagree. `ComposerView` keeps its per-button
+    // `.keyboardShortcut`s as harmless duplicates — SwiftUI resolves the
+    // first responder, and keeping them leaves iOS 17 behaviour unchanged.
+    .background {
+      ChatCommandPublisher(
+        actions: ChatCommandActions(
+          feature: feature,
+          focusComposer: { composerFocusRequest += 1 },
+          close: {
+            appModel.splitConversationSelection = nil
+            appModel.conversationPath = []
+          }
+        )
+      )
+      .equatable()
     }
     .navigationTitle(feature.state.conversation.title)
     .navigationBarTitleDisplayMode(.inline)

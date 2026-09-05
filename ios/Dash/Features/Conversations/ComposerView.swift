@@ -6,6 +6,13 @@ import UniformTypeIdentifiers
 struct ComposerView: View {
   @Environment(ChatFeature.self) private var feature
 
+  /// Monotonic counter bumped by `ChatView` when ⌘L
+  /// (`KeyboardCommand.focusComposer`) fires. A counter rather than a `Bool`
+  /// so repeated ⌘L presses each land: the value always changes, so
+  /// `onChange` always runs, even if the field is already focused and the
+  /// user has since tapped elsewhere.
+  var focusRequest: Int = 0
+
   @State private var selectedItems: [PhotosPickerItem] = []
   @State private var pickerError: String?
   // Input sources (Phase 4 Task 4, audit #19): the paperclip is now a menu
@@ -108,6 +115,14 @@ struct ComposerView: View {
     .onChange(of: feature.draftEditingAllowed) { _, allowed in
       guard allowed else { return }
       attemptAutoFocus()
+    }
+    // ⌘L. Unlike `attemptAutoFocus()` this is NOT one-shot and is NOT gated
+    // on `isFreshConversation`: the user asked for the field explicitly, so
+    // honour it every time in any conversation. `focusRequest`'s initial 0
+    // never fires `onChange`, so simply opening a chat still can't steal
+    // focus.
+    .onChange(of: focusRequest) { _, _ in
+      isDraftFocused = true
     }
   }
 

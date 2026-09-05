@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		014653B60BF955074E4FE86E /* DashCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B654542849A5ED64B774062E /* DashCommandsTests.swift */; };
 		02931AC2C7E2F904AD3659E8 /* PairingFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFA811FD278BEF708BCFC58F /* PairingFeature.swift */; };
 		02A064E055D0040558D605B2 /* UITestScenarioSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 157831053268782C34102FDF /* UITestScenarioSupportTests.swift */; };
 		05C3D7786DB5826DFE5CEB65 /* AgentContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF957521D399CF0D79B78B8 /* AgentContracts.swift */; };
@@ -110,6 +111,7 @@
 		CB53AF9BE851F52EA8976BF0 /* DashThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7277EEBC63A2130F3FBF5987 /* DashThemeTests.swift */; };
 		CC33C25272F46102059E80C2 /* ChatConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6E272B4649EC1830609594 /* ChatConnectionTests.swift */; };
 		CDCB930B00943139EB0B3EF7 /* AccountConnectFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 802CB5BE377C22DC1D1F8E82 /* AccountConnectFeature.swift */; };
+		D1355C6445DFA80D65B3951D /* DashCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21CAB9D01A999569A66E8E5B /* DashCommands.swift */; };
 		D1A1D32F8972DE9BCD72F836 /* ChatReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25EDAF628CC06039429777EF /* ChatReducerTests.swift */; };
 		D232F0CD364D9F618D884512 /* GatewayURLSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D0545A13FB1490609CAA806 /* GatewayURLSession.swift */; };
 		D3C7C3AD27986FA80EDFFAC9 /* ConversationListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5CADE326E98556F3632D30D /* ConversationListServiceTests.swift */; };
@@ -188,6 +190,7 @@
 		1F04887C454ECE584A3459F6 /* ToolPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolPresentationTests.swift; sourceTree = "<group>"; };
 		2097A8BDBBFD9F47F93E2B7A /* ConversationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationUITests.swift; sourceTree = "<group>"; };
 		21AFAE8B91CB5C301E9DE8CA /* ChatReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatReducer.swift; sourceTree = "<group>"; };
+		21CAB9D01A999569A66E8E5B /* DashCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashCommands.swift; sourceTree = "<group>"; };
 		247BD9B6EABCDC4C3283949B /* ChatFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFrames.swift; sourceTree = "<group>"; };
 		25EDAF628CC06039429777EF /* ChatReducerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatReducerTests.swift; sourceTree = "<group>"; };
 		2B126558F955E1B204D2FC09 /* GatewayContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayContracts.swift; sourceTree = "<group>"; };
@@ -265,6 +268,7 @@
 		AFA811FD278BEF708BCFC58F /* PairingFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingFeature.swift; sourceTree = "<group>"; };
 		B07525DD3A981A91EB916EE6 /* PersistenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceStore.swift; sourceTree = "<group>"; };
 		B234BC90E4C8944A1E68EABA /* ProjectSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSmokeTests.swift; sourceTree = "<group>"; };
+		B654542849A5ED64B774062E /* DashCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashCommandsTests.swift; sourceTree = "<group>"; };
 		B8E840833B20E96231F7BEE1 /* ChatConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatConnection.swift; sourceTree = "<group>"; };
 		B92A2E043D415EDF91976BDB /* ConnectionEndpointTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionEndpointTests.swift; sourceTree = "<group>"; };
 		B9D472E7216F5D49490082C3 /* AgentsFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsFeature.swift; sourceTree = "<group>"; };
@@ -490,6 +494,7 @@
 				CF68BCD8217DED6A249CEBE7 /* AppModel.swift */,
 				A860ECC1E3CC7ECA273922FB /* AppRoute.swift */,
 				6E1586AC3AA8DD659BA93386 /* DashApp.swift */,
+				21CAB9D01A999569A66E8E5B /* DashCommands.swift */,
 				7122407C2DFAE0725F3C7A19 /* RootView.swift */,
 				DF660A29825035E283207461 /* SceneLifecycleModifier.swift */,
 				3E70F43610FFDDE62669A45B /* SidebarFooterView.swift */,
@@ -536,6 +541,14 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
+		8E9A626E1BC3F7E0FB07BB7B /* App */ = {
+			isa = PBXGroup;
+			children = (
+				B654542849A5ED64B774062E /* DashCommandsTests.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
 		93F67DB4B60A1161379BB7F9 /* Sync */ = {
 			isa = PBXGroup;
 			children = (
@@ -552,6 +565,7 @@
 				76591DF6B43D727FF70D1499 /* AppModelTests.swift */,
 				B234BC90E4C8944A1E68EABA /* ProjectSmokeTests.swift */,
 				157831053268782C34102FDF /* UITestScenarioSupportTests.swift */,
+				8E9A626E1BC3F7E0FB07BB7B /* App */,
 				9BB9AF38E853044326A0FA94 /* Core */,
 				D91ADAC8DD379475E3CD0F26 /* DesignSystem */,
 				C6D259DC8D41EC60B34A9688 /* Features */,
@@ -891,6 +905,7 @@
 				D3C7C3AD27986FA80EDFFAC9 /* ConversationListServiceTests.swift in Sources */,
 				C5F0F1A6D7C796410B67CE90 /* ConversationRecoveryPresentationTests.swift in Sources */,
 				3766C2A158C6EB99A648EB7F /* ConversationSyncEngineTests.swift in Sources */,
+				014653B60BF955074E4FE86E /* DashCommandsTests.swift in Sources */,
 				CB53AF9BE851F52EA8976BF0 /* DashThemeTests.swift in Sources */,
 				DE173F96B5CDCE15F9A5945A /* FixtureLoader.swift in Sources */,
 				51E87DEB7932585EE7B1E34A /* GatewayAPITests.swift in Sources */,
@@ -982,6 +997,7 @@
 				BE42C07EF4EDE6B93609BF28 /* ConversationListView.swift in Sources */,
 				F1D2774A290331363443850C /* ConversationSyncEngine.swift in Sources */,
 				8813C9D311DEA458B7FA15E6 /* DashApp.swift in Sources */,
+				D1355C6445DFA80D65B3951D /* DashCommands.swift in Sources */,
 				659C3BDACE475612B04A2414 /* DashTheme.swift in Sources */,
 				EB599E0D86FCB3CAAD600B0C /* EventViews.swift in Sources */,
 				728D0D7250C62AE2A03CCB5B /* GatewayAPI.swift in Sources */,

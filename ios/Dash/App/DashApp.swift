@@ -8,6 +8,10 @@ struct DashApp: App {
     WindowGroup {
       AppLaunchView(launch: launch)
     }
+    // iPad goal Phase B: every keyboard shortcut Dash answers to lives in
+    // `DashCommands`, routed through `FocusedValues` — that is also what
+    // populates iPadOS's hold-⌘ shortcut overlay.
+    .commands { DashCommands() }
   }
 }
 

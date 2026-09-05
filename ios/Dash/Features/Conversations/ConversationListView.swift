@@ -151,6 +151,11 @@ struct ConversationListView: View {
   // replaces guarded the exact same window, just one screen later (after an
   // explicit "Start conversation" tap instead of the compose tap itself).
   @State private var isComposing = false
+  /// Focus of the `.searchable` field, driven by ⌘F
+  /// (`KeyboardCommand.focusSearch`). Bound through `dashSearchFocused(_:)`,
+  /// which is the identity modifier below iOS 18 — see its doc comment for
+  /// why ⌘F is a documented no-op there rather than a hidden command.
+  @FocusState private var isSearchFocused: Bool
 
   var body: some View {
     List {
@@ -265,6 +270,23 @@ struct ConversationListView: View {
     .listStyle(.plain)
     .navigationTitle("Conversations")
     .searchable(text: $searchText, prompt: "Search conversations")
+    .dashSearchFocused($isSearchFocused)
+    // iPad goal Phase B: the list surface's slice of `DashCommands`.
+    // `canCompose` reuses `composeDisabled` so ⌘N is greyed out for exactly
+    // the reasons the toolbar's compose button is — including its
+    // in-flight reentrancy guard.
+    .background {
+      ListCommandPublisher(
+        actions: ListCommandActions(
+          feature: feature,
+          newConversation: { Task { await startCompose() } },
+          focusSearch: { isSearchFocused = true },
+          previous: { step(-1) },
+          next: { step(1) }
+        )
+      )
+      .equatable()
+    }
     .refreshable { await feature.refresh() }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
@@ -463,6 +485,45 @@ struct ConversationListView: View {
     // toolbar during a search (iOS 18 collapses it to the field + Cancel).
     searchText = ""
     appModel.openConversation(conversationID, presentation: presentation)
+  }
+
+  /// ⌘⇧[ / ⌘⇧] (`KeyboardCommand.previousConversation` / `.nextConversation`):
+  /// walks `filteredConversations` — the list the user is actually looking
+  /// at, so the agent filter and an active search both scope the keyboard
+  /// walk exactly as they scope the rows.
+  ///
+  /// No-op at the ends: stepping past either edge deliberately does nothing
+  /// rather than wrapping, so holding the chord can't cycle forever past the
+  /// conversation the user wanted. With nothing open (or with the open
+  /// conversation hidden by the current filter) it enters the list from the
+  /// end it is travelling towards — first row for next, last for previous.
+  private func step(_ offset: Int) {
+    let conversations = filteredConversations
+    guard conversations.isEmpty == false else { return }
+    guard let index = openConversationID.flatMap({ id in
+      conversations.firstIndex { $0.id == id }
+    }) else {
+      let entry = offset < 0 ? conversations[conversations.count - 1] : conversations[0]
+      appModel.openConversation(entry.id, presentation: presentation)
+      return
+    }
+    let target = index + offset
+    guard conversations.indices.contains(target) else { return }
+    appModel.openConversation(conversations[target].id, presentation: presentation)
+  }
+
+  /// Which conversation `step(_:)` walks from. Branches on presentation for
+  /// the same reason `ChatView`'s `onDisappear` does: a compact back-button
+  /// pop mutates the bound `conversationPath` but never clears
+  /// `splitConversationSelection`, which would leave the compact walk
+  /// stepping from a conversation the user has already left.
+  private var openConversationID: String? {
+    let route: ConversationRoute? = switch presentation {
+    case .compact: appModel.conversationPath.last
+    case .regular: appModel.splitConversationSelection
+    }
+    if case .transcript(let id) = route { return id }
+    return nil
   }
 
   /// Audit #9: local filter over `feature.conversations` (already scoped by

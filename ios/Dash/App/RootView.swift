@@ -52,6 +52,12 @@ struct RootView: View {
       }
     }
     .tint(DashTheme.accent)
+    // iPad goal Phase B: the shell's own commands (⌘, ⌘1 ⌘2). All three
+    // write `selectedTab`, which is the source of truth at BOTH widths — on
+    // the two-column layout `sidebarPath` turns `.agents` into a push and
+    // `isSettingsPresented` turns `.settings` into a sheet, so these need no
+    // presentation-specific branch of their own.
+    .background { AppCommandPublisher(actions: appCommands).equatable() }
     .onChange(of: navigationPresentation) { _, presentation in
       appModel.reconcileNavigation(for: presentation)
     }
@@ -68,6 +74,15 @@ struct RootView: View {
           ?? "The saved message remains available."
       )
     }
+  }
+
+  /// `nil` — which DISABLES ⌘, ⌘1 ⌘2 rather than leaving them listed and
+  /// inert — while signed out, since `pairingNavigation` has no tabs at all.
+  /// Publishing them there would let ⌘, quietly set `selectedTab = .settings`
+  /// behind the sign-in screen, so the first thing the user saw after pairing
+  /// would be the Settings sheet they never asked for.
+  private var appCommands: AppCommandActions? {
+    appModel.selectedProfile == nil ? nil : AppCommandActions(appModel: appModel)
   }
 
   private var agentMutationErrorPresented: Binding<Bool> {

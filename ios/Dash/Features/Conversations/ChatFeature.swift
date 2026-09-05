@@ -626,6 +626,43 @@ final class ChatFeature {
       && cancelRequestInFlight == false
   }
 
+  /// The newest assistant reply's raw markdown, or `nil` when no assistant
+  /// message has produced text yet.
+  private var lastAssistantMarkdown: String? {
+    guard
+      let text = state.messages.last(where: { $0.role == .assistant })?.assistant?.text,
+      text.isEmpty == false
+    else { return nil }
+    return text
+  }
+
+  /// Whether ⌘⇧C (`KeyboardCommand.copyLastResponse`) has anything to copy.
+  ///
+  /// Deliberately NOT `lastAssistantText != nil`: `ChatView` reads this on
+  /// every body pass to fill `ChatCommandActions.canCopy`, and body passes
+  /// happen once per streamed frame. Routing that through the markdown
+  /// flattener re-parsed the whole reply on every frame, which starved the
+  /// main thread badly enough that typing into the composer stopped landing
+  /// (three `chat.composer` UI tests failed on "receive typed text"). This
+  /// only looks at whether the string is empty.
+  var canCopyLastAssistantText: Bool {
+    lastAssistantMarkdown != nil
+  }
+
+  /// The newest assistant reply as plain text, for ⌘⇧C. Computed on demand —
+  /// i.e. when the command actually fires — never per frame; see
+  /// `canCopyLastAssistantText` for why that distinction matters.
+  ///
+  /// Flattened with the SAME `markdownPlainTextAccessibilityLabel(for:)` the
+  /// assistant bubble's context-menu Copy uses (`MessageViews.swift`,
+  /// `assistantContextMenuItems`), deliberately rather than a second
+  /// flattener: copying the last response from the keyboard has to put the
+  /// exact same characters on the pasteboard as long-pressing that bubble
+  /// and choosing Copy.
+  var lastAssistantText: String? {
+    lastAssistantMarkdown.map { markdownPlainTextAccessibilityLabel(for: $0) }
+  }
+
   var composerDisabledReason: String? {
     if isShutdown { return "Chat session is closed" }
     if pendingSendRecovery != nil { return "A saved message needs recovery" }
