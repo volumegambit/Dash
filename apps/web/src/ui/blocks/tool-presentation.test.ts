@@ -5,6 +5,7 @@ import {
   middleTruncate,
   normalizeTool,
   parseTodos,
+  shortenCommand,
   summarize,
   toolLabel,
 } from './tool-presentation.js';
@@ -235,5 +236,41 @@ describe('parseTodos', () => {
     expect(parseTodos({})).toBeNull();
     expect(parseTodos({ todos: [] })).toBeNull();
     expect(parseTodos(undefined)).toBeNull();
+  });
+});
+
+describe('shortenCommand', () => {
+  it('drops the leading directory from an absolute launcher path', () => {
+    expect(shortenCommand('/opt/homebrew/bin/gog gmail list')).toBe('gog gmail list');
+  });
+
+  it('leaves a bare executable alone', () => {
+    expect(shortenCommand('npm test')).toBe('npm test');
+  });
+
+  it('preserves paths that are arguments, not the executable', () => {
+    expect(shortenCommand('cd /Users/gerry/x && npm test')).toBe('cd /Users/gerry/x && npm test');
+  });
+
+  it('shortens ./, ../ and ~/ launchers too', () => {
+    expect(shortenCommand('./scripts/build.sh --watch')).toBe('build.sh --watch');
+    expect(shortenCommand('~/bin/deploy prod')).toBe('deploy prod');
+  });
+
+  it('leaves a trailing-slash executable alone rather than emptying it', () => {
+    expect(shortenCommand('/usr/bin/ ')).toBe('/usr/bin/ ');
+  });
+});
+
+describe('middleTruncate path detection', () => {
+  it('does not splice a command onto its last argument', () => {
+    const command = `echo ${'a'.repeat(55)} > /tmp/out.json`;
+    expect(middleTruncate(command)).toBe(`${command.slice(0, 60)}…`);
+  });
+
+  it('still middle-ellipsises a real path', () => {
+    const path = `/Users/gerry/${'a'.repeat(60)}/ChatView.swift`;
+    expect(middleTruncate(path).endsWith('/ChatView.swift')).toBe(true);
+    expect(middleTruncate(path)).toContain('…');
   });
 });

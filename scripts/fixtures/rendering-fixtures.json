@@ -499,6 +499,30 @@
           "value": "12345678901234567000"
         }
       ]
+    },
+    {
+      "name": "truncate: a long command is not spliced into a fake path",
+      "kind": "truncate",
+      "input": "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > /tmp/out.json",
+      "expectedTruncated": "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…"
+    },
+    {
+      "name": "summarize: bash drops an absolute launcher directory",
+      "kind": "summarize",
+      "toolName": "bash",
+      "input": {
+        "command": "/opt/homebrew/bin/gog gmail list --account m@gerryeng.com"
+      },
+      "expectedSummary": "gog gmail list --account m@gerryeng.com"
+    },
+    {
+      "name": "summarize: bash keeps a path that is an argument",
+      "kind": "summarize",
+      "toolName": "bash",
+      "input": {
+        "command": "cd /Users/gerry/x && npm test"
+      },
+      "expectedSummary": "cd /Users/gerry/x && npm test"
     }
   ]
 }

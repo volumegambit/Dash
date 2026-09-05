@@ -79,11 +79,27 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   create_skill: ['name'],
 };
 
+function isPathLike(s: string): boolean {
+  return s.includes('/') && !/\s/.test(s);
+}
+
+/** Truncate `s` to `max` characters. For path-like strings — containing "/"
+ * and no whitespace — uses a middle-ellipsis that preserves the trailing
+ * filename.
+ *
+ * The whitespace test is load-bearing, not a nicety. Keying the branch off
+ * `includes('/')` alone, as this did until 2026-09-05, makes a shell
+ * command's LAST slash — which usually sits inside a trailing argument —
+ * look like a path separator. The result spliced the command's head onto
+ * that argument's tail and rendered a plausible path
+ * ("/opt/homebrew/bin/gog gmail li…/out.json") that never existed. A string
+ * with spaces in it is a command or a sentence, not a path; plain tail
+ * truncation is the honest rendering. Ported from the iOS twin, which found
+ * this first. */
 export function truncate(s: string, max = 60): string {
   if (s.length <= max) return s;
 
-  // For file paths, use middle-ellipsis to preserve the filename
-  if (s.includes('/')) {
+  if (isPathLike(s)) {
     const lastSlash = s.lastIndexOf('/');
     const filename = s.slice(lastSlash); // includes the leading /
     const prefix = s.slice(0, max - filename.length - 1);
@@ -93,6 +109,31 @@ export function truncate(s: string, max = 60): string {
   }
 
   return `${s.slice(0, max)}…`;
+}
+
+/** Drop the leading directory from a shell command's executable, so
+ * `/opt/homebrew/bin/gog gmail list` summarizes as `gog gmail list`.
+ *
+ * A collapsed row gets roughly 40 characters on a phone. An absolute
+ * launcher path spends the first ~18 of them on a prefix identical across
+ * every call to the same binary, so consecutive calls are indistinguishable
+ * until you expand them. The directory is not information the reader is
+ * missing — it is on `$PATH` — so it goes, and the arguments that actually
+ * differ move into view.
+ *
+ * Only the first whitespace-delimited word is touched, and only when it
+ * reads as a launcher path (absolute, `./`, `../` or `~/`). Everything after
+ * it is preserved byte-for-byte: `cd /Users/gerry/x && npm test` keeps its
+ * path, because that path is an argument the user chose, not an install
+ * location. Ported from the iOS twin. */
+export function shortenCommand(command: string): string {
+  const match = command.match(/^\S+/);
+  if (!match) return command;
+  const executable = match[0];
+  if (!/^(\/|\.\/|\.\.\/|~\/)/.test(executable)) return command;
+  const name = executable.slice(executable.lastIndexOf('/') + 1);
+  if (!name) return command;
+  return name + command.slice(executable.length);
 }
 
 export function summarize(name: string, input: string): string {
@@ -113,10 +154,15 @@ export function summarize(name: string, input: string): string {
     }
   }
 
-  const keys = PRIMARY_KEYS[normalizeTool(name)] ?? [];
+  const normalized = normalizeTool(name);
+  const keys = PRIMARY_KEYS[normalized] ?? [];
   for (const key of keys) {
     const val = parsed[key];
-    if (typeof val === 'string' && val) return truncate(val);
+    // Shorten BEFORE truncating: otherwise `/opt/homebrew/bin/` spends 18 of
+    // the 60-character budget before the command even starts.
+    if (typeof val === 'string' && val) {
+      return truncate(normalized === 'bash' ? shortenCommand(val) : val);
+    }
   }
 
   // Fallback: first string value in the object
