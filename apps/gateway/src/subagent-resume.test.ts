@@ -187,6 +187,28 @@ describe('reconstructChildSpec', () => {
     expect(rebuilt?.mcpTools).toEqual([]);
   });
 
+  it("puts a grandchild inside a LIVE isolated parent's worktree, not the repo", () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_MID', { isolation: 'worktree' });
+    persistChild('sub_MID', 'sub_GRAND', { depth: 2, workspace: '/repo-old' });
+    // The middle child is mid-turn: its LIVE spec still names the repo, because
+    // its worktree is minted by the runtime after the spec is built.
+    const live = {
+      ...specFor('sub_MID', parent.id),
+      isolation: 'worktree' as const,
+      workspace: '/repo',
+    } as ChildSpec;
+
+    const rebuilt = reconstructChildSpec(
+      'sub_GRAND',
+      deps({
+        liveSpec: (id) => (id === 'sub_MID' ? live : undefined),
+        worktreePath: (s) => `/data/worktrees/${s.agentName}/${s.workerId}`,
+      }),
+    );
+    expect(rebuilt?.workspace).toBe('/data/worktrees/Helper/sub_MID');
+  });
+
   it('prefers the LIVE spec of a parent that is still running', () => {
     const parent = parentConversation();
     persistChild(parent.id, 'sub_MID', { tools: ['read', 'bash'] });
@@ -259,6 +281,19 @@ describe('reconstructChildSpec', () => {
     const rebuilt = reconstructChildSpec('sub_A', deps());
     expect(rebuilt?.workspace).toBe('/data/worktrees/Helper/sub_A');
     expect(rebuilt?.isolationSource).toBe('/repo-new');
+  });
+
+  it('falls back to the persisted repo when the agent config names no workspace', () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_A', { isolation: 'worktree', workspace: '/repo' });
+    conversations.updateSubagent('sub_A', {
+      info: { workspace: '/data/worktrees/Helper/sub_A' },
+    });
+    // No `workspace` on the agent: the coordinator fell back to process.cwd()
+    // at spawn, and the grant recorded the repo the child was actually cut from.
+    agents.set(AGENT_ID, config({ tools: agentTools }));
+
+    expect(reconstructChildSpec('sub_A', deps())?.isolationSource).toBe('/repo');
   });
 
   it('leaves isolationSource unset for a child that was never isolated', () => {

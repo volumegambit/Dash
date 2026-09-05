@@ -1492,6 +1492,72 @@ describe('child conversations on the shared pool', () => {
     expect(builtWith).toEqual([['read', 'bash'], ['read']]);
   });
 
+  /**
+   * Round 3, item 1. `getOrCreate` DEDUPES concurrent creates, so there is a
+   * window with no entry to find a mismatch on: turn A drops the stale entry
+   * and its backend is still being built when the grant narrows; turn B sees
+   * no entry, joins A's in-flight create, and receives A's WIDE backend. The
+   * old code then labelled that backend with B's NARROW signature — the same
+   * permanent staleness, with the window reduced to the build.
+   */
+  it('refuses a turn that joined an in-flight create built from a wider grant', async () => {
+    let grant = ['read', 'bash'];
+    const builtWith: string[][] = [];
+    let releaseBuild!: () => void;
+    const buildGate = new Promise<void>((resolve) => {
+      releaseBuild = resolve;
+    });
+    const { agents, agentId } = makeChildAgents({
+      childRuntime: async () => {
+        const tools = [...grant];
+        // The backend build is in flight while the grant changes underneath.
+        await buildGate;
+        builtWith.push(tools);
+        return {
+          backend: childBackend(),
+          resolveConfig: () => ({ model: 'test/child-model', systemPrompt: 'child', tools }),
+          workspace: '/data/worktrees/parent-agent/sub_1',
+        };
+      },
+      childAttachOptions: () => ({
+        orchestratorModel: 'test/child-model',
+        orchestratorFallbackModels: undefined,
+        orchestratorTools: [...grant],
+        orchestratorMcpTools: [],
+        workspace: '/data/worktrees/parent-agent/sub_1',
+      }),
+    });
+
+    // Turn A: wide, and now blocked inside the backend factory.
+    const wide = drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'wide' }));
+    await new Promise((r) => setTimeout(r, 0));
+    // The operator removes `bash`. Turn B finds no entry — the create has not
+    // finished — so there is no mismatch to detect, and it joins A's create.
+    grant = ['read'];
+    const narrowEvents: AgentEvent[] = [];
+    const narrow = (async () => {
+      for await (const event of agents.chat({
+        agentId,
+        conversationId: 'sub_child',
+        text: 'narrow',
+      })) {
+        narrowEvents.push(event);
+      }
+    })();
+
+    releaseBuild();
+    await wide;
+    await narrow;
+
+    // Exactly one backend was built, from the WIDE grant.
+    expect(builtWith).toEqual([['read', 'bash']]);
+    // The narrow turn must not have run on it — and must not have relabelled it.
+    expect(narrowEvents).toHaveLength(1);
+    expect(narrowEvents[0]).toMatchObject({ type: 'error' });
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'after' }));
+    expect(builtWith).toEqual([['read', 'bash'], ['read']]);
+  });
+
   it('reuses the warm child entry when the grant is unchanged', async () => {
     let runtimeCalls = 0;
     const { agents, agentId } = makeChildAgents({

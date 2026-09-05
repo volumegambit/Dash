@@ -528,6 +528,8 @@ async function main() {
       liveSpec: (id) => swarmCoordinator.liveChildSpec(id),
       agentConfig: (id) => registry.get(id)?.config,
       agentMcpTools: (id) => orchestratorMcpToolNames(registry.get(id)?.config, listMcpToolNames),
+      worktreePath: (spec) =>
+        childWorktreePath({ dataDir, agentName: spec.agentName, childId: spec.workerId }),
     });
 
   const swarmCoordinator: SwarmCoordinator = new SwarmCoordinator({

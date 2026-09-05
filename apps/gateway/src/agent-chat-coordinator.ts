@@ -512,10 +512,30 @@ export function createAgentChatCoordinator(
       }
 
       const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
-      // Only ever labels an entry this turn is entitled to label: either it was
-      // just created, or it already carried this signature, or the stale one
-      // was actually dropped above.
-      if (childSignature) poolEntry.signature = childSignature;
+      if (childSignature) {
+        // `getOrCreate` DEDUPES concurrent creates, which leaves a window the
+        // check above cannot see: a turn that arrives while an earlier one's
+        // backend is still being built finds NO entry to compare against, joins
+        // that create, and receives a backend built from the EARLIER grant.
+        // Labelling it with ours is the same permanent staleness the check
+        // above exists to prevent, so a signature that is already set and
+        // different is treated exactly like a stale entry — refused. (Which of
+        // the two overlapping turns loses depends on which resumes first; both
+        // are safe, and the loser succeeds on a retry.)
+        if (poolEntry.signature !== undefined && poolEntry.signature !== childSignature) {
+          yield {
+            type: 'error',
+            error: new Error(
+              `sub-agent ${request.conversationId} is still running under an earlier grant`,
+            ),
+          };
+          return;
+        }
+        // Only ever labels an entry this turn is entitled to label: it was just
+        // created, it already carried this signature, or the stale one was
+        // actually dropped above.
+        poolEntry.signature = childSignature;
+      }
       pool.pin(request.agentId, request.conversationId);
 
       const swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;

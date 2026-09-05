@@ -32,6 +32,14 @@ export interface ChildSpecReconstructionDeps {
   agentConfig(agentId: string): GatewayAgentConfig | undefined;
   /** The fully-qualified `server__tool` names that agent holds NOW. */
   agentMcpTools(agentId: string): string[];
+  /**
+   * Where an `isolation: 'worktree'` child's checkout lives. A LIVE isolated
+   * parent's spec still names the REPO — its worktree is minted by the runtime
+   * after the spec is built — so without this a grandchild rebuilt while its
+   * parent is running would be handed the repo its parent was isolated FROM,
+   * disagreeing with the live spawn path. The path is deterministic.
+   */
+  worktreePath?(spec: Omit<ChildSpec, 'extraTools'>): string;
 }
 
 /** What of a resolved spec has to outlive the process. */
@@ -80,7 +88,10 @@ function effectiveGrantOf(
     return {
       tools: [...live.tools],
       mcpTools: [...(live.mcpTools ?? [])],
-      workspace: live.workspace,
+      workspace:
+        live.isolation === 'worktree' && deps.worktreePath
+          ? deps.worktreePath(live)
+          : live.workspace,
     };
   }
 
@@ -165,8 +176,12 @@ export function reconstructChildSpec(
     workspace: narrowed.workspace ?? info.workspace ?? grant.workspace,
     // An isolated child's worktree is cut from its PARENT's current repo, which
     // is not where the child itself runs — see `WorkerSpec.isolationSource`.
-    ...(info.isolation === 'worktree' && parent.workspace !== undefined
-      ? { isolationSource: parent.workspace }
+    // `grant.workspace` is the repo this child was actually cut from, recorded
+    // at spawn: the fallback for an agent whose config names no workspace (the
+    // coordinator used `process.cwd()` then), where leaving the source unset
+    // would send the deleted worktree path to `git worktree add` again.
+    ...(info.isolation === 'worktree'
+      ? { isolationSource: parent.workspace ?? grant.workspace }
       : {}),
     tools: narrowed.tools,
     mcpTools: narrowed.mcpTools,
