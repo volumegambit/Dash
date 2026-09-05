@@ -1069,6 +1069,356 @@ describe('ResumableChatHub', () => {
     });
   });
 
+  function subagentConversation(parent: ConversationSummary, id = 'sub_01'): ConversationSummary {
+    return conversations.createSubagent({
+      id,
+      agentId: parent.agentId,
+      agentName: `Helper ${parent.agentId}`,
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-01',
+      title: 'Review the diff',
+      subagent: {
+        type: 'code-reviewer',
+        status: 'running',
+        description: 'Review the diff',
+        prompt: 'Review the diff and report findings',
+        model: 'anthropic/claude-opus-4',
+        background: true,
+        depth: 1,
+        startedAt: '2026-07-13T00:00:00.000Z',
+        toolCallCount: 0,
+        oneShot: false,
+      },
+    });
+  }
+
+  it('streams a system-initiated turn to a conversation subscriber that never started it', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const watcher = makeSink();
+
+    hub.subscribe(conversation.agentId, conversation.id, watcher);
+    const { turnId } = hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+
+    expect(turnId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(watcher.frames).toEqual([
+      {
+        type: 'accepted',
+        id: turnId,
+        conversationId: conversation.id,
+        userMessageId: expect.any(String),
+        assistantMessageId: expect.any(String),
+        revision: expect.any(Number),
+        seq: 1,
+        origin: 'notification',
+        kind: 'user',
+      },
+    ]);
+    expect(harness.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ channelId: 'system', text: 'Sub-agent reviewer finished' }),
+    );
+
+    scripted.emit({ type: 'text_delta', text: 'Acknowledged' });
+    await waitForFrames(watcher, 2);
+    scripted.finish();
+    await waitForFrames(watcher, 3);
+
+    expect(watcher.frames.map((frame) => frame.type)).toEqual(['accepted', 'event', 'done']);
+    expect(
+      conversations.listMessages({ conversationId: conversation.id, limit: 10 }).items[0],
+    ).toMatchObject({ role: 'user', origin: 'notification' });
+  });
+
+  it('labels a child turn accepted frame with the parent origin and the subagent kind', () => {
+    const parent = createConversation();
+    const child = subagentConversation(parent);
+    register(child.id);
+    const watcher = makeSink();
+
+    hub.subscribe(child.agentId, child.id, watcher);
+    const { turnId } = hub.startSystemTurn({
+      agentId: child.agentId,
+      conversationId: child.id,
+      text: 'Review the diff and report findings',
+      origin: 'parent',
+      turnId: 'turn-child-01',
+    });
+
+    expect(turnId).toBe('turn-child-01');
+    expect(watcher.frames[0]).toMatchObject({
+      type: 'accepted',
+      id: 'turn-child-01',
+      conversationId: child.id,
+      origin: 'parent',
+      kind: 'subagent',
+    });
+  });
+
+  it('propagates conversation_busy out of startSystemTurn so a notification can be queued', () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    hub.start(sendFrame(conversation), makeSink());
+
+    let error: unknown;
+    try {
+      hub.startSystemTurn({
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        text: 'Sub-agent reviewer finished',
+        origin: 'notification',
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ConversationServiceError);
+    expect(error).toMatchObject({
+      code: 'conversation_busy',
+      details: { activeTurnId: 'turn-01' },
+    });
+    // The busy turn is untouched: only the original run exists.
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+    scripted.finish();
+  });
+
+  it('auto-subscribes a message sender so a later system turn reaches the same sink', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(sendFrame(conversation), sink);
+    first.finish();
+    await waitForFrames(sink, 2);
+
+    const second = register(conversation.id, makeScriptedStream());
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+
+    await waitForFrames(sink, 3);
+    expect(sink.frames[2]).toMatchObject({ type: 'accepted', origin: 'notification' });
+    second.finish();
+    await waitForFrames(sink, 4);
+    expect(sink.frames.map((frame) => frame.type)).toEqual([
+      'accepted',
+      'done',
+      'accepted',
+      'done',
+    ]);
+  });
+
+  it('auto-subscribes a resuming sink so a later system turn reaches it', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const starter = makeSink();
+    hub.start(sendFrame(conversation), starter);
+    first.finish();
+    await waitForFrames(starter, 2);
+
+    const resumer = makeSink();
+    hub.resume(
+      {
+        type: 'resume',
+        id: 'turn-01',
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 0,
+      },
+      resumer,
+    );
+    expect(resumer.frames).toHaveLength(2);
+
+    const second = register(conversation.id, makeScriptedStream());
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+    await waitForFrames(resumer, 3);
+    second.finish();
+    await waitForFrames(resumer, 4);
+  });
+
+  it('stops delivering conversation frames after unsubscribe', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const watcher = makeSink();
+    const observer = makeSink();
+    hub.subscribe(conversation.agentId, conversation.id, watcher);
+    hub.subscribe(conversation.agentId, conversation.id, observer);
+    hub.unsubscribe(conversation.agentId, conversation.id, watcher);
+
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+    scripted.finish();
+    await waitForFrames(observer, 2);
+
+    expect(watcher.send).not.toHaveBeenCalled();
+  });
+
+  it('sends one copy to a sink that both started the turn and subscribed to the conversation', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.subscribe(conversation.agentId, conversation.id, sink);
+    hub.start(sendFrame(conversation), sink);
+    scripted.emit({ type: 'text_delta', text: 'Once' });
+    await waitForFrames(sink, 2);
+    scripted.finish();
+    await waitForFrames(sink, 3);
+
+    expect(sink.frames.map((frame) => frame.seq)).toEqual([1, 2, 3]);
+  });
+
+  it('rejects a subscription to an unknown or foreign conversation', () => {
+    const conversation = createConversation();
+    const sink = makeSink();
+
+    expect(() => hub.subscribe(conversation.agentId, 'no-such-conversation', sink)).toThrow(
+      ConversationServiceError,
+    );
+    expect(() => hub.subscribe('agent-other', conversation.id, sink)).toThrow(
+      ConversationServiceError,
+    );
+    // Unsubscribing is always safe, even for a conversation that never existed.
+    expect(() => hub.unsubscribe(conversation.agentId, 'no-such-conversation', sink)).not.toThrow();
+  });
+
+  it('detach drops conversation subscriptions so a closed socket stops being written to', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const closed = makeSink();
+    const open = makeSink();
+    hub.subscribe(conversation.agentId, conversation.id, closed);
+    hub.subscribe(conversation.agentId, conversation.id, open);
+
+    hub.detach(closed);
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+    scripted.finish();
+    await waitForFrames(open, 2);
+
+    expect(closed.send).not.toHaveBeenCalled();
+  });
+
+  it('reports every turn event and the completed outcome to observers until disposed', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const events: Array<{ turnId: string; type: string }> = [];
+    const finishes: Array<{ turnId: string; outcome: string }> = [];
+    const dispose = hub.addObserver({
+      onEvent: (turn, event) => events.push({ turnId: turn.turnId, type: event.type }),
+      onFinish: (turn, outcome) => finishes.push({ turnId: turn.turnId, outcome }),
+    });
+
+    hub.start(sendFrame(conversation), makeSink());
+    scripted.emit({ type: 'text_delta', text: 'A' });
+    scripted.emit({
+      type: 'subagent_progress',
+      subagentId: 'w-1',
+      status: 'running',
+      toolCallCount: 1,
+      elapsedMs: 5,
+    });
+    scripted.finish();
+    await vi.waitFor(() => expect(finishes).toHaveLength(1));
+
+    expect(events).toEqual([
+      { turnId: 'turn-01', type: 'text_delta' },
+      { turnId: 'turn-01', type: 'subagent_progress' },
+    ]);
+    expect(finishes).toEqual([{ turnId: 'turn-01', outcome: 'completed' }]);
+
+    dispose();
+    const second = register(conversation.id, makeScriptedStream());
+    hub.start(sendFrame(conversation, 'turn-02'), makeSink());
+    second.emit({ type: 'text_delta', text: 'B' });
+    second.finish();
+    await vi.waitFor(() => expect(conversations.get(conversation.id)?.activeTurnId).toBeNull());
+    expect(events).toHaveLength(2);
+    expect(finishes).toHaveLength(1);
+  });
+
+  it('reports cancelled and failed outcomes to observers', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const finishes: Array<{ turnId: string; outcome: string }> = [];
+    hub.addObserver({
+      onEvent: () => {},
+      onFinish: (turn, outcome) => finishes.push({ turnId: turn.turnId, outcome }),
+    });
+
+    hub.start(sendFrame(conversation), makeSink());
+    await hub.cancel('turn-01', makeSink());
+    scripted.finish();
+    await vi.waitFor(() => expect(finishes).toHaveLength(1));
+    expect(finishes[0]).toEqual({ turnId: 'turn-01', outcome: 'cancelled' });
+
+    const failing = register(conversation.id, makeScriptedStream());
+    hub.start(sendFrame(conversation, 'turn-02'), makeSink());
+    failing.fail(new Error('provider exploded'));
+    await vi.waitFor(() => expect(finishes).toHaveLength(2));
+    expect(finishes[1]).toEqual({ turnId: 'turn-02', outcome: 'failed' });
+  });
+
+  it('keeps the accepted frame of an ordinary user turn byte-identical', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(sendFrame(conversation), sink);
+
+    // A client that never subscribes and never receives a server-initiated
+    // turn must see the pre-C2 wire bytes: no `origin`, no `kind`.
+    expect(sink.frames[0]).toEqual({
+      type: 'accepted',
+      id: 'turn-01',
+      conversationId: conversation.id,
+      userMessageId: expect.any(String),
+      assistantMessageId: expect.any(String),
+      revision: expect.any(Number),
+      seq: 1,
+    });
+    scripted.emit({ type: 'text_delta', text: 'Part one' });
+    await waitForFrames(sink, 2);
+    scripted.finish();
+    await waitForFrames(sink, 3);
+    expect(sink.frames.slice(1)).toEqual([
+      {
+        type: 'event',
+        id: 'turn-01',
+        conversationId: conversation.id,
+        seq: 2,
+        event: expect.any(Object),
+      },
+      {
+        type: 'done',
+        id: 'turn-01',
+        conversationId: conversation.id,
+        seq: 3,
+        outcome: 'completed',
+      },
+    ]);
+  });
+
   it('removes only a sink that throws while the provider run continues', async () => {
     const conversation = createConversation();
     const scripted = register(conversation.id);

@@ -44,7 +44,14 @@ export interface ChatWsOptions {
   wsTickets?: WsTicketStore;
 }
 
-const KNOWN_CLIENT_FRAME_TYPES = new Set(['message', 'resume', 'answer', 'cancel']);
+const KNOWN_CLIENT_FRAME_TYPES = new Set([
+  'message',
+  'resume',
+  'answer',
+  'cancel',
+  'subscribe',
+  'unsubscribe',
+]);
 const STRUCTURAL_CLIENT_FIELDS = new Set([
   'type',
   'id',
@@ -172,6 +179,17 @@ export function parseChatClientFrame(msg: unknown): MobileWsClientFrame | null {
 
   if (m.type === 'answer') {
     if (typeof m.questionId !== 'string' || typeof m.answer !== 'string') return null;
+    return msg as MobileWsClientFrame;
+  }
+
+  if (m.type === 'subscribe' || m.type === 'unsubscribe') {
+    if (
+      typeof m.agentId !== 'string' ||
+      typeof m.conversationId !== 'string' ||
+      !isValidConversationId(m.conversationId)
+    ) {
+      return null;
+    }
     return msg as MobileWsClientFrame;
   }
 
@@ -400,6 +418,19 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
               error: 'Invalid message: missing required fields',
               code: 'validation_failed',
               retryable: false,
+            });
+            return;
+          }
+
+          if (msg.type === 'subscribe' || msg.type === 'unsubscribe') {
+            // Bookkeeping only: no acknowledgement frame, so a client that
+            // subscribes to a quiet conversation sees nothing until a turn runs.
+            dispatchHub(ws, msg.id, msg.conversationId, () => {
+              if (msg.type === 'subscribe') {
+                resumableChatHub.subscribe(msg.agentId, msg.conversationId, sink);
+              } else {
+                resumableChatHub.unsubscribe(msg.agentId, msg.conversationId, sink);
+              }
             });
             return;
           }
