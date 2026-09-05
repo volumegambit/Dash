@@ -258,7 +258,15 @@ export type MobileWsClientFrame =
     }
   | { type: 'resume'; id: string; agentId: string; conversationId: string; sinceSeq: number }
   | { type: 'answer'; id: string; questionId: string; answer: string }
-  | { type: 'cancel'; id: string };
+  | { type: 'cancel'; id: string }
+  /**
+   * Watch a conversation the socket did not start a turn on, so server-initiated
+   * turns (`accepted` with `origin: 'notification'`) and sub-agent child turns
+   * reach it. `message` and `resume` subscribe implicitly; this frame is only
+   * needed for a conversation the socket has not otherwise touched.
+   */
+  | { type: 'subscribe'; id: string; agentId: string; conversationId: string }
+  | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string };
 
 export type MobileWsServerFrame =
   | {
@@ -269,6 +277,14 @@ export type MobileWsServerFrame =
       assistantMessageId: string;
       revision: number;
       seq: number;
+      /**
+       * Who caused this turn. Omitted for an ordinary user turn on a user
+       * conversation, so a pre-subscription client sees the same bytes it
+       * always did; absent means `'user'`.
+       */
+      origin?: ConversationMessageOrigin;
+      /** Conversation kind. Omitted alongside `origin`; absent means `'user'`. */
+      kind?: ConversationKind;
     }
   | {
       type: 'event';

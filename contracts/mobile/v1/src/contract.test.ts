@@ -55,9 +55,75 @@ function parseSse(raw: string): unknown[] {
     });
 }
 
+/**
+ * Assert an event carries exactly `required`, plus any subset of `optional`.
+ * Sub-agent events (design 2026-09-04 sub-agents, 7.2) have optional members
+ * (`name`, `isolation`, `usage`, `detail`, `question`), so an exact `toEqual`
+ * cannot express them — but an unlisted key is still a contract drift.
+ */
+function assertEventShape(
+  event: Record<string, unknown>,
+  required: Record<string, unknown>,
+  optional: readonly string[],
+): void {
+  expect(event).toMatchObject(required);
+  const allowed = new Set([...Object.keys(required), ...optional]);
+  expect(Object.keys(event).filter((key) => !allowed.has(key))).toEqual([]);
+}
+
 function assertCanonicalAgentEvent(value: unknown): void {
   if (typeof value !== 'object' || value === null) return;
   const event = value as Record<string, unknown>;
+  if (event.type === 'subagent_started') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_started',
+        subagentId: expect.any(String),
+        subagentType: expect.any(String),
+        description: expect.any(String),
+        prompt: expect.any(String),
+        model: expect.any(String),
+        background: expect.any(Boolean),
+        depth: expect.any(Number),
+        startedAt: expect.any(String),
+      },
+      ['name', 'isolation'],
+    );
+    return;
+  }
+  if (event.type === 'subagent_progress') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_progress',
+        subagentId: expect.any(String),
+        status: expect.stringMatching(/^(running|waiting_input)$/),
+        toolCallCount: expect.any(Number),
+        elapsedMs: expect.any(Number),
+      },
+      ['detail', 'question'],
+    );
+    return;
+  }
+  if (event.type === 'subagent_finished') {
+    assertEventShape(
+      event,
+      {
+        type: 'subagent_finished',
+        subagentId: expect.any(String),
+        subagentType: expect.any(String),
+        description: expect.any(String),
+        status: expect.stringMatching(/^(done|failed|cancelled|interrupted|max_turns)$/),
+        report: expect.any(String),
+        toolCallCount: expect.any(Number),
+        startedAt: expect.any(String),
+        endedAt: expect.any(String),
+      },
+      ['name', 'usage'],
+    );
+    return;
+  }
   if (event.type === 'text_delta') {
     expect(event).toEqual({ type: 'text_delta', text: expect.any(String) });
   } else if (event.type === 'question') {
@@ -340,6 +406,31 @@ describe('mobile v1 contract fixtures', () => {
         fixture.valid,
       );
     }
+  });
+
+  it('carries turn origin and conversation kind as optional accepted-frame fields', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const accepted = ws.$defs?.ChatAccepted;
+    // Optional on the wire: a pre-C2 client never sends or sees them.
+    expect(accepted?.required).not.toContain('origin');
+    expect(accepted?.required).not.toContain('kind');
+    expect(accepted?.properties?.origin).toEqual({ enum: ['user', 'notification', 'parent'] });
+    expect(accepted?.properties?.kind).toEqual({ enum: ['user', 'subagent'] });
+
+    for (const name of ['ChatSubscribe', 'ChatUnsubscribe'] as const) {
+      expect(ws.$defs?.[name]?.required).toEqual(['type', 'id', 'agentId', 'conversationId']);
+    }
+    const clientFrame = ws.$defs?.MobileWsClientFrame as { oneOf?: Array<{ $ref?: string }> };
+    expect(clientFrame.oneOf?.map((entry) => entry.$ref)).toEqual([
+      '#/$defs/MobileWsMessageFrame',
+      '#/$defs/ChatResume',
+      '#/$defs/ChatAnswer',
+      '#/$defs/ChatCancel',
+      '#/$defs/ChatSubscribe',
+      '#/$defs/ChatUnsubscribe',
+    ]);
   });
 
   it('has no duplicate or unlisted fixture files', async () => {

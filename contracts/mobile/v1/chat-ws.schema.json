@@ -79,7 +79,31 @@
         "id": { "type": "string", "format": "uuid" }
       }
     },
+    "ChatSubscribe": {
+      "$comment": "Watch a conversation this socket did not start a turn on (design 2026-09-04 sub-agents, 7.6). `message` and `resume` subscribe implicitly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "subscribe" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "ChatUnsubscribe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "unsubscribe" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
     "ChatAccepted": {
+      "$comment": "`origin` and `kind` are optional: they are emitted only when the turn is not an ordinary user turn on a user conversation, so pre-subscription clients see unchanged bytes. Absent means 'user'.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -98,7 +122,9 @@
         "userMessageId": { "type": "string", "format": "uuid" },
         "assistantMessageId": { "type": "string", "format": "uuid" },
         "revision": { "type": "integer", "minimum": 1 },
-        "seq": { "type": "integer", "minimum": 1 }
+        "seq": { "type": "integer", "minimum": 1 },
+        "origin": { "enum": ["user", "notification", "parent"] },
+        "kind": { "enum": ["user", "subagent"] }
       }
     },
     "ChatEvent": {
@@ -217,7 +243,9 @@
         { "$ref": "#/$defs/MobileWsMessageFrame" },
         { "$ref": "#/$defs/ChatResume" },
         { "$ref": "#/$defs/ChatAnswer" },
-        { "$ref": "#/$defs/ChatCancel" }
+        { "$ref": "#/$defs/ChatCancel" },
+        { "$ref": "#/$defs/ChatSubscribe" },
+        { "$ref": "#/$defs/ChatUnsubscribe" }
       ]
     },
     "MobileWsServerFrame": {
