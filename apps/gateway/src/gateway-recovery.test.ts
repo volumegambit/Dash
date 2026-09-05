@@ -65,7 +65,7 @@ describe('gateway conversation composition', () => {
     const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
     const steps = [
       "safeStep('resumableChatHub.stop'",
-      "safeStep('conversationAutoTitle.flush'",
+      "safeFlush('conversationAutoTitle.flush'",
       "safeStep('swarmCoordinator.stop'",
       "safeStep('agents.stop'",
       "safeStep('gateway.stop'",

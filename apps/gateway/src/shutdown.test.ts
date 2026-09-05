@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { describeError, redactBotTokens, safeStep, withTimeout } from './shutdown.js';
+import {
+  FLUSH_TIMEOUT_MS,
+  describeError,
+  redactBotTokens,
+  safeFlush,
+  safeStep,
+  withTimeout,
+} from './shutdown.js';
 
 describe('redactBotTokens', () => {
   it('redacts a Telegram bot token embedded in a URL', () => {
@@ -103,5 +110,46 @@ describe('withTimeout', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('safeFlush', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('awaits a flush that completes in time', async () => {
+    const flush = vi.fn().mockResolvedValue(undefined);
+    await safeFlush('memorySweep.flush', flush, 1000);
+    expect(flush).toHaveBeenCalled();
+  });
+
+  it('gives up on a hung flush instead of blocking shutdown forever', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      const step = safeFlush('memorySweep.flush', () => new Promise<void>(() => {}), 5000);
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(step).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('memorySweep.flush'),
+      expect.stringContaining('timed out after 5000ms'),
+    );
+  });
+
+  it('logs and continues when the flush rejects', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      safeFlush('conversationAutoTitle.flush', () => Promise.reject(new Error('boom')), 1000),
+    ).resolves.toBeUndefined();
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('defaults to a bounded deadline', () => {
+    expect(FLUSH_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(FLUSH_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
   });
 });

@@ -65,7 +65,7 @@ import {
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
-import { safeStep } from './shutdown.js';
+import { safeFlush, safeStep } from './shutdown.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
@@ -1091,8 +1091,11 @@ async function main() {
     await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
     await safeStep('mcpManager.stop', () => mcpManager.stop());
     await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
-    await safeStep('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
-    await safeStep('memorySweep.flush', () => memorySweep.flush());
+    // Both flushes wait on provider completions that carry no AbortSignal, so
+    // they are deadline-bounded: a hung provider socket must not keep the
+    // process alive until SIGKILL with its databases still open.
+    await safeFlush('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
+    await safeFlush('memorySweep.flush', () => memorySweep.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.
