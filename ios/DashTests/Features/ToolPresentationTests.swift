@@ -319,34 +319,38 @@ struct ToolPresentationTests {
 
   @Test("formatDetails returns short strings as-is")
   func formatDetailsShortString() {
+    // `pattern` is grep's primary key, so it becomes the header summary and
+    // its row is filtered out; `note` is the row under test. A single-key
+    // input cannot be used here — `summarize`'s fallback would make that one
+    // value the summary, and the row would be dropped as a duplicate.
     let result = ToolPresentation.formatDetails(
-      name: "grep", input: .object(["query": .string("useState")]))
-    #expect(result == [ToolPresentation.ToolDetail(key: "query", value: "useState")])
+      name: "grep", input: .object(["pattern": .string("x"), "note": .string("useState")]))
+    #expect(result == [ToolPresentation.ToolDetail(key: "note", value: "useState")])
   }
 
   @Test("formatDetails truncates long strings with a char count")
   func formatDetailsLongString() {
     let long = String(repeating: "x", count: 100)
     let result = ToolPresentation.formatDetails(
-      name: "grep", input: .object(["note": .string(long)]))
+      name: "grep", input: .object(["pattern": .string("x"), "note": .string(long)]))
     #expect(result.count == 1)
     #expect(result[0].key == "note")
     #expect(result[0].value.contains("(100 chars)"))
     #expect(result[0].value.contains("…"))
   }
 
-  @Test("formatDetails formats arrays as [N items]")
+  @Test("formatDetails drops an array row rather than showing its length")
   func formatDetailsArray() {
     let result = ToolPresentation.formatDetails(
       name: "grep", input: .object(["files": .array([.string("a"), .string("b"), .string("c")])]))
-    #expect(result == [ToolPresentation.ToolDetail(key: "files", value: "[3 items]")])
+    #expect(result.isEmpty)
   }
 
-  @Test("formatDetails formats nested objects as {object}")
+  @Test("formatDetails drops a nested-object row rather than showing {object}")
   func formatDetailsNestedObject() {
     let result = ToolPresentation.formatDetails(
       name: "grep", input: .object(["opts": .object(["a": .number(1)])]))
-    #expect(result == [ToolPresentation.ToolDetail(key: "opts", value: "{object}")])
+    #expect(result.isEmpty)
   }
 
   @Test("formatDetails skips path/offset/limit for read")
@@ -363,19 +367,22 @@ struct ToolPresentationTests {
     #expect(result == [ToolPresentation.ToolDetail(key: "reason", value: "checking contents")])
   }
 
-  @Test("formatDetails skips content for write")
+  @Test("formatDetails skips content for write, and path repeats the summary")
   func formatDetailsSkipsWriteContent() {
     let result = ToolPresentation.formatDetails(
       name: "write",
       input: .object(["path": .string("a.txt"), "content": .string("hello world")])
     )
-    #expect(result == [ToolPresentation.ToolDetail(key: "path", value: "a.txt")])
+    #expect(result.isEmpty)
   }
 
   @Test("formatDetails returns multiple key/value pairs sorted by key")
   func formatDetailsMultiplePairs() {
     let result = ToolPresentation.formatDetails(
-      name: "grep", input: .object(["path": .string("foo.ts"), "mode": .string("write")]))
+      name: "grep",
+      input: .object([
+        "pattern": .string("p"), "path": .string("foo.ts"), "mode": .string("write"),
+      ]))
     #expect(
       result == [
         ToolPresentation.ToolDetail(key: "mode", value: "write"),
@@ -518,5 +525,48 @@ struct ToolPresentationTests {
   @Test("resultSummary names an empty result")
   func resultSummaryEmpty() {
     #expect(ToolPresentation.resultSummary(name: "bash", content: "\n\n") == "no output")
+  }
+
+  // MARK: - formatDetails filtering
+
+  @Test("A detail row repeating the header summary is dropped")
+  func detailsDropDuplicate() {
+    let input = JSONValue.object(["command": .string("ls -la")])
+    #expect(ToolPresentation.formatDetails(name: "bash", input: input).isEmpty)
+  }
+
+  @Test("A truncated summary leaves its detail row in place")
+  func detailsKeepTruncated() {
+    let command = "echo " + String(repeating: "a", count: 100)
+    let input = JSONValue.object(["command": .string(command)])
+    let details = ToolPresentation.formatDetails(name: "bash", input: input)
+    #expect(details.count == 1)
+    #expect(details.first?.value.hasPrefix("\"echo ") == true)
+  }
+
+  @Test("A shortened executable leaves its detail row in place")
+  func detailsKeepShortened() {
+    let command = "/opt/homebrew/bin/gog gmail list"
+    let input = JSONValue.object(["command": .string(command)])
+    #expect(
+      ToolPresentation.formatDetails(name: "bash", input: input)
+        == [ToolPresentation.ToolDetail(key: "command", value: command)])
+  }
+
+  @Test("Type placeholders are dropped")
+  func detailsDropPlaceholders() {
+    let input = JSONValue.object([
+      "schema": .object(["a": .number(1)]),
+      "items": .array([.number(1), .number(2)]),
+    ])
+    #expect(ToolPresentation.formatDetails(name: "some_tool", input: input).isEmpty)
+  }
+
+  @Test("Ordinary rows survive alongside a dropped duplicate")
+  func detailsKeepOthers() {
+    let input = JSONValue.object(["pattern": .string("foo"), "path": .string("src")])
+    #expect(
+      ToolPresentation.formatDetails(name: "grep", input: input)
+        == [ToolPresentation.ToolDetail(key: "path", value: "src")])
   }
 }

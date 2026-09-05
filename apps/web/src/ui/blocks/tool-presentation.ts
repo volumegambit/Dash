@@ -255,7 +255,19 @@ const PLACEHOLDER_VALUE = /^(\{object\}|\[\d+ items?\])$/;
  * 2. A row whose value is `{object}` or `[N items]` reports the input's
  *    TYPE and never its content. `Todos: [3 items]` was the agent's plan
  *    rendered as its own array length.
- * 3. Everything else stays.
+ * 3. Everything else stays. *
+ * PARITY HAZARD, deliberately accepted: rule 1 compares against
+ * `summarize`, whose LAST resort is "first string value in the object" —
+ * insertion order here, sorted-key order on iOS (a Swift dictionary has no
+ * insertion order to fall back on). That divergence used to be cosmetic. It
+ * is now load-bearing: for a tool with no primary key and two or more string
+ * inputs, the two platforms can pick different summaries and therefore drop
+ * different rows. Every such tool is by definition one this repo does not
+ * know, and the row is still shown on one platform and merely elided on the
+ * other, so the cost is a cosmetic difference on unknown third-party tools —
+ * not lost information. Fixing it properly means giving `summarize` a
+ * deterministic fallback on both sides, which changes MC-parity behaviour
+ * that predates this work.
  */
 export function formatVisibleDetails(
   name: string,

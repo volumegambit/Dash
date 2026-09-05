@@ -387,12 +387,29 @@ enum ToolPresentation {
   private static let readSkipKeys: Set<String> = ["path", "offset", "limit"]
   private static let writeSkipKeys: Set<String> = ["content"]
 
-  /// Key/value detail rows for a tool's expanded body, with the read tool's
-  /// `path`/`offset`/`limit` and the write tool's `content` keys skipped
-  /// (those are already shown elsewhere — the summary, or a rich content
-  /// preview on platforms that have one). Mirrors chat.helpers.ts
-  /// `formatDetails` fused with the read/write filtering that lives at the
-  /// ToolBlock call site on web (see type doc).
+  /// Key/value detail rows for a tool's expanded body, filtered down to the
+  /// rows that tell the reader something.
+  ///
+  /// Three rules. The read tool's `path`/`offset`/`limit` and the write
+  /// tool's `content` are skipped, as before — those are shown elsewhere.
+  /// A row whose value is exactly the header summary is dropped as pure
+  /// duplication. A row whose value is `{object}` or `[N items]` is dropped
+  /// because it reports the input's type and never its content.
+  ///
+  /// Twin of tool-presentation.ts `formatVisibleDetails`; iOS keeps the
+  /// filtering fused into `formatDetails` because there is no second call
+  /// site here that wants the unfiltered list (see type doc).
+  ///
+  /// PARITY HAZARD, deliberately accepted: the duplicate rule compares
+  /// against `summarize`, whose last resort is "first string value in the
+  /// object" — sorted-key order here, insertion order on web. That
+  /// divergence used to be cosmetic and is now load-bearing: for a tool with
+  /// no primary key and two or more string inputs, the platforms can pick
+  /// different summaries and drop different rows. Such a tool is by
+  /// definition one this repo does not know, and the row is still shown on
+  /// one platform rather than lost, so the cost is cosmetic. Fixing it means
+  /// giving `summarize` a deterministic fallback on both sides, which
+  /// changes MC-parity behaviour predating this work.
   static func formatDetails(name: String, input: JSONValue?) -> [ToolDetail] {
     guard let input else { return [] }
 
@@ -407,10 +424,26 @@ enum ToolPresentation {
     default: skipKeys = []
     }
 
+    let summary = summarize(name: name, input: input)
+
     return fields.keys.sorted().compactMap { key in
       guard !skipKeys.contains(key) else { return nil }
-      return ToolDetail(key: key, value: formatDetailValue(fields[key]!))
+      let value = formatDetailValue(fields[key]!)
+      // Pure duplication: the header sits directly above this row. Equality
+      // against `summarize` rather than "drop the primary key" makes the
+      // rule self-correcting — a truncated or shortened summary does not
+      // match, so the full value stays reachable here.
+      if let summary, value == summary { return nil }
+      // Reports the input's TYPE and never its content. "Todos: [3 items]"
+      // was the agent's plan rendered as its own array length.
+      if isPlaceholderValue(value) { return nil }
+      return ToolDetail(key: key, value: value)
     }
+  }
+
+  private static func isPlaceholderValue(_ value: String) -> Bool {
+    value == "{object}"
+      || value.range(of: "^\\[\\d+ items?\\]$", options: .regularExpression) != nil
   }
 
   private static func formatDetailValue(_ value: JSONValue) -> String {
