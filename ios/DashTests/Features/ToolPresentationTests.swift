@@ -315,26 +315,6 @@ struct ToolPresentationTests {
     #expect(result?.hasSuffix("…") == true)
   }
 
-  // MARK: - outcomeSummary
-
-  @Test("outcomeSummary counts the lines of a multi-line result")
-  func outcomeSummaryMultiline() {
-    #expect(ToolPresentation.outcomeSummary(content: "a\nb\nc") == "3 lines")
-  }
-
-  @Test("outcomeSummary ignores a trailing newline from command output")
-  func outcomeSummaryTrailingNewline() {
-    #expect(ToolPresentation.outcomeSummary(content: "a\nb\n") == "2 lines")
-  }
-
-  @Test(
-    "outcomeSummary stays silent when there is nothing worth reporting",
-    arguments: [nil, "", "   ", "\n", "one line", "one line\n"]
-  )
-  func outcomeSummarySilent(content: String?) {
-    #expect(ToolPresentation.outcomeSummary(content: content) == nil)
-  }
-
   // MARK: - formatDetails
 
   @Test("formatDetails returns short strings as-is")
@@ -450,5 +430,93 @@ struct ToolPresentationTests {
     #expect(ToolPresentation.parseTodos(.object([:])) == nil)
     #expect(ToolPresentation.parseTodos(.object(["todos": .array([])])) == nil)
     #expect(ToolPresentation.parseTodos(nil) == nil)
+  }
+
+  // MARK: - resultSummary
+
+  @Test("resultSummary is nil while the tool is still running")
+  func resultSummaryRunning() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: nil) == nil)
+  }
+
+  @Test("resultSummary shows an error's first line")
+  func resultSummaryError() {
+    #expect(
+      ToolPresentation.resultSummary(
+        name: "bash", content: "ENOENT: no such file\n  at open()", isError: true)
+        == "ENOENT: no such file")
+  }
+
+  @Test("resultSummary says failed when an error has no text")
+  func resultSummaryErrorBlank() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: "   ", isError: true) == "failed")
+  }
+
+  @Test("resultSummary stays silent for TodoWrite")
+  func resultSummaryTodoWrite() {
+    #expect(ToolPresentation.resultSummary(name: "TodoWrite", content: "ok") == nil)
+  }
+
+  @Test("resultSummary counts read lines without the XML envelope")
+  func resultSummaryRead() {
+    let content = "<path>a.ts</path>\n<content>\nline one\nline two\n</content>"
+    #expect(ToolPresentation.resultSummary(name: "read", content: content) == "2 lines")
+  }
+
+  @Test("resultSummary uses the singular for one line")
+  func resultSummaryOneLine() {
+    #expect(ToolPresentation.resultSummary(name: "read", content: "only line") == "1 line")
+  }
+
+  @Test("resultSummary prefers ls's own declared entry count")
+  func resultSummaryLs() {
+    #expect(
+      ToolPresentation.resultSummary(name: "ls", content: "(30 entries)\nsrc/\npackage.json")
+        == "30 entries")
+  }
+
+  @Test("resultSummary counts grep matches and names the empty case")
+  func resultSummaryGrep() {
+    #expect(
+      ToolPresentation.resultSummary(name: "grep", content: "a.ts:1: hit\nb.ts:9: hit")
+        == "2 matches")
+    #expect(ToolPresentation.resultSummary(name: "grep", content: "") == "no matches")
+  }
+
+  @Test("resultSummary counts web_search's numbered results")
+  func resultSummaryWebSearch() {
+    let content = "1. [One](https://a)\n   snip\n\n2. [Two](https://b)\n   snip"
+    #expect(ToolPresentation.resultSummary(name: "web_search", content: content) == "2 results")
+  }
+
+  @Test("resultSummary sizes a web_fetch body")
+  func resultSummaryWebFetch() {
+    #expect(
+      ToolPresentation.resultSummary(
+        name: "web_fetch", content: String(repeating: "x", count: 2048)) == "2.0 KB")
+  }
+
+  @Test("resultSummary reports an edit as a diff stat")
+  func resultSummaryEdit() {
+    let details = JSONValue.object([
+      "diff": .string("--- a/x.ts\n+++ b/x.ts\n-old\n+new\n+also new")
+    ])
+    #expect(
+      ToolPresentation.resultSummary(name: "edit", content: "ok", details: details) == "+2 -1")
+  }
+
+  @Test("resultSummary falls back to a line count for an unknown tool")
+  func resultSummaryUnknown() {
+    #expect(ToolPresentation.resultSummary(name: "some_mcp_tool", content: "a\nb\nc") == "3 lines")
+  }
+
+  @Test("resultSummary echoes a short single-line result verbatim")
+  func resultSummaryShortLine() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: "done") == "done")
+  }
+
+  @Test("resultSummary names an empty result")
+  func resultSummaryEmpty() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: "\n\n") == "no output")
   }
 }

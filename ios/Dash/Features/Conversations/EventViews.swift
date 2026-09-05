@@ -334,7 +334,10 @@ struct ToolCardView: View {
           .truncationMode(.tail)
       }
       Spacer(minLength: 4)
-      if let outcome = ToolPresentation.outcomeSummary(content: tool.content), !isExpanded {
+      if let outcome = ToolPresentation.resultSummary(
+        name: tool.name, content: tool.content, isError: tool.status == .failed,
+        details: tool.details), !isExpanded
+      {
         Text(outcome)
           .font(.caption2)
           .foregroundStyle(.tertiary)

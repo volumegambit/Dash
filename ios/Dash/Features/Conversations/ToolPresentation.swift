@@ -227,24 +227,154 @@ enum ToolPresentation {
     return nil
   }
 
-  // MARK: - Collapsed outcome
+  // MARK: - Result summary
 
-  /// How much output a finished tool produced, for the right edge of its
-  /// collapsed header — `nil` when there is nothing worth saying.
+  /// Removes the chrome some tools wrap their result body in, so a line
+  /// count counts the body and not the envelope.
   ///
-  /// An iOS-only addition, not part of the MC parity surface: the web cards
-  /// are wide enough to preview output inline, whereas here a collapsed card
-  /// shows a status dot and a command, and nothing distinguishes "expanding
-  /// this reveals 200 lines of log" from "expanding this reveals nothing at
-  /// all". A single-line result stays silent — "1 line" is not worth the
-  /// pixels, and the row is already narrow.
-  static func outcomeSummary(content: String?) -> String? {
-    guard let content, content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+  /// `<path>`/`<type>` are dropped ELEMENT AND CONTENT — they are metadata
+  /// the collapsed header already shows, and leaving the text behind would
+  /// make a two-line file read as four. The remaining tags are pure
+  /// wrappers, so only the tags go. Twin of tool-presentation.ts
+  /// `stripResultChrome`; both descend from Mission Control's
+  /// `stripXmlTags`.
+  static func stripResultChrome(_ content: String) -> String {
+    var out = content.replacingOccurrences(
+      of: "<(path|type)>[\\s\\S]*?</\\1>\n?", with: "", options: .regularExpression)
+    out = out.replacingOccurrences(
+      of: "</?(?:entries|content|results)>\n?", with: "", options: .regularExpression)
+    // `(?m)` rather than an option: `replacingOccurrences(options:)` takes
+    // NSString.CompareOptions, which has no multiline member — that lives on
+    // NSRegularExpression.Options, which this API never sees. The inline
+    // flag is the same thing the JS twin spells as the /m regex flag.
+    out = out.replacingOccurrences(
+      of: "(?m)^FilePath:.*\n?", with: "", options: .regularExpression)
+    out = out.replacingOccurrences(
+      of: "(?m)^\\(\\d+ entries?\\)\n?", with: "", options: .regularExpression)
+    return out.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// Lines in `content`, ignoring leading and trailing blank lines. 0 for
+  /// blank input — a trailing newline is an artifact of command output, not
+  /// a line of it.
+  static func countLines(_ content: String) -> Int {
+    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? 0 : trimmed.components(separatedBy: "\n").count
+  }
+
+  private static func firstLine(_ content: String) -> String {
+    for line in content.components(separatedBy: "\n") {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return ""
+  }
+
+  private static func plural(_ n: Int, _ one: String, _ many: String) -> String {
+    "\(n) \(n == 1 ? one : many)"
+  }
+
+  /// Human byte size: `512 B`, `4.2 KB`, `1.3 MB`.
+  static func formatBytes(_ bytes: Int) -> String {
+    if bytes < 1024 { return "\(bytes) B" }
+    if bytes < 1024 * 1024 { return String(format: "%.1f KB", Double(bytes) / 1024) }
+    return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+  }
+
+  /// `+added -removed` from an edit tool's `details.diff`, or nil when there
+  /// is no usable diff. `+++`/`---` are unified-diff FILE HEADERS, not
+  /// content, so they are excluded — counting them would report every
+  /// one-line edit as `+2 -2`. The hyphen is ASCII U+002D, not a U+2212
+  /// minus: three platforms render this string and an encoding is one more
+  /// thing they could disagree about.
+  static func diffStat(_ details: JSONValue?) -> String? {
+    guard case let .object(fields)? = details,
+      case let .string(diff)? = fields["diff"], !diff.isEmpty
     else { return nil }
-    // Trailing newlines are an artifact of command output, not a line of it.
-    let lines = content.trimmingCharacters(in: .newlines).components(separatedBy: "\n").count
-    guard lines > 1 else { return nil }
-    return "\(lines) lines"
+    var added = 0
+    var removed = 0
+    for line in diff.components(separatedBy: "\n") {
+      if line.hasPrefix("+++") || line.hasPrefix("---") { continue }
+      if line.hasPrefix("+") {
+        added += 1
+      } else if line.hasPrefix("-") {
+        removed += 1
+      }
+    }
+    guard added > 0 || removed > 0 else { return nil }
+    return "+\(added) -\(removed)"
+  }
+
+  /// What came back, for the right edge of a collapsed tool row — the half
+  /// of the card `summarize` cannot answer, because `summarize` reads only
+  /// the tool's INPUT.
+  ///
+  /// Replaces `outcomeSummary`, which reported the payload's line count and
+  /// nothing else: size is a property of the transport, whereas "12 matches"
+  /// or "no matches" is the answer to the question the user actually asked.
+  ///
+  /// Heuristic by necessity — the backend flattens a tool's content blocks
+  /// into one opaque string, so there is nothing structured to read. Every
+  /// branch is keyed to a shape this repo's own tools emit; the fallback is
+  /// deliberately dull, because a third-party MCP tool's output is only
+  /// reliably "some text". Twin of tool-presentation.ts `resultSummary`,
+  /// pinned against it by the shared fixture corpus.
+  static func resultSummary(
+    name: String, content: String?, isError: Bool = false, details: JSONValue? = nil
+  ) -> String? {
+    guard let content else { return nil }
+
+    if isError {
+      let line = firstLine(content)
+      return line.isEmpty ? "failed" : middleTruncate(line, max: 40)
+    }
+
+    // A task card's header already reads "2/3 done" plus the active item,
+    // and its body is a rendered checklist. An outcome would be a third
+    // account of the same thing.
+    if isTodoWrite(name) { return nil }
+
+    let normalized = normalizeTool(name)
+    if normalized == "edit" { return diffStat(details) }
+
+    let body = stripResultChrome(content)
+
+    switch normalized {
+    case "read":
+      return plural(countLines(body), "line", "lines")
+    case "ls":
+      // The listing tool states its own count; trust it over a line count,
+      // which would also count any header or trailing note.
+      return plural(declaredEntryCount(content) ?? countLines(body), "entry", "entries")
+    case "grep", "find":
+      let matches = countLines(body)
+      return matches == 0 ? "no matches" : plural(matches, "match", "matches")
+    case "web_search":
+      let results = numberedResultCount(body)
+      return results == 0 ? "no results" : plural(results, "result", "results")
+    case "web_fetch":
+      return formatBytes(body.utf8.count)
+    default:
+      let lines = countLines(body)
+      if lines == 0 { return "no output" }
+      // One short line IS the outcome — "ok", "done", an exit message.
+      // Saying "1 line" instead would be strictly less information for the
+      // same width.
+      if lines == 1, body.count <= 40 { return body }
+      return plural(lines, "line", "lines")
+    }
+  }
+
+  private static func declaredEntryCount(_ content: String) -> Int? {
+    guard let range = content.range(of: "\\((\\d+) entries?\\)", options: .regularExpression)
+    else { return nil }
+    return Int(content[range].filter(\.isNumber))
+  }
+
+  private static func numberedResultCount(_ body: String) -> Int {
+    body.components(separatedBy: "\n").filter {
+      $0.range(of: "^\\d+\\. \\[", options: .regularExpression) != nil
+    }.count
   }
 
   // MARK: - Detail formatting
