@@ -139,9 +139,22 @@ final class ConversationUITests: DashUITestCase {
   // 11–50), a 10-message page behind "Load earlier", and a send that streams
   // 45 deltas over ~3s. See `UITestScenario.longTranscript`.
 
+  /// Launches straight into the long transcript (no tab/row taps — see
+  /// `launch(conversationID:)`) and waits for the chat surface to be usable.
+  private func openLongTranscript() -> XCUIApplication {
+    let app = launch(scenario: "long-transcript", conversationID: "shared-plan")
+    dismissSplitOverlayIfPresent(in: app)
+    _ = element("chat.transcript", in: app)
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(composer, timeout: 5),
+      "Expected the composer to be actionable after opening the conversation"
+    )
+    return app
+  }
+
   func testOpeningALongConversationStartsAtTheLatestMessage() {
-    let app = launch(scenario: "long-transcript")
-    openFirstConversation(in: app)
+    let app = openLongTranscript()
 
     let transcript = element("chat.transcript", in: app)
     let latest = element("chat.message.long-assistant-50", in: app, timeout: 5)
@@ -162,8 +175,7 @@ final class ConversationUITests: DashUITestCase {
   }
 
   func testLoadEarlierKeepsTheFirstVisibleMessageInPlace() {
-    let app = launch(scenario: "long-transcript")
-    openFirstConversation(in: app)
+    let app = openLongTranscript()
 
     let loadOlder = app.descendants(matching: .any)["chat.loadOlder"]
     for _ in 0..<24 where !(loadOlder.exists && loadOlder.isHittable) {
@@ -186,8 +198,7 @@ final class ConversationUITests: DashUITestCase {
   }
 
   func testDraggingUpMidStreamUnpinsUntilJumpToLatest() {
-    let app = launch(scenario: "long-transcript")
-    openFirstConversation(in: app)
+    let app = openLongTranscript()
 
     replaceText(
       in: element("chat.composer", in: app),
@@ -223,7 +234,7 @@ final class ConversationUITests: DashUITestCase {
     // The streamed row, by message id: every completed reply in a long
     // transcript carries `chat.final.response`, so that one is ambiguous.
     XCTAssertTrue(
-      waitUntilAbsent(app.descendants(matching: .any)["chat.cancel"], timeout: 15),
+      waitUntilAbsent(app.descendants(matching: .any)["chat.cancel"], timeout: 25),
       "The stream should finish (Cancel gives way to Send)"
     )
     let final = element("chat.message.assistant-ui-turn", in: app)

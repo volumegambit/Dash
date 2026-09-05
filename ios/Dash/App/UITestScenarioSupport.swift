@@ -126,7 +126,7 @@ extension AppDependenciesFactory {
     /// with 40 cached messages (ordinals 11–50, enough to overflow any
     /// supported viewport, iPad landscape included), a further 10-message
     /// page (ordinals 1–10) behind `longTranscriptOlderCursor` for "Load
-    /// earlier", and a send that streams 60 text deltas over ~7s so a UI test
+    /// earlier", and a send that streams 90 text deltas over ~11s so a UI test
     /// can scroll mid-stream. Every other scenario keeps its 2-message thread.
     case longTranscript = "long-transcript"
 
@@ -356,11 +356,14 @@ extension AppDependenciesFactory {
       }
     }
 
-    /// The `.longTranscript` send's reply, streamed as 60 deltas ~120ms apart
-    /// (≈7s): long enough that a UI test — with XCUITest's own several
-    /// seconds of idle-waiting after the send — still catches it mid-stream.
+    /// The `.longTranscript` send's reply, streamed as 90 deltas ~120ms apart
+    /// (≈11s): long enough that a UI test — with XCUITest's several seconds
+    /// of idle-waiting after the send, more on the iOS 18.4 CI runtime —
+    /// still drags AND taps jump-to-latest while the reply is streaming. (At
+    /// 7s the tap coincided with completion on 18.4, and the composer
+    /// re-enabling brought the keyboard back under the tap.)
     static let longTranscriptStreamedReply: String = {
-      (1...60).map { "Streamed chunk \($0) of the reply." }.joined(separator: " ")
+      (1...90).map { "Streamed chunk \($0) of the reply." }.joined(separator: " ")
     }()
 
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
@@ -1853,8 +1856,8 @@ extension AppDependenciesFactory {
     }
 
     /// `.longTranscript`'s send: the same ack shape as the default script,
-    /// then `longTranscriptStreamedReply` in 60 word-group deltas ~120ms
-    /// apart (≈7s), so a UI test has time to scroll while the reply streams.
+    /// then `longTranscriptStreamedReply` in 90 word-group deltas ~120ms
+    /// apart (≈11s), so a UI test has time to scroll while the reply streams.
     private func runLongStreamScript(turnID: String, conversationID: String) async {
       guard await pause(.milliseconds(150)) else { return }
       yield(

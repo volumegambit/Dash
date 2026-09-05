@@ -10,15 +10,24 @@ class DashUITestCase: XCTestCase {
   }
 
   @discardableResult
+  /// `conversationID`: open this conversation on launch through
+  /// `UITestLaunchOptions.initialConversationID` — no tab or row taps, so a
+  /// test that is about the chat surface itself runs the same on every
+  /// runtime, including iPadOS 26, whose sidebar-tab layout has no `tab.*`
+  /// bar for `selectTab` to find on `main` today.
   func launch(
     scenario: String,
     contentSize: String? = nil,
-    reduceMotion: Bool = false
+    reduceMotion: Bool = false,
+    conversationID: String? = nil
   ) -> XCUIApplication {
     let app = XCUIApplication()
     let dataIdentifier = UUID().uuidString
     app.launchEnvironment["DASH_UI_TEST_SCENARIO"] = scenario
     app.launchEnvironment["DASH_UI_TEST_DATA_IDENTIFIER"] = dataIdentifier
+    if let conversationID {
+      app.launchEnvironment["DASH_UI_TEST_CONVERSATION"] = conversationID
+    }
     app.launchArguments += [
       "-AppleLanguages",
       "(en)",
