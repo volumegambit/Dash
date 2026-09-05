@@ -264,8 +264,14 @@ struct ToolCardView: View {
   /// `ToolBlock`.
   init(tool: ToolCardState) {
     self.tool = tool
-    _isExpanded = State(
-      initialValue: ToolPresentation.isTodoWrite(tool.name) || tool.status == .failed)
+    var expanded = ToolPresentation.isTodoWrite(tool.name) || tool.status == .failed
+    #if DEBUG
+      // Debug-only capture affordance: a tool BODY is behind a tap and
+      // `simctl` has no tap, so without this the per-tool result rendering
+      // cannot be seen on any iOS screen. See `UITestLaunchOptions`.
+      if UITestLaunchOptions.expandTools { expanded = true }
+    #endif
+    _isExpanded = State(initialValue: expanded)
   }
 
   var body: some View {
@@ -329,9 +335,16 @@ struct ToolCardView: View {
       // row (it repeats down the whole run) and was set larger than the
       // summary, which is the part that differs. Demoting it to `.caption`
       // semibold hands those points to the summary.
+      if let namespace = ToolPresentation.toolNamespace(tool.name) {
+        Text(namespace)
+          .font(.caption.monospaced())
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+      }
       Text(ToolPresentation.toolLabel(tool.name))
         .font(.caption.monospaced().weight(.semibold))
         .foregroundStyle(.primary)
+        .lineLimit(1)
       if let summary = ToolPresentation.summarize(name: tool.name, input: tool.input) {
         Text(summary)
           .font(isBash ? .caption.monospaced() : .caption)
@@ -417,6 +430,15 @@ struct ToolCardView: View {
     }
   }
 
+  /// Per-tool-type body (2026-09-05 per-type goal), replacing a branch that
+  /// keyed only on how many NEWLINES the result contained.
+  ///
+  /// Two defects that branch caused, both seen in `iphone-tools-*.png`:
+  /// a 1.6 KB single-line `web_fetch` body has no newlines, so it took the
+  /// "short" path — no height cap, no scroll — and consumed the whole screen,
+  /// pushing its sibling cards out of the transcript; and every long result
+  /// rendered `.primary` on the fixed dark `codeBackground`, i.e. black on
+  /// navy in light mode.
   @ViewBuilder
   private var resultView: some View {
     switch tool.status {
@@ -424,36 +446,254 @@ struct ToolCardView: View {
       EmptyView()
 
     case .failed:
-      Text(tool.content ?? "")
-        .font(.caption.monospaced())
-        .foregroundStyle(DashTheme.danger)
-        .textSelection(.enabled)
+      // An error is prose, not machine output: keep it on the card ground in
+      // the danger colour rather than in a code chip.
+      ToolScrollBox {
+        Text(tool.content ?? "")
+          .font(.caption.monospaced())
+          .foregroundStyle(DashTheme.danger)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
 
     case .succeeded:
-      let content = tool.content ?? ""
-      if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      succeededBody
+    }
+  }
+
+  @ViewBuilder
+  private var succeededBody: some View {
+    let raw = tool.content ?? ""
+    let normalized = ToolPresentation.normalizeTool(tool.name)
+
+    if let diff = ToolPresentation.diffLines(tool.details) {
+      // `edit`: the diff IS the result. It rode along in `details.diff` and
+      // was thrown away — the body used to read "ok".
+      ToolDiffView(lines: diff)
+    } else if normalized == "write", let written = ToolPresentation.writtenContent(tool.input) {
+      // `write`: what was written is the point. `content` is skipped as a
+      // detail row (too big for a key/value line) and nothing rendered it.
+      ToolCodeBlock(text: written)
+    } else if normalized == "ls", let entries = ToolPresentation.directoryEntries(raw) {
+      ToolDirectoryView(entries: entries)
+    } else if normalized == "grep" || normalized == "find",
+      let groups = ToolPresentation.grepGroups(raw)
+    {
+      ToolGrepView(groups: groups)
+    } else if normalized == "web_search", let results = ToolPresentation.searchResults(raw) {
+      ToolSearchResultsView(results: results)
+    } else if ToolPresentation.bodyIsRedundant(name: tool.name, content: raw) {
+      // `load_skill` and friends: a one-line confirmation that repeats the
+      // header is not worth a row.
+      EmptyView()
+    } else {
+      let body = ToolPresentation.displayBody(name: tool.name, content: raw)
+      if body.isEmpty {
         Text("No output")
           .font(.caption)
           .italic()
           .foregroundStyle(.secondary)
-      } else if content.components(separatedBy: "\n").count <= 3 {
-        Text(content)
+      } else if ToolPresentation.fitsInline(body) {
+        Text(body)
           .font(.caption.monospaced())
-          .foregroundStyle(DashTheme.success.opacity(DashTheme.Opacity.contentSecondary))
+          .foregroundStyle(.secondary)
           .textSelection(.enabled)
       } else {
-        ScrollView {
-          Text(content)
-            .font(.caption.monospaced())
-            .foregroundStyle(.primary.opacity(DashTheme.Opacity.contentSecondary))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-        }
-        .frame(maxHeight: 256)
-        .background(DashTheme.codeBackground)
+        ToolCodeBlock(text: body)
       }
     }
+  }
+}
+
+/// A height-capped, scrollable container for any tool body.
+///
+/// Capping on RENDERED height rather than on a line count is the point: the
+/// previous branch asked "does this have more than 3 newlines", which a long
+/// single-line page body answers with "no" — so a 1.6 KB one-line page body
+/// rendered at full height and pushed its sibling cards off the screen.
+///
+/// The height is MEASURED rather than left to `.frame(maxHeight:)` alone. A
+/// SwiftUI `ScrollView` is greedy along its scroll axis, so `maxHeight` is
+/// not a shrink-to-fit cap: a four-line Write body still reserved the whole
+/// 256pt and rendered as a mostly-empty black slab. Measuring the content and
+/// taking `min(measured, cap)` makes the box a cap when the content is tall
+/// and shrink-to-fit when it is not.
+private struct ToolScrollBox<Content: View>: View {
+  static var cap: CGFloat { 256 }
+
+  @ViewBuilder var content: Content
+  @State private var contentHeight: CGFloat = 0
+
+  var body: some View {
+    ScrollView {
+      content
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+          GeometryReader { proxy in
+            Color.clear
+              .preference(key: ToolBodyHeightKey.self, value: proxy.size.height)
+          }
+        )
+    }
+    .frame(height: min(max(contentHeight, 1), Self.cap))
+    .scrollDisabled(contentHeight <= Self.cap)
+    .onPreferenceChange(ToolBodyHeightKey.self) { contentHeight = $0 }
+  }
+}
+
+private struct ToolBodyHeightKey: PreferenceKey {
+  static let defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
+/// Machine output on the fixed dark chip, in the fixed light foreground that
+/// pairs with it. See `DashTheme.codeForeground`.
+struct ToolCodeBlock: View {
+  let text: String
+
+  var body: some View {
+    ToolScrollBox {
+      Text(text)
+        .font(.caption.monospaced())
+        .foregroundStyle(DashTheme.codeForeground)
+        .textSelection(.enabled)
+        .padding(8)
+    }
+    .background(DashTheme.codeBackground)
+    .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+  }
+}
+
+/// A unified diff, coloured by line kind. File headers are dropped — the
+/// header row already names the file.
+struct ToolDiffView: View {
+  let lines: [ToolPresentation.DiffLine]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+          Text(line.text)
+            .font(.caption.monospaced())
+            .foregroundStyle(colour(for: line.kind))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(background(for: line.kind))
+        }
+      }
+      .padding(.vertical, 6)
+    }
+    .background(DashTheme.codeBackground)
+    .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+    .accessibilityIdentifier("chat.tool.diff")
+  }
+
+  private func colour(for kind: ToolPresentation.DiffLine.Kind) -> Color {
+    switch kind {
+    case .added: DashTheme.success
+    case .removed: DashTheme.danger
+    case .hunk: DashTheme.codeForeground.opacity(0.55)
+    case .context: DashTheme.codeForeground
+    }
+  }
+
+  private func background(for kind: ToolPresentation.DiffLine.Kind) -> Color {
+    switch kind {
+    case .added: DashTheme.success.opacity(0.12)
+    case .removed: DashTheme.danger.opacity(0.12)
+    default: Color.clear
+    }
+  }
+}
+
+/// A directory listing, with folders distinguishable from files.
+struct ToolDirectoryView: View {
+  let entries: [ToolPresentation.DirectoryEntry]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 3) {
+        ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+          HStack(spacing: 6) {
+            Image(systemName: entry.isDirectory ? "folder.fill" : "doc")
+              .font(.system(size: 10))
+              .foregroundStyle(entry.isDirectory ? DashTheme.accent : Color.secondary)
+              .frame(width: 12)
+            Text(entry.name)
+              .font(.caption.monospaced())
+              .foregroundStyle(entry.isDirectory ? .primary : .secondary)
+          }
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel("\(entry.isDirectory ? "Folder" : "File"): \(entry.name)")
+        }
+      }
+    }
+    .accessibilityIdentifier("chat.tool.entries")
+  }
+}
+
+/// Grep matches grouped under their file, rather than repeating the full
+/// path on every row.
+struct ToolGrepView: View {
+  let groups: [ToolPresentation.GrepFileGroup]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+          VStack(alignment: .leading, spacing: 1) {
+            Text(group.path)
+              .font(.caption2.monospaced().weight(.medium))
+              .foregroundStyle(.primary)
+              .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(group.matches.enumerated()), id: \.offset) { _, match in
+              HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(match.line)
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(.tertiary)
+                  .frame(minWidth: 22, alignment: .trailing)
+                Text(match.text)
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+              }
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+    .accessibilityIdentifier("chat.tool.grep")
+  }
+}
+
+/// Web-search hits as title + host, rather than the raw markdown list the
+/// tool emits.
+struct ToolSearchResultsView: View {
+  let results: [ToolPresentation.SearchResult]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(results.enumerated()), id: \.offset) { _, hit in
+          VStack(alignment: .leading, spacing: 1) {
+            Text(hit.title)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(.primary)
+              .lineLimit(2)
+            Text(hit.host)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityElement(children: .combine)
+        }
+      }
+    }
+    .accessibilityIdentifier("chat.tool.searchResults")
   }
 }
 
