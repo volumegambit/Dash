@@ -1,4 +1,4 @@
-import type { SwarmCaps } from '@dash/swarm';
+import type { ResolvedSubagentType, SwarmCaps } from '@dash/swarm';
 import type { GatewayAgentConfig } from './agent-registry.js';
 
 /**
@@ -61,9 +61,12 @@ const EXPLICIT_GUIDANCE =
  * eviction — the roster in particular changes within a conversation as children
  * are spawned and finish.
  *
- * The roster doubles as the set of valid `send_message` targets, so a child is
- * listed by the name the model addresses it with (falling back to its worker id
- * when it was spawned unnamed).
+ * Each child is listed by the name the model addresses it with (falling back to
+ * its worker id when it was spawned unnamed) plus its status. The heading leans
+ * on the status rather than claiming every entry is addressable: `rosterFor`
+ * falls back to the most recent FINALIZED run's workers, so on turn N+1 the
+ * list can still name turn N's terminal children, and `send_message` to those
+ * fails.
  */
 export function buildDelegationSection(
   mode: 'auto' | 'explicit',
@@ -77,7 +80,7 @@ export function buildDelegationSection(
     '# Delegation',
     guidance,
     'Background agents report back as system notifications in a later turn.',
-    'Your agents in this conversation (valid send_message targets):',
+    'Your agents in this conversation (running ones are `send_message` targets):',
     rosterLines,
   ].join('\n');
 }
@@ -106,4 +109,23 @@ export function subagentCapsFromConfig(config: GatewayAgentConfig): Partial<Swar
     caps.maxSteersPerWorker = swarm.maxSteersPerWorker;
   }
   return caps;
+}
+
+/**
+ * The sub-agent types this orchestrator may spawn: the full built-in set,
+ * narrowed to `subagents.allowedTypes` when that key is set. An unset key means
+ * "all" (never "none"); an explicit `[]` means none, which leaves the `agent`
+ * tool with nothing to launch.
+ *
+ * Applied where the resolver is built (gateway `createBackend`) so the roster
+ * the model is shown and the set it can actually resolve are the same list.
+ */
+export function subagentTypesFor(
+  config: GatewayAgentConfig,
+  all: ResolvedSubagentType[],
+): ResolvedSubagentType[] {
+  const allowed = config.subagents?.allowedTypes;
+  if (allowed === undefined) return all;
+  const wanted = new Set(allowed);
+  return all.filter((type) => wanted.has(type.name));
 }

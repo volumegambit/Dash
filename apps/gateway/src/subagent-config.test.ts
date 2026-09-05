@@ -1,3 +1,4 @@
+import { builtinSubagentTypes, createStaticResolver } from '@dash/swarm';
 import { describe, expect, it } from 'vitest';
 import type { GatewayAgentConfig } from './agent-registry.js';
 import {
@@ -5,6 +6,7 @@ import {
   effectiveDelegation,
   isSubagentsEnabled,
   subagentCapsFromConfig,
+  subagentTypesFor,
 } from './subagent-config.js';
 
 const base: GatewayAgentConfig = {
@@ -40,6 +42,10 @@ describe('subagent config', () => {
     expect(s).toContain('# Delegation');
     expect(s).toContain('only when the user asks');
     expect(s).toContain('- mapper (Explore, done)');
+    // The heading must not claim every listed child is addressable: rosterFor
+    // can still list the previous turn's terminal children.
+    expect(s).toContain('running ones are `send_message` targets');
+    expect(s).not.toContain('valid send_message targets');
     expect(buildDelegationSection('auto', [])).toContain('Delegate proactively');
   });
 
@@ -47,6 +53,25 @@ describe('subagent config', () => {
     const unnamed = buildDelegationSection('auto', [{ id: 'w9', type: 'Plan', status: 'running' }]);
     expect(unnamed).toContain('- w9 (Plan, running)');
     expect(buildDelegationSection('explicit', [])).toContain('- none yet');
+  });
+
+  it('narrows the spawnable types to subagents.allowedTypes when set', () => {
+    const all = builtinSubagentTypes();
+    // Unset → every built-in, same array contents (never "none").
+    expect(subagentTypesFor(base, all).map((t) => t.name)).toEqual(all.map((t) => t.name));
+
+    const narrowed = subagentTypesFor({ ...base, subagents: { allowedTypes: ['Explore'] } }, all);
+    expect(narrowed.map((t) => t.name)).toEqual(['Explore']);
+
+    // What the resolver built from it can actually launch: Explore yes,
+    // general-purpose no — the roster and the resolvable set are one list.
+    const resolver = createStaticResolver(narrowed);
+    expect(resolver.resolve('Explore')?.name).toBe('Explore');
+    expect(resolver.resolve('general-purpose')).toBeUndefined();
+    expect(resolver.list().map((t) => t.name)).toEqual(['Explore']);
+
+    // An explicit [] means none.
+    expect(subagentTypesFor({ ...base, subagents: { allowedTypes: [] } }, all)).toEqual([]);
   });
 
   it('maps caps from subagents then swarm', () => {

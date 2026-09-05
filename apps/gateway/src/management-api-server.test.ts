@@ -782,7 +782,8 @@ describe('createGatewayManagementApp', () => {
         [{ nope: 1 }, 'subagents contains unknown or invalid fields'],
         [{ enabled: 'yes' }, 'subagents.enabled must be a boolean'],
         [{ maxConcurrent: 0 }, 'subagents.maxConcurrent must be a positive integer'],
-        [{ maxDepth: 1.5 }, 'subagents.maxDepth must be a positive integer'],
+        [{ maxDepth: 1.5 }, 'subagents.maxDepth must be a non-negative integer'],
+        [{ maxDepth: -1 }, 'subagents.maxDepth must be a non-negative integer'],
         [{ allowedTypes: [''] }, 'subagents.allowedTypes must be an array of nonblank strings'],
       ] as const) {
         const res = await app.request(`/agents/${entry.id}`, {
@@ -793,6 +794,22 @@ describe('createGatewayManagementApp', () => {
         expect(res.status, message).toBe(400);
         expect(await res.json()).toMatchObject({ code: 'validation_failed', error: message });
       }
+    });
+
+    it('accepts maxDepth: 0 — "may not nest at all" must be expressible', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ subagents: { maxDepth: 0 } }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).config.subagents).toEqual({ maxDepth: 0 });
     });
 
     it('stores a valid subagents block and evicts warm backends when it changes', async () => {

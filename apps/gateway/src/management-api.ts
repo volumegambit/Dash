@@ -272,11 +272,19 @@ function validateAgentSubagents(value: unknown): void {
   ) {
     throw new Error('subagents.delegation must be "auto" or "explicit"');
   }
-  for (const key of ['maxConcurrent', 'maxPerTurn', 'maxRunSeconds', 'maxDepth'] as const) {
+  for (const key of ['maxConcurrent', 'maxPerTurn', 'maxRunSeconds'] as const) {
     const item = value[key];
     if (item !== undefined && (!Number.isInteger(item) || (item as number) < 1)) {
       throw new Error(`subagents.${key} must be a positive integer`);
     }
+  }
+  // 0 is meaningful here (unlike the caps above): "this agent may not nest at
+  // all". Mirrors swarm.maxSteersPerWorker.
+  if (
+    value.maxDepth !== undefined &&
+    (!Number.isInteger(value.maxDepth) || (value.maxDepth as number) < 0)
+  ) {
+    throw new Error('subagents.maxDepth must be a non-negative integer');
   }
   for (const key of ['allowedTypes', 'allowedModels'] as const) {
     if (value[key] !== undefined) requireAgentStringArray(value[key], `subagents.${key}`);

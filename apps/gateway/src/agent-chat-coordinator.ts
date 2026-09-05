@@ -395,13 +395,19 @@ export function createAgentChatCoordinator(
         messageId: request.messageId,
         // Cooperative abort of the orchestrator (pool-entry backend.abort).
         orchestratorAbort: () => poolEntry.backend.abort(),
-        // Live registry read of the agent's swarm-enabled + disabled gate so a
+        // Live registry read of the agent's sub-agent + disabled gate so a
         // mid-turn PUT /agents/:id that flips either takes effect on the next
         // spawn (the coordinator re-reads this per spawn).
+        //
+        // MUST use the SAME predicate as the tool injection and the delegation
+        // section (`isSubagentsEnabled`). `swarm?.enabled === true` here would
+        // reject every spawn from an agent that has no `swarm` block — i.e.
+        // every agent registered before this feature, the exact population
+        // sub-agents-on-by-default targets — after having told it to delegate.
         getAgentGate: () => {
           const e = registry.get(request.agentId);
           return {
-            enabled: e?.config.swarm?.enabled === true,
+            enabled: !!e && isSubagentsEnabled(e.config),
             disabled: e?.status === 'disabled',
           };
         },

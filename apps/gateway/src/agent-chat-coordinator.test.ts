@@ -14,6 +14,7 @@ import {
   createAgentChatCoordinator,
 } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
+import { isSubagentsEnabled } from './subagent-config.js';
 
 function makeMockBackend(events: AgentEvent[]): AgentBackend {
   return {
@@ -920,6 +921,85 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
 
     const done = collected.find((e) => e.type === 'worker_done');
     expect(done).toMatchObject({ type: 'worker_done', workerId, status: 'done' });
+    await agents.stop();
+  });
+
+  // (g) THE default-configuration path: an agent registered with NEITHER a
+  // `swarm` nor a `subagents` block — every agent that predates sub-agents.
+  // It takes the merge path and is told to delegate, so its spawns MUST be
+  // allowed. Regression for `getAgentGate` reading `swarm?.enabled === true`,
+  // which made every such spawn throw "swarm is disabled for this agent" — a
+  // tool-presence assertion does not catch it, only a real spawn does.
+  it('(g) a spawn SUCCEEDS for an agent with no swarm and no subagents block', async () => {
+    const registry = new AgentRegistry();
+    // NOTE: no `swarm`, no `subagents`. Do not add either to this fixture.
+    const { id } = registry.register({ name: 'default-agent', model: MODEL, systemPrompt: 'x' });
+    const { factory, release } = makeWorkerFactory();
+    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const { backend, controller } = makeScriptedBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+      // The REAL gateway gate (index.ts) — sub-agents on by default.
+      swarm: {
+        coordinator,
+        isEnabled: (agentId) => {
+          const e = registry.get(agentId);
+          return !!e && isSubagentsEnabled(e.config);
+        },
+      },
+    });
+
+    const collected: AgentEvent[] = [];
+    const gen = agents.chat({ agentId: id, conversationId: 'c1', text: 'hi' });
+    const pull = async () => {
+      const r = await gen.next();
+      if (!r.done) collected.push(r.value);
+      return r;
+    };
+
+    await controller.emit({ type: 'text_delta', text: 'start' });
+    await pull();
+    // The merge path must have attached a turn (not taken the fast path)...
+    expect(coordinator.getLiveRun(id, 'c1')).toBeUndefined(); // run is lazy until first spawn
+    // ...and the coordinator's live gate re-read must ALLOW this spawn.
+    const { workerId, status } = coordinator.spawnWorker(id, 'c1', { role: 'r', brief: 'b' });
+    expect(status).toBe('spawning');
+    await pull(); // worker_spawned
+    await pull(); // agent_spawned
+    release(0);
+    await pull(); // worker_done{done}
+    controller.end();
+    while (!(await pull()).done) {
+      /* drain */
+    }
+    expect(collected.find((e) => e.type === 'worker_done')).toMatchObject({
+      workerId,
+      status: 'done',
+    });
+    await agents.stop();
+  });
+
+  // (h) The gate still bites when an operator explicitly turns sub-agents off
+  // mid-turn: the coordinator re-reads it per spawn.
+  it('(h) rejects a spawn once subagents.enabled is flipped off mid-turn', async () => {
+    const { id, registry, coordinator, controller, agents } = setup({ swarmEnabled: true });
+
+    const gen = agents.chat({ agentId: id, conversationId: 'c1', text: 'hi' });
+    const pull = () => gen.next();
+    await controller.emit({ type: 'text_delta', text: 'start' });
+    await pull();
+
+    registry.update(id, { subagents: { enabled: false } });
+    expect(() => coordinator.spawnWorker(id, 'c1', { role: 'r', brief: 'b' })).toThrow(
+      /disabled for this agent/,
+    );
+
+    controller.end();
+    while (!(await pull()).done) {
+      /* drain */
+    }
     await agents.stop();
   });
 

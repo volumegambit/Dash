@@ -47,6 +47,12 @@ export interface AgentSubagentsConfig {
   maxConcurrent?: number;
   maxPerTurn?: number;
   maxRunSeconds?: number;
+  /**
+   * How deep this orchestrator's descendants may nest (0 = may not nest at
+   * all). VALIDATED AND PERSISTED BUT NOT YET ENFORCED — **Task C3** owns
+   * nesting and the depth ceiling; until it lands, the coordinator's own
+   * ceiling is the only limit.
+   */
   maxDepth?: number;
 }
 

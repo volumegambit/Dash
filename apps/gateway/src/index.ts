@@ -75,7 +75,7 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
-import { isSubagentsEnabled } from './subagent-config.js';
+import { isSubagentsEnabled, subagentTypesFor } from './subagent-config.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
@@ -673,15 +673,25 @@ async function main() {
                   coordinator: swarmCoordinator,
                   agentId,
                   conversationId: () => backend.getCurrentSessionId() ?? '',
-                  resolver: createStaticResolver(builtinSubagentTypes()),
+                  // Narrowed to `subagents.allowedTypes` when set, so the
+                  // roster the model sees and the set it can resolve match.
+                  resolver: createStaticResolver(
+                    subagentTypesFor(agentConfig, builtinSubagentTypes()),
+                  ),
                   // Phase A: a background child is cancelled at turn end. Task
                   // C4 flips this to 'detached'.
                   backgroundMode: 'turn-scoped',
                   // A child may only be granted tools the parent itself holds.
-                  // The fallback mirrors SwarmCoordinator's DEFAULT_TOOL_NAMES
-                  // (packages/swarm/src/coordinator.ts) — the list a worker
-                  // spawned without an explicit grant receives.
-                  parentTools: () => agentConfig.tools ?? [...DEFAULT_PARENT_TOOLS],
+                  // LIVE registry read, not the `agentConfig` snapshot: a PUT
+                  // that edits `tools` does NOT evict the pool, and the merge
+                  // wrapper's `orchestratorTools` (which drives the
+                  // coordinator's validateTools) is a live read too. Reading a
+                  // stale list here would advertise a grant the spawn then
+                  // rejects — the exact mismatch grantableTools exists to
+                  // prevent. The fallback mirrors SwarmCoordinator's
+                  // DEFAULT_TOOL_NAMES (packages/swarm/src/coordinator.ts).
+                  parentTools: () =>
+                    registry.get(agentId)?.config.tools ?? [...DEFAULT_PARENT_TOOLS],
                   // A top-level orchestrator is depth 0, so its children are 1.
                   depth: 0,
                 }),
