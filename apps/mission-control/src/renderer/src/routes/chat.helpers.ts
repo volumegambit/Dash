@@ -191,11 +191,7 @@ export function insertNewlineAtSelection(
  * because each client's handler was only ever tested against itself. */
 export type ComposerKeyAction = 'send' | 'newline' | 'focus';
 
-export function composerKeyAction(
-  key: string,
-  shift: boolean,
-  meta: boolean,
-): ComposerKeyAction {
+export function composerKeyAction(key: string, shift: boolean, meta: boolean): ComposerKeyAction {
   if (key === 'Enter') return shift ? 'newline' : 'send';
   if (key === 'Tab') return shift ? 'newline' : 'focus';
   return 'focus';
