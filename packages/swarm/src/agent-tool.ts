@@ -312,7 +312,16 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
         };
       }
 
-      const snap = await coordinator.waitWorker(agentId, convo(), workerId, signal);
+      // FOREGROUND: the child is part of THIS turn, so an abort of the tool
+      // call (a cancelled turn, a closed socket) takes the child down with it.
+      // A background child is deliberately not touched here — it is detached.
+      let snap: Awaited<ReturnType<SwarmCoordinator['waitWorker']>>;
+      try {
+        snap = await coordinator.waitWorker(agentId, convo(), workerId, signal);
+      } catch (err) {
+        void coordinator.cancelChild(workerId, 'the parent turn was cancelled').catch(() => {});
+        throw err;
+      }
       const scanned = scanSubagentOutput(snap.report ?? '');
       const header =
         snap.status === 'done' ? '' : `[agent finished with status: ${snap.status}]\n\n`;
@@ -373,14 +382,16 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
           `Agent "${to}" is a one-shot ${kind} agent and cannot be resumed. Launch a new one.`,
         );
       }
-      const { ok, status } = coordinator.sendToWorker(agentId, convo(), {
-        workerId: target.workerId,
-        message,
-      });
-      if (!ok) throw new Error(`could not deliver to ${to} (${status})`);
+      // One gate for both outcomes: a RUNNING child queues the message as its
+      // next turn, a FINISHED one is resumed with it now. Both return at once —
+      // the child's next completion comes back as a notification.
+      const { status, mode } = coordinator.sendToChild(convo(), to, message);
+      const who = target.name ?? target.workerId;
       return {
-        content: [{ type: 'text', text: `delivered to ${target.name ?? target.workerId}` }],
-        details: { subagentId: target.workerId, status },
+        content: [
+          { type: 'text', text: mode === 'resumed' ? `resumed ${who}` : `delivered to ${who}` },
+        ],
+        details: { subagentId: target.workerId, status, mode },
       };
     },
   };

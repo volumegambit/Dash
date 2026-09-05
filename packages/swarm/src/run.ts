@@ -4,6 +4,9 @@ import type { ChildHandle } from './child-handle.js';
 import { legacyWorkerDoneStatus } from './subagent-status.js';
 import type { SwarmCaps, WorkerSpec, WorkerStatus } from './types.js';
 
+/** A worker's spec at its terminal transition — see `onWorkerFinished`. */
+export type FinishedWorkerSpec = Omit<WorkerSpec, 'extraTools'> & { workerStatus: string };
+
 /** A worker as seen by the panel/management API. */
 export interface RunWorkerSnapshot {
   workerId: string;
@@ -76,8 +79,12 @@ export interface SwarmRunOptions {
   /**
    * Invoked once per worker terminal transition with that worker's spec, so the
    * spawner can undo per-child setup (the gateway's worktree isolation).
+   *
+   * Carries the terminal `workerStatus`, which the gateway's cleanup reads: a
+   * `max_turns` child is resumable, so its worktree is KEPT while every other
+   * terminal status releases it.
    */
-  onWorkerFinished?(spec: Omit<WorkerSpec, 'extraTools'>): void | Promise<void>;
+  onWorkerFinished?(spec: FinishedWorkerSpec): void | Promise<void>;
 }
 
 /**
@@ -86,10 +93,12 @@ export interface SwarmRunOptions {
  * `closed` `AbortSignal` used to settle in-flight tool calls (wait_workers,
  * ask).
  *
- * It no longer owns a child's LIFETIME — the coordinator's per-parent registry
- * does, so a child stays addressable after the turn that spawned it ends. The
- * run is what makes a child turn-SCOPED (its `finalize` cancels whatever is
- * still live) and what carries the child's events to the parent's stream.
+ * It does not own a child's LIFETIME — the coordinator's per-parent registry
+ * does, so a child stays addressable after the turn that spawned it ends. What
+ * the run owns is the FOREGROUND half of the turn: its `finalize` cancels the
+ * foreground children (they are part of the turn) and leaves the background
+ * ones running, and it carries every child's events to the parent's stream
+ * while there is one to carry them to.
  *
  * Correctness discipline mirrors ChildHandle: `adopt`, `cancelAll`, and
  * `finalize` apply their effects in synchronous blocks with no awaits between a
@@ -110,9 +119,7 @@ export class SwarmRun {
   private readonly wallClockTimer: ReturnType<typeof setTimeout>;
   private readonly orchestratorAbort?: () => void;
   private readonly onWorkerTerminal?: (run: SwarmRun) => void;
-  private readonly onWorkerFinished?: (
-    spec: Omit<WorkerSpec, 'extraTools'>,
-  ) => void | Promise<void>;
+  private readonly onWorkerFinished?: (spec: FinishedWorkerSpec) => void | Promise<void>;
 
   private finalizedAt?: number;
 
@@ -131,7 +138,14 @@ export class SwarmRun {
     this.wallClockTimer = timer;
   }
 
-  /** Fires on finalize or wall-clock expiry. Consumed by tool settlement. */
+  /**
+   * Fires on finalize or wall-clock expiry. Consumed by tool settlement.
+   *
+   * The wall clock here bounds the ORCHESTRATOR's turn. Each child carries the
+   * same number as its OWN deadline (see `ChildHandle`), because a detached
+   * background child outlives this run and a run-scoped clock would either kill
+   * it when the turn ended or never fire for it at all.
+   */
   get closed(): AbortSignal {
     return this.closedController.signal;
   }
@@ -190,7 +204,7 @@ export class SwarmRun {
   }
 
   /** Fires `onWorkerFinished`; the coordinator wires this to a child's terminal. */
-  noteFinished(spec: Omit<WorkerSpec, 'extraTools'>): void {
+  noteFinished(spec: FinishedWorkerSpec): void {
     this.onWorkerFinished?.(spec);
   }
 
@@ -235,10 +249,20 @@ export class SwarmRun {
     };
   }
 
-  /** Cancel every non-terminal worker synchronously (worker_done pushed to channel first). */
+  /**
+   * Cancel this turn's FOREGROUND workers synchronously (their `worker_done`
+   * is pushed to the channel first).
+   *
+   * A `background: true` child is deliberately left alone: since Task C4 it is
+   * DETACHED from the turn that spawned it (design §5.2 — "you will be notified
+   * when it completes"), so the end of that turn is not the end of the child.
+   * Its own wall clock, an explicit `cancelChild`, and a delete of its
+   * conversation are what stop it.
+   */
   cancelAll(reason: string): void {
     for (const id of this.order) {
       const h = this.handles.get(id) as ChildHandle;
+      if (h.background) continue;
       if (!TERMINAL.has(h.status)) h.cancel(reason);
     }
   }
@@ -262,10 +286,14 @@ export class SwarmRun {
     // at completion time. Snapshot before cancelAll terminalizes them so the
     // returned events cover exactly what THIS call produced (no double-logging).
     const cancelledHere = new Set(
-      this.order.filter((id) => !TERMINAL.has((this.handles.get(id) as ChildHandle).status)),
+      this.order.filter((id) => {
+        const h = this.handles.get(id) as ChildHandle;
+        return !h.background && !TERMINAL.has(h.status);
+      }),
     );
 
-    // 1) Cancel non-terminal workers; worker_done{cancelled} lands in the channel first.
+    // 1) Cancel this turn's foreground workers; their worker_done{cancelled}
+    //    lands in the channel first. Background children detach — see cancelAll.
     this.cancelAll(reason);
 
     // 2) Abort the orchestrator (cooperative).

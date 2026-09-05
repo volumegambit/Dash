@@ -107,9 +107,10 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       // already happened inside the registry, so the roster the model sees and
       // the set it can resolve match.
       resolver: opts.resolver,
-      // Phase A: a background child is cancelled at turn end. Task C4 flips
-      // this to 'detached'.
-      backgroundMode: 'turn-scoped',
+      // A background child is DETACHED: it outlives the turn that spawned it
+      // and reports back as a notification (design §5.2). The run only cancels
+      // this turn's FOREGROUND children.
+      backgroundMode: 'detached',
       // A child may only be granted tools the parent itself holds, and only
       // the INHERITABLE ones: `create_skill` / `mcp_add_server` and friends are
       // configurable on the parent but are never passed down.
@@ -179,7 +180,7 @@ export function createChildSpawnTools(opts: ChildSpawnToolsOptions): SwarmExtraT
     agentId: opts.agentId,
     conversationId: () => opts.spec.childConversationId,
     resolver: createStaticResolver(types),
-    backgroundMode: 'turn-scoped',
+    backgroundMode: 'detached',
     parentContext: () => ({
       builtinTools: opts.spec.tools,
       mcpTools: opts.spec.mcpTools ?? [],

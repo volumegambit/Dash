@@ -184,6 +184,20 @@ export interface SwarmCoordinatorOptions {
    */
   childDriver: ChildTurnDriver;
   /**
+   * Rebuild the resolved spec of a child this process holds no live one for,
+   * from whatever the embedder persisted. Called on the RESUME path and by
+   * {@link SwarmCoordinator.childSpec}, so a child that finished, was evicted,
+   * or belongs to a previous gateway process can run again.
+   *
+   * The implementation MUST re-intersect the stored grant against what the
+   * child's parent holds NOW — not what it held at spawn time. The standing
+   * invariant is that a child never holds a tool or an MCP server its parent
+   * lacks, and a stored grant is a snapshot of a parent that may since have
+   * lost tools. Undefined (or a `undefined` return) means the child cannot be
+   * resumed, and the coordinator refuses rather than guessing.
+   */
+  reconstructChildSpec?(subagentId: string): Omit<ChildSpec, 'extraTools'> | undefined;
+  /**
    * Each child's heartbeat interval, which is also its liveness poll: a child
    * whose conversation was deleted (a cascading parent delete) is cancelled on
    * the first tick that sees the row gone. Default 10s — the abort is
@@ -237,6 +251,9 @@ export class SwarmCoordinator {
   private readonly childHeartbeatMs?: number;
   private readonly onRunChanged?: (agentId: string, runId: string) => void;
   private readonly onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
+  private readonly reconstructChildSpec?: (
+    subagentId: string,
+  ) => Omit<ChildSpec, 'extraTools'> | undefined;
 
   /** Live turns keyed by `${agentId}/${conversationId}`. */
   private readonly live = new Map<string, LiveTurn>();
@@ -262,6 +279,7 @@ export class SwarmCoordinator {
     this.childHeartbeatMs = opts.childHeartbeatMs;
     this.onRunChanged = opts.onRunChanged;
     this.onWorkerFinished = opts.onWorkerFinished;
+    this.reconstructChildSpec = opts.reconstructChildSpec;
   }
 
   // --- attachment / ownership ---
@@ -469,34 +487,8 @@ export class SwarmCoordinator {
       name: p.role,
     });
 
-    const handle = new ChildHandle({
-      spec,
-      driver: this.driver,
-      // Looked up PER EMISSION rather than captured: a background child can
-      // outlive the turn that spawned it, and after finalize there is no
-      // parent channel to push into.
-      emit: (event) => this.emitToParent(parent.agentId, parent.conversationId, event),
-      maxSteers: turn.caps.maxSteersPerWorker,
-      ...(this.childHeartbeatMs !== undefined ? { heartbeatMs: this.childHeartbeatMs } : {}),
-      hooks: this.hooks,
-      onTerminal: (h) => this.onChildTerminal(h, run),
-      onFinished: (finished) => run.noteFinished(finished),
-    });
-    const fullSpec: ChildSpec = {
-      ...spec,
-      extraTools: [createAskOrchestratorTool(handle, run.closed)],
-    };
     try {
-      // Registration order matters: `start()` is synchronous and can reach a
-      // terminal state before it returns, so every index the terminal path
-      // touches has to be populated first. The driver takes the resolved spec
-      // BEFORE the row exists — it is what the runtime builds the backend from.
-      this.children.set(childId, handle);
-      this.indexChild(parent.conversationId, handle);
-      this.childSpecs.set(childId, fullSpec);
-      run.adopt(handle);
-      this.driver.prepareChild(fullSpec);
-      handle.start();
+      this.startChild(spec, turn.caps, run);
     } catch (err) {
       // `start()` catches its own failures, so reaching here means the run or
       // the driver refused outright. The worker_spawned card is already on the
@@ -510,6 +502,168 @@ export class SwarmCoordinator {
     this.onRunChanged?.(parent.agentId, run.runId);
 
     return { subagentId: childId };
+  }
+
+  /**
+   * Build, register and START one child handle — the single path a child ever
+   * begins running on, whether this is its first turn (`spawnChild`) or a
+   * resume (`sendToChild`). Everything up to and including `start()` is
+   * synchronous, so a same-batch read always sees the child.
+   *
+   * `run` is optional: a resume can happen with no live parent turn (a panel
+   * or an API caller), and a child with no run is exactly the detached case —
+   * nothing to adopt it, nothing to cancel it at a turn boundary.
+   */
+  private startChild(
+    spec: Omit<ChildSpec, 'extraTools'>,
+    caps: SwarmCaps,
+    run?: SwarmRun,
+    opts: { resumeWith?: string; steersUsed?: number } = {},
+  ): ChildHandle {
+    const childId = spec.childConversationId;
+    const parentConversationId = spec.parentConversationId;
+    const handle = new ChildHandle({
+      spec,
+      driver: this.driver,
+      // Looked up PER EMISSION rather than captured: a background child can
+      // outlive the turn that spawned it, and after finalize there is no
+      // parent channel to push into.
+      emit: (event) => this.emitToParent(spec.agentId, parentConversationId, event),
+      maxSteers: caps.maxSteersPerWorker,
+      // The child's OWN deadline (see ChildHandle.maxRunSeconds): a detached
+      // child has to stay bounded once its parent's run is gone.
+      maxRunSeconds: caps.maxRunSeconds,
+      ...(opts.steersUsed !== undefined ? { steersUsed: opts.steersUsed } : {}),
+      ...(opts.resumeWith !== undefined ? { resumeWith: opts.resumeWith } : {}),
+      ...(this.childHeartbeatMs !== undefined ? { heartbeatMs: this.childHeartbeatMs } : {}),
+      hooks: this.hooks,
+      onTerminal: (h) => this.onChildTerminal(h, run),
+      // A runless (detached) child still has to notify the spawner — that hook
+      // is what removes an isolated child's worktree.
+      onFinished: (finished) =>
+        run ? run.noteFinished(finished) : this.onWorkerFinished?.(finished),
+    });
+    const fullSpec: ChildSpec = {
+      ...spec,
+      // `run.closed` settles an in-flight question when the parent's turn ends.
+      // A detached child has no such turn, so its question is bounded only by
+      // its own timeout.
+      extraTools: [createAskOrchestratorTool(handle, run?.closed ?? new AbortController().signal)],
+    };
+    // Registration order matters: `start()` is synchronous and can reach a
+    // terminal state before it returns, so every index the terminal path
+    // touches has to be populated first. The driver takes the resolved spec
+    // BEFORE the row exists — it is what the runtime builds the backend from.
+    this.children.set(childId, handle);
+    this.indexChild(parentConversationId, handle);
+    this.childSpecs.set(childId, fullSpec);
+    run?.adopt(handle);
+    this.driver.prepareChild(fullSpec);
+    handle.start();
+    return handle;
+  }
+
+  /**
+   * `send_message` (design §5.2). One message, two outcomes, both returning
+   * immediately:
+   *
+   * - the child is RUNNING → the message is queued and delivered as its next
+   *   turn once the current one finishes (`mode: 'queued'`);
+   * - the child is FINISHED → it is resumed right now, with the message as a
+   *   new turn on its own conversation (`mode: 'resumed'`).
+   *
+   * Throws with actionable text rather than returning `ok: false` for the three
+   * refusals a model can act on: an unknown target, a one-shot type (Explore /
+   * Plan are not resumable by construction), and the steer cap — which counts
+   * across resumes, or resuming would be a way to buy more steers.
+   */
+  sendToChild(
+    parentConversationId: string,
+    nameOrId: string,
+    message: string,
+  ): { ok: boolean; status: WorkerStatus; mode: 'queued' | 'resumed' } {
+    const target = this.findChild(parentConversationId, nameOrId);
+    if (!target) {
+      throw new Error(`No agent named or with id "${nameOrId}" in this conversation.`);
+    }
+    if (target.oneShot) {
+      throw new Error(
+        `Agent "${nameOrId}" is a one-shot ${target.subagentType} agent and cannot be resumed.`,
+      );
+    }
+    const handle = this.children.get(target.subagentId);
+    if (handle && !TERMINAL_STATUSES.has(handle.status)) {
+      const res = handle.send(message);
+      if (!res.ok) {
+        throw new Error(`could not deliver to ${nameOrId}: ${res.reason ?? 'unknown'}`);
+      }
+      return { ok: true, status: handle.status, mode: 'queued' };
+    }
+    return { ok: true, status: this.resumeChild(target, handle, message).status, mode: 'resumed' };
+  }
+
+  /**
+   * Start a new turn on a FINISHED child's own conversation. The child keeps
+   * its identity, its transcript and its grant; what it gets is a fresh handle
+   * over the same conversation (design §5.2, §7.1).
+   *
+   * The spec comes from memory when this process still holds one and is
+   * REBUILT from the persisted row otherwise — a child that finished, was
+   * LRU-evicted, or belongs to a previous gateway process has no in-memory
+   * spec, and refusing those was only ever a placeholder for this path. The
+   * rebuild re-intersects the stored grant against what the parent holds NOW
+   * (see the gateway's `reconstructChildSpec`), so a resume can never widen a
+   * child past its parent.
+   */
+  private resumeChild(
+    target: ChildSnapshot,
+    prior: ChildHandle | undefined,
+    message: string,
+  ): ChildHandle {
+    const id = target.subagentId;
+    // Reconstruction FIRST, even when a spec is still in memory: it is the path
+    // that re-intersects the child's grant against what its parent holds NOW,
+    // and a resume is a new turn that must not run on a stale grant.
+    const spec = this.reconstructChildSpec?.(id) ?? this.childSpecs.get(id);
+    if (!spec) {
+      throw new Error(
+        `Agent "${target.name ?? id}" cannot be resumed: its grant cannot be rebuilt.`,
+      );
+    }
+    const turn = this.live.get(key(spec.agentId, spec.parentConversationId));
+    const caps = turn && !turn.finalized ? turn.caps : this.mergeCaps();
+    const steersUsed = prior?.steersUsed ?? 0;
+    if (steersUsed >= caps.maxSteersPerWorker) {
+      throw new Error(
+        `steer cap reached for "${target.name ?? id}" (max ${caps.maxSteersPerWorker} per agent).`,
+      );
+    }
+    // A resume starts a child running, so it counts against the same ceilings a
+    // spawn does.
+    if (this.activeChildCount(spec.parentConversationId) >= caps.maxConcurrentWorkers) {
+      throw new Error(
+        `too many workers running at once (max ${caps.maxConcurrentWorkers}) — wait for workers to finish`,
+      );
+    }
+    if (this.activeWorkerCount() >= this.globalMax) {
+      throw new Error(
+        `the gateway is at its global worker limit (${this.globalMax}) — wait for workers to finish`,
+      );
+    }
+    const run = turn && !turn.finalized ? this.ensureRun(turn) : undefined;
+    // The prior handle is replaced, not kept alongside: `indexChild` would
+    // otherwise leave two entries for one child in the per-parent index.
+    if (prior) this.forgetChild(spec.parentConversationId, id);
+    const handle = this.startChild(
+      { ...spec, runId: run?.runId ?? spec.runId },
+      caps,
+      run,
+      // The resume message IS a steer, and the count carries over from the
+      // handle it replaces so the cap spans a child's whole life.
+      { resumeWith: message, steersUsed: steersUsed + 1 },
+    );
+    if (run) this.onRunChanged?.(spec.agentId, run.runId);
+    return handle;
   }
 
   /**
@@ -640,7 +794,13 @@ export class SwarmCoordinator {
    * Wait for ONE named child to reach a terminal status and return its full
    * snapshot. Unlike `wait_workers` it does not return early when the child
    * asks a question — the question is answered out of band (sendToWorker) and
-   * the wait continues. Throws when the worker is unknown to the live run.
+   * the wait continues. Throws when the child cannot be resolved at all.
+   *
+   * Resolved from the CROSS-TURN registry first, exactly like `findChild` and
+   * `checkWorkers`: a child spawned in an earlier turn is addressable in this
+   * one, and a background child now outlives its turn by design — throwing
+   * `unknown worker` for it while the other two answered was a disagreement
+   * waiting to bite.
    */
   async waitWorker(
     agentId: string,
@@ -648,6 +808,18 @@ export class SwarmCoordinator {
     workerId: string,
     signal?: AbortSignal,
   ): Promise<ChildSnapshot> {
+    const handle = this.children.get(workerId);
+    if (handle) {
+      if (!TERMINAL_STATUSES.has(handle.status)) {
+        // A FOREGROUND child belongs to the turn, so a closing run settles the
+        // wait with whatever snapshot it has (the run cancels it a moment later
+        // anyway). A BACKGROUND child is detached: the end of the turn says
+        // nothing about it, so only its own terminal transition ends the wait.
+        const run = handle.background ? undefined : this.getLiveRun(agentId, conversationId);
+        await this.raceChildTerminal(handle, run, signal);
+      }
+      return handle.snapshot();
+    }
     const [w] = await this.waitWorkers(
       agentId,
       conversationId,
@@ -682,6 +854,39 @@ export class SwarmCoordinator {
     const current = snapshot();
     if (!current) throw new Error(`unknown worker ${workerId}`);
     return current;
+  }
+
+  /**
+   * The child's terminal transition, the run closing, or an abort — whichever
+   * comes first. Rejects only on abort; a closed run is a normal settlement.
+   */
+  private raceChildTerminal(
+    handle: ChildHandle,
+    run: SwarmRun | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new Error('aborted'));
+    if (run?.closed.aborted) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        reject(new Error('aborted'));
+      };
+      const onClosed = () => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = () => {
+        signal?.removeEventListener('abort', onAbort);
+        run?.closed.removeEventListener('abort', onClosed);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      run?.closed.addEventListener('abort', onClosed, { once: true });
+      void handle.terminalPromise.then(() => {
+        cleanup();
+        resolve();
+      });
+    });
   }
 
   /**
@@ -765,9 +970,21 @@ export class SwarmCoordinator {
     await handle.terminalPromise;
   }
 
-  /** The fully-resolved spec of a live child — what its backend is built from. */
+  /**
+   * The fully-resolved spec of a child — what its backend is built from.
+   *
+   * Falls back to {@link SwarmCoordinatorOptions.reconstructChildSpec} when
+   * this process holds no live one, so a turn on a finished (or pre-restart)
+   * child conversation runs under the CHILD's grant instead of being refused
+   * or, worse, taking the top-level agent's. The rebuilt spec carries no
+   * `ask_orchestrator`: nobody is waiting on the other end of a question when
+   * the turn that spawned the child is long over.
+   */
   childSpec(subagentId: string): ChildSpec | undefined {
-    return this.childSpecs.get(subagentId);
+    const live = this.childSpecs.get(subagentId);
+    if (live) return live;
+    const rebuilt = this.reconstructChildSpec?.(subagentId);
+    return rebuilt ? { ...rebuilt, extraTools: [] } : undefined;
   }
 
   /**
@@ -1192,17 +1409,30 @@ export class SwarmCoordinator {
    * so nothing is left to address) and by the cross-conversation LRU below.
    *
    * Recurses: a child's conversation can itself be a parent, and the delete
-   * cascaded to those rows too. NEVER cancels — a caller that wants live
-   * children stopped calls {@link cancelChild}; this only forgets.
+   * cascaded to those rows too.
+   *
+   * CANCELS a live descendant on the way out. A background child is detached
+   * from the turn that spawned it, so deleting its parent mid-turn used to drop
+   * the handle while the child kept running: under-counting the global ceiling
+   * and leaving `findChild` / `cancelChild` / `sendToChild` unable to reach the
+   * thing still burning tokens. The cancel is synchronous (`ChildHandle.cancel`
+   * never awaits the driver), so the registry is consistent when this returns.
+   * The LRU sweep only calls this for buckets with no live descendant, so it
+   * never cancels anything.
    */
   forgetConversation(conversationId: string): void {
     const handles = this.childrenByParent.get(conversationId);
     if (!handles) return;
     this.childrenByParent.delete(conversationId);
     for (const handle of handles) {
+      // Depth-first: a grandchild is cancelled before the child above it, so
+      // nothing is ever left running under a cancelled parent.
+      this.forgetConversation(handle.subagentId);
+      if (!TERMINAL_STATUSES.has(handle.status)) {
+        handle.cancel('the conversation was deleted');
+      }
       this.children.delete(handle.subagentId);
       this.childSpecs.delete(handle.subagentId);
-      this.forgetConversation(handle.subagentId);
     }
   }
 
@@ -1238,8 +1468,12 @@ export class SwarmCoordinator {
     return false;
   }
 
-  /** One child's terminal transition: tell the run, then release the runtime. */
-  private onChildTerminal(handle: ChildHandle, run: SwarmRun): void {
+  /**
+   * One child's terminal transition: tell the run (when it still has one), then
+   * release the runtime. Dropping the resolved spec here is what makes a later
+   * resume go through `reconstructChildSpec` — the durable record is the row.
+   */
+  private onChildTerminal(handle: ChildHandle, run?: SwarmRun): void {
     this.childSpecs.delete(handle.subagentId);
     try {
       this.driver.releaseChild?.(handle.subagentId);
@@ -1247,7 +1481,7 @@ export class SwarmCoordinator {
       // A runtime that cannot release a finished child must not break its
       // terminal transition — the child is over either way.
     }
-    run.noteTerminal();
+    run?.noteTerminal();
   }
 
   private pushHistory(agentId: string, snap: RunSnapshot): void {

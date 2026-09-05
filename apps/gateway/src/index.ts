@@ -76,6 +76,10 @@ import {
   subagentMaxDepth,
 } from './subagent-config.js';
 import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
+import {
+  childAttachOverrides,
+  reconstructChildSpec as reconstructChildSpecFrom,
+} from './subagent-resume.js';
 import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import {
   childSkillWiring,
@@ -92,13 +96,15 @@ import {
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 /**
- * The one refusal message for a turn on a sub-agent conversation this process
- * holds no resolved spec for. Both guards use it so the pool-miss path and the
- * warm-entry path cannot drift into saying different things — or, worse, into
- * one of them not saying anything.
+ * The one refusal message for a turn on a sub-agent conversation whose grant
+ * this process can neither find in memory nor rebuild from the row — a child of
+ * a deleted conversation, of a removed agent, or one persisted before grants
+ * were recorded. Both guards use it so the pool-miss path and the warm-entry
+ * path cannot drift into saying different things — or, worse, into one of them
+ * not saying anything and running the child on the AGENT's grant.
  */
 const SPEC_LESS_CHILD_TURN = (conversationId: string): string =>
-  `sub-agent conversation ${conversationId} has no live spec (resume is not wired yet)`;
+  `sub-agent conversation ${conversationId} has no live spec and its grant cannot be rebuilt`;
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
@@ -507,8 +513,24 @@ async function main() {
     warn: (message) => logger.warn(message),
   });
 
-  const swarmCoordinator = new SwarmCoordinator({
+  /**
+   * RESUME (design §5.2): the spec of a child this process no longer holds one
+   * for, rebuilt from its row + persisted grant and RE-INTERSECTED against what
+   * its parent holds right now. Wired into the coordinator so `send_message` to
+   * a finished child, and an ordinary turn on a child conversation, both go
+   * through the one narrowing path.
+   */
+  const reconstructChildSpec = (subagentId: string) =>
+    reconstructChildSpecFrom(subagentId, {
+      conversations: conversationService,
+      liveSpec: (id) => swarmCoordinator.childSpec(id),
+      agentConfig: (id) => registry.get(id)?.config,
+      agentMcpTools: (id) => orchestratorMcpToolNames(registry.get(id)?.config, listMcpToolNames),
+    });
+
+  const swarmCoordinator: SwarmCoordinator = new SwarmCoordinator({
     childDriver: childTurnDriver,
+    reconstructChildSpec,
     // EventLogStore.append is synchronous (returns the assigned seq); the swarm
     // sink expects a Promise. Wrap so the coordinator's fire-and-forget
     // out-of-band append is type-correct and never throws into the loop.
@@ -616,12 +638,12 @@ async function main() {
      * the only thing that makes the answer a definition-driven child backend
      * built from the child's resolved spec instead of the agent's normal one.
      *
-     * The spec comes from the coordinator, which holds it for as long as the
-     * child is live. A child conversation with no live spec is one this process
-     * did not spawn (a row left by a previous gateway); resuming it rebuilds
-     * the spec from its definition, which is Task C4's job — until then this
-     * fails loudly rather than silently warming the PARENT's backend on the
-     * child's conversation.
+     * The spec comes from the coordinator, which holds it while the child is
+     * live and REBUILDS it from the child's row + persisted grant otherwise (a
+     * finished child, an evicted one, or a row left by a previous gateway) —
+     * narrowed to what the parent holds now. Only a child whose grant cannot be
+     * established at all is refused, and it is refused loudly rather than
+     * silently warming the PARENT's backend on the child's conversation.
      */
     childRuntime: async (agentId, conversationId) => {
       // `includeDeleted`: a cascading parent delete can tombstone a child
@@ -695,28 +717,11 @@ async function main() {
      * MCP escalation is blocked by the child's captured `parentContext`, but
      * `spawnChild` reads `workspace` from the attachment, so a grandchild would
      * be sandboxed in the agent's real repo instead of inside its parent's
-     * worktree. The reconstruction that would let this succeed needs the
-     * child's tool grant, which `subagent_meta` structurally does not carry —
-     * so the honest answer until resume lands (C4) is to refuse the turn.
+     * worktree.
      */
     childAttachOptions: (_agentId, conversationId) => {
       const spec = swarmCoordinator.childSpec(conversationId);
-      if (spec) {
-        return {
-          orchestratorModel: spec.model,
-          // Explicitly cleared: the agent's fallback chain would widen a
-          // grandchild's model grant past what the child's definition pinned.
-          orchestratorFallbackModels: undefined,
-          orchestratorTools: spec.tools,
-          // Unset means NONE (fail-closed), so an empty list is what a child
-          // with no MCP grant must send — omitting the key inherits the
-          // agent's.
-          orchestratorMcpTools: spec.mcpTools ?? [],
-          // The child's workspace: its own worktree when it was isolated, so a
-          // grandchild is sandboxed where its parent actually ran.
-          workspace: spec.workspace,
-        };
-      }
+      if (spec) return childAttachOverrides(spec);
       const convo = conversationService.get(conversationId, { includeDeleted: true });
       if (convo?.kind !== 'subagent') return undefined;
       throw new Error(SPEC_LESS_CHILD_TURN(conversationId));
@@ -988,7 +993,10 @@ async function main() {
   // coordinator's in-memory child registry for it is addressing nothing. Drop
   // it rather than letting a gateway that has served thousands of conversations
   // hold a handle — with its resolved spec and its full report string — for
-  // every one of them.
+  // every one of them. `forgetConversation` CANCELS any descendant that is
+  // still running first: a background child is detached from the turn that
+  // spawned it, so deleting its parent mid-turn would otherwise leave it
+  // running with nothing able to reach it.
   eventBus.subscribe((event) => {
     if (event.type === 'conversation:deleted') {
       swarmCoordinator.forgetConversation(event.conversationId);

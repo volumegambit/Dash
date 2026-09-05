@@ -474,7 +474,7 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     await harness.agents.stop();
   });
 
-  it('background children are TURN-SCOPED: a still-running child dies at turn end', async () => {
+  it('background children are DETACHED: a still-running child outlives the turn', async () => {
     let launched!: ToolResult;
     const harness = setup(
       {},
@@ -486,9 +486,9 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
             name: 'stray',
             run_in_background: true,
           });
-          // The turn ends here. `stray` never reports and is never collected
-          // with wait_workers — turn-end cancellation is the ONLY thing that
-          // can terminalize it in Phase A.
+          // The turn ends here without collecting `stray`. Since Task C4 that
+          // is not a leak but the point: a background child reports back as a
+          // notification, so turn end says nothing about it.
         },
       ],
       deferred(),
@@ -498,38 +498,34 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     const events = await harness.run();
     const strayId = (launched.details as { subagentId: string }).subagentId;
 
-    // 1) The tool told the model the child is turn-scoped. Task C4 flips
-    //    `backgroundMode` to 'detached', which replaces this sentence with
-    //    "You will be notified when it completes." — landing that change early
-    //    (before detached children are actually kept alive) must fail here.
+    // 1) The tool told the model what actually happens now.
     expect(launched.content[0]?.text).toBe(
-      'Agent stray launched in the background. Note: in this gateway version a ' +
-        'background agent is scoped to this turn — collect it with wait_workers ' +
-        'before you finish, or it is cancelled when your turn ends.',
+      'Agent stray launched in the background. You will be notified when it completes.',
     );
 
     // 2) It was genuinely still running when the turn ended (never reported).
     expect(harness.specs).toHaveLength(1);
     expect(harness.specs[0]).toMatchObject({ name: 'stray', background: true });
 
-    // 3) The turn-end finalize cancelled it, and both families said so ON the
-    //    stream the consumer drains (teardown-before-drain).
-    const finished = events.filter(
-      (e): e is Extract<AgentEvent, { type: 'subagent_finished' }> =>
-        e.type === 'subagent_finished' && e.subagentId === strayId,
+    // 3) Turn-end finalize did NOT terminalize it: no terminal event of either
+    //    family reached the stream the consumer drained.
+    expect(
+      events.filter((e) => e.type === 'subagent_finished' && e.subagentId === strayId),
+    ).toHaveLength(0);
+    expect(events.filter((e) => e.type === 'worker_done' && e.workerId === strayId)).toHaveLength(
+      0,
     );
-    expect(finished).toHaveLength(1);
-    expect(finished[0].status).toBe('cancelled');
-    const done = events.filter(
-      (e): e is Extract<AgentEvent, { type: 'worker_done' }> =>
-        e.type === 'worker_done' && e.workerId === strayId,
-    );
-    expect(done).toHaveLength(1);
-    expect(done[0].status).toBe('cancelled');
 
-    // 4) No worker leaked past the turn: the live run is gone and the roster
-    //    the next turn would see reports the child as terminal.
+    // 4) The turn is over, the child is not: it stays addressable, on the
+    //    roster the next turn reads, and counted against the global ceiling.
     expect(harness.coordinator.getLiveRun(harness.agentId, CONVERSATION)).toBeUndefined();
+    expect(harness.coordinator.rosterFor(harness.agentId, CONVERSATION)).toEqual([
+      { id: strayId, name: 'stray', type: 'general-purpose', status: 'running' },
+    ]);
+    expect(harness.coordinator.activeWorkerCount()).toBe(1);
+
+    // 5) And it is still reachable: an explicit cancel is what ends it.
+    await harness.coordinator.cancelChild(strayId, 'done watching');
     expect(harness.coordinator.rosterFor(harness.agentId, CONVERSATION)).toEqual([
       { id: strayId, name: 'stray', type: 'general-purpose', status: 'cancelled' },
     ]);

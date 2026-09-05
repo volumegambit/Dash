@@ -61,6 +61,8 @@ function makeCoordinator(overrides: Partial<Record<string, unknown>> = {}) {
     })),
     findWorker: vi.fn(() => undefined),
     sendToWorker: vi.fn(() => ({ ok: true, status: 'running' })),
+    sendToChild: vi.fn(() => ({ ok: true, status: 'running', mode: 'queued' as const })),
+    cancelChild: vi.fn(async () => {}),
     rosterFor: vi.fn(() => []),
     ...overrides,
   };
@@ -409,11 +411,74 @@ describe('agent tool', () => {
     });
     const [, send] = createAgentTools(base(c));
     const r = await send.execute('t', { to: 'mapper', message: 'also check tests' });
-    expect(c.sendToWorker).toHaveBeenCalledWith('a', 'c', {
-      workerId: 'w9',
-      message: 'also check tests',
-    });
+    expect(c.sendToChild).toHaveBeenCalledWith('c', 'mapper', 'also check tests');
     expect(r.content[0].text).toBe('delivered to mapper');
+    expect(r.details).toMatchObject({ subagentId: 'w9', status: 'running', mode: 'queued' });
+  });
+
+  it('send_message RESUMES a finished child and says so', async () => {
+    const c = makeCoordinator({
+      findWorker: vi.fn(() => ({
+        workerId: 'w9',
+        name: 'mapper',
+        status: 'done',
+        oneShot: false,
+      })),
+      sendToChild: vi.fn(() => ({ ok: true, status: 'running', mode: 'resumed' as const })),
+    });
+    const [, send] = createAgentTools(base(c));
+    const r = await send.execute('t', { to: 'mapper', message: 'one more thing' });
+    expect(c.sendToChild).toHaveBeenCalledWith('c', 'mapper', 'one more thing');
+    expect(r.content[0].text).toBe('resumed mapper');
+    expect(r.details).toMatchObject({ subagentId: 'w9', status: 'running', mode: 'resumed' });
+  });
+
+  /**
+   * A FOREGROUND child is part of the turn that launched it: when that turn is
+   * cancelled the tool's abort signal fires, and the child has to come down
+   * with it rather than keep burning tokens until something else notices.
+   */
+  it('cancels its foreground child when the tool call is aborted', async () => {
+    const controller = new AbortController();
+    const c = makeCoordinator({
+      waitWorker: vi.fn(
+        (_a: string, _c: string, _id: string, signal?: AbortSignal) =>
+          new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+      ),
+    });
+    const [agent] = createAgentTools({ ...base(c), backgroundMode: 'detached' });
+    const p = agent.execute('t', { prompt: 'p', description: 'd' }, controller.signal);
+    await new Promise((r) => setTimeout(r, 1));
+    controller.abort();
+
+    await expect(p).rejects.toThrow(/aborted/);
+    expect(c.cancelChild).toHaveBeenCalledWith('w1', expect.stringMatching(/cancelled/));
+  });
+
+  it('does NOT cancel a background child when the tool call is aborted', async () => {
+    const controller = new AbortController();
+    const c = makeCoordinator();
+    const [agent] = createAgentTools({ ...base(c), backgroundMode: 'detached' });
+    await agent.execute(
+      't',
+      { prompt: 'p', description: 'd', run_in_background: true },
+      controller.signal,
+    );
+    controller.abort();
+    expect(c.cancelChild).not.toHaveBeenCalled();
+  });
+
+  it('background (detached) promises a notification instead of wait_workers', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools({ ...base(c), backgroundMode: 'detached' });
+    const r = await agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true });
+    expect(c.waitWorker).not.toHaveBeenCalled();
+    expect(r.content[0].text).toBe(
+      'Agent w1 launched in the background. You will be notified when it completes.',
+    );
+    expect(r.content[0].text).not.toMatch(/wait_workers/);
   });
 
   // --- model resolution (design §6.4 step 3) ---

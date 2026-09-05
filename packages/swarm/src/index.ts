@@ -36,7 +36,7 @@ export {
   resolveChildModel,
   resolveChildTools,
 } from './resolve-spawn.js';
-export { SwarmRun, type SwarmRunOptions } from './run.js';
+export { type FinishedWorkerSpec, SwarmRun, type SwarmRunOptions } from './run.js';
 export { isTransientAgentEvent } from './transient-events.js';
 export {
   createAskOrchestratorTool,

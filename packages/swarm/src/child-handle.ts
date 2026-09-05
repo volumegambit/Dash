@@ -20,6 +20,27 @@ export interface ChildHandleOptions {
    */
   emit(event: AgentEvent): void;
   maxSteers: number;
+  /**
+   * Steers already spent by an EARLIER handle for this same child (a resume
+   * builds a new handle over the same conversation). Without it every resume
+   * would hand the child a fresh budget and `maxSteersPerWorker` would cap
+   * nothing.
+   */
+  steersUsed?: number;
+  /**
+   * RESUME: continue an existing child conversation with this message instead
+   * of starting from `spec.brief`. The row already exists (`createChild` is
+   * idempotent on id), so the only other difference is that the handle puts the
+   * row back to `running`.
+   */
+  resumeWith?: string;
+  /**
+   * The child's OWN wall clock, in seconds. Per child rather than per run: a
+   * background child outlives the turn that spawned it, so a run-scoped clock
+   * would either kill it early or, once the run's timer is cleared by finalize,
+   * never fire at all. Unset = no deadline.
+   */
+  maxRunSeconds?: number;
   /** Heartbeat interval while running. Default 10_000ms. */
   heartbeatMs?: number;
   onTerminal(handle: ChildHandle): void;
@@ -133,6 +154,7 @@ export class ChildHandle {
   private startedAt?: number;
   private endedAt?: number;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private wallClockTimer?: ReturnType<typeof setTimeout>;
   private lastEventSummary = '';
   private lastProgressAt = 0;
   private disposers: Array<() => void> = [];
@@ -160,6 +182,7 @@ export class ChildHandle {
     this.specWorkspace = opts.spec.isolation === 'worktree' ? undefined : opts.spec.workspace;
     this.runId = opts.spec.runId;
     this.heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+    this.steersUsed = opts.steersUsed ?? 0;
 
     let resolveTerminal!: () => void;
     const promise = new Promise<void>((resolve) => {
@@ -237,9 +260,14 @@ export class ChildHandle {
       return;
     }
 
+    // A RESUME re-creates a row that already exists, so `createChild` left the
+    // terminal status it was written with; the child is running again now.
+    if (this.opts.resumeWith !== undefined) this.persist({ status: 'running' });
+
     this.emitStarted();
     this.startHeartbeat();
-    this.beginTurn(this.brief);
+    this.startWallClock();
+    this.beginTurn(this.opts.resumeWith ?? this.brief);
   }
 
   /**
@@ -491,6 +519,7 @@ export class ChildHandle {
     report: string,
     settled?: Promise<void>,
   ): void {
+    this.stopWallClock();
     const waiter = this.questionWaiter;
     if (waiter) {
       this.clearQuestion();
@@ -587,6 +616,27 @@ export class ChildHandle {
       this.status = 'running';
       this.emitStatus('running');
       this.persist({ status: 'running' });
+    }
+  }
+
+  /**
+   * The child's own deadline. Fires a cancel like any other, so the terminal
+   * transition (report, events, worktree cleanup) is the shared one.
+   */
+  private startWallClock(): void {
+    const seconds = this.opts.maxRunSeconds;
+    if (seconds === undefined || seconds <= 0 || this.wallClockTimer) return;
+    const timer = setTimeout(() => {
+      this.cancel(`the sub-agent exceeded its ${seconds}s wall clock`);
+    }, seconds * 1000);
+    if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+    this.wallClockTimer = timer;
+  }
+
+  private stopWallClock(): void {
+    if (this.wallClockTimer) {
+      clearTimeout(this.wallClockTimer);
+      this.wallClockTimer = undefined;
     }
   }
 
