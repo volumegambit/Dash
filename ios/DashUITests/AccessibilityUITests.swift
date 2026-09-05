@@ -28,7 +28,10 @@ final class AccessibilityUITests: DashUITestCase {
   func testSettingsForgetReturnsToConnectAndRemovesCachedRows() {
     let app = launch(scenario: "settings-forget")
     selectTab("tab.settings", in: app)
-    element("settings.disconnect", in: app).tap()
+    // Settings is a sheet on the iPad two-column layout (design §1.1), a much
+    // shorter viewport than the old full-height column: `settings.disconnect`
+    // sits below its fold and is absent from the hierarchy until scrolled to.
+    scrollSettingsToElement("settings.disconnect", in: app).tap()
     let confirmation = confirmationDialog(titled: "Disconnect & Forget?", in: app)
     confirmation.buttons["Disconnect & Forget"].tap()
 
