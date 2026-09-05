@@ -103,7 +103,7 @@
       }
     },
     "ChatAccepted": {
-      "$comment": "`origin` and `kind` are optional: they are emitted only when the turn is not an ordinary user turn on a user conversation, so pre-subscription clients see unchanged bytes. Absent means 'user'.",
+      "$comment": "`origin` and `kind` are optional. On a live frame they are emitted only when the turn is not an ordinary user turn on a user conversation, so pre-subscription clients see unchanged bytes, and absent means 'user'. On the replay path they are never emitted (the durable event-log payload does not carry them yet), so absent there means unknown -- read ConversationMessage.origin and ConversationSummary.kind instead.",
       "type": "object",
       "additionalProperties": false,
       "required": [

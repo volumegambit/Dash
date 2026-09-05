@@ -108,11 +108,15 @@ interface LiveTurn {
   turnId: string;
   agentId: string;
   conversationId: string;
+  /** Decides conversation fan-out: only a non-`'user'` turn reaches subscribers. */
+  origin: ConversationMessageOrigin;
   controller: AbortController;
   subscribers: Set<TurnFrameSink>;
   cancelled: boolean;
   terminal: boolean;
   settled: boolean;
+  /** One `onFinish` per turn, whichever path gets there first. */
+  finishNotified: boolean;
   promise: Promise<void>;
 }
 
@@ -235,10 +239,20 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
    * Fan out to the union of the turn's own subscribers and the conversation's
    * subscribers. A sink in both sets is written to exactly once; a sink that
    * throws is dropped from both, because a dead socket is dead for every turn.
+   *
+   * Conversation subscribers receive ONLY turns they could not have started
+   * themselves — server-initiated notification turns and sub-agent child turns.
+   * An ordinary user turn stays with its own sink. `message`/`resume`
+   * auto-subscribe for the socket's whole lifetime (spec 7.6), so without this
+   * gate a second client typing into the same conversation would push its
+   * `accepted`/`event`/`done` at every peer that ever touched it — which today
+   * makes web overwrite `pending` and iOS append a blank user bubble. Nothing
+   * in the sub-agent feature needs that, and it would ship before any client
+   * learned to handle a turn it did not start.
    */
   const broadcast = (live: LiveTurn, frame: MobileWsServerFrame): void => {
     const key = conversationKey(live.agentId, live.conversationId);
-    const watchers = conversationSubscribers.get(key);
+    const watchers = live.origin === 'user' ? undefined : conversationSubscribers.get(key);
     for (const sink of live.subscribers) {
       if (send(sink, frame)) continue;
       live.subscribers.delete(sink);
@@ -270,6 +284,8 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   };
 
   const notifyFinish = (live: LiveTurn, outcome: TurnOutcome): void => {
+    if (live.finishNotified) return;
+    live.finishNotified = true;
     if (observers.size === 0) return;
     const turn = observedTurn(live);
     for (const observer of [...observers]) {
@@ -377,6 +393,11 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         if (stream) await stream.return(undefined);
       } finally {
         live.settled = true;
+        // Both terminal paths above persist BEFORE notifying, so a throwing
+        // finishTurn would otherwise leave observers waiting forever on a run
+        // that is over. Report it as failed; `finishNotified` keeps a later
+        // successful cancel retry from double-reporting.
+        notifyFinish(live, 'failed');
         if (live.terminal && turns.get(live.turnId) === live) turns.delete(live.turnId);
       }
     }
@@ -435,11 +456,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       turnId: frame.id,
       agentId: frame.agentId,
       conversationId: frame.conversationId,
+      origin,
       controller: new AbortController(),
       subscribers: new Set(sink ? [sink] : []),
       cancelled: false,
       terminal: false,
       settled: false,
+      finishNotified: false,
       promise: Promise.resolve(),
     };
     turns.set(frame.id, live);

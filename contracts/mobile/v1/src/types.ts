@@ -278,12 +278,21 @@ export type MobileWsServerFrame =
       revision: number;
       seq: number;
       /**
-       * Who caused this turn. Omitted for an ordinary user turn on a user
-       * conversation, so a pre-subscription client sees the same bytes it
-       * always did; absent means `'user'`.
+       * Who caused this turn. On a LIVE frame it is omitted for an ordinary
+       * user turn on a user conversation — so a pre-subscription client sees
+       * the same bytes it always did — and absent therefore means `'user'`.
+       *
+       * On the REPLAY path (`/conversations/:id/replay`, and any `accepted`
+       * rebuilt from the event log) it is never emitted at all, because the
+       * durable payload does not carry it yet: absent there means UNKNOWN, not
+       * `'user'`. Read `ConversationMessage.origin` for a replayed turn.
        */
       origin?: ConversationMessageOrigin;
-      /** Conversation kind. Omitted alongside `origin`; absent means `'user'`. */
+      /**
+       * Conversation kind, omitted alongside `origin` and under the same
+       * live-versus-replay rule. For a replayed turn read
+       * `ConversationSummary.kind`.
+       */
       kind?: ConversationKind;
     }
   | {

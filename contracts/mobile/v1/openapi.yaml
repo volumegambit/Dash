@@ -974,6 +974,12 @@ components:
                 activeTurnId: { type: string, minLength: 1 }
     ReplayPayload:
       oneOf:
+        # `origin`/`kind` mirror the live `accepted` WebSocket frame
+        # (chat-ws.schema.json ChatAccepted). The durable event-log payload does
+        # not populate them yet, so a replayed row omits them and absent means
+        # unknown, not `user` -- read ConversationMessage.origin and
+        # ConversationSummary.kind. They are declared here so the frozen schema
+        # accepts them once the log carries them.
         - type: object
           additionalProperties: false
           required: [type, userMessageId, assistantMessageId, revision]
@@ -982,6 +988,8 @@ components:
             userMessageId: { type: string, format: uuid }
             assistantMessageId: { type: string, format: uuid }
             revision: { type: integer, minimum: 1 }
+            origin: { enum: [user, notification, parent] }
+            kind: { enum: [user, subagent] }
         - type: object
           additionalProperties: false
           required: [type, event]

@@ -1269,19 +1269,78 @@ describe('ResumableChatHub', () => {
     expect(watcher.send).not.toHaveBeenCalled();
   });
 
-  it('sends one copy to a sink that both started the turn and subscribed to the conversation', async () => {
+  it('sends one copy to a sink that is both a turn subscriber and a conversation subscriber', async () => {
     const conversation = createConversation();
     const scripted = register(conversation.id);
     const sink = makeSink();
 
     hub.subscribe(conversation.agentId, conversation.id, sink);
-    hub.start(sendFrame(conversation), sink);
+    const { turnId } = hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+    await waitForFrames(sink, 1);
+    // Resuming attaches the same sink to the live turn as well, so it now sits
+    // in both sets and every later frame must still arrive exactly once.
+    hub.resume(
+      {
+        type: 'resume',
+        id: turnId,
+        agentId: conversation.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 1,
+      },
+      sink,
+    );
     scripted.emit({ type: 'text_delta', text: 'Once' });
     await waitForFrames(sink, 2);
     scripted.finish();
     await waitForFrames(sink, 3);
 
     expect(sink.frames.map((frame) => frame.seq)).toEqual([1, 2, 3]);
+  });
+
+  it('keeps an ordinary user turn off every socket but the one that started it', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const peer = makeSink();
+    const author = makeSink();
+
+    // The peer earns its auto-subscription the way a real client does: by
+    // sending its own turn on this conversation first.
+    hub.start(sendFrame(conversation, 'turn-peer'), peer);
+    first.finish();
+    await waitForFrames(peer, 2);
+    const peerFramesAfterOwnTurn = peer.frames.length;
+
+    // A SECOND client now types into the same conversation. Nothing about this
+    // turn is the peer's business — spec 7.6 fans out server-initiated turns,
+    // not a peer's ordinary message.
+    const second = register(conversation.id, makeScriptedStream());
+    hub.start(sendFrame(conversation, 'turn-author', 'Author speaking'), author);
+    second.emit({ type: 'text_delta', text: 'Reply to the author' });
+    await waitForFrames(author, 2);
+    second.finish();
+    await waitForFrames(author, 3);
+
+    expect(peer.frames).toHaveLength(peerFramesAfterOwnTurn);
+    expect(peer.frames.map((frame) => frame.id)).toEqual(['turn-peer', 'turn-peer']);
+
+    // ...but the peer's subscription is intact: a server-initiated turn on the
+    // same conversation still reaches it, with no `subscribe` frame sent.
+    const third = register(conversation.id, makeScriptedStream());
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'Sub-agent reviewer finished',
+      origin: 'notification',
+    });
+    await waitForFrames(peer, peerFramesAfterOwnTurn + 1);
+    expect(peer.frames.at(-1)).toMatchObject({ type: 'accepted', origin: 'notification' });
+    third.finish();
+    await waitForFrames(peer, peerFramesAfterOwnTurn + 2);
   });
 
   it('rejects a subscription to an unknown or foreign conversation', () => {
@@ -1354,6 +1413,34 @@ describe('ResumableChatHub', () => {
     second.finish();
     await vi.waitFor(() => expect(conversations.get(conversation.id)?.activeTurnId).toBeNull());
     expect(events).toHaveLength(2);
+    expect(finishes).toHaveLength(1);
+  });
+
+  it('still reports a finish to observers when durable terminal persistence fails', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const finishes: Array<{ turnId: string; outcome: string }> = [];
+    hub.addObserver({
+      onEvent: () => {},
+      onFinish: (turn, outcome) => finishes.push({ turnId: turn.turnId, outcome }),
+    });
+    // Both terminal writes fail: the 'completed' one and the 'failed' retry.
+    const finishTurn = vi.spyOn(conversations, 'finishTurn');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      finishTurn.mockImplementationOnce(() => {
+        throw new Error('SQLite unavailable');
+      });
+    }
+
+    hub.start(sendFrame(conversation), makeSink());
+    scripted.finish();
+
+    // Without a guaranteed notify, C5's coordinator would wait on this child
+    // forever: the run is over and no observer callback ever fired.
+    await vi.waitFor(() => expect(finishes).toEqual([{ turnId: 'turn-01', outcome: 'failed' }]));
+
+    // The later successful cancel retry must not report a second outcome.
+    await hub.cancel('turn-01', makeSink());
     expect(finishes).toHaveLength(1);
   });
 
