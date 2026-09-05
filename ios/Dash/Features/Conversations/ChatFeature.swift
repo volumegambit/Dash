@@ -667,7 +667,13 @@ final class ChatFeature {
   @ObservationIgnored private var activeRecoveryChangeOperations = 0
   @ObservationIgnored private var recoveryChangeOperationWaiters:
     [CheckedContinuation<Void, Never>] = []
-  @ObservationIgnored private var hasLoadedCache = false
+  /// True once the cached transcript has been read at least once (set in
+  /// `appear()`). Observable, not `@ObservationIgnored`, because
+  /// `ComposerView`'s keyboard-ready auto-focus must wait for it: before the
+  /// cache loads `state.messages` is empty for EVERY conversation, so an
+  /// existing thread looked "fresh" and stole focus (keyboard up on open —
+  /// seen in the 2026-09-05 transcript-scroll test videos).
+  private(set) var hasLoadedCache = false
   @ObservationIgnored private var isVisible = false
   @ObservationIgnored private var isConnected = false
   @ObservationIgnored private var wasReconnecting = false

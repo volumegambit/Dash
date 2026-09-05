@@ -125,10 +125,18 @@ struct ComposerView: View {
       guard allowed else { return }
       attemptAutoFocus()
     }
+    .onChange(of: feature.hasLoadedCache) { _, loaded in
+      guard loaded else { return }
+      attemptAutoFocus()
+    }
   }
 
+  /// "Never had a message" is only knowable once the cached transcript has
+  /// been read — `messages` is empty for every conversation before that, and
+  /// deciding on the empty placeholder made existing threads open with the
+  /// keyboard up (transcript scroll fix, 2026-09-05).
   private var isFreshConversation: Bool {
-    feature.state.messages.isEmpty && feature.state.activeTurnID == nil
+    feature.hasLoadedCache && feature.state.messages.isEmpty && feature.state.activeTurnID == nil
   }
 
   private func attemptAutoFocus() {
