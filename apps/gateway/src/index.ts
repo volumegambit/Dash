@@ -523,7 +523,7 @@ async function main() {
   const reconstructChildSpec = (subagentId: string) =>
     reconstructChildSpecFrom(subagentId, {
       conversations: conversationService,
-      liveSpec: (id) => swarmCoordinator.childSpec(id),
+      liveSpec: (id) => swarmCoordinator.liveChildSpec(id),
       agentConfig: (id) => registry.get(id)?.config,
       agentMcpTools: (id) => orchestratorMcpToolNames(registry.get(id)?.config, listMcpToolNames),
     });

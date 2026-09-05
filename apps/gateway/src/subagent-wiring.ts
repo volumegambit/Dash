@@ -24,7 +24,7 @@ import {
  * definition granted: a pull-based credential source and the data dir root
  * (children get a private session dir under it).
  */
-export interface GatewayWorkerFactoryDeps {
+export interface ChildBackendBaseDeps {
   /** Same pull-based credential source the chat-path backend factory uses. */
   credentialProvider: ProviderApiKeysSource;
   /** Gateway data dir root; worker session dirs live under it. */
@@ -56,7 +56,7 @@ export interface GatewayWorkerFactoryDeps {
  * (`<dataDir>/skills/<agentName>` plus that agent's plugin selection), so a
  * single gateway-wide list would let a child of agent A load agent B's skills.
  */
-export interface ChildBackendDeps extends GatewayWorkerFactoryDeps {
+export interface ChildBackendDeps extends ChildBackendBaseDeps {
   /** The gateway's shared MCP manager; only reaches children granted MCP tools. */
   mcpManager?: McpManager;
   /** Plugin-contributed model catalog, so a child can resolve the same model ids. */

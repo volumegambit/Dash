@@ -981,10 +981,20 @@ export class SwarmCoordinator {
    * the turn that spawned the child is long over.
    */
   childSpec(subagentId: string): ChildSpec | undefined {
-    const live = this.childSpecs.get(subagentId);
+    const live = this.liveChildSpec(subagentId);
     if (live) return live;
     const rebuilt = this.reconstructChildSpec?.(subagentId);
     return rebuilt ? { ...rebuilt, extraTools: [] } : undefined;
+  }
+
+  /**
+   * The IN-MEMORY spec only, with no rebuild fallback. This is what a rebuilder
+   * asks for when it walks up the parent chain: routing that read through
+   * {@link childSpec} would re-enter the rebuild once per level and escape the
+   * walk's own depth bound.
+   */
+  liveChildSpec(subagentId: string): ChildSpec | undefined {
+    return this.childSpecs.get(subagentId);
   }
 
   /**

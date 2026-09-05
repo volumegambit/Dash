@@ -181,8 +181,12 @@ export class SwarmRun {
    * `finalize`'s cancel sweep.
    */
   adopt(handle: ChildHandle): void {
+    // A RESUME builds a second handle over the SAME child conversation and
+    // re-adopts it, so the id must not be appended twice: `order` drives every
+    // snapshot and the cancel sweep, and a duplicate would list the child twice
+    // and cancel it twice.
+    if (!this.handles.has(handle.workerId)) this.order.push(handle.workerId);
     this.handles.set(handle.workerId, handle);
-    this.order.push(handle.workerId);
   }
 
   /**

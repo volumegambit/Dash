@@ -1074,7 +1074,7 @@ describe('SwarmCoordinator', () => {
   });
 
   // Subagent hook threading: the hooks option handed to the coordinator must
-  // reach every WorkerHandle (via run.register) — this is the seam the gateway
+  // reach every child handle — this is the seam the gateway
   // uses to fire the SubagentStart/SubagentStop plugin hook events.
   describe('subagent hooks', () => {
     function makeHookRecorder() {
@@ -2229,8 +2229,11 @@ describe('SwarmCoordinator sendToChild', () => {
     expect(res).toEqual({ ok: true, status: 'running', mode: 'resumed' });
     expect(child.texts).toEqual(['go', 'one more thing']);
     expect(coordinator.findChild(CONVO_ID, 'scout')?.status).toBe('running');
-    // The resumed child runs the SAME conversation, not a new one.
+    // The resumed child runs the SAME conversation, not a new one — in the
+    // registry AND in the run it was re-adopted into.
     expect(coordinator.childrenOf(CONVO_ID)).toHaveLength(1);
+    expect(coordinator.getLiveRun(AGENT_ID, CONVO_ID)?.snapshot().workers).toHaveLength(1);
+    expect(coordinator.checkWorkers(AGENT_ID, CONVO_ID)).toHaveLength(1);
   });
 
   it('refuses a one-shot child', () => {
