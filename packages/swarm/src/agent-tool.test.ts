@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@dash/agent';
 import { createAgentTools } from './agent-tool.js';
 import { SwarmCoordinator } from './coordinator.js';
+import { type ParentToolContext, parentBuiltinTools } from './resolve-spawn.js';
 import {
   type ResolvedSubagentType,
   type SubagentTypeResolver,
@@ -9,8 +10,16 @@ import {
 } from './subagent-types.js';
 import type { WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
 
-/** The orchestrator's default grant (coordinator.ts DEFAULT_TOOL_NAMES). */
+/** The orchestrator's default grant (resolve-spawn.ts DEFAULT_TOOL_NAMES). */
 const PARENT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+/** What that grant means as a parent context: + load_skill + the task tool. */
+const PARENT_EFFECTIVE = parentBuiltinTools(PARENT_TOOLS);
+const PARENT_MODEL = 'orch-model';
+
+/** A parent context, defaulting to the standard grant and no MCP. */
+function ctx(over: Partial<ParentToolContext> = {}): ParentToolContext {
+  return { builtinTools: PARENT_EFFECTIVE, mcpTools: [], depth: 0, maxDepth: 3, ...over };
+}
 
 type AgentSchema = {
   properties: {
@@ -59,7 +68,8 @@ const base = (coordinator: FakeCoordinator) => ({
   conversationId: () => 'c',
   resolver: createStaticResolver(builtinSubagentTypes()),
   backgroundMode: 'turn-scoped' as const,
-  parentTools: () => ['read', 'bash'],
+  parentContext: () => ctx({ builtinTools: parentBuiltinTools(['read', 'bash']) }),
+  parentModel: () => PARENT_MODEL,
 });
 
 describe('agent tool', () => {
@@ -69,8 +79,10 @@ describe('agent tool', () => {
     expect(send.name).toBe('send_message');
     const schema = agent.parameters as { properties: { subagent_type: { description: string } } };
     expect(schema.properties.subagent_type.description).toContain('- Explore:');
-    // general-purpose inherits parent tools
-    expect(schema.properties.subagent_type.description).toContain('(Tools: read, bash)');
+    // general-purpose inherits the parent's effective tools, always-available ones included
+    expect(schema.properties.subagent_type.description).toContain(
+      '(Tools: read, bash, load_skill, task)',
+    );
   });
 
   it('foreground: spawns, waits, returns the scanned report', async () => {
@@ -92,37 +104,144 @@ describe('agent tool', () => {
     expect(r.details).toMatchObject({ subagentId: 'w1', status: 'done', toolCallCount: 2 });
   });
 
-  it('Explore gets only the grantable read-only tools, plus skipMemory/oneShot', async () => {
+  it('Explore gets the read-only intersection, plus skipMemory/oneShot', async () => {
     const c = makeCoordinator();
-    const [agent] = createAgentTools({ ...base(c), parentTools: () => PARENT_TOOLS });
+    const [agent] = createAgentTools({ ...base(c), parentContext: () => ctx() });
     await agent.execute('t1', { prompt: 'p', description: 'd', subagent_type: 'Explore' });
-    // load_skill is rejected outright by validateTools; web_fetch/web_search are
-    // not in the parent's grant. Only the intersection may be requested.
+    // READ_ONLY_TOOLS asks for web_fetch/web_search too; the default parent
+    // grant has neither, so the intersection drops them. load_skill IS granted:
+    // every agent holds it, so a child inheriting it is not an escalation.
     expect(c.spawnWorker).toHaveBeenCalledWith(
       'a',
       'c',
       expect.objectContaining({
-        tools: ['read', 'grep', 'find', 'ls'],
+        tools: ['read', 'grep', 'find', 'ls', 'load_skill'],
         skipMemory: true,
         oneShot: true,
       }),
     );
     const granted = (c.spawned[0] as { tools: string[] }).tools;
-    expect(granted).not.toContain('load_skill');
     expect(granted).not.toContain('web_fetch');
+    expect(granted).not.toContain('web_search');
+  });
+
+  it('an explicit tools list withholds `agent`: Explore cannot spawn', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools({ ...base(c), parentContext: () => ctx() });
+    await agent.execute('t1', { prompt: 'p', description: 'd', subagent_type: 'Explore' });
+    expect(c.spawned[0]).toMatchObject({ canSpawn: false });
+    // general-purpose declares no tools, so it inherits the parent's ability.
+    await agent.execute('t2', { prompt: 'p', description: 'd' });
+    expect(c.spawned[1]).toMatchObject({ canSpawn: true, spawnableTypes: undefined });
   });
 
   it('the roster advertises exactly the tools the spawn requests', async () => {
     const c = makeCoordinator();
-    const [agent] = createAgentTools({ ...base(c), parentTools: () => PARENT_TOOLS });
+    const [agent] = createAgentTools({ ...base(c), parentContext: () => ctx() });
     await agent.execute('t', { prompt: 'p', description: 'd' });
-    const granted = (c.spawned[0] as { tools: string[] }).tools;
+    const spawned = c.spawned[0] as { tools: string[]; mcpTools?: string[] };
+    const granted = [...spawned.tools, ...(spawned.mcpTools ?? [])];
     const schema = agent.parameters as AgentSchema;
     const line = schema.properties.subagent_type.description
       .split('\n')
       .find((l) => l.startsWith('- general-purpose:'));
     expect(line).toContain(`(Tools: ${granted.join(', ')})`);
-    expect(granted).toEqual(PARENT_TOOLS);
+    expect(granted).toEqual(PARENT_EFFECTIVE);
+  });
+
+  it('the roster and the grant share ONE computation, MCP tools included', async () => {
+    const c = makeCoordinator();
+    const parent = ctx({ mcpTools: ['github__pr', 'slack__post'] });
+    const [agent] = createAgentTools({ ...base(c), parentContext: () => parent });
+    await agent.execute('t', { prompt: 'p', description: 'd' });
+    const spawned = c.spawned[0] as { tools: string[]; mcpTools?: string[] };
+    expect(spawned.mcpTools).toEqual(['github__pr', 'slack__post']);
+    const line = (agent.parameters as AgentSchema).properties.subagent_type.description
+      .split('\n')
+      .find((l) => l.startsWith('- general-purpose:'));
+    expect(line).toContain(`(Tools: ${[...spawned.tools, ...(spawned.mcpTools ?? [])].join(', ')})`);
+  });
+
+  it('never grants a tool or an MCP server the parent lacks', async () => {
+    const c = makeCoordinator();
+    const greedy: ResolvedSubagentType = {
+      name: 'greedy',
+      description: 'Wants everything.',
+      systemPrompt: 'g',
+      tools: ['read', 'write', 'mcp__*', 'mcp__jira__create'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), greedy]),
+      parentContext: () => ctx({ builtinTools: ['read', 'load_skill'], mcpTools: ['github__pr'] }),
+    });
+    await agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'greedy' });
+    expect(c.spawned[0]).toMatchObject({ tools: ['read'], mcpTools: ['github__pr'] });
+  });
+
+  it('a definition that resolves to nothing throws naming the unresolved entries', async () => {
+    const c = makeCoordinator();
+    const impossible: ResolvedSubagentType = {
+      name: 'impossible',
+      description: 'Wants what the parent lacks.',
+      systemPrompt: 'x',
+      tools: ['write', 'mcp__nope'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), impossible]),
+      parentContext: () => ctx({ builtinTools: ['read'], mcpTools: [] }),
+    });
+    await expect(
+      agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'impossible' }),
+    ).rejects.toThrow('Agent would be spawned with zero tools: write, mcp__nope');
+    expect(c.spawnWorker).not.toHaveBeenCalled();
+    // The roster says so rather than throwing while rendering the schema.
+    const line = (agent.parameters as AgentSchema).properties.subagent_type.description
+      .split('\n')
+      .find((l) => l.startsWith('- impossible:'));
+    expect(line).toContain('(Tools: none — no overlap with your tools)');
+  });
+
+  it('agent(a, b) narrows spawnable types; the depth ceiling removes spawning', async () => {
+    const c = makeCoordinator();
+    const lead: ResolvedSubagentType = {
+      name: 'lead',
+      description: 'Delegates.',
+      systemPrompt: 'l',
+      tools: ['read', 'agent(Explore, Plan)'],
+      source: 'workspace',
+    };
+    const types = [...builtinSubagentTypes(), lead];
+    const [shallow] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver(types),
+      parentContext: () => ctx(),
+    });
+    await shallow.execute('t', { prompt: 'p', description: 'd', subagent_type: 'lead' });
+    expect(c.spawned[0]).toMatchObject({
+      spawnableTypes: ['Explore', 'Plan'],
+      canSpawn: true,
+      depth: 1,
+    });
+
+    const deep = makeCoordinator();
+    const [atCeiling] = createAgentTools({
+      ...base(deep),
+      resolver: createStaticResolver(types),
+      parentContext: () => ctx({ depth: 2, maxDepth: 3 }),
+    });
+    await atCeiling.execute('t', { prompt: 'p', description: 'd', subagent_type: 'lead' });
+    expect(deep.spawned[0]).toMatchObject({ canSpawn: false, depth: 3 });
+  });
+
+  it('takes the child depth from the parent context', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools({ ...base(c), parentContext: () => ctx({ depth: 2 }) });
+    await agent.execute('t', { prompt: 'p', description: 'd' });
+    expect(c.spawned[0]).toMatchObject({ depth: 3 });
   });
 
   it('advertises the name pattern in the schema', () => {
@@ -187,6 +306,143 @@ describe('agent tool', () => {
       message: 'also check tests',
     });
     expect(r.content[0].text).toBe('delivered to mapper');
+  });
+
+  // --- model resolution (design §6.4 step 3) ---
+
+  it('inherits the parent model by default and does not pin it on the spawn', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools(base(c));
+    await agent.execute('t', { prompt: 'p', description: 'd' });
+    // Passing `undefined` lets the coordinator apply its own authoritative
+    // read of the orchestrator model rather than our copy of it.
+    expect(c.spawned[0]).toMatchObject({ model: undefined });
+  });
+
+  it('a per-call model wins over the definition; aliases resolve', async () => {
+    const c = makeCoordinator();
+    const pinned: ResolvedSubagentType = {
+      name: 'pinned',
+      description: 'Pinned model.',
+      systemPrompt: 'p',
+      model: 'anthropic/claude-sonnet-5',
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), pinned]),
+      modelAliases: () => ({ haiku: 'anthropic/claude-haiku-4-5' }),
+    });
+    await agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'pinned' });
+    expect(c.spawned[0]).toMatchObject({ model: 'anthropic/claude-sonnet-5' });
+    await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      subagent_type: 'pinned',
+      model: 'haiku',
+    });
+    expect(c.spawned[1]).toMatchObject({ model: 'anthropic/claude-haiku-4-5' });
+  });
+
+  it('an explicit per-call model: inherit overrides a type-level pin', async () => {
+    const c = makeCoordinator();
+    const pinned: ResolvedSubagentType = {
+      name: 'pinned',
+      description: 'Pinned model.',
+      systemPrompt: 'p',
+      model: 'anthropic/claude-sonnet-5',
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), pinned]),
+    });
+    await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      subagent_type: 'pinned',
+      model: 'inherit',
+    });
+    expect(c.spawned[0]).toMatchObject({ model: undefined });
+  });
+
+  it('an unconfigured alias falls back to the parent model and warns in the result', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools(base(c));
+    const r = await agent.execute('t', { prompt: 'p', description: 'd', model: 'opus' });
+    expect(c.spawned[0]).toMatchObject({ model: undefined });
+    expect(r.content[0].text).toContain(
+      'alias "opus" is not configured (subagents.modelAliases); using the parent model',
+    );
+    expect(r.details).toMatchObject({
+      warning: 'alias "opus" is not configured (subagents.modelAliases); using the parent model',
+    });
+  });
+
+  it('carries the warning on a background launch too', async () => {
+    const c = makeCoordinator();
+    const [agent] = createAgentTools(base(c));
+    const r = await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      model: 'opus',
+      run_in_background: true,
+    });
+    expect(r.content[0].text).toContain('is not configured');
+    expect(r.details).toMatchObject({ status: 'running' });
+  });
+
+  // --- skills (design §6.4 step 4) ---
+
+  it('appends preloaded skill bodies to the child system prompt', async () => {
+    const c = makeCoordinator();
+    const withSkills: ResolvedSubagentType = {
+      name: 'reviewer',
+      description: 'Reviews diffs.',
+      systemPrompt: 'REVIEW BODY',
+      skills: ['house-style'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), withSkills]),
+      listSkills: async () => [
+        { name: 'house-style', content: 'Two spaces.' },
+        { name: 'unused', content: 'nope' },
+      ],
+    });
+    await agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'reviewer' });
+    expect(c.spawned[0]).toMatchObject({
+      systemPrompt: 'REVIEW BODY\n\n# Preloaded skill: house-style\nTwo spaces.',
+    });
+  });
+
+  it('an unknown skill name throws instead of spawning', async () => {
+    const c = makeCoordinator();
+    const withSkills: ResolvedSubagentType = {
+      name: 'reviewer',
+      description: 'Reviews diffs.',
+      systemPrompt: 'body',
+      skills: ['missing'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), withSkills]),
+      listSkills: async () => [],
+    });
+    await expect(
+      agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'reviewer' }),
+    ).rejects.toThrow('Unknown skill "missing" in definition skills list');
+    expect(c.spawnWorker).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the skill lookup when the definition names no skills', async () => {
+    const c = makeCoordinator();
+    const listSkills = vi.fn(async () => []);
+    const [agent] = createAgentTools({ ...base(c), listSkills });
+    await agent.execute('t', { prompt: 'p', description: 'd' });
+    expect(listSkills).not.toHaveBeenCalled();
   });
 
   it('send_message refuses one-shot types and unknown targets', async () => {

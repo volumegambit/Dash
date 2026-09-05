@@ -17,6 +17,15 @@ export interface WorkerSpec {
   model: string;
   workspace: string;
   tools: string[];
+  /**
+   * Fully-qualified `server__tool` MCP names this child may call, resolved by
+   * `resolveChildTools` against the parent's own MCP grant. Absent = no MCP.
+   */
+  mcpTools?: string[];
+  /** `agent(a, b)` — the sub-agent types this child may spawn. Unset = all. */
+  spawnableTypes?: string[];
+  /** Whether this child gets `agent` / `send_message` (depth + definition). */
+  canSpawn?: boolean;
   /** Worker-side extra tools (ask_orchestrator) built by the coordinator. */
   extraTools: SwarmExtraTool[];
   subagentType?: string; // defaults 'general-purpose'

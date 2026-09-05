@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
+import { ALWAYS_AVAILABLE_TOOLS, UNIVERSE, parentBuiltinTools } from './resolve-spawn.js';
 import { type RunSnapshot, type RunSummary, type RunWorkerSnapshot, SwarmRun } from './run.js';
 import { createAskOrchestratorTool } from './tools.js';
 import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
@@ -8,24 +9,12 @@ import { DEFAULT_SUBAGENT_TYPE, type WorkerHandleOptions } from './worker-handle
 
 export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
 
-/** The full universe of tools a worker may ever be granted. */
-const UNIVERSE = [
-  'read',
-  'bash',
-  'edit',
-  'write',
-  'grep',
-  'find',
-  'ls',
-  'web_fetch',
-  'web_search',
-] as const;
-
-/** The tools the orchestrator has by default (when config.tools is unset). */
-const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
-
 /** The default subset granted to a worker when it requests no tools. */
 const DEFAULT_WORKER_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
+
+/** Membership sets for `validateTools`, so it can name WHY a tool was refused. */
+const UNIVERSE_SET: ReadonlySet<string> = new Set<string>(UNIVERSE);
+const ALWAYS_AVAILABLE_SET: ReadonlySet<string> = new Set<string>(ALWAYS_AVAILABLE_TOOLS);
 
 /** Hard-coded cap defaults, lowest precedence. */
 const HARD_DEFAULT_CAPS: SwarmCaps = {
@@ -65,6 +54,14 @@ export interface AttachOptions {
   orchestratorFallbackModels?: string[];
   /** The orchestrator's own tool grant (config.tools ?? undefined). */
   orchestratorTools?: string[];
+  /**
+   * Fully-qualified `server__tool` MCP names the orchestrator holds. The child
+   * grant is bounded by this list; UNSET MEANS NONE, so a spawn that asks for
+   * MCP tools is refused rather than trusted. Fail-closed on purpose: the
+   * `agent` tool computes the child's MCP grant from its own parent context,
+   * and this is the coordinator-side re-check that the two agree.
+   */
+  orchestratorMcpTools?: string[];
   /** Workspace path handed to spawned workers. */
   workspace?: string;
 }
@@ -237,6 +234,12 @@ export class SwarmCoordinator {
       role: string;
       brief: string;
       tools?: string[];
+      /** Fully-qualified `server__tool` names resolved by `resolveChildTools`. */
+      mcpTools?: string[];
+      /** `agent(a, b)` — the types this child may itself spawn. Unset = all. */
+      spawnableTypes?: string[];
+      /** Whether this child gets `agent` / `send_message` at all. */
+      canSpawn?: boolean;
       model?: string;
       subagentType?: string;
       description?: string;
@@ -293,6 +296,7 @@ export class SwarmCoordinator {
 
     const model = this.validateModel(turn, p.model);
     const tools = this.validateTools(turn, p.tools);
+    const mcpTools = this.validateMcpTools(turn, p.mcpTools);
 
     const workerId = randomUUID().slice(0, 8);
     const spec = {
@@ -305,6 +309,9 @@ export class SwarmCoordinator {
       model,
       workspace: turn.opts.workspace ?? process.cwd(),
       tools,
+      mcpTools,
+      spawnableTypes: p.spawnableTypes,
+      canSpawn: p.canSpawn,
       subagentType: p.subagentType,
       description: p.description,
       name: p.name,
@@ -716,21 +723,57 @@ export class SwarmCoordinator {
     return model;
   }
 
+  /**
+   * DEFENCE IN DEPTH on the built-in grant. `resolveChildTools` already
+   * computed an intersection with the parent's tools for `agent` spawns, but
+   * the legacy `spawn_worker` tool reaches this method directly with a list the
+   * model chose, so the subset check has to live here too.
+   *
+   * The bound is `parentBuiltinTools(orchestratorTools)` — literally the same
+   * function the `agent` tool builds its `ParentToolContext` from, so the two
+   * cannot drift. That admits `load_skill` and the task tool (every agent has
+   * them whatever `config.tools` says) and excludes skill-management and MCP-
+   * management tools (parent-only, never inheritable).
+   *
+   * MCP names are NOT rejected as a class any more — they travel in their own
+   * `mcpTools` field and are checked by {@link validateMcpTools}.
+   */
   private validateTools(turn: LiveTurn, requested?: string[]): string[] {
     if (!requested || requested.length === 0) {
       return [...DEFAULT_WORKER_TOOLS];
     }
-    const universe = new Set<string>(UNIVERSE);
-    const orchestratorSet = new Set<string>(turn.opts.orchestratorTools ?? DEFAULT_TOOL_NAMES);
-    // Allowed = (orchestratorTools ?? DEFAULT_TOOL_NAMES) ∩ UNIVERSE.
-    const allowed = new Set<string>([...orchestratorSet].filter((t) => universe.has(t)));
+    const allowed = new Set(parentBuiltinTools(turn.opts.orchestratorTools));
     for (const tool of requested) {
-      if (/^mcp/.test(tool) || /_skill$/.test(tool) || !universe.has(tool)) {
+      // Redundant with the allow-list below (no `*_skill` but `load_skill` is
+      // in it), kept explicit so widening the universe cannot hand a child the
+      // skill-management tools by accident.
+      if (tool !== 'load_skill' && /_skill$/.test(tool)) {
         throw new Error(`tool "${tool}" is not available to swarm workers`);
       }
       if (!allowed.has(tool)) {
+        if (!UNIVERSE_SET.has(tool) && !ALWAYS_AVAILABLE_SET.has(tool)) {
+          throw new Error(`tool "${tool}" is not available to swarm workers`);
+        }
         throw new Error(
           `tool "${tool}" is not available to swarm workers (the orchestrator does not have it)`,
+        );
+      }
+    }
+    return [...requested];
+  }
+
+  /**
+   * DEFENCE IN DEPTH on the MCP grant: every requested `server__tool` must be
+   * one the orchestrator itself holds. An attachment that declared no MCP tools
+   * grants none — a spawn asking for any is refused rather than waved through.
+   */
+  private validateMcpTools(turn: LiveTurn, requested?: string[]): string[] | undefined {
+    if (!requested || requested.length === 0) return undefined;
+    const allowed = new Set(turn.opts.orchestratorMcpTools ?? []);
+    for (const tool of requested) {
+      if (!allowed.has(tool)) {
+        throw new Error(
+          `MCP tool "${tool}" is not available to swarm workers (the orchestrator does not have it)`,
         );
       }
     }

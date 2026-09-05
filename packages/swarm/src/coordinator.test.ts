@@ -417,11 +417,92 @@ describe('SwarmCoordinator', () => {
         coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['mcp__x'] }),
       ).toThrow(/mcp__x/);
       expect(() =>
-        coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['foo_skill'] }),
-      ).toThrow(/foo_skill/);
+        coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['create_skill'] }),
+      ).toThrow(/create_skill/);
       expect(() =>
         coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['wat'] }),
       ).toThrow(/wat/);
+    });
+
+    it('accepts the always-available tools, which no config.tools list has to name', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach({ orchestratorTools: ['read'] }));
+      coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        tools: ['read', 'load_skill', 'task'],
+      });
+      expect(specs[0].tools).toEqual(['read', 'load_skill', 'task']);
+    });
+
+    it('bounds the child grant by parentBuiltinTools — the same list the agent tool reads', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach({ orchestratorTools: ['read', 'grep'] }));
+      // web_search is in UNIVERSE but the parent does not hold it.
+      expect(() =>
+        coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b', tools: ['web_search'] }),
+      ).toThrow(/the orchestrator does not have it/);
+    });
+  });
+
+  // Behavior 6b: MCP tools are a separate, separately-validated grant.
+  describe('mcp tool validation', () => {
+    it('passes through MCP tools the parent holds', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach({ orchestratorMcpTools: ['github__pr', 'slack__post'] }));
+      coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        tools: ['read'],
+        mcpTools: ['github__pr'],
+      });
+      expect(specs[0].mcpTools).toEqual(['github__pr']);
+    });
+
+    it('refuses an MCP tool the parent does not hold', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach({ orchestratorMcpTools: ['github__pr'] }));
+      expect(() =>
+        coord.spawnWorker(AGENT_ID, CONVO_ID, {
+          role: 'r',
+          brief: 'b',
+          tools: ['read'],
+          mcpTools: ['slack__post'],
+        }),
+      ).toThrow(/slack__post/);
+    });
+
+    it('fails closed when the attachment declared no MCP tools at all', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach());
+      expect(() =>
+        coord.spawnWorker(AGENT_ID, CONVO_ID, {
+          role: 'r',
+          brief: 'b',
+          tools: ['read'],
+          mcpTools: ['github__pr'],
+        }),
+      ).toThrow(/github__pr/);
+    });
+
+    it('carries spawnableTypes and canSpawn onto the worker spec', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach());
+      coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        tools: ['read'],
+        spawnableTypes: ['Explore'],
+        canSpawn: true,
+      });
+      expect(specs[0].spawnableTypes).toEqual(['Explore']);
+      expect(specs[0].canSpawn).toBe(true);
     });
 
     it('uses the default subset when tools is omitted', () => {
