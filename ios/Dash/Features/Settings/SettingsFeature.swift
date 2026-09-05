@@ -6,6 +6,12 @@ enum SettingsDisconnectError: Error, Equatable, Sendable {
   case localCleanup
 }
 
+enum ConnectionSeverity: Equatable, Sendable {
+  case ok
+  case warning
+  case error
+}
+
 @MainActor
 @Observable
 final class SettingsFeature {
@@ -42,6 +48,45 @@ final class SettingsFeature {
     case .repairRequired: "Session no longer authorized"
     case .updateRequired: "Update required"
     }
+  }
+
+  /// How much attention a connection state deserves (settings clarity
+  /// 2026-09-05).
+  ///
+  /// The Status row rendered every state as the same secondary grey text as
+  /// "Type" and "Last sync", so "Rate limited" and "Online" were
+  /// indistinguishable at a glance — on the one screen whose whole purpose
+  /// is answering "is my gateway reachable?". Severity is modelled here
+  /// rather than as a `Color` so it can be unit-tested; the view maps it to
+  /// a colour.
+  var connectionSeverity: ConnectionSeverity {
+    switch connection {
+    case .online: .ok
+    // Transient or self-resolving: the app is already retrying, and the
+    // user has nothing to do but wait.
+    case .connecting, .reconnecting, .offline, .gatewayOffline, .rateLimited: .warning
+    // Terminal until the user acts — re-authorize, or update the app.
+    case .repairRequired, .updateRequired: .error
+    }
+  }
+
+  var connectionSystemImage: String {
+    switch connection {
+    case .online: "checkmark.circle.fill"
+    case .connecting, .reconnecting: "arrow.triangle.2.circlepath"
+    case .offline: "wifi.slash"
+    case .gatewayOffline: "server.rack"
+    case .rateLimited: "clock"
+    case .repairRequired: "link.badge.plus"
+    case .updateRequired: "arrow.down.app"
+    }
+  }
+
+  /// The full public key, when there is one worth copying. `nil` mirrors
+  /// `publicKeyFingerprint`'s "Unavailable" case so the view never offers to
+  /// copy a key it refuses to show.
+  var copyablePublicKey: String? {
+    identity.publicKey.count >= 12 ? identity.publicKey : nil
   }
 
   var canReconnect: Bool {
