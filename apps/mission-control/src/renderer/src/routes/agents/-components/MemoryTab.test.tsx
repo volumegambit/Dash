@@ -1,8 +1,10 @@
 import '@testing-library/jest-dom/vitest';
-import type { MemoryInfo } from '@dash/management';
-import { fireEvent, render, screen } from '@testing-library/react';
+import type { MemoryContent, MemoryInfo } from '@dash/management';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
-import { MemoryConfigStrip, MemoryList } from './MemoryTab.js';
+import { mockApi } from '../../../../../../vitest.setup.js';
+import { useAgentMemoryStore } from '../../../stores/agent-memory.js';
+import { MemoryConfigStrip, MemoryList, MemoryTab } from './MemoryTab.js';
 
 const memory = (over: Partial<MemoryInfo> & Pick<MemoryInfo, 'name' | 'type'>): MemoryInfo => ({
   description: 'A memory',
@@ -110,5 +112,69 @@ describe('MemoryList', () => {
   it('renders an empty state when there are no memories', () => {
     render(<MemoryList memories={[]} onOpen={vi.fn()} onRemove={vi.fn()} />);
     expect(screen.getByText(/No memories yet/)).toBeInTheDocument();
+  });
+});
+
+describe('MemoryTab', () => {
+  beforeEach(() => {
+    // Reset the module-global zustand store so one test's agent data can't leak
+    // into the next render.
+    useAgentMemoryStore.setState({
+      memories: [],
+      config: { enabled: true, sweep: 'auto' },
+      loading: false,
+      error: null,
+    });
+  });
+
+  it('closes the editor when the memory being edited is deleted', async () => {
+    mockApi.memoryList.mockResolvedValueOnce([
+      memory({ name: 'user-timezone', description: 'Gerry is in Singapore', type: 'user' }),
+    ]);
+    mockApi.memoryList.mockResolvedValue([]);
+    mockApi.memoryGet.mockResolvedValue({
+      name: 'user-timezone',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      source: 'agent',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+      content: 'Gerry lives in Singapore.',
+    } satisfies MemoryContent);
+
+    render(<MemoryTab agentId="agent-a" />);
+
+    fireEvent.click(await screen.findByText('user-timezone'));
+    expect(await screen.findByLabelText('Content')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Delete'));
+
+    await waitFor(() =>
+      expect(mockApi.memoryRemove).toHaveBeenCalledWith('agent-a', 'user-timezone'),
+    );
+    await waitFor(() => expect(screen.queryByLabelText('Content')).not.toBeInTheDocument());
+    expect(screen.queryByText('Save')).not.toBeInTheDocument();
+    expect(mockApi.memoryPut).not.toHaveBeenCalled();
+  });
+
+  it('does not render the previous agent memories or config after switching agent', async () => {
+    mockApi.memoryList.mockImplementation((agentId: string) =>
+      agentId === 'agent-a'
+        ? Promise.resolve([memory({ name: 'a-only-memory', type: 'user' })])
+        : new Promise(() => {}),
+    );
+    mockApi.memoryGetConfig.mockImplementation((agentId: string) =>
+      agentId === 'agent-a'
+        ? Promise.resolve({ enabled: false, sweep: 'off' })
+        : new Promise(() => {}),
+    );
+
+    const { rerender } = render(<MemoryTab agentId="agent-a" />);
+    expect(await screen.findByText('a-only-memory')).toBeInTheDocument();
+
+    rerender(<MemoryTab agentId="agent-b" />);
+
+    await waitFor(() => expect(screen.queryByText('a-only-memory')).not.toBeInTheDocument());
+    expect(screen.queryByLabelText('Automatic memory')).not.toBeInTheDocument();
   });
 });

@@ -106,11 +106,12 @@ export function MemoryTab({ agentId }: { agentId: string }): JSX.Element {
     void load(agentId);
   }, [agentId, load]);
 
+  // The store is module-global and keeps the previous agent's data until the
+  // next load resolves, so nothing below may render it while `loading` is true.
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Memory ({memories.length})</h2>
-        {loading && <output className="text-xs text-muted">Loading…</output>}
+        <h2 className="text-lg font-semibold">Memory{loading ? '' : ` (${memories.length})`}</h2>
       </div>
 
       {error && (
@@ -119,15 +120,27 @@ export function MemoryTab({ agentId }: { agentId: string }): JSX.Element {
         </div>
       )}
 
-      <MemoryConfigStrip config={config} onSave={(patch) => void saveConfig(agentId, patch)} />
+      {loading ? (
+        <output className="block text-sm text-muted">Loading…</output>
+      ) : (
+        <>
+          <MemoryConfigStrip config={config} onSave={(patch) => void saveConfig(agentId, patch)} />
 
-      <MemoryList
-        memories={memories}
-        onOpen={(name) => {
-          void open(agentId, name).then(setEditing);
-        }}
-        onRemove={(name) => void remove(agentId, name)}
-      />
+          <MemoryList
+            memories={memories}
+            onOpen={(name) => {
+              void open(agentId, name).then(setEditing);
+            }}
+            onRemove={(name) => {
+              // Deleting the record that is open in the editor must close the
+              // editor: a later Save would UPSERT the memory back into place.
+              void remove(agentId, name).then(() => {
+                setEditing((current) => (current?.name === name ? null : current));
+              });
+            }}
+          />
+        </>
+      )}
 
       {editing && (
         <EditForm
