@@ -105,9 +105,11 @@ export function createMemorySweepService(options: MemorySweepOptions): MemorySwe
     for (const candidate of candidates) {
       try {
         // The sweep is unattended and driven by a weaker model: it may never
-        // clobber something the user wrote by hand.
+        // clobber something the user wrote by hand. That includes 'import' —
+        // the legacy `MEMORY.md` the user hand-wrote in their workspace, held
+        // under the larger import budget a sweep rewrite would truncate.
         const existing = await store.get(candidate.name);
-        if (existing?.source === 'user') {
+        if (existing?.source === 'user' || existing?.source === 'import') {
           options.logger?.warn('memory sweep refused to overwrite a user-authored memory', {
             agentId: input.agentId,
             name: candidate.name,

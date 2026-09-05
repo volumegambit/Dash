@@ -398,6 +398,53 @@ describe('createMemorySweepService', () => {
     expect(await store.get('other-fact')).not.toBeNull();
   });
 
+  it('refuses to overwrite an imported (user-authored) memory', async () => {
+    const warn = vi.fn();
+    const store = new MemoryStore(dir);
+    // The legacy import holds the user's hand-written workspace MEMORY.md under
+    // the larger import budget — the sweep would truncate it to 2048 chars.
+    const imported = `${'user notes, hand written. '.repeat(200)}end`;
+    await store.save({
+      name: 'legacy-memory-md',
+      description: 'Imported from the workspace MEMORY.md',
+      type: 'project',
+      content: imported,
+      source: 'import',
+    });
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        { turnId: 't1', role: 'user', content: { type: 'user', text: 'note this' } },
+        {
+          turnId: 't1',
+          role: 'assistant',
+          content: { type: 'assistant', events: [{ type: 'response', content: 'ok', usage: {} }] },
+        },
+      ]),
+      memoryStore: () => store,
+      shouldSweep: () => true,
+      extract: async () => [
+        {
+          name: 'legacy-memory-md',
+          description: 'rewritten by the sweep',
+          type: 'project' as const,
+          content: 'a much shorter note',
+        },
+      ],
+      logger: { info: vi.fn(), warn },
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await svc.flush();
+
+    const kept = await store.get('legacy-memory-md');
+    expect(kept?.source).toBe('import');
+    expect(kept?.content).toBe(imported);
+    expect(warn).toHaveBeenCalledWith(
+      'memory sweep refused to overwrite a user-authored memory',
+      expect.objectContaining({ name: 'legacy-memory-md' }),
+    );
+  });
+
   it('still updates memories written by the agent or a previous sweep', async () => {
     const store = new MemoryStore(dir);
     await store.save({

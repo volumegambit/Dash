@@ -35,10 +35,21 @@ function sweepPrompt(index: MemoryInfo[]): string {
     : '(none)';
   return `You maintain long-term memory for an assistant. Given one exchange (user message and assistant reply), decide whether it contains facts worth remembering in future conversations: who the user is (type "user"), how they want the assistant to work (type "feedback"), ongoing work or constraints (type "project"), or pointers to external resources (type "reference"). Most exchanges contain nothing worth saving — then reply {"memories":[]}.
 
-Reply with ONLY minified JSON of the shape {"memories":[{"name":"kebab-case-slug","description":"one line","type":"user|feedback|project|reference","content":"the fact, under ${MEMORY_LIMITS.contentMax} characters"}]}. Reuse an existing name below to update it instead of creating a near-duplicate. Entries listed as "source: user" were written by the user themselves: never reuse or modify those names — if you disagree with one, propose a NEW name instead. Never save secrets, credentials, or details that only matter for this one exchange.
+Reply with ONLY minified JSON of the shape {"memories":[{"name":"kebab-case-slug","description":"one line","type":"user|feedback|project|reference","content":"the fact, under ${MEMORY_LIMITS.contentMax} characters"}]}. Reuse an existing name below to update it instead of creating a near-duplicate. Entries listed as "source: user" or "source: import" were written by the user themselves: never reuse or modify those names — if you disagree with one, propose a NEW name instead. Never save secrets, credentials, or details that only matter for this one exchange.
 
 Existing memories:
 ${existing}`;
+}
+
+/** Flatten a model-written description to a single bracket-free line inside the store limit. */
+function sanitizeDescription(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MEMORY_LIMITS.descriptionMax);
 }
 
 /** Tolerant parse of the model reply; invalid entries are dropped, never fatal. */
@@ -58,7 +69,12 @@ export function parseSweepReply(raw: string): SweepCandidate[] {
     if (!item || typeof item !== 'object') continue;
     const m = item as Record<string, unknown>;
     const name = typeof m.name === 'string' ? m.name.trim() : '';
-    const description = typeof m.description === 'string' ? m.description.trim() : '';
+    // The sweep model sees raw user chat text, so a description can carry
+    // anything back. It is rendered into the `<memory>` block of the system
+    // prompt every turn: keep it to one line with no angle brackets (the
+    // renderer neutralises `</memory>` too — belt and braces) and inside the
+    // store's limit, the same way `content` is truncated below.
+    const description = sanitizeDescription(m.description);
     const content = typeof m.content === 'string' ? m.content.trim() : '';
     if (!MEMORY_NAME_RE.test(name) || !description || !content || !isMemoryType(m.type)) continue;
     out.push({
