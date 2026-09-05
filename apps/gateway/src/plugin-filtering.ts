@@ -16,6 +16,25 @@
  */
 
 /**
+ * Narrow plugin SUB-AGENT DEFINITION files (`agents/*.md`) to the plugins an
+ * agent has selected. Same semantics as the `agentDefFiles` channel of
+ * {@link filterPluginsByAgent} — `undefined` selection = all, `[]` = none —
+ * exposed on its own because the definition registry needs ONLY this channel
+ * and passing empty arrays for the other four parameters would be both noise
+ * and a transposition hazard (skill dirs, command files and agent definitions
+ * are structurally identical). `filterPluginsByAgent` delegates here, so the
+ * two paths can never drift.
+ */
+export function filterAgentDefFilesByAgent(
+  agentPlugins: string[] | undefined,
+  allAgentDefFiles: Array<{ file: string; namespace: string }>,
+): Array<{ file: string; namespace: string }> {
+  if (agentPlugins === undefined) return allAgentDefFiles;
+  const selected = new Set(agentPlugins);
+  return allAgentDefFiles.filter((af) => selected.has(af.namespace));
+}
+
+/**
  * Filter the gateway's plugin skill dirs, command files and sub-agent
  * definition files down to the plugins an agent has selected.
  *
@@ -85,7 +104,7 @@ export function filterPluginsByAgent(
   // — filter each directly, keeping the two channels separate.
   const selectedNames = new Set(agentPlugins);
   const commandFiles = allCommandFiles.filter((cf) => selectedNames.has(cf.namespace));
-  const agentDefFiles = allAgentDefFiles.filter((af) => selectedNames.has(af.namespace));
+  const agentDefFiles = filterAgentDefFilesByAgent(agentPlugins, allAgentDefFiles);
 
   return { skillDirs, commandFiles, agentDefFiles };
 }
