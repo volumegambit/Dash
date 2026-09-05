@@ -50,7 +50,12 @@ struct MessageListView: View {
   var body: some View {
     let failedTurns = failedTurnIDs(in: messages)
     LazyVStack(spacing: 16) {
-      ForEach(messages) { message in
+      // Keyed on `rowID`, not `id` (transcript scroll fix, 2026-09-05): the
+      // gateway's `accepted` frame rewrites `id` from the local uuid to the
+      // server's, and keying on it made SwiftUI remove + re-insert the row
+      // the user just sent — replaying the entrance transition below and
+      // resetting the row's `@State`. See `ChatMessageState.rowID`.
+      ForEach(messages, id: \.rowID) { message in
         ChatMessageView(
           message: message,
           isAnsweringEnabled: isAnsweringEnabled,
@@ -62,7 +67,7 @@ struct MessageListView: View {
           onEditAndResend: onEditAndResend
         )
         // Entrance animation (chat-ux Phase 3 Task 4, audit #18): a fresh
-        // row (new `ChatMessageState.id`, `ForEach`'s identity) fades+rises
+        // row (new `ChatMessageState.rowID`, `ForEach`'s identity) fades+rises
         // in rather than popping in place — never re-triggered by an
         // in-place content update to an EXISTING row (streamed
         // text/tool-card deltas mutate that row's own properties, they
@@ -130,7 +135,9 @@ struct MessageListView: View {
 /// initial-load distinction directly, same pattern as `failedTurnIDs`/
 /// `userMessageID` above and `ChatTranscriptSignature` in `ChatView.swift`.
 func messageEntranceSignature(for messages: [ChatMessageState]) -> String? {
-  messages.last?.id
+  // `rowID`, not `id`: the ack rewriting the last row's id is the same row
+  // (see `ChatMessageState.rowID`), so it must not read as an append.
+  messages.last?.rowID
 }
 
 struct ChatMessageView: View {

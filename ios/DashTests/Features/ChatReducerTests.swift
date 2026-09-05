@@ -35,6 +35,87 @@ struct ChatReducerTests {
     #expect(effects == [.persistCursor(1)])
   }
 
+  @Test(
+    "accepted keeps the optimistic user row's identity (rowID) stable while adopting the server id — the row the user just sent must not be torn down and re-inserted by SwiftUI"
+  )
+  func acceptedPreservesRowIdentity() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(turnID: "turn-1", localUserID: "local-u", text: "Hello", images: [])
+    )
+    #expect(state.messages.map(\.rowID) == ["local-u"])
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-1",
+          conversationId: "conv-1",
+          userMessageId: "user-1",
+          assistantMessageId: "assistant-1",
+          revision: 2,
+          seq: 1
+        )
+      )
+    )
+
+    #expect(state.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(state.messages.map(\.rowID) == ["local-u", "assistant-1"])
+  }
+
+  @Test(
+    "a canonical reload (cachedMessagesLoaded) and a Load Earlier page (olderMessagesLoaded) keep the row identity of messages already on screen"
+  )
+  func canonicalReloadsPreserveRowIdentity() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(turnID: "turn-1", localUserID: "local-u", text: "Hello", images: [])
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-1",
+          conversationId: "conv-1",
+          userMessageId: "user-1",
+          assistantMessageId: "assistant-1",
+          revision: 2,
+          seq: 1
+        )
+      )
+    )
+    let canonical = [
+      message(
+        id: "user-1",
+        turnID: "turn-1",
+        ordinal: 1,
+        role: .user,
+        status: .completed,
+        content: .user(text: "Hello", images: nil)
+      ),
+      message(
+        id: "assistant-1",
+        turnID: "turn-1",
+        ordinal: 2,
+        role: .assistant,
+        status: .completed,
+        content: .assistant(events: [.textDelta(text: "Hi")])
+      ),
+    ]
+
+    var reloaded = state
+    _ = ChatReducer.reduce(state: &reloaded, action: .cachedMessagesLoaded(canonical, cursor: 4))
+    #expect(reloaded.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(reloaded.messages.map(\.rowID) == ["local-u", "assistant-1"])
+
+    var paged = state
+    _ = ChatReducer.reduce(state: &paged, action: .olderMessagesLoaded(canonical, nextCursor: nil))
+    #expect(paged.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(paged.messages.map(\.rowID) == ["local-u", "assistant-1"])
+  }
+
   @Test("canonical cached messages replace optimistic identities without duplicates")
   func canonicalCacheReconcilesOptimisticMessages() {
     var state = chatState()

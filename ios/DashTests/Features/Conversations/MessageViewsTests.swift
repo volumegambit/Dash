@@ -108,6 +108,17 @@ struct MessageEntranceSignatureTests {
   }
 
   @Test(
+    "the gateway ack adopting a server id for the last row (ChatReducer.reconcileAccepted rewrites `id`, never `rowID`) leaves the signal unchanged — it is the same row, so it must not re-enter"
+  )
+  func serverIDAdoptionLeavesSignalUnchanged() {
+    var message = userMessage(id: "local-u", turnID: "t1", text: "Hi", status: .streaming)
+    let before = [message]
+    message.id = "user-1"
+    message.status = .accepted
+    #expect(messageEntranceSignature(for: before) == messageEntranceSignature(for: [message]))
+  }
+
+  @Test(
     "initial load: empty-to-non-empty naturally changes the signal (nil to the first message's id), but this is harmless — MessageListView is only ever constructed once `messages` is already non-empty (see ChatView.swift's isEmpty branch), so there is no PREVIOUS render of this view for `.animation(value:)` to diff against for that transition"
   )
   func initialLoadSignalGoesFromNilToTheFirstMessageID() {
