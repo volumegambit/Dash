@@ -346,6 +346,97 @@ describe('ContentBlocks', () => {
     rerender(<ContentBlocks content={failed} />);
     expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
   });
+  it('shows what a tool call returned in the collapsed header', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'grep', input: { pattern: 'foo' } },
+        { type: 'tool_result', id: 'call-1', name: 'grep', content: 'a.ts:1: foo\nb.ts:2: foo' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('2 matches');
+  });
+
+  it('says nothing in the header while a tool is still running', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'sleep 5' } },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-card-outcome')).toBeNull();
+  });
+
+  it('opens a failed tool call without a click, showing the error once', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'bash',
+          content: 'command not found',
+          isError: true,
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
+    // ONCE: the header outcome is hidden while expanded, matching iOS. It used
+    // to print the same error text right-aligned in the header as well.
+    expect(screen.queryByTestId('tool-card-outcome')).toBeNull();
+  });
+
+  it('keeps a successful tool call collapsed', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
+        { type: 'tool_result', id: 'call-1', name: 'bash', content: 'a\nb' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+  });
+
+  it('reports an edit as a diff stat, from the result details', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'edit', input: { path: 'x.ts' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'edit',
+          content: 'ok',
+          details: { diff: '--- a/x.ts\n+++ b/x.ts\n-old\n+new' },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('+1 -1');
+  });
+
+  it('does not print TodoWrite\'s own "ok" result under the checklist', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        {
+          type: 'tool_use_start',
+          id: 'call-1',
+          name: 'TodoWrite',
+          input: { todos: [{ content: 'Ship it', status: 'pending' }] },
+        },
+        { type: 'tool_result', id: 'call-1', name: 'TodoWrite', content: 'ok' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-todos')).toBeTruthy();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+  });
 });
 
 describe('paragraph keys', () => {
@@ -388,75 +479,4 @@ describe('getMessageCopyText', () => {
 
   // Tool-use UX 2026-09-05: the collapsed row answers what the agent did, to
   // what, and what came back. The third was missing entirely.
-  it('shows what a tool call returned in the collapsed header', () => {
-    const content: ConversationContent = {
-      type: 'assistant',
-      events: [
-        { type: 'tool_use_start', id: 'call-1', name: 'grep', input: { pattern: 'foo' } },
-        { type: 'tool_result', id: 'call-1', name: 'grep', content: 'a.ts:1: foo\nb.ts:2: foo' },
-      ],
-    };
-    render(<ContentBlocks content={content} />);
-    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('2 matches');
-  });
-
-  it('says nothing in the header while a tool is still running', () => {
-    const content: ConversationContent = {
-      type: 'assistant',
-      events: [
-        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'sleep 5' } },
-      ],
-    };
-    render(<ContentBlocks content={content} />);
-    expect(screen.queryByTestId('tool-card-outcome')).toBeNull();
-  });
-
-  it('opens a failed tool call without a click, and names the error in the header', () => {
-    const content: ConversationContent = {
-      type: 'assistant',
-      events: [
-        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } },
-        {
-          type: 'tool_result',
-          id: 'call-1',
-          name: 'bash',
-          content: 'command not found',
-          isError: true,
-        },
-      ],
-    };
-    render(<ContentBlocks content={content} />);
-    expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
-    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('command not found');
-  });
-
-  it('keeps a successful tool call collapsed', () => {
-    const content: ConversationContent = {
-      type: 'assistant',
-      events: [
-        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
-        { type: 'tool_result', id: 'call-1', name: 'bash', content: 'a\nb' },
-      ],
-    };
-    render(<ContentBlocks content={content} />);
-    expect(screen.queryByTestId('tool-result')).toBeNull();
-  });
-
-  it('reports an edit as a diff stat, from the result details', () => {
-    const content: ConversationContent = {
-      type: 'assistant',
-      events: [
-        { type: 'tool_use_start', id: 'call-1', name: 'edit', input: { path: 'x.ts' } },
-        {
-          type: 'tool_result',
-          id: 'call-1',
-          name: 'edit',
-          content: 'ok',
-          details: { diff: '--- a/x.ts\n+++ b/x.ts\n-old\n+new' },
-        },
-      ],
-    };
-    render(<ContentBlocks content={content} />);
-    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('+1 -1');
-  });
 });

@@ -268,15 +268,24 @@ describe('formatVisibleDetails', () => {
     expect(formatVisibleDetails('write', input)).toEqual([]);
   });
 
-  it('drops rows whose value is only a type placeholder', () => {
-    const input = JSON.stringify({ schema: { a: 1 }, items: [1, 2, 3] });
-    expect(formatVisibleDetails('some_tool', input)).toEqual([]);
+  it('drops rows whose value is only a type placeholder, for a KNOWN tool', () => {
+    const input = JSON.stringify({ pattern: 'x', items: [1, 2, 3] });
+    expect(formatVisibleDetails('grep', input)).toEqual([]);
   });
 
-  it('keeps the row when the header shortened the executable', () => {
+  it('drops the command row for bash, which the header already carries', () => {
+    // Bash is the one tool whose header summary is SHORTENED, so the duplicate
+    // rule cannot match it and the full launcher path was printed directly
+    // under a header that already said the same thing.
     const command = '/opt/homebrew/bin/gog gmail list';
-    expect(formatVisibleDetails('bash', JSON.stringify({ command }))).toEqual([
-      { key: 'command', value: command },
+    expect(formatVisibleDetails('bash', JSON.stringify({ command }))).toEqual([]);
+  });
+
+  it("keeps an unknown tool's nested arguments as JSON", () => {
+    const input = JSON.stringify({ query: 'tool card', limit: 5, filter: { state: 'open' } });
+    expect(formatVisibleDetails('linear__search_issues', input)).toEqual([
+      { key: 'limit', value: '5' },
+      { key: 'filter', value: '{"state":"open"}' },
     ]);
   });
 });

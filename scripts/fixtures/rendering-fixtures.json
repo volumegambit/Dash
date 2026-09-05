@@ -104,10 +104,10 @@
       "expectedLabel": "Search"
     },
     {
-      "name": "label: fallback capitalization for custom_thing",
+      "name": "label: an unknown tool becomes title-cased words",
       "kind": "label",
       "toolName": "custom_thing",
-      "expectedLabel": "Custom_thing"
+      "expectedLabel": "Custom Thing"
     },
     {
       "name": "label: fallback capitalization for TodoWrite",
@@ -625,30 +625,68 @@
       "expectedDetails": []
     },
     {
-      "name": "details: a truncated summary leaves its row in place",
+      "name": "details: bash drops its command row, which the header carries",
       "kind": "details",
       "toolName": "bash",
       "input": {
         "command": "/opt/homebrew/bin/gog gmail list"
       },
-      "expectedDetails": [
-        {
-          "key": "command",
-          "value": "/opt/homebrew/bin/gog gmail list"
-        }
-      ]
+      "expectedDetails": []
     },
     {
       "name": "details: type placeholders are dropped",
       "kind": "details",
-      "toolName": "some_tool",
+      "toolName": "grep",
       "input": {
-        "schema": {
+        "pattern": "x",
+        "files": [1, 2, 3],
+        "opts": {
           "a": 1
-        },
-        "items": [1, 2, 3]
+        }
       },
       "expectedDetails": []
+    },
+    {
+      "name": "details: an unknown tool keeps its nested arguments as JSON",
+      "kind": "details",
+      "toolName": "linear__search_issues",
+      "input": {
+        "query": "tool card",
+        "limit": 5,
+        "filter": {
+          "state": "open"
+        }
+      },
+      "expectedDetails": [
+        {
+          "key": "limit",
+          "value": "5"
+        },
+        {
+          "key": "filter",
+          "value": "{\"state\":\"open\"}"
+        }
+      ]
+    },
+    {
+      "name": "details: a long path is truncated in the summary so its row survives",
+      "kind": "details",
+      "toolName": "grep",
+      "input": {
+        "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expectedDetails": [
+        {
+          "key": "pattern",
+          "value": "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\" (100 chars)"
+        }
+      ]
+    },
+    {
+      "name": "label: a namespaced MCP tool drops its server prefix",
+      "kind": "label",
+      "toolName": "linear__search_issues",
+      "expectedLabel": "Search Issues"
     }
   ]
 }

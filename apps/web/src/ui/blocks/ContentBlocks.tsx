@@ -3,13 +3,22 @@ import { type ReactNode, useEffect, useState } from 'react';
 import { Markdown } from './Markdown.js';
 import {
   type TodoItem,
+  bodyIsRedundant,
+  diffLines,
+  directoryEntries,
+  fitsInline,
   formatVisibleDetails,
+  grepGroups,
   isTodoWrite,
   normalizeTool,
   parseTodos,
   resultSummary,
+  searchResults,
+  stripResultChrome,
   summarize,
   toolLabel,
+  toolNamespace,
+  writtenContent,
 } from './tool-presentation.js';
 
 export interface ContentBlocksProps {
@@ -102,14 +111,26 @@ function ToolStatusGlyph({ status }: { status: ToolStatus }): ReactNode {
   return <span className="tool-status-dot" aria-hidden="true" />;
 }
 
-/** Tool result branching (spec appendix §3, ToolResult): error → red
- * pre-wrap text; empty → muted italic "No output"; ≤3 lines → green
- * pre-wrap text; longer → 256px-capped scrollable block on the dark code
- * surface. Diff rendering, directory-listing/numbered-source detection, and
- * TodoWrite's checklist body are out of scope here — same reduced scope as
- * the iOS twin's `resultView` (design doc "Out of scope" + iOS Task 2
- * precedent: brief authoritative over MC's fuller ToolResult.tsx). */
-function ToolResultView({ content, isError }: { content: string; isError?: boolean }): ReactNode {
+/** Per-tool-type body (2026-09-05 per-type goal), replacing a branch that
+ * keyed only on how many NEWLINES the result contained.
+ *
+ * Two defects that branch caused, both seen in the gallery: a 1.6 KB
+ * single-line `web_fetch` body has no newlines, so it took the "short" path —
+ * no height cap, no scroll — and consumed the viewport; and the protocol
+ * chrome (`<path>`, `<content>`, `(N entries)`) was printed verbatim. */
+function ToolResultView({
+  name,
+  input,
+  content,
+  isError,
+  details,
+}: {
+  name: string;
+  input?: Record<string, unknown>;
+  content: string;
+  isError?: boolean;
+  details?: unknown;
+}): ReactNode {
   if (isError) {
     return (
       <p data-testid="tool-result" className="tool-result tool-result-error">
@@ -117,24 +138,117 @@ function ToolResultView({ content, isError }: { content: string; isError?: boole
       </p>
     );
   }
-  if (!content.trim()) {
+
+  const diff = diffLines(details);
+  if (diff.length > 0) {
+    // `edit`: the diff IS the result. It rode along in `details.diff` and was
+    // thrown away — the body used to read "ok".
+    return (
+      <div data-testid="tool-diff" className="tool-diff">
+        {diff.map((line, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: diff lines are positional by nature and this list is immutable once rendered
+            key={`${index}-${line.text}`}
+            className={`tool-diff-line tool-diff-${line.kind}`}
+          >
+            {line.text || ' '}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  const normalized = normalizeTool(name);
+
+  if (normalized === 'write') {
+    const written = writtenContent(input);
+    if (written) {
+      return (
+        <pre data-testid="tool-result" className="tool-result tool-result-long">
+          {written}
+        </pre>
+      );
+    }
+  }
+
+  if (normalized === 'ls') {
+    const entries = directoryEntries(content);
+    if (entries.length > 0) {
+      return (
+        <ul data-testid="tool-entries" className="tool-entries">
+          {entries.map((entry) => (
+            <li
+              key={entry.name}
+              className={entry.isDirectory ? 'tool-entry tool-entry-dir' : 'tool-entry'}
+            >
+              <span aria-hidden="true" className="tool-entry-glyph">
+                {entry.isDirectory ? '▸' : '·'}
+              </span>
+              {entry.name}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+  }
+
+  if (normalized === 'grep' || normalized === 'find') {
+    const groups = grepGroups(content);
+    if (groups.length > 0) {
+      return (
+        <div data-testid="tool-grep" className="tool-grep">
+          {groups.map((group) => (
+            <div key={group.path} className="tool-grep-group">
+              <p className="tool-grep-path">{group.path}</p>
+              {group.matches.map((m) => (
+                <p key={`${m.line}-${m.text}`} className="tool-grep-match">
+                  <span className="tool-grep-line">{m.line}</span>
+                  {m.text}
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    }
+  }
+
+  if (normalized === 'web_search') {
+    const hits = searchResults(content);
+    if (hits.length > 0) {
+      return (
+        <ul data-testid="tool-search-results" className="tool-search-results">
+          {hits.map((hit) => (
+            <li key={`${hit.host}-${hit.title}`} className="tool-search-result">
+              <span className="tool-search-title">{hit.title}</span>
+              <span className="tool-search-host">{hit.host}</span>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+  }
+
+  if (bodyIsRedundant(name, content)) return null;
+
+  const body = stripResultChrome(content);
+  if (!body) {
     return (
       <p data-testid="tool-result" className="tool-result tool-result-empty">
         No output
       </p>
     );
   }
-  const lineCount = content.split('\n').length;
-  if (lineCount <= 3) {
+  if (fitsInline(body)) {
     return (
       <p data-testid="tool-result" className="tool-result tool-result-short">
-        {content}
+        {body}
       </p>
     );
   }
   return (
     <pre data-testid="tool-result" className="tool-result tool-result-long">
-      {content}
+      {body}
     </pre>
   );
 }
@@ -146,12 +260,11 @@ function ToolResultView({ content, isError }: { content: string; isError?: boole
  * `data-status` carries the state for styling and for tests, rather than
  * relying on a glyph character. */
 function TodoList({ todos }: { todos: TodoItem[] }): ReactNode {
-  const done = todos.filter((t) => t.status === 'completed').length;
   return (
+    // No count row: the collapsed header already reads "1/3 done" and the
+    // expanded header keeps its summary, so a second "1/3 completed" directly
+    // beneath it was the same fact twice.
     <div className="tool-todos" data-testid="tool-todos">
-      <p className="tool-todos-count">
-        {done}/{todos.length} completed
-      </p>
       {todos.map((todo) => (
         <div
           key={todo.id ?? todo.content}
@@ -202,6 +315,7 @@ function ToolUseBlock({
   }, [status]);
   const summary = summarize(tool.name, tool.input);
   const outcome = resultSummary(tool.name, result?.content, result?.isError, result?.details);
+  const namespace = toolNamespace(tool.name);
   const details = formatVisibleDetails(tool.name, tool.input);
   const isBash = normalizeTool(tool.name) === 'bash';
 
@@ -218,13 +332,17 @@ function ToolUseBlock({
         aria-expanded={open}
       >
         <ToolStatusGlyph status={status} />
+        {namespace && <span className="tool-card-namespace">{namespace}</span>}
         <span className="tool-card-label">{toolLabel(tool.name)}</span>
         {summary && (
           <span className={`tool-card-summary${isBash ? ' tool-card-summary-mono' : ''}`}>
             {summary}
           </span>
         )}
-        {outcome && (
+        {/* Only while collapsed, matching iOS. Expanded, the body below shows
+            the result itself, so a failed card printed its error twice —
+            right-aligned in the header and again underneath. */}
+        {outcome && !open && (
           <span className="tool-card-outcome" data-testid="tool-card-outcome">
             {outcome}
           </span>
@@ -245,7 +363,20 @@ function ToolUseBlock({
               </div>
             )
           )}
-          {result && <ToolResultView content={result.content} isError={result.isError} />}
+          {/* A task card's body IS the checklist. TodoWrite's own result is the
+              string "ok", which rendered as a stray line under the list —
+              iOS never showed it, so this was also a client divergence. An
+              error still renders, because a failed TodoWrite has something to
+              say. */}
+          {result && (!todos || result.isError) && (
+            <ToolResultView
+              name={tool.name}
+              input={tool.input}
+              content={result.content}
+              isError={result.isError}
+              details={result.details}
+            />
+          )}
         </div>
       )}
     </div>

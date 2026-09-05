@@ -1,14 +1,23 @@
 import {
+  bodyIsRedundant,
+  countLines,
+  diffLines,
+  directoryEntries,
+  fitsInline,
   formatDetails,
   formatVisibleDetails,
+  humanizeToolName,
   isTodoWrite,
   middleTruncate,
   normalizeTool,
   parseTodos,
   resultSummary,
+  searchResults,
   shortenCommand,
   summarize,
   toolLabel,
+  toolNamespace,
+  writtenContent,
 } from './tool-presentation.js';
 
 // Table tests mirror ios/DashTests/Features/ToolPresentationTests.swift
@@ -43,9 +52,12 @@ describe('toolLabel', () => {
     expect(toolLabel(name)).toBe(expected);
   });
 
-  it('falls back to a capitalized raw name for unknown tools', () => {
+  it('turns an unknown tool into title-cased words', () => {
     expect(toolLabel('search')).toBe('Search');
-    expect(toolLabel('custom_thing')).toBe('Custom_thing');
+    // Was 'Custom_thing': the old fallback uppercased the first character and
+    // left the rest, which rendered MCP tools as `Linear__search_issues`.
+    expect(toolLabel('custom_thing')).toBe('Custom Thing');
+    expect(toolLabel('linear__search_issues')).toBe('Search Issues');
   });
 });
 
@@ -343,25 +355,106 @@ describe('formatVisibleDetails filtering', () => {
   });
 
   it('keeps the row when the header truncated the value', () => {
-    const command = `echo ${'a'.repeat(100)}`;
-    const rows = formatVisibleDetails('bash', { command });
+    const pattern = 'a'.repeat(100);
+    const rows = formatVisibleDetails('grep', { pattern });
     expect(rows).toHaveLength(1);
-    expect(rows[0].key).toBe('command');
-    expect(rows[0].value).not.toBe(summarize('bash', { command }));
+    expect(rows[0].key).toBe('pattern');
+    expect(rows[0].value).not.toBe(summarize('grep', { pattern }));
   });
 
-  it('keeps the row when the header shortened the executable', () => {
+  it('drops the command row for bash, which the header already carries', () => {
+    // Bash is the one tool where the header's summary is SHORTENED, so the
+    // duplicate rule cannot match it and the full launcher path was printed
+    // directly under a header that already said the same thing.
     const command = '/opt/homebrew/bin/gog gmail list';
-    expect(formatVisibleDetails('bash', { command })).toEqual([{ key: 'command', value: command }]);
+    expect(formatVisibleDetails('bash', { command })).toEqual([]);
   });
 
-  it('drops rows whose value is only a type placeholder', () => {
-    expect(formatVisibleDetails('some_tool', { schema: { a: 1 }, items: [1, 2, 3] })).toEqual([]);
+  it('drops rows whose value is only a type placeholder, for a KNOWN tool', () => {
+    expect(formatVisibleDetails('grep', { pattern: 'x', items: [1, 2, 3] })).toEqual([]);
+  });
+
+  it("keeps an unknown tool's nested arguments as JSON", () => {
+    // For a tool this app does not know the arguments are the only thing that
+    // explains the call. Collapsing them to `{object}` and then dropping that
+    // placeholder left an MCP card showing `Limit: 5` and nothing else.
+    expect(
+      formatVisibleDetails('linear__search_issues', {
+        query: 'tool card',
+        limit: 5,
+        filter: { state: 'open' },
+      }),
+    ).toEqual([
+      { key: 'limit', value: '5' },
+      { key: 'filter', value: '{"state":"open"}' },
+    ]);
   });
 
   it('keeps ordinary rows alongside a dropped duplicate', () => {
     expect(formatVisibleDetails('grep', { pattern: 'foo', path: 'src' })).toEqual([
       { key: 'path', value: 'src' },
     ]);
+  });
+});
+
+describe('per-type helpers', () => {
+  it('humanizes a namespaced MCP tool name and splits off its server', () => {
+    expect(humanizeToolName('linear__search_issues')).toBe('Search Issues');
+    expect(toolNamespace('linear__search_issues')).toBe('Linear');
+  });
+
+  it('leaves a core tool without a namespace', () => {
+    expect(toolNamespace('bash')).toBe('');
+    expect(humanizeToolName('some_tool')).toBe('Some Tool');
+  });
+
+  it('keeps a long SINGLE-LINE body out of the inline treatment', () => {
+    // The defect this replaces: the old rule was newline count alone, so a
+    // 1.6 KB one-line page body counted as "short" and rendered uncapped.
+    const oneLongLine = 'x'.repeat(1600);
+    expect(countLines(oneLongLine)).toBe(1);
+    expect(fitsInline(oneLongLine)).toBe(false);
+    expect(fitsInline('a\nb\nc')).toBe(true);
+  });
+
+  it('parses a unified diff and drops the file headers', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new';
+    expect(diffLines({ diff })).toEqual([
+      { kind: 'hunk', text: '@@ -1,2 +1,3 @@' },
+      { kind: 'context', text: ' keep' },
+      { kind: 'removed', text: '-old' },
+      { kind: 'added', text: '+new' },
+    ]);
+  });
+
+  it('returns no diff lines when there is no diff', () => {
+    expect(diffLines(undefined)).toEqual([]);
+    expect(diffLines({})).toEqual([]);
+  });
+
+  it('marks directories in a listing and drops the entry-count chrome', () => {
+    expect(directoryEntries('(2 entries)\nui/\nmain.tsx')).toEqual([
+      { name: 'ui/', isDirectory: true },
+      { name: 'main.tsx', isDirectory: false },
+    ]);
+  });
+
+  it('parses web_search results into title and host', () => {
+    const content = '1. [Observation](https://www.developer.apple.com/x)\n   snippet';
+    expect(searchResults(content)).toEqual([{ title: 'Observation', host: 'developer.apple.com' }]);
+  });
+
+  it('returns no search results for an unexpected format', () => {
+    expect(searchResults('no results found')).toEqual([]);
+  });
+
+  it('treats a one-line skill confirmation as a redundant body', () => {
+    expect(bodyIsRedundant('load_skill', "Loaded skill 'frontend-design'.")).toBe(true);
+    expect(bodyIsRedundant('bash', 'done')).toBe(false);
+  });
+
+  it('extracts the content a write was asked to write', () => {
+    expect(writtenContent({ path: 'a.md', content: '# Hi' })).toBe('# Hi');
+    expect(writtenContent({ path: 'a.md' })).toBe('');
   });
 });
