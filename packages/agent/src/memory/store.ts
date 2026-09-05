@@ -165,11 +165,21 @@ export class MemoryStore {
       );
     }
     const today = todayIso();
+    // Provenance is sticky for user-authored memories: the agent (or the
+    // sweep) may legitimately refine what the user wrote, but it must not
+    // downgrade `source` to 'agent'/'sweep' — that would void the sweep's
+    // "never clobber a hand-written memory" guard for every later turn and
+    // make the "who wrote this" column lie. The human-facing API path
+    // (source 'user') can still claim a memory the agent wrote.
+    const userAuthored =
+      existing !== null && (existing.source === 'user' || existing.source === 'import');
+    const downgrading = input.source === 'agent' || input.source === 'sweep';
+    const source = existing && userAuthored && downgrading ? existing.source : input.source;
     const record: MemoryRecord = {
       name: input.name,
       description: input.description.trim(),
       type: input.type,
-      source: input.source,
+      source,
       createdAt: existing?.createdAt ?? today,
       updatedAt: today,
       content: input.content.trim(),

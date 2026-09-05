@@ -88,4 +88,43 @@ describe('memory tools', () => {
       'Memory "a" not found.',
     );
   });
+
+  it.each(['user', 'import'] as const)(
+    'forget_memory refuses to delete a %s-authored memory',
+    async (source) => {
+      await store.save({
+        name: 'deploy-policy',
+        description: 'd',
+        type: 'project',
+        content: 'x',
+        source,
+      });
+      const forget = createForgetMemoryTool(store);
+      const r = await forget.execute('t', { name: 'deploy-policy' });
+      expect(r.content[0].text).toMatch(/written by the user/i);
+      expect(r.content[0].text).toMatch(/raise it with them/i);
+      expect(r.details).toEqual({});
+      expect(await store.get('deploy-policy')).not.toBeNull();
+    },
+  );
+
+  it('save_memory keeps a user-authored source when the agent updates the entry', async () => {
+    await store.save({
+      name: 'deploy-policy',
+      description: 'd',
+      type: 'project',
+      content: 'x',
+      source: 'user',
+    });
+    const save = createSaveMemoryTool(store);
+    await save.execute('t', {
+      name: 'deploy-policy',
+      description: 'd2',
+      type: 'project',
+      content: 'y',
+    });
+    const after = await store.get('deploy-policy');
+    expect(after?.content).toBe('y');
+    expect(after?.source).toBe('user');
+  });
 });

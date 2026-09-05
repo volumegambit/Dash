@@ -109,9 +109,18 @@ export function createForgetMemoryTool(store: MemoryStore): AgentTool<typeof nam
   return {
     name: 'forget_memory',
     label: 'Forget Memory',
-    description: 'Delete one memory by name when it is wrong or no longer applies.',
+    description:
+      'Delete one memory by name when it is wrong or no longer applies. Memories the user wrote themselves cannot be deleted this way.',
     parameters: nameSchema,
     execute: async (_toolCallId: string, params: NameInput) => {
+      // Tool-level guard, deliberately NOT in the store: the HTTP DELETE route
+      // is the user deleting their own memory on purpose and must keep working.
+      const existing = await store.get(params.name);
+      if (existing && (existing.source === 'user' || existing.source === 'import')) {
+        return textResult(
+          `Memory "${params.name}" was written by the user, so you cannot delete it. If you believe it is wrong or out of date, raise it with them instead of deleting it.`,
+        );
+      }
       const removed = await store.remove(params.name);
       if (!removed) return textResult(`Memory "${params.name}" not found.`);
       return textResult(`Forgot memory "${params.name}".`, {

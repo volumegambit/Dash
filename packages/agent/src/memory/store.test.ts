@@ -135,6 +135,41 @@ describe('MemoryStore', () => {
     ).resolves.toMatchObject({ action: 'updated' });
   });
 
+  it('preserves a user-authored source when the agent or the sweep updates it', async () => {
+    for (const [existing, incoming] of [
+      ['user', 'agent'],
+      ['user', 'sweep'],
+      ['import', 'agent'],
+      ['import', 'sweep'],
+    ] as const) {
+      const name = `m-${existing}-${incoming}`;
+      await store.save({ name, description: 'd', type: 'user', content: 'c', source: existing });
+      const { record } = await store.save({
+        name,
+        description: 'refined',
+        type: 'user',
+        content: 'c2',
+        source: incoming,
+      });
+      // The write still lands — only the provenance is protected.
+      expect(record.content).toBe('c2');
+      expect(record.source).toBe(existing);
+      expect((await store.get(name))?.source).toBe(existing);
+    }
+  });
+
+  it('lets the user path (re)claim a memory the agent wrote', async () => {
+    await store.save({ name: 'a', description: 'd', type: 'user', content: 'c', source: 'agent' });
+    const { record } = await store.save({
+      name: 'a',
+      description: 'd',
+      type: 'user',
+      content: 'c2',
+      source: 'user',
+    });
+    expect(record.source).toBe('user');
+  });
+
   it('skips unparsable files and ignores MEMORY.md when listing', async () => {
     await store.save({
       name: 'good',
