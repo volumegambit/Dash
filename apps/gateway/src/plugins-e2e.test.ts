@@ -134,6 +134,18 @@ async function writeMcpPlugin(pluginsDir: string, name: string): Promise<void> {
     join(dir, 'skills', 'greeter', 'SKILL.md'),
     '---\nname: greeter\ndescription: greets people\n---\nSay hi.',
   );
+  // Command — becomes the flat `load_skill`-able skill `<plugin>:triage`.
+  await mkdir(join(dir, 'commands'), { recursive: true });
+  await writeFile(join(dir, 'commands', 'triage.md'), '# Triage\nTriage it.');
+  // Sub-agent DEFINITION (spec §6.2) — must NOT become a loadable skill. It is
+  // routed to `PluginWiringState.agentDefFiles` and consumed by the sub-agent
+  // definition registry instead; CF5b asserts `<plugin>:reviewer` never shows
+  // up in GET /agents/:id/skills.
+  await mkdir(join(dir, 'agents'), { recursive: true });
+  await writeFile(
+    join(dir, 'agents', 'reviewer.md'),
+    '---\nname: reviewer\ndescription: reviews code\n---\nReview the code.',
+  );
   // MCP server — code component, withheld until trusted.
   await writeFile(
     join(dir, '.mcp.json'),
@@ -682,6 +694,13 @@ describe('plugin mutate → hot-reload end-to-end', () => {
       const greeter = afterSkills.find((s) => s.name === 'greeter');
       expect(greeter).toBeDefined();
       expect(greeter?.source).toBe('plugin');
+      // B2 / spec §6.2, through the REAL management app: a plugin `commands/*.md`
+      // stays a `load_skill`-able `<plugin>:<command>` skill, while its
+      // `agents/*.md` is a sub-agent DEFINITION and must never be listed as one.
+      // This is the user-visible negative of the split — previously only asserted
+      // in the non-CI scripts/plugins-e2e/run.mjs.
+      expect(afterSkills.map((s) => s.name)).toContain('disco:triage');
+      expect(afterSkills.map((s) => s.name)).not.toContain('disco:reviewer');
     } finally {
       await cleanup();
     }
