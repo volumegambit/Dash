@@ -60,8 +60,31 @@ describe('parseAgentDefinition', () => {
     expect(r.ok && r.definition.name).toBe('p:a');
   });
   it('splitToolList handles commas inside agent()', () => {
-    expect(splitToolList('read, agent(a, b), mcp__*')).toEqual(['read', 'agent(a, b)', 'mcp__*']);
-    expect(splitToolList(['read'])).toEqual(['read']);
-    expect(splitToolList(undefined)).toBeUndefined();
+    expect(splitToolList('read, agent(a, b), mcp__*')).toEqual({
+      ok: true,
+      items: ['read', 'agent(a, b)', 'mcp__*'],
+    });
+    expect(splitToolList(['read'])).toEqual({ ok: true, items: ['read'] });
+    expect(splitToolList(undefined)).toEqual({ ok: true, items: undefined });
+  });
+
+  // A stray `)` used to drive the depth counter NEGATIVE, so the following
+  // comma was treated as "inside parentheses" and `agent(a)), foo` collapsed
+  // into ONE bogus tool entry instead of being rejected. Both an unclosed `(`
+  // and an unopened `)` are now hard parse errors, per field.
+  it('rejects unbalanced parentheses in tools and disallowedTools', () => {
+    expect(
+      parseAgentDefinition('---\nname: a\ndescription: d\ntools: agent(a)), foo\n---\nb', meta),
+    ).toEqual({ ok: false, error: 'unbalanced parentheses in tools list' });
+    expect(
+      parseAgentDefinition('---\nname: a\ndescription: d\ntools: read, agent(a, b\n---\nb', meta),
+    ).toEqual({ ok: false, error: 'unbalanced parentheses in tools list' });
+    expect(
+      parseAgentDefinition('---\nname: a\ndescription: d\ndisallowedTools: x)\n---\nb', meta),
+    ).toEqual({ ok: false, error: 'unbalanced parentheses in disallowedTools list' });
+    expect(splitToolList('agent(a)), foo')).toEqual({
+      ok: false,
+      error: 'unbalanced parentheses',
+    });
   });
 });

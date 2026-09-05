@@ -32,17 +32,31 @@ const IGNORED_KEY_LIST = [
 ];
 
 /**
+ * Outcome of splitting a tool list. `items` is `undefined` when the input was
+ * `undefined` or split to nothing; `ok: false` means the input's parentheses do
+ * not balance, which the caller turns into a per-field parse error.
+ */
+export type SplitToolListResult =
+  | { ok: true; items: string[] | undefined }
+  | { ok: false; error: 'unbalanced parentheses' };
+
+/**
  * Split a comma-separated tool list, respecting parentheses.
  * Handles strings like "read, agent(a, b), mcp__*" → ['read', 'agent(a, b)', 'mcp__*']
  * Also handles arrays and undefined.
+ *
+ * UNBALANCED INPUT IS AN ERROR, never a silent mis-split. A stray `)` used to
+ * drive the depth counter negative, so every later comma looked "nested" and
+ * `agent(a)), foo` collapsed into a single bogus entry that then reached tool
+ * resolution. An unopened `)` and an unclosed `(` both return `ok: false`.
  */
-export function splitToolList(value: string | string[] | undefined): string[] | undefined {
+export function splitToolList(value: string | string[] | undefined): SplitToolListResult {
   if (value === undefined) {
-    return undefined;
+    return { ok: true, items: undefined };
   }
 
   if (Array.isArray(value)) {
-    return value;
+    return { ok: true, items: value };
   }
 
   // Track parenthesis depth while splitting on commas
@@ -57,6 +71,9 @@ export function splitToolList(value: string | string[] | undefined): string[] | 
       depth++;
       current += char;
     } else if (char === ')') {
+      if (depth === 0) {
+        return { ok: false, error: 'unbalanced parentheses' };
+      }
       depth--;
       current += char;
     } else if (char === ',' && depth === 0) {
@@ -71,13 +88,18 @@ export function splitToolList(value: string | string[] | undefined): string[] | 
     }
   }
 
+  // An unclosed `(` is just as unbalanced as a stray `)`.
+  if (depth !== 0) {
+    return { ok: false, error: 'unbalanced parentheses' };
+  }
+
   // Don't forget the last item
   const trimmed = current.trim();
   if (trimmed) {
     result.push(trimmed);
   }
 
-  return result.length > 0 ? result : undefined;
+  return { ok: true, items: result.length > 0 ? result : undefined };
 }
 
 /**
@@ -116,25 +138,33 @@ export function parseAgentDefinition(
     return { ok: false, error: 'description is required' };
   }
 
-  // Parse tools (optional)
+  // Parse tools (optional). Unbalanced parentheses are a hard error: silently
+  // keeping a mis-split entry would hand tool resolution a name no grant can
+  // ever match.
   let tools: string[] | undefined;
   if (fields.tools !== undefined) {
     const toolsValue = Array.isArray(fields.tools) ? fields.tools.join(', ') : String(fields.tools);
     const split = splitToolList(toolsValue);
-    if (split && split.length > 0) {
-      tools = split;
+    if (!split.ok) {
+      return { ok: false, error: 'unbalanced parentheses in tools list' };
+    }
+    if (split.items && split.items.length > 0) {
+      tools = split.items;
     }
   }
 
-  // Parse disallowedTools (optional)
+  // Parse disallowedTools (optional) — same grammar, same rejection.
   let disallowedTools: string[] | undefined;
   if (fields.disallowedTools !== undefined) {
     const toolsValue = Array.isArray(fields.disallowedTools)
       ? fields.disallowedTools.join(', ')
       : String(fields.disallowedTools);
     const split = splitToolList(toolsValue);
-    if (split && split.length > 0) {
-      disallowedTools = split;
+    if (!split.ok) {
+      return { ok: false, error: 'unbalanced parentheses in disallowedTools list' };
+    }
+    if (split.items && split.items.length > 0) {
+      disallowedTools = split.items;
     }
   }
 

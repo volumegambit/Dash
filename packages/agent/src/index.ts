@@ -50,7 +50,11 @@ export type {
   SkillOpCode,
 } from './skills/index.js';
 export type { AgentDefinition, ParseDefinitionResult } from './agents/definition.js';
-export { parseAgentDefinition, splitToolList } from './agents/definition.js';
+export {
+  parseAgentDefinition,
+  type SplitToolListResult,
+  splitToolList,
+} from './agents/definition.js';
 
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.
