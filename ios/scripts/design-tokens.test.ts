@@ -26,6 +26,7 @@ function swiftFiles(dir: string): string[] {
 
 const RADIUS_LITERAL = /cornerRadius:\s*\d/g;
 const OPACITY_LITERAL = /\.opacity\(\s*0?\.\d/g;
+const WIDTH_LITERAL = /maxWidth:\s*760\b/g;
 
 describe('iOS design tokens (chat-ux Phase 4 Task 2, audit #11)', () => {
   it('has no ad-hoc corner-radius or opacity literals outside DashTheme', () => {
@@ -35,11 +36,12 @@ describe('iOS design tokens (chat-ux Phase 4 Task 2, audit #11)', () => {
       if (rel === tokenFile) continue;
       const lines = readFileSync(file, 'utf8').split('\n');
       lines.forEach((line, index) => {
-        if (RADIUS_LITERAL.test(line) || OPACITY_LITERAL.test(line)) {
+        if (RADIUS_LITERAL.test(line) || OPACITY_LITERAL.test(line) || WIDTH_LITERAL.test(line)) {
           offenders.push(`${rel}:${index + 1}: ${line.trim()}`);
         }
         RADIUS_LITERAL.lastIndex = 0;
         OPACITY_LITERAL.lastIndex = 0;
+        WIDTH_LITERAL.lastIndex = 0;
       });
     }
     expect(offenders, offenders.join('\n')).toEqual([]);

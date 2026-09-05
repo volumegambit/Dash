@@ -74,7 +74,7 @@ struct ComposerView: View {
         draftStatus
       }
     }
-    .frame(maxWidth: 760)
+    .frame(maxWidth: DashTheme.Layout.readableWidth)
     .padding(.horizontal)
     .padding(.vertical, 10)
     .background(.bar)

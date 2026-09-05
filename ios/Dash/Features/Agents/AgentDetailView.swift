@@ -60,6 +60,8 @@ struct AgentDetailView: View {
           swarmSection(agent)
         }
         .accessibilityIdentifier("agent.detail.\(agentID)")
+        .frame(maxWidth: DashTheme.Layout.readableWidth)
+        .frame(maxWidth: .infinity)
       } else {
         ContentUnavailableView(
           "Agent unavailable",

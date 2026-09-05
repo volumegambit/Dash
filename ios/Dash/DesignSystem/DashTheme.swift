@@ -57,4 +57,10 @@ enum DashTheme {
     static let scrim = 0.7
     static let contentSecondary = 0.8
   }
+
+  /// iPad goal Phase A (design §1.2): the centred reading column for the
+  /// transcript, composer and agent forms at regular width.
+  enum Layout {
+    static let readableWidth: CGFloat = 760
+  }
 }

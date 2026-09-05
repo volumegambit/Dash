@@ -447,7 +447,7 @@ struct ChatView: View {
             }
           )
       }
-      .frame(maxWidth: 760)
+      .frame(maxWidth: DashTheme.Layout.readableWidth)
       .padding(.horizontal)
       .padding(.vertical, 12)
       .frame(maxWidth: .infinity)
