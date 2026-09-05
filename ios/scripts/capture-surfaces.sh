@@ -130,7 +130,12 @@ for batch in "${GALLERY[@]}"; do
     echo "  !! tools-$batch — launch failed"
     continue
   fi
-  sleep 6
+  # 9s, not the 6s the plain surfaces use. A gallery batch renders four
+  # EXPANDED tool cards — a diff, a code block, a listing — and twice this run
+  # screenshotted the conversation list because navigation had not finished.
+  # Two of the four files came out byte-identical to each other, which is how
+  # it was caught. A capture that races is worse than a slow one.
+  sleep 9
   xcrun simctl io "$UDID" screenshot "$OUT/$IDIOM-tools-$batch.png" >/dev/null 2>&1
   echo "  -> $OUT/$IDIOM-tools-$batch.png"
 done
