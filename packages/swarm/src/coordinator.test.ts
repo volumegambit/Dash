@@ -436,6 +436,40 @@ describe('SwarmCoordinator', () => {
       expect(specs[0].tools).toEqual(['read', 'load_skill', 'task']);
     });
 
+    it('an OMITTED tools list defaults to the read-only subset the PARENT holds', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      // `spawn_worker`'s `tools` is optional: a worker spawned without one must
+      // not be handed tools the orchestrator itself lacks.
+      coord.attach(baseAttach({ orchestratorTools: ['bash'] }));
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      expect(specs[0].tools).toEqual([]);
+    });
+
+    it('the omitted-tools default is still the read-only four for a default parent', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(baseAttach({ orchestratorTools: undefined }));
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls']);
+    });
+
+    it('an EXPLICIT empty grant stays empty — it is not widened to the default', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      coord.attach(
+        baseAttach({ orchestratorTools: ['bash'], orchestratorMcpTools: ['github__pr'] }),
+      );
+      // An MCP-only (or spawn-only) child resolves to zero BUILT-INS on purpose.
+      coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        tools: [],
+        mcpTools: ['github__pr'],
+      });
+      expect(specs[0].tools).toEqual([]);
+    });
+
     it('bounds the child grant by parentBuiltinTools — the same list the agent tool reads', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });

@@ -9,7 +9,10 @@ import { DEFAULT_SUBAGENT_TYPE, type WorkerHandleOptions } from './worker-handle
 
 export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
 
-/** The default subset granted to a worker when it requests no tools. */
+/**
+ * The default subset granted to a worker that names NO tools at all, before it
+ * is intersected with what the orchestrator itself holds (see `validateTools`).
+ */
 const DEFAULT_WORKER_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 
 /** Membership sets for `validateTools`, so it can name WHY a tool was refused. */
@@ -739,10 +742,17 @@ export class SwarmCoordinator {
    * `mcpTools` field and are checked by {@link validateMcpTools}.
    */
   private validateTools(turn: LiveTurn, requested?: string[]): string[] {
-    if (!requested || requested.length === 0) {
-      return [...DEFAULT_WORKER_TOOLS];
-    }
     const allowed = new Set(parentBuiltinTools(turn.opts.orchestratorTools));
+    // OMITTED (legacy `spawn_worker` leaves `tools` out) is not the same as an
+    // EMPTY list. Omitted means "the read-only default" — but bounded by what
+    // the orchestrator itself holds, or a parent configured `tools: ['bash']`
+    // would spawn children holding read/grep/find/ls that it lacks. An empty
+    // list is a resolved grant of zero built-ins (an MCP-only or spawn-only
+    // definition) and MUST stay empty: widening it here would hand the child
+    // tools the roster never advertised.
+    if (requested === undefined) {
+      return DEFAULT_WORKER_TOOLS.filter((t) => allowed.has(t));
+    }
     for (const tool of requested) {
       // Redundant with the allow-list below (no `*_skill` but `load_skill` is
       // in it), kept explicit so widening the universe cannot hand a child the
