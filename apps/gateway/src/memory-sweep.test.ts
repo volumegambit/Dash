@@ -352,6 +352,92 @@ describe('createMemorySweepService', () => {
     );
   });
 
+  it('refuses to overwrite a user-authored memory but still saves the rest', async () => {
+    const warn = vi.fn();
+    const store = new MemoryStore(dir);
+    await store.save({
+      name: 'user-timezone',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      content: 'UTC+8, do not change',
+      source: 'user',
+    });
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        { turnId: 't1', role: 'user', content: { type: 'user', text: 'I am in Tokyo today' } },
+        {
+          turnId: 't1',
+          role: 'assistant',
+          content: { type: 'assistant', events: [{ type: 'response', content: 'ok', usage: {} }] },
+        },
+      ]),
+      memoryStore: () => store,
+      shouldSweep: () => true,
+      extract: async () => [
+        {
+          name: 'user-timezone',
+          description: 'Gerry is in Tokyo',
+          type: 'user' as const,
+          content: 'Gerry is in Tokyo',
+        },
+        { name: 'other-fact', description: 'x', type: 'project' as const, content: 'y' },
+      ],
+      logger: { info: vi.fn(), warn },
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await svc.flush();
+
+    const kept = await store.get('user-timezone');
+    expect(kept?.source).toBe('user');
+    expect(kept?.content).toBe('UTC+8, do not change');
+    expect(warn).toHaveBeenCalledWith(
+      'memory sweep refused to overwrite a user-authored memory',
+      expect.objectContaining({ name: 'user-timezone' }),
+    );
+    expect(await store.get('other-fact')).not.toBeNull();
+  });
+
+  it('still updates memories written by the agent or a previous sweep', async () => {
+    const store = new MemoryStore(dir);
+    await store.save({
+      name: 'agent-fact',
+      description: 'old',
+      type: 'project',
+      content: 'old body',
+      source: 'agent',
+    });
+    await store.save({
+      name: 'sweep-fact',
+      description: 'old',
+      type: 'project',
+      content: 'old body',
+      source: 'sweep',
+    });
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        { turnId: 't1', role: 'user', content: { type: 'user', text: 'a' } },
+        {
+          turnId: 't1',
+          role: 'assistant',
+          content: { type: 'assistant', events: [{ type: 'response', content: 'b', usage: {} }] },
+        },
+      ]),
+      memoryStore: () => store,
+      shouldSweep: () => true,
+      extract: async () => [
+        { name: 'agent-fact', description: 'new', type: 'project' as const, content: 'new body' },
+        { name: 'sweep-fact', description: 'new', type: 'project' as const, content: 'new body' },
+      ],
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await svc.flush();
+
+    expect((await store.get('agent-fact'))?.content).toBe('new body');
+    expect((await store.get('sweep-fact'))?.content).toBe('new body');
+  });
+
   it('flush resolves when nothing is scheduled', async () => {
     const svc = createMemorySweepService({
       conversations: fakeConversations([]),

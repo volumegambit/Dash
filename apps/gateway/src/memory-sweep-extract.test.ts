@@ -135,10 +135,37 @@ describe('extractMemoriesWithModel', () => {
     ]);
     const [model, context, options] = (completeFn as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(model.provider).toBe('anthropic');
-    expect(context.systemPrompt).toContain('user-name (user): The user is called Gerry');
+    expect(context.systemPrompt).toContain(
+      'user-name (user, source: agent): The user is called Gerry',
+    );
     expect(context.messages[0].content).toContain('I live in Singapore');
     expect(context.messages[0].content).toContain('Noted');
     expect(options.apiKey).toBe('sk-test');
+  });
+
+  it('marks user-authored memories in the index and forbids modifying them', async () => {
+    const completeFn = makeCompleteFn('{"memories":[]}');
+    await extractMemoriesWithModel({
+      ...base,
+      userText: 'a',
+      assistantText: 'b',
+      index: [
+        {
+          name: 'user-timezone',
+          description: 'UTC+8',
+          type: 'user',
+          source: 'user',
+          createdAt: '2026-09-01',
+          updatedAt: '2026-09-01',
+          size: 5,
+        },
+      ],
+      completeFn,
+    });
+    const [, context] = (completeFn as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(context.systemPrompt).toContain('user-timezone (user, source: user): UTC+8');
+    expect(context.systemPrompt).toMatch(/source: user.*never reuse|never reuse.*source: user/s);
+    expect(context.systemPrompt).toContain('propose a NEW name');
   });
 
   it('says "(none)" when there are no existing memories', async () => {

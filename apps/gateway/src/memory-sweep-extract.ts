@@ -31,11 +31,11 @@ const MAX_SIDE_CHARS = 3000;
 
 function sweepPrompt(index: MemoryInfo[]): string {
   const existing = index.length
-    ? index.map((m) => `- ${m.name} (${m.type}): ${m.description}`).join('\n')
+    ? index.map((m) => `- ${m.name} (${m.type}, source: ${m.source}): ${m.description}`).join('\n')
     : '(none)';
   return `You maintain long-term memory for an assistant. Given one exchange (user message and assistant reply), decide whether it contains facts worth remembering in future conversations: who the user is (type "user"), how they want the assistant to work (type "feedback"), ongoing work or constraints (type "project"), or pointers to external resources (type "reference"). Most exchanges contain nothing worth saving — then reply {"memories":[]}.
 
-Reply with ONLY minified JSON of the shape {"memories":[{"name":"kebab-case-slug","description":"one line","type":"user|feedback|project|reference","content":"the fact, under ${MEMORY_LIMITS.contentMax} characters"}]}. Reuse an existing name below to update it instead of creating a near-duplicate. Never save secrets, credentials, or details that only matter for this one exchange.
+Reply with ONLY minified JSON of the shape {"memories":[{"name":"kebab-case-slug","description":"one line","type":"user|feedback|project|reference","content":"the fact, under ${MEMORY_LIMITS.contentMax} characters"}]}. Reuse an existing name below to update it instead of creating a near-duplicate. Entries listed as "source: user" were written by the user themselves: never reuse or modify those names — if you disagree with one, propose a NEW name instead. Never save secrets, credentials, or details that only matter for this one exchange.
 
 Existing memories:
 ${existing}`;

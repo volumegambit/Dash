@@ -104,6 +104,16 @@ export function createMemorySweepService(options: MemorySweepOptions): MemorySwe
     let saved = 0;
     for (const candidate of candidates) {
       try {
+        // The sweep is unattended and driven by a weaker model: it may never
+        // clobber something the user wrote by hand.
+        const existing = await store.get(candidate.name);
+        if (existing?.source === 'user') {
+          options.logger?.warn('memory sweep refused to overwrite a user-authored memory', {
+            agentId: input.agentId,
+            name: candidate.name,
+          });
+          continue;
+        }
         await store.save({ ...candidate, source: 'sweep' });
         saved++;
       } catch (error) {
