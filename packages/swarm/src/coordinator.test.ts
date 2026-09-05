@@ -2384,3 +2384,78 @@ describe('SwarmCoordinator sendToChild', () => {
     });
   });
 });
+
+describe('SwarmCoordinator C4 review fixes', () => {
+  it('wait_workers waits on a DETACHED child from an earlier turn', async () => {
+    const { d, coordinator, attachment } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'bg', brief: 'b', description: 'd', name: 'bg', background: true },
+    );
+    attachment.finalize({ consumerAlive: true });
+    // Turn two names the detached child explicitly. Answering `[]` — "nothing
+    // to wait for" — is the one answer that is wrong: with notifications not
+    // yet wired this is the only polling primitive the model has for it.
+    coordinator.attach(baseAttach({ messageId: 'parent-turn-2' }));
+
+    const waitP = coordinator.waitWorkers(AGENT_ID, CONVO_ID, { workerIds: [subagentId] });
+    await flush();
+    d.emit(subagentId, {
+      type: 'response',
+      content: 'late report',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    d.finish(subagentId);
+
+    await expect(waitP).resolves.toMatchObject([
+      { workerId: subagentId, status: 'done', report: 'late report' },
+    ]);
+  });
+
+  it('wait_workers resolves a detached child even before this turn has spawned', async () => {
+    const { d, coordinator, attachment } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'bg', brief: 'b', description: 'd', background: true },
+    );
+    d.finish(subagentId);
+    attachment.finalize({ consumerAlive: true });
+    // Turn two has no run at all (nothing spawned in it yet).
+    coordinator.attach(baseAttach({ messageId: 'parent-turn-2' }));
+
+    await expect(
+      coordinator.waitWorkers(AGENT_ID, CONVO_ID, { workerIds: [subagentId] }),
+    ).resolves.toMatchObject([{ workerId: subagentId, status: 'done' }]);
+  });
+
+  it('a resume with no live parent turn still uses the AGENT-configured caps', async () => {
+    const d = makeChildDriver();
+    const coordinator = new SwarmCoordinator({
+      childDriver: d.driver,
+      // The per-agent `subagents.max*` an attachment would have carried.
+      resolveCaps: () => ({ maxSteersPerWorker: 1 }),
+      reconstructChildSpec: (id) => {
+        const spec = d.preparedById.get(id);
+        if (!spec) return undefined;
+        const { extraTools: _extraTools, ...rest } = spec;
+        return rest;
+      },
+    });
+    const attachment = coordinator.attach(
+      baseAttach({ messageId: 'parent-turn-1', caps: { maxSteersPerWorker: 1 } }),
+    );
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'd', name: 'scout' },
+    );
+    coordinator.sendToChild(CONVO_ID, 'scout', 'first steer');
+    d.finish(subagentId);
+    d.finish(subagentId);
+    await coordinator.waitChild(subagentId);
+    // The turn that spawned it is over, so the caps can only come from the
+    // agent — the hard defaults would allow ten more steers.
+    attachment.finalize({ consumerAlive: true });
+
+    expect(() => coordinator.sendToChild(CONVO_ID, 'scout', 'second steer')).toThrow(/steer cap/);
+  });
+});

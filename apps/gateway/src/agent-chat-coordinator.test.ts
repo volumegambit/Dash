@@ -1362,6 +1362,78 @@ describe('child conversations on the shared pool', () => {
     expect(attaches[0].orchestratorFallbackModels).toBeUndefined();
   });
 
+  /**
+   * C4 review item 1 (Critical). `releaseChild` leaves a finished child's pool
+   * entry WARM on purpose, and `childRuntime` only runs on a pool MISS — so a
+   * resumed child kept running on the `PiAgentBackend` built from its ORIGINAL
+   * grant. The attachment was narrowed correctly (that only bounds a
+   * grandchild); the child's own tools were not. These two drive the child's
+   * OWN runtime, not the attachment.
+   */
+  it("rebuilds a resumed child's backend when its grant has narrowed", async () => {
+    // What the coordinator would rebuild + re-intersect for this child.
+    let grant = { tools: ['read', 'bash'], model: 'test/child-model' };
+    const builtWith: string[][] = [];
+    const { agents, agentId } = makeChildAgents({
+      childRuntime: async () => {
+        builtWith.push([...grant.tools]);
+        return {
+          backend: childBackend(),
+          resolveConfig: () => ({
+            model: grant.model,
+            systemPrompt: 'child',
+            tools: [...grant.tools],
+          }),
+          workspace: '/data/worktrees/parent-agent/sub_1',
+        };
+      },
+      childAttachOptions: () => ({
+        orchestratorModel: grant.model,
+        orchestratorFallbackModels: undefined,
+        allowedModels: undefined,
+        orchestratorTools: [...grant.tools],
+        orchestratorMcpTools: [],
+        workspace: '/data/worktrees/parent-agent/sub_1',
+      }),
+    });
+
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'go' }));
+    expect(builtWith).toEqual([['read', 'bash']]);
+
+    // The operator removes `bash` from the agent; the rebuild narrows the child.
+    grant = { tools: ['read'], model: 'test/child-model' };
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'resume' }));
+
+    // The warm entry cannot be reused: its backend still holds `bash`.
+    expect(builtWith).toEqual([['read', 'bash'], ['read']]);
+  });
+
+  it('reuses the warm child entry when the grant is unchanged', async () => {
+    let runtimeCalls = 0;
+    const { agents, agentId } = makeChildAgents({
+      childRuntime: async () => {
+        runtimeCalls++;
+        return {
+          backend: childBackend(),
+          resolveConfig: () => ({ model: 'test/child-model', systemPrompt: 'child' }),
+          workspace: '/data/worktrees/parent-agent/sub_1',
+        };
+      },
+      childAttachOptions: () => ({
+        orchestratorModel: 'test/child-model',
+        orchestratorFallbackModels: undefined,
+        orchestratorTools: ['read'],
+        orchestratorMcpTools: [],
+        workspace: '/data/worktrees/parent-agent/sub_1',
+      }),
+    });
+
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'go' }));
+    await drain(agents.chat({ agentId, conversationId: 'sub_child', text: 'again' }));
+
+    expect(runtimeCalls).toBe(1);
+  });
+
   it('refuses a spec-less child turn even when its pool entry is still WARM', async () => {
     // The regression this covers: `childRuntime` only runs on a pool MISS, so a
     // guard that lives only there stops firing the moment the entry is cached —

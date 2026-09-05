@@ -3,6 +3,7 @@ import { parentBuiltinTools } from '@dash/swarm';
 import type { AgentChatAttachOverrides } from './agent-chat-coordinator.js';
 import type { GatewayAgentConfig } from './agent-registry.js';
 import type { ConversationService, SubagentGrant } from './conversation-service.js';
+import { isSubagentsEnabled } from './subagent-config.js';
 
 /**
  * RESUME (design §5.2): rebuilding the resolved spec of a child this process
@@ -48,10 +49,17 @@ export function grantFromSpec(spec: Omit<ChildSpec, 'extraTools'>): SubagentGran
   };
 }
 
-/** The tools + MCP names one conversation may pass DOWN, right now. */
+/** What one conversation may pass DOWN right now: tools, MCP names, and WHERE. */
 interface EffectiveGrant {
   tools: string[];
   mcpTools: string[];
+  /**
+   * The directory a child of this conversation runs in — the agent's CURRENT
+   * workspace at the root, or an isolated parent's own worktree. `workspace` is
+   * a grant field like any other: an agent whose workspace moved must not
+   * resume a child pointed at the directory it used to have.
+   */
+  workspace?: string;
 }
 
 /**
@@ -68,7 +76,13 @@ function effectiveGrantOf(
   // A parent that is mid-turn: its LIVE grant is narrower than (or equal to)
   // whatever its row says, and it is the grant its own children run under.
   const live = deps.liveSpec(conversationId);
-  if (live) return { tools: [...live.tools], mcpTools: [...(live.mcpTools ?? [])] };
+  if (live) {
+    return {
+      tools: [...live.tools],
+      mcpTools: [...(live.mcpTools ?? [])],
+      workspace: live.workspace,
+    };
+  }
 
   // Deleted rows are excluded on purpose: a tombstoned conversation cascades to
   // its children, and none of them may run again.
@@ -80,23 +94,38 @@ function effectiveGrantOf(
     if (!grant || !row.parentConversationId) return undefined;
     const above = effectiveGrantOf(row.parentConversationId, deps, depth + 1);
     if (!above) return undefined;
-    return intersect(grant, above);
+    return intersect(grant, above, row.subagent);
   }
 
   const config = deps.agentConfig(row.agentId);
-  if (!config) return undefined;
+  // The operator's off switch has to reach an existing child too: with
+  // sub-agents turned off, nothing under this agent may take another turn.
+  if (!config || !isSubagentsEnabled(config)) return undefined;
   return {
     // The same function the `agent` tool and `validateTools` bound a spawn
     // with, so the roster, the spawn gate and this rebuild cannot drift.
     tools: parentBuiltinTools(config.tools),
     mcpTools: deps.agentMcpTools(row.agentId),
+    workspace: config.workspace,
   };
 }
 
-function intersect(grant: SubagentGrant, parent: EffectiveGrant): EffectiveGrant {
+/**
+ * One level of narrowing. `info` is the conversation's own persisted subagent
+ * row when it HAS one, which is what decides where its children run: an
+ * isolated child hands down its worktree, everyone else hands down whatever it
+ * was handed.
+ */
+function intersect(
+  grant: SubagentGrant,
+  parent: EffectiveGrant,
+  info?: { isolation?: 'worktree'; workspace?: string },
+): EffectiveGrant {
   return {
     tools: grant.tools.filter((tool) => parent.tools.includes(tool)),
     mcpTools: (grant.mcpTools ?? []).filter((tool) => parent.mcpTools.includes(tool)),
+    workspace:
+      info?.isolation === 'worktree' ? (info.workspace ?? grant.workspace) : parent.workspace,
   };
 }
 
@@ -116,8 +145,8 @@ export function reconstructChildSpec(
   if (!grant) return undefined;
   const parent = effectiveGrantOf(row.parentConversationId, deps);
   if (!parent) return undefined;
-  const narrowed = intersect(grant, parent);
   const info = row.subagent;
+  const narrowed = intersect(grant, parent, info);
   return {
     agentId: row.agentId,
     agentName: row.agentName,
@@ -130,9 +159,10 @@ export function reconstructChildSpec(
     role: info.name ?? info.type,
     brief: info.prompt,
     model: info.model,
-    // Where it ACTUALLY ran: an isolated child resumes in its own worktree,
-    // which is also where the work it left behind is.
-    workspace: info.workspace ?? grant.workspace,
+    // An isolated child resumes in its OWN worktree (also where the work it
+    // left behind is); everyone else resumes in whatever its parent's workspace
+    // is NOW, which is not necessarily the one it ran in.
+    workspace: narrowed.workspace ?? info.workspace ?? grant.workspace,
     tools: narrowed.tools,
     mcpTools: narrowed.mcpTools,
     spawnableTypes: grant.spawnableTypes,

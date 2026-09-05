@@ -106,6 +106,7 @@ describe('reconstructChildSpec', () => {
         prompt: spec.brief,
         model: spec.model,
         background: spec.background ?? false,
+        ...(spec.isolation !== undefined ? { isolation: spec.isolation } : {}),
         depth: spec.depth ?? 1,
         startedAt: '2026-09-05T00:00:00.000Z',
         toolCallCount: 0,
@@ -198,6 +199,57 @@ describe('reconstructChildSpec', () => {
       deps({ liveSpec: (id) => (id === 'sub_MID' ? live : undefined) }),
     );
     expect(rebuilt?.tools).toEqual(['read']);
+  });
+
+  /**
+   * Review item 2: `workspace` is a grant field like any other. An agent whose
+   * workspace moved must not resume a child — or let it spawn a grandchild —
+   * pointed at the directory it used to have.
+   */
+  it("rebinds a non-isolated child to the agent's CURRENT workspace", () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_A', { workspace: '/repo-old' });
+    agents.set(AGENT_ID, config({ tools: agentTools, workspace: '/repo-new' }));
+
+    expect(reconstructChildSpec('sub_A', deps())?.workspace).toBe('/repo-new');
+  });
+
+  it('keeps an ISOLATED child in its own worktree, not the agent workspace', () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_A', { isolation: 'worktree' });
+    conversations.updateSubagent('sub_A', {
+      info: { workspace: '/data/worktrees/Helper/sub_A' },
+    });
+    agents.set(AGENT_ID, config({ tools: agentTools, workspace: '/repo-new' }));
+
+    const rebuilt = reconstructChildSpec('sub_A', deps());
+    expect(rebuilt?.workspace).toBe('/data/worktrees/Helper/sub_A');
+    expect(rebuilt?.isolation).toBe('worktree');
+  });
+
+  it("puts a grandchild inside its parent child's worktree, not the agent workspace", () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_MID', { isolation: 'worktree' });
+    conversations.updateSubagent('sub_MID', {
+      info: { workspace: '/data/worktrees/Helper/sub_MID' },
+    });
+    persistChild('sub_MID', 'sub_GRAND', { depth: 2, workspace: '/repo-old' });
+    agents.set(AGENT_ID, config({ tools: agentTools, workspace: '/repo-new' }));
+
+    expect(reconstructChildSpec('sub_GRAND', deps())?.workspace).toBe(
+      '/data/worktrees/Helper/sub_MID',
+    );
+  });
+
+  /** Review item 5: the operator's off switch has to reach a resumable child. */
+  it('refuses to rebuild once the operator turns sub-agents off', () => {
+    const parent = parentConversation();
+    persistChild(parent.id, 'sub_A');
+    expect(reconstructChildSpec('sub_A', deps())).toBeDefined();
+
+    agents.set(AGENT_ID, config({ tools: agentTools, subagents: { enabled: false } }));
+
+    expect(reconstructChildSpec('sub_A', deps())).toBeUndefined();
   });
 
   it('refuses when the agent is gone, the grant is missing, or the row is not a child', () => {

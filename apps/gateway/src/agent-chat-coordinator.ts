@@ -281,6 +281,22 @@ export interface AgentChatCoordinator {
  * before running teardown. The listener is `once` and self-cleans; the promise
  * never rejects (abort is a normal control-flow signal here, not an error).
  */
+/**
+ * The fields of a child's per-turn overrides that its BACKEND is built from.
+ * Two turns with the same signature can share one warm backend; anything else
+ * has to rebuild. Deliberately not the whole object: `orchestratorFallbackModels`
+ * and `allowedModels` bound what a nested spawn may ask for, not what this
+ * child's own backend holds.
+ */
+function signatureOf(overrides: Partial<AgentChatAttachOverrides>): string {
+  return JSON.stringify([
+    overrides.orchestratorModel ?? null,
+    overrides.orchestratorTools ?? null,
+    overrides.orchestratorMcpTools ?? null,
+    overrides.workspace ?? null,
+  ]);
+}
+
 function abortRace(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise<void>((resolve) => {
@@ -464,7 +480,25 @@ export function createAgentChatCoordinator(
         return;
       }
 
+      // A CHILD's warm backend was built from the grant it last ran under, and
+      // a backend binds its tool set at `start()` — re-resolving its config per
+      // turn cannot take a tool away. That grant is re-intersected against its
+      // parent's CURRENT one on every turn (`childAttachOptions`), so an entry
+      // built from a WIDER one must not be reused: the attachment would bound a
+      // grandchild correctly while the child itself still held the removed
+      // tool. `releaseChild` deliberately leaves a finished child warm and
+      // `childRuntime` only runs on a pool miss, so this is the only place that
+      // can notice.
+      const childSignature = childOverrides && signatureOf(childOverrides);
+      if (childSignature) {
+        const warm = pool.get(request.agentId, request.conversationId);
+        if (warm && warm.signature !== childSignature) {
+          pool.dropConversation(request.agentId, request.conversationId);
+        }
+      }
+
       const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
+      if (childSignature) poolEntry.signature = childSignature;
       pool.pin(request.agentId, request.conversationId);
 
       const swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;

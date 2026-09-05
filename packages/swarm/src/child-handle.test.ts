@@ -1,5 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
-import { CHILD_DELETED_REASON, ChildHandle } from './child-handle.js';
+import { CHILD_DELETED_REASON, ChildHandle, type ChildHandleOptions } from './child-handle.js';
 import { childConversationId } from './child-id.js';
 import type {
   ChildConversationInput,
@@ -31,6 +31,8 @@ function fakeDriver() {
   const released: string[] = [];
   const cancels: string[] = [];
   let alive = true;
+  let cancelGate: Promise<void> | undefined;
+  let releaseCancelGate: (() => void) | undefined;
   let workspace: string | undefined;
   let startFailure: Error | undefined;
   let seq = 0;
@@ -54,7 +56,9 @@ function fakeDriver() {
     },
     cancelTurn(_agentId, conversationId) {
       cancels.push(conversationId);
-      return Promise.resolve();
+      // Held open when the test wants to observe what happens BEFORE the
+      // driver's abort settles — the window the cancel grace period covers.
+      return cancelGate ?? Promise.resolve();
     },
     updateChild(id, patch) {
       patches.push({ id, ...patch });
@@ -91,6 +95,15 @@ function fakeDriver() {
     cancels,
     setAlive(value: boolean) {
       alive = value;
+    },
+    /** Make `cancelTurn` hang until {@link releaseCancel} (or forever). */
+    holdCancel() {
+      cancelGate = new Promise<void>((resolve) => {
+        releaseCancelGate = resolve;
+      });
+    },
+    releaseCancel() {
+      releaseCancelGate?.();
     },
     setWorkspace(value: string) {
       workspace = value;
@@ -139,7 +152,12 @@ function baseSpec(
 function makeHandle(
   driver: ChildTurnDriver,
   over: Partial<Omit<ChildSpec, 'extraTools'>> = {},
-  opts: { heartbeatMs?: number } = {},
+  opts: {
+    heartbeatMs?: number;
+    maxSteers?: number;
+    cancelStopGraceMs?: number;
+    onFinished?: ChildHandleOptions['onFinished'];
+  } = {},
 ) {
   const events: AgentEvent[] = [];
   const terminals: string[] = [];
@@ -147,8 +165,10 @@ function makeHandle(
     spec: baseSpec(over),
     driver,
     emit: (event) => events.push(event),
-    maxSteers: 2,
+    maxSteers: opts.maxSteers ?? 2,
     heartbeatMs: opts.heartbeatMs ?? 10_000,
+    ...(opts.cancelStopGraceMs !== undefined ? { cancelStopGraceMs: opts.cancelStopGraceMs } : {}),
+    ...(opts.onFinished ? { onFinished: opts.onFinished } : {}),
     onTerminal: (h) => terminals.push(h.status),
   });
   return { handle, events, terminals };
@@ -344,5 +364,125 @@ describe('ChildHandle', () => {
     d.finish('completed');
     await handle.terminalPromise;
     expect(handle.status).toBe('done');
+  });
+
+  // ---------------------------------------------------------------------
+  // The invariants `WorkerHandle` used to carry, ported onto the one child
+  // lifetime that implements them now (C4 review item 6). Each of these was
+  // the ONLY assertion of its behaviour anywhere in the repo.
+  // ---------------------------------------------------------------------
+
+  /** Invariant 1 (child-handle.ts): enqueue and completion cannot interleave. */
+  it('never silently drops a steer in the enqueue-vs-completion race', async () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    d.emit(response('turn one'));
+    d.finish('completed');
+    // Steer in the very next synchronous turn, before awaiting anything.
+    const res = handle.send('race steer');
+
+    if (res.ok) {
+      // Accepted: a second turn MUST run with this message.
+      expect(d.turns.map((t) => t.text)).toEqual(['find the thing', 'race steer']);
+    } else {
+      // Refused as terminal: the child must actually be terminal, and no turn
+      // may have been started for the steer.
+      expect(res.reason).toBe('worker terminal');
+      await handle.terminalPromise;
+      expect(['done', 'failed', 'cancelled']).toContain(handle.status);
+      expect(d.turns).toHaveLength(1);
+    }
+  });
+
+  it('rejects send() on a terminal child', async () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    d.emit(response('done'));
+    d.finish('completed');
+    await handle.terminalPromise;
+
+    expect(handle.send('too late')).toEqual({ ok: false, reason: 'worker terminal' });
+  });
+
+  it('rejects steers past maxSteers with steer cap reached', () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver, {}, { maxSteers: 2 });
+    handle.start();
+
+    expect(handle.send('steer 1')).toEqual({ ok: true });
+    expect(handle.send('steer 2')).toEqual({ ok: true });
+    expect(handle.send('steer 3')).toEqual({ ok: false, reason: 'steer cap reached' });
+    expect(handle.steersUsed).toBe(2);
+  });
+
+  it('cancel() is idempotent', () => {
+    const d = fakeDriver();
+    const { handle, events, terminals } = makeHandle(d.driver);
+    handle.start();
+    handle.cancel('once');
+    handle.cancel('twice');
+
+    expect(terminals).toEqual(['cancelled']);
+    expect(d.cancels).toEqual([CHILD_ID]);
+    expect(events.filter((e) => e.type === 'worker_done')).toHaveLength(1);
+    expect(handle.report).toBe('once');
+  });
+
+  it('answerQuestion returns false when nothing is waiting', () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    expect(handle.answerQuestion('nobody asked')).toBe(false);
+  });
+
+  /**
+   * The cancel grace race: the spawner's cleanup (the gateway removes an
+   * isolated child's worktree) must not sample a directory the child is still
+   * writing to, so it waits for the driver's abort — but only up to the grace
+   * period, or a hung abort would leak the directory forever.
+   */
+  it('holds the finished hook until the driver abort settles', async () => {
+    const d = fakeDriver();
+    const finished: string[] = [];
+    d.holdCancel();
+    const { handle, terminals } = makeHandle(
+      d.driver,
+      {},
+      { onFinished: (spec) => void finished.push(spec.workerStatus) },
+    );
+    handle.start();
+
+    handle.cancel('user cancelled');
+
+    // The terminal transition itself is synchronous and already complete.
+    expect(handle.status).toBe('cancelled');
+    expect(terminals).toEqual(['cancelled']);
+    await Promise.resolve();
+    await Promise.resolve();
+    // ...but the spawner's cleanup has not run: the abort is still in flight.
+    expect(finished).toEqual([]);
+
+    d.releaseCancel();
+    await vi.waitFor(() => expect(finished).toEqual(['cancelled']));
+  });
+
+  it('fires the finished hook anyway when the driver abort never settles', async () => {
+    const d = fakeDriver();
+    const finished: string[] = [];
+    d.holdCancel(); // never released
+    const { handle } = makeHandle(
+      d.driver,
+      {},
+      { cancelStopGraceMs: 20, onFinished: (spec) => void finished.push(spec.workerStatus) },
+    );
+    handle.start();
+
+    handle.cancel('user cancelled');
+    expect(finished).toEqual([]);
+
+    // Bounded: a hung abort delays the cleanup, it does not cancel it.
+    await vi.waitFor(() => expect(finished).toEqual(['cancelled']), { timeout: 2_000 });
   });
 });

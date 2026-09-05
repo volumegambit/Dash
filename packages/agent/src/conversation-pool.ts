@@ -6,6 +6,14 @@ export interface PoolEntry {
   agent: DashAgent;
   lastActive: number;
   pinned: boolean;
+  /**
+   * What this entry was BUILT from, when the caller's backend depends on
+   * something that can change between turns. A backend binds its tool set (and
+   * its MCP allow-list) at `start()`, so an entry whose signature no longer
+   * matches cannot be reused — see {@link dropConversation}. Unused for
+   * ordinary agent conversations, whose config is re-read per turn.
+   */
+  signature?: string;
 }
 
 export type PoolBackendFactory = (
@@ -118,6 +126,26 @@ export class ConversationPool {
 
   has(agentName: string, conversationId: string): boolean {
     return this.pool.has(this.key(agentName, conversationId));
+  }
+
+  /**
+   * Drop ONE conversation's warm entry so the next `getOrCreate` rebuilds it.
+   *
+   * The map delete is SYNCHRONOUS and `stop()` is fired without awaiting: the
+   * caller's very next `getOrCreate` has to miss, and making that depend on a
+   * backend settling would reopen the window this closes. A PINNED entry (a
+   * turn in flight) is left alone — it is mid-stream, and the next turn will
+   * re-check.
+   *
+   * Returns whether an entry was dropped.
+   */
+  dropConversation(agentName: string, conversationId: string): boolean {
+    const k = this.key(agentName, conversationId);
+    const entry = this.pool.get(k);
+    if (!entry || entry.pinned) return false;
+    this.pool.delete(k);
+    void Promise.resolve(entry.backend.stop()).catch(() => {});
+    return true;
   }
 
   async evictAgent(agentName: string): Promise<void> {

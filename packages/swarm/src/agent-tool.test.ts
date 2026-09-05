@@ -457,17 +457,23 @@ describe('agent tool', () => {
     expect(c.cancelChild).toHaveBeenCalledWith('w1', expect.stringMatching(/cancelled/));
   });
 
-  it('does NOT cancel a background child when the tool call is aborted', async () => {
-    const controller = new AbortController();
+  it('does NOT cancel a background child launched under an aborted signal', async () => {
+    // Aborted BEFORE the call, so the signal is live for the whole execute:
+    // aborting afterwards could never fail, since the tool has already
+    // returned and holds no listener.
     const c = makeCoordinator();
     const [agent] = createAgentTools({ ...base(c), backgroundMode: 'detached' });
-    await agent.execute(
+    const r = await agent.execute(
       't',
       { prompt: 'p', description: 'd', run_in_background: true },
-      controller.signal,
+      AbortSignal.abort(),
     );
-    controller.abort();
+
+    // A background child is detached the moment it is launched: the parent's
+    // turn ending — however it ends — says nothing about it.
+    expect(r.content[0].text).toMatch(/launched in the background/);
     expect(c.cancelChild).not.toHaveBeenCalled();
+    expect(c.waitWorker).not.toHaveBeenCalled();
   });
 
   it('background (detached) promises a notification instead of wait_workers', async () => {

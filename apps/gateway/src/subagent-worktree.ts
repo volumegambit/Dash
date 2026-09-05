@@ -67,6 +67,33 @@ export async function createChildWorktree(o: {
 }
 
 /**
+ * The worktree an isolated child runs in, creating it only when it has none.
+ *
+ * A RESUME reaches this in both states and neither is exceptional:
+ * - the worktree is STILL THERE — a `max_turns` child's is kept on purpose,
+ *   because its `[partial: … resumable with send_message]` report points at
+ *   the work in it. `git worktree add` refuses an existing path, so a resume
+ *   that always created would fail exactly the child that invites resumption.
+ * - the worktree is GONE — every other terminal status removed it, so the
+ *   resume needs a fresh checkout of the workspace's current HEAD.
+ *
+ * A path that exists but is NOT a git working tree is left to
+ * {@link createChildWorktree} to fail on: silently reusing a directory that
+ * is not a checkout would run the child somewhere with no relation to the
+ * workspace it was told to work in.
+ */
+export async function ensureChildWorktree(o: {
+  workspace: string;
+  dataDir: string;
+  agentName: string;
+  childId: string;
+}): Promise<{ path: string; reused: boolean }> {
+  const path = childWorktreePath(o);
+  if (await isGitWorkspace(path)) return { path, reused: true };
+  return { path: (await createChildWorktree(o)).path, reused: false };
+}
+
+/**
  * The ONLY ignored content a worktree removal is allowed to destroy.
  *
  * `git status --porcelain` omits gitignored files entirely, so a worktree whose

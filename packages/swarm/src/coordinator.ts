@@ -198,6 +198,13 @@ export interface SwarmCoordinatorOptions {
    */
   reconstructChildSpec?(subagentId: string): Omit<ChildSpec, 'extraTools'> | undefined;
   /**
+   * The caps configured for an agent, for a resume that happens with NO live
+   * parent turn (a panel or API caller). Per-agent `subagents.max*` only ever
+   * reach the coordinator through `attach({ caps })`, so without this a resume
+   * outside a turn would silently fall back to the gateway defaults.
+   */
+  resolveCaps?(agentId: string): Partial<SwarmCaps> | undefined;
+  /**
    * Each child's heartbeat interval, which is also its liveness poll: a child
    * whose conversation was deleted (a cascading parent delete) is cancelled on
    * the first tick that sees the row gone. Default 10s — the abort is
@@ -254,6 +261,7 @@ export class SwarmCoordinator {
   private readonly reconstructChildSpec?: (
     subagentId: string,
   ) => Omit<ChildSpec, 'extraTools'> | undefined;
+  private readonly resolveCaps?: (agentId: string) => Partial<SwarmCaps> | undefined;
 
   /** Live turns keyed by `${agentId}/${conversationId}`. */
   private readonly live = new Map<string, LiveTurn>();
@@ -280,6 +288,7 @@ export class SwarmCoordinator {
     this.onRunChanged = opts.onRunChanged;
     this.onWorkerFinished = opts.onWorkerFinished;
     this.reconstructChildSpec = opts.reconstructChildSpec;
+    this.resolveCaps = opts.resolveCaps;
   }
 
   // --- attachment / ownership ---
@@ -631,7 +640,8 @@ export class SwarmCoordinator {
       );
     }
     const turn = this.live.get(key(spec.agentId, spec.parentConversationId));
-    const caps = turn && !turn.finalized ? turn.caps : this.mergeCaps();
+    const caps =
+      turn && !turn.finalized ? turn.caps : this.mergeCaps(this.resolveCaps?.(spec.agentId));
     const steersUsed = prior?.steersUsed ?? 0;
     if (steersUsed >= caps.maxSteersPerWorker) {
       throw new Error(
@@ -719,20 +729,43 @@ export class SwarmCoordinator {
   ): Promise<
     Array<{ workerId: string; status: WorkerStatus; report?: string; question?: string }>
   > {
-    const k = key(agentId, conversationId);
-    const turn = this.live.get(k);
-    const maybeRun = turn?.run;
-    if (!maybeRun) {
-      // Nothing to wait on.
-      return [];
-    }
-    const run: SwarmRun = maybeRun;
+    const turn = this.live.get(key(agentId, conversationId));
+    const run = turn?.run;
 
-    const referenced = () => {
-      const all = run.workerStatuses();
-      if (!p.workerIds || p.workerIds.length === 0) return all;
-      const set = new Set(p.workerIds);
-      return all.filter((w) => set.has(w.workerId));
+    /**
+     * The children this call is waiting on: this turn's run, plus — for ids the
+     * caller NAMED — the cross-turn registry. A detached background child is
+     * not in the current run, and answering `[]` ("nothing to wait for") for
+     * one is the single answer that is wrong: it is the same child
+     * `findChild`, `checkWorkers` and `waitWorker` all resolve.
+     */
+    const referenced = (): Array<{
+      workerId: string;
+      role: string;
+      status: WorkerStatus;
+      report?: string;
+      question?: string;
+    }> => {
+      const fromRun = run ? run.workerStatuses() : [];
+      if (!p.workerIds || p.workerIds.length === 0) return fromRun;
+      const wanted = new Set(p.workerIds);
+      const out = fromRun.filter((w) => wanted.has(w.workerId));
+      const seen = new Set(out.map((w) => w.workerId));
+      for (const id of p.workerIds) {
+        if (seen.has(id)) continue;
+        const snapshot =
+          this.children.get(id)?.snapshot() ??
+          this.childrenOf(conversationId).find((c) => c.subagentId === id);
+        if (!snapshot) continue;
+        out.push({
+          workerId: snapshot.subagentId,
+          role: snapshot.role,
+          status: snapshot.status,
+          report: snapshot.report,
+          question: snapshot.question,
+        });
+      }
+      return out;
     };
 
     const returnOnWaitingInput = p.returnOnWaitingInput ?? true;
@@ -774,17 +807,19 @@ export class SwarmCoordinator {
       const onClosed = () => finish(() => resolve(referenced()));
       const onAbort = () => finish(() => reject(new Error('aborted')));
 
-      run.closed.addEventListener('abort', onClosed, { once: true });
+      // A turn with no run of its own can still be waiting on a detached child
+      // from an earlier one; there is simply no run close to settle it early.
+      run?.closed.addEventListener('abort', onClosed, { once: true });
       if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
       // If already aborted (race), settle immediately.
-      if (run.closed.aborted) onClosed();
+      if (run?.closed.aborted) onClosed();
       else if (signal?.aborted) onAbort();
 
       function cleanup() {
         clearInterval(poll);
         clearTimeout(timer);
-        run.closed.removeEventListener('abort', onClosed);
+        run?.closed.removeEventListener('abort', onClosed);
         if (signal) signal.removeEventListener('abort', onAbort);
       }
     });

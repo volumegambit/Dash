@@ -16,7 +16,7 @@ import type { WorkerSpec } from '@dash/swarm';
 import {
   childWorktreePath,
   cleanupChildWorktree,
-  createChildWorktree,
+  ensureChildWorktree,
 } from './subagent-worktree.js';
 
 /**
@@ -282,8 +282,10 @@ export interface ChildRuntime {
  * `ConversationPool` like any conversation, and only its construction differs.
  *
  * Isolation happens FIRST, before anything else is constructed:
- * `createChildWorktree` throws on a non-git workspace, and a child that cannot
- * be isolated must not be started sharing the parent's directory instead.
+ * `ensureChildWorktree` throws on a non-git workspace, and a child that cannot
+ * be isolated must not be started sharing the parent's directory instead. It
+ * REUSES a worktree the child already has, which is what makes a resume work
+ * for the `max_turns` child whose worktree was kept for exactly that.
  * Everything downstream — `config.workspace`, the memory read, the tool sandbox
  * pi enforces — derives from the returned path, so there is no second place
  * that could still point at the parent.
@@ -295,7 +297,7 @@ export async function createChildBackend(
   const workspace =
     spec.isolation === 'worktree'
       ? (
-          await createChildWorktree({
+          await ensureChildWorktree({
             workspace: spec.workspace,
             dataDir: deps.dataDir,
             agentName: spec.agentName,

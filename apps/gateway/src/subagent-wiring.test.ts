@@ -580,6 +580,39 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     expect(await pathExists(join(expected, 'base.txt'))).toBe(true);
   });
 
+  /**
+   * C4 review item 3: a RESUME reaches `createChildBackend` again, and hits
+   * both states. A `max_turns` child's worktree is KEPT on purpose (its report
+   * says the work is resumable and points at it) — `git worktree add` fails on
+   * a path that already exists. Every other terminal status removes it —
+   * `createChildWorktree` then has to make a new one. Neither worked before.
+   */
+  it('a resumed isolated child REUSES the worktree it left behind', async () => {
+    const spec = makeSpec({ workspace, isolation: 'worktree' });
+    const first = await createChildBackend(spec, { ...deps, dataDir });
+    // The partial work a max_turns child's report points at.
+    await writeFile(join(first.workspace, 'findings.md'), '# half the answer\n');
+
+    const resumed = await createChildBackend(spec, { ...deps, dataDir });
+
+    expect(resumed.workspace).toBe(first.workspace);
+    expect(await pathExists(join(resumed.workspace, 'findings.md'))).toBe(true);
+  });
+
+  it('a resumed isolated child whose worktree was cleaned up gets a fresh one', async () => {
+    const spec = makeSpec({ workspace, isolation: 'worktree' });
+    await createChildBackend(spec, { ...deps, dataDir });
+    const { extraTools: _extraTools, ...finished } = spec;
+    await cleanupWorktreeForSpec({ ...finished, workerStatus: 'done' }, { dataDir });
+    const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+    expect(await pathExists(path)).toBe(false);
+
+    const resumed = await createChildBackend(spec, { ...deps, dataDir });
+
+    expect(resumed.workspace).toBe(path);
+    expect(await pathExists(join(path, 'base.txt'))).toBe(true);
+  });
+
   it('a normal child still runs in the shared workspace', async () => {
     const child = await createChildBackend(makeSpec({ workspace }), { ...deps, dataDir });
     expect(captured.starts.at(-1)).toBe(workspace);
