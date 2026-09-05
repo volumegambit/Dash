@@ -509,7 +509,11 @@ export class WorkerHandle {
     this.report = `${MAX_TURNS_PARTIAL_MARKER}\n\n${this.report ?? ''}`;
     this.endedAt = Date.now();
     this.stopHeartbeat();
-    this.clearQuestion();
+    const waiter = this.questionWaiter;
+    if (waiter) {
+      this.clearQuestion();
+      waiter.reject(new Error('maxTurns limit reached'));
+    }
     this.finalizeTerminal('max_turns', this.report);
   }
 
