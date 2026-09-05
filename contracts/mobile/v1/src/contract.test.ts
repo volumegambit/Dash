@@ -353,6 +353,37 @@ describe('mobile v1 contract fixtures', () => {
     });
   });
 
+  it('documents the memory 404 body the gateway really emits, not MobileApiError', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, Record<string, { responses?: Record<string, unknown> }>>;
+      components?: {
+        responses?: Record<string, { content?: Record<string, { schema?: unknown }> }>;
+        schemas?: Record<string, Record<string, unknown>>;
+      };
+    };
+
+    // The three memory handlers answer `{ "error": "not found" }` — no `code`,
+    // no `retryable`. Pointing them at the shared `NotFound` response would
+    // promise a `MobileApiError` no client could ever decode.
+    for (const [path, method] of [
+      ['/agents/{id}/memory', 'get'],
+      ['/agents/{id}/memory/{name}', 'get'],
+      ['/agents/{id}/memory/{name}', 'delete'],
+    ] as const) {
+      expect(openapi.paths?.[path]?.[method]?.responses?.['404'], `${method} ${path}`).toEqual({
+        $ref: '#/components/responses/MemoryNotFound',
+      });
+    }
+    expect(
+      openapi.components?.responses?.MemoryNotFound?.content?.['application/json']?.schema,
+    ).toEqual({ $ref: '#/components/schemas/MemoryNotFoundError' });
+    const schema = openapi.components?.schemas?.MemoryNotFoundError;
+    expect(schema?.type).toBe('object');
+    expect(schema?.additionalProperties).toBe(false);
+    expect(schema?.required).toEqual(['error']);
+    expect(schema?.properties).toEqual({ error: { type: 'string', minLength: 1 } });
+  });
+
   it('matches every manifest case to its declared schema and polarity', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as object;
     const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as object;

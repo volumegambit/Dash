@@ -144,6 +144,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  # The three memory operations answer 404 with `MemoryNotFound`, NOT the
+  # `NotFound` (`MobileApiError`) envelope every other operation in this
+  # namespace uses. That is deliberate: the gateway handlers emit the bare
+  # `{ "error": "not found" }` body, and this document describes what is
+  # actually on the wire. See the `MemoryNotFound` response for the full note.
   /agents/{id}/memory:
     parameters:
       - $ref: '#/components/parameters/AgentId'
@@ -159,7 +164,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/MemoryNotFound'
   /agents/{id}/memory/{name}:
     parameters:
       - $ref: '#/components/parameters/AgentId'
@@ -176,7 +181,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/MemoryNotFound'
     delete:
       operationId: deleteMobileAgentMemory
       responses:
@@ -189,7 +194,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/MemoryNotFound'
   /models:
     get:
       operationId: listMobileModels
@@ -449,6 +454,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MobileApiError'
+    MemoryNotFound:
+      description: >-
+        The agent, or the named memory, does not exist. DELIBERATE DIVERGENCE:
+        the memory routes reply with the gateway's bare `{ "error": ... }` body
+        instead of the `MobileApiError` envelope the rest of this namespace
+        uses, so they are documented with their own schema rather than
+        `NotFound`. Clients must not expect `code`/`retryable` here; iOS maps
+        the 404 status before it reads the body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryNotFoundError'
     Gone:
       description: The conversation was previously deleted and cannot be mutated.
       content:
@@ -646,6 +663,17 @@ components:
       required: [name]
       properties:
         name: { type: string, minLength: 1 }
+    MemoryNotFoundError:
+      description: >-
+        The 404 body of the three memory routes, exactly as the gateway emits
+        it. Intentionally NOT `MobileApiError`: there is no `code` and no
+        `retryable`, so a client that decoded this as the standard envelope
+        would fail to parse it.
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { type: string, minLength: 1 }
     MobileModel:
       type: object
       additionalProperties: false
