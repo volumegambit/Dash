@@ -161,7 +161,7 @@ describe('ContentBlocks', () => {
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 
-  it('tints a failed tool card red and renders the error result on open', () => {
+  it('tints a failed tool card red and renders the error result without a click', () => {
     const content: ConversationContent = {
       type: 'assistant',
       events: [
@@ -180,7 +180,9 @@ describe('ContentBlocks', () => {
     expect(toolBlock.getAttribute('data-status')).toBe('failed');
     expect(toolBlock.className).toContain('tool-card-error');
 
-    fireEvent.click(screen.getByRole('button', { name: /Bash/ }));
+    // No click: a failed call opens by default (tool-use UX 2026-09-05). The
+    // one case whose body you always want was behind the same tap as a
+    // successful read.
     const result = screen.getByTestId('tool-result');
     expect(result.className).toContain('tool-result-error');
     expect(result.textContent).toBe('command not found');
@@ -353,5 +355,79 @@ describe('getMessageCopyText', () => {
 
   it('returns an empty string for malformed content', () => {
     expect(getMessageCopyText({ type: 'bogus' } as unknown as ConversationContent)).toBe('');
+  });
+
+  // Tool-use UX 2026-09-05: the collapsed row answers what the agent did, to
+  // what, and what came back. The third was missing entirely.
+  it('shows what a tool call returned in the collapsed header', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'grep', input: { pattern: 'foo' } },
+        { type: 'tool_result', id: 'call-1', name: 'grep', content: 'a.ts:1: foo\nb.ts:2: foo' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('2 matches');
+  });
+
+  it('says nothing in the header while a tool is still running', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'sleep 5' } },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-card-outcome')).toBeNull();
+  });
+
+  it('opens a failed tool call without a click, and names the error in the header', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'bash',
+          content: 'command not found',
+          isError: true,
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('command not found');
+  });
+
+  it('keeps a successful tool call collapsed', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
+        { type: 'tool_result', id: 'call-1', name: 'bash', content: 'a\nb' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+  });
+
+  it('reports an edit as a diff stat, from the result details', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'edit', input: { path: 'x.ts' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'edit',
+          content: 'ok',
+          details: { diff: '--- a/x.ts\n+++ b/x.ts\n-old\n+new' },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('+1 -1');
   });
 });

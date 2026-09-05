@@ -7,6 +7,7 @@ import {
   isTodoWrite,
   normalizeTool,
   parseTodos,
+  resultSummary,
   summarize,
   toolLabel,
 } from './tool-presentation.js';
@@ -177,18 +178,21 @@ function ToolUseBlock({
   result,
 }: {
   tool: PendingTool;
-  result?: { content: string; isError?: boolean };
+  result?: { content: string; isError?: boolean; details?: unknown };
 }): ReactNode {
   const todos = isTodoWrite(tool.name) ? parseTodos(tool.input) : null;
-  // Task cards open expanded; every other tool card stays collapsed. The rest
-  // hide diagnostic detail you want on demand — a command's arguments, a
-  // file's contents. A task list is the agent's plan for the turn, which is
-  // the one tool body read at a glance, and it was the only one whose
-  // contents were not shown at all: `formatDetails` renders the `todos` array
-  // as the literal string "[3 items]". Matches iOS `ToolCardView`.
-  const [open, setOpen] = useState(todos !== null);
   const status: ToolStatus = !result ? 'running' : result.isError ? 'failed' : 'succeeded';
+  // Two cards open without being asked. Task cards, because a task list is
+  // the agent's plan for the turn — the one tool body read at a glance, and
+  // the only one whose contents were not shown at all (`formatDetails`
+  // rendered the `todos` array as the literal string "[3 items]"). And
+  // failures, because a failure is the one case where the detail is
+  // necessary and it was the one case that took a tap to reach. Everything
+  // else hides diagnostic detail you want on demand — a command's arguments,
+  // a file's contents. Matches iOS `ToolCardView`.
+  const [open, setOpen] = useState(todos !== null || status === 'failed');
   const summary = summarize(tool.name, tool.input);
+  const outcome = resultSummary(tool.name, result?.content, result?.isError, result?.details);
   const details = formatVisibleDetails(tool.name, tool.input);
   const isBash = normalizeTool(tool.name) === 'bash';
 
@@ -209,6 +213,11 @@ function ToolUseBlock({
         {summary && (
           <span className={`tool-card-summary${isBash ? ' tool-card-summary-mono' : ''}`}>
             {summary}
+          </span>
+        )}
+        {outcome && (
+          <span className="tool-card-outcome" data-testid="tool-card-outcome">
+            {outcome}
           </span>
         )}
       </button>
@@ -396,7 +405,7 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
           <ToolUseBlock
             key={`tool-${key++}`}
             tool={tool}
-            result={{ content, isError: event.isError === true }}
+            result={{ content, isError: event.isError === true, details: event.details }}
           />,
         );
         pendingTool = null;
