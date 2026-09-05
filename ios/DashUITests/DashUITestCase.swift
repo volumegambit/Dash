@@ -336,8 +336,15 @@ class DashUITestCase: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) -> XCUIElement {
+    // `Self.exposureWait`, not a sub-second peek: at regular width the
+    // sidebar footer publishes `tab.*` as BUTTONS, so this is the branch the
+    // iPad takes, and one prematurely-expired wait here falls all the way
+    // through to `tabBarFallback` — a tab bar that cannot exist at regular
+    // width — turning a timing blip into "Expected the tab bar button for
+    // tab.agents". See `exposureWait` for why sub-second windows expire
+    // before a query round-trips on a contended host.
     let compactButton = app.buttons.matching(identifier: identifier).firstMatch
-    if compactButton.waitForExistence(timeout: 0.5) {
+    if compactButton.waitForExistence(timeout: Self.exposureWait) {
       return compactButton
     }
 
@@ -359,7 +366,8 @@ class DashUITestCase: XCTestCase {
   }
 
   /// How long every `waitUntilExposed` check inside `revealSidebarIfNeeded`
-  /// gets. A single XCUITest element query round-trips in roughly a second on
+  /// — and the regular-width button lookup in `tab(_:in:)` — gets.
+  /// A single XCUITest element query round-trips in roughly a second on
   /// a contended host, so the sub-second timeouts this used to pass expired
   /// before `XCTNSPredicateExpectation` ever evaluated its predicate once:
   /// the check reported "not exposed" no matter what was on screen, and the
@@ -372,6 +380,10 @@ class DashUITestCase: XCTestCase {
   /// `agent.list` was gone by the time it was checked for. Giving each check
   /// a full poll cycle lets it see the already-correct screen and return
   /// without touching anything.
+  ///
+  /// A window this wide necessarily spans UIKit transition animations, during
+  /// which `isHittable` RAISES on a control with no usable activation point —
+  /// see `isSafelyHittable`, which is what makes a long poll safe.
   private static let exposureWait: TimeInterval = 2
 
   func revealSidebarIfNeeded(
@@ -396,7 +408,10 @@ class DashUITestCase: XCTestCase {
     let isCompact = app.windows.firstMatch.frame.width < 700
     for _ in 0..<4 {
       if waitUntilExposed(identifier, in: app, timeout: Self.exposureWait) { return }
-      if let control = controls.first(where: { $0.exists && $0.isHittable }) {
+      // `isSafelyHittable`, not `isHittable`: a back/toggle control that is
+      // itself mid-transition raises rather than reporting false, and this
+      // loop now polls long enough to catch one in that state.
+      if let control = controls.first(where: { isSafelyHittable($0, in: app) }) {
         control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         continue
       }
@@ -445,19 +460,18 @@ class DashUITestCase: XCTestCase {
         predicate: NSPredicate { object, _ in
           guard let app = object as? XCUIApplication else { return false }
           let compactButton = app.buttons.matching(identifier: identifier).firstMatch
-          if compactButton.exists, compactButton.isHittable {
+          if isSafelyHittable(compactButton, in: app) {
             return true
           }
           let regularLabel = app.staticTexts.matching(identifier: identifier).firstMatch
-          if regularLabel.exists, regularLabel.isHittable {
+          if isSafelyHittable(regularLabel, in: app) {
             return true
           }
           // See `tabBarFallback(_:in:)`: the tab-bar button is there and
           // hittable, but SwiftUI may never publish the `.tabItem` label's
           // accessibility identifier onto it for this launch.
           guard let titleFallback else { return false }
-          let barButton = app.tabBars.buttons[titleFallback]
-          return barButton.exists && barButton.isHittable
+          return isSafelyHittable(app.tabBars.buttons[titleFallback], in: app)
         },
         object: app
       )
@@ -701,4 +715,40 @@ class DashUITestCase: XCTestCase {
     )
     return value
   }
+}
+
+/// `isHittable`, but never fatal for an element that is mid-transition.
+///
+/// `XCUIElement.isHittable` does not return `false` for an element that exists
+/// yet has no usable activation point — it RAISES ("Failed to determine
+/// hittability of … : Activation point invalid and no suggested hit points
+/// based on element frame"), and that raise escapes an `NSPredicate` block and
+/// fails the whole test. A UIKit tab-bar button passes through exactly that
+/// state while the bar animates in or out (iOS 26 hides the phone's tab bar
+/// under a pushed detail), so ANY poll long enough to span a transition — see
+/// `DashUITestCase.exposureWait` — will eventually sample it. The failure is
+/// therefore a property of the poll window, not of the app.
+///
+/// So ask `isHittable` only when the element's frame is real and lies inside
+/// the window, which is precisely the state in which XCUITest can always
+/// derive a hit point from the frame. Anything else counts as "not exposed
+/// yet", which is what a mid-transition control genuinely is, and the caller
+/// keeps waiting. Nothing is weakened for settled UI: a settled control is
+/// inside the window, so `isHittable` is still consulted and still decides.
+///
+/// Free function rather than a `DashUITestCase` member because
+/// `DashUITestCase` is `@MainActor` and the `NSPredicate` block that needs
+/// this is not actor-isolated.
+private func isSafelyHittable(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+  guard element.exists else { return false }
+  let frame = element.frame
+  guard frame.isNull == false, frame.isInfinite == false, frame.isEmpty == false else {
+    return false
+  }
+  let window = app.windows.firstMatch.frame
+  // 1pt of slack: a settled control may round a hair past the window edge.
+  guard window.isEmpty == false, window.insetBy(dx: -1, dy: -1).contains(frame) else {
+    return false
+  }
+  return element.isHittable
 }
