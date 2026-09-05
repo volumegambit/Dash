@@ -132,12 +132,28 @@ struct MarkdownTextView: View {
   }
 }
 
+/// Extra leading between wrapped lines of prose (chat UI polish
+/// 2026-09-05). SwiftUI's default is the font's own tight leading, which is
+/// tuned for labels; assistant replies are long-form body text read on a
+/// phone, where set-solid lines are what makes a wall of text a wall.
+///
+/// Applied to prose only — paragraphs, blockquotes, list items. Code blocks
+/// and tables keep the default, where line breaks are structural rather than
+/// a consequence of wrapping and extra leading just spreads them out.
+private let markdownProseLineSpacing: CGFloat = 3
+
+/// Gap between blocks. Must stay clearly larger than
+/// `markdownProseLineSpacing`: if the space between two paragraphs is not
+/// visibly greater than the space between two wrapped lines, the paragraph
+/// break stops reading as one.
+private let markdownBlockSpacing: CGFloat = 10
+
 /// A vertical run of blocks — the document body, or a list item's children.
 private struct MarkdownBlocksView: View {
   let blocks: [MarkdownBlock]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: markdownBlockSpacing) {
       ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
         MarkdownBlockView(block: block, depth: 0)
       }
@@ -153,6 +169,7 @@ private struct MarkdownBlockView: View {
     switch block {
     case .paragraph(let text):
       Text(attributedInlineMarkdown(text))
+        .lineSpacing(markdownProseLineSpacing)
         .textSelection(.enabled)
 
     case .heading(let level, let text):
@@ -205,6 +222,7 @@ private struct MarkdownListView: View {
             .frame(minWidth: list.ordered ? 22 : 14, alignment: .trailing)
           VStack(alignment: .leading, spacing: 4) {
             Text(attributedInlineMarkdown(item.text))
+              .lineSpacing(markdownProseLineSpacing)
               .textSelection(.enabled)
             ForEach(Array(item.children.enumerated()), id: \.offset) { _, child in
               MarkdownBlockView(block: child, depth: depth + 1)
@@ -301,6 +319,7 @@ private struct MarkdownBlockquoteView: View {
 
   var body: some View {
     Text(attributedInlineMarkdown(text))
+      .lineSpacing(markdownProseLineSpacing)
       .foregroundStyle(.secondary)
       .padding(.leading, 10)
       .overlay(alignment: .leading) {

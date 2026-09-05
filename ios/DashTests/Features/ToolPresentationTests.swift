@@ -73,7 +73,105 @@ struct ToolPresentationTests {
     #expect(result.count <= 61)
   }
 
+  // MARK: - middleTruncate is path-aware only for actual paths
+
+  @Test("middleTruncate never splices a whitespace-bearing command around its last slash")
+  func middleTruncateDoesNotSpliceCommands() {
+    // Regression (chat UI polish 2026-09-05): the slash branch assumed
+    // "contains /" meant "is a path". For a shell command whose LAST slash
+    // sits in a trailing argument, it spliced the command's head onto that
+    // argument's tail — "/opt/homebrew/bin/gog gmail li…/out.json" — a
+    // summary that reads as a path neither the user nor the agent ever used.
+    let command =
+      "/opt/homebrew/bin/gog gmail list --query unread --limit 50 --format json --out /tmp/out.json"
+    let result = ToolPresentation.middleTruncate(command)
+    #expect(result.hasSuffix("…"))
+    #expect(result.hasSuffix("/tmp/out.json") == false)
+    #expect(result.count == 61)
+  }
+
+  // MARK: - shortenCommand
+
+  @Test("shortenCommand strips the executable's leading directory")
+  func shortenCommandStripsBinaryDirectory() {
+    #expect(
+      ToolPresentation.shortenCommand("/opt/homebrew/bin/gog gmail list \"in:inbox\"")
+        == "gog gmail list \"in:inbox\""
+    )
+  }
+
+  @Test("shortenCommand handles a bare executable path with no arguments")
+  func shortenCommandBareExecutable() {
+    #expect(ToolPresentation.shortenCommand("/usr/local/bin/wrangler") == "wrangler")
+  }
+
+  @Test(
+    "shortenCommand leaves commands whose first word is not a path untouched",
+    arguments: [
+      "ls -la",
+      "npm run build",
+      "cd /Users/gerry/Projects && npm test",
+      "grep -rn foo src/",
+      "",
+    ]
+  )
+  func shortenCommandLeavesNonPathsUntouched(command: String) {
+    #expect(ToolPresentation.shortenCommand(command) == command)
+  }
+
+  @Test("shortenCommand keeps relative and home-relative launches recognizable")
+  func shortenCommandRelativeLaunchers() {
+    #expect(ToolPresentation.shortenCommand("./scripts/build.sh --watch") == "build.sh --watch")
+    #expect(ToolPresentation.shortenCommand("~/bin/deploy prod") == "deploy prod")
+  }
+
+  @Test("shortenCommand preserves interior whitespace of the arguments")
+  func shortenCommandPreservesArguments() {
+    #expect(
+      ToolPresentation.shortenCommand("/bin/echo  a   b") == "echo  a   b"
+    )
+  }
+
+  @Test("shortenCommand does not strip a trailing-slash-only first word")
+  func shortenCommandTrailingSlash() {
+    #expect(ToolPresentation.shortenCommand("/usr/bin/ arg") == "/usr/bin/ arg")
+  }
+
   // MARK: - summarize
+
+  @Test("summarize strips the binary directory from a bash command")
+  func summarizeBashStripsBinaryDirectory() {
+    // The screenshot case: three consecutive gog calls whose first 18
+    // characters were identical, so the collapsed rows were indistinguishable.
+    #expect(
+      ToolPresentation.summarize(
+        name: "bash",
+        input: .object(["command": .string("/opt/homebrew/bin/gog gmail list \"in:inbox\"")])
+      ) == "gog gmail list \"in:inbox\""
+    )
+  }
+
+  @Test("summarize shortens the command before truncating, not after")
+  func summarizeBashShortensBeforeTruncating() {
+    // 18 chars of "/opt/homebrew/bin/" must not eat into the 60-char budget.
+    let arguments = String(repeating: "x", count: 55)
+    let result = ToolPresentation.summarize(
+      name: "bash",
+      input: .object(["command": .string("/opt/homebrew/bin/gog \(arguments)")])
+    )
+    #expect(result == "gog \(arguments)")
+  }
+
+  @Test("summarize applies command shortening to the legacy execute_command name")
+  func summarizeLegacyExecuteCommand() {
+    #expect(
+      ToolPresentation.summarize(
+        name: "execute_command",
+        input: .object(["command": .string("/opt/homebrew/bin/gog auth list")])
+      ) == "gog auth list"
+    )
+  }
+
 
   @Test("summarize extracts the command for bash")
   func summarizeBash() {
@@ -172,6 +270,26 @@ struct ToolPresentationTests {
     #expect(
       ToolPresentation.summarize(name: "task", input: .object(["todos": todos])) == "2/3 done"
     )
+  }
+
+  // MARK: - outcomeSummary
+
+  @Test("outcomeSummary counts the lines of a multi-line result")
+  func outcomeSummaryMultiline() {
+    #expect(ToolPresentation.outcomeSummary(content: "a\nb\nc") == "3 lines")
+  }
+
+  @Test("outcomeSummary ignores a trailing newline from command output")
+  func outcomeSummaryTrailingNewline() {
+    #expect(ToolPresentation.outcomeSummary(content: "a\nb\n") == "2 lines")
+  }
+
+  @Test(
+    "outcomeSummary stays silent when there is nothing worth reporting",
+    arguments: [nil, "", "   ", "\n", "one line", "one line\n"]
+  )
+  func outcomeSummarySilent(content: String?) {
+    #expect(ToolPresentation.outcomeSummary(content: content) == nil)
   }
 
   // MARK: - formatDetails

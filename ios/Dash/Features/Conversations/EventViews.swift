@@ -80,8 +80,17 @@ struct AssistantEventViews: View {
         }
       }
 
-      ForEach(projection.toolCards) { tool in
-        ToolCardView(tool: tool)
+      // Consecutive tool calls are one action, not several messages (chat UI
+      // polish 2026-09-05). They used to inherit this stack's 12pt
+      // inter-block spacing, so three `gog` calls from a single turn read as
+      // three separate events and consumed half the screen. 4pt groups them
+      // as a run while still separating them from the prose above and below.
+      if projection.toolCards.isEmpty == false {
+        VStack(alignment: .leading, spacing: 4) {
+          ForEach(projection.toolCards) { tool in
+            ToolCardView(tool: tool)
+          }
+        }
       }
 
       ForEach(projection.workerCards) { worker in
@@ -258,8 +267,19 @@ struct ToolCardView: View {
           .padding(.top, 6)
       }
     }
-    .padding(10)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
     .background(cardBackground, in: RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+    // A failed card's only signal was a `fillSubtle` (0.08) danger wash and
+    // an 8pt glyph, which is very close to invisible against a dark ground.
+    // A hairline in the same colour costs nothing on success and makes the
+    // failure legible at a glance.
+    .overlay {
+      if tool.status == .failed {
+        RoundedRectangle(cornerRadius: DashTheme.Radius.small)
+          .strokeBorder(DashTheme.danger.opacity(DashTheme.Opacity.fillEmphasis))
+      }
+    }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
     .accessibilityIdentifier("chat.tool.\(tool.id)")
@@ -271,8 +291,12 @@ struct ToolCardView: View {
   private var header: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
       statusGlyph
+      // Was `.callout` — the tool name is the least variable thing on the
+      // row (it repeats down the whole run) and was set larger than the
+      // summary, which is the part that differs. Demoting it to `.caption`
+      // semibold hands those points to the summary.
       Text(ToolPresentation.toolLabel(tool.name))
-        .font(.callout.monospaced())
+        .font(.caption.monospaced().weight(.semibold))
         .foregroundStyle(.primary)
       if let summary = ToolPresentation.summarize(name: tool.name, input: tool.input) {
         Text(summary)
@@ -281,7 +305,20 @@ struct ToolCardView: View {
           .lineLimit(1)
           .truncationMode(.tail)
       }
-      Spacer(minLength: 0)
+      Spacer(minLength: 4)
+      if let outcome = ToolPresentation.outcomeSummary(content: tool.content), !isExpanded {
+        Text(outcome)
+          .font(.caption2)
+          .foregroundStyle(.tertiary)
+          .layoutPriority(1)
+      }
+      // The cards were silently expandable: nothing on a collapsed row said
+      // so, and the whole-row Button gives no visual affordance of its own.
+      Image(systemName: "chevron.right")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(.tertiary)
+        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+        .layoutPriority(1)
     }
   }
 

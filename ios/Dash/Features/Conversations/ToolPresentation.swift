@@ -61,13 +61,24 @@ enum ToolPresentation {
 
   // MARK: - Truncation
 
-  /// Truncates `s` to `max` characters. For strings containing `/`, uses a
+  /// Truncates `s` to `max` characters. For path-like strings, uses a
   /// middle-ellipsis that preserves the trailing filename (mirrors
   /// chat.helpers.ts `truncate`).
+  ///
+  /// Divergence from the web source (chat UI polish 2026-09-05): "path-like"
+  /// here additionally requires the string to be whitespace-free. The web
+  /// version keys the middle-ellipsis off `includes('/')` alone, which is
+  /// fine for the `path`/`url` fields it was written for but wrong for
+  /// `bash`'s `command` — a shell line's LAST slash usually sits inside a
+  /// trailing argument, so the branch spliced the command's head onto that
+  /// argument's tail and produced a plausible-looking path
+  /// ("/opt/homebrew/bin/gog gmail li…/out.json") that never existed. A
+  /// string with spaces in it is a sentence or a command, not a path, and
+  /// plain tail truncation is the honest rendering.
   static func middleTruncate(_ s: String, max: Int = 60) -> String {
     guard s.count > max else { return s }
 
-    if s.contains("/"), let lastSlash = s.lastIndex(of: "/") {
+    if isPathLike(s), let lastSlash = s.lastIndex(of: "/") {
       let filename = String(s[lastSlash...])  // includes the leading /
       let prefixMaxLength = max - filename.count - 1
       if prefixMaxLength > 3 {
@@ -77,6 +88,42 @@ enum ToolPresentation {
     }
 
     return "\(s.prefix(max))…"
+  }
+
+  private static func isPathLike(_ s: String) -> Bool {
+    s.contains("/") && s.contains(where: \.isWhitespace) == false
+  }
+
+  // MARK: - Command shortening
+
+  /// Drops the leading directory from a shell command's executable, so
+  /// `/opt/homebrew/bin/gog gmail list` summarizes as `gog gmail list`.
+  ///
+  /// Collapsed tool rows get roughly 40 characters on a phone. An absolute
+  /// launcher path spends the first ~18 of those on a prefix that is
+  /// identical across every call to the same binary, which is exactly the
+  /// state the conversation view was in: three consecutive `gog` calls that
+  /// were indistinguishable until you expanded them. The directory is not
+  /// information the reader is missing — it is on `$PATH` — so it goes,
+  /// and the arguments that actually differ move into view.
+  ///
+  /// Only the first whitespace-delimited word is touched, and only when it
+  /// reads as a launcher path (absolute, `./`, `../`, or `~/`). Everything
+  /// after it is preserved byte-for-byte: `cd /Users/gerry/x && npm test`
+  /// keeps its path, because that path is an argument the user chose, not
+  /// an install location.
+  static func shortenCommand(_ command: String) -> String {
+    let executableEnd = command.firstIndex(where: \.isWhitespace) ?? command.endIndex
+    let executable = command[command.startIndex..<executableEnd]
+    guard
+      executable.hasPrefix("/") || executable.hasPrefix("./") || executable.hasPrefix("../")
+        || executable.hasPrefix("~/"),
+      let lastSlash = executable.lastIndex(of: "/")
+    else { return command }
+
+    let name = executable[executable.index(after: lastSlash)...]
+    guard !name.isEmpty else { return command }
+    return String(name) + String(command[executableEnd...])
   }
 
   // MARK: - TodoWrite
@@ -141,10 +188,13 @@ enum ToolPresentation {
       return "\(done)/\(todos.count) done"
     }
 
-    let keys = primaryKeys[normalizeTool(name)] ?? []
+    let normalized = normalizeTool(name)
+    let keys = primaryKeys[normalized] ?? []
     for key in keys {
       if case let .string(value)? = fields[key], !value.isEmpty {
-        return middleTruncate(value)
+        // Shorten BEFORE truncating: otherwise `/opt/homebrew/bin/` spends
+        // 18 of the 60-character budget before the command even starts.
+        return middleTruncate(normalized == "bash" ? shortenCommand(value) : value)
       }
     }
 
@@ -157,6 +207,26 @@ enum ToolPresentation {
     }
 
     return nil
+  }
+
+  // MARK: - Collapsed outcome
+
+  /// How much output a finished tool produced, for the right edge of its
+  /// collapsed header — `nil` when there is nothing worth saying.
+  ///
+  /// An iOS-only addition, not part of the MC parity surface: the web cards
+  /// are wide enough to preview output inline, whereas here a collapsed card
+  /// shows a status dot and a command, and nothing distinguishes "expanding
+  /// this reveals 200 lines of log" from "expanding this reveals nothing at
+  /// all". A single-line result stays silent — "1 line" is not worth the
+  /// pixels, and the row is already narrow.
+  static func outcomeSummary(content: String?) -> String? {
+    guard let content, content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    else { return nil }
+    // Trailing newlines are an artifact of command output, not a line of it.
+    let lines = content.trimmingCharacters(in: .newlines).components(separatedBy: "\n").count
+    guard lines > 1 else { return nil }
+    return "\(lines) lines"
   }
 
   // MARK: - Detail formatting
