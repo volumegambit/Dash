@@ -1,17 +1,16 @@
 import type { FlatSkillFile } from '@dash/agent';
 import {
+  type SubagentTypeResolver,
   type SwarmCoordinator,
   type SwarmExtraTool,
-  builtinSubagentTypes,
   createAgentTools,
-  createStaticResolver,
   createSwarmTools,
   parentBuiltinTools,
 } from '@dash/swarm';
 import type { AgentChatCoordinatorSwarm } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 import { filterPluginsByAgent } from './plugin-filtering.js';
-import { isSubagentsEnabled, subagentTypesFor } from './subagent-config.js';
+import { isSubagentsEnabled } from './subagent-config.js';
 
 /**
  * A top-level orchestrator is depth 0 and its children are depth 1.
@@ -30,6 +29,18 @@ export interface SubagentExtraToolsOptions {
   agentId: string;
   /** Config snapshot at backend-creation time: the gate + `allowedTypes`. */
   agentConfig: GatewayAgentConfig;
+  /**
+   * The agent's sub-agent roster, from the DEFINITION REGISTRY — built-ins plus
+   * plugin `agents/*.md`, the per-agent dir and the workspace dirs, already
+   * narrowed by `subagents.allowedTypes`. Required: falling back to the
+   * built-ins here is how an agent silently loses every definition it authored.
+   *
+   * MUST be the delegating resolver from `createSubagentRosterRefresher`, not a
+   * bare `registry.resolverFor()` snapshot — `createAgentTools` captures it in a
+   * closure for the backend's lifetime, so a snapshot can never see a later
+   * definition write.
+   */
+  resolver: SubagentTypeResolver;
   /**
    * Late-bound conversation id, resolved per tool invocation (the gateway wires
    * this to the backend's in-flight session id, mirroring the projects tools).
@@ -94,9 +105,10 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       coordinator: opts.coordinator,
       agentId: opts.agentId,
       conversationId,
-      // Narrowed to `subagents.allowedTypes` when set, so the roster the model
-      // sees and the set it can resolve match.
-      resolver: createStaticResolver(subagentTypesFor(opts.agentConfig, builtinSubagentTypes())),
+      // The registry-backed roster. Narrowing to `subagents.allowedTypes`
+      // already happened inside the registry, so the roster the model sees and
+      // the set it can resolve match.
+      resolver: opts.resolver,
       // Phase A: a background child is cancelled at turn end. Task C4 flips
       // this to 'detached'.
       backgroundMode: 'turn-scoped',

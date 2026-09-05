@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import {
   SwarmCoordinator,
@@ -10,6 +12,8 @@ import {
 import { type MockInstance, describe, expect, it, vi } from 'vitest';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
+import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
+import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
 
 /**
@@ -206,6 +210,21 @@ function setup(
   const states: AgentState[] = [];
   const harness = { injected: [] as string[] };
 
+  // The real definition registry and roster bridge, exactly as index.ts wires
+  // them. The data dir deliberately does not exist: an agent with no authored
+  // definitions resolves to the built-ins, which is the Phase A population.
+  const definitions = createSubagentDefinitionRegistry({
+    dataDir: join(tmpdir(), 'dash-phase-a-no-definitions'),
+    getPluginAgentDefFiles: () => [],
+    getAgentConfig: (agentId) => registry.get(agentId)?.config,
+  });
+  const rosters = createSubagentRosterRefresher({
+    registry: definitions,
+    refreshBackends: () => agents.refreshCustomTools(id),
+    listAgentIds: () => registry.list().map((entry) => entry.id),
+    warn: () => {},
+  });
+
   const agents = createAgentChatCoordinator({
     registry,
     poolMaxSize: 10,
@@ -216,6 +235,7 @@ function setup(
         coordinator,
         agentId,
         agentConfig,
+        resolver: await rosters.resolverFor(agentId),
         conversationId: () => conversationId,
         parentTools: () => registry.get(agentId)?.config.tools,
         parentModel: () => registry.get(agentId)?.config.model ?? agentConfig.model,

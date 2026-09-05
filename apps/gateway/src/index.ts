@@ -69,6 +69,8 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
+import { createSubagentDefinitionRegistry } from './subagent-definitions.js';
+import { createSubagentRosterRefresher } from './subagent-roster-refresh.js';
 import {
   childSkillWiring,
   createSubagentExtraTools,
@@ -336,6 +338,33 @@ async function main() {
   if (migratedAgents > 0) {
     logger.info(`[migrate] rewrote ${migratedAgents} agent(s) off skills.includeBundled`);
   }
+
+  // --- Sub-agent definition registry (spec §6.2) ---
+  //
+  // Resolves a `subagent_type` per agent across the four definition sources.
+  // Both inputs are LIVE getters, never snapshots: a plugin hot-reload
+  // reassigns `wiringState`, and `PUT /agents/:id` rewrites the config the
+  // per-agent dir, workspace dirs and `allowedTypes` come from.
+  //
+  // The logger matters as much as the resolution: the registry's
+  // `allowedTypes` diagnostics and the spec §5.4 roster token-budget warning
+  // are only useful if they land in the gateway's own log stream rather than a
+  // console nobody is tailing.
+  const subagentDefinitions = createSubagentDefinitionRegistry({
+    dataDir,
+    getPluginAgentDefFiles: () => wiringState.agentDefFiles,
+    getAgentConfig: (agentId) => registry.get(agentId)?.config,
+    logger: { warn: (message) => logger.warn(message) },
+  });
+  // The registry→warm-backend bridge. Created BEFORE `agents` and reaching it
+  // through the closure below (never called during construction) because the
+  // chat backend factory needs `resolverFor` while this needs the coordinator.
+  const subagentRosters = createSubagentRosterRefresher({
+    registry: subagentDefinitions,
+    refreshBackends: (agentId) => agents.refreshCustomTools(agentId),
+    listAgentIds: () => registry.list().map((entry) => entry.id),
+    warn: (message) => logger.warn(message),
+  });
 
   // Shared pull-based credential source. The chat-path backend factory below
   // builds its own inline copy (it also needs it before this point in the file
@@ -641,9 +670,9 @@ async function main() {
       //
       // `agentDefFiles` (plugin `agents/*.md`) is narrowed by the SAME selection
       // but is deliberately NOT handed to the backend: per spec §6.2 those are
-      // sub-agent DEFINITIONS, not loadable skills. The definition registry that
-      // consumes them is built in a later task; until then the narrowed value is
-      // intentionally unused here rather than silently folded into commandFiles.
+      // sub-agent DEFINITIONS, not loadable skills. They reach the model
+      // through the definition registry's roster instead (see
+      // `subagentResolver` below), which does its own plugin narrowing.
       const { skillDirs, commandFiles } = filterPluginsByAgent(
         agentConfig.plugins,
         allSkillDirs,
@@ -651,6 +680,12 @@ async function main() {
         wiringState.skillDirsByPlugin,
         allAgentDefFiles,
       );
+
+      // This agent's sub-agent roster. Awaited HERE (not inside the tool
+      // bundle) because the registry scans directories: the `agent` tool's
+      // `parameters` getter is synchronous, so the first build has to happen
+      // while the backend is still being constructed.
+      const subagentResolver = await subagentRosters.resolverFor(agentId);
 
       // Explicit annotation breaks the circular type inference: the projects
       // tools close over `backend` (getSessionId) while `backend` is still
@@ -716,6 +751,14 @@ async function main() {
             coordinator: swarmCoordinator,
             agentId,
             agentConfig,
+            // The registry-backed roster, via the DELEGATING resolver: the
+            // `agent` tool captures it for this backend's whole life, so a
+            // definition written after the backend warmed is picked up by the
+            // refresher swapping the snapshot behind it (plus the
+            // `refreshCustomTools` poke that makes the new roster reach pi's
+            // frozen tool registry). Resolved above the `new PiAgentBackend`
+            // call because it is async.
+            resolver: subagentResolver,
             conversationId: () => backend.getCurrentSessionId() ?? '',
             parentTools: () => registry.get(agentId)?.config.tools,
             // The parent's OWN MCP grant, read live and through the SAME helper
@@ -816,6 +859,14 @@ async function main() {
     // Re-log any provider catalogs dropped for colliding with a built-in id —
     // the same boot-time helper, so the warning surfaces on every reload too.
     logDroppedCollisions(newWiring.droppedProviderCollisions);
+
+    // The plugin `agents/*.md` set just changed for EVERY agent, so drop every
+    // cached roster (no argument = all). The refresher rebuilds each one — which
+    // also re-fires the `allowedTypes` and roster-token-budget warnings against
+    // the new plugin set — and pokes the warm backends. Deliberately AFTER the
+    // `wiringState` swap above: the rebuild reads it through the live getter.
+    subagentDefinitions.invalidate();
+    await subagentRosters.whenIdle();
   };
 
   // The closure handed to the management routes: re-run discovery, rebuild
@@ -850,6 +901,15 @@ async function main() {
       gateway.registerAgent(agentId, bridgeClient);
     }
   }
+
+  // Build every agent's sub-agent roster once at BOOT.
+  //
+  // The registry is lazy, so without this the spec §5.4 roster token-budget
+  // warning and the `subagents.allowedTypes` typo diagnostic would first fire
+  // on whatever chat happens to arrive first — buried in traffic, hours after
+  // the operator edited the config they are about. Priming here puts them in
+  // the startup log next to the rest of the boot diagnostics.
+  await subagentRosters.prime(registry.list().map((entry) => entry.id));
 
   // Restore persisted channels
   for (const channel of channelRegistry.list()) {
@@ -927,6 +987,7 @@ async function main() {
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload
     // closure + plugins dir let PUT/DELETE persist and re-derive wiring.
+    subagentDefinitions,
     getPluginWiringState: () => wiringState,
     pluginConfigStore,
     reloadPlugins,

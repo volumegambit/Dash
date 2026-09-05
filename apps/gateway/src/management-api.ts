@@ -30,6 +30,8 @@ import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import type { SubagentDefinitionRegistry } from './subagent-definitions.js';
+import { mountSubagentDefinitionRoutes } from './subagent-management.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -61,6 +63,14 @@ export interface GatewayManagementOptions {
    * swarms still construct the app; the swarm routes simply aren't mounted.
    */
   swarmCoordinator?: SwarmCoordinator;
+  /**
+   * The sub-agent definition registry. When present, mounts the definition
+   * routes (`/agents/:id/subagent-types`, `/agents/:id/subagent-definitions…`)
+   * on BOTH the loopback app and `/mobile/v1`, and threads cache invalidation
+   * into the agent update/delete handlers. Optional so tests/embedders that
+   * don't wire sub-agents still construct the app.
+   */
+  subagentDefinitions?: SubagentDefinitionRegistry;
   /** Capability bearer accepted only by the `/mobile/v1` namespace. */
   mobileToken?: string;
   /** Administrative bearer accepted by every non-mobile management route. */
@@ -744,6 +754,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
       try {
         await agentRegistry.save();
+        // Drop this agent's cached sub-agent roster. Unconditional rather than
+        // diffed: the registry snapshots `workspace`, `plugins`, `name` AND the
+        // `subagents` block, so any narrower condition is one new key away from
+        // silently serving a stale roster until the next restart. A rebuild is
+        // one directory scan, and it only happens on an explicit config write.
+        options.subagentDefinitions?.invalidate(id);
         eventBus?.emit({
           type: 'agent:config-changed',
           agent: entry.name,
@@ -790,6 +806,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           await agents.evict(id);
           const archived = options.conversationService.archiveAgentConversations(id);
           agentRegistry.remove(id);
+          // Drop the deleted agent's cached roster so the entry does not
+          // outlive the agent (and so a re-registered id starts from disk).
+          options.subagentDefinitions?.invalidate(id);
           await agentRegistry.save();
           await channelRegistry.save();
           for (const conversation of archived) {
@@ -1349,6 +1368,17 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       swarmCoordinator: options.swarmCoordinator,
       agentRegistry,
     });
+  }
+
+  // --- Sub-agent definition routes ---
+  // Mounted behind the bearer middleware on BOTH namespaces (the same dual
+  // mount `mountConversationRoutes` uses) so MC/web and the iOS app read and
+  // write definitions through one implementation. Conditional on the registry
+  // dep so tests/embedders that don't wire sub-agents still construct the app.
+  if (options.subagentDefinitions) {
+    const subagentDeps = { agentRegistry, definitions: options.subagentDefinitions };
+    mountSubagentDefinitionRoutes(app, subagentDeps);
+    mountSubagentDefinitionRoutes(mobileV1, subagentDeps);
   }
 
   // --- MCP routes ---

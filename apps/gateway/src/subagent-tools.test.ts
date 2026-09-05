@@ -5,6 +5,8 @@ import {
   type WorkerBackend,
   type WorkerFactory,
   type WorkerSpec,
+  builtinSubagentTypes,
+  createStaticResolver,
   parentBuiltinTools,
 } from '@dash/swarm';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
@@ -93,6 +95,9 @@ function setup(
     coordinator,
     agentId: 'a',
     agentConfig: config({ tools: parentTools }),
+    // The roster the definition registry would serve. These tests are about the
+    // parent-grant wiring, so the built-ins alone are the relevant set.
+    resolver: createStaticResolver(builtinSubagentTypes()),
     conversationId: () => 'c',
     parentTools: () => parentTools,
     parentMcpTools: () => parentMcp,

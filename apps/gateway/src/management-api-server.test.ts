@@ -146,6 +146,7 @@ function makeAgents(): AgentChatCoordinator {
     cancel: vi.fn().mockReturnValue(false),
     evict: vi.fn().mockResolvedValue(undefined),
     evictAll: vi.fn().mockResolvedValue(undefined),
+    refreshCustomTools: vi.fn().mockResolvedValue(undefined),
     listSkills: vi.fn().mockResolvedValue([]),
     getSkill: vi.fn().mockResolvedValue(null),
     createSkill: vi.fn().mockResolvedValue({ name: 'x', location: '/x/SKILL.md' }),
@@ -244,6 +245,103 @@ describe('createGatewayManagementApp', () => {
   // specific id (e.g. `a1`) get predictable values regardless of order.
   beforeEach(() => {
     agentIdCounter = 0;
+  });
+
+  // Sub-agent definition routes (Ruling 5: BOTH namespaces; Ruling 4:
+  // invalidate on every mutation, including a PUT/DELETE of the agent itself).
+  describe('sub-agent definition wiring', () => {
+    function makeDefinitions() {
+      const invalidate = vi.fn();
+      const listFor = vi.fn().mockResolvedValue({
+        types: [
+          {
+            name: 'general-purpose',
+            description: 'd',
+            systemPrompt: 'body',
+            source: 'builtin',
+            skipMemory: false,
+            oneShot: false,
+          },
+        ],
+        unknownAllowedTypes: [],
+      });
+      const definitions = {
+        resolverFor: vi.fn(),
+        listFor,
+        invalidate,
+        perAgentDir: (name: string) => join('/tmp/dash-test-subagents', name),
+        onChange: vi.fn(() => () => {}),
+      };
+      return { definitions, invalidate, listFor };
+    }
+
+    function withAgent() {
+      const { definitions, invalidate, listFor } = makeDefinitions();
+      const created = createApp({ subagentDefinitions: definitions });
+      (created.agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'alpha',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      return { ...created, invalidate, listFor };
+    }
+
+    it('serves the roster on the loopback app AND on /mobile/v1', async () => {
+      const { app, listFor } = withAgent();
+      const loopback = await app.request('/agents/a1/subagent-types', { headers: AUTH });
+      expect(loopback.status).toBe(200);
+      const mobile = await app.request('/mobile/v1/agents/a1/subagent-types', {
+        headers: MOBILE_AUTH,
+      });
+      expect(mobile.status).toBe(200);
+      // Both namespaces read the same registry, so a definition written from
+      // the web app is immediately visible to the phone.
+      expect(listFor).toHaveBeenCalledTimes(2);
+      expect(await mobile.json()).toEqual({
+        types: [{ name: 'general-purpose', description: 'd', source: 'builtin' }],
+        unknownAllowedTypes: [],
+      });
+    });
+
+    it('requires the namespace bearer on each mount', async () => {
+      const { app } = withAgent();
+      expect((await app.request('/agents/a1/subagent-types')).status).toBe(401);
+      expect((await app.request('/mobile/v1/agents/a1/subagent-types')).status).toBe(401);
+      // The mobile bearer is not an administrative bearer.
+      expect(
+        (await app.request('/agents/a1/subagent-types', { headers: MOBILE_AUTH })).status,
+      ).toBe(401);
+    });
+
+    it('is simply absent when no registry is wired', async () => {
+      const { app, agentRegistry } = createApp();
+      (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'alpha',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      expect((await app.request('/agents/a1/subagent-types', { headers: AUTH })).status).toBe(404);
+    });
+
+    it('invalidates the agent roster on PUT /agents/:id', async () => {
+      const { app, invalidate } = withAgent();
+      const res = await app.request('/agents/a1', {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ workspace: '/tmp/new-workspace' }),
+      });
+      expect(res.status).toBe(200);
+      // The registry snapshots `workspace` (it is where `.dash/agents` lives),
+      // so a PUT that did not invalidate would serve the old roster forever.
+      expect(invalidate).toHaveBeenCalledWith('a1');
+    });
+
+    it('invalidates on DELETE /agents/:id so the cache does not outlive the agent', async () => {
+      const { app, invalidate } = withAgent();
+      const res = await app.request('/agents/a1', { method: 'DELETE', headers: AUTH });
+      expect(res.status).toBe(200);
+      expect(invalidate).toHaveBeenCalledWith('a1');
+    });
   });
 
   // Health
