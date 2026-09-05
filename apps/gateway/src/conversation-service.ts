@@ -35,6 +35,11 @@ export interface ListConversationsInput {
    * context, so exposing them by default would be a privacy regression.
    */
   kind?: ConversationKind;
+  /**
+   * Restricts the page to children of this conversation. Note that `kind`
+   * still defaults to `'user'` and parents have no parent, so this filter
+   * returns nothing unless you also pass `kind: 'subagent'`.
+   */
   parentConversationId?: string;
   limit: number;
   cursor?: string;

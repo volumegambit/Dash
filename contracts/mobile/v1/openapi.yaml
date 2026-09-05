@@ -394,7 +394,7 @@ paths:
       - name: conversationId
         in: path
         required: true
-        schema: { type: string, format: uuid }
+        schema: { $ref: '#/components/schemas/ConversationIdentifier' }
     get:
       operationId: replayConversationEvents
       parameters:
@@ -457,7 +457,7 @@ components:
       name: id
       in: path
       required: true
-      schema: { type: string, format: uuid }
+      schema: { $ref: '#/components/schemas/ConversationIdentifier' }
     ConversationAgentId:
       name: agentId
       in: query
@@ -790,6 +790,12 @@ components:
       properties:
         type: { type: string, minLength: 1 }
       additionalProperties: true
+    ConversationIdentifier:
+      # A user conversation id is a uuid; a sub-agent conversation id is
+      # `sub_<ulid>` (design 2026-09-04 sub-agents, 7.4). Both are addressable
+      # through the same routes, so every conversation id accepts either shape.
+      type: string
+      pattern: '^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sub_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})$'
     ConversationContent:
       oneOf:
         - type: object
@@ -842,7 +848,7 @@ components:
       additionalProperties: false
       required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, kind]
       properties:
-        id: { type: string, format: uuid }
+        id: { $ref: '#/components/schemas/ConversationIdentifier' }
         agentId: { type: string, minLength: 1 }
         agentName: { type: string, minLength: 1 }
         title: { type: string }
@@ -859,7 +865,7 @@ components:
         updatedAt: { type: string, format: date-time }
         deletedAt: { type: string, format: date-time }
         kind: { enum: [user, subagent] }
-        parentConversationId: { type: string, minLength: 1 }
+        parentConversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         parentTurnId: { type: string, minLength: 1 }
         subagent:
           $ref: '#/components/schemas/SubagentInfo'
@@ -869,7 +875,7 @@ components:
       required: [id, conversationId, turnId, ordinal, role, status, content, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
-        conversationId: { type: string, format: uuid }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         turnId: { type: string, format: uuid }
         ordinal: { type: integer, minimum: 1 }
         role: { enum: [user, assistant] }
@@ -1006,7 +1012,7 @@ components:
         seq: { type: integer, minimum: 1 }
         msgId: { type: string, minLength: 1 }
         agentId: { type: string, minLength: 1 }
-        conversationId: { type: string, format: uuid }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         timestamp: { type: string, format: date-time }
         payload:
           $ref: '#/components/schemas/ReplayPayload'
@@ -1025,7 +1031,7 @@ components:
       required: [type, conversationId, revision]
       properties:
         type: { const: 'conversation:changed' }
-        conversationId: { type: string, format: uuid }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         revision: { type: integer, minimum: 1 }
     ConversationDeletedEvent:
       type: object
@@ -1033,7 +1039,7 @@ components:
       required: [type, conversationId, revision]
       properties:
         type: { const: 'conversation:deleted' }
-        conversationId: { type: string, format: uuid }
+        conversationId: { $ref: '#/components/schemas/ConversationIdentifier' }
         revision: { type: integer, minimum: 1 }
     WsTicketResponse:
       type: object

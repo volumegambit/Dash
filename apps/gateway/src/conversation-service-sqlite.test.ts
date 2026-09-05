@@ -1208,12 +1208,120 @@ describe('SqliteConversationService subagent persistence', () => {
     });
 
     expect(notified.userMessage.origin).toBe('notification');
+    // The origin describes the TURN, so both rows carry it: listMessages pages
+    // by ordinal and a page boundary can put the two rows of one turn on
+    // different pages, leaving an assistant-only page unable to recover it.
+    expect(notified.assistantMessage.origin).toBe('notification');
     expect(
       service
         .listMessages({ conversationId: parent.id, limit: 10 })
-        .items.filter((message) => message.role === 'user')
-        .map((message) => message.origin),
-    ).toEqual(['user', 'notification']);
+        .items.map((message) => [message.role, message.origin]),
+    ).toEqual([
+      ['user', 'user'],
+      ['assistant', 'user'],
+      ['user', 'notification'],
+      ['assistant', 'notification'],
+    ]);
+    // A single-row page still carries the origin.
+    const lastPage = service.listMessages({ conversationId: parent.id, limit: 1 });
+    expect(lastPage.items).toEqual([
+      expect.objectContaining({ role: 'assistant', origin: 'notification' }),
+    ]);
+  });
+
+  it('exposes children through the parentConversationId filter', () => {
+    const parent = createParent();
+    const other = createParent('parent-02');
+    service.createSubagent({
+      id: 'sub_filter_a',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Mine',
+      subagent: subagentInfo(),
+    });
+    service.createSubagent({
+      id: 'sub_filter_b',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: other.id,
+      parentTurnId: 'turn-parent-02',
+      title: 'Theirs',
+      subagent: subagentInfo(),
+    });
+
+    expect(
+      service
+        .list({ limit: 10, kind: 'subagent', parentConversationId: parent.id })
+        .items.map((item) => item.id),
+    ).toEqual(['sub_filter_a']);
+    // The trap worth a test: kind still defaults to 'user', and no parent has a
+    // parent, so the filter alone returns nothing.
+    expect(service.list({ limit: 10, parentConversationId: parent.id }).items).toEqual([]);
+  });
+
+  it('tombstones the whole subtree when a parent is deleted', () => {
+    const parent = createParent();
+    const child = service.createSubagent({
+      id: 'sub_level_one',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Level one',
+      subagent: subagentInfo(),
+    });
+    service.createSubagent({
+      id: 'sub_level_two',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: child.id,
+      parentTurnId: 'turn-child-01',
+      title: 'Level two',
+      subagent: subagentInfo({ depth: 2 }),
+    });
+    const bystander = createParent('parent-02');
+    service.createSubagent({
+      id: 'sub_bystander',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: bystander.id,
+      parentTurnId: 'turn-parent-02',
+      title: 'Untouched',
+      subagent: subagentInfo(),
+    });
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: 'sub_level_two',
+      turnId: 'turn-grandchild-01',
+      text: 'Working',
+      origin: 'parent',
+    });
+
+    service.delete(parent.id, parent.revision);
+
+    // A grandchild's prompt can quote the context the user just deleted, so the
+    // whole subtree goes, not just the direct children.
+    for (const id of ['sub_level_one', 'sub_level_two']) {
+      expect(service.get(id)).toBeNull();
+      expect(service.get(id, { includeDeleted: true })).toMatchObject({ status: 'deleted' });
+    }
+    expect(service.listSubagents(parent.id)).toEqual([]);
+    expect(service.list({ limit: 10, kind: 'subagent' }).items.map((item) => item.id)).toEqual([
+      'sub_bystander',
+    ]);
+    // Transcripts and event logs of the subtree are gone, and an active child
+    // turn does not save it.
+    expect(
+      (service as unknown as { db: DatabaseType }).db
+        .prepare('SELECT COUNT(*) AS total FROM conversation_messages WHERE conversation_id = ?')
+        .get('sub_level_two'),
+    ).toEqual({ total: 0 });
+    expect(service.eventLog.readSince('agent-01', 'sub_level_two', 0)).toEqual([]);
+    expect(service.get('sub_level_two', { includeDeleted: true })?.activeTurnId).toBeNull();
+    // The bystander subtree is untouched.
+    expect(service.get('sub_bystander')).toMatchObject({ status: 'idle' });
   });
 
   it('queues notifications up to the cap and drains them in order', () => {
@@ -1315,6 +1423,44 @@ describe('SqliteConversationService subagent persistence', () => {
     expect(() => service.updateSubagent(child.id, { status: 'done' })).toThrow(
       ConversationServiceError,
     );
+    // A tombstone lives forever, so the idempotence branch must not report a
+    // deleted child as a fresh spawn — the caller's first acceptTurn would then
+    // fail with not_found on a conversation it believes it just created.
+    expect(() =>
+      service.createSubagent({
+        id: 'sub_guard',
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: 'Respawn',
+        subagent: subagentInfo(),
+      }),
+    ).toThrow(expect.objectContaining({ code: 'not_found', status: 410 }));
+  });
+
+  it('fails loudly on a corrupt child row instead of inventing contract-invalid values', () => {
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_corrupt',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Corrupt me',
+      subagent: subagentInfo(),
+    });
+    const db = (service as unknown as { db: DatabaseType }).db;
+
+    // `SubagentInfo.type` is `minLength: 1` in the contract, so defaulting to ''
+    // would mint a summary the contract suite itself rejects.
+    db.prepare('UPDATE conversations SET subagent_type = NULL WHERE id = ?').run('sub_corrupt');
+    expect(() => service.get('sub_corrupt')).toThrow(/no subagent_type/);
+
+    db.prepare(
+      "UPDATE conversations SET subagent_type = 'x', subagent_status = NULL WHERE id = ?",
+    ).run('sub_corrupt');
+    expect(() => service.get('sub_corrupt')).toThrow(/no subagent_status/);
   });
 
   it('keeps each conversation-s notification queue separate', () => {

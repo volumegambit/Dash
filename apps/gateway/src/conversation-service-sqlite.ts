@@ -200,11 +200,20 @@ function parseContent(raw: string): ConversationContent {
 
 /** Recombine the columnar fields with the `subagent_meta` blob. */
 function mapSubagent(row: ConversationRow): SubagentInfo {
+  // A child row without a type or a status is corrupt. Defaulting would mint a
+  // summary that violates the contract this task just wrote (`type` is
+  // `minLength: 1`) or invent a status for a row whose state is unknown.
+  if (!row.subagent_type) {
+    throw new Error(`Subagent conversation ${row.id} has no subagent_type`);
+  }
+  if (!row.subagent_status) {
+    throw new Error(`Subagent conversation ${row.id} has no subagent_status`);
+  }
   const meta = (row.subagent_meta ? JSON.parse(row.subagent_meta) : {}) as Partial<SubagentMeta>;
   return {
-    type: row.subagent_type ?? '',
+    type: row.subagent_type,
     ...(row.subagent_name ? { name: row.subagent_name } : {}),
-    status: row.subagent_status ?? 'running',
+    status: row.subagent_status,
     description: meta.description ?? '',
     prompt: meta.prompt ?? '',
     model: meta.model ?? '',
@@ -558,11 +567,7 @@ export class SqliteConversationService implements ConversationService {
       }
       this.assertRevision(current, expectedRevision);
       const timestamp = this.now();
-      this.db.prepare('DELETE FROM conversation_messages WHERE conversation_id = ?').run(id);
-      // The row survives as a tombstone, so the FK cascade never fires — drop
-      // the queue explicitly or it outlives the conversation forever.
-      this.db.prepare('DELETE FROM pending_notifications WHERE conversation_id = ?').run(id);
-      this.eventLog.deleteConversation(current.agent_id, id);
+      this.purgeConversationContent(current.agent_id, id);
       const tombstoned = this.db
         .prepare(`
           UPDATE conversations
@@ -584,8 +589,58 @@ export class SqliteConversationService implements ConversationService {
         }
         throw new Error(`Failed to tombstone conversation ${id}`);
       }
+      this.tombstoneDescendants(id, timestamp);
       return this.mapConversation(this.requireConversationRow(id, true));
     })();
+  }
+
+  /**
+   * Drop everything a tombstone must not keep: the transcript, the event log
+   * and the notification queue. The conversation row survives as a tombstone,
+   * so the `pending_notifications` FK cascade never fires — hence the explicit
+   * delete.
+   */
+  private purgeConversationContent(agentId: string, conversationId: string): void {
+    this.db
+      .prepare('DELETE FROM conversation_messages WHERE conversation_id = ?')
+      .run(conversationId);
+    this.db
+      .prepare('DELETE FROM pending_notifications WHERE conversation_id = ?')
+      .run(conversationId);
+    this.eventLog.deleteConversation(agentId, conversationId);
+  }
+
+  /**
+   * Deleting a conversation deletes its whole subtree. Children carry no FK to
+   * their parent, so nothing else would remove them, and a surviving child is a
+   * privacy leak: `subagent.prompt` can quote the parent context the user just
+   * deleted and `GET /conversations/:childId` has no `kind` gate. Children nest,
+   * so this walks the tree. A child holding an active turn is tombstoned
+   * anyway — the user's delete outranks a runaway child.
+   */
+  private tombstoneDescendants(rootId: string, timestamp: string): void {
+    const selectChildren = this.db.prepare(
+      'SELECT * FROM conversations WHERE parent_conversation_id = ? AND deleted_at IS NULL',
+    );
+    const tombstone = this.db.prepare(`
+      UPDATE conversations
+      SET status = 'deleted', active_turn_id = NULL, revision = revision + 1,
+          updated_at = @now, deleted_at = @now
+      WHERE id = @id
+    `);
+    const queue = [rootId];
+    const seen = new Set<string>([rootId]);
+    while (queue.length > 0) {
+      const parentId = queue.shift() as string;
+      for (const child of selectChildren.all(parentId) as ConversationRow[]) {
+        // Defensive: a cycle would otherwise spin forever.
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        queue.push(child.id);
+        this.purgeConversationContent(child.agent_id, child.id);
+        tombstone.run({ id: child.id, now: timestamp });
+      }
+    }
   }
 
   listMessages(input: ListMessagesInput): ConversationMessagePage {
@@ -731,6 +786,7 @@ export class SqliteConversationService implements ConversationService {
         ...(value.images !== undefined ? { images: value.images } : {}),
       };
       const assistantContent: ConversationContent = { type: 'assistant', events: [] };
+      const turnOrigin: ConversationMessageOrigin = value.origin ?? 'user';
       const insertMessage = this.db.prepare(`
         INSERT INTO conversation_messages (
           id, conversation_id, turn_id, ordinal, role, content, status,
@@ -748,7 +804,7 @@ export class SqliteConversationService implements ConversationService {
         role: 'user',
         content: JSON.stringify(userContent),
         status: 'accepted',
-        origin: value.origin ?? 'user',
+        origin: turnOrigin,
         now: timestamp,
       });
       insertMessage.run({
@@ -759,8 +815,12 @@ export class SqliteConversationService implements ConversationService {
         role: 'assistant',
         content: JSON.stringify(assistantContent),
         status: 'streaming',
-        // The origin marks who *asked*; the reply is always the agent's own.
-        origin: 'user',
+        // `origin` describes the turn, not the row. listMessages pages by
+        // ordinal, so a page boundary can split a turn's two adjacent rows —
+        // an assistant row that did not carry the origin would be unrecoverable
+        // (its sibling is on another page) and a client filtering out
+        // notification turns would drop the question but keep the answer.
+        origin: turnOrigin,
         now: timestamp,
       });
 
@@ -957,6 +1017,17 @@ export class SqliteConversationService implements ConversationService {
             'validation_failed',
             `Conversation ${value.id} already exists and is not a subagent conversation`,
             409,
+            false,
+          );
+        }
+        // A tombstone survives forever, so the idempotence branch would
+        // otherwise report a deleted child as a successful spawn and the first
+        // acceptTurn would fail with not_found.
+        if (existing.deleted_at) {
+          throw new ConversationServiceError(
+            'not_found',
+            `Conversation ${value.id} was deleted`,
+            410,
             false,
           );
         }

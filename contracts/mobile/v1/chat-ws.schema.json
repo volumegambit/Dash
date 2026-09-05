@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mobile-chat-ws",
   "$defs": {
+    "ConversationId": {
+      "$comment": "A user conversation id is a uuid; a sub-agent conversation id is sub_<ulid> (design 2026-09-04 sub-agents, 7.4). Child conversations stream over the same frames, so every conversationId accepts either shape.",
+      "type": "string",
+      "pattern": "^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sub_[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26})$"
+    },
     "MobileImage": {
       "type": "object",
       "additionalProperties": false,
@@ -32,7 +37,7 @@
         "id": { "type": "string", "format": "uuid" },
         "agentId": { "type": "string", "minLength": 1 },
         "channelId": { "type": "string", "minLength": 1 },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "text": { "type": "string" },
         "images": {
           "type": "array",
@@ -50,7 +55,7 @@
         "type": { "const": "resume" },
         "id": { "type": "string", "format": "uuid" },
         "agentId": { "type": "string", "minLength": 1 },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "sinceSeq": { "type": "integer", "minimum": 0 }
       }
     },
@@ -89,7 +94,7 @@
       "properties": {
         "type": { "const": "accepted" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "userMessageId": { "type": "string", "format": "uuid" },
         "assistantMessageId": { "type": "string", "format": "uuid" },
         "revision": { "type": "integer", "minimum": 1 },
@@ -103,7 +108,7 @@
       "properties": {
         "type": { "const": "event" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "seq": { "type": "integer", "minimum": 1 },
         "event": {
           "type": "object",
@@ -122,7 +127,7 @@
       "properties": {
         "type": { "const": "done" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "seq": { "type": "integer", "minimum": 1 },
         "outcome": { "enum": ["completed", "cancelled"] }
       }
@@ -134,7 +139,7 @@
       "properties": {
         "type": { "const": "error" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "seq": { "type": "integer", "minimum": 1 },
         "error": { "type": "string", "minLength": 1 },
         "code": { "$ref": "#/$defs/MobileApiErrorCode" },
@@ -151,7 +156,7 @@
         "id": { "type": "string", "format": "uuid" },
         "agentId": { "type": "string", "minLength": 1 },
         "channelId": { "type": "string", "minLength": 1 },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "text": { "type": "string" },
         "images": {
           "type": "array",
@@ -168,7 +173,7 @@
       "properties": {
         "type": { "const": "event" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "seq": { "type": "integer", "minimum": 1 },
         "event": {
           "type": "object",
@@ -187,7 +192,7 @@
       "properties": {
         "type": { "const": "done" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "seq": { "type": "integer", "minimum": 1 },
         "outcome": { "enum": ["completed", "cancelled"] }
       }
@@ -199,7 +204,7 @@
       "properties": {
         "type": { "const": "error" },
         "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
+        "conversationId": { "$ref": "#/$defs/ConversationId" },
         "seq": { "type": "integer", "minimum": 1 },
         "error": { "type": "string", "minLength": 1 },
         "code": { "$ref": "#/$defs/MobileApiErrorCode" },
