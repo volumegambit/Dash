@@ -354,6 +354,37 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
         break;
       }
 
+      case 'memory_saved':
+      case 'memory_forgotten': {
+        // Agent memory bookkeeping (MC parity, chat.tsx's memory chip): a
+        // compact chip so the user can see what the agent remembered or
+        // forgot. Validated the same way as every other event here — a
+        // malformed one degrades to `UnknownBlock` rather than rendering
+        // "undefined". Rendered as `<output>` rather than a
+        // `<span role="status">` — same implicit status live region, and the
+        // form biome's `useSemanticElements` requires.
+        const label =
+          event.type === 'memory_forgotten'
+            ? typeof event.name === 'string'
+              ? `Forgot: ${event.name}`
+              : null
+            : typeof event.description === 'string'
+              ? `${event.action === 'updated' ? 'Updated memory' : 'Remembered'}: ${event.description}`
+              : null;
+        if (label === null) {
+          pushUnknown();
+          break;
+        }
+        flushThinking();
+        flushText();
+        nodes.push(
+          <output key={`memory-${key++}`} className="chat-memory-chip">
+            {label}
+          </output>,
+        );
+        break;
+      }
+
       default:
         pushUnknown();
     }
