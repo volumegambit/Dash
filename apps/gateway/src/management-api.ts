@@ -868,9 +868,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
    * Status mapping for the memory routes, mirroring `mapSkillError` but keyed
    * on the `code` carried by `MemoryOpError`: `invalid` -> 400 (bad name/type/
    * oversized content), `not_found` -> 404, `limit` -> 409 (per-agent cap).
-   * The coordinator's write paths throw a plain Error when memory is disabled
-   * for the agent; that is a configuration state, not a client mistake, so it
-   * surfaces as 503.
+   * The coordinator's save path throws a plain Error when memory is disabled
+   * for the agent, and every memory path throws when the embedding has no
+   * memory directory at all; those are configuration states, not client
+   * mistakes, so they surface as 503.
    */
   const mapMemoryError = (
     err: unknown,
@@ -881,7 +882,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         err.code === 'invalid' ? 400 : err.code === 'not_found' ? 404 : 409;
       return { status, body: { error: message } };
     }
-    if (message.includes('Memory is disabled')) return { status: 503, body: { error: message } };
+    if (message.includes('Memory is disabled') || message.includes('Memory is not configured')) {
+      return { status: 503, body: { error: message } };
+    }
     return { status: 500, body: { error: message } };
   };
 

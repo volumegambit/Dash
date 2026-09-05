@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import { MemoryStore } from '@dash/agent';
 import {
   SwarmCoordinator,
   type SwarmEventLogSink,
@@ -1057,27 +1058,87 @@ describe('AgentChatCoordinator memory wiring', () => {
     }
   });
 
-  it('reads degrade to empty and writes throw when memory is disabled', async () => {
-    const registry = new AgentRegistry();
-    const { id } = registry.register({
-      name: 'mem-off',
-      model: 'm',
-      systemPrompt: 'p',
-      memory: { enabled: false },
-    });
-    const agents = createAgentChatCoordinator({
-      registry,
-      poolMaxSize: 10,
-      memoryDir: (agentId) => join('/tmp/dash-mem', agentId),
-      createBackend: async () => makeMockBackend([]),
-    });
+  it('keeps reads and deletes working (but refuses saves) when memory is disabled', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dash-coord-mem-off-'));
+    try {
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-off',
+        model: 'm',
+        systemPrompt: 'p',
+        memory: { enabled: false },
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(dir, agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
 
-    expect(await agents.listMemories(id)).toEqual([]);
-    expect(await agents.getMemory(id, 'x')).toBeNull();
-    await expect(
-      agents.saveMemory(id, { name: 'x', description: 'd', type: 'user', content: 'c' }),
-    ).rejects.toThrow(/disabled/);
-    await expect(agents.removeMemory(id, 'x')).rejects.toThrow(/disabled/);
+      // Memories written before the user turned memory off are still on disk;
+      // the management surfaces must show them and be able to delete them.
+      const store = new MemoryStore(join(dir, id));
+      await store.save({
+        name: 'x',
+        description: 'd',
+        type: 'user',
+        content: 'c',
+        source: 'user',
+      });
+
+      expect((await agents.listMemories(id)).map((m) => m.name)).toEqual(['x']);
+      expect((await agents.getMemory(id, 'x'))?.content).toBe('c');
+      await expect(
+        agents.saveMemory(id, { name: 'y', description: 'd', type: 'user', content: 'c' }),
+      ).rejects.toThrow(/disabled/);
+      expect(await agents.removeMemory(id, 'x')).toBe(true);
+      expect(await agents.getMemory(id, 'x')).toBeNull();
+      // The chat-path store stays null: no prompt, no tools, no sweep.
+      expect(agents.memoryStore(id)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives a memory-disabled agent no memory block and no memory tools', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dash-coord-mem-off2-'));
+    try {
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-off-prompt',
+        model: 'm',
+        systemPrompt: 'p',
+        memory: { enabled: false },
+      });
+      const store = new MemoryStore(join(dir, id));
+      await store.save({
+        name: 'x',
+        description: 'd',
+        type: 'user',
+        content: 'c',
+        source: 'user',
+      });
+      const seenConfigs: BackendFactoryConfig[] = [];
+      const { backend, states } = makeStateCapturingBackend();
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(dir, agentId),
+        createBackend: async (config) => {
+          seenConfigs.push(config);
+          return backend;
+        },
+      });
+
+      await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+      expect(seenConfigs[0].memoryRuntime).toBeUndefined();
+      expect(states[0].systemPrompt).not.toContain('<memory>');
+
+      await agents.stop();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('imports a legacy workspace MEMORY.md when the pool entry is created', async () => {

@@ -203,16 +203,25 @@ export interface AgentChatCoordinator {
    * (`memory.enabled === false`) or no `memoryDir` resolver is configured.
    */
   memoryStore(agentId: string): MemoryStore | null;
-  /** List the agent's memories. Empty when memory is disabled (never throws). */
+  /**
+   * List the agent's memories. Management path: it still lists what is on disk
+   * for a memory-DISABLED agent (so the Memory tab stays honest), and degrades
+   * to empty — never throws — for an unknown agent or an embedding with no
+   * memory directory.
+   */
   listMemories(agentId: string): Promise<MemoryInfo[]>;
-  /** Get one memory by name, or null (also null when memory is disabled). */
+  /** Get one memory by name, or null. Management path: works while memory is disabled. */
   getMemory(agentId: string, name: string): Promise<MemoryRecord | null>;
   /** Create/update a memory as the human-facing API path (`source: 'user'`). Throws when disabled. */
   saveMemory(
     agentId: string,
     input: Omit<SaveMemoryInput, 'source'>,
   ): Promise<{ record: MemoryRecord; action: 'created' | 'updated' }>;
-  /** Delete a memory. Throws when memory is disabled. */
+  /**
+   * Delete a memory. Management path: works while memory is disabled (the user
+   * must be able to clear memories they can see); throws only when no memory
+   * directory is configured at all.
+   */
   removeMemory(agentId: string, name: string): Promise<boolean>;
   stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
@@ -257,6 +266,19 @@ export function createAgentChatCoordinator(
     return cfg ? new MemoryStore(cfg.dir) : null;
   };
 
+  /**
+   * Store for the MANAGEMENT paths (Mission Control's Memory tab and the
+   * mobile memory routes). Deliberately NOT gated on `memory.enabled`: turning
+   * memory off stops the prompt, the tools and the sweep, but the files stay on
+   * disk, and a user who cannot see or delete them is stuck — the docs tell
+   * them to clear the tab before deleting an agent. `memoryConfigFor` stays the
+   * decision point for the CHAT path; this one only needs a `memoryDir`.
+   */
+  const managementStoreFor = (agentId: string): MemoryStore | null => {
+    if (!registry.get(agentId) || !options.memoryDir) return null;
+    return new MemoryStore(options.memoryDir(agentId));
+  };
+
   /** Store for a WRITE path: writing to a disabled agent is an error, not a no-op. */
   const requireStore = (agentId: string): MemoryStore => {
     const store = memoryStoreFor(agentId);
@@ -298,8 +320,11 @@ export function createAgentChatCoordinator(
       tools: entry.config.tools,
       skills: entry.config.skills,
       // Resolved LIVE per message like the fields above: flipping
-      // `memory.enabled` via PUT /agents/:id takes effect on the next chat
-      // without evicting the warm backend. `undefined` = no memory block.
+      // `memory.enabled` via PATCH /agents/:id/memory/config (the only route
+      // that writes it — `PUT /agents/:id` ignores the `memory` key) takes
+      // effect on the next chat without evicting the warm backend for the
+      // PROMPT. `undefined` = no memory block. The memory TOOLS are captured at
+      // backend start(), which is why that PATCH route also evicts the entry.
       memory: memoryConfigFor(agentId),
     };
   }
@@ -620,14 +645,15 @@ export function createAgentChatCoordinator(
     memoryStore: memoryStoreFor,
 
     async listMemories(agentId) {
-      // Reads degrade to empty rather than throwing: the HTTP list route for a
-      // memory-disabled agent should render an empty list, not a 500.
-      const store = memoryStoreFor(agentId);
+      // Reads degrade to empty rather than throwing: the HTTP list route for an
+      // unknown agent should render an empty list, not a 500. A memory-DISABLED
+      // agent still lists what is on disk (see `managementStoreFor`).
+      const store = managementStoreFor(agentId);
       return store ? store.list() : [];
     },
 
     async getMemory(agentId, name) {
-      const store = memoryStoreFor(agentId);
+      const store = managementStoreFor(agentId);
       return store ? store.get(name) : null;
     },
 
@@ -638,7 +664,12 @@ export function createAgentChatCoordinator(
     },
 
     async removeMemory(agentId, name) {
-      return requireStore(agentId).remove(name);
+      // Deletes stay available while memory is disabled: this is the user
+      // clearing their own memories, which is exactly what the Memory tab and
+      // the "clear them before deleting the agent" guidance ask them to do.
+      const store = managementStoreFor(agentId);
+      if (!store) throw new Error(`Memory is not configured for agent '${agentId}'`);
+      return store.remove(name);
     },
 
     async steer(agentId, conversationId, text, images) {
