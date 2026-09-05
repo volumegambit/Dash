@@ -187,14 +187,18 @@ export class ChildHandle {
 
     // Subscribe BEFORE the first turn: the driver may deliver events (or a
     // failure) synchronously from inside `startTurn`.
+    // Filtered on the TURN, not just the conversation. A child's conversation
+    // is addressable, so a client can open a turn on it that this handle did
+    // not start; folding that turn's events into the child's report — or
+    // letting its completion terminalize the child — would be wrong twice.
     this.disposers.push(
       this.driver.onEvent((turn, event) => {
-        if (turn.conversationId !== this.subagentId) return;
+        if (!this.ownsTurn(turn)) return;
         if (this.finalized) return;
         this.processEvent(event);
       }),
       this.driver.onFinish((turn, outcome, error) => {
-        if (turn.conversationId !== this.subagentId) return;
+        if (!this.ownsTurn(turn)) return;
         this.onTurnFinished(outcome, error);
       }),
     );
@@ -365,6 +369,11 @@ export class ChildHandle {
   }
 
   // --- internals ---
+
+  /** Is this the turn THIS handle started on its own conversation? */
+  private ownsTurn(turn: { conversationId: string; turnId: string }): boolean {
+    return turn.conversationId === this.subagentId && turn.turnId === this.currentTurnId;
+  }
 
   private beginTurn(text: string): void {
     try {

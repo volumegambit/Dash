@@ -98,13 +98,15 @@ function fakeDriver() {
     failStart(error: Error) {
       startFailure = error;
     },
-    emit(event: AgentEvent) {
+    emit(event: AgentEvent, turnId?: string) {
       if (!ref) throw new Error('no turn started');
-      for (const listener of [...eventListeners]) listener(ref, event);
+      const target = turnId ? { ...ref, turnId } : ref;
+      for (const listener of [...eventListeners]) listener(target, event);
     },
-    finish(outcome: ChildTurnOutcome, error?: string) {
+    finish(outcome: ChildTurnOutcome, error?: string, turnId?: string) {
       if (!ref) throw new Error('no turn started');
-      for (const listener of [...finishListeners]) listener(ref, outcome, error);
+      const target = turnId ? { ...ref, turnId } : ref;
+      for (const listener of [...finishListeners]) listener(target, outcome, error);
     },
   };
 }
@@ -308,6 +310,25 @@ describe('ChildHandle', () => {
     expect(handle.snapshot().workspace).toBeUndefined();
     d.setWorkspace('/data/worktrees/Agent One/child');
     expect(handle.snapshot().workspace).toBe('/data/worktrees/Agent One/child');
+  });
+
+  it('ignores a turn on its conversation that it did not start', async () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    // A client typed into the child's own conversation: its transcript is
+    // addressable, so this is a real turn — but it is not the child's task, and
+    // neither its events nor its completion may touch the child's report.
+    d.emit(response('someone else said this'), 'foreign-turn');
+    d.finish('completed', undefined, 'foreign-turn');
+
+    expect(handle.status).toBe('running');
+    expect(handle.report).toBeUndefined();
+
+    d.emit(response('the real report'));
+    d.finish('completed');
+    await handle.terminalPromise;
+    expect(handle.report).toBe('the real report');
   });
 
   it('a persist failure never breaks the terminal transition', async () => {
