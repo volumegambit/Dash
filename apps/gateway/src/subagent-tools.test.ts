@@ -8,7 +8,12 @@ import {
   parentBuiltinTools,
 } from '@dash/swarm';
 import { AgentRegistry, type GatewayAgentConfig } from './agent-registry.js';
-import { createSubagentExtraTools, createSwarmGate } from './subagent-tools.js';
+import {
+  childSkillWiring,
+  createSubagentExtraTools,
+  createSwarmGate,
+  orchestratorMcpToolNames,
+} from './subagent-tools.js';
 
 /**
  * The gateway's sub-agent tool wiring. The point of these tests is that the
@@ -62,6 +67,8 @@ const INHERITABLE = ['read', 'bash', 'load_skill', 'task'];
 
 /** The MCP tools the orchestrator itself holds, in the gateway's naming. */
 const PARENT_MCP = ['github__pr', 'github__merge'];
+/** Everything the shared manager exposes, across two servers. */
+const ALL_MCP_TOOLS = ['github__pr', 'github__merge', 'linear__issue'];
 
 function setup(
   parentTools: string[] | undefined = MC_PARENT_TOOLS,
@@ -174,6 +181,27 @@ describe('orchestrator MCP tools reach the spawn path', () => {
     attachment.finalize({ consumerAlive: true });
   });
 
+  it('a child cannot receive a server the operator never assigned to its parent', async () => {
+    // End to end through the real helper: agent A is assigned only `linear`,
+    // so a general-purpose child — which inherits the parent's WHOLE MCP set —
+    // must not come out holding `github__merge`.
+    const assigned = orchestratorMcpToolNames(
+      {
+        name: 'orch',
+        model: 'orch-model',
+        systemPrompt: 's',
+        tools: MC_PARENT_TOOLS,
+        mcpServers: ['linear'],
+      },
+      () => ALL_MCP_TOOLS,
+    );
+    const { attachment, specs, agent } = setup(MC_PARENT_TOOLS, { parentMcp: assigned });
+    await agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true });
+    expect(specs[0].mcpTools).toEqual(['linear__issue']);
+    expect(specs[0].mcpTools).not.toContain('github__merge');
+    attachment.finalize({ consumerAlive: true });
+  });
+
   it('a parent with no MCP tools still grants none', async () => {
     const { attachment, specs, agent } = setup();
     await agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true });
@@ -183,19 +211,41 @@ describe('orchestrator MCP tools reach the spawn path', () => {
 });
 
 describe('createSwarmGate', () => {
-  function gateFor(over: Partial<GatewayAgentConfig> = {}) {
+  function gateFor(over: Partial<GatewayAgentConfig> = {}, tools = ALL_MCP_TOOLS) {
     const registry = new AgentRegistry();
     const { id } = registry.register({ name: 'orch', model: 'm', systemPrompt: 's', ...over });
     const coordinator = new SwarmCoordinator({
       workerFactory: () => Promise.resolve(new IdleBackend()),
     });
-    const gate = createSwarmGate(coordinator, registry, () => PARENT_MCP);
+    const gate = createSwarmGate(coordinator, registry, () => tools);
     return { gate, id };
   }
 
   it('reports the orchestrator MCP tools for an agent that holds the mcp tool', () => {
-    const { gate, id } = gateFor({ tools: ['read', 'mcp'] });
+    const { gate, id } = gateFor({ tools: ['read', 'mcp'] }, PARENT_MCP);
     expect(gate.orchestratorMcpTools?.(id)).toEqual(PARENT_MCP);
+  });
+
+  it('narrows to the servers the OPERATOR assigned to that agent', () => {
+    // `config.mcpServers` is the per-agent assignment (patchMcpServers writes
+    // it). Without this narrowing a general-purpose child — which has no
+    // `tools:` key, so it inherits the parent's WHOLE MCP set — would receive
+    // tools from servers the operator never assigned to its parent.
+    const { gate, id } = gateFor({ tools: ['read', 'mcp'], mcpServers: ['linear'] });
+    expect(gate.orchestratorMcpTools?.(id)).toEqual(['linear__issue']);
+  });
+
+  it('an agent assigned NO server holds no MCP tool', () => {
+    const { gate, id } = gateFor({ tools: ['read', 'mcp'], mcpServers: [] });
+    expect(gate.orchestratorMcpTools?.(id)).toEqual([]);
+  });
+
+  it('an agent with no assignment at all still sees the whole pool', () => {
+    // Unset `mcpServers` is the legacy/standalone shape the gateway has always
+    // treated as "everything"; narrowing it here would be a behaviour change
+    // for existing agents rather than a fix.
+    const { gate, id } = gateFor({ tools: ['read', 'mcp'] });
+    expect(gate.orchestratorMcpTools?.(id)).toEqual(ALL_MCP_TOOLS);
   });
 
   it('reports none for an agent whose tool list omits mcp', () => {
@@ -211,5 +261,65 @@ describe('createSwarmGate', () => {
   it('reports none for an unknown agent id', () => {
     const { gate } = gateFor({ tools: ['read', 'mcp'] });
     expect(gate.orchestratorMcpTools?.('nope')).toEqual([]);
+  });
+});
+
+describe('childSkillWiring', () => {
+  const wiring = {
+    skillDirs: ['/plugins/alpha/skills', '/plugins/beta/skills'],
+    commandFiles: [
+      { file: '/plugins/alpha/commands/a.md', namespace: 'alpha' },
+      { file: '/plugins/beta/commands/b.md', namespace: 'beta' },
+    ],
+    skillDirsByPlugin: {
+      alpha: ['/plugins/alpha/skills'],
+      beta: ['/plugins/beta/skills'],
+    },
+    agentDefFiles: [],
+  };
+
+  it('gives a child the parent skill paths, its plugin dirs and the managed dir', () => {
+    const result = childSkillWiring(
+      { name: 'orch', model: 'm', systemPrompt: 's', skills: { paths: ['/own/skills'] } },
+      wiring,
+      () => '/data/skills/orch',
+    );
+    expect(result.paths).toEqual([
+      '/own/skills',
+      '/plugins/alpha/skills',
+      '/plugins/beta/skills',
+      '/data/skills/orch',
+    ]);
+    expect(result.commandFiles).toEqual(wiring.commandFiles);
+  });
+
+  it('honours a narrowed plugins selection', () => {
+    const result = childSkillWiring(
+      { name: 'orch', model: 'm', systemPrompt: 's', plugins: ['alpha'] },
+      wiring,
+      () => '/data/skills/orch',
+    );
+    expect(result.paths).toEqual(['/plugins/alpha/skills', '/data/skills/orch']);
+    expect(result.commandFiles).toEqual([wiring.commandFiles[0]]);
+  });
+
+  it('an agent configured plugins: [] gets NO plugin contribution', () => {
+    const result = childSkillWiring(
+      { name: 'orch', model: 'm', systemPrompt: 's', plugins: [] },
+      wiring,
+      () => '/data/skills/orch',
+    );
+    expect(result.paths).toEqual(['/data/skills/orch']);
+    expect(result.commandFiles).toEqual([]);
+  });
+
+  it('FAILS CLOSED when the parent agent is gone', () => {
+    // A deleted agent has no config. `filterPluginsByAgent(undefined, …)` means
+    // ALL plugins, so a naive lookup miss would hand an orphaned child every
+    // plugin's skills — strictly more than its parent ever had.
+    expect(childSkillWiring(undefined, wiring, () => '/data/skills/orch')).toEqual({
+      paths: [],
+      commandFiles: [],
+    });
   });
 });

@@ -1,3 +1,4 @@
+import type { FlatSkillFile } from '@dash/agent';
 import {
   type SwarmCoordinator,
   type SwarmExtraTool,
@@ -9,6 +10,7 @@ import {
 } from '@dash/swarm';
 import type { AgentChatCoordinatorSwarm } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
+import { filterPluginsByAgent } from './plugin-filtering.js';
 import { isSubagentsEnabled, subagentTypesFor } from './subagent-config.js';
 
 /**
@@ -152,13 +154,25 @@ export function createSwarmGate(
 }
 
 /**
- * The fully-qualified `server__tool` names an orchestrator actually holds.
+ * The fully-qualified `server__tool` names an orchestrator may pass down.
  *
- * Mirrors `PiAgentBackend.buildCustomTools` exactly: MCP tools are registered
- * only when the agent's tool list names the `mcp` gate — which is NOT one of
- * the default tools, so an agent that configured none gets an empty list — and
- * the gateway constructs its chat-path backends without `assignedMcpServers`,
- * so a gated agent sees every tool of the shared manager.
+ * Two gates, both narrowing:
+ *
+ * 1. The `mcp` tool must be in the agent's list. That is the gate
+ *    `PiAgentBackend.buildCustomTools` reads before registering any MCP tool,
+ *    and it is NOT one of the default tools — an agent that configured none
+ *    gets an empty list.
+ * 2. `config.mcpServers` — the OPERATOR's per-agent assignment, written by
+ *    `AgentRegistry.patchMcpServers` — narrows to those servers when it is
+ *    defined. The gateway does not yet enforce this on the parent's own
+ *    backend (it builds chat-path backends without `assignedMcpServers`), but a
+ *    child MUST NOT be wider than the operator's intent: a `general-purpose`
+ *    definition has no `tools:` key, so it inherits the parent's WHOLE MCP set,
+ *    and without this filter a child of an agent assigned only `linear` would
+ *    come out holding `github__merge`. Narrowing here also removes the landmine
+ *    where a later parent-side fix would silently make children wider than
+ *    parents. `undefined` (never assigned) keeps the legacy "whole pool"
+ *    behaviour rather than changing it for existing agents.
  *
  * This is the ONE definition of the parent's MCP grant. Both the `attach()`
  * bound (`orchestratorMcpTools`, checked by `validateMcpTools`) and the spawn
@@ -170,5 +184,51 @@ export function orchestratorMcpToolNames(
   listMcpToolNames: () => string[],
 ): string[] {
   if (!config?.tools?.includes('mcp')) return [];
-  return listMcpToolNames();
+  const assigned = config.mcpServers;
+  const names = listMcpToolNames();
+  if (!assigned) return names;
+  const assignedSet = new Set(assigned);
+  return names.filter((name) => assignedSet.has(name.split('__')[0]));
+}
+
+/** The plugin wiring `childSkillWiring` narrows, read live from the gateway. */
+export interface ChildSkillWiringInputs {
+  skillDirs: string[];
+  commandFiles: FlatSkillFile[];
+  skillDirsByPlugin: Record<string, string[]>;
+  agentDefFiles: Array<{ file: string; namespace: string }>;
+}
+
+/**
+ * The READ-ONLY skill roots and flat command files a child of `parentConfig`
+ * may discover: the parent's own skill paths, the plugin skill dirs its
+ * `plugins` selection allows, and the parent's managed skills dir — the last
+ * one as a READ path only, so `load_skill` resolves the parent's managed skills
+ * while `create_skill` / `install_skill` / `remove_skill` (which gate on the
+ * backend's `managedSkillsDir` slot) stay unreachable.
+ *
+ * FAILS CLOSED. `filterPluginsByAgent(undefined, …)` means ALL plugins — the
+ * backward-compat shape for an agent that never opted into a selection — so a
+ * lookup MISS (the parent was deleted mid-run) must not reach it: an orphaned
+ * child would get every plugin's skills, strictly more than its parent held,
+ * and in particular more than a parent configured `plugins: []` held.
+ */
+export function childSkillWiring(
+  parentConfig: GatewayAgentConfig | undefined,
+  wiring: ChildSkillWiringInputs,
+  /** Resolves the parent's managed skills dir. Never called on a lookup miss. */
+  managedSkillsDirFor: (config: GatewayAgentConfig) => string,
+): { paths: string[]; commandFiles: FlatSkillFile[] } {
+  if (!parentConfig) return { paths: [], commandFiles: [] };
+  const { skillDirs, commandFiles } = filterPluginsByAgent(
+    parentConfig.plugins,
+    wiring.skillDirs,
+    wiring.commandFiles,
+    wiring.skillDirsByPlugin,
+    wiring.agentDefFiles,
+  );
+  return {
+    paths: [...(parentConfig.skills?.paths ?? []), ...skillDirs, managedSkillsDirFor(parentConfig)],
+    commandFiles,
+  };
 }

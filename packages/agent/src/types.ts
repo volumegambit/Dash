@@ -163,8 +163,14 @@ export interface DashAgentConfig {
    * appended to the system prompt. `{ enabled: false }` opts out entirely —
    * used for turn-scoped subagents (Explore / Plan) whose findings belong in
    * the report they hand their parent, not in a memory file.
+   *
+   * `readOnly: true` keeps the memory BODY in the preamble but drops every
+   * instruction to update the file. Set for spawned sub-agents: several run
+   * concurrently on one workspace, and the default preamble's `write_file`
+   * advice is a whole-file overwrite — a lost-update hazard on a user-visible
+   * artifact. See `MemoryPreambleOptions.readOnly`.
    */
-  memory?: { enabled?: boolean };
+  memory?: { enabled?: boolean; readOnly?: boolean };
 }
 
 export interface AgentState {

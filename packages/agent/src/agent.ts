@@ -51,7 +51,9 @@ export class DashAgent {
     // `memory.enabled === false` opts out (turn-scoped subagents); an absent
     // `memory` block keeps the historical behaviour.
     if (config.workspace && config.memory?.enabled !== false) {
-      const preamble = await buildMemoryPreamble(config.workspace);
+      const preamble = await buildMemoryPreamble(config.workspace, {
+        readOnly: config.memory?.readOnly,
+      });
       systemPrompt = `${systemPrompt}\n\n${preamble}`;
     }
 

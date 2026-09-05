@@ -6,6 +6,7 @@ import type {
   AgentState,
   DashAgentConfig,
   DashAgentConfigResolver,
+  PiAgentBackendOptions,
 } from '@dash/agent';
 import type { SwarmExtraTool, WorkerSpec } from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
@@ -27,13 +28,15 @@ import {
 const captured = vi.hoisted(() => ({
   resolvers: [] as DashAgentConfigResolver[],
   states: [] as AgentState[],
+  options: [] as unknown[],
 }));
 
 vi.mock('@dash/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@dash/agent')>();
   class FakePiAgentBackend {
     readonly name = 'piagent';
-    static fromOptions(): FakePiAgentBackend {
+    static fromOptions(options: unknown): FakePiAgentBackend {
+      captured.options.push(options);
       return new FakePiAgentBackend();
     }
     async start(): Promise<void> {}
@@ -166,6 +169,7 @@ describe('createGatewayWorkerFactory config resolver', () => {
     dir = await mkdtemp(join(tmpdir(), 'swarm-factory-'));
     captured.resolvers.length = 0;
     captured.states.length = 0;
+    captured.options.length = 0;
   });
 
   afterEach(async () => {
@@ -180,14 +184,33 @@ describe('createGatewayWorkerFactory config resolver', () => {
     return resolver();
   }
 
+  /**
+   * The factory seam: without this, a regression that constructed the backend
+   * with (say) an unconditional `mcpManager` would pass every other test here,
+   * because they all check `buildChildBackendOptions` in isolation.
+   */
+  it('hands PiAgentBackend.fromOptions exactly what buildChildBackendOptions built', async () => {
+    const spec = makeSpec({ mcpTools: ['github__pr'] });
+    const factoryDeps = { ...deps, dataDir: dir };
+    const factory = createGatewayWorkerFactory(factoryDeps);
+    await factory(spec);
+    expect(captured.options.at(-1)).toEqual(buildChildBackendOptions(spec, factoryDeps));
+  });
+
+  it('does not pass the mcpManager to a child with no MCP grant', async () => {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir: dir });
+    await factory(makeSpec());
+    expect((captured.options.at(-1) as PiAgentBackendOptions).mcpManager).toBeUndefined();
+  });
+
   it('skipMemory children get a resolver that marks memory off', async () => {
     const config = await resolveFor(makeSpec({ skipMemory: true }));
-    expect(config.memory).toEqual({ enabled: false });
+    expect(config.memory).toEqual({ enabled: false, readOnly: true });
   });
 
   it('normal children get a resolver with memory on', async () => {
     const config = await resolveFor(makeSpec());
-    expect(config.memory).toEqual({ enabled: true });
+    expect(config.memory).toEqual({ enabled: true, readOnly: true });
     expect(config.model).toBe('anthropic/claude-sonnet-4-20250514');
     expect(config.systemPrompt).toBe(buildWorkerPreamble(makeSpec()));
   });
@@ -219,6 +242,25 @@ describe('createGatewayWorkerFactory config resolver', () => {
       );
       expect(prompt).toContain('ship the thing.');
       expect(prompt).toContain('persistent memory file');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('but is never told to WRITE it — up to 8 children share one workspace', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'swarm-ws-'));
+    try {
+      await writeFile(join(workspace, 'MEMORY.md'), '- 2026-09-05: ship the thing.\n');
+      const prompt = await systemPromptFor(
+        makeSpec({ subagentType: 'general-purpose', workspace }),
+      );
+      expect(prompt).toContain('ship the thing.');
+      // The default preamble's "use write_file to save memories" is a
+      // whole-file overwrite; concurrent children would lose each other's
+      // updates to a user-visible artifact.
+      expect(prompt).not.toContain('write_file');
+      expect(prompt).not.toContain('Proactively update');
+      expect(prompt).toContain('READ-ONLY');
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -371,8 +413,19 @@ describe('buildChildBackendOptions memory policy', () => {
   it('marks memory off for skipMemory children and on for the rest', () => {
     expect(buildChildBackendOptions(makeSpec({ skipMemory: true }), deps).config.memory).toEqual({
       enabled: false,
+      readOnly: true,
     });
-    expect(buildChildBackendOptions(makeSpec(), deps).config.memory).toEqual({ enabled: true });
+    expect(buildChildBackendOptions(makeSpec(), deps).config.memory).toEqual({
+      enabled: true,
+      readOnly: true,
+    });
+  });
+
+  it('every child is read-only over memory, whatever its type', () => {
+    for (const type of ['general-purpose', 'Explore', 'Plan', undefined]) {
+      const options = buildChildBackendOptions(makeSpec({ subagentType: type }), deps);
+      expect(options.config.memory?.readOnly).toBe(true);
+    }
   });
 });
 

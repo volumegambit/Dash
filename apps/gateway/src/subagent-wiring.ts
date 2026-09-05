@@ -161,8 +161,9 @@ function mcpServersFor(mcpTools: string[]): string[] {
  *
  * `memory.enabled` is `false` for children the definition marks `skipMemory`
  * (Explore / Plan): they are turn-scoped researchers whose findings belong in
- * their report, not in the workspace MEMORY.md. Every other child keeps the
- * normal memory behaviour.
+ * their report, not in the workspace MEMORY.md. Every other child READS memory
+ * — `memory.readOnly` is always set, so no child is ever told to rewrite a file
+ * its siblings are holding a snapshot of.
  */
 export function buildChildAgentConfig(spec: WorkerSpec, deps: ChildBackendDeps): DashAgentConfig {
   const mcpTools = spec.mcpTools ?? [];
@@ -175,7 +176,12 @@ export function buildChildAgentConfig(spec: WorkerSpec, deps: ChildBackendDeps):
     // Add it only when the resolved grant actually contains MCP tools, so a
     // child with none cannot reach the MCP registry at all.
     tools: mcpTools.length > 0 ? [...spec.tools, 'mcp'] : spec.tools,
-    memory: { enabled: !spec.skipMemory },
+    // READ-only for every child: the default preamble tells its reader to
+    // rewrite MEMORY.md with `write_file` (a whole-file overwrite), and up to
+    // `maxConcurrentWorkers` children run at once on the SAME workspace, each
+    // holding a spawn-time snapshot. Children read the memory and put anything
+    // worth recording in the report they hand their parent.
+    memory: { enabled: !spec.skipMemory, readOnly: true },
     workspace: spec.workspace,
     // Read-only skill discovery: enough for `load_skill` (which every grant
     // carries) to resolve, without the managedSkillsDir that would also arm

@@ -170,6 +170,42 @@ describe('DashAgent.chat()', () => {
     expect(prompts[1]).toContain('Remember: user likes TypeScript');
   });
 
+  it('config.memory.readOnly keeps the body but drops the write instruction', async () => {
+    await writeFile(join(tempDir, 'MEMORY.md'), 'Remember: user likes TypeScript');
+
+    const prompts: string[] = [];
+    const backend = makeBackend([], (state) => {
+      prompts.push(state.systemPrompt);
+    });
+
+    const child = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-3-haiku',
+        systemPrompt: 'You are a helpful assistant.',
+        workspace: tempDir,
+        memory: { enabled: true, readOnly: true },
+      }),
+    );
+    const parent = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-3-haiku',
+        systemPrompt: 'You are a helpful assistant.',
+        workspace: tempDir,
+      }),
+    );
+
+    await collect(child.chat('ch', 'conv1', 'hello'));
+    await collect(parent.chat('ch', 'conv2', 'hello'));
+
+    expect(prompts[0]).toContain('Remember: user likes TypeScript');
+    expect(prompts[0]).not.toContain('write_file');
+    // The parent keeps the full, writable preamble.
+    expect(prompts[1]).toContain('Remember: user likes TypeScript');
+    expect(prompts[1]).toContain('write_file');
+  });
+
   // ------------------------------------------------------------------
   // Config resolver semantics — the whole point of the resolver API
   // is that a config change visible to the resolver takes effect on

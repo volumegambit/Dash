@@ -21,6 +21,7 @@ export type { AgentClient } from './client.js';
 export { FileLogger } from './logger.js';
 export type { LogLevel, Logger } from './logger.js';
 export { buildMemoryPreamble } from './memory.js';
+export type { MemoryPreambleOptions } from './memory.js';
 export { ConversationPool } from './conversation-pool.js';
 export type {
   ConversationPoolOptions,

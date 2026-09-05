@@ -70,6 +70,7 @@ import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeStep } from './shutdown.js';
 import {
+  childSkillWiring,
   createSubagentExtraTools,
   createSwarmGate,
   orchestratorMcpToolNames,
@@ -397,34 +398,21 @@ async function main() {
    */
   const listMcpToolNames = (): string[] => mcpManager.getTools().map((t) => t.name);
   /**
-   * The READ-ONLY skill roots a child of `spec.agentName` may discover: that
-   * agent's configured skill paths, the plugin skill dirs its `plugins`
-   * selection allows, and the agent's own managed skills dir — the last one as
-   * a READ path only, so `load_skill` resolves the parent's managed skills
-   * while `create_skill` / `install_skill` / `remove_skill` (which gate on the
-   * backend's `managedSkillsDir` slot) stay unreachable for the child.
-   *
+   * The READ-ONLY skill wiring a child of `spec.agentId` may discover.
    * Per-parent, not gateway-wide: a child of agent A must not discover agent
-   * B's managed skills. Reads `wiringState` LIVE inside the closure (same
-   * reload contract as the chat-path backend factory).
+   * B's managed skills.
+   *
+   * Keyed on the REGISTRY ID, not the name — the id is the stable handle the
+   * spec carries — and `childSkillWiring` fails CLOSED on a lookup miss (the
+   * parent was deleted mid-run), because `filterPluginsByAgent(undefined, …)`
+   * means ALL plugins. Reads `wiringState` LIVE inside the closure (same reload
+   * contract as the chat-path backend factory).
    */
-  const parentSkillWiring = (spec: { agentName: string }) => {
-    const parentConfig = registry.findByName(spec.agentName)?.config;
-    const { skillDirs, commandFiles } = filterPluginsByAgent(
-      parentConfig?.plugins,
-      wiringState.skillDirs,
-      wiringState.commandFiles,
-      wiringState.skillDirsByPlugin,
-      wiringState.agentDefFiles,
+  const parentSkillWiring = (spec: { agentId: string }) => {
+    const parentConfig = registry.get(spec.agentId)?.config;
+    return childSkillWiring(parentConfig, wiringState, (config) =>
+      resolve(dataDir, 'skills', config.name),
     );
-    return {
-      paths: [
-        ...(parentConfig?.skills?.paths ?? []),
-        ...skillDirs,
-        resolve(dataDir, 'skills', spec.agentName),
-      ],
-      commandFiles,
-    };
   };
   const swarmCoordinator = new SwarmCoordinator({
     workerFactory: createGatewayWorkerFactory({
