@@ -2,7 +2,6 @@ export {
   AGENT_TOOL_DESCRIPTION,
   type CreateAgentToolsOptions,
   createAgentTools,
-  grantableTools,
 } from './agent-tool.js';
 export { AsyncChannel } from './channel.js';
 export {

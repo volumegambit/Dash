@@ -1,5 +1,12 @@
 import type { SwarmCoordinator } from './coordinator.js';
 import { scanSubagentOutput } from './output-scan.js';
+import {
+  type ParentToolContext,
+  parentBuiltinTools,
+  preloadSkills,
+  resolveChildModel,
+  resolveChildTools,
+} from './resolve-spawn.js';
 import { type SubagentTypeResolver, buildRosterText } from './subagent-types.js';
 import type { SwarmExtraTool } from './types.js';
 
@@ -17,10 +24,10 @@ export const AGENT_TOOL_DESCRIPTION =
   'its own tools and system prompt. Reach for this when a task matches an ' +
   "agent type's description, when independent work can run in parallel " +
   '(call agent several times in one turn), or when answering would mean ' +
-  'reading across many files — delegate the search and keep the conclusion, ' +
+  'reading across many files - delegate the search and keep the conclusion, ' +
   'not the file dumps. Once you have delegated a search, do not also run it ' +
   "yourself. The agent's final report is returned to you and is NOT shown " +
-  'to the user — relay what matters. Use send_message with the ' +
+  'to the user - relay what matters. Use send_message with the ' +
   "agent's name or id to continue a previous agent with its context " +
   'intact; a new agent call starts fresh. Set run_in_background: true for ' +
   'long independent work; you will be notified when it completes. ' +
@@ -30,7 +37,7 @@ export const AGENT_TOOL_DESCRIPTION =
 const SEND_MESSAGE_DESCRIPTION =
   'Send a message to one of your agents by name or id. A running agent ' +
   'receives it after its current step; a finished agent resumes with its ' +
-  'context intact. Returns immediately; the agent’s next completion is ' +
+  "context intact. Returns immediately; the agent's next completion is " +
   'delivered to you as a notification (or via wait_workers in this gateway ' +
   'version).';
 
@@ -44,46 +51,6 @@ const DETACHED_NOTE = ' You will be notified when it completes.';
 const NAME_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
 const NAME_RE = new RegExp(NAME_PATTERN);
 
-/**
- * The coordinator's spawnable universe (`UNIVERSE` in coordinator.ts). Kept in
- * sync by `grantableTools`'s tests, which spawn against a real SwarmCoordinator.
- */
-const SPAWNABLE_TOOLS: ReadonlySet<string> = new Set([
-  'read',
-  'bash',
-  'edit',
-  'write',
-  'grep',
-  'find',
-  'ls',
-  'web_fetch',
-  'web_search',
-]);
-
-/**
- * The exact tool list `SwarmCoordinator.validateTools` will accept for a child:
- * the type's request (or the parent's own grant when the type asks for none),
- * intersected with the spawnable universe AND with the parent's tools, minus
- * anything mcp- or skill-shaped. The roster and the spawn both read this, so
- * what the model is told it gets and what it actually gets are identical by
- * construction.
- *
- * PHASE A STOPGAP. Task B4's `resolveChildTools` replaces this with the full
- * resolution: `disallowedTools`, `mcp__*` patterns, the `agent(a,b)` spawnable-
- * type restriction, model aliases, and skill preloading.
- */
-export function grantableTools(typeTools: string[] | undefined, parentTools: string[]): string[] {
-  const parent = new Set(parentTools);
-  const granted: string[] = [];
-  for (const tool of typeTools ?? parentTools) {
-    if (granted.includes(tool)) continue;
-    if (/^mcp/.test(tool) || /_skill$/.test(tool)) continue;
-    if (!SPAWNABLE_TOOLS.has(tool) || !parent.has(tool)) continue;
-    granted.push(tool);
-  }
-  return granted;
-}
-
 export interface CreateAgentToolsOptions {
   coordinator: SwarmCoordinator;
   agentId: string;
@@ -95,9 +62,29 @@ export interface CreateAgentToolsOptions {
    * Phase C: 'detached'.
    */
   backgroundMode: 'turn-scoped' | 'detached';
-  /** Effective tools of the parent for roster rendering. */
-  parentTools: () => string[];
-  /** Parent's depth; children get depth+1 (default 0 → 1). */
+  /**
+   * The parent's effective context at spawn time. NEW: provides builtins,
+   * MCPs, depth, maxDepth all together so the roster and grant match.
+   */
+  parentContext?: () => ParentToolContext;
+  /**
+   * LEGACY (Phase A): effective tools of the parent for roster rendering.
+   * Superseded by `parentContext`; ignored if both are present.
+   */
+  parentTools?: () => string[];
+  /**
+   * The parent's model ID for inheritance and fallback.
+   */
+  parentModel?: () => string;
+  /**
+   * Model aliases for per-call resolution: `{ haiku: 'anthropic/claude-haiku' }`.
+   */
+  modelAliases?: () => Record<string, string>;
+  /**
+   * Skill lookup for preloading: async function that lists available skills.
+   */
+  listSkills?: () => Promise<Array<{ name: string; content: string }>>;
+  /** Parent's depth; children get depth+1 (default 0 - 1). */
   depth?: number;
 }
 
@@ -109,13 +96,55 @@ function asRecord(v: unknown): Record<string, unknown> {
 export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[] {
   const { coordinator, agentId, resolver } = opts;
   const convo = () => opts.conversationId();
-  const childDepth = (opts.depth ?? 0) + 1;
 
-  const toolsFor = (typeTools: string[] | undefined) =>
-    grantableTools(typeTools, opts.parentTools());
+  // Resolve parent context: prefer parentContext, fall back to parentTools
+  const getParentContext = (): ParentToolContext => {
+    if (opts.parentContext) {
+      return opts.parentContext();
+    }
+    // Fallback for Phase A: construct context from parentTools (legacy path).
+    // Do NOT add ALWAYS_AVAILABLE_TOOLS here - if the parent's config doesn't
+    // include them, they shouldn't be inherited. The test setup that wants them
+    // will use parentContext with parentBuiltinTools() explicitly.
+    const configTools = opts.parentTools?.() ?? [];
+    return {
+      builtinTools: configTools,
+      mcpTools: [],
+      depth: opts.depth ?? 0,
+      maxDepth: 3,
+    };
+  };
+
+  // Child depth is calculated from parent context, computed at spawn time
+  const getChildDepth = () => getParentContext().depth + 1;
+
+  /**
+   * Compute the resolved tools and MCPs for a given definition (design section 6.4
+   * step 2). The roster and the spawn both use this result, so they cannot drift.
+   */
+  const resolveTools = (typeTools: string[] | undefined, typeMcps?: string[]) => {
+    const parent = getParentContext();
+    const resolved = resolveChildTools({ tools: typeTools }, parent);
+    return {
+      tools: resolved.tools,
+      mcpTools: resolved.mcpTools,
+      spawnableTypes: resolved.spawnableTypes,
+      canSpawn: resolved.canSpawn,
+    };
+  };
 
   const rosterDescription = () => {
-    const roster = buildRosterText(resolver.list(), (t) => toolsFor(t.tools).join(', '));
+    const parent = getParentContext();
+    const roster = buildRosterText(resolver.list(), (t) => {
+      try {
+        const resolved = resolveTools(t.tools);
+        const all = [...resolved.tools, ...resolved.mcpTools];
+        return all.length > 0 ? all.join(', ') : 'none — no overlap with your tools';
+      } catch {
+        // Definition would grant zero tools - advertise that fact.
+        return 'none — no overlap with your tools';
+      }
+    });
     return `${roster}\nDefaults to general-purpose.`;
   };
 
@@ -197,40 +226,96 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
       if (name !== undefined && !NAME_RE.test(name)) {
         throw new Error('name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$');
       }
+
       const background = p.run_in_background === true || type.background === true;
       const isolation =
         p.isolation === 'worktree' || type.isolation === 'worktree' ? 'worktree' : undefined;
-      const model =
-        typeof p.model === 'string' && p.model !== 'inherit'
-          ? p.model
-          : type.model && type.model !== 'inherit'
-            ? type.model
-            : undefined;
+
+      // Resolve tools (design section 6.4 step 2)
+      const parent = getParentContext();
+      const resolved = resolveChildTools({ tools: type.tools }, parent);
+
+      // Resolve model (design section 6.4 step 3)
+      const requestedModel = typeof p.model === 'string' ? p.model : undefined;
+      const parentModelStr = opts.parentModel?.() ?? 'parent-model';
+      const modelResult = resolveChildModel({
+        requested: requestedModel,
+        definition: type.model,
+        parentModel: parentModelStr,
+        aliases: opts.modelAliases?.() ?? {},
+      });
+      // Only pin a model if it was explicitly requested or defined, AND it
+      // resolves to a non-parent value. Per-call 'inherit' overrides definition
+      // model. If an alias is unconfigured, we pass undefined.
+      const hasExplicitRequest = requestedModel !== undefined;
+      const hasDefinitionModel = type.model && type.model !== 'inherit';
+      let pinModel: string | undefined;
+      if (hasExplicitRequest) {
+        // Explicit per-call model (or 'inherit') overrides definition
+        pinModel = requestedModel === 'inherit' ? undefined : modelResult.model;
+        if (modelResult.warning) pinModel = undefined;
+      } else if (hasDefinitionModel) {
+        // Definition model, but only if it resolves cleanly
+        pinModel = modelResult.warning ? undefined : modelResult.model;
+      } else {
+        // No explicit request, no definition - let coordinator decide
+        pinModel = undefined;
+      }
+
+      // Preload skills (design section 6.4 step 4)
+      let systemPrompt = type.systemPrompt;
+      let skillError: Error | undefined;
+      if (type.skills && type.skills.length > 0) {
+        try {
+          const skills = await opts.listSkills?.();
+          if (skills) {
+            const skillsBlock = preloadSkills(type.skills, skills);
+            systemPrompt = type.systemPrompt + skillsBlock;
+          }
+        } catch (e) {
+          skillError = e instanceof Error ? e : new Error(String(e));
+        }
+      }
+
+      if (skillError) throw skillError;
 
       const { workerId } = coordinator.spawnWorker(agentId, convo(), {
         role: name ?? type.name,
         brief: prompt,
-        tools: toolsFor(type.tools),
-        model,
+        tools: resolved.tools,
+        mcpTools: resolved.mcpTools.length > 0 ? resolved.mcpTools : undefined,
+        canSpawn: resolved.canSpawn,
+        spawnableTypes: resolved.spawnableTypes,
+        model: pinModel,
         subagentType: type.name,
         description,
         name,
-        systemPrompt: type.systemPrompt,
+        systemPrompt,
         background,
         isolation,
         skipMemory: type.skipMemory,
         maxTurns: type.maxTurns,
         oneShot: type.oneShot,
-        depth: childDepth,
+        depth: getChildDepth(),
       });
+
+      const statusText = modelResult.warning ? `\n\nNote: ${modelResult.warning}` : '';
 
       if (background) {
         const note = opts.backgroundMode === 'turn-scoped' ? TURN_SCOPED_NOTE : DETACHED_NOTE;
         return {
           content: [
-            { type: 'text', text: `Agent ${name ?? workerId} launched in the background.${note}` },
+            {
+              type: 'text',
+              text: `Agent ${name ?? workerId} launched in the background.${note}${statusText}`,
+            },
           ],
-          details: { subagentId: workerId, name, status: 'running' },
+          details: {
+            subagentId: workerId,
+            name,
+            status: 'running',
+            ...(modelResult.warning && { warning: modelResult.warning }),
+          },
         };
       }
 
@@ -240,7 +325,12 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
         snap.status === 'done' ? '' : `[agent finished with status: ${snap.status}]\n\n`;
       const now = Date.now();
       return {
-        content: [{ type: 'text', text: header + scanned.text }],
+        content: [
+          {
+            type: 'text',
+            text: header + scanned.text + statusText,
+          },
+        ],
         details: {
           subagentId: workerId,
           name,
@@ -250,6 +340,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
           toolCallCount: snap.toolCallCount,
           elapsedMs: (snap.endedAt ?? now) - (snap.startedAt ?? now),
           scannerMatched: scanned.matched,
+          ...(modelResult.warning && { warning: modelResult.warning }),
         },
       };
     },
