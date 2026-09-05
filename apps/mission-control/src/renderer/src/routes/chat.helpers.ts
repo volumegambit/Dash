@@ -177,3 +177,40 @@ export function insertNewlineAtSelection(
     caret: start + 1,
   };
 }
+
+/** What a key does in the Mission Control composer.
+ *
+ * A declaration, not a description: `chat.tsx`'s composer `onKeyDown` routes
+ * through this, and `chat.helpers.test.ts` cross-checks every case against
+ * the `mc` column of `scripts/fixtures/composer-key-contract.json` — the same
+ * file the web and iOS suites check against.
+ *
+ * Why: Shift+Enter inserted a newline here and on web and was silently
+ * impossible on iOS for months, because SwiftUI's `onSubmit` fires on every
+ * Return with no modifier awareness. Every test on every client passed,
+ * because each client's handler was only ever tested against itself. */
+export type ComposerKeyAction = 'send' | 'newline' | 'focus';
+
+export function composerKeyAction(
+  key: string,
+  shift: boolean,
+  meta: boolean,
+): ComposerKeyAction {
+  if (key === 'Enter') return shift ? 'newline' : 'send';
+  if (key === 'Tab') return shift ? 'newline' : 'focus';
+  return 'focus';
+}
+
+/** How a newline arrives, for the cases that produce one.
+ *
+ * `handler` — this app splices the break itself.
+ * `native` — the handler declines the key and the textarea inserts it.
+ * Declining is exactly what iOS's `onSubmit` could not do. */
+export function composerKeyMechanism(
+  key: string,
+  shift: boolean,
+  meta: boolean,
+): 'handler' | 'native' | null {
+  if (composerKeyAction(key, shift, meta) !== 'newline') return null;
+  return key === 'Tab' ? 'handler' : 'native';
+}

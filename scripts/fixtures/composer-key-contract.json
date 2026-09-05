@@ -17,9 +17,7 @@
       "mc": "send",
       "note": "iOS deliberately differs: on a hardware keyboard Return is the natural newline and Cmd+Return sends, matching the send button's existing shortcut. Changed 2026-09-05.",
       "mechanism": {
-        "ios": "native",
-        "web": "handler",
-        "mc": "handler"
+        "ios": "native"
       }
     },
     {
@@ -74,6 +72,7 @@
   ],
   "mechanisms": {
     "handler": "the client's own key handler prevents the default and splices the newline itself \u2014 assertable by inspecting the draft",
-    "native": "the handler declines the key and the platform's own text input inserts the break \u2014 NOT assertable from a synthetic keydown, because DOM test environments do not perform default actions. Tests assert the negative instead: nothing was sent, and the default was not prevented."
+    "native": "the handler declines the key and the platform's own text input inserts the break \u2014 NOT assertable from a synthetic keydown, because DOM test environments do not perform default actions. Tests assert the negative instead: nothing was sent, and the default was not prevented.",
+    "_note": "Present ONLY for clients whose action on that row is `newline` \u2014 a mechanism describes how a line break arrives, so it is meaningless where the key sends or moves focus. This was wrong in the first draft (plain Return carried a `mc: handler` while MC sends) and the Mission Control contract test caught it."
   }
 }

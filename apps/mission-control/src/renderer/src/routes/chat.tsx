@@ -54,6 +54,7 @@ import {
 import { EmptyChatState } from './chat.empty-state.js';
 import {
   type TodoItem,
+  composerKeyAction,
   formatDetails,
   insertNewlineAtSelection,
   isTodoWrite,
@@ -2599,7 +2600,11 @@ export function Chat(): JSX.Element {
                     // backwards. Plain Tab is left alone on purpose:
                     // overriding both would make the composer a focus trap
                     // for keyboard and screen-reader users.
-                    if (e.key === 'Tab' && e.shiftKey) {
+                    // Through the contract, so the declaration in
+                    // chat.helpers.ts is load-bearing rather than a comment
+                    // that can drift from this handler.
+                    const keyAction = composerKeyAction(e.key, e.shiftKey, e.metaKey);
+                    if (e.key === 'Tab' && keyAction === 'newline') {
                       e.preventDefault();
                       const field = e.currentTarget;
                       const next = insertNewlineAtSelection(
@@ -2614,7 +2619,7 @@ export function Chat(): JSX.Element {
                       });
                       return;
                     }
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.key === 'Enter' && keyAction === 'send') {
                       e.preventDefault();
                       handleSend();
                     }
