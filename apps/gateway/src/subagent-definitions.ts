@@ -5,6 +5,7 @@ import {
   ROSTER_TOKEN_BUDGET,
   type ResolvedSubagentType,
   type SubagentTypeResolver,
+  buildRosterText,
   builtinSubagentTypes,
   createStaticResolver,
   estimateTokens,
@@ -190,6 +191,41 @@ async function readDefinitionFile(
   return parsed.definition;
 }
 
+/**
+ * Neutralise anything in an agent name that could escape
+ * `<dataDir>/subagents/`. Agent names are operator-supplied and NOT validated
+ * by `agent-registry.ts`, and Task B8 writes definition files through
+ * `perAgentDir`, so an unsanitised name would be an arbitrary-write primitive
+ * (`name: '../../etc'`). Only traversal is neutralised — separators, `..` and
+ * NUL become `_`, a name that is nothing but dots becomes `_` — so ordinary
+ * names (including ones with spaces) still map to a readable directory.
+ */
+function safeAgentDirName(agentName: string): string {
+  const flattened = agentName.replace(/[/\\\0]/g, '_').replace(/\.\./g, '_');
+  return flattened.trim() === '' || /^\.+$/.test(flattened) ? '_' : flattened;
+}
+
+/**
+ * Canonicalise a FILE definition's name onto a built-in's exact spelling when
+ * the two match case-insensitively (spec §6.3: "built-ins can be shadowed by a
+ * user definition of the same name").
+ *
+ * The `name` grammar is lowercase-only, so `Explore` is unspellable in a file.
+ * Without this, `explore.md` would not override the built-in at all — it would
+ * ADD a second, near-identical `explore` next to `Explore` in the roster, and
+ * the operator's override would silently never apply to the name they meant.
+ * Canonicalising here (rather than relaxing the grammar or matching
+ * case-insensitively at resolve time) keeps the set of valid `subagent_type`
+ * strings exactly as it was and leaves the roster advertising `Explore` only.
+ */
+function canonicaliseBuiltinName(
+  type: ResolvedSubagentType,
+  canonicalByLower: Map<string, string>,
+): ResolvedSubagentType {
+  const canonical = canonicalByLower.get(type.name.toLowerCase());
+  return canonical && canonical !== type.name ? { ...type, name: canonical } : type;
+}
+
 export function createSubagentDefinitionRegistry(
   o: SubagentDefinitionRegistryOptions,
 ): SubagentDefinitionRegistry {
@@ -199,7 +235,8 @@ export function createSubagentDefinitionRegistry(
   const cache = new Map<string, Promise<BuiltRoster>>();
   const listeners = new Set<(agentId: string | undefined) => void>();
 
-  const perAgentDir = (agentName: string) => join(o.dataDir, 'subagents', agentName);
+  const perAgentDir = (agentName: string) =>
+    join(o.dataDir, 'subagents', safeAgentDirName(agentName));
 
   async function build(agentId: string): Promise<BuiltRoster> {
     const config = o.getAgentConfig(agentId);
@@ -210,7 +247,12 @@ export function createSubagentDefinitionRegistry(
     }
 
     // --- Gather every layer, LOWEST PRECEDENCE FIRST. ---
-    const layers: ResolvedSubagentType[] = [...builtinSubagentTypes()];
+    const builtins = builtinSubagentTypes();
+    const layers: ResolvedSubagentType[] = [...builtins];
+    // `explore.md` must SHADOW the built-in `Explore`, not sit beside it.
+    const canonicalByLower = new Map(builtins.map((b) => [b.name.toLowerCase(), b.name]));
+    const toType = (d: AgentDefinition) =>
+      canonicaliseBuiltinName(definitionToType(d), canonicalByLower);
 
     // Plugins, narrowed by the agent's plugin selection (`undefined` = all).
     // Their names are already `<plugin>:<name>`, so they occupy a key space no
@@ -220,7 +262,7 @@ export function createSubagentDefinitionRegistry(
       o.getPluginAgentDefFiles(),
     )) {
       const definition = await readDefinitionFile(file, 'plugin', warn, namespace);
-      if (definition) layers.push(definitionToType(definition));
+      if (definition) layers.push(toType(definition));
     }
 
     // Per-Dash-agent dir, then the workspace dirs (`.claude` before `.dash`, so
@@ -234,7 +276,7 @@ export function createSubagentDefinitionRegistry(
     }
     for (const { dir, source } of dirs) {
       for (const definition of await readDefinitionsFrom(dir, source, warn)) {
-        layers.push(definitionToType(definition));
+        layers.push(toType(definition));
       }
     }
 
@@ -330,17 +372,23 @@ function warnIfOverBudget(
   types: ResolvedSubagentType[],
   warn: (msg: string) => void,
 ): void {
-  const sizes = types.map((t) => ({ name: t.name, tokens: estimateTokens(t.description) }));
-  const total = sizes.reduce((sum, s) => sum + s.tokens, 0);
+  // Measure the STRING THAT SHIPS, not the descriptions alone: `buildRosterText`
+  // adds `- <name>: ` and ` (Tools: <list>)` per entry, so many small
+  // definitions can blow the budget while a description-only sum stays quiet.
+  // The tool column is approximated with the definition's declared tools (`*`
+  // when it inherits) — the exact grant depends on the parent's live tool set,
+  // which the registry does not know; descriptions dominate the total either way.
+  const total = estimateTokens(buildRosterText(types, (t) => (t.tools ?? ['*']).join(', ')));
   if (total <= ROSTER_TOKEN_BUDGET) return;
+  const sizes = types.map((t) => ({ name: t.name, tokens: estimateTokens(t.description) }));
   const worst = sizes
     .sort((a, b) => b.tokens - a.tokens)
     .slice(0, 5)
     .map((s) => `${s.name} (~${s.tokens})`)
     .join(', ');
   warn(
-    `[subagents] agent "${agentName}": sub-agent roster descriptions total ~${total} ` +
-      `tokens, over the ${ROSTER_TOKEN_BUDGET} budget; nothing was truncated, so the full ` +
-      `roster is still sent. Shorten these, largest first: ${worst}`,
+    `[subagents] agent "${agentName}": the sub-agent roster sent to the model is ` +
+      `~${total} tokens, over the ${ROSTER_TOKEN_BUDGET} budget; nothing was truncated, so ` +
+      `the full roster is still sent. Shorten these descriptions, largest first: ${worst}`,
   );
 }

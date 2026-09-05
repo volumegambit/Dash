@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentDefinition } from '@dash/agent';
-import { ROSTER_TOKEN_BUDGET } from '@dash/swarm';
+import { ROSTER_TOKEN_BUDGET, estimateTokens } from '@dash/swarm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { GatewayAgentConfig } from './agent-registry.js';
 import {
@@ -101,6 +101,42 @@ describe('subagent definition registry', () => {
     expect(resolver.resolve('general-purpose')).toMatchObject({
       description: 'a replacement general-purpose',
       source: 'agent',
+    });
+  });
+
+  // Spec §6.3: a built-in can be shadowed by a user definition of the same
+  // name. The `name` grammar is lowercase-only, so `Explore` is unspellable in
+  // a file — `explore.md` must therefore be CANONICALISED onto the built-in's
+  // spelling, not added next to it as a second, near-identical type.
+  it('canonicalises a lowercase file name onto the built-in it shadows', async () => {
+    await writeDef(agentDir(), 'explore.md', def('explore', 'my own explorer'));
+
+    const registry = makeRegistry();
+    const resolver = await registry.resolverFor(AGENT_ID);
+    expect(resolver.resolve('Explore')).toMatchObject({
+      name: 'Explore',
+      description: 'my own explorer',
+      source: 'agent',
+    });
+    // No second entry under the lowercase spelling.
+    expect(resolver.resolve('explore')).toBeUndefined();
+    expect(resolver.list().map((t) => t.name)).toEqual(['general-purpose', 'Explore', 'Plan']);
+    const listing = await registry.listFor(AGENT_ID);
+    expect(listing.types.filter((t) => t.name.toLowerCase() === 'explore')).toHaveLength(2);
+    expect(listing.types.some((t) => t.name === 'explore')).toBe(false);
+  });
+
+  it('a workspace definition shadows a built-in of the same name', async () => {
+    await writeDef(
+      join(workspace, '.dash', 'agents'),
+      'general-purpose.md',
+      def('general-purpose', 'the project general-purpose'),
+    );
+
+    const resolver = await makeRegistry().resolverFor(AGENT_ID);
+    expect(resolver.resolve('general-purpose')).toMatchObject({
+      description: 'the project general-purpose',
+      source: 'workspace',
     });
   });
 
@@ -257,6 +293,44 @@ describe('subagent definition registry', () => {
     // A second read of the SAME cached build must not re-warn.
     await registry.listFor(AGENT_ID);
     expect(warnings.filter((w) => w.includes('budget'))).toHaveLength(1);
+  });
+
+  // The budget must measure the string that SHIPS (`buildRosterText`), which
+  // adds `- <name>: ` and ` (Tools: …)` per entry. Many small definitions blow
+  // the budget while the descriptions alone stay under it.
+  it('counts the roster line overhead, not just the descriptions', async () => {
+    for (let i = 0; i < 40; i++) {
+      const name = `bulk-${String(i).padStart(2, '0')}`;
+      await writeDef(
+        agentDir(),
+        `${name}.md`,
+        def(name, 'D'.repeat(1470), 'tools: read, grep, find, ls, web_fetch\n'),
+      );
+    }
+
+    const registry = makeRegistry();
+    const listing = await registry.listFor(AGENT_ID);
+    // The OLD metric (descriptions only) is under budget — so this test fails
+    // the moment the check regresses to summing descriptions.
+    const descriptionsOnly = estimateTokens(listing.types.map((t) => t.description).join(''));
+    expect(descriptionsOnly).toBeLessThanOrEqual(ROSTER_TOKEN_BUDGET);
+    expect(warnings.filter((w) => w.includes('budget'))).toHaveLength(1);
+  });
+
+  // Agent names are operator-supplied and unvalidated by the registry; B8
+  // WRITES definition files into this dir, so traversal here would be an
+  // arbitrary-write primitive.
+  it('cannot escape the subagents root via a traversing agent name', async () => {
+    const root = join(dataDir, 'subagents');
+    const escaped = makeRegistry().perAgentDir('../../etc');
+    expect(escaped.startsWith(`${root}/`)).toBe(true);
+    expect(escaped).not.toContain('..');
+
+    // The build reads from the SAME sanitised dir (not from the raw name).
+    configs[AGENT_ID] = { ...configs[AGENT_ID], name: '../../etc' };
+    await writeDef(escaped, 'sanitised.md', def('sanitised', 'inside the root'));
+    const resolver = await makeRegistry().resolverFor(AGENT_ID);
+    expect(resolver.resolve('sanitised')).toMatchObject({ description: 'inside the root' });
   });
 
   it('lists shadowed definitions with the winner that shadowed them', async () => {
