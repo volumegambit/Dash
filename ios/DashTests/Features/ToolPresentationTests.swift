@@ -42,10 +42,12 @@ struct ToolPresentationTests {
     #expect(ToolPresentation.toolLabel(name) == expected)
   }
 
-  @Test("toolLabel falls back to a capitalized raw name for unknown tools")
+  @Test("toolLabel turns an unknown tool into title-cased words")
   func toolLabelUnknownTool() {
     #expect(ToolPresentation.toolLabel("search") == "Search")
-    #expect(ToolPresentation.toolLabel("custom_thing") == "Custom_thing")
+    // Was "Custom_thing": the old fallback uppercased the first character and
+    // left everything else, which rendered MCP tools as `Linear__search_issues`.
+    #expect(ToolPresentation.toolLabel("custom_thing") == "Custom Thing")
   }
 
   // MARK: - middleTruncate
@@ -315,58 +317,42 @@ struct ToolPresentationTests {
     #expect(result?.hasSuffix("…") == true)
   }
 
-  // MARK: - outcomeSummary
-
-  @Test("outcomeSummary counts the lines of a multi-line result")
-  func outcomeSummaryMultiline() {
-    #expect(ToolPresentation.outcomeSummary(content: "a\nb\nc") == "3 lines")
-  }
-
-  @Test("outcomeSummary ignores a trailing newline from command output")
-  func outcomeSummaryTrailingNewline() {
-    #expect(ToolPresentation.outcomeSummary(content: "a\nb\n") == "2 lines")
-  }
-
-  @Test(
-    "outcomeSummary stays silent when there is nothing worth reporting",
-    arguments: [nil, "", "   ", "\n", "one line", "one line\n"]
-  )
-  func outcomeSummarySilent(content: String?) {
-    #expect(ToolPresentation.outcomeSummary(content: content) == nil)
-  }
-
   // MARK: - formatDetails
 
   @Test("formatDetails returns short strings as-is")
   func formatDetailsShortString() {
+    // `pattern` is grep's primary key, so it becomes the header summary and
+    // its row is filtered out; `note` is the row under test. A single-key
+    // input cannot be used here — `summarize`'s fallback would make that one
+    // value the summary, and the row would be dropped as a duplicate.
     let result = ToolPresentation.formatDetails(
-      name: "grep", input: .object(["query": .string("useState")]))
-    #expect(result == [ToolPresentation.ToolDetail(key: "query", value: "useState")])
+      name: "grep", input: .object(["pattern": .string("x"), "note": .string("useState")]))
+    #expect(result == [ToolPresentation.ToolDetail(key: "note", value: "useState")])
   }
 
   @Test("formatDetails truncates long strings with a char count")
   func formatDetailsLongString() {
     let long = String(repeating: "x", count: 100)
     let result = ToolPresentation.formatDetails(
-      name: "grep", input: .object(["note": .string(long)]))
+      name: "grep", input: .object(["pattern": .string("x"), "note": .string(long)]))
     #expect(result.count == 1)
     #expect(result[0].key == "note")
     #expect(result[0].value.contains("(100 chars)"))
     #expect(result[0].value.contains("…"))
   }
 
-  @Test("formatDetails formats arrays as [N items]")
+  @Test("formatDetails drops an array row rather than showing its length")
   func formatDetailsArray() {
     let result = ToolPresentation.formatDetails(
       name: "grep", input: .object(["files": .array([.string("a"), .string("b"), .string("c")])]))
-    #expect(result == [ToolPresentation.ToolDetail(key: "files", value: "[3 items]")])
+    #expect(result.isEmpty)
   }
 
-  @Test("formatDetails formats nested objects as {object}")
+  @Test("formatDetails drops a nested-object row rather than showing {object}")
   func formatDetailsNestedObject() {
     let result = ToolPresentation.formatDetails(
       name: "grep", input: .object(["opts": .object(["a": .number(1)])]))
-    #expect(result == [ToolPresentation.ToolDetail(key: "opts", value: "{object}")])
+    #expect(result.isEmpty)
   }
 
   @Test("formatDetails skips path/offset/limit for read")
@@ -383,19 +369,22 @@ struct ToolPresentationTests {
     #expect(result == [ToolPresentation.ToolDetail(key: "reason", value: "checking contents")])
   }
 
-  @Test("formatDetails skips content for write")
+  @Test("formatDetails skips content for write, and path repeats the summary")
   func formatDetailsSkipsWriteContent() {
     let result = ToolPresentation.formatDetails(
       name: "write",
       input: .object(["path": .string("a.txt"), "content": .string("hello world")])
     )
-    #expect(result == [ToolPresentation.ToolDetail(key: "path", value: "a.txt")])
+    #expect(result.isEmpty)
   }
 
   @Test("formatDetails returns multiple key/value pairs sorted by key")
   func formatDetailsMultiplePairs() {
     let result = ToolPresentation.formatDetails(
-      name: "grep", input: .object(["path": .string("foo.ts"), "mode": .string("write")]))
+      name: "grep",
+      input: .object([
+        "pattern": .string("p"), "path": .string("foo.ts"), "mode": .string("write"),
+      ]))
     #expect(
       result == [
         ToolPresentation.ToolDetail(key: "mode", value: "write"),
@@ -450,5 +439,253 @@ struct ToolPresentationTests {
     #expect(ToolPresentation.parseTodos(.object([:])) == nil)
     #expect(ToolPresentation.parseTodos(.object(["todos": .array([])])) == nil)
     #expect(ToolPresentation.parseTodos(nil) == nil)
+  }
+
+  // MARK: - resultSummary
+
+  @Test("resultSummary is nil while the tool is still running")
+  func resultSummaryRunning() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: nil) == nil)
+  }
+
+  @Test("resultSummary shows an error's first line")
+  func resultSummaryError() {
+    #expect(
+      ToolPresentation.resultSummary(
+        name: "bash", content: "ENOENT: no such file\n  at open()", isError: true)
+        == "ENOENT: no such file")
+  }
+
+  @Test("resultSummary says failed when an error has no text")
+  func resultSummaryErrorBlank() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: "   ", isError: true) == "failed")
+  }
+
+  @Test("resultSummary stays silent for TodoWrite")
+  func resultSummaryTodoWrite() {
+    #expect(ToolPresentation.resultSummary(name: "TodoWrite", content: "ok") == nil)
+  }
+
+  @Test("resultSummary counts read lines without the XML envelope")
+  func resultSummaryRead() {
+    let content = "<path>a.ts</path>\n<content>\nline one\nline two\n</content>"
+    #expect(ToolPresentation.resultSummary(name: "read", content: content) == "2 lines")
+  }
+
+  @Test("resultSummary uses the singular for one line")
+  func resultSummaryOneLine() {
+    #expect(ToolPresentation.resultSummary(name: "read", content: "only line") == "1 line")
+  }
+
+  @Test("resultSummary prefers ls's own declared entry count")
+  func resultSummaryLs() {
+    #expect(
+      ToolPresentation.resultSummary(name: "ls", content: "(30 entries)\nsrc/\npackage.json")
+        == "30 entries")
+  }
+
+  @Test("resultSummary counts grep matches and names the empty case")
+  func resultSummaryGrep() {
+    #expect(
+      ToolPresentation.resultSummary(name: "grep", content: "a.ts:1: hit\nb.ts:9: hit")
+        == "2 matches")
+    #expect(ToolPresentation.resultSummary(name: "grep", content: "") == "no matches")
+  }
+
+  @Test("resultSummary counts web_search's numbered results")
+  func resultSummaryWebSearch() {
+    let content = "1. [One](https://a)\n   snip\n\n2. [Two](https://b)\n   snip"
+    #expect(ToolPresentation.resultSummary(name: "web_search", content: content) == "2 results")
+  }
+
+  @Test("resultSummary sizes a web_fetch body")
+  func resultSummaryWebFetch() {
+    #expect(
+      ToolPresentation.resultSummary(
+        name: "web_fetch", content: String(repeating: "x", count: 2048)) == "2.0 KB")
+  }
+
+  @Test("resultSummary reports an edit as a diff stat")
+  func resultSummaryEdit() {
+    let details = JSONValue.object([
+      "diff": .string("--- a/x.ts\n+++ b/x.ts\n-old\n+new\n+also new")
+    ])
+    #expect(
+      ToolPresentation.resultSummary(name: "edit", content: "ok", details: details) == "+2 -1")
+  }
+
+  @Test("resultSummary falls back to a line count for an unknown tool")
+  func resultSummaryUnknown() {
+    #expect(ToolPresentation.resultSummary(name: "some_mcp_tool", content: "a\nb\nc") == "3 lines")
+  }
+
+  @Test("resultSummary echoes a short single-line result verbatim")
+  func resultSummaryShortLine() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: "done") == "done")
+  }
+
+  @Test("resultSummary names an empty result")
+  func resultSummaryEmpty() {
+    #expect(ToolPresentation.resultSummary(name: "bash", content: "\n\n") == "no output")
+  }
+
+  // MARK: - formatDetails filtering
+
+  @Test("A detail row repeating the header summary is dropped")
+  func detailsDropDuplicate() {
+    let input = JSONValue.object(["command": .string("ls -la")])
+    #expect(ToolPresentation.formatDetails(name: "bash", input: input).isEmpty)
+  }
+
+  @Test("A truncated summary leaves its detail row in place")
+  func detailsKeepTruncated() {
+    // Not bash: bash now drops its command row outright, see
+    // `bashDropsCommandRow`. Grep shows the general rule.
+    let pattern = "find " + String(repeating: "a", count: 100)
+    let input = JSONValue.object(["pattern": .string(pattern)])
+    let details = ToolPresentation.formatDetails(name: "grep", input: input)
+    #expect(details.count == 1)
+    #expect(details.first?.value.hasPrefix("\"find ") == true)
+  }
+
+  @Test("A truncated non-bash summary leaves its detail row in place")
+  func detailsKeepShortened() {
+    // Bash moved to its own rule — see `bashDropsCommandRow`. Grep still
+    // demonstrates the general case: the summary is truncated, so it does not
+    // equal the row's value and the full value stays reachable.
+    let pattern = String(repeating: "a", count: 100)
+    let input = JSONValue.object(["pattern": .string(pattern)])
+    let details = ToolPresentation.formatDetails(name: "grep", input: input)
+    #expect(details.count == 1)
+    #expect(details.first?.key == "pattern")
+    #expect(details.first?.value != ToolPresentation.summarize(name: "grep", input: input))
+  }
+
+  @Test("Type placeholders are dropped, for a KNOWN tool")
+  func detailsDropPlaceholders() {
+    // `some_tool` is now an UNKNOWN tool, whose nested arguments are kept as
+    // JSON — see `unknownToolKeepsNested`. The placeholder rule still applies
+    // to tools this app knows.
+    let input = JSONValue.object([
+      "pattern": .string("x"),
+      "items": .array([.number(1), .number(2)]),
+    ])
+    #expect(ToolPresentation.formatDetails(name: "grep", input: input).isEmpty)
+  }
+
+  @Test("Ordinary rows survive alongside a dropped duplicate")
+  func detailsKeepOthers() {
+    let input = JSONValue.object(["pattern": .string("foo"), "path": .string("src")])
+    #expect(
+      ToolPresentation.formatDetails(name: "grep", input: input)
+        == [ToolPresentation.ToolDetail(key: "path", value: "src")])
+  }
+
+  // MARK: - Per-type bodies
+
+  @Test("fitsInline rejects a long SINGLE-LINE body")
+  func fitsInlineLongSingleLine() {
+    // The defect this replaces: the old rule was newline count alone, so a
+    // 1.6 KB one-line page body counted as short and rendered uncapped.
+    let oneLongLine = String(repeating: "x", count: 1600)
+    #expect(ToolPresentation.countLines(oneLongLine) == 1)
+    #expect(ToolPresentation.fitsInline(oneLongLine) == false)
+    #expect(ToolPresentation.fitsInline("a\nb\nc"))
+  }
+
+  @Test("diffLines types a unified diff and drops file headers")
+  func diffLinesParses() {
+    let details = JSONValue.object([
+      "diff": .string("--- a/x.ts\n+++ b/x.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new")
+    ])
+    #expect(
+      ToolPresentation.diffLines(details) == [
+        .init(kind: .hunk, text: "@@ -1,2 +1,3 @@"),
+        .init(kind: .context, text: " keep"),
+        .init(kind: .removed, text: "-old"),
+        .init(kind: .added, text: "+new"),
+      ])
+  }
+
+  @Test("diffLines is nil without a diff")
+  func diffLinesNil() {
+    #expect(ToolPresentation.diffLines(nil) == nil)
+    #expect(ToolPresentation.diffLines(.object([:])) == nil)
+  }
+
+  @Test("directoryEntries marks folders and drops the entry-count chrome")
+  func directoryEntriesParses() {
+    #expect(
+      ToolPresentation.directoryEntries("(2 entries)\nui/\nmain.tsx") == [
+        .init(name: "ui/", isDirectory: true),
+        .init(name: "main.tsx", isDirectory: false),
+      ])
+  }
+
+  @Test("searchResults parses title and host")
+  func searchResultsParses() {
+    let content = "1. [Observation](https://www.developer.apple.com/x)\n   snippet"
+    #expect(
+      ToolPresentation.searchResults(content) == [
+        .init(title: "Observation", host: "developer.apple.com")
+      ])
+  }
+
+  @Test("searchResults is nil for an unexpected format")
+  func searchResultsNil() {
+    #expect(ToolPresentation.searchResults("no results found") == nil)
+  }
+
+  @Test("grepGroups groups matches under their file")
+  func grepGroupsParses() {
+    let content = "a.ts:1: first\na.ts:9: second\nb.ts:4: third"
+    #expect(
+      ToolPresentation.grepGroups(content) == [
+        .init(path: "a.ts", matches: [.init(line: "1", text: "first"), .init(line: "9", text: "second")]),
+        .init(path: "b.ts", matches: [.init(line: "4", text: "third")]),
+      ])
+  }
+
+  @Test("grepGroups is nil when the body is not grep output")
+  func grepGroupsNil() {
+    #expect(ToolPresentation.grepGroups("just some prose") == nil)
+  }
+
+  @Test("bodyIsRedundant hides a one-line skill confirmation only")
+  func bodyIsRedundantSkill() {
+    #expect(ToolPresentation.bodyIsRedundant(name: "load_skill", content: "Loaded skill 'x'."))
+    #expect(ToolPresentation.bodyIsRedundant(name: "bash", content: "done") == false)
+  }
+
+  @Test("writtenContent returns what a write was asked to write")
+  func writtenContentReturns() {
+    #expect(
+      ToolPresentation.writtenContent(.object(["path": .string("a.md"), "content": .string("# Hi")]))
+        == "# Hi")
+    #expect(ToolPresentation.writtenContent(.object(["path": .string("a.md")])) == nil)
+  }
+
+  @Test("An unknown tool keeps its nested arguments as JSON")
+  func unknownToolKeepsNested() {
+    let input = JSONValue.object([
+      "query": .string("tool card"), "limit": .number(5),
+      "filter": .object(["state": .string("open")]),
+    ])
+    let details = ToolPresentation.formatDetails(name: "linear__search_issues", input: input)
+    #expect(details.contains { $0.key == "filter" && $0.value.contains("\"state\"") })
+    #expect(details.contains { $0.key == "limit" && $0.value == "5" })
+  }
+
+  @Test("Bash drops the command row the header already carries")
+  func bashDropsCommandRow() {
+    let input = JSONValue.object(["command": .string("/opt/homebrew/bin/gog gmail list")])
+    #expect(ToolPresentation.formatDetails(name: "bash", input: input).isEmpty)
+  }
+
+  @Test("A namespaced MCP tool reads as words, with the server split off")
+  func namespacedToolLabel() {
+    #expect(ToolPresentation.toolLabel("linear__search_issues") == "Search Issues")
+    #expect(ToolPresentation.toolNamespace("linear__search_issues") == "Linear")
+    #expect(ToolPresentation.toolNamespace("bash") == nil)
   }
 }

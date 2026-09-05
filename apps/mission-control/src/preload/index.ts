@@ -154,6 +154,14 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('skills:install', agentId, source, name),
   skillsRemove: (agentId, skillName) => ipcRenderer.invoke('skills:remove', agentId, skillName),
 
+  // Agent memory
+  memoryList: (agentId) => ipcRenderer.invoke('memory:list', agentId),
+  memoryGet: (agentId, name) => ipcRenderer.invoke('memory:get', agentId, name),
+  memoryPut: (agentId, name, input) => ipcRenderer.invoke('memory:put', agentId, name, input),
+  memoryRemove: (agentId, name) => ipcRenderer.invoke('memory:remove', agentId, name),
+  memoryGetConfig: (agentId) => ipcRenderer.invoke('memory:getConfig', agentId),
+  memoryUpdateConfig: (agentId, patch) => ipcRenderer.invoke('memory:updateConfig', agentId, patch),
+
   // Swarm panel
   swarmListRuns: (agentId) => ipcRenderer.invoke('swarm:listRuns', agentId),
   swarmGetRun: (agentId, runId) => ipcRenderer.invoke('swarm:getRun', agentId, runId),

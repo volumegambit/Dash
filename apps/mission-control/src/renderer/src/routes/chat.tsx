@@ -5,6 +5,7 @@ import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import {
   Ban,
+  Brain,
   Check,
   ChevronDown,
   ChevronUp,
@@ -54,12 +55,15 @@ import {
 import { EmptyChatState } from './chat.empty-state.js';
 import {
   type TodoItem,
-  formatDetails,
+  composerKeyAction,
+  formatVisibleDetails,
   insertNewlineAtSelection,
   isTodoWrite,
   parseTodos,
+  resultSummary,
   summarize,
   toolLabel,
+  toolNamespace,
   truncate,
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
@@ -291,6 +295,24 @@ function renderEvents(
           </span>
         </div>,
       );
+    } else if (event.type === 'memory_saved' || event.type === 'memory_forgotten') {
+      // Agent memory bookkeeping — a compact chip so the user can see (and
+      // later audit) what the agent chose to remember or forget.
+      flushProse();
+      const label =
+        event.type === 'memory_forgotten'
+          ? `Forgot: ${event.name}`
+          : `${event.action === 'updated' ? 'Updated memory' : 'Remembered'}: ${event.description}`;
+      elements.push(
+        <div
+          key={`memory-${blockCount++}`}
+          className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-sidebar-hover px-2.5 py-1 text-xs text-muted"
+          data-testid="memory-chip"
+        >
+          <Brain size={12} aria-hidden="true" />
+          <span>{label}</span>
+        </div>,
+      );
     } else if (event.type === 'response' || event.type === 'skill_created') {
       // Metadata-only events do not produce a transcript row.
     } else {
@@ -489,7 +511,11 @@ function TodoListBlock({ todos }: { todos: TodoItem[] }): JSX.Element {
   );
 }
 
-function ToolBlock({
+// Exported for the dev-only tool-card gallery
+// (`src/renderer/gallery.html`). ToolBlock takes plain props and touches no
+// store or IPC, so it renders standalone — which is what finally makes this
+// client's tool rows checkable from a rendered screen rather than assertions.
+export function ToolBlock({
   name,
   input,
   result,
@@ -507,20 +533,27 @@ function ToolBlock({
     toolDetails != null &&
     typeof toolDetails === 'object' &&
     'diff' in toolDetails;
-  const [open, setOpen] = useState(hasDiff);
+  // An edit's diff opens because it is the point of the call. A failure opens
+  // because it is the one case where the detail is necessary, and it was the
+  // one case that took a click to reach (tool-use UX 2026-09-05).
+  const [open, setOpen] = useState(hasDiff || isError === true);
+  // useState's initial value is only read on this instance's FIRST render,
+  // and a tool card is first rendered while the call is still running — no
+  // isError yet. Without this, "failures open" would hold for a reloaded
+  // transcript and silently not hold live, which is the case that matters.
+  useEffect(() => {
+    if (isError) setOpen(true);
+  }, [isError]);
   const [showRaw, setShowRaw] = useState(false);
   const summary = summarize(name, input);
+  const outcome = resultSummary(name, result, isError, toolDetails);
+  // Without this an MCP tool lost its server entirely: `linear__search_issues`
+  // rendered as just "Search Issues", which is ambiguous across servers.
+  const namespace = toolNamespace(name);
   const normalizedName = name === 'read_file' ? 'read' : name;
   const isBash = normalizedName === 'bash' || name === 'execute_command';
   const isWrite = normalizedName === 'write' || name === 'write_file';
-  const READ_HIDDEN_KEYS = new Set(['path', 'offset', 'limit']);
-  const allDetails = formatDetails(input);
-  const details =
-    normalizedName === 'read'
-      ? allDetails.filter(({ key }) => !READ_HIDDEN_KEYS.has(key))
-      : isWrite
-        ? allDetails.filter(({ key }) => key !== 'content')
-        : allDetails;
+  const details = formatVisibleDetails(name, input);
   const todos = isTodoWrite(name) ? parseTodos(input) : null;
 
   // Parse Write tool content for rich display
@@ -589,30 +622,49 @@ function ToolBlock({
   if (effectiveSummary && highlightedSummary) {
     summaryNode = (
       <span
-        className="ml-1 font-mono text-muted"
+        className="ml-1 min-w-0 truncate font-mono text-muted"
         dangerouslySetInnerHTML={{ __html: highlightedSummary }}
       />
     );
   } else if (effectiveSummary) {
-    summaryNode = <span className="ml-1 text-muted">{effectiveSummary}</span>;
+    summaryNode = <span className="ml-1 min-w-0 truncate text-muted">{effectiveSummary}</span>;
   }
 
   return (
     <div
       className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
     >
+      {/* Flex, not the block it was: the outcome is pushed to the right edge
+          with `ml-auto` so a run of calls reads as a column of results, and
+          `min-w-0 truncate` on the summary means a long command ellipsizes
+          rather than shoving the outcome out of the row. The glyph and label
+          keep their own widths via `shrink-0`. */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="w-full px-3 py-1.5 text-left hover:text-foreground"
+        className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
       >
         {isError ? (
-          <XCircle size={10} className="inline text-red mr-1.5" />
+          <XCircle size={10} className="shrink-0 text-red mr-1.5" />
         ) : (
-          <Circle size={8} className="inline text-green fill-green mr-1.5" />
+          <Circle size={8} className="shrink-0 text-green fill-green mr-1.5" />
         )}
-        <span className="font-mono">{toolLabel(name)}</span>
+        {namespace && (
+          <span className="shrink-0 font-mono text-muted opacity-70">{namespace}&nbsp;·&nbsp;</span>
+        )}
+        <span className="shrink-0 font-mono">{toolLabel(name)}</span>
         {summaryNode}
+        {/* Only while collapsed, matching web and iOS. Expanded, the body
+            below shows the result itself, so a failed card printed its error
+            twice — right-aligned in the header and again underneath. Seen in
+            the gallery, which is the first rendered look this client has had. */}
+        {outcome && !open && (
+          <span
+            className={`ml-auto shrink-0 pl-3 ${isError ? 'text-red' : 'text-muted opacity-75'}`}
+          >
+            {outcome}
+          </span>
+        )}
       </button>
       {open && (
         <div className="border-t border-border px-3 pb-2 pt-1">
@@ -2599,7 +2651,11 @@ export function Chat(): JSX.Element {
                     // backwards. Plain Tab is left alone on purpose:
                     // overriding both would make the composer a focus trap
                     // for keyboard and screen-reader users.
-                    if (e.key === 'Tab' && e.shiftKey) {
+                    // Through the contract, so the declaration in
+                    // chat.helpers.ts is load-bearing rather than a comment
+                    // that can drift from this handler.
+                    const keyAction = composerKeyAction(e.key, e.shiftKey, e.metaKey);
+                    if (e.key === 'Tab' && keyAction === 'newline') {
                       e.preventDefault();
                       const field = e.currentTarget;
                       const next = insertNewlineAtSelection(
@@ -2614,7 +2670,7 @@ export function Chat(): JSX.Element {
                       });
                       return;
                     }
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.key === 'Enter' && keyAction === 'send') {
                       e.preventDefault();
                       handleSend();
                     }

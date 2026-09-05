@@ -12,6 +12,7 @@ import {
   type PersistedTurnFrame,
 } from './conversation-service.js';
 import type { EventLogEntry } from './event-log-store.js';
+import type { MemorySweepService } from './memory-sweep.js';
 
 export type ResumableSendFrame = Extract<MobileWsClientFrame, { type: 'message' }> & {
   resumable: true;
@@ -26,6 +27,8 @@ export interface ResumableChatHubOptions {
   conversations: ConversationService;
   agents: AgentChatCoordinator;
   autoTitle: ConversationAutoTitleService;
+  /** Optional post-turn memory sweep; scheduled only for turns that complete. */
+  memorySweep?: Pick<MemorySweepService, 'schedule'>;
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
   onChanged?(summary: ConversationSummary): void;
 }
@@ -202,7 +205,14 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         const persisted = conversations.appendTurnEvent(live.conversationId, live.turnId, event);
         if (persisted) broadcast(live, frameFromPersisted(live, persisted));
       }
-      if (!live.cancelled) finish(live, 'completed');
+      if (!live.cancelled) {
+        finish(live, 'completed');
+        options.memorySweep?.schedule({
+          agentId: live.agentId,
+          conversationId: live.conversationId,
+          turnId: live.turnId,
+        });
+      }
     } catch (error) {
       if (!live.cancelled) {
         const persisted = conversations.finishTurn({

@@ -161,7 +161,7 @@ describe('ContentBlocks', () => {
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 
-  it('tints a failed tool card red and renders the error result on open', () => {
+  it('tints a failed tool card red and renders the error result without a click', () => {
     const content: ConversationContent = {
       type: 'assistant',
       events: [
@@ -180,7 +180,9 @@ describe('ContentBlocks', () => {
     expect(toolBlock.getAttribute('data-status')).toBe('failed');
     expect(toolBlock.className).toContain('tool-card-error');
 
-    fireEvent.click(screen.getByRole('button', { name: /Bash/ }));
+    // No click: a failed call opens by default (tool-use UX 2026-09-05). The
+    // one case whose body you always want was behind the same tap as a
+    // successful read.
     const result = screen.getByTestId('tool-result');
     expect(result.className).toContain('tool-result-error');
     expect(result.textContent).toBe('command not found');
@@ -292,6 +294,45 @@ describe('ContentBlocks', () => {
     expect(screen.queryByTestId('unknown-block')).toBeNull();
   });
 
+  it('renders memory events as a chip instead of unknown content', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'text_delta', text: 'Noted. ' },
+        {
+          type: 'memory_saved',
+          name: 'user-timezone',
+          description: 'Gerry is in Singapore',
+          memoryType: 'user',
+          action: 'created',
+        },
+        {
+          type: 'memory_saved',
+          name: 'user-timezone',
+          description: 'Gerry is in Singapore (UTC+8)',
+          memoryType: 'user',
+          action: 'updated',
+        },
+        { type: 'memory_forgotten', name: 'old-fact' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByText('Noted.')).toBeTruthy();
+    expect(screen.getByText('Remembered: Gerry is in Singapore')).toBeTruthy();
+    expect(screen.getByText('Updated memory: Gerry is in Singapore (UTC+8)')).toBeTruthy();
+    expect(screen.getByText('Forgot: old-fact')).toBeTruthy();
+    expect(screen.queryByTestId('unknown-block')).toBeNull();
+  });
+
+  it('renders a fallback unknown-block for a malformed memory event', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'memory_saved', name: 'user-timezone', action: 'created' }],
+    };
+    expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
+    expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
   it('renders a fallback unknown-block for an unrecognized event type, without throwing', () => {
     const content: ConversationContent = {
       type: 'assistant',
@@ -314,6 +355,126 @@ describe('ContentBlocks', () => {
     const content = { type: 'bogus' } as unknown as ConversationContent;
     expect(() => render(<ContentBlocks content={content} />)).not.toThrow();
     expect(screen.getByTestId('unknown-block')).toBeTruthy();
+  });
+
+  // The card is created while the call is still running, so its useState
+  // initial value is computed with status 'running'. A failure that arrives
+  // afterwards must still open it, or "failures open by default" only holds
+  // for a reloaded transcript and silently fails live — the case that matters.
+  it('opens a call that fails after it was already rendered as running', () => {
+    const running: ConversationContent = {
+      type: 'assistant',
+      events: [{ type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } }],
+    };
+    const { rerender } = render(<ContentBlocks content={running} />);
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+
+    const failed: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'bash',
+          content: 'command not found',
+          isError: true,
+        },
+      ],
+    };
+    rerender(<ContentBlocks content={failed} />);
+    expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
+  });
+  it('shows what a tool call returned in the collapsed header', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'grep', input: { pattern: 'foo' } },
+        { type: 'tool_result', id: 'call-1', name: 'grep', content: 'a.ts:1: foo\nb.ts:2: foo' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('2 matches');
+  });
+
+  it('says nothing in the header while a tool is still running', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'sleep 5' } },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-card-outcome')).toBeNull();
+  });
+
+  it('opens a failed tool call without a click, showing the error once', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'nope' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'bash',
+          content: 'command not found',
+          isError: true,
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-result').textContent).toBe('command not found');
+    // ONCE: the header outcome is hidden while expanded, matching iOS. It used
+    // to print the same error text right-aligned in the header as well.
+    expect(screen.queryByTestId('tool-card-outcome')).toBeNull();
+  });
+
+  it('keeps a successful tool call collapsed', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'bash', input: { command: 'ls' } },
+        { type: 'tool_result', id: 'call-1', name: 'bash', content: 'a\nb' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+  });
+
+  it('reports an edit as a diff stat, from the result details', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'edit', input: { path: 'x.ts' } },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'edit',
+          content: 'ok',
+          details: { diff: '--- a/x.ts\n+++ b/x.ts\n-old\n+new' },
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-card-outcome').textContent).toBe('+1 -1');
+  });
+
+  it('does not print TodoWrite\'s own "ok" result under the checklist', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        {
+          type: 'tool_use_start',
+          id: 'call-1',
+          name: 'TodoWrite',
+          input: { todos: [{ content: 'Ship it', status: 'pending' }] },
+        },
+        { type: 'tool_result', id: 'call-1', name: 'TodoWrite', content: 'ok' },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-todos')).toBeTruthy();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 });
 
@@ -354,4 +515,7 @@ describe('getMessageCopyText', () => {
   it('returns an empty string for malformed content', () => {
     expect(getMessageCopyText({ type: 'bogus' } as unknown as ConversationContent)).toBe('');
   });
+
+  // Tool-use UX 2026-09-05: the collapsed row answers what the agent did, to
+  // what, and what came back. The third was missing entirely.
 });

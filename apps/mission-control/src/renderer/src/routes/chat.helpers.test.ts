@@ -1,5 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { formatDetails, insertNewlineAtSelection, summarize } from './chat.helpers.js';
+import {
+  composerKeyAction,
+  composerKeyMechanism,
+  formatDetails,
+  formatVisibleDetails,
+  insertNewlineAtSelection,
+  resultSummary,
+  shortenCommand,
+  summarize,
+  truncate,
+} from './chat.helpers.js';
 
 describe('summarize', () => {
   it('extracts command for bash', () => {
@@ -143,4 +155,181 @@ describe('insertNewlineAtSelection', () => {
       caret: 3,
     });
   });
+});
+
+describe('shortenCommand', () => {
+  it('drops the leading directory from an absolute launcher path', () => {
+    expect(shortenCommand('/opt/homebrew/bin/gog gmail list')).toBe('gog gmail list');
+  });
+
+  it('leaves a bare executable alone', () => {
+    expect(shortenCommand('npm test')).toBe('npm test');
+  });
+
+  it('preserves paths that are arguments, not the executable', () => {
+    expect(shortenCommand('cd /Users/gerry/x && npm test')).toBe('cd /Users/gerry/x && npm test');
+  });
+
+  it('shortens ./, ../ and ~/ launchers too', () => {
+    expect(shortenCommand('./scripts/build.sh --watch')).toBe('build.sh --watch');
+    expect(shortenCommand('~/bin/deploy prod')).toBe('deploy prod');
+  });
+
+  it('leaves a trailing-slash executable alone rather than emptying it', () => {
+    expect(shortenCommand('/usr/bin/ ')).toBe('/usr/bin/ ');
+  });
+});
+
+describe('truncate path detection', () => {
+  it('does not splice a command onto its last argument', () => {
+    const command = `echo ${'a'.repeat(55)} > /tmp/out.json`;
+    expect(truncate(command)).toBe(`${command.slice(0, 60)}…`);
+  });
+
+  it('still middle-ellipsises a real path', () => {
+    const path = `/Users/gerry/${'a'.repeat(60)}/ChatView.swift`;
+    expect(truncate(path).endsWith('/ChatView.swift')).toBe(true);
+    expect(truncate(path)).toContain('…');
+  });
+});
+
+describe('resultSummary', () => {
+  it('is empty while the tool is still running', () => {
+    expect(resultSummary('bash', undefined)).toBe('');
+  });
+
+  it('shows the first line of an error, truncated', () => {
+    expect(resultSummary('bash', 'ENOENT: no such file\n  at open()', true)).toBe(
+      'ENOENT: no such file',
+    );
+  });
+
+  it('says "failed" when an error has no text', () => {
+    expect(resultSummary('bash', '   ', true)).toBe('failed');
+  });
+
+  it('stays silent for TodoWrite, whose header already carries progress', () => {
+    expect(resultSummary('TodoWrite', 'ok')).toBe('');
+  });
+
+  it('counts a read result in lines, ignoring the XML envelope', () => {
+    const content = '<path>a.ts</path>\n<content>\nline one\nline two\n</content>';
+    expect(resultSummary('read', content)).toBe('2 lines');
+  });
+
+  it('uses the singular for one line', () => {
+    expect(resultSummary('read', 'only line')).toBe('1 line');
+  });
+
+  it("prefers ls's own entry count over a line count", () => {
+    expect(resultSummary('ls', '(30 entries)\nsrc/\npackage.json')).toBe('30 entries');
+  });
+
+  it('counts grep matches and names the empty case', () => {
+    expect(resultSummary('grep', 'a.ts:1: hit\nb.ts:9: hit')).toBe('2 matches');
+    expect(resultSummary('grep', '')).toBe('no matches');
+  });
+
+  it('counts web_search results from the numbered list it emits', () => {
+    const content = '1. [One](https://a)\n   snip\n\n2. [Two](https://b)\n   snip';
+    expect(resultSummary('web_search', content)).toBe('2 results');
+  });
+
+  it('reports a web_fetch body as a size', () => {
+    expect(resultSummary('web_fetch', 'x'.repeat(2048))).toBe('2.0 KB');
+  });
+
+  it('reports an edit as a diff stat', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n-old\n+new\n+also new';
+    expect(resultSummary('edit', 'ok', false, { diff })).toBe('+2 -1');
+  });
+
+  it('falls back to a line count for an unknown tool', () => {
+    expect(resultSummary('some_mcp_tool', 'a\nb\nc')).toBe('3 lines');
+  });
+
+  it('echoes a short single-line result verbatim', () => {
+    expect(resultSummary('bash', 'done')).toBe('done');
+  });
+
+  it('names an empty result', () => {
+    expect(resultSummary('bash', '\n\n')).toBe('no output');
+  });
+});
+
+describe('formatVisibleDetails', () => {
+  it('drops a row that repeats the header summary verbatim', () => {
+    expect(formatVisibleDetails('bash', JSON.stringify({ command: 'ls -la' }))).toEqual([]);
+  });
+
+  it('applies the read skips the ToolBlock call site used to do inline', () => {
+    const input = JSON.stringify({ path: 'a.ts', offset: 0, limit: 10, encoding: 'utf8' });
+    expect(formatVisibleDetails('read', input)).toEqual([{ key: 'encoding', value: 'utf8' }]);
+  });
+
+  it('applies the write skips, and path repeats the header summary', () => {
+    const input = JSON.stringify({ path: 'a.ts', content: 'hello' });
+    expect(formatVisibleDetails('write', input)).toEqual([]);
+  });
+
+  it('drops rows whose value is only a type placeholder, for a KNOWN tool', () => {
+    const input = JSON.stringify({ pattern: 'x', items: [1, 2, 3] });
+    expect(formatVisibleDetails('grep', input)).toEqual([]);
+  });
+
+  it('drops the command row for bash, which the header already carries', () => {
+    // Bash is the one tool whose header summary is SHORTENED, so the duplicate
+    // rule cannot match it and the full launcher path was printed directly
+    // under a header that already said the same thing.
+    const command = '/opt/homebrew/bin/gog gmail list';
+    expect(formatVisibleDetails('bash', JSON.stringify({ command }))).toEqual([]);
+  });
+
+  it("keeps an unknown tool's nested arguments as JSON", () => {
+    const input = JSON.stringify({ query: 'tool card', limit: 5, filter: { state: 'open' } });
+    expect(formatVisibleDetails('linear__search_issues', input)).toEqual([
+      { key: 'limit', value: '5' },
+      { key: 'filter', value: '{"state":"open"}' },
+    ]);
+  });
+});
+
+// Cross-client composer key contract (UI-quality goal, Phase D). Checks the
+// `mc` column of the same fixture the web and iOS suites use. Mission Control
+// was the last client whose handler was tested only against itself — the
+// condition that let Shift+Enter be correct here and impossible on iOS for
+// months with every suite green.
+describe('composer key contract (mc column)', () => {
+  const contract = JSON.parse(
+    // `import.meta.dirname` rather than `new URL(..., import.meta.url)`: this
+    // file can run under a DOM environment whose URL polyfill rejects `file:`.
+    readFileSync(
+      join(import.meta.dirname, '../../../../../../scripts/fixtures/composer-key-contract.json'),
+      'utf8',
+    ),
+  ) as {
+    cases: {
+      name: string;
+      key: string;
+      shift: boolean;
+      meta: boolean;
+      mc: 'send' | 'newline' | 'focus';
+      mechanism?: { mc: 'handler' | 'native' };
+    }[];
+  };
+
+  it('carries rows, so a truncated fixture cannot pass everything', () => {
+    expect(contract.cases.length).toBeGreaterThanOrEqual(5);
+  });
+
+  for (const testCase of contract.cases) {
+    it(`${testCase.name} -> ${testCase.mc}`, () => {
+      expect(composerKeyAction(testCase.key, testCase.shift, testCase.meta)).toBe(testCase.mc);
+      if (testCase.mechanism?.mc) {
+        expect(composerKeyMechanism(testCase.key, testCase.shift, testCase.meta)).toBe(
+          testCase.mechanism.mc,
+        );
+      }
+    });
+  }
 });

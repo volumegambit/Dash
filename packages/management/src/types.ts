@@ -46,6 +46,31 @@ export interface SkillsConfig {
   urls?: string[];
 }
 
+// --- Agent memory ---
+
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
+
+export type MemorySource = 'agent' | 'sweep' | 'user' | 'import';
+
+export interface MemoryInfo {
+  name: string;
+  description: string;
+  type: MemoryType;
+  source: MemorySource;
+  createdAt: string;
+  updatedAt: string;
+  size: number;
+}
+
+export interface MemoryContent extends Omit<MemoryInfo, 'size'> {
+  content: string;
+}
+
+export interface MemoryConfig {
+  enabled: boolean;
+  sweep: 'auto' | 'on' | 'off';
+}
+
 export interface ChannelHealthEntry {
   appId: string;
   type: 'whatsapp' | 'telegram' | string;

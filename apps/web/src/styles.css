@@ -878,6 +878,26 @@ textarea:focus-visible {
 }
 
 /* ---------------------------------------------------------------------
+ * Memory chip (agent-memory Task 11): the transcript row for `memory_saved`
+ * / `memory_forgotten`, mirroring MC's chip in `chat.tsx`. Pill-shaped on
+ * purpose — it is a status badge, not a content surface, so it opts out of
+ * the hard-corner `--radius: 0` the content blocks use. Muted foreground on
+ * the shared `--border`, no new tokens.
+ * ------------------------------------------------------------------- */
+.chat-memory-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------
  * Message entrance animation (chat-ux Phase 3 Task 4, audit #18; narrowed
  * by Phase 4 Task 1, minor 10): fade+rise for rows that ARRIVE while the
  * transcript is showing — `.chat-message-enter`, which `ChatView`'s
@@ -1099,6 +1119,24 @@ textarea:focus-visible {
 
 .tool-card-summary-mono {
   font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+/* What the call returned, at the right edge of the row. `margin-left: auto`
+   rather than a spacer element keeps the header one flex line; `flex-shrink: 0`
+   means a long command truncates and the outcome stays legible, since the
+   outcome is the shorter and more variable of the two. */
+.tool-card-outcome {
+  margin-left: auto;
+  padding-left: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.75;
+  font-size: 0.92em;
+}
+
+.tool-card-error .tool-card-outcome {
+  color: var(--danger, #f87171);
+  opacity: 1;
 }
 
 .tool-card-body {
@@ -1567,4 +1605,140 @@ textarea:focus-visible {
   50% {
     opacity: 1;
   }
+}
+
+/* Per-tool-type tool bodies (2026-09-05 per-type goal).
+   The diff, directory and search-result treatments replace a body that
+   branched only on how many newlines a result had. */
+
+.tool-card-namespace {
+  color: var(--text-muted);
+  opacity: 0.7;
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+.tool-card-namespace::after {
+  content: "·";
+  padding: 0 0.35em;
+}
+
+.tool-diff {
+  display: flex;
+  flex-direction: column;
+  max-height: 256px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 6px 0;
+  border-radius: 6px;
+  background: var(--md-code-bg);
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+.tool-diff-line {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Fixed light on the fixed dark chip — never a scheme-adaptive token, which
+     is the bug that made the iOS twin render black on navy. */
+  color: rgb(248 250 252 / 80%);
+}
+
+.tool-diff-added {
+  background: rgb(34 197 94 / 12%);
+  color: #4ade80;
+}
+
+.tool-diff-removed {
+  background: rgb(248 113 113 / 12%);
+  color: #f87171;
+}
+
+.tool-diff-hunk {
+  color: rgb(248 250 252 / 45%);
+}
+
+.tool-entries {
+  max-height: 256px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.tool-entry {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--text-muted);
+}
+
+.tool-entry-dir {
+  color: var(--text);
+}
+
+.tool-entry-glyph {
+  width: 0.8em;
+  color: var(--accent, #3b82f6);
+}
+
+.tool-search-results {
+  max-height: 256px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-search-result {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+}
+
+.tool-search-title {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.tool-search-host {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.tool-grep {
+  max-height: 256px;
+  overflow: auto;
+  margin: 4px 0 0;
+  font-size: 0.9em;
+}
+
+.tool-grep-group {
+  margin-bottom: 6px;
+}
+
+.tool-grep-path {
+  margin: 0;
+  color: var(--text);
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.tool-grep-match {
+  margin: 0;
+  color: var(--text-muted);
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.tool-grep-line {
+  display: inline-block;
+  min-width: 3ch;
+  padding-right: 8px;
+  opacity: 0.6;
+  text-align: right;
 }

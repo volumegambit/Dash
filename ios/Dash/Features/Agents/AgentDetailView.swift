@@ -48,6 +48,12 @@ struct AgentDetailView: View {
               .frame(minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
+            // Same measure as the gateway picker and sign-in. A primary
+            // action stretched across ~700pt of an 11-inch iPad detail column
+            // reads as an unfinished phone layout; the constraint is what the
+            // other pre-connection screens already use.
+            .frame(maxWidth: 520)
+            .frame(maxWidth: .infinity)
             .disabled(feature.mutationsAllowed == false || isWorking)
             .accessibilityHint(
               feature.mutationsAllowed ? "" : "Connect to the gateway to start a conversation"
@@ -57,6 +63,7 @@ struct AgentDetailView: View {
 
           configurationSection(agent)
           integrationsSection(agent)
+          memorySection(agent)
           swarmSection(agent)
         }
         .accessibilityIdentifier("agent.detail.\(agentID)")
@@ -69,6 +76,10 @@ struct AgentDetailView: View {
       }
     }
     .navigationTitle(agent?.name ?? "Agent")
+    // Loaded from the view root, not from `memorySection`: a `.task` attached
+    // to a `Section` restarts every time the section is rebuilt, and the load
+    // itself writes `feature.memories`, so it re-triggers itself forever.
+    .task(id: agentID) { await feature.loadMemories(agentID: agentID) }
     .toolbar {
       if let agent {
         ToolbarItem(placement: .topBarTrailing) {
@@ -164,10 +175,85 @@ struct AgentDetailView: View {
 
   @ViewBuilder
   private func integrationsSection(_ agent: RegisteredAgentDTO) -> some View {
-    Section("Integrations") {
-      optionalList("MCP servers", agent.config.mcpServers)
-      optionalList("Skill paths", agent.config.skills?.paths)
-      optionalList("Skill URLs", agent.config.skills?.urls)
+    // Only when there is something to integrate. Every value inside is
+    // optional, so an agent with no MCP servers and no skills rendered a
+    // bare "Integrations" header over nothing — a section title is a promise
+    // that content follows.
+    if hasIntegrations(agent) {
+      Section("Integrations") {
+        optionalList("MCP servers", agent.config.mcpServers)
+        optionalList("Skill paths", agent.config.skills?.paths)
+        optionalList("Skill URLs", agent.config.skills?.urls)
+      }
+    }
+  }
+
+  private func hasIntegrations(_ agent: RegisteredAgentDTO) -> Bool {
+    let lists = [agent.config.mcpServers, agent.config.skills?.paths, agent.config.skills?.urls]
+    return lists.contains { ($0?.isEmpty == false) }
+  }
+
+  /// The Memory section, grouped by `MemoryTypeDTO` bucket (the enum is
+  /// `CaseIterable` for exactly this). Swipe-to-delete is the only mutation
+  /// the phone gets — writes stay loopback-only.
+  ///
+  /// Accessibility identifiers deliberately sit on LEAF views: the section
+  /// header carries `agent.memory.list` and each row carries
+  /// `agent.memory.row.<name>`. Putting an identifier on the `Section` (a
+  /// container) makes XCUITest collapse it into one element and erases the
+  /// per-row identifiers underneath it.
+  @ViewBuilder
+  private func memorySection(_ agent: RegisteredAgentDTO) -> some View {
+    Section {
+      let rows = feature.memories[agent.id] ?? []
+      if rows.isEmpty {
+        Text("No memories yet.")
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("agent.memory.empty")
+      } else {
+        ForEach(MemoryTypeDTO.allCases, id: \.self) { type in
+          let group = rows.filter { $0.type == type }
+          if group.isEmpty == false {
+            Text(memoryTypeTitle(type))
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            ForEach(group) { memory in
+              memoryRow(agentID: agent.id, memory: memory)
+            }
+          }
+        }
+      }
+    } header: {
+      Text("Memory")
+        .accessibilityIdentifier("agent.memory.list")
+    }
+  }
+
+  @ViewBuilder
+  private func memoryRow(agentID: String, memory: MemoryInfoDTO) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(memory.description)
+      Text(memory.name)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 2)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("agent.memory.row.\(memory.name)")
+    .swipeActions(edge: .trailing) {
+      Button("Delete", role: .destructive) {
+        Task { await feature.deleteMemory(agentID: agentID, name: memory.name) }
+      }
+      .disabled(feature.mutationsAllowed == false)
+    }
+  }
+
+  private func memoryTypeTitle(_ type: MemoryTypeDTO) -> String {
+    switch type {
+    case .user: "User"
+    case .feedback: "Feedback"
+    case .project: "Project"
+    case .reference: "Reference"
     }
   }
 

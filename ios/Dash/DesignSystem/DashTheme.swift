@@ -21,6 +21,20 @@ enum DashTheme {
   static let danger = Color(red: 0xf8 / 255, green: 0x71 / 255, blue: 0x71 / 255)
   static let codeBackground = Color(red: 0x16 / 255, green: 0x1b / 255, blue: 0x22 / 255)
 
+  /// Text on `codeBackground`.
+  ///
+  /// A FIXED near-white, deliberately not `.primary`. `codeBackground` is a
+  /// fixed dark chip in both colour schemes — it is the same `#161b22` the
+  /// web renderer uses for `--md-code-bg` — so pairing it with a
+  /// scheme-adaptive foreground renders BLACK ON DARK NAVY in light mode.
+  /// Every long tool result (a file read, a command's stdout, a directory
+  /// listing) was near-illegible on a light-mode phone because of exactly
+  /// that. Web already pairs the chip with `rgb(248 250 252 / 80%)`; this is
+  /// the same value.
+  static let codeForeground = Color(
+    red: 0xf8 / 255, green: 0xfa / 255, blue: 0xfc / 255
+  ).opacity(0.8)
+
   /// Corner radii on a 4pt scale. `small` = inline cards (tool/worker),
   /// `medium` = thumbnails and question cards, `large` = message bubbles and
   /// banners, `xLarge` = the composer field and scanner reticle, `xxLarge` =
@@ -56,5 +70,8 @@ enum DashTheme {
     static let shadow = 0.18
     static let scrim = 0.7
     static let contentSecondary = 0.8
+    /// Text that is present but subordinate on a strong ground — a diff's
+    /// `@@` hunk header, which orients the reader without being content.
+    static let contentTertiary = 0.55
   }
 }

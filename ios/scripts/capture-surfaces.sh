@@ -87,7 +87,15 @@ SURFACES=(
   "signin|signed-out|"
   "gateway-picker|account-picker|"
   "recovery|pending-recovery|DASH_UI_TEST_TAB=conversations"
+  "agent-detail|paired-online|DASH_UI_TEST_AGENT=research-agent"
+  "model-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=model-picker"
 )
+
+# Tool gallery: every tool type, cards forced EXPANDED, four batches because a
+# phone screen fits about four expanded cards. A collapsed row was already
+# auditable from the `chat` surface above; the BODIES were not visible on any
+# screen, which is what the per-tool-type work needs to see.
+GALLERY=(files shell search meta)
 
 for entry in "${SURFACES[@]}"; do
   name="${entry%%|*}"; rest="${entry#*|}"
@@ -99,7 +107,11 @@ for entry in "${SURFACES[@]}"; do
     "SIMCTL_CHILD_DASH_UI_TEST_SCENARIO=$scenario"
     "SIMCTL_CHILD_DASH_UI_TEST_DATA_IDENTIFIER=capture-$name"
   )
-  if [ -n "$extra" ]; then env_args+=("SIMCTL_CHILD_$extra"); fi
+  # `extra` may carry several `KEY=VALUE` pairs separated by `;`.
+  if [ -n "$extra" ]; then
+    IFS=';' read -ra pairs <<< "$extra"
+    for pair in "${pairs[@]}"; do env_args+=("SIMCTL_CHILD_$pair"); done
+  fi
 
   if ! env "${env_args[@]}" xcrun simctl launch "$UDID" "$BUNDLE_ID" >/dev/null 2>&1; then
     echo "  !! $name — launch failed (scenario '$scenario' may not exist)"
@@ -110,6 +122,28 @@ for entry in "${SURFACES[@]}"; do
   sleep 6
   xcrun simctl io "$UDID" screenshot "$OUT/$IDIOM-$name.png" >/dev/null 2>&1
   echo "  -> $OUT/$IDIOM-$name.png"
+done
+
+for batch in "${GALLERY[@]}"; do
+  xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+  if ! env \
+    "SIMCTL_CHILD_DASH_UI_TEST_SCENARIO=paired-online" \
+    "SIMCTL_CHILD_DASH_UI_TEST_DATA_IDENTIFIER=capture-tools-$batch" \
+    "SIMCTL_CHILD_DASH_UI_TEST_CONVERSATION=shared-plan" \
+    "SIMCTL_CHILD_DASH_UI_TEST_TOOL_GALLERY=$batch" \
+    "SIMCTL_CHILD_DASH_UI_TEST_EXPAND_TOOLS=1" \
+    xcrun simctl launch "$UDID" "$BUNDLE_ID" >/dev/null 2>&1; then
+    echo "  !! tools-$batch — launch failed"
+    continue
+  fi
+  # 9s, not the 6s the plain surfaces use. A gallery batch renders four
+  # EXPANDED tool cards — a diff, a code block, a listing — and twice this run
+  # screenshotted the conversation list because navigation had not finished.
+  # Two of the four files came out byte-identical to each other, which is how
+  # it was caught. A capture that races is worse than a slow one.
+  sleep 9
+  xcrun simctl io "$UDID" screenshot "$OUT/$IDIOM-tools-$batch.png" >/dev/null 2>&1
+  echo "  -> $OUT/$IDIOM-tools-$batch.png"
 done
 
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true

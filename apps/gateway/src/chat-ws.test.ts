@@ -1062,7 +1062,7 @@ describe('gateway resumable chat composition', () => {
     const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
     const orderedShutdownSteps = [
       "safeStep('resumableChatHub.stop'",
-      "safeStep('conversationAutoTitle.flush'",
+      "safeFlush('conversationAutoTitle.flush'",
       "safeStep('swarmCoordinator.stop'",
       "safeStep('agents.stop'",
       "safeStep('conversationService.close'",

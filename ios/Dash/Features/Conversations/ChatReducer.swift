@@ -211,6 +211,8 @@ enum StatusRowKind: Equatable, Sendable {
   case skillLoaded
   case skillCreated
   case mcpError
+  case memorySaved
+  case memoryForgotten
   case unknown
 }
 
@@ -726,6 +728,17 @@ enum ChatReducer {
         detail: error,
         onto: &assistant
       )
+
+    case let .memorySaved(_, description, _, action):
+      appendStatus(
+        kind: .memorySaved,
+        title: action == .updated ? "Updated memory" : "Remembered",
+        detail: description,
+        onto: &assistant
+      )
+
+    case let .memoryForgotten(name):
+      appendStatus(kind: .memoryForgotten, title: "Forgot memory", detail: name, onto: &assistant)
 
     case let .unknown(type, _):
       appendStatus(

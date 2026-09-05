@@ -61,6 +61,23 @@ extension AppDependenciesFactory {
         ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-conversation")
     }
 
+    /// An agent to open on launch, so agent detail — reachable only by
+    /// selecting a row — can be captured.
+    static var initialAgentID: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_AGENT"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-agent")
+    }
+
+    /// A sheet to present on launch. Sheets are view state, not `AppModel`
+    /// state, so the presenting view reads this itself — see `ChatView`.
+    /// Values: `model-picker`.
+    static var initialSheet: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_SHEET"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-sheet")
+    }
+
     static var initialTab: AppTab? {
       let environment = ProcessInfo.processInfo.environment
       guard
@@ -68,6 +85,30 @@ extension AppDependenciesFactory {
           ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
       else { return nil }
       return AppTab(rawValue: raw)
+    }
+
+    /// Start every tool card expanded, so a capture can show the tool BODIES.
+    ///
+    /// The same gap `initialConversationID` closed one level down: a tool
+    /// card's body is behind a tap, `simctl` has no tap, and so the per-tool
+    /// result rendering — the thing the 2026-09-05 tool-use goal is about —
+    /// could not be looked at on any iOS screen. Collapsed rows were
+    /// auditable; the bodies were not.
+    /// Which batch of the tool gallery to render in the chat fixture, or nil
+    /// for the ordinary fixture. Four batches, because a phone screen fits
+    /// about four EXPANDED tool cards and the point is to see the bodies.
+    static var toolGallery: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_TOOL_GALLERY"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tool-gallery")
+    }
+
+    static var expandTools: Bool {
+      let environment = ProcessInfo.processInfo.environment
+      if let raw = environment["DASH_UI_TEST_EXPAND_TOOLS"] {
+        return raw == "1" || raw.lowercased() == "true"
+      }
+      return ProcessInfo.processInfo.arguments.contains("--dash-ui-test-expand-tools")
     }
   }
 
@@ -271,6 +312,45 @@ extension AppDependenciesFactory {
       ),
     ]
 
+    /// Agent memory (Task 19): seeded per agent so the detail screen's
+    /// Memory section has both a `user` and a `project` bucket to group.
+    static let memories: [String: [MemoryInfoDTO]] = [
+      "research-agent": [
+        memory(
+          name: "user-timezone",
+          description: "Gerry is in Singapore (UTC+8)",
+          type: .user,
+          source: "agent",
+          size: 24
+        ),
+        memory(
+          name: "repo-pnpm",
+          description: "The repo uses pnpm",
+          type: .project,
+          source: "sweep",
+          size: 18
+        ),
+      ]
+    ]
+
+    static func memory(
+      name: String,
+      description: String,
+      type: MemoryTypeDTO,
+      source: String,
+      size: Int
+    ) -> MemoryInfoDTO {
+      MemoryInfoDTO(
+        name: name,
+        description: description,
+        type: type,
+        source: source,
+        createdAt: "2026-09-05",
+        updatedAt: "2026-09-05",
+        size: size
+      )
+    }
+
     static let models: [ModelDTO] = [
       ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "OpenAI"),
       ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI"),
@@ -366,7 +446,150 @@ extension AppDependenciesFactory {
       (1...90).map { "Streamed chunk \($0) of the reply." }.joined(separator: " ")
     }()
 
+    /// One assistant message per gallery batch, so `capture-surfaces.sh` can
+    /// render every tool type's BODY and the per-type result treatment can be
+    /// audited from pixels rather than from reading `resultView`.
+    ///
+    /// Single-line string literals with escapes throughout, deliberately: a
+    /// Swift `"""` block would be re-indented by the formatter and the
+    /// leading whitespace of a numbered-source fixture is load-bearing.
+    static func toolGalleryMessages(_ batch: String) -> [ConversationMessageDTO] {
+      let events: [AgentEvent]
+      switch batch {
+      case "files":
+        events = [
+          .toolUseStart(
+            id: "g-read", name: "read",
+            input: .object(["path": .string("apps/web/src/ui/blocks/tool-presentation.ts")])),
+          .toolResult(
+            id: "g-read", name: "read",
+            content:
+              "<path>apps/web/src/ui/blocks/tool-presentation.ts</path>\n<content>\n   1\texport function normalizeTool(name: string): string {\n   2\t  switch (name) {\n   3\t    case 'read_file':\n   4\t      return 'read';\n   5\t    default:\n   6\t      return name;\n   7\t  }\n   8\t}\n</content>",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-write", name: "write",
+            input: .object([
+              "path": .string("docs/notes.md"),
+              "content": .string("# Notes\n\nFirst line.\nSecond line.\n"),
+            ])),
+          .toolResult(
+            id: "g-write", name: "write", content: "Wrote 4 lines to docs/notes.md",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-edit", name: "edit",
+            input: .object(["path": .string("apps/web/src/ui/blocks/ContentBlocks.tsx")])),
+          .toolResult(
+            id: "g-edit", name: "edit", content: "ok", isError: false,
+            details: .object([
+              "diff": .string(
+                "--- a/apps/web/src/ui/blocks/ContentBlocks.tsx\n+++ b/apps/web/src/ui/blocks/ContentBlocks.tsx\n@@ -12,7 +12,8 @@\n   const summary = summarize(tool.name, tool.input);\n-  const details = formatVisibleDetails(tool.name, tool.input);\n+  const outcome = resultSummary(tool.name, result?.content);\n+  const details = formatVisibleDetails(tool.name, tool.input);")
+            ])),
+        ]
+      case "shell":
+        events = [
+          .toolUseStart(
+            id: "g-bash", name: "bash",
+            input: .object(["command": .string("/opt/homebrew/bin/npm run lint")])),
+          .toolResult(
+            id: "g-bash", name: "bash",
+            content:
+              "> dash@0.2.0 lint\n> biome check .\n\nChecked 942 files in 609ms. No fixes applied.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-quiet", name: "bash",
+            input: .object(["command": .string("mkdir -p build/captures")])),
+          .toolResult(id: "g-quiet", name: "bash", content: "", isError: false, details: nil),
+          .toolUseStart(id: "g-ls", name: "ls", input: .object(["path": .string("apps/web/src")])),
+          .toolResult(
+            id: "g-ls", name: "ls",
+            content: "(5 entries)\nui/\nintegration/\nmain.tsx\nstyles.css\nvite-env.d.ts",
+            isError: false, details: nil),
+        ]
+      case "search":
+        events = [
+          .toolUseStart(
+            id: "g-grep", name: "grep", input: .object(["pattern": .string("resultSummary")])),
+          .toolResult(
+            id: "g-grep", name: "grep",
+            content:
+              "apps/web/src/ui/blocks/tool-presentation.ts:214: export function resultSummary(\napps/web/src/ui/blocks/ContentBlocks.tsx:191:  const outcome = resultSummary(\nios/Dash/Features/Conversations/ToolPresentation.swift:318:  static func resultSummary(",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-search", name: "web_search",
+            input: .object(["query": .string("swiftui observable macro")])),
+          .toolResult(
+            id: "g-search", name: "web_search",
+            content:
+              "1. [Observation | Apple Developer](https://developer.apple.com/documentation/observation)\n   The Observation framework provides a robust, type-safe model.\n\n2. [Migrating to the Observable macro](https://developer.apple.com/videos/wwdc)\n   Replace ObservableObject with the @Observable macro.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-fetch", name: "web_fetch",
+            input: .object([
+              "url": .string("https://developer.apple.com/documentation/observation")
+            ])),
+          .toolResult(
+            id: "g-fetch", name: "web_fetch",
+            content: String(repeating: "Observation framework documentation body. ", count: 40),
+            isError: false, details: nil),
+        ]
+      default:
+        events = [
+          .toolUseStart(
+            id: "g-todo", name: "TodoWrite",
+            input: .object([
+              "todos": .array([
+                .object([
+                  "content": .string("Port resultSummary to iOS"), "status": .string("completed"),
+                ]),
+                .object([
+                  "content": .string("Audit each tool type from a rendered screen"),
+                  "status": .string("in_progress"),
+                ]),
+                .object([
+                  "content": .string("Write the per-type design"), "status": .string("pending"),
+                ]),
+              ])
+            ])),
+          .toolResult(id: "g-todo", name: "TodoWrite", content: "ok", isError: false, details: nil),
+          .toolUseStart(
+            id: "g-skill", name: "load_skill",
+            input: .object(["name": .string("frontend-design")])),
+          .toolResult(
+            id: "g-skill", name: "load_skill", content: "Loaded skill 'frontend-design'.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-mcp", name: "linear__search_issues",
+            input: .object([
+              "query": .string("tool card"), "limit": .number(5),
+              "filter": .object(["state": .string("open")]),
+            ])),
+          .toolResult(
+            id: "g-mcp", name: "linear__search_issues",
+            content: "DASH-412  Tool rows unreadable\nDASH-418  Diff not rendered on iOS",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-fail", name: "read",
+            input: .object(["path": .string("/Users/gerry/missing.swift")])),
+          .toolResult(
+            id: "g-fail", name: "read", content: "ENOENT: no such file or directory",
+            isError: true, details: nil),
+          .toolUseStart(
+            id: "g-run", name: "bash", input: .object(["command": .string("npm test")])),
+        ]
+      }
+      return [
+        message(
+          id: "gallery-assistant", turnID: "gallery-turn", role: .assistant, status: .completed,
+          events: events, ordinal: 1)
+      ]
+    }
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
+      #if DEBUG
+        if let batch = UITestLaunchOptions.toolGallery {
+          return toolGalleryMessages(batch)
+        }
+      #endif
       if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
       if scenario == .longTranscript { return longTranscriptMessages }
       if scenario == .remoteBusy {
@@ -399,6 +622,34 @@ extension AppDependenciesFactory {
           role: .assistant,
           status: .completed,
           events: [
+            // Tool-use UX (2026-09-05): a run of four calls — a plain
+            // success, a grep with a countable result, an edit carrying a
+            // diff, and a failure — so `capture-surfaces.sh`'s `chat` shot
+            // actually shows the tool rows. Before this the only reachable
+            // chat capture had no tool calls in it at all, which is how three
+            // screens shipped in the first place without being looked at.
+            .toolUseStart(
+              id: "cap-1", name: "bash",
+              input: .object(["command": .string("/opt/homebrew/bin/npm run build")])),
+            .toolResult(
+              id: "cap-1", name: "bash", content: "built in 4.2s", isError: false, details: nil),
+            .toolUseStart(
+              id: "cap-2", name: "grep", input: .object(["pattern": .string("resultSummary")])),
+            .toolResult(
+              id: "cap-2", name: "grep",
+              content: "a.ts:1: hit\nb.ts:9: hit\nc.ts:14: hit", isError: false, details: nil),
+            .toolUseStart(
+              id: "cap-3", name: "edit",
+              input: .object(["path": .string("apps/web/src/ui/blocks/ContentBlocks.tsx")])),
+            .toolResult(
+              id: "cap-3", name: "edit", content: "ok", isError: false,
+              details: .object(["diff": .string("--- a/x\n+++ b/x\n-old\n+new\n+more")])),
+            .toolUseStart(
+              id: "cap-4", name: "read",
+              input: .object(["path": .string("/Users/gerry/missing.swift")])),
+            .toolResult(
+              id: "cap-4", name: "read", content: "ENOENT: no such file or directory",
+              isError: true, details: nil),
             .response(
               // iOS markdown parity (2026-09-04): a GFM table rides along so
               // the table renderer is exercised by DashUI; the sentence other
@@ -1071,6 +1322,7 @@ extension AppDependenciesFactory {
     private var pendingSends: [String: PendingChatSend] = [:]
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
+    private var memoryValues: [String: [MemoryInfoDTO]] = UITestScenarioFixtures.memories
     private var didFailSleepingAgentEnable = false
 
     init(scenario: UITestScenario, dataIdentifier: String) {
@@ -1116,6 +1368,7 @@ extension AppDependenciesFactory {
       pendingSends.removeAll()
       cursors.removeAll()
       retainedRequests.removeAll()
+      memoryValues.removeAll()
       _ = dataIdentifier
     }
 
@@ -1404,6 +1657,21 @@ extension AppDependenciesFactory {
         throw GatewayError.notFound
       }
       agentValues.removeAll { $0.id == id }
+      memoryValues[id] = nil
+    }
+
+    func memories(for agentID: String) -> [MemoryInfoDTO] {
+      memoryValues[agentID] ?? []
+    }
+
+    func deleteMemory(agentID: String, name: String) throws {
+      guard var values = memoryValues[agentID],
+        values.contains(where: { $0.name == name })
+      else {
+        throw GatewayError.notFound
+      }
+      values.removeAll { $0.name == name }
+      memoryValues[agentID] = values
     }
 
     func startConversation(agentID: String) throws -> ConversationSummaryDTO {

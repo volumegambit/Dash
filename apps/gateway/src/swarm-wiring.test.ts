@@ -1,15 +1,44 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { DashAgentConfig } from '@dash/agent';
 import type { SwarmExtraTool, WorkerSpec } from '@dash/swarm';
+import { vi } from 'vitest';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
 import {
   type GatewayWorkerFactoryDeps,
   buildWorkerBackendArgs,
   buildWorkerPreamble,
+  createGatewayWorkerFactory,
   workerSessionDir,
 } from './swarm-wiring.js';
+
+/**
+ * Capture every config resolver handed to `DashAgent` by the worker factory.
+ * `@dash/agent` is only partially mocked: `PiAgentBackend` (so no pi session
+ * boots) and `DashAgent` (so the resolver is observable). Everything else stays
+ * real for the rest of this file.
+ */
+const agentMock = vi.hoisted(() => ({
+  resolvers: [] as Array<() => Promise<DashAgentConfig>>,
+}));
+
+vi.mock('@dash/agent', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@dash/agent')>();
+  class FakePiAgentBackend {
+    async start(): Promise<void> {}
+    abort(): void {}
+    async stop(): Promise<void> {}
+  }
+  class FakeDashAgent {
+    constructor(_backend: unknown, resolver: () => Promise<DashAgentConfig>) {
+      agentMock.resolvers.push(resolver);
+    }
+    async *chat(): AsyncGenerator<never> {}
+  }
+  return { ...actual, PiAgentBackend: FakePiAgentBackend, DashAgent: FakeDashAgent };
+});
 
 function makeSpec(overrides: Partial<WorkerSpec> = {}): WorkerSpec {
   const askOrchestrator: SwarmExtraTool = {
@@ -204,5 +233,73 @@ describe('resolveSwarmConfig (gateway defaults merge)', () => {
     resolveSwarmConfig({ maxConcurrentWorkersGlobal: 99, defaults: { maxRunSeconds: 1 } });
     expect(DEFAULT_SWARM_CONFIG.maxConcurrentWorkersGlobal).toBe(16);
     expect(DEFAULT_SWARM_CONFIG.defaults.maxRunSeconds).toBe(1800);
+  });
+});
+
+describe('createGatewayWorkerFactory memory inheritance', () => {
+  let dataDir: string;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'swarm-worker-mem-'));
+    agentMock.resolvers.length = 0;
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  async function resolverConfigFor(
+    spec: WorkerSpec,
+    extra: Partial<GatewayWorkerFactoryDeps>,
+  ): Promise<DashAgentConfig> {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir, ...extra });
+    await factory(spec);
+    const resolver = agentMock.resolvers.at(-1);
+    if (!resolver) throw new Error('worker factory did not construct a DashAgent');
+    return resolver();
+  }
+
+  it('gives the worker the parent memory dir read-only', async () => {
+    const spec = makeSpec();
+    const config = await resolverConfigFor(spec, {
+      memoryDir: (agentId) => `/tmp/mem/${agentId}`,
+    });
+    expect(config.memory).toEqual({ dir: '/tmp/mem/agent-id-1', tools: false });
+    // The rest of the resolver config is unchanged.
+    expect(config.model).toBe(spec.model);
+    expect(config.systemPrompt).toBe(buildWorkerPreamble(spec));
+    expect(config.tools).toBe(spec.tools);
+  });
+
+  it('keys the memory dir on the registry agentId, not the agent name', async () => {
+    const spec = makeSpec({ agentId: 'reg-42', agentName: 'renamed-agent' });
+    const seen: string[] = [];
+    const config = await resolverConfigFor(spec, {
+      memoryDir: (agentId) => {
+        seen.push(agentId);
+        return `/tmp/mem/${agentId}`;
+      },
+    });
+    expect(seen).toEqual(['reg-42']);
+    expect(config.memory?.dir).toBe('/tmp/mem/reg-42');
+  });
+
+  it('omits memory entirely when no memoryDir resolver is supplied', async () => {
+    const config = await resolverConfigFor(makeSpec(), {});
+    expect(config.memory).toBeUndefined();
+  });
+
+  it('omits memory when the resolver returns undefined (agent opted out)', async () => {
+    const config = await resolverConfigFor(makeSpec(), { memoryDir: () => undefined });
+    expect(config.memory).toBeUndefined();
+  });
+
+  it('never puts memory in the stripped backend constructor config (no memory tools)', () => {
+    const spec = makeSpec();
+    const args = buildWorkerBackendArgs(spec, {
+      ...deps,
+      memoryDir: (agentId) => `/tmp/mem/${agentId}`,
+    });
+    expect(args[0].memory).toBeUndefined();
   });
 });

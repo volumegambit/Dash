@@ -3,10 +3,12 @@ import { sep } from 'node:path';
 import {
   ConversationPool,
   DashAgent,
+  MemoryStore,
   SkillOpError,
   createSkillInDir,
   discoverSkills,
   heuristicScan,
+  importLegacyMemoryFile,
   installSkillToDir,
   loadFlatSkills,
   removeSkillFromDir,
@@ -19,11 +21,26 @@ import type {
   FlatSkillFile,
   ImageBlock,
   InstalledSkill,
+  MemoryInfo,
+  MemoryRecord,
+  SaveMemoryInput,
   SkillDiscoveryResult,
   WrittenSkill,
 } from '@dash/agent';
 import type { SwarmCoordinator } from '@dash/swarm';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
+
+/**
+ * The config handed to `createBackend`: the persisted agent config plus the
+ * RESOLVED memory runtime object. Two deliberately distinct names —
+ * `GatewayAgentConfig.memory` holds the PERSISTED flags (`enabled`/`sweep`)
+ * while `memoryRuntime` holds the resolved `{ dir }` the backend/DashAgent
+ * consume — so the two can never be confused at a call site.
+ * `memoryRuntime` is absent when memory is off for the agent.
+ */
+export type BackendFactoryConfig = GatewayAgentConfig & {
+  memoryRuntime?: { dir: string; tools?: boolean };
+};
 
 /**
  * Builds the backend for one agent conversation. Receives the registry
@@ -34,7 +51,7 @@ import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
  * on-disk identity (sessions/, skills/) — the two are distinct on purpose.
  */
 export type BackendFactory = (
-  config: GatewayAgentConfig,
+  config: BackendFactoryConfig,
   conversationId: string,
   agentId: string,
 ) => Promise<AgentBackend>;
@@ -56,6 +73,13 @@ export interface AgentChatCoordinatorOptions {
   createBackend: BackendFactory;
   /** Resolve an agent's managed skills directory (for `listSkills`). */
   managedSkillsDir?: (config: GatewayAgentConfig) => string | undefined;
+  /**
+   * Resolve an agent's memory directory (`agentMemoryDir(dataDir, agentId)`).
+   * Absent → memory is off for every agent (no prompt block, no store, and
+   * `memoryStore()` returns null) — the shape tests and embedders that don't
+   * want persistence get by default.
+   */
+  memoryDir?: (agentId: string) => string;
   /**
    * Live getter for the trusted-plugin skill directories (each a `skills/`-style
    * root). Merged into skill discovery for `listSkills` so the HTTP skills API
@@ -174,6 +198,31 @@ export interface AgentChatCoordinator {
   installSkill(agentId: string, source: string, name?: string): Promise<InstalledSkill>;
   /** Remove a managed/agent/remote skill (plugin refused). */
   removeSkill(agentId: string, name: string): Promise<{ name: string }>;
+  /**
+   * The agent's memory store, or null when memory is disabled for it
+   * (`memory.enabled === false`) or no `memoryDir` resolver is configured.
+   */
+  memoryStore(agentId: string): MemoryStore | null;
+  /**
+   * List the agent's memories. Management path: it still lists what is on disk
+   * for a memory-DISABLED agent (so the Memory tab stays honest), and degrades
+   * to empty — never throws — for an unknown agent or an embedding with no
+   * memory directory.
+   */
+  listMemories(agentId: string): Promise<MemoryInfo[]>;
+  /** Get one memory by name, or null. Management path: works while memory is disabled. */
+  getMemory(agentId: string, name: string): Promise<MemoryRecord | null>;
+  /** Create/update a memory as the human-facing API path (`source: 'user'`). Throws when disabled. */
+  saveMemory(
+    agentId: string,
+    input: Omit<SaveMemoryInput, 'source'>,
+  ): Promise<{ record: MemoryRecord; action: 'created' | 'updated' }>;
+  /**
+   * Delete a memory. Management path: works while memory is disabled (the user
+   * must be able to clear memories they can see); throws only when no memory
+   * directory is configured at all.
+   */
+  removeMemory(agentId: string, name: string): Promise<boolean>;
   stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
 }
@@ -198,6 +247,46 @@ export function createAgentChatCoordinator(
   const { registry } = options;
 
   /**
+   * Resolve an agent's RUNTIME memory config from the registry snapshot.
+   * `undefined` when there is no `memoryDir` resolver (memory off for this
+   * embedding entirely) or the agent opted out with `memory.enabled === false`.
+   * An ABSENT `memory` key means ENABLED — legacy agents persisted before the
+   * memory system must not silently lose memory.
+   */
+  const memoryConfigFor = (agentId: string): { dir: string } | undefined => {
+    const entry = registry.get(agentId);
+    if (!entry || !options.memoryDir) return undefined;
+    if (entry.config.memory?.enabled === false) return undefined;
+    return { dir: options.memoryDir(agentId) };
+  };
+
+  /** The agent's store, or null when memory is off. Cheap — the store is stateless. */
+  const memoryStoreFor = (agentId: string): MemoryStore | null => {
+    const cfg = memoryConfigFor(agentId);
+    return cfg ? new MemoryStore(cfg.dir) : null;
+  };
+
+  /**
+   * Store for the MANAGEMENT paths (Mission Control's Memory tab and the
+   * mobile memory routes). Deliberately NOT gated on `memory.enabled`: turning
+   * memory off stops the prompt, the tools and the sweep, but the files stay on
+   * disk, and a user who cannot see or delete them is stuck — the docs tell
+   * them to clear the tab before deleting an agent. `memoryConfigFor` stays the
+   * decision point for the CHAT path; this one only needs a `memoryDir`.
+   */
+  const managementStoreFor = (agentId: string): MemoryStore | null => {
+    if (!registry.get(agentId) || !options.memoryDir) return null;
+    return new MemoryStore(options.memoryDir(agentId));
+  };
+
+  /** Store for a WRITE path: writing to a disabled agent is an error, not a no-op. */
+  const requireStore = (agentId: string): MemoryStore => {
+    const store = memoryStoreFor(agentId);
+    if (!store) throw new Error(`Memory is disabled for agent '${agentId}'`);
+    return store;
+  };
+
+  /**
    * Build a `DashAgentConfig` from the current registry snapshot.
    * Centralised so both the backend factory (which needs the initial
    * config at backend start() time) and the DashAgent's per-chat
@@ -213,11 +302,10 @@ export function createAgentChatCoordinator(
     const systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
     // `workspace` is intentionally NOT included here: it's passed to
     // `backend.start(workspace)` at pool-entry creation time (so the
-    // backend can set up its tools against the right dir) and is
-    // also what DashAgent uses to build the memory preamble. The
-    // memory preamble path is only taken when `config.workspace` is
-    // set — leaving it undefined in the resolved config means
-    // non-workspace tests and simple chats skip the preamble build.
+    // backend can set up its tools against the right dir). It no longer
+    // drives the memory prompt — that is now keyed off `memory` below,
+    // so an agent gets the memory block iff a `memoryDir` resolver is
+    // configured and it has not opted out.
     return {
       model: entry.config.model,
       systemPrompt,
@@ -231,6 +319,13 @@ export function createAgentChatCoordinator(
       allowedProviders: entry.config.providers,
       tools: entry.config.tools,
       skills: entry.config.skills,
+      // Resolved LIVE per message like the fields above: flipping
+      // `memory.enabled` via PATCH /agents/:id/memory/config (the only route
+      // that writes it — `PUT /agents/:id` ignores the `memory` key) takes
+      // effect on the next chat without evicting the warm backend for the
+      // PROMPT. `undefined` = no memory block. The memory TOOLS are captured at
+      // backend start(), which is why that PATCH route also evicts the entry.
+      memory: memoryConfigFor(agentId),
     };
   }
 
@@ -243,7 +338,13 @@ export function createAgentChatCoordinator(
       // factory: it is the key the pool and the SwarmCoordinator address a turn
       // by, so swarm-tool injection must use it to stay consistent with the
       // merge wrapper's attach() below.
-      const backend = await options.createBackend(entry.config, conversationId, agentId);
+      const backend = await options.createBackend(
+        // The resolved runtime object rides under `memoryRuntime`, distinct from
+        // the persisted `entry.config.memory` flags it is derived from.
+        { ...entry.config, memoryRuntime: memoryConfigFor(agentId) },
+        conversationId,
+        agentId,
+      );
       // Resolve the workspace and ensure it exists on disk before any tool
       // can touch it. The registry is expected to have assigned a default
       // workspace at register() time via its `defaultWorkspace` resolver, so
@@ -256,6 +357,25 @@ export function createAgentChatCoordinator(
         await mkdir(workspace, { recursive: true });
       }
       await backend.start(workspace);
+      // One-time migration of the pre-memory-system `<workspace>/MEMORY.md`
+      // into the store (no-op once the store holds anything). Best-effort by
+      // design: if the memory dir exists but is unreadable, `count()` reports 0
+      // and `save()` throws — that must degrade to a log line, never fail the
+      // chat the user is waiting on.
+      const legacyStore = memoryStoreFor(agentId);
+      if (legacyStore) {
+        try {
+          if (await importLegacyMemoryFile(legacyStore, entry.config.workspace)) {
+            console.log(`[memory] imported legacy MEMORY.md for agent '${entry.config.name}'`);
+          }
+        } catch (err) {
+          console.warn(
+            `[memory] legacy import failed for agent '${entry.config.name}': ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
       // The DashAgent receives a *resolver* rather than a static config.
       // On every chat() invocation the resolver re-reads the registry,
       // so model / fallbackModels / systemPrompt / tools changes made
@@ -520,6 +640,36 @@ export function createAgentChatCoordinator(
         name,
         listFn: () => listSkillsFor(agentId),
       });
+    },
+
+    memoryStore: memoryStoreFor,
+
+    async listMemories(agentId) {
+      // Reads degrade to empty rather than throwing: the HTTP list route for an
+      // unknown agent should render an empty list, not a 500. A memory-DISABLED
+      // agent still lists what is on disk (see `managementStoreFor`).
+      const store = managementStoreFor(agentId);
+      return store ? store.list() : [];
+    },
+
+    async getMemory(agentId, name) {
+      const store = managementStoreFor(agentId);
+      return store ? store.get(name) : null;
+    },
+
+    async saveMemory(agentId, input) {
+      // `source: 'user'` — this is the human-facing API path (the agent's own
+      // tool writes 'agent', the post-turn sweep writes 'sweep').
+      return requireStore(agentId).save({ ...input, source: 'user' });
+    },
+
+    async removeMemory(agentId, name) {
+      // Deletes stay available while memory is disabled: this is the user
+      // clearing their own memories, which is exactly what the Memory tab and
+      // the "clear them before deleting the agent" guidance ask them to do.
+      const store = managementStoreFor(agentId);
+      if (!store) throw new Error(`Memory is not configured for agent '${agentId}'`);
+      return store.remove(name);
     },
 
     async steer(agentId, conversationId, text, images) {

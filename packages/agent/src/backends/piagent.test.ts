@@ -1623,3 +1623,178 @@ describe('PiAgentBackend skill tool registration', () => {
     expect(activated).not.toContain('remove_skill');
   });
 });
+
+describe('PiAgentBackend memory tools registration', () => {
+  function memoryBackend(memory?: { dir: string; tools?: boolean }) {
+    return new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'p', memory },
+      {},
+    );
+  }
+
+  it('registers the memory tools when config.memory.dir is set', () => {
+    const backend = memoryBackend({ dir: '/tmp/dash-mem-test' });
+    // biome-ignore lint/suspicious/noExplicitAny: buildCustomTools is private
+    const names = (backend as any).buildCustomTools().map((t: { name: string }) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining(['save_memory', 'recall_memory', 'forget_memory']),
+    );
+  });
+
+  it('registers them even when config.tools omits them (always-on, not allowlisted)', () => {
+    const backend = new PiAgentBackend(
+      {
+        model: 'anthropic/claude-sonnet-4-20250514',
+        systemPrompt: 'p',
+        tools: ['read'],
+        memory: { dir: '/tmp/dash-mem-test' },
+      },
+      {},
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: buildCustomTools is private
+    const names = (backend as any).buildCustomTools().map((t: { name: string }) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining(['save_memory', 'recall_memory', 'forget_memory']),
+    );
+  });
+
+  it('skips them when memory.tools === false or memory is absent', () => {
+    const a = memoryBackend({ dir: '/tmp/dash-mem-test', tools: false });
+    const b = memoryBackend(undefined);
+    for (const backend of [a, b]) {
+      // biome-ignore lint/suspicious/noExplicitAny: buildCustomTools is private
+      const names = (backend as any).buildCustomTools().map((t: { name: string }) => t.name);
+      expect(names).not.toContain('save_memory');
+      expect(names).not.toContain('recall_memory');
+      expect(names).not.toContain('forget_memory');
+    }
+  });
+});
+
+describe('PiAgentBackend memory event bridge', () => {
+  function bridgeBackend() {
+    return new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'p' },
+      {},
+    );
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: normalizeEvents is private, event is a test mock
+  function normalize(backend: PiAgentBackend, event: any): AgentEvent[] {
+    // biome-ignore lint/suspicious/noExplicitAny: normalizeEvents is private
+    return (backend as any).normalizeEvents(event);
+  }
+
+  it('follows a successful save_memory tool_result with memory_saved', () => {
+    const events = normalize(bridgeBackend(), {
+      type: 'tool_execution_end',
+      toolCallId: 'c1',
+      toolName: 'save_memory',
+      isError: false,
+      result: {
+        content: [{ type: 'text', text: 'Saved memory "a" (created).' }],
+        details: { memory: { name: 'a', description: 'd', memoryType: 'user', action: 'created' } },
+      },
+    });
+    expect(events.map((e) => e.type)).toEqual(['tool_result', 'memory_saved']);
+    expect(events[1]).toEqual({
+      type: 'memory_saved',
+      name: 'a',
+      description: 'd',
+      memoryType: 'user',
+      action: 'created',
+    });
+  });
+
+  it('reads memoryType (not the `type` discriminant) off details.memory', () => {
+    // Guard against `details.memory.type` — the tools' details are typed `any`
+    // at this boundary, so that typo compiles fine. `type` here is a decoy the
+    // real payload never carries; reading it would surface 'reference'.
+    const events = normalize(bridgeBackend(), {
+      type: 'tool_execution_end',
+      toolCallId: 'c1b',
+      toolName: 'save_memory',
+      isError: false,
+      result: {
+        content: [{ type: 'text', text: 'Saved memory "b" (updated).' }],
+        details: {
+          memory: {
+            name: 'b',
+            description: 'd2',
+            memoryType: 'feedback',
+            type: 'reference',
+            action: 'updated',
+          },
+        },
+      },
+    });
+    expect(events).toHaveLength(2);
+    const saved = events[1] as Extract<AgentEvent, { type: 'memory_saved' }>;
+    expect(saved.type).toBe('memory_saved');
+    expect(saved.memoryType).toBe('feedback');
+    expect(saved.action).toBe('updated');
+  });
+
+  it('emits memory_forgotten after forget_memory and nothing extra on errors', () => {
+    const backend = bridgeBackend();
+    const ok = normalize(backend, {
+      type: 'tool_execution_end',
+      toolCallId: 'c2',
+      toolName: 'forget_memory',
+      isError: false,
+      result: {
+        content: [{ type: 'text', text: 'Forgot memory "a".' }],
+        details: { memory: { name: 'a', action: 'forgotten' } },
+      },
+    });
+    expect(ok[1]).toEqual({ type: 'memory_forgotten', name: 'a' });
+
+    const err = normalize(backend, {
+      type: 'tool_execution_end',
+      toolCallId: 'c3',
+      toolName: 'save_memory',
+      isError: true,
+      result: { content: [{ type: 'text', text: 'Error: bad' }], details: {} },
+    });
+    expect(err.map((e) => e.type)).toEqual(['tool_result']);
+  });
+
+  it('emits nothing extra when a memory tool result carries no details.memory', () => {
+    // recall_memory (and the "not found" paths) return `details: {}`.
+    const events = normalize(bridgeBackend(), {
+      type: 'tool_execution_end',
+      toolCallId: 'c4',
+      toolName: 'recall_memory',
+      isError: false,
+      result: { content: [{ type: 'text', text: '# a (user)' }], details: {} },
+    });
+    expect(events.map((e) => e.type)).toEqual(['tool_result']);
+  });
+
+  it('ignores a `memory` details key from an unrelated tool', () => {
+    const events = normalize(bridgeBackend(), {
+      type: 'tool_execution_end',
+      toolCallId: 'c5',
+      toolName: 'read',
+      isError: false,
+      result: {
+        content: [{ type: 'text', text: 'file contents' }],
+        details: {
+          memory: { name: 'spoofed', description: 'x', memoryType: 'user', action: 'created' },
+        },
+      },
+    });
+    expect(events.map((e) => e.type)).toEqual(['tool_result']);
+  });
+
+  it('passes non-tool events through as a single-element array and drops unmapped ones', () => {
+    const backend = bridgeBackend();
+    const passthrough = normalize(backend, {
+      type: 'message_update',
+      message: {},
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'hi', partial: {} },
+    });
+    expect(passthrough).toEqual([{ type: 'text_delta', text: 'hi' }]);
+    expect(normalize(backend, { type: 'agent_start' })).toEqual([]);
+  });
+});

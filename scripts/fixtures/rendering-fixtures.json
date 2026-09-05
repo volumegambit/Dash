@@ -104,10 +104,10 @@
       "expectedLabel": "Search"
     },
     {
-      "name": "label: fallback capitalization for custom_thing",
+      "name": "label: an unknown tool becomes title-cased words",
       "kind": "label",
       "toolName": "custom_thing",
-      "expectedLabel": "Custom_thing"
+      "expectedLabel": "Custom Thing"
     },
     {
       "name": "label: fallback capitalization for TodoWrite",
@@ -321,21 +321,16 @@
       ]
     },
     {
-      "name": "details: 5-item array formats as [5 items]",
+      "name": "details: an array row is a type placeholder and is dropped",
       "kind": "details",
       "toolName": "bash",
       "input": {
         "files": ["a", "b", "c", "d", "e"]
       },
-      "expectedDetails": [
-        {
-          "key": "files",
-          "value": "[5 items]"
-        }
-      ]
+      "expectedDetails": []
     },
     {
-      "name": "details: nested object formats as {object}",
+      "name": "details: an object row is a type placeholder and is dropped",
       "kind": "details",
       "toolName": "bash",
       "input": {
@@ -344,12 +339,7 @@
           "b": 2
         }
       },
-      "expectedDetails": [
-        {
-          "key": "opts",
-          "value": "{object}"
-        }
-      ]
+      "expectedDetails": []
     },
     {
       "name": "details: integer formats without decimal",
@@ -439,22 +429,17 @@
       ]
     },
     {
-      "name": "details: write skips content, keeps other keys",
+      "name": "details: write skips content, and path repeats the header summary",
       "kind": "details",
       "toolName": "write",
       "input": {
         "path": "a.txt",
         "content": "hello world"
       },
-      "expectedDetails": [
-        {
-          "key": "path",
-          "value": "a.txt"
-        }
-      ]
+      "expectedDetails": []
     },
     {
-      "name": "details: non-read/write tools are not filtered",
+      "name": "details: a non-read/write tool keeps every row but the header duplicate",
       "kind": "details",
       "toolName": "bash",
       "input": {
@@ -462,10 +447,6 @@
         "path": "/tmp"
       },
       "expectedDetails": [
-        {
-          "key": "command",
-          "value": "ls"
-        },
         {
           "key": "path",
           "value": "/tmp"
@@ -499,6 +480,213 @@
           "value": "12345678901234567000"
         }
       ]
+    },
+    {
+      "name": "truncate: a long command is not spliced into a fake path",
+      "kind": "truncate",
+      "input": "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > /tmp/out.json",
+      "expectedTruncated": "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…"
+    },
+    {
+      "name": "summarize: bash drops an absolute launcher directory",
+      "kind": "summarize",
+      "toolName": "bash",
+      "input": {
+        "command": "/opt/homebrew/bin/gog gmail list --account m@gerryeng.com"
+      },
+      "expectedSummary": "gog gmail list --account m@gerryeng.com"
+    },
+    {
+      "name": "summarize: bash keeps a path that is an argument",
+      "kind": "summarize",
+      "toolName": "bash",
+      "input": {
+        "command": "cd /Users/gerry/x && npm test"
+      },
+      "expectedSummary": "cd /Users/gerry/x && npm test"
+    },
+    {
+      "name": "resultSummary: read counts body lines, not the XML envelope",
+      "kind": "resultSummary",
+      "toolName": "read",
+      "resultContent": "<path>a.ts</path>\n<content>\nline one\nline two\n</content>",
+      "expectedResultSummary": "2 lines"
+    },
+    {
+      "name": "resultSummary: one line is singular",
+      "kind": "resultSummary",
+      "toolName": "read",
+      "resultContent": "only line",
+      "expectedResultSummary": "1 line"
+    },
+    {
+      "name": "resultSummary: ls prefers its own declared entry count",
+      "kind": "resultSummary",
+      "toolName": "ls",
+      "resultContent": "(30 entries)\nsrc/\npackage.json",
+      "expectedResultSummary": "30 entries"
+    },
+    {
+      "name": "resultSummary: grep with no hits",
+      "kind": "resultSummary",
+      "toolName": "grep",
+      "resultContent": "",
+      "expectedResultSummary": "no matches"
+    },
+    {
+      "name": "resultSummary: grep counts matches",
+      "kind": "resultSummary",
+      "toolName": "grep",
+      "resultContent": "a.ts:1: hit\nb.ts:9: hit",
+      "expectedResultSummary": "2 matches"
+    },
+    {
+      "name": "resultSummary: web_search counts its numbered results",
+      "kind": "resultSummary",
+      "toolName": "web_search",
+      "resultContent": "1. [One](https://a)\n   snip\n\n2. [Two](https://b)\n   snip",
+      "expectedResultSummary": "2 results"
+    },
+    {
+      "name": "resultSummary: web_fetch reports a body size",
+      "kind": "resultSummary",
+      "toolName": "web_fetch",
+      "resultContent": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expectedResultSummary": "2.0 KB"
+    },
+    {
+      "name": "resultSummary: edit reports a diff stat",
+      "kind": "resultSummary",
+      "toolName": "edit",
+      "resultContent": "ok",
+      "resultDetails": {
+        "diff": "--- a/x.ts\n+++ b/x.ts\n-old\n+new\n+also new"
+      },
+      "expectedResultSummary": "+2 -1"
+    },
+    {
+      "name": "resultSummary: an error shows its first line",
+      "kind": "resultSummary",
+      "toolName": "bash",
+      "resultContent": "ENOENT: no such file\n  at open()",
+      "isError": true,
+      "expectedResultSummary": "ENOENT: no such file"
+    },
+    {
+      "name": "resultSummary: an error with no text says failed",
+      "kind": "resultSummary",
+      "toolName": "bash",
+      "resultContent": "   ",
+      "isError": true,
+      "expectedResultSummary": "failed"
+    },
+    {
+      "name": "resultSummary: bash with no output",
+      "kind": "resultSummary",
+      "toolName": "bash",
+      "resultContent": "\n\n",
+      "expectedResultSummary": "no output"
+    },
+    {
+      "name": "resultSummary: a short single-line result is echoed verbatim",
+      "kind": "resultSummary",
+      "toolName": "bash",
+      "resultContent": "done",
+      "expectedResultSummary": "done"
+    },
+    {
+      "name": "resultSummary: an unknown tool falls back to a line count",
+      "kind": "resultSummary",
+      "toolName": "some_mcp_tool",
+      "resultContent": "a\nb\nc",
+      "expectedResultSummary": "3 lines"
+    },
+    {
+      "name": "resultSummary: a running tool has nothing to say",
+      "kind": "resultSummary",
+      "toolName": "bash",
+      "resultContent": null,
+      "expectedResultSummary": null
+    },
+    {
+      "name": "resultSummary: TodoWrite stays silent",
+      "kind": "resultSummary",
+      "toolName": "TodoWrite",
+      "resultContent": "ok",
+      "expectedResultSummary": null
+    },
+    {
+      "name": "details: a row repeating the header summary is dropped",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "command": "ls -la"
+      },
+      "expectedDetails": []
+    },
+    {
+      "name": "details: bash drops its command row, which the header carries",
+      "kind": "details",
+      "toolName": "bash",
+      "input": {
+        "command": "/opt/homebrew/bin/gog gmail list"
+      },
+      "expectedDetails": []
+    },
+    {
+      "name": "details: type placeholders are dropped",
+      "kind": "details",
+      "toolName": "grep",
+      "input": {
+        "pattern": "x",
+        "files": [1, 2, 3],
+        "opts": {
+          "a": 1
+        }
+      },
+      "expectedDetails": []
+    },
+    {
+      "name": "details: an unknown tool keeps its nested arguments as JSON",
+      "kind": "details",
+      "toolName": "linear__search_issues",
+      "input": {
+        "query": "tool card",
+        "limit": 5,
+        "filter": {
+          "state": "open"
+        }
+      },
+      "expectedDetails": [
+        {
+          "key": "limit",
+          "value": "5"
+        },
+        {
+          "key": "filter",
+          "value": "{\"state\":\"open\"}"
+        }
+      ]
+    },
+    {
+      "name": "details: a long path is truncated in the summary so its row survives",
+      "kind": "details",
+      "toolName": "grep",
+      "input": {
+        "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expectedDetails": [
+        {
+          "key": "pattern",
+          "value": "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\" (100 chars)"
+        }
+      ]
+    },
+    {
+      "name": "label: a namespaced MCP tool drops its server prefix",
+      "kind": "label",
+      "toolName": "linear__search_issues",
+      "expectedLabel": "Search Issues"
     }
   ]
 }

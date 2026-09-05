@@ -27,6 +27,8 @@ protocol AgentsServicing: Actor {
   func update(id: String, request: UpdateAgentRequest) async throws -> RegisteredAgentDTO
   func setEnabled(id: String, enabled: Bool) async throws -> RegisteredAgentDTO
   func delete(id: String) async throws
+  func memories(for agentID: String) async throws -> [MemoryInfoDTO]
+  func deleteMemory(agentID: String, name: String) async throws
   func startConversation(agentID: String) async throws -> ConversationSummaryDTO
   func shutdown() async
 }
@@ -42,6 +44,8 @@ protocol AgentsGatewayServicing: Actor {
   func setAgentEnabled(id: String, enabled: Bool) async throws
   func deleteAgent(id: String) async throws
   func models() async throws -> ModelsResponseDTO
+  func listMemories(agentID: String) async throws -> [MemoryInfoDTO]
+  func deleteMemory(agentID: String, name: String) async throws
   func shutdown() async
 }
 
@@ -132,6 +136,23 @@ actor LiveAgentsService: AgentsServicing {
     try await resolvedAPI().deleteAgent(id: id)
     try validate(lifecycle)
     try await store.removeAgent(gatewayID: gatewayID, agentID: id)
+    try validate(lifecycle)
+  }
+
+  /// Memories are not cached locally — the phone reads them live and shows
+  /// an empty section when offline, which is why there is no store write here.
+  func memories(for agentID: String) async throws -> [MemoryInfoDTO] {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let values = try await resolvedAPI().listMemories(agentID: agentID)
+    try validate(lifecycle)
+    return values
+  }
+
+  func deleteMemory(agentID: String, name: String) async throws {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    try await resolvedAPI().deleteMemory(agentID: agentID, name: name)
     try validate(lifecycle)
   }
 
@@ -264,6 +285,9 @@ final class AgentsFeature {
   var mutationError: String?
   var startedConversationID: String?
   var savedAgentID: String?
+  /// Memory rows keyed by agent id — the agent detail screen's Memory
+  /// section. Read-only plus delete; the phone never writes memories.
+  var memories: [String: [MemoryInfoDTO]] = [:]
   /// The last successful `changeModel` (goal 2026-09-04) — what the chat
   /// toolbar's toast and VoiceOver announcement read. Cleared by the view
   /// once shown; `nil` when nothing changed (same model, offline, failure).
@@ -503,6 +527,47 @@ final class AgentsFeature {
     }
   }
 
+  /// Load the agent's memories. A failed read degrades to whatever is already
+  /// on screen (empty on first open) rather than raising the shared mutation
+  /// alert — the gateway itself answers `[]` for a memory-disabled agent, and
+  /// simply opening an agent while offline must not pop an error dialog. The
+  /// error is still reported so the connection layer reacts to it.
+  func loadMemories(agentID: String) async {
+    do {
+      memories[agentID] = try await service.memories(for: agentID)
+    } catch is CancellationError {
+      return
+    } catch {
+      memories[agentID] = memories[agentID] ?? []
+      await report(error)
+    }
+  }
+
+  /// Optimistically forget a memory, restoring the row when the gateway
+  /// refuses. Unlike `handleMutationFailure`, a 404 here does NOT trigger an
+  /// agent-list refresh: the agent still exists, only the memory is gone, and
+  /// the user needs to see why the row came back.
+  @discardableResult
+  func deleteMemory(agentID: String, name: String) async -> Bool {
+    guard requireMutation() else { return false }
+    let prior = memories[agentID] ?? []
+    guard prior.contains(where: { $0.name == name }) else { return false }
+    memories[agentID] = prior.filter { $0.name != name }
+    do {
+      try await service.deleteMemory(agentID: agentID, name: name)
+      mutationError = nil
+      return true
+    } catch is CancellationError {
+      memories[agentID] = prior
+      return false
+    } catch {
+      memories[agentID] = prior
+      mutationError = "Dash couldn't forget that memory."
+      await report(error)
+      return false
+    }
+  }
+
   func setEnabled(id: String, enabled: Bool, confirmed: Bool) async {
     guard enabled || confirmed else { return }
     guard requireMutation() else { return }
@@ -538,6 +603,7 @@ final class AgentsFeature {
       canonicalOverrides[id] = nil
       suppressedAgentIDs.insert(id)
       agents.removeAll { $0.id == id }
+      memories[id] = nil
       mutationError = nil
     } catch is CancellationError {
       return
