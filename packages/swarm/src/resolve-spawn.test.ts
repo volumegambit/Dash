@@ -49,9 +49,9 @@ describe('resolveChildTools', () => {
     expect(resolveChildTools({ disallowedTools: ['mcp__slack', 'bash'] }, parent).mcpTools).toEqual(
       ['github__search', 'github__pr'],
     );
-    expect(resolveChildTools({ disallowedTools: ['mcp__slack', 'bash'] }, parent).tools).not.toContain(
-      'bash',
-    );
+    expect(
+      resolveChildTools({ disallowedTools: ['mcp__slack', 'bash'] }, parent).tools,
+    ).not.toContain('bash');
     expect(
       resolveChildTools({ tools: ['mcp__*'], disallowedTools: ['mcp__github__pr'] }, parent),
     ).toMatchObject({ tools: [], mcpTools: ['github__search', 'slack__post'] });
@@ -122,9 +122,9 @@ describe('resolveChildTools', () => {
       tools: [],
       canSpawn: true,
     });
-    expect(() =>
-      resolveChildTools({ tools: ['agent(Explore)'] }, { ...parent, depth: 3 }),
-    ).toThrow(/zero tools/);
+    expect(() => resolveChildTools({ tools: ['agent(Explore)'] }, { ...parent, depth: 3 })).toThrow(
+      /zero tools/,
+    );
   });
 
   it('throws when disallowedTools removes everything the parent holds', () => {
@@ -202,7 +202,11 @@ describe('resolveChildModel', () => {
 
   it('uses the definition model when the call asks for nothing', () => {
     expect(
-      resolveChildModel({ definition: 'anthropic/claude-sonnet-5', parentModel: 'p/m', aliases: {} }),
+      resolveChildModel({
+        definition: 'anthropic/claude-sonnet-5',
+        parentModel: 'p/m',
+        aliases: {},
+      }),
     ).toEqual({ model: 'anthropic/claude-sonnet-5' });
   });
 

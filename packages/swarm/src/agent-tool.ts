@@ -1,7 +1,9 @@
 import type { SwarmCoordinator } from './coordinator.js';
 import { scanSubagentOutput } from './output-scan.js';
 import {
+  type ChildToolRequest,
   type ParentToolContext,
+  type ResolvedChildTools,
   parentBuiltinTools,
   preloadSkills,
   resolveChildModel,
@@ -24,10 +26,10 @@ export const AGENT_TOOL_DESCRIPTION =
   'its own tools and system prompt. Reach for this when a task matches an ' +
   "agent type's description, when independent work can run in parallel " +
   '(call agent several times in one turn), or when answering would mean ' +
-  'reading across many files - delegate the search and keep the conclusion, ' +
+  'reading across many files — delegate the search and keep the conclusion, ' +
   'not the file dumps. Once you have delegated a search, do not also run it ' +
   "yourself. The agent's final report is returned to you and is NOT shown " +
-  'to the user - relay what matters. Use send_message with the ' +
+  'to the user — relay what matters. Use send_message with the ' +
   "agent's name or id to continue a previous agent with its context " +
   'intact; a new agent call starts fresh. Set run_in_background: true for ' +
   'long independent work; you will be notified when it completes. ' +
@@ -37,7 +39,7 @@ export const AGENT_TOOL_DESCRIPTION =
 const SEND_MESSAGE_DESCRIPTION =
   'Send a message to one of your agents by name or id. A running agent ' +
   'receives it after its current step; a finished agent resumes with its ' +
-  "context intact. Returns immediately; the agent's next completion is " +
+  'context intact. Returns immediately; the agent’s next completion is ' +
   'delivered to you as a notification (or via wait_workers in this gateway ' +
   'version).';
 
@@ -50,6 +52,19 @@ const DETACHED_NOTE = ' You will be notified when it completes.';
 
 const NAME_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
 const NAME_RE = new RegExp(NAME_PATTERN);
+
+/** What the roster says for a definition that resolves to nothing shareable. */
+const NO_OVERLAP = 'none — no overlap with your tools';
+
+/** Nesting ceiling assumed when the caller supplies no `parentContext`. */
+const DEFAULT_MAX_DEPTH = 3;
+
+/**
+ * Stands in for the parent's model when the caller wired none. It is only ever
+ * COMPARED against (a result equal to it means "inherit, pin nothing"), so it
+ * cannot reach the coordinator and be rejected as an unknown model.
+ */
+const UNKNOWN_PARENT_MODEL = '\u0000unknown-parent-model';
 
 export interface CreateAgentToolsOptions {
   coordinator: SwarmCoordinator;
@@ -84,7 +99,7 @@ export interface CreateAgentToolsOptions {
    * Skill lookup for preloading: async function that lists available skills.
    */
   listSkills?: () => Promise<Array<{ name: string; content: string }>>;
-  /** Parent's depth; children get depth+1 (default 0 - 1). */
+  /** Parent's depth; children get depth+1 (default 0 → 1). */
   depth?: number;
 }
 
@@ -97,52 +112,46 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
   const { coordinator, agentId, resolver } = opts;
   const convo = () => opts.conversationId();
 
-  // Resolve parent context: prefer parentContext, fall back to parentTools
-  const getParentContext = (): ParentToolContext => {
-    if (opts.parentContext) {
-      return opts.parentContext();
-    }
-    // Fallback for Phase A: construct context from parentTools (legacy path).
-    // Do NOT add ALWAYS_AVAILABLE_TOOLS here - if the parent's config doesn't
-    // include them, they shouldn't be inherited. The test setup that wants them
-    // will use parentContext with parentBuiltinTools() explicitly.
-    const configTools = opts.parentTools?.() ?? [];
-    return {
-      builtinTools: configTools,
+  /**
+   * The parent's effective capabilities at this moment. `parentContext` is the
+   * real thing; `parentTools` is the legacy Phase A shape and is put through
+   * `parentBuiltinTools` on the way in — a parent's RAW `config.tools` can name
+   * tools no child may ever inherit (`create_skill`, `mcp_add_server`, …), and
+   * passing those straight through would advertise them in the roster and then
+   * fail the spawn in the coordinator's `validateTools`.
+   */
+  const getParentContext = (): ParentToolContext =>
+    opts.parentContext?.() ?? {
+      builtinTools: parentBuiltinTools(opts.parentTools?.()),
       mcpTools: [],
       depth: opts.depth ?? 0,
-      maxDepth: 3,
+      maxDepth: DEFAULT_MAX_DEPTH,
     };
-  };
-
-  // Child depth is calculated from parent context, computed at spawn time
-  const getChildDepth = () => getParentContext().depth + 1;
 
   /**
-   * Compute the resolved tools and MCPs for a given definition (design section 6.4
-   * step 2). The roster and the spawn both use this result, so they cannot drift.
+   * The ONE resolution (design §6.4 step 2) behind both the roster and the
+   * spawn, `disallowedTools` included — resolving them separately is how a
+   * definition's denial ends up honoured in one and dropped from the other.
+   * The parent context is returned with the grant so the caller reads the depth
+   * the grant was computed against rather than re-reading it.
    */
-  const resolveTools = (typeTools: string[] | undefined, typeMcps?: string[]) => {
+  const resolveGrant = (
+    type: ChildToolRequest,
+  ): { parent: ParentToolContext; grant: ResolvedChildTools } => {
     const parent = getParentContext();
-    const resolved = resolveChildTools({ tools: typeTools }, parent);
-    return {
-      tools: resolved.tools,
-      mcpTools: resolved.mcpTools,
-      spawnableTypes: resolved.spawnableTypes,
-      canSpawn: resolved.canSpawn,
-    };
+    return { parent, grant: resolveChildTools(type, parent) };
   };
 
   const rosterDescription = () => {
-    const parent = getParentContext();
     const roster = buildRosterText(resolver.list(), (t) => {
       try {
-        const resolved = resolveTools(t.tools);
-        const all = [...resolved.tools, ...resolved.mcpTools];
-        return all.length > 0 ? all.join(', ') : 'none — no overlap with your tools';
+        const { grant } = resolveGrant(t);
+        const all = [...grant.tools, ...grant.mcpTools];
+        return all.length > 0 ? all.join(', ') : NO_OVERLAP;
       } catch {
-        // Definition would grant zero tools - advertise that fact.
-        return 'none — no overlap with your tools';
+        // The definition would grant zero tools — advertise that fact rather
+        // than throwing while rendering the schema.
+        return NO_OVERLAP;
       }
     });
     return `${roster}\nDefaults to general-purpose.`;
@@ -231,61 +240,45 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
       const isolation =
         p.isolation === 'worktree' || type.isolation === 'worktree' ? 'worktree' : undefined;
 
-      // Resolve tools (design section 6.4 step 2)
-      const parent = getParentContext();
-      const resolved = resolveChildTools({ tools: type.tools }, parent);
+      // Tools (design §6.4 step 2) — the same computation the roster reads.
+      const { parent, grant } = resolveGrant(type);
 
-      // Resolve model (design section 6.4 step 3)
-      const requestedModel = typeof p.model === 'string' ? p.model : undefined;
-      const parentModelStr = opts.parentModel?.() ?? 'parent-model';
+      // Model (design §6.4 step 3). `resolveChildModel` already encodes the
+      // whole precedence (per-call → definition → parent, `inherit` at either
+      // level falling through, an unconfigured alias warning and falling back),
+      // so the only thing left to decide is whether to PIN the result: a model
+      // equal to the parent's is inheritance, and passing `undefined` lets the
+      // coordinator apply its own authoritative read of the orchestrator model.
+      const parentModel = opts.parentModel?.() ?? UNKNOWN_PARENT_MODEL;
       const modelResult = resolveChildModel({
-        requested: requestedModel,
+        requested: typeof p.model === 'string' ? p.model : undefined,
         definition: type.model,
-        parentModel: parentModelStr,
+        parentModel,
         aliases: opts.modelAliases?.() ?? {},
       });
-      // Only pin a model if it was explicitly requested or defined, AND it
-      // resolves to a non-parent value. Per-call 'inherit' overrides definition
-      // model. If an alias is unconfigured, we pass undefined.
-      const hasExplicitRequest = requestedModel !== undefined;
-      const hasDefinitionModel = type.model && type.model !== 'inherit';
-      let pinModel: string | undefined;
-      if (hasExplicitRequest) {
-        // Explicit per-call model (or 'inherit') overrides definition
-        pinModel = requestedModel === 'inherit' ? undefined : modelResult.model;
-        if (modelResult.warning) pinModel = undefined;
-      } else if (hasDefinitionModel) {
-        // Definition model, but only if it resolves cleanly
-        pinModel = modelResult.warning ? undefined : modelResult.model;
-      } else {
-        // No explicit request, no definition - let coordinator decide
-        pinModel = undefined;
-      }
+      const pinModel = modelResult.model === parentModel ? undefined : modelResult.model;
 
-      // Preload skills (design section 6.4 step 4)
+      // Skills (design §6.4 step 4). An unknown name throws (in preloadSkills)
+      // and so does a definition that names skills with no lookup wired: both
+      // would otherwise spawn a child missing the knowledge it depends on.
       let systemPrompt = type.systemPrompt;
-      let skillError: Error | undefined;
       if (type.skills && type.skills.length > 0) {
-        try {
-          const skills = await opts.listSkills?.();
-          if (skills) {
-            const skillsBlock = preloadSkills(type.skills, skills);
-            systemPrompt = type.systemPrompt + skillsBlock;
-          }
-        } catch (e) {
-          skillError = e instanceof Error ? e : new Error(String(e));
+        if (!opts.listSkills) {
+          const named = type.skills.join(', ');
+          throw new Error(
+            `subagent type "${type.name}" preloads skills (${named}) but no skill lookup is wired`,
+          );
         }
+        systemPrompt += preloadSkills(type.skills, await opts.listSkills());
       }
-
-      if (skillError) throw skillError;
 
       const { workerId } = coordinator.spawnWorker(agentId, convo(), {
         role: name ?? type.name,
         brief: prompt,
-        tools: resolved.tools,
-        mcpTools: resolved.mcpTools.length > 0 ? resolved.mcpTools : undefined,
-        canSpawn: resolved.canSpawn,
-        spawnableTypes: resolved.spawnableTypes,
+        tools: grant.tools,
+        mcpTools: grant.mcpTools.length > 0 ? grant.mcpTools : undefined,
+        canSpawn: grant.canSpawn,
+        spawnableTypes: grant.spawnableTypes,
         model: pinModel,
         subagentType: type.name,
         description,
@@ -296,7 +289,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
         skipMemory: type.skipMemory,
         maxTurns: type.maxTurns,
         oneShot: type.oneShot,
-        depth: getChildDepth(),
+        depth: parent.depth + 1,
       });
 
       const statusText = modelResult.warning ? `\n\nNote: ${modelResult.warning}` : '';

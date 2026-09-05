@@ -30,15 +30,7 @@ export const UNIVERSE = [
  * Mirrors `DEFAULT_TOOL_NAMES` in `packages/agent/src/backends/piagent.ts` —
  * the list pi activates when the agent config names none.
  */
-export const DEFAULT_TOOL_NAMES = [
-  'read',
-  'bash',
-  'edit',
-  'write',
-  'grep',
-  'find',
-  'ls',
-] as const;
+export const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
 
 /**
  * Tools every agent holds regardless of `config.tools`, so a child inheriting
@@ -205,8 +197,10 @@ export function resolveChildTools(
           .split(',')
           .map((n) => n.trim())
           .filter(Boolean);
-        const list = spawnableTypes ?? (spawnableTypes = []);
-        for (const name of names) if (!list.includes(name)) list.push(name);
+        if (!spawnableTypes) spawnableTypes = [];
+        for (const name of names) {
+          if (!spawnableTypes.includes(name)) spawnableTypes.push(name);
+        }
       }
       continue;
     }

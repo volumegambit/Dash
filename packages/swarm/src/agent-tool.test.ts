@@ -159,7 +159,9 @@ describe('agent tool', () => {
     const line = (agent.parameters as AgentSchema).properties.subagent_type.description
       .split('\n')
       .find((l) => l.startsWith('- general-purpose:'));
-    expect(line).toContain(`(Tools: ${[...spawned.tools, ...(spawned.mcpTools ?? [])].join(', ')})`);
+    expect(line).toContain(
+      `(Tools: ${[...spawned.tools, ...(spawned.mcpTools ?? [])].join(', ')})`,
+    );
   });
 
   it('never grants a tool or an MCP server the parent lacks', async () => {
@@ -178,6 +180,72 @@ describe('agent tool', () => {
     });
     await agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'greedy' });
     expect(c.spawned[0]).toMatchObject({ tools: ['read'], mcpTools: ['github__pr'] });
+  });
+
+  it('honours a definition disallowedTools list on the spawn AND on the roster', async () => {
+    const c = makeCoordinator();
+    const careful: ResolvedSubagentType = {
+      name: 'careful',
+      description: 'No shell, no chat.',
+      systemPrompt: 'careful',
+      disallowedTools: ['bash', 'mcp__slack'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), careful]),
+      parentContext: () => ctx({ mcpTools: ['github__pr', 'slack__post'] }),
+    });
+    await agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'careful' });
+    const spawned = c.spawned[0] as { tools: string[]; mcpTools?: string[] };
+    expect(spawned.tools).not.toContain('bash');
+    expect(spawned.tools).toContain('read');
+    expect(spawned.mcpTools).toEqual(['github__pr']);
+    const line = (agent.parameters as AgentSchema).properties.subagent_type.description
+      .split('\n')
+      .find((l) => l.startsWith('- careful:'));
+    expect(line).not.toContain('bash');
+    expect(line).not.toContain('slack__post');
+    expect(line).toContain('github__pr');
+  });
+
+  it('a spawn-only definition is granted zero built-ins, not a default subset', async () => {
+    const c = makeCoordinator();
+    const delegator: ResolvedSubagentType = {
+      name: 'delegator',
+      description: 'Only delegates.',
+      systemPrompt: 'd',
+      tools: ['agent(Explore)'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), delegator]),
+      parentContext: () => ctx(),
+    });
+    await agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'delegator' });
+    expect(c.spawned[0]).toMatchObject({ tools: [], canSpawn: true });
+  });
+
+  it('the legacy parentTools path drops tools a child can never inherit', async () => {
+    const c = makeCoordinator();
+    // A realistic Mission Control agent: skill- and MCP-management tools are
+    // configurable on the PARENT but are never inheritable by a child.
+    const [agent] = createAgentTools({
+      coordinator: c as unknown as SwarmCoordinator,
+      agentId: 'a',
+      conversationId: () => 'c',
+      resolver: createStaticResolver(builtinSubagentTypes()),
+      backgroundMode: 'turn-scoped',
+      parentTools: () => ['read', 'bash', 'create_skill', 'mcp', 'mcp_add_server'],
+    });
+    await agent.execute('t', { prompt: 'p', description: 'd' });
+    expect(c.spawned[0]).toMatchObject({ tools: ['read', 'bash', 'load_skill', 'task'] });
+    const line = (agent.parameters as AgentSchema).properties.subagent_type.description
+      .split('\n')
+      .find((l) => l.startsWith('- general-purpose:'));
+    expect(line).not.toContain('create_skill');
+    expect(line).not.toContain('mcp_add_server');
   });
 
   it('a definition that resolves to nothing throws naming the unresolved entries', async () => {
@@ -445,6 +513,33 @@ describe('agent tool', () => {
     expect(listSkills).not.toHaveBeenCalled();
   });
 
+  it('refuses to spawn a skill-preloading definition when no skill lookup is wired', async () => {
+    const c = makeCoordinator();
+    const withSkills: ResolvedSubagentType = {
+      name: 'reviewer',
+      description: 'Reviews diffs.',
+      systemPrompt: 'body',
+      skills: ['house-style'],
+      source: 'workspace',
+    };
+    const [agent] = createAgentTools({
+      ...base(c),
+      resolver: createStaticResolver([...builtinSubagentTypes(), withSkills]),
+    });
+    await expect(
+      agent.execute('t', { prompt: 'p', description: 'd', subagent_type: 'reviewer' }),
+    ).rejects.toThrow(/no skill lookup is wired/);
+    expect(c.spawnWorker).not.toHaveBeenCalled();
+  });
+
+  it('an empty per-call model inherits instead of pinning a sentinel', async () => {
+    const c = makeCoordinator();
+    const { parentModel: _unwired, ...noParentModel } = base(c);
+    const [agent] = createAgentTools(noParentModel);
+    await agent.execute('t', { prompt: 'p', description: 'd', model: '' });
+    expect(c.spawned[0]).toMatchObject({ model: undefined });
+  });
+
   it('send_message refuses one-shot types and unknown targets', async () => {
     const c = makeCoordinator({
       findWorker: vi.fn((_a: string, _c: string, id: string) =>
@@ -482,7 +577,7 @@ class IdleBackend implements WorkerBackend {
  * `load_skill` and tools the orchestrator does not hold.
  */
 describe('agent tool against a real SwarmCoordinator', () => {
-  function setup(orchestratorTools?: string[]) {
+  function setup(orchestratorTools?: string[], extraTypes: ResolvedSubagentType[] = []) {
     const specs: WorkerSpec[] = [];
     const factory: WorkerFactory = (spec) => {
       specs.push(spec);
@@ -500,7 +595,7 @@ describe('agent tool against a real SwarmCoordinator', () => {
       coordinator,
       agentId: 'a',
       conversationId: () => 'c',
-      resolver: createStaticResolver(builtinSubagentTypes()),
+      resolver: createStaticResolver([...builtinSubagentTypes(), ...extraTypes]),
       backgroundMode: 'turn-scoped',
       parentTools: () => orchestratorTools ?? PARENT_TOOLS,
     });
@@ -517,7 +612,9 @@ describe('agent tool against a real SwarmCoordinator', () => {
         run_in_background: true,
       }),
     ).resolves.toBeDefined();
-    expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls']);
+    // `load_skill` is in READ_ONLY_TOOLS and every agent holds it, so it is
+    // part of the parent context the legacy `parentTools` path builds too.
+    expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls', 'load_skill']);
     attachment.finalize({ consumerAlive: true });
   });
 
@@ -526,7 +623,46 @@ describe('agent tool against a real SwarmCoordinator', () => {
     await expect(
       agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true }),
     ).resolves.toBeDefined();
-    expect(specs[0].tools).toEqual(PARENT_TOOLS);
+    expect(specs[0].tools).toEqual(PARENT_EFFECTIVE);
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('a spawn-only child reaches the worker with an EMPTY grant, not the default four', async () => {
+    const delegator: ResolvedSubagentType = {
+      name: 'delegator',
+      description: 'Only delegates.',
+      systemPrompt: 'd',
+      tools: ['agent(Explore)'],
+      source: 'workspace',
+    };
+    const { attachment, specs, agent } = setup(['bash'], [delegator]);
+    await expect(
+      agent.execute('t', {
+        prompt: 'p',
+        description: 'd',
+        subagent_type: 'delegator',
+        run_in_background: true,
+      }),
+    ).resolves.toBeDefined();
+    // The parent holds only bash; read/grep/find/ls would be an escalation.
+    expect(specs[0].tools).toEqual([]);
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('spawns for a parent configured with skill- and MCP-management tools', async () => {
+    // Mission Control exposes these as configurable agent tools. They are not
+    // inheritable, so the child must simply not get them — not fail to spawn.
+    const { attachment, specs, agent } = setup([
+      'read',
+      'bash',
+      'create_skill',
+      'mcp',
+      'mcp_add_server',
+    ]);
+    await expect(
+      agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true }),
+    ).resolves.toBeDefined();
+    expect(specs[0].tools).toEqual(['read', 'bash', 'load_skill', 'task']);
     attachment.finalize({ consumerAlive: true });
   });
 
@@ -540,7 +676,7 @@ describe('agent tool against a real SwarmCoordinator', () => {
         run_in_background: true,
       }),
     ).resolves.toBeDefined();
-    expect(specs[0].tools).toEqual(['read', 'grep']);
+    expect(specs[0].tools).toEqual(['read', 'grep', 'load_skill']);
     attachment.finalize({ consumerAlive: true });
   });
 });
