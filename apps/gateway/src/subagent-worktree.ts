@@ -67,19 +67,125 @@ export async function createChildWorktree(o: {
 }
 
 /**
+ * The ONLY ignored content a worktree removal is allowed to destroy.
+ *
+ * `git status --porcelain` omits gitignored files entirely, so a worktree whose
+ * sole content is ignored reads CLEAN and `git worktree remove` deletes it
+ * recursively. That is not a corner case here: this repo gitignores
+ * `docs/plans/`, `PLAN.md`, `.superpowers/brainstorm/`, `data/`, `config/`,
+ * `.env` and `CLAUDE.md`/`AGENTS.md`, and its own CLAUDE.md instructs every
+ * agent to write plans into `docs/plans/`. So cleanup asks git for the ignored
+ * entries too and subtracts exactly this set — build output and editor litter,
+ * regenerable by definition. ANYTHING else keeps the worktree.
+ *
+ * Entries ending in `/` name a directory; `*.ext` is a suffix glob; the rest
+ * are exact file names. All three are matched against the LAST path segment,
+ * which is what `--ignored=matching` reports (an ignored directory is reported
+ * as the directory, not its contents).
+ *
+ * Deliberately short and deliberately exported: widening it widens what a
+ * finished child can silently lose, so it should be reviewed as policy.
+ */
+export const DISPOSABLE_WORKTREE_ARTEFACTS = [
+  'node_modules/',
+  'dist/',
+  'build/',
+  '.next/',
+  'coverage/',
+  '*.log',
+  '.DS_Store',
+] as const;
+
+/** True when a status path is regenerable build output or editor litter. */
+export function isDisposableArtefact(path: string): boolean {
+  const segments = path.replace(/\/+$/, '').split('/');
+  const name = segments[segments.length - 1];
+  if (!name) return false;
+  return DISPOSABLE_WORKTREE_ARTEFACTS.some((pattern) => {
+    if (pattern.endsWith('/')) return name === pattern.slice(0, -1);
+    if (pattern.startsWith('*.')) return name.endsWith(pattern.slice(1));
+    return name === pattern;
+  });
+}
+
+/** One `git status --porcelain -z` record. */
+interface StatusEntry {
+  /** The two-letter status code; `!!` for ignored, `??` for untracked. */
+  code: string;
+  path: string;
+}
+
+/**
+ * Parse `git status --porcelain -z`. `-z` (not the plain form) because paths
+ * with spaces or non-ASCII bytes come back C-quoted otherwise, and a misparsed
+ * path here decides whether a directory gets deleted.
+ *
+ * A rename/copy record is followed by a SECOND NUL-terminated field holding the
+ * original path; it is consumed rather than parsed as a record of its own.
+ */
+function parseStatus(stdout: string): StatusEntry[] {
+  const fields = stdout.split('\0');
+  const entries: StatusEntry[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i];
+    if (!field) continue;
+    const code = field.slice(0, 2);
+    entries.push({ code, path: field.slice(3) });
+    // `R`/`C` in either column ⇒ the next field is the source path.
+    if (code.includes('R') || code.includes('C')) i++;
+  }
+  return entries;
+}
+
+/** What one cleanup attempt found, and what it did about it. */
+export interface WorktreeCleanupResult {
+  /** True only when the worktree was taken down. */
+  removed: boolean;
+  /**
+   * Everything that stopped the removal: tracked modifications, staged changes,
+   * untracked files AND ignored content that is not on the disposable list.
+   * Empty when `removed` is true.
+   */
+  blocking: string[];
+  /** Ignored-but-disposable entries the removal destroyed, or would have. */
+  disposable: string[];
+}
+
+/**
  * Take an isolated child's worktree down — but only if it is EMPTY-HANDED.
  *
- * `git status --porcelain` covers modifications, staged changes AND untracked
- * files, so anything the child produced and did not commit keeps the directory
- * alive. Removing it would destroy work the user may want; the caller surfaces
- * the kept path instead.
+ * `--ignored=matching` is load-bearing: without it `git status --porcelain`
+ * reports a worktree holding nothing but a gitignored deliverable as clean, and
+ * the removal below deletes it recursively with no warning. See
+ * `DISPOSABLE_WORKTREE_ARTEFACTS` for the only content that does not count.
+ *
+ * Anything the child produced and did not commit therefore keeps the directory
+ * alive — the caller surfaces the kept path and the reason instead. Destroying
+ * a child's output is the one unrecoverable thing this code can do, so every
+ * ambiguous case resolves to KEEP.
  */
 export async function cleanupChildWorktree(o: {
   workspace: string;
   path: string;
-}): Promise<{ removed: boolean }> {
-  const { stdout } = await run('git', ['-C', o.path, 'status', '--porcelain']);
-  if (stdout.trim() !== '') return { removed: false };
+}): Promise<WorktreeCleanupResult> {
+  const { stdout } = await run('git', [
+    '-C',
+    o.path,
+    'status',
+    '--porcelain',
+    '-z',
+    '--ignored=matching',
+  ]);
+  const blocking: string[] = [];
+  const disposable: string[] = [];
+  for (const entry of parseStatus(stdout)) {
+    if (entry.code === '!!' && isDisposableArtefact(entry.path)) disposable.push(entry.path);
+    else blocking.push(entry.path);
+  }
+  if (blocking.length > 0) return { removed: false, blocking, disposable };
+  // Deliberately NOT `--force`: git re-checks the tree itself, so if the child
+  // wrote something between our status call and this line the removal fails
+  // loudly instead of deleting it. That last-moment refusal is a feature.
   await run('git', ['-C', o.workspace, 'worktree', 'remove', o.path]);
-  return { removed: true };
+  return { removed: true, blocking, disposable };
 }

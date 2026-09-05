@@ -736,7 +736,7 @@ describe('WorkerHandle', () => {
 describe('WorkerHandle onFinished', () => {
   function finishing() {
     const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
-    const made = makeHandle({ onFinished: (spec) => specs.push(spec) });
+    const made = makeHandle({ onFinished: (spec) => void specs.push(spec) });
     return { ...made, specs };
   }
 
@@ -760,12 +760,16 @@ describe('WorkerHandle onFinished', () => {
     expect(specs).toHaveLength(1);
   });
 
-  it('fires when the worker is cancelled', async () => {
+  // Deferred, not skipped: the cancel path waits for the backend's cooperative
+  // stop() before the spawner is told to clean up. See the dedicated describe
+  // below for the wait and its bound.
+  it('fires when the worker is cancelled, once stop() has settled', async () => {
     const { handle, backend, specs } = finishing();
     handle.start();
     await backend.onNextSegment();
     handle.cancel('user cancelled');
-    expect(specs).toHaveLength(1);
+    backend.stopGate.resolve();
+    await vi.waitFor(() => expect(specs).toHaveLength(1));
     expect(specs[0]).toMatchObject({ workerId: WORKER_ID });
   });
 
@@ -773,7 +777,7 @@ describe('WorkerHandle onFinished', () => {
     const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
     const { handle } = makeHandle({
       backendPromise: Promise.reject(new Error('no backend')),
-      onFinished: (spec) => specs.push(spec),
+      onFinished: (spec) => void specs.push(spec),
     });
     handle.start();
     await handle.terminalPromise;
@@ -828,5 +832,194 @@ describe('WorkerHandle snapshot workspace', () => {
     seg.complete();
     await handle.terminalPromise;
     expect(handle.snapshot().workspace).toBe('/data/worktrees/researcher/w-1');
+  });
+});
+
+/** The spec of a child that asked for its own worktree. */
+function isolatedSpec(over: Partial<Omit<WorkerSpec, 'extraTools'>> = {}) {
+  return {
+    agentId: 'agent-1',
+    agentName: 'Agent One',
+    runId: RUN_ID,
+    workerId: WORKER_ID,
+    role: ROLE,
+    brief: 'do the thing',
+    model: 'test-model',
+    workspace: '/tmp/ws',
+    tools: [],
+    isolation: 'worktree' as const,
+    ...over,
+  };
+}
+
+/**
+ * The cancel path is the one that can destroy work: the spawner's cleanup runs
+ * `git status` on the child's worktree, and pi's abort is COOPERATIVE, so a
+ * cleanup that samples the tree before the child has flushed reads clean and
+ * removes the directory out from under a still-running process. The hook is
+ * therefore chained off `stop()` — bounded, because a `stop()` that never
+ * settles must not leak the worktree instead.
+ */
+describe('WorkerHandle cancel settles the backend before the finished hook', () => {
+  it('holds the finished hook until stop() settles', async () => {
+    const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
+    const { handle, backend, terminals } = makeHandle({
+      onFinished: (spec) => void specs.push(spec),
+    });
+    handle.start();
+    await backend.onNextSegment();
+
+    handle.cancel('user cancelled');
+
+    // The terminal transition itself is already complete and synchronous.
+    expect(handle.status).toBe('cancelled');
+    expect(terminals).toHaveLength(1);
+    expect(backend.stopCalls).toBe(1);
+    // ...but the spawner's cleanup has NOT run: stop() is still in flight.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(specs).toHaveLength(0);
+
+    backend.stopGate.resolve();
+    await vi.waitFor(() => expect(specs).toHaveLength(1));
+  });
+
+  it('fires the finished hook anyway when stop() never settles', async () => {
+    const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
+    const { handle, backend } = makeHandle({
+      onFinished: (spec) => void specs.push(spec),
+      cancelStopGraceMs: 20,
+    });
+    backend.hangStop = true;
+    handle.start();
+    await backend.onNextSegment();
+
+    handle.cancel('user cancelled');
+    expect(specs).toHaveLength(0);
+
+    // Bounded: a hung stop() delays the cleanup, it does not cancel it.
+    await vi.waitFor(() => expect(specs).toHaveLength(1), { timeout: 2_000 });
+  });
+
+  it('fires the finished hook at once when the backend was never constructed', async () => {
+    const specs: Array<Omit<WorkerSpec, 'extraTools'>> = [];
+    const { handle } = makeHandle({
+      backendPromise: new Promise<WorkerBackend>(() => {}),
+      onFinished: (spec) => void specs.push(spec),
+    });
+    handle.start();
+
+    handle.cancel('user cancelled');
+
+    // Nothing was ever started, so nothing can still be writing.
+    expect(specs).toHaveLength(1);
+  });
+});
+
+/**
+ * `snapshot().workspace` is what the `agent` tool reports to the user. For a
+ * child that asked for isolation it must never name the PARENT workspace: that
+ * is the exact claim isolation exists to deny, and a failed isolation would
+ * otherwise report it forever.
+ */
+describe('WorkerHandle snapshot workspace for an isolated child', () => {
+  it('reports no workspace until the worktree is known', async () => {
+    const backend = new FakeBackend();
+    backend.workspace = '/data/worktrees/researcher/w-1';
+    const pending = deferred<WorkerBackend>();
+    const { handle } = makeHandle({ spec: isolatedSpec(), backendPromise: pending.promise });
+
+    expect(handle.snapshot().workspace).toBeUndefined();
+
+    pending.resolve(backend);
+    // Resolved off the backend promise itself: no start() needed.
+    await vi.waitFor(() =>
+      expect(handle.snapshot().workspace).toBe('/data/worktrees/researcher/w-1'),
+    );
+  });
+
+  it('never reports the parent workspace when isolation failed', async () => {
+    const { handle } = makeHandle({
+      spec: isolatedSpec(),
+      backendPromise: Promise.reject(new Error('isolation: worktree requires a git workspace')),
+    });
+    handle.start();
+    await handle.terminalPromise;
+
+    expect(handle.status).toBe('failed');
+    expect(handle.snapshot().workspace).toBeUndefined();
+  });
+
+  it('still reports the shared workspace for a child that asked for no isolation', async () => {
+    const { handle } = makeHandle();
+    expect(handle.snapshot().workspace).toBe('/tmp/ws');
+  });
+});
+
+/**
+ * All three finalizers delegate to ONE terminal-transition helper, so a future
+ * terminal status cannot pick up five of the six steps and silently skip the
+ * spawner notification that takes the worktree down.
+ */
+describe('WorkerHandle terminal transition parity', () => {
+  /** The observable steps of a terminal transition, in the order they happened. */
+  function recorder() {
+    const order: string[] = [];
+    const made = makeHandle({
+      emit: (event) => {
+        if (event.type === 'worker_done' || event.type === 'subagent_finished') {
+          order.push(event.type);
+        }
+      },
+      hooks: { subagentStop: (w) => order.push(`subagentStop:${w.status}`) },
+      onTerminal: () => order.push('onTerminal'),
+      onFinished: () => void order.push('onFinished'),
+    });
+    return { ...made, order };
+  }
+
+  const SEQUENCE = ['worker_done', 'subagent_finished', 'subagentStop', 'onTerminal'];
+
+  it('done, failed and cancelled all run the same terminal sequence', async () => {
+    const done = recorder();
+    done.handle.start();
+    const seg = await done.backend.onNextSegment();
+    await seg.emit(response('report'));
+    seg.complete();
+    await done.handle.terminalPromise;
+
+    const failed = recorder();
+    failed.handle.start();
+    const failSeg = await failed.backend.onNextSegment();
+    await failSeg.emit({ type: 'error', error: new Error('boom') });
+    await failed.handle.terminalPromise;
+
+    const cancelled = recorder();
+    cancelled.handle.start();
+    await cancelled.backend.onNextSegment();
+    cancelled.handle.cancel('user cancelled');
+    cancelled.backend.stopGate.resolve();
+    await vi.waitFor(() => expect(cancelled.order).toContain('onFinished'));
+
+    // Same steps, same order, differing only in the status the hook carries and
+    // in WHEN the spawner notification lands (cancel waits for stop()).
+    expect(done.order.filter((s) => s !== 'onFinished')).toEqual([
+      ...SEQUENCE.slice(0, 2),
+      'subagentStop:done',
+      'onTerminal',
+    ]);
+    expect(failed.order.filter((s) => s !== 'onFinished')).toEqual([
+      ...SEQUENCE.slice(0, 2),
+      'subagentStop:failed',
+      'onTerminal',
+    ]);
+    expect(cancelled.order.filter((s) => s !== 'onFinished')).toEqual([
+      ...SEQUENCE.slice(0, 2),
+      'subagentStop:cancelled',
+      'onTerminal',
+    ]);
+    for (const r of [done, failed, cancelled]) {
+      expect(r.order.filter((s) => s === 'onFinished')).toHaveLength(1);
+    }
   });
 });

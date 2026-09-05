@@ -643,6 +643,51 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
       expect(warnings.join('\n')).toContain(path);
     });
 
+    /**
+     * The gateway seam for the ignored-deliverable case. `docs/plans/` is
+     * gitignored in this repo and is exactly where CLAUDE.md tells agents to
+     * write plans, so a plan-writing child must keep its worktree and get the
+     * path surfaced, the same as for a modified tracked file.
+     */
+    it('keeps a worktree holding a gitignored deliverable and warns with its path', async () => {
+      await writeFile(join(workspace, '.gitignore'), 'docs/plans/\nnode_modules/\n');
+      await git(workspace, 'add', '-A');
+      await git(workspace, 'commit', '-m', 'ignore plans');
+      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+      const spec = makeSpec({ workspace, isolation: 'worktree' });
+      await factory(spec);
+      const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+      await mkdir(join(path, 'docs', 'plans'), { recursive: true });
+      await writeFile(join(path, 'docs', 'plans', '2026-09-05-thing.md'), '# the plan\n');
+
+      const warnings: string[] = [];
+      await expect(
+        cleanupWorktreeForSpec(finishedSpec(), { dataDir, warn: (m) => warnings.push(m) }),
+      ).resolves.toEqual({ removed: false, path });
+      expect(await pathExists(join(path, 'docs', 'plans', '2026-09-05-thing.md'))).toBe(true);
+      expect(warnings.join('\n')).toContain('docs/plans');
+    });
+
+    /** A removal is never silent about what it took with it. */
+    it('logs the disposable content a removal destroyed', async () => {
+      await writeFile(join(workspace, '.gitignore'), 'node_modules/\n');
+      await git(workspace, 'add', '-A');
+      await git(workspace, 'commit', '-m', 'ignore deps');
+      const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+      const spec = makeSpec({ workspace, isolation: 'worktree' });
+      await factory(spec);
+      const path = childWorktreePath({ dataDir, agentName: spec.agentName, childId: 'w-01' });
+      await mkdir(join(path, 'node_modules'), { recursive: true });
+      await writeFile(join(path, 'node_modules', 'x.js'), 'x\n');
+
+      const warnings: string[] = [];
+      await expect(
+        cleanupWorktreeForSpec(finishedSpec(), { dataDir, warn: (m) => warnings.push(m) }),
+      ).resolves.toEqual({ removed: true, path });
+      expect(await pathExists(path)).toBe(false);
+      expect(warnings.join('\n')).toContain('node_modules/');
+    });
+
     it('does nothing for a child that was not isolated', async () => {
       const { extraTools: _extraTools, ...spec } = makeSpec({ workspace });
       await expect(cleanupWorktreeForSpec(spec, { dataDir })).resolves.toBeUndefined();

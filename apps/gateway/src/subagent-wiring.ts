@@ -327,6 +327,17 @@ async function pathExists(path: string): Promise<boolean> {
 /** The fields of a finished worker spec the cleanup reads. */
 type FinishedWorkerSpec = Pick<WorkerSpec, 'agentName' | 'isolation' | 'workspace' | 'workerId'>;
 
+/** How many status paths a single log line names before it says "and N more". */
+const MAX_LOGGED_ENTRIES = 5;
+
+/** A bounded, readable rendering of a status path list for one log line. */
+function summarizeEntries(entries: string[]): string {
+  if (entries.length === 0) return 'nothing';
+  const shown = entries.slice(0, MAX_LOGGED_ENTRIES).join(', ');
+  const rest = entries.length - MAX_LOGGED_ENTRIES;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
 /**
  * Take down the worktree of one finished child, if it had one.
  *
@@ -335,10 +346,15 @@ type FinishedWorkerSpec = Pick<WorkerSpec, 'agentName' | 'isolation' | 'workspac
  * reported the child's result. Two outcomes are deliberate rather than
  * exceptional:
  *
- * - CLEAN worktree → removed, `{ removed: true }`.
- * - DIRTY worktree → KEPT, `{ removed: false }`, and the path is warned about.
- *   The child produced uncommitted work; deleting it would be the one
- *   unrecoverable thing this code could do. The user gets the path instead.
+ * - CLEAN worktree → removed, `{ removed: true }`. If the removal destroyed
+ *   ignored build output it says so, so a removal is never silent about what
+ *   it took with it.
+ * - DIRTY worktree → KEPT, `{ removed: false }`, and the path is warned about
+ *   together with the entries that held it back. "Dirty" includes GITIGNORED
+ *   deliverables (`docs/plans/…` and friends) — see
+ *   `DISPOSABLE_WORKTREE_ARTEFACTS`. The child produced uncommitted work;
+ *   deleting it would be the one unrecoverable thing this code could do. The
+ *   user gets the path instead.
  *
  * `undefined` means there was nothing to do (the child was not isolated) or the
  * cleanup itself failed (already logged).
@@ -357,10 +373,21 @@ export async function cleanupWorktreeForSpec(
   // workspace is the common case — so this is not worth a warning.
   if (!(await pathExists(path))) return undefined;
   try {
-    const { removed } = await cleanupChildWorktree({ workspace: spec.workspace, path });
+    const { removed, blocking, disposable } = await cleanupChildWorktree({
+      workspace: spec.workspace,
+      path,
+    });
     if (!removed) {
       deps.warn?.(
-        `[swarm] agent ${spec.workerId} left uncommitted work in its worktree; keeping ${path}`,
+        `[swarm] agent ${spec.workerId} left uncommitted work in its worktree; keeping ${path} ` +
+          `(${summarizeEntries(blocking)})`,
+      );
+    } else if (disposable.length > 0) {
+      // A removal is never silent about what it destroyed, even when everything
+      // it destroyed was regenerable.
+      deps.warn?.(
+        `[swarm] removed the worktree ${path} of agent ${spec.workerId}, discarding ` +
+          `${summarizeEntries(disposable)}`,
       );
     }
     return { removed, path };

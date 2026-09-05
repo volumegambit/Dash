@@ -18,11 +18,18 @@ export interface WorkerHandleOptions {
    * the gateway removes an `isolation: worktree` checkout here, and a hook that
    * only ran on the happy path would leak one directory per cancelled child.
    *
-   * Never awaited (cancel() must stay synchronous) and never trusted: a
-   * rejection or a synchronous throw is swallowed rather than allowed to break
-   * the terminal transition.
+   * Never awaited by the terminal transition (which stays synchronous) and
+   * never trusted: a rejection or a synchronous throw is swallowed rather than
+   * allowed to break it. On the CANCEL path the call is deferred until the
+   * backend's `stop()` settles or `cancelStopGraceMs` expires, so the spawner
+   * never inspects a directory the child is still writing to.
    */
   onFinished?(spec: Omit<WorkerSpec, 'extraTools'>): void | Promise<void>;
+  /**
+   * How long `cancel()` gives the backend's cooperative `stop()` to settle
+   * before running `onFinished` anyway. Default `DEFAULT_CANCEL_STOP_GRACE_MS`.
+   */
+  cancelStopGraceMs?: number;
   hooks?: {
     subagentStart?(w: { workerId: string; role: string }): void;
     subagentStop?(w: { workerId: string; role: string; status: string }): void;
@@ -30,6 +37,14 @@ export interface WorkerHandleOptions {
 }
 
 const DEFAULT_HEARTBEAT_MS = 10_000;
+
+/**
+ * The bound on how long a cancel waits for `stop()` before notifying the
+ * spawner anyway. Long enough for a cooperative abort to unwind and flush,
+ * short enough that a hung backend delays a cleanup rather than cancelling it:
+ * an unconditional await would leak the child's worktree forever.
+ */
+export const DEFAULT_CANCEL_STOP_GRACE_MS = 5_000;
 
 /** The default subagent type when a caller names none. */
 export const DEFAULT_SUBAGENT_TYPE = 'general-purpose';
@@ -88,11 +103,17 @@ export class WorkerHandle {
   readonly depth: number;
   private readonly isolation?: 'worktree';
   /**
-   * Where the child actually ran. Starts as the spec's workspace and is
-   * replaced by the backend's own once it resolves — an isolated child runs in
-   * a worktree whose path only the worker factory knows.
+   * Where the child actually ran.
+   *
+   * For an ordinary child this is the spec's workspace from the start. For a
+   * child that asked for `isolation: 'worktree'` it starts UNDEFINED and is
+   * filled in from the backend, which is the only thing that knows the worktree
+   * path: reporting the parent workspace in the meantime would state exactly
+   * what isolation exists to deny, and a child whose isolation FAILED would
+   * state it permanently. Undefined shows the user nothing rather than
+   * something false.
    */
-  private workspace: string;
+  private workspace?: string;
 
   status: WorkerStatus = 'spawning';
   report?: string;
@@ -139,7 +160,18 @@ export class WorkerHandle {
     this.oneShot = opts.spec.oneShot ?? false;
     this.depth = opts.spec.depth ?? 1;
     this.isolation = opts.spec.isolation;
-    this.workspace = opts.spec.workspace;
+    this.workspace = opts.spec.isolation === 'worktree' ? undefined : opts.spec.workspace;
+    // Resolved here rather than in runSegment: a background child can be
+    // snapshotted before its first segment runs, and a cancel during
+    // construction never reaches runSegment at all. The rejection handler is
+    // not optional — the same promise is awaited (and reported) by runSegment,
+    // and an unhandled rejection here would be a second, noisier consumer.
+    void opts.backendPromise.then(
+      (backend) => {
+        if (backend.workspace) this.workspace = backend.workspace;
+      },
+      () => {},
+    );
     this.runId = opts.spec.runId;
     this.heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
 
@@ -282,7 +314,15 @@ export class WorkerHandle {
   /**
    * Synchronous, idempotent cancel. NEVER awaits the backend: rejects the pending
    * question waiter, aborts the backend if constructed, emits worker_done{cancelled},
-   * fires onTerminal, then fire-and-forget stop().
+   * fires onTerminal, and leaves stop() running in the background.
+   *
+   * The ONE thing that waits for stop() is the spawner notification. pi's abort
+   * is cooperative, so when cancel() returns the child may still be inside a
+   * tool call; a spawner told to clean up at that moment would sample the
+   * child's worktree mid-write, read it clean and delete the directory out from
+   * under a live process. So `onFinished` is chained off `stop()` — bounded by
+   * `cancelStopGraceMs`, because a `stop()` that never settles must DELAY the
+   * cleanup, not cancel it, or the worktree leaks for the gateway's lifetime.
    */
   cancel(reason: string): void {
     if (this.finalized) return;
@@ -298,30 +338,13 @@ export class WorkerHandle {
       waiter.reject(new Error(`worker cancelled: ${reason}`));
     }
 
-    // abort() only if the backend has actually been constructed.
+    // abort() only if the backend has actually been constructed. Same for
+    // stop(): with no backend nothing can still be writing, so the spawner's
+    // cleanup has nothing to wait for.
     this.backend?.abort();
+    const stopped = this.backend?.stop().catch(() => {});
 
-    this.emit({
-      type: 'worker_done',
-      workerId: this.workerId,
-      runId: this.runId,
-      role: this.role,
-      status: legacyWorkerDoneStatus(this.status),
-      report: reason,
-      usage: this.usage,
-    });
-    this.emitFinished(this.status, reason);
-    this.opts.hooks?.subagentStop?.({
-      workerId: this.workerId,
-      role: this.role,
-      status: 'cancelled',
-    });
-    this.notifyFinished();
-    this.opts.onTerminal(this);
-    this.terminal.resolve();
-
-    // Fire-and-forget: never await the cooperative stop.
-    this.backend?.stop().catch(() => {});
+    this.finalizeTerminal('cancelled', reason, stopped);
   }
 
   snapshot(): {
@@ -340,7 +363,7 @@ export class WorkerHandle {
     toolCallCount: number;
     background: boolean;
     oneShot: boolean;
-    workspace: string;
+    workspace?: string;
   } {
     return {
       workerId: this.workerId,
@@ -374,7 +397,9 @@ export class WorkerHandle {
       return;
     }
     this.backend = backend;
-    if (backend.workspace) this.workspace = backend.workspace;
+    // `workspace` is not set here: the constructor already resolved it off the
+    // same promise, so a child snapshotted before its first segment (or
+    // cancelled during construction) reports the right thing too.
     // A cancel() may have landed while awaiting construction.
     if (this.finalized) return;
 
@@ -428,20 +453,7 @@ export class WorkerHandle {
     this.endedAt = Date.now();
     this.stopHeartbeat();
     this.clearQuestion();
-    this.emit({
-      type: 'worker_done',
-      workerId: this.workerId,
-      runId: this.runId,
-      role: this.role,
-      status: legacyWorkerDoneStatus(this.status),
-      report: this.report ?? '',
-      usage: this.usage,
-    });
-    this.emitFinished(this.status, this.report ?? '');
-    this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status: 'done' });
-    this.notifyFinished();
-    this.opts.onTerminal(this);
-    this.terminal.resolve();
+    this.finalizeTerminal('done', this.report ?? '');
   }
 
   private finalizeFailed(message: string): void {
@@ -456,20 +468,64 @@ export class WorkerHandle {
       this.clearQuestion();
       waiter.reject(new Error(`worker failed: ${message}`));
     }
+    this.finalizeTerminal('failed', message);
+  }
+
+  /**
+   * The ONE terminal transition, shared by finalizeDone / finalizeFailed /
+   * cancel. Every terminal path emits `worker_done` and its `subagent_finished`
+   * twin, runs the `subagentStop` hook, notifies the spawner, calls onTerminal
+   * and resolves the terminal promise — in that order, exactly once.
+   *
+   * It is one function on purpose. `notifyFinished` is what takes an isolated
+   * child's worktree down, so a future terminal status (`interrupted`,
+   * `max_turns`) that hand-rolled five of these six steps would leak a
+   * directory per worker and look correct doing it. Route new terminal statuses
+   * through here and that is structurally impossible.
+   *
+   * `settled` is cancel's bounded wait (see cancel): when present the spawner
+   * notification is deferred until the backend has stopped, or the grace period
+   * expires, whichever comes first. Callers must have set `finalized`, `status`
+   * and `endedAt` before calling.
+   */
+  private finalizeTerminal(
+    status: TerminalWorkerStatus,
+    report: string,
+    settled?: Promise<void>,
+  ): void {
     this.emit({
       type: 'worker_done',
       workerId: this.workerId,
       runId: this.runId,
       role: this.role,
-      status: legacyWorkerDoneStatus(this.status),
-      report: message,
+      status: legacyWorkerDoneStatus(status),
+      report,
       usage: this.usage,
     });
-    this.emitFinished(this.status, message);
-    this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status: 'failed' });
-    this.notifyFinished();
+    this.emitFinished(status, report);
+    this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status });
+    if (settled) this.notifyFinishedAfter(settled);
+    else this.notifyFinished();
     this.opts.onTerminal(this);
     this.terminal.resolve();
+  }
+
+  /**
+   * Fire the spawner notification once `settled` settles, or after the cancel
+   * grace period — whichever is first. The timeout is not a nicety: an
+   * unconditional wait on a `stop()` that never resolves would leak the child's
+   * worktree for the lifetime of the gateway.
+   */
+  private notifyFinishedAfter(settled: Promise<void>): void {
+    const graceMs = this.opts.cancelStopGraceMs ?? DEFAULT_CANCEL_STOP_GRACE_MS;
+    const grace = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, graceMs);
+      if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+    });
+    void Promise.race([settled, grace]).then(
+      () => this.notifyFinished(),
+      () => this.notifyFinished(),
+    );
   }
 
   /**
