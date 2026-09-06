@@ -40,7 +40,12 @@ struct SidebarFooterView: View {
     }
     .buttonStyle(.plain)
     .hoverEffect(.highlight)
-    .focusable()
+    // Tab reachability is intentionally left to native `Button` focus rather
+    // than `.focusable()` — a `Button` already joins the Full Keyboard Access
+    // Tab chain regardless of `buttonStyle`, so adding `.focusable()` here
+    // would be a no-op at best and a duplicate Tab stop at worst. Verify with
+    // Full Keyboard Access during QA; only add `.focusable()` back to a row
+    // that is actually confirmed skipped.
     .foregroundStyle(selectedTab == tab ? DashTheme.accent : Color.primary)
     .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
     .accessibilityIdentifier(identifier)

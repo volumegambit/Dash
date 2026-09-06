@@ -605,7 +605,6 @@ struct ConversationListView: View {
     }
     .buttonStyle(.plain)
     .hoverEffect(.highlight)
-    .focusable()
     .listRowBackground(
       isSelected(conversation.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
     )
@@ -668,7 +667,6 @@ struct ConversationListView: View {
     }
     .buttonStyle(.plain)
     .hoverEffect(.highlight)
-    .focusable()
     .listRowBackground(
       isRecoverySelected(recovery.conversationID)
         ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
