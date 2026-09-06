@@ -33,6 +33,20 @@ export interface ImageBlock {
   data: string; // base64-encoded
 }
 
+export interface SteerContent {
+  text: string;
+  images?: ImageBlock[];
+}
+
+export type SteerResult =
+  | { accepted: true }
+  | { accepted: false; reason: 'idle' | 'run_mismatch' | 'sealed' };
+
+export interface DeliveredSteerRecord {
+  inputId: string;
+  content: SteerContent;
+}
+
 // --- Agent types ---
 
 export type AgentEvent =
@@ -181,6 +195,8 @@ export interface AgentState {
 
 export interface RunOptions {
   signal?: AbortSignal;
+  runId?: string;
+  onSteerConsumed?(inputId: string): Promise<void>;
 }
 
 /**
@@ -276,6 +292,9 @@ export interface AgentBackend {
   stop(): Promise<void>;
   run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
+  steer?(runId: string, inputId: string, content: SteerContent): Promise<SteerResult>;
+  sealSteering?(runId: string): Promise<string[]>;
+  reconcileSteers?(records: readonly DeliveredSteerRecord[]): Promise<void>;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
 }

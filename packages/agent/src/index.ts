@@ -6,6 +6,9 @@ export type {
   ImageBlock,
   PluginModelCatalog,
   RunOptions,
+  SteerContent,
+  SteerResult,
+  DeliveredSteerRecord,
   DashAgentConfig,
 } from './types.js';
 export { DashAgent } from './agent.js';
@@ -23,6 +26,7 @@ export type {
   ConversationPoolOptions,
   PoolEntry,
   PoolBackendFactory,
+  PoolLease,
 } from './conversation-pool.js';
 export type { SkillDiscoveryResult, SkillFrontmatter, FlatSkillFile } from './skills/index.js';
 export {

@@ -146,6 +146,27 @@ describe('DashAgent.chat()', () => {
       }
     }).rejects.toThrow(/not found/);
   });
+
+  it('threads run identity and the awaited steering callback through unchanged', async () => {
+    const received: RunOptions[] = [];
+    const backend = {
+      ...makeBackend(),
+      async *run(_state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
+        received.push(options);
+        yield* [] as AgentEvent[];
+      },
+    };
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-3-haiku', systemPrompt: 'test' }),
+    );
+    const callback = vi.fn(async () => {});
+    const options = { runId: 'run-1', onSteerConsumed: callback };
+
+    await collect(agent.chat('ch', 'conv1', 'hello', options));
+
+    expect(received).toEqual([options]);
+  });
 });
 
 describe('DashAgent memory prompt', () => {

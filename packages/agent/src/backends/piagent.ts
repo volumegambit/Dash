@@ -1,7 +1,17 @@
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { AgentEvent as PiAgentEvent } from '@earendil-works/pi-agent-core';
-import type { Api, AssistantMessage, ImageContent, Model, Usage } from '@earendil-works/pi-ai';
+import type {
+  AgentEvent as PiAgentEvent,
+  AgentMessage as PiAgentMessage,
+} from '@earendil-works/pi-agent-core';
+import type {
+  Api,
+  AssistantMessage,
+  ImageContent,
+  Model,
+  TextContent,
+  Usage,
+} from '@earendil-works/pi-ai';
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -46,16 +56,40 @@ import type {
   AgentState,
   ClientLocation,
   DashAgentConfig,
+  DeliveredSteerRecord,
   ExtraTool,
   HookRunner,
   PluginModelCatalog,
   RunOptions,
+  SteerContent,
+  SteerResult,
 } from '../types.js';
 import { DashResourceLoader } from './dash-resource-loader.js';
 import { resolveModelString } from './resolve-model.js';
 
 /** All built-in tool names supported by PiAgent */
 const DEFAULT_TOOL_NAMES = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'] as const;
+
+interface TaggedPiUserMessage {
+  role: 'user';
+  content: string | (TextContent | ImageContent)[];
+  timestamp: number;
+  __dashInputId: string;
+}
+
+interface SteerBoundary {
+  type: '__steer_boundary__';
+  inputId: string;
+  cancelled: Promise<Error>;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
+type QueuedPiEvent =
+  | AgentSessionEvent
+  | SteerBoundary
+  | { type: '__done__' }
+  | { type: '__error__'; error: Error };
 
 /**
  * Provider API keys can be supplied either as a static snapshot (tests,
@@ -293,6 +327,15 @@ export class PiAgentBackend implements AgentBackend {
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
 
+  private steeringPhase: 'sealed' | 'active' | 'ended-unsealed' = 'sealed';
+  private steeringRunId: string | null = null;
+  private acceptingSteers = false;
+  private acceptedSteers = new Map<string, SteerContent>();
+  private pendingSteerBoundaries = new Map<string, SteerBoundary>();
+  private cachedSeal: { runId: string; inputIds: string[] } | null = null;
+  private unsubscribeSteeringListener: (() => void) | null = null;
+  private pendingPersistenceRepairs = new Map<string, { manager: object; entry: unknown }>();
+
   /** Track the compaction reason from auto_compaction_start for use in auto_compaction_end */
   private lastCompactionReason: 'threshold' | 'overflow' = 'threshold';
 
@@ -365,6 +408,36 @@ export class PiAgentBackend implements AgentBackend {
   /** Test/host hook to set the current session id outside run(). */
   setCurrentSessionId(sessionId: string | null): void {
     this.currentSessionId = sessionId;
+  }
+
+  private toPiImages(images?: SteerContent['images']): ImageContent[] {
+    return (images ?? []).map((image) => ({
+      type: 'image',
+      data: image.data,
+      mimeType: image.mediaType,
+    }));
+  }
+
+  private createTaggedSteer(inputId: string, content: SteerContent): TaggedPiUserMessage {
+    return {
+      role: 'user',
+      content: [{ type: 'text', text: content.text }, ...this.toPiImages(content.images)],
+      timestamp: Date.now(),
+      __dashInputId: inputId,
+    };
+  }
+
+  private taggedInputId(message: unknown): string | undefined {
+    if (!message || typeof message !== 'object') return undefined;
+    const candidate = message as { role?: string; __dashInputId?: unknown };
+    return candidate.role === 'user' && typeof candidate.__dashInputId === 'string'
+      ? candidate.__dashInputId
+      : undefined;
+  }
+
+  private rejectPendingSteerBoundaries(error: Error): void {
+    for (const boundary of this.pendingSteerBoundaries.values()) boundary.reject(error);
+    this.pendingSteerBoundaries.clear();
   }
 
   /** Names of injected extra tools (for diagnostics/tests). */
@@ -836,6 +909,27 @@ export class PiAgentBackend implements AgentBackend {
 
     this.session = session;
 
+    // Dash's opaque correlation tag belongs only to Pi runtime/session state.
+    // Pi's stock converter returns ordinary user messages unchanged, so wrap
+    // the conversion boundary explicitly and expose only provider fields.
+    const coreAgent = session.agent;
+    if (typeof coreAgent.convertToLlm === 'function') {
+      const convertToLlm = coreAgent.convertToLlm.bind(coreAgent);
+      coreAgent.convertToLlm = (messages: PiAgentMessage[]) =>
+        convertToLlm(
+          messages.map((message) =>
+            message.role === 'user'
+              ? {
+                  role: message.role,
+                  content: message.content,
+                  timestamp: message.timestamp,
+                }
+              : message,
+          ),
+        );
+    }
+    coreAgent.steeringMode = 'one-at-a-time';
+
     // Compose plugin tool hooks onto pi's agent. MUST run AFTER
     // createAgentSession(...) returns — pi installs its own beforeToolCall/
     // afterToolCall in the session ctor, and composeToolHooks saves+wraps them.
@@ -876,12 +970,24 @@ export class PiAgentBackend implements AgentBackend {
     if (!this.session) {
       throw new Error('PiAgentBackend not started. Call start() first.');
     }
+    if (this.steeringPhase === 'ended-unsealed') {
+      throw new Error(
+        `Cannot start run '${options.runId ?? 'legacy'}' while the prior run is ended-unsealed`,
+      );
+    }
 
     this.abortRequested = false;
     this.fullText = '';
     this.lastCompactionReason = 'threshold';
     this.currentSessionId = state.conversationId;
     this.currentLocation = state.location ?? null;
+    this.cachedSeal = null;
+    this.steeringRunId = options.runId ?? null;
+    this.steeringPhase = options.runId ? 'active' : 'sealed';
+    this.acceptingSteers = Boolean(options.runId && options.onSteerConsumed);
+    this.session.agent.steeringMode = 'one-at-a-time';
+
+    const runId = options.runId;
 
     const hookCwd = state.workspace ?? this.workspace ?? undefined;
 
@@ -916,6 +1022,10 @@ export class PiAgentBackend implements AgentBackend {
 
       yield* this.runModelChain(state, options);
     } finally {
+      if (runId && this.steeringRunId === runId && this.steeringPhase === 'active') {
+        this.acceptingSteers = false;
+        this.steeringPhase = 'ended-unsealed';
+      }
       // Fire the Stop lifecycle hook (plugins). Stop's additionalContext has
       // nowhere to go after the run completes (the turn is over), so we log it
       // and otherwise ignore it. No-op when no runner.
@@ -1021,11 +1131,7 @@ export class PiAgentBackend implements AgentBackend {
       }
 
       // Event queue for bridging subscribe callback to async generator
-      const queue: (
-        | AgentSessionEvent
-        | { type: '__done__' }
-        | { type: '__error__'; error: Error }
-      )[] = [];
+      const queue: QueuedPiEvent[] = [];
       let resolve: (() => void) | null = null;
 
       const waitForEvent = (): Promise<void> =>
@@ -1037,9 +1143,7 @@ export class PiAgentBackend implements AgentBackend {
           }
         });
 
-      const pushEvent = (
-        event: AgentSessionEvent | { type: '__done__' } | { type: '__error__'; error: Error },
-      ) => {
+      const pushEvent = (event: QueuedPiEvent) => {
         queue.push(event);
         if (resolve) {
           const r = resolve;
@@ -1057,6 +1161,48 @@ export class PiAgentBackend implements AgentBackend {
       const unsubscribe = this.session.subscribe((event: AgentSessionEvent) => {
         pushEvent(event);
       });
+
+      const unsubscribeCore =
+        options.runId && options.onSteerConsumed
+          ? this.session.agent.subscribe(async (event) => {
+              if (event.type !== 'message_start') return;
+              const inputId = this.taggedInputId(event.message);
+              if (!inputId || !this.acceptedSteers.has(inputId)) return;
+              if (this.pendingSteerBoundaries.has(inputId)) return;
+
+              let resolveWait!: () => void;
+              let rejectWait!: (error: Error) => void;
+              let cancel!: (error: Error) => void;
+              let settled = false;
+              const wait = new Promise<void>((resolve, reject) => {
+                resolveWait = resolve;
+                rejectWait = reject;
+              });
+              const cancelled = new Promise<Error>((resolve) => {
+                cancel = resolve;
+              });
+              const boundary: SteerBoundary = {
+                type: '__steer_boundary__',
+                inputId,
+                cancelled,
+                resolve: () => {
+                  if (settled) return;
+                  settled = true;
+                  resolveWait();
+                },
+                reject: (error) => {
+                  if (settled) return;
+                  settled = true;
+                  cancel(error);
+                  rejectWait(error);
+                },
+              };
+              this.pendingSteerBoundaries.set(inputId, boundary);
+              pushEvent(boundary);
+              await wait;
+            })
+          : null;
+      this.unsubscribeSteeringListener = unsubscribeCore;
 
       // Convert Dash ImageBlock[] to PiAgent ImageContent[]
       const images: ImageContent[] | undefined = state.images?.map((img) => ({
@@ -1111,6 +1257,41 @@ export class PiAgentBackend implements AgentBackend {
               break;
             }
 
+            if (event.type === '__steer_boundary__') {
+              const boundary = event as SteerBoundary;
+              const callback = options.onSteerConsumed;
+              const outcome = await Promise.race([
+                (callback
+                  ? callback(boundary.inputId)
+                  : Promise.reject(new Error('Steering consumption callback is unavailable'))
+                ).then(
+                  () => ({ ok: true as const }),
+                  (error) => ({
+                    ok: false as const,
+                    error: error instanceof Error ? error : new Error(String(error)),
+                  }),
+                ),
+                boundary.cancelled.then((error) => ({ ok: false as const, error })),
+              ]);
+              if (outcome.ok) {
+                this.acceptedSteers.delete(boundary.inputId);
+                this.pendingSteerBoundaries.delete(boundary.inputId);
+                this.fullText = '';
+                boundary.resolve();
+                continue;
+              }
+
+              attemptError = outcome.error;
+              this.acceptingSteers = false;
+              boundary.reject(outcome.error);
+              this.pendingSteerBoundaries.delete(boundary.inputId);
+              this.session.agent.clearAllQueues();
+              this.session.agent.abort();
+              this.rejectPendingSteerBoundaries(outcome.error);
+              completed = true;
+              break;
+            }
+
             for (const normalized of this.normalizeEvents(event as AgentSessionEvent)) {
               yield normalized;
               committed = true;
@@ -1118,6 +1299,11 @@ export class PiAgentBackend implements AgentBackend {
           }
         }
       } finally {
+        this.rejectPendingSteerBoundaries(new Error('Steering boundary disposed before delivery'));
+        unsubscribeCore?.();
+        if (unsubscribeCore && this.unsubscribeSteeringListener === unsubscribeCore) {
+          this.unsubscribeSteeringListener = null;
+        }
         unsubscribe();
         await promptPromise;
       }
@@ -1305,12 +1491,125 @@ export class PiAgentBackend implements AgentBackend {
     }
   }
 
+  async steer(runId: string, inputId: string, content: SteerContent): Promise<SteerResult> {
+    if (!this.session || !this.steeringRunId) {
+      return this.cachedSeal?.runId === runId
+        ? { accepted: false, reason: 'sealed' }
+        : { accepted: false, reason: 'idle' };
+    }
+    if (this.steeringRunId !== runId) {
+      return { accepted: false, reason: 'run_mismatch' };
+    }
+    if (this.steeringPhase !== 'active' || !this.acceptingSteers) {
+      return { accepted: false, reason: 'sealed' };
+    }
+    if (this.acceptedSteers.has(inputId)) return { accepted: true };
+
+    // Admission is synchronous up to and including Pi queue insertion. The
+    // ledger entry exists before any future await can observe the run.
+    this.acceptedSteers.set(inputId, content);
+    this.session.agent.steer(this.createTaggedSteer(inputId, content) as PiAgentMessage);
+    return { accepted: true };
+  }
+
+  async sealSteering(runId: string): Promise<string[]> {
+    if (this.cachedSeal?.runId === runId) return [...this.cachedSeal.inputIds];
+    if (!this.session || this.steeringRunId !== runId) return [];
+
+    this.acceptingSteers = false;
+    this.steeringPhase = 'sealed';
+    const inputIds = [...this.acceptedSteers.keys()];
+    this.cachedSeal = { runId, inputIds };
+    this.steeringRunId = null;
+    this.rejectPendingSteerBoundaries(new Error(`Steering run '${runId}' was sealed`));
+    this.acceptedSteers.clear();
+    this.session.agent.clearAllQueues();
+    // Deliberately direct and non-blocking: Task 7 calls this while holding the
+    // live-run lock, so waiting on AgentSession cleanup would deadlock.
+    this.session.agent.abort();
+    return [...inputIds];
+  }
+
+  async reconcileSteers(records: readonly DeliveredSteerRecord[]): Promise<void> {
+    if (!this.session) {
+      throw new Error('PiAgentBackend not started. Call start() first.');
+    }
+    const delivered = new Set(records.map((record) => record.inputId));
+    const coreAgent = this.session.agent;
+    const runtime = coreAgent.state.messages.filter((message) => {
+      const inputId = this.taggedInputId(message);
+      return !inputId || delivered.has(inputId);
+    });
+    const runtimeIds = new Set<string>();
+    const deduplicatedRuntime = runtime.filter((message) => {
+      const inputId = this.taggedInputId(message);
+      if (!inputId) return true;
+      if (runtimeIds.has(inputId)) return false;
+      runtimeIds.add(inputId);
+      return true;
+    });
+    for (const record of records) {
+      if (runtimeIds.has(record.inputId)) continue;
+      deduplicatedRuntime.push(
+        this.createTaggedSteer(record.inputId, record.content) as PiAgentMessage,
+      );
+      runtimeIds.add(record.inputId);
+    }
+    coreAgent.state.messages = deduplicatedRuntime;
+
+    const manager = this.session.sessionManager;
+    for (const record of records) {
+      const repair = this.pendingPersistenceRepairs.get(record.inputId);
+      if (repair?.manager === manager) {
+        const persist = (manager as unknown as { _persist?: (entry: unknown) => void })._persist;
+        if (!persist) {
+          throw new Error('SessionManager persistence repair is unavailable');
+        }
+        persist.call(manager, repair.entry);
+        this.pendingPersistenceRepairs.delete(record.inputId);
+      } else if (repair) {
+        this.pendingPersistenceRepairs.delete(record.inputId);
+      }
+
+      const branchHasRecord = manager
+        .getBranch()
+        .some(
+          (entry) =>
+            entry.type === 'message' && this.taggedInputId(entry.message) === record.inputId,
+        );
+      if (branchHasRecord) continue;
+
+      const message = this.createTaggedSteer(record.inputId, record.content);
+      try {
+        manager.appendMessage(message);
+      } catch (error) {
+        const mutatedEntry = manager
+          .getBranch()
+          .find(
+            (entry) =>
+              entry.type === 'message' && this.taggedInputId(entry.message) === record.inputId,
+          );
+        if (mutatedEntry) {
+          this.pendingPersistenceRepairs.set(record.inputId, {
+            manager,
+            entry: mutatedEntry,
+          });
+        }
+        throw error;
+      }
+    }
+  }
+
   /**
    * Abort the current prompt.
    */
   abort(): void {
     this.abortRequested = true;
+    this.acceptingSteers = false;
+    this.rejectPendingSteerBoundaries(new Error('Steering run aborted'));
     if (this.session) {
+      this.session.agent.clearAllQueues();
+      this.session.agent.abort();
       // session.abort() returns a promise but we fire-and-forget
       this.session.abort().catch(() => {});
     }
@@ -1320,6 +1619,15 @@ export class PiAgentBackend implements AgentBackend {
    * Clean up session resources.
    */
   async stop(): Promise<void> {
+    this.unsubscribeSteeringListener?.();
+    this.unsubscribeSteeringListener = null;
+    this.rejectPendingSteerBoundaries(new Error('PiAgentBackend stopped'));
+    this.acceptedSteers.clear();
+    this.pendingPersistenceRepairs.clear();
+    this.acceptingSteers = false;
+    this.steeringPhase = 'sealed';
+    this.steeringRunId = null;
+    this.cachedSeal = null;
     if (this.session) {
       this.session.dispose();
       this.session = null;

@@ -65,7 +65,7 @@ vi.mock('@earendil-works/pi-ai', () => ({
   })),
 }));
 
-import type { AgentEvent } from '../types.js';
+import type { AgentEvent, DeliveredSteerRecord, SteerContent } from '../types.js';
 import { PiAgentBackend } from './piagent.js';
 
 function makeBackend() {
@@ -78,6 +78,22 @@ function makeBackend() {
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function collectEvents(generator: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  for await (const event of generator) events.push(event);
+  return events;
+}
 
 describe('PiAgentBackend', () => {
   it('has name "piagent"', () => {
@@ -620,6 +636,560 @@ describe('PiAgentBackend lifecycle', () => {
     ]);
 
     await backend.stop();
+  });
+});
+
+describe('PiAgentBackend ordered steering', () => {
+  const RUN_ID = 'run-1';
+  const INPUT_ID = 'input-1';
+
+  type TaggedMessage = {
+    role: 'user';
+    content: string | Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    timestamp: number;
+    __dashInputId?: string;
+  };
+
+  type CoreHarnessEvent = {
+    type: string;
+    message?: {
+      role: string;
+      content: unknown;
+      timestamp: number;
+      __dashInputId?: string;
+    };
+    assistantMessageEvent?: unknown;
+    messages?: unknown[];
+  };
+
+  function makeSteeringHarness(
+    options: {
+      pauseBeforeEnd?: boolean;
+      runtimeMessages?: TaggedMessage[];
+      branchMessages?: TaggedMessage[];
+      appendFailures?: number;
+    } = {},
+  ) {
+    const providerStarted = deferred<void>();
+    const finishFirstTurn = deferred<void>();
+    const secondCall = deferred<void>();
+    const finalPoll = deferred<void>();
+    const allowEnd = deferred<void>();
+    const steeringQueue: TaggedMessage[] = [];
+    const steered: TaggedMessage[] = [];
+    const providerBodies: unknown[] = [];
+    const sessionListeners = new Set<(event: unknown) => void>();
+    const coreListeners: Array<
+      (event: CoreHarnessEvent, signal: AbortSignal) => void | Promise<void>
+    > = [];
+    const runtimeMessages = [...(options.runtimeMessages ?? [])];
+    const branchEntries = (options.branchMessages ?? []).map((message, index) => ({
+      type: 'message',
+      id: `entry-${index}`,
+      parentId: index === 0 ? null : `entry-${index - 1}`,
+      timestamp: new Date(index).toISOString(),
+      message,
+    }));
+    let appendFailures = options.appendFailures ?? 0;
+    let aborted = false;
+
+    const sessionManager = {
+      getBranch: vi.fn(() => [...branchEntries]),
+      appendMessage: vi.fn((message: TaggedMessage) => {
+        const entry = {
+          type: 'message',
+          id: `entry-${branchEntries.length}`,
+          parentId: branchEntries.length === 0 ? null : branchEntries[branchEntries.length - 1].id,
+          timestamp: new Date().toISOString(),
+          message,
+        };
+        // SessionManager mutates its in-memory tree before attempting the JSONL write.
+        branchEntries.push(entry);
+        if (appendFailures > 0) {
+          appendFailures--;
+          throw new Error('disk unavailable');
+        }
+        return entry.id;
+      }),
+      _persist: vi.fn(),
+    };
+
+    const emitCore = async (event: CoreHarnessEvent) => {
+      for (const listener of [...coreListeners]) {
+        await listener(event, new AbortController().signal);
+      }
+    };
+
+    // Model the AgentSession listener that is already registered with Pi core before
+    // PiAgentBackend installs its direct per-run boundary listener.
+    coreListeners.push(async (event) => {
+      for (const listener of [...sessionListeners]) listener(event);
+      if (
+        event.type === 'message_end' &&
+        ['user', 'assistant', 'toolResult'].includes(event.message?.role)
+      ) {
+        sessionManager.appendMessage(event.message as TaggedMessage);
+      }
+    });
+
+    const usage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+
+    const emitAssistant = async (text: string) => {
+      const message = {
+        role: 'assistant',
+        content: [{ type: 'text', text }],
+        usage,
+        timestamp: Date.now(),
+      };
+      runtimeMessages.push(message as unknown as TaggedMessage);
+      await emitCore({ type: 'message_start', message });
+      await emitCore({
+        type: 'message_update',
+        message,
+        assistantMessageEvent: {
+          type: 'text_delta',
+          contentIndex: 0,
+          delta: text,
+          partial: message,
+        },
+      });
+      await emitCore({ type: 'message_end', message });
+    };
+
+    const agent = {
+      steeringMode: 'all',
+      state: { messages: runtimeMessages },
+      convertToLlm: vi.fn(async (messages: unknown[]) => messages),
+      subscribe: vi.fn(
+        (listener: (event: CoreHarnessEvent, signal: AbortSignal) => void | Promise<void>) => {
+          coreListeners.push(listener);
+          return vi.fn(() => {
+            const index = coreListeners.indexOf(listener);
+            if (index >= 0) coreListeners.splice(index, 1);
+          });
+        },
+      ),
+      steer: vi.fn((message: TaggedMessage) => {
+        steered.push(message);
+        steeringQueue.push(message);
+      }),
+      clearAllQueues: vi.fn(() => {
+        steeringQueue.splice(0);
+      }),
+      abort: vi.fn(() => {
+        aborted = true;
+        allowEnd.resolve();
+      }),
+    };
+
+    const session = {
+      sessionManager,
+      agent,
+      dispose: vi.fn(),
+      subscribe: vi.fn((listener: (event: unknown) => void) => {
+        sessionListeners.add(listener);
+        return vi.fn(() => sessionListeners.delete(listener));
+      }),
+      prompt: vi.fn(async (text: string, promptOptions?: { images?: unknown[] }) => {
+        const initial = {
+          role: 'user' as const,
+          content: [
+            { type: 'text', text },
+            ...(promptOptions?.images ?? []),
+          ] as TaggedMessage['content'],
+          timestamp: Date.now(),
+        };
+        runtimeMessages.push(initial);
+        await emitCore({ type: 'message_start', message: initial });
+        await emitCore({ type: 'message_end', message: initial });
+        providerBodies.push(await agent.convertToLlm(runtimeMessages));
+        providerStarted.resolve();
+        await finishFirstTurn.promise;
+        if (!aborted) await emitAssistant('before');
+
+        while (!aborted && steeringQueue.length > 0) {
+          const message = steeringQueue.shift() as TaggedMessage;
+          runtimeMessages.push(message);
+          await emitCore({ type: 'message_start', message });
+          await emitCore({ type: 'message_end', message });
+          providerBodies.push(await agent.convertToLlm(runtimeMessages));
+          secondCall.resolve();
+          await emitAssistant('after');
+        }
+
+        finalPoll.resolve();
+        if (options.pauseBeforeEnd) await allowEnd.promise;
+        await emitCore({ type: 'agent_end', messages: [...runtimeMessages] });
+      }),
+      abort: vi.fn(async () => agent.abort()),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      getActiveToolNames: vi.fn(() => ['read']),
+      setActiveToolsByName: vi.fn(),
+    };
+
+    return {
+      session,
+      agent,
+      sessionManager,
+      providerStarted,
+      finishFirstTurn,
+      secondCall,
+      finalPoll,
+      allowEnd,
+      providerBodies,
+      steered,
+      get runtimeMessages() {
+        return agent.state.messages as TaggedMessage[];
+      },
+      branchEntries,
+    };
+  }
+
+  async function mountSteeringBackend(harness: ReturnType<typeof makeSteeringHarness>) {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: focused partial AgentSession test double
+      session: harness.session as any,
+      // biome-ignore lint/suspicious/noExplicitAny: focused partial creation result
+      extensionsResult: {} as any,
+    });
+    const backend = makeBackend();
+    await backend.start('/tmp/test');
+    return backend;
+  }
+
+  function state(conversationId = 'conv-1') {
+    return {
+      channelId: 'web',
+      conversationId,
+      model: 'anthropic/claude-sonnet-4-20250514',
+      message: 'start',
+      systemPrompt: 'Test',
+    };
+  }
+
+  it('holds the provider behind an ordered durable Steer boundary', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const deliveryGate = deferred<void>();
+    const callbackStarted = deferred<void>();
+    const committed: string[] = [];
+    const eventsPromise = collectEvents(
+      backend.run(state(), {
+        runId: RUN_ID,
+        onSteerConsumed: async (inputId) => {
+          committed.push(inputId);
+          callbackStarted.resolve();
+          await deliveryGate.promise;
+        },
+      }),
+    );
+
+    await harness.providerStarted.promise;
+    await expect(backend.steer(RUN_ID, INPUT_ID, { text: 'focus' })).resolves.toEqual({
+      accepted: true,
+    });
+    harness.finishFirstTurn.resolve();
+    await callbackStarted.promise;
+    expect(harness.providerBodies).toHaveLength(1);
+    expect(harness.branchEntries.some((entry) => entry.message.__dashInputId === INPUT_ID)).toBe(
+      false,
+    );
+    deliveryGate.resolve();
+    await harness.secondCall.promise;
+    expect(committed).toEqual([INPUT_ID]);
+    expect(harness.branchEntries.some((entry) => entry.message.__dashInputId === INPUT_ID)).toBe(
+      true,
+    );
+
+    const events = await eventsPromise;
+    expect(events).toEqual([
+      { type: 'text_delta', text: 'before' },
+      expect.objectContaining({ type: 'response', content: 'before' }),
+      { type: 'text_delta', text: 'after' },
+      expect.objectContaining({ type: 'response', content: 'after' }),
+    ]);
+  });
+
+  it('correlates identical Steers by opaque ID without leaking metadata to providers or events', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const consumed: string[] = [];
+    const eventsPromise = collectEvents(
+      backend.run(state(), {
+        runId: RUN_ID,
+        onSteerConsumed: async (inputId) => {
+          consumed.push(inputId);
+        },
+      }),
+    );
+
+    await harness.providerStarted.promise;
+    const image = { type: 'image' as const, mediaType: 'image/png' as const, data: 'aGVsbG8=' };
+    await backend.steer(RUN_ID, 'opaque-a', { text: 'same', images: [image] });
+    await backend.steer(RUN_ID, 'opaque-b', { text: 'same' });
+    harness.finishFirstTurn.resolve();
+    const events = await eventsPromise;
+
+    expect(consumed).toEqual(['opaque-a', 'opaque-b']);
+    expect(harness.steered[0]).toMatchObject({
+      role: 'user',
+      __dashInputId: 'opaque-a',
+      content: [
+        { type: 'text', text: 'same' },
+        { type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' },
+      ],
+    });
+    expect(JSON.stringify(harness.providerBodies)).not.toContain('__dashInputId');
+    expect(JSON.stringify(events)).not.toContain('__dashInputId');
+    expect(
+      events.filter((event) => event.type === 'response').map((event) => event.content),
+    ).toEqual(['before', 'after', 'after']);
+  });
+
+  it('rejects idle, wrong-run, and runId-only steering without queueing', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    await expect(backend.steer(RUN_ID, INPUT_ID, { text: 'idle' })).resolves.toEqual({
+      accepted: false,
+      reason: 'idle',
+    });
+
+    const eventsPromise = collectEvents(backend.run(state(), { runId: RUN_ID }));
+    await harness.providerStarted.promise;
+    await expect(backend.steer('wrong-run', INPUT_ID, { text: 'wrong' })).resolves.toEqual({
+      accepted: false,
+      reason: 'run_mismatch',
+    });
+    await expect(backend.steer(RUN_ID, INPUT_ID, { text: 'sealed' })).resolves.toEqual({
+      accepted: false,
+      reason: 'sealed',
+    });
+    expect(harness.agent.steer).not.toHaveBeenCalled();
+    harness.finishFirstTurn.resolve();
+    await eventsPromise;
+  });
+
+  it('aborts before a second provider call when durable delivery fails', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const eventsPromise = collectEvents(
+      backend.run(state(), {
+        runId: RUN_ID,
+        onSteerConsumed: async () => {
+          throw new Error('sqlite failed');
+        },
+      }),
+    );
+    await harness.providerStarted.promise;
+    await backend.steer(RUN_ID, INPUT_ID, { text: 'focus' });
+    harness.finishFirstTurn.resolve();
+    const events = await eventsPromise;
+
+    expect(harness.providerBodies).toHaveLength(1);
+    expect(harness.agent.clearAllQueues).toHaveBeenCalled();
+    expect(harness.agent.abort).toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: 'error', error: new Error('sqlite failed') });
+  });
+
+  it('rejects an awaited boundary on abort without deadlocking the generator', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const callbackStarted = deferred<void>();
+    const never = deferred<void>();
+    const eventsPromise = collectEvents(
+      backend.run(state(), {
+        runId: RUN_ID,
+        onSteerConsumed: async () => {
+          callbackStarted.resolve();
+          await never.promise;
+        },
+      }),
+    );
+    await harness.providerStarted.promise;
+    await backend.steer(RUN_ID, INPUT_ID, { text: 'focus' });
+    harness.finishFirstTurn.resolve();
+    await callbackStarted.promise;
+    backend.abort();
+
+    const result = await Promise.race([
+      eventsPromise.then((events) => ({ settled: true, events })),
+      new Promise<{ settled: false }>((resolve) =>
+        setTimeout(() => resolve({ settled: false }), 100),
+      ),
+    ]);
+    expect(result.settled).toBe(true);
+    expect(harness.providerBodies).toHaveLength(1);
+    expect(harness.agent.abort).toHaveBeenCalled();
+  });
+
+  it('retains ended-unsealed state and returns an idempotent cached seal snapshot', async () => {
+    const harness = makeSteeringHarness({ pauseBeforeEnd: true });
+    const backend = await mountSteeringBackend(harness);
+    const eventsPromise = collectEvents(
+      backend.run(state(), { runId: RUN_ID, onSteerConsumed: async () => {} }),
+    );
+    await harness.providerStarted.promise;
+    harness.finishFirstTurn.resolve();
+    await harness.finalPoll.promise;
+    await backend.steer(RUN_ID, INPUT_ID, { text: 'too late for final poll' });
+    harness.allowEnd.resolve();
+    await eventsPromise;
+
+    await expect(backend.steer(RUN_ID, 'post-end', { text: 'late' })).resolves.toEqual({
+      accepted: false,
+      reason: 'sealed',
+    });
+    await expect(backend.sealSteering(RUN_ID)).resolves.toEqual([INPUT_ID]);
+    await expect(backend.sealSteering(RUN_ID)).resolves.toEqual([INPUT_ID]);
+    expect(harness.agent.clearAllQueues).toHaveBeenCalledTimes(1);
+    expect(harness.agent.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a new run overwrite an ended-unsealed predecessor', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const first = collectEvents(
+      backend.run(state(), { runId: RUN_ID, onSteerConsumed: async () => {} }),
+    );
+    await harness.providerStarted.promise;
+    harness.finishFirstTurn.resolve();
+    await first;
+
+    const next = backend.run(state('conv-2'), {
+      runId: 'run-2',
+      onSteerConsumed: async () => {},
+    });
+    await expect(next.next()).rejects.toThrow(/unsealed/);
+  });
+
+  it('reconciles runtime and full branch independently in canonical order', async () => {
+    const runtimeOnly = {
+      role: 'user' as const,
+      content: 'runtime',
+      timestamp: 1,
+      __dashInputId: 'runtime-only',
+    };
+    const branchOnly = {
+      role: 'user' as const,
+      content: 'branch',
+      timestamp: 2,
+      __dashInputId: 'branch-only',
+    };
+    const undelivered = {
+      role: 'user' as const,
+      content: 'drop',
+      timestamp: 3,
+      __dashInputId: 'not-delivered',
+    };
+    const harness = makeSteeringHarness({
+      runtimeMessages: [runtimeOnly, undelivered],
+      branchMessages: [branchOnly],
+    });
+    const backend = await mountSteeringBackend(harness);
+    const records: DeliveredSteerRecord[] = [
+      { inputId: 'runtime-only', content: { text: 'runtime' } },
+      { inputId: 'branch-only', content: { text: 'branch' } },
+    ];
+
+    await backend.reconcileSteers(records);
+    await backend.reconcileSteers(records);
+
+    expect(
+      harness.runtimeMessages
+        .filter((message) => message.__dashInputId)
+        .map((message) => message.__dashInputId),
+    ).toEqual(['runtime-only', 'branch-only']);
+    expect(
+      harness.branchEntries
+        .map((entry) => entry.message.__dashInputId)
+        .filter((id): id is string => Boolean(id)),
+    ).toEqual(['branch-only', 'runtime-only']);
+    expect(harness.sessionManager.appendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries persistence after appendMessage mutates manager memory and throws', async () => {
+    const harness = makeSteeringHarness({ appendFailures: 1 });
+    const backend = await mountSteeringBackend(harness);
+    const records: DeliveredSteerRecord[] = [{ inputId: INPUT_ID, content: { text: 'committed' } }];
+
+    await expect(backend.reconcileSteers(records)).rejects.toThrow('disk unavailable');
+    await expect(backend.reconcileSteers(records)).resolves.toBeUndefined();
+
+    expect(harness.sessionManager.appendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.sessionManager._persist).toHaveBeenCalledTimes(1);
+    expect(
+      harness.runtimeMessages.filter((message) => message.__dashInputId === INPUT_ID),
+    ).toHaveLength(1);
+  });
+
+  it('reasserts one-at-a-time mode and cleans listeners across start-stop-start', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    expect(harness.agent.steeringMode).toBe('one-at-a-time');
+    harness.agent.steeringMode = 'all';
+    const eventsPromise = collectEvents(
+      backend.run(state(), { runId: RUN_ID, onSteerConsumed: vi.fn() }),
+    );
+    await harness.providerStarted.promise;
+    expect(harness.agent.steeringMode).toBe('one-at-a-time');
+    harness.finishFirstTurn.resolve();
+    await eventsPromise;
+    await backend.stop();
+    expect(harness.agent.subscribe).toHaveBeenCalledTimes(1);
+    expect(harness.session.dispose).toHaveBeenCalled();
+
+    const restarted = makeSteeringHarness();
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: focused partial AgentSession test double
+      session: restarted.session as any,
+      // biome-ignore lint/suspicious/noExplicitAny: focused partial creation result
+      extensionsResult: {} as any,
+    });
+    await backend.start('/tmp/test');
+    const restartedEvents = collectEvents(
+      backend.run(state(), { runId: 'run-restarted', onSteerConsumed: vi.fn() }),
+    );
+    await restarted.providerStarted.promise;
+    expect(restarted.agent.steeringMode).toBe('one-at-a-time');
+    restarted.finishFirstTurn.resolve();
+    await restartedEvents;
+    await backend.stop();
+    expect(restarted.agent.subscribe).toHaveBeenCalledTimes(1);
+    expect(restarted.session.dispose).toHaveBeenCalled();
+  });
+
+  it('constructs Steer content with explicit MIME mapping and stable block order', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const eventsPromise = collectEvents(
+      backend.run(state(), { runId: RUN_ID, onSteerConsumed: async () => {} }),
+    );
+    await harness.providerStarted.promise;
+    const content: SteerContent = {
+      text: 'look',
+      images: [
+        { type: 'image', mediaType: 'image/jpeg', data: 'one' },
+        { type: 'image', mediaType: 'image/webp', data: 'two' },
+      ],
+    };
+    await backend.steer(RUN_ID, INPUT_ID, content);
+    expect(harness.steered[0].content).toEqual([
+      { type: 'text', text: 'look' },
+      { type: 'image', mimeType: 'image/jpeg', data: 'one' },
+      { type: 'image', mimeType: 'image/webp', data: 'two' },
+    ]);
+    backend.abort();
+    harness.finishFirstTurn.resolve();
+    await eventsPromise;
   });
 });
 

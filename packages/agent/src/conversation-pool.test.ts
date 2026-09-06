@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ConversationPoolOptions, PoolEntry } from './conversation-pool.js';
+import type { ConversationPoolOptions, PoolEntry, PoolLease } from './conversation-pool.js';
 import { ConversationPool } from './conversation-pool.js';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from './types.js';
 
@@ -164,6 +164,24 @@ describe('ConversationPool', () => {
     expect(pool.has('agent-b', 'conv-1')).toBe(true);
   });
 
+  it('evictAgent continues teardown and removes every target when one stop rejects', async () => {
+    const backends = [mockBackend('first'), mockBackend('second')];
+    backends[0].stop = vi.fn().mockRejectedValue(new Error('first stop failed'));
+    let call = 0;
+    const pool = new ConversationPool({
+      maxSize: 10,
+      backendFactory: vi.fn(async () => ({ backend: backends[call++], agent: mockAgent() })),
+    });
+    await pool.getOrCreate('agent-a', 'conv-1');
+    await pool.getOrCreate('agent-a', 'conv-2');
+
+    await expect(pool.evictAgent('agent-a')).rejects.toThrow('first stop failed');
+    expect(backends[0].stop).toHaveBeenCalledTimes(1);
+    expect(backends[1].stop).toHaveBeenCalledTimes(1);
+    expect(pool.has('agent-a', 'conv-1')).toBe(false);
+    expect(pool.has('agent-a', 'conv-2')).toBe(false);
+  });
+
   it('evictAgent aborts pinned entries before stopping', async () => {
     const backend = mockBackend();
     const pool = new ConversationPool({
@@ -261,6 +279,23 @@ describe('ConversationPool', () => {
     }
   });
 
+  it('clear continues stopping and empties the pool when one backend rejects', async () => {
+    const backends = [mockBackend('first'), mockBackend('second')];
+    backends[0].stop = vi.fn().mockRejectedValue(new Error('clear stop failed'));
+    let call = 0;
+    const pool = new ConversationPool({
+      maxSize: 10,
+      backendFactory: vi.fn(async () => ({ backend: backends[call++], agent: mockAgent() })),
+    });
+    await pool.getOrCreate('a', 'conv-1');
+    await pool.getOrCreate('b', 'conv-2');
+
+    await expect(pool.clear()).rejects.toThrow('clear stop failed');
+    expect(backends[0].stop).toHaveBeenCalledTimes(1);
+    expect(backends[1].stop).toHaveBeenCalledTimes(1);
+    expect(pool.size).toBe(0);
+  });
+
   it('stats returns correct pool statistics', async () => {
     const pool = makePool();
     await pool.getOrCreate('agent-a', 'conv-1');
@@ -303,4 +338,110 @@ describe('ConversationPool', () => {
 
     await expect(pool.getOrCreate('c', 'conv-3')).rejects.toThrow(/all pinned/);
   });
+
+  it('acquires same-key leases atomically and releases each reference exactly once', async () => {
+    const pool = makePool();
+    const first: PoolLease = await pool.acquire('a', 'conv-1');
+    const second = await pool.acquire('a', 'conv-1');
+
+    expect(first.entry).toBe(second.entry);
+    expect(pool.stats().pinned).toBe(1);
+    first.release();
+    first.release();
+    expect(pool.stats().pinned).toBe(1);
+    second.release();
+    expect(pool.stats().pinned).toBe(0);
+  });
+
+  it('reserves maxSize capacity while a different-key creation is pending', async () => {
+    const firstFactory = deferredFactory();
+    const factory = vi
+      .fn()
+      .mockImplementationOnce(() => firstFactory.promise)
+      .mockResolvedValue({ backend: mockBackend('unexpected'), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+
+    const firstLeasePromise = pool.acquire('a', 'conv-1');
+    await Promise.resolve();
+    await expect(pool.acquire('b', 'conv-2')).rejects.toThrow(/all leased|full/);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    firstFactory.resolve({ backend: mockBackend('created'), agent: mockAgent() });
+    const first = await firstLeasePromise;
+    first.release();
+  });
+
+  it('deduplicates concurrent same-key creation while granting two references', async () => {
+    const pending = deferredFactory();
+    const factory = vi.fn(() => pending.promise);
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+
+    const firstPromise = pool.acquire('a', 'conv-1');
+    const secondPromise = pool.acquire('a', 'conv-1');
+    pending.resolve({ backend: mockBackend(), agent: mockAgent() });
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(factory).toHaveBeenCalledTimes(1);
+    first.release();
+    expect(pool.stats().pinned).toBe(1);
+    second.release();
+    expect(pool.stats().pinned).toBe(0);
+  });
+
+  it('releases a failed creation reservation so another key can be acquired', async () => {
+    const factory = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('factory failed'))
+      .mockResolvedValueOnce({ backend: mockBackend(), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+
+    await expect(pool.acquire('a', 'conv-1')).rejects.toThrow('factory failed');
+    const lease = await pool.acquire('b', 'conv-2');
+    expect(lease.entry.backend.name).toBe('mock');
+    lease.release();
+  });
+
+  it('evicts only after the final lease reference is released', async () => {
+    const firstBackend = mockBackend('first');
+    const secondBackend = mockBackend('second');
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: firstBackend, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: secondBackend, agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+
+    const first = await pool.acquire('a', 'conv-1');
+    await expect(pool.acquire('b', 'conv-2')).rejects.toThrow(/all leased|full/);
+    expect(firstBackend.stop).not.toHaveBeenCalled();
+
+    first.release();
+    const second = await pool.acquire('b', 'conv-2');
+    expect(firstBackend.stop).toHaveBeenCalledTimes(1);
+    expect(second.entry.backend).toBe(secondBackend);
+    second.release();
+  });
+
+  it('does not let a stale forced-eviction lease release unpin a replacement generation', async () => {
+    const pool = makePool();
+    const stale = await pool.acquire('a', 'conv-1');
+    await pool.evictAgent('a');
+    const replacement = await pool.acquire('a', 'conv-1');
+
+    stale.release();
+    expect(pool.stats().pinned).toBe(1);
+    replacement.release();
+    expect(pool.stats().pinned).toBe(0);
+  });
 });
+
+function deferredFactory() {
+  let resolve!: (value: { backend: AgentBackend; agent: ReturnType<typeof mockAgent> }) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<{ backend: AgentBackend; agent: ReturnType<typeof mockAgent> }>(
+    (res, rej) => {
+      resolve = res;
+      reject = rej;
+    },
+  );
+  return { promise, resolve, reject };
+}

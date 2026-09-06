@@ -15,13 +15,16 @@
  * 3. `new DefaultResourceLoader(...)` has the methods `DashResourceLoader`
  *    delegates to
  *
- * Deliberately OUT of scope (would require API keys or non-trivial setup):
- * - Actually calling `createAgentSession` — just verify it's a function
- * - Actually running a model via `getModel(...).generate(...)`
+ * A focused integration below also runs a real AgentSession with an injected
+ * in-memory stream function. It exercises Pi's listener ordering and session
+ * persistence without making a network request.
  */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { getModel } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, getModel } from '@earendil-works/pi-ai';
 import type { Api, Model } from '@earendil-works/pi-ai';
 // If any of these imports change name, TypeScript compilation fails before
 // the test runner even starts — which is itself a fast-failing contract check.
@@ -45,6 +48,16 @@ import type {
   ResourceLoader,
   Skill,
 } from '@earendil-works/pi-coding-agent';
+import type { AgentEvent } from '../types.js';
+import { PiAgentBackend } from './piagent.js';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 describe('pi-coding-agent SDK contract', () => {
   it('exports createAgentSession as a function', () => {
@@ -254,5 +267,130 @@ describe('pi-coding-agent SDK type surface', () => {
     expect(event).toBeUndefined();
     expect(loader).toBeUndefined();
     expect(model).toBeUndefined();
+  });
+});
+
+describe('PiAgentBackend real Pi-core/AgentSession steering contract', () => {
+  it('blocks the next provider request and Pi persistence behind the durable callback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-pi-steer-contract-'));
+    const sessionDir = join(root, 'sessions');
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-5', systemPrompt: 'test', tools: [] },
+      { anthropic: 'sk-test-no-network' },
+      undefined,
+      sessionDir,
+    );
+    const firstProviderStarted = deferred<void>();
+    const finishFirstProvider = deferred<void>();
+    const callbackStarted = deferred<void>();
+    const deliveryCommitted = deferred<void>();
+    const secondProviderStarted = deferred<void>();
+    const providerBodies: unknown[] = [];
+
+    try {
+      await backend.start(root);
+      const session = (backend as unknown as { session: AgentSession }).session;
+      let providerCall = 0;
+      session.agent.streamFn = ((model, context) => {
+        providerCall++;
+        const call = providerCall;
+        providerBodies.push(context.messages);
+        if (call === 1) firstProviderStarted.resolve();
+        else secondProviderStarted.resolve();
+        const stream = createAssistantMessageEventStream();
+        void (async () => {
+          if (call === 1) await finishFirstProvider.promise;
+          const text = call === 1 ? 'before' : 'after';
+          const message = {
+            role: 'assistant' as const,
+            content: [] as Array<{ type: 'text'; text: string }>,
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: 'stop' as const,
+            timestamp: Date.now(),
+          };
+          stream.push({ type: 'start', partial: message });
+          message.content.push({ type: 'text', text: '' });
+          stream.push({ type: 'text_start', contentIndex: 0, partial: message });
+          message.content[0].text = text;
+          stream.push({ type: 'text_delta', contentIndex: 0, delta: text, partial: message });
+          stream.push({ type: 'text_end', contentIndex: 0, content: text, partial: message });
+          stream.push({ type: 'done', reason: 'stop', message });
+          stream.end();
+        })();
+        return stream;
+      }) as typeof session.agent.streamFn;
+
+      const eventsPromise = (async () => {
+        const events: AgentEvent[] = [];
+        for await (const event of backend.run(
+          {
+            channelId: 'web',
+            conversationId: 'conversation-1',
+            model: 'anthropic/claude-sonnet-4-5',
+            message: 'start',
+            systemPrompt: 'test',
+          },
+          {
+            runId: 'run-1',
+            onSteerConsumed: async (inputId) => {
+              expect(inputId).toBe('input-1');
+              callbackStarted.resolve();
+              await deliveryCommitted.promise;
+            },
+          },
+        )) {
+          events.push(event);
+        }
+        return events;
+      })();
+
+      await firstProviderStarted.promise;
+      await backend.steer('run-1', 'input-1', { text: 'focus' });
+      finishFirstProvider.resolve();
+      await callbackStarted.promise;
+      expect(providerBodies).toHaveLength(1);
+      expect(
+        session.sessionManager
+          .getBranch()
+          .some(
+            (entry) =>
+              entry.type === 'message' &&
+              (entry.message as { __dashInputId?: string }).__dashInputId === 'input-1',
+          ),
+      ).toBe(false);
+
+      deliveryCommitted.resolve();
+      await secondProviderStarted.promise;
+      const events = await eventsPromise;
+      expect(providerBodies).toHaveLength(2);
+      expect(JSON.stringify(providerBodies)).not.toContain('__dashInputId');
+      expect(JSON.stringify(events)).not.toContain('__dashInputId');
+      expect(
+        session.sessionManager
+          .getBranch()
+          .filter(
+            (entry) =>
+              entry.type === 'message' &&
+              (entry.message as { __dashInputId?: string }).__dashInputId === 'input-1',
+          ),
+      ).toHaveLength(1);
+      expect(
+        events.filter((event) => event.type === 'response').map((event) => event.content),
+      ).toEqual(['before', 'after']);
+      await backend.sealSteering('run-1');
+    } finally {
+      await backend.stop();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

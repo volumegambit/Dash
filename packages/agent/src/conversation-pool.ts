@@ -8,6 +8,11 @@ export interface PoolEntry {
   pinned: boolean;
 }
 
+export interface PoolLease {
+  entry: PoolEntry;
+  release(): void;
+}
+
 export type PoolBackendFactory = (
   agentName: string,
   conversationId: string,
@@ -18,9 +23,15 @@ export interface ConversationPoolOptions {
   backendFactory: PoolBackendFactory;
 }
 
+interface LeaseRefState {
+  count: number;
+}
+
 export class ConversationPool {
   private pool = new Map<string, PoolEntry>();
   private pending = new Map<string, Promise<PoolEntry>>();
+  private leaseRefs = new Map<string, LeaseRefState>();
+  private legacyPins = new Set<string>();
   private readonly maxSize: number;
   private readonly backendFactory: PoolBackendFactory;
 
@@ -49,13 +60,21 @@ export class ConversationPool {
     const inflight = this.pending.get(k);
     if (inflight) return inflight;
 
-    const promise = this.createEntry(k, agentName, conversationId);
+    let startCreation!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      startCreation = resolve;
+    });
+    const promise = (async () => {
+      await startGate;
+      try {
+        return await this.createEntry(k, agentName, conversationId);
+      } finally {
+        this.pending.delete(k);
+      }
+    })();
     this.pending.set(k, promise);
-    try {
-      return await promise;
-    } finally {
-      this.pending.delete(k);
-    }
+    startCreation();
+    return promise;
   }
 
   private async createEntry(
@@ -63,11 +82,13 @@ export class ConversationPool {
     agentName: string,
     conversationId: string,
   ): Promise<PoolEntry> {
-    if (this.pool.size >= this.maxSize) {
+    // `pending` already contains this creation. Counting it reserves capacity
+    // before the factory awaits, closing the old getOrCreate()/pin() race.
+    if (this.pool.size + this.pending.size > this.maxSize) {
       const evicted = await this.evictLRU();
       if (!evicted) {
         throw new Error(
-          `Pool is full (${this.maxSize} entries, all pinned). Cannot create new conversation.`,
+          `Pool is full (${this.maxSize} entries, all pinned, leased, or reserved). Cannot create new conversation.`,
         );
       }
     }
@@ -77,10 +98,50 @@ export class ConversationPool {
       backend,
       agent,
       lastActive: Date.now(),
-      pinned: false,
+      pinned: (this.leaseRefs.get(k)?.count ?? 0) > 0 || this.legacyPins.has(k),
     };
     this.pool.set(k, entry);
     return entry;
+  }
+
+  async acquire(agentName: string, conversationId: string): Promise<PoolLease> {
+    const k = this.key(agentName, conversationId);
+    const refs = this.leaseRefs.get(k) ?? { count: 0 };
+    refs.count++;
+    this.leaseRefs.set(k, refs);
+    const existing = this.pool.get(k);
+    if (existing) existing.pinned = true;
+
+    let entry: PoolEntry;
+    try {
+      entry = await this.getOrCreate(agentName, conversationId);
+      entry.pinned = true;
+    } catch (error) {
+      this.releaseLeaseRef(k, refs);
+      throw error;
+    }
+
+    let released = false;
+    return {
+      entry,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.releaseLeaseRef(k, refs);
+      },
+    };
+  }
+
+  private releaseLeaseRef(k: string, refs: LeaseRefState): void {
+    // Forced eviction retires the whole generation. A late release from that
+    // generation must not decrement a replacement entry's independent count.
+    if (this.leaseRefs.get(k) !== refs) return;
+    const next = refs.count - 1;
+    refs.count = next;
+    if (next > 0) this.leaseRefs.set(k, refs);
+    else this.leaseRefs.delete(k);
+    const entry = this.pool.get(k);
+    if (entry) entry.pinned = next > 0 || this.legacyPins.has(k);
   }
 
   private async evictLRU(): Promise<boolean> {
@@ -103,13 +164,17 @@ export class ConversationPool {
   }
 
   pin(agentName: string, conversationId: string): void {
-    const entry = this.pool.get(this.key(agentName, conversationId));
+    const k = this.key(agentName, conversationId);
+    this.legacyPins.add(k);
+    const entry = this.pool.get(k);
     if (entry) entry.pinned = true;
   }
 
   unpin(agentName: string, conversationId: string): void {
-    const entry = this.pool.get(this.key(agentName, conversationId));
-    if (entry) entry.pinned = false;
+    const k = this.key(agentName, conversationId);
+    this.legacyPins.delete(k);
+    const entry = this.pool.get(k);
+    if (entry) entry.pinned = (this.leaseRefs.get(k)?.count ?? 0) > 0;
   }
 
   get(agentName: string, conversationId: string): PoolEntry | undefined {
@@ -122,19 +187,33 @@ export class ConversationPool {
 
   async evictAgent(agentName: string): Promise<void> {
     const prefix = `${agentName}/`;
-    const toEvict: string[] = [];
+    const toEvict: Array<[string, PoolEntry]> = [];
     for (const [key, entry] of this.pool) {
-      if (key.startsWith(prefix)) {
+      if (key.startsWith(prefix)) toEvict.push([key, entry]);
+    }
+    const errors: unknown[] = [];
+    await Promise.all(
+      toEvict.map(async ([, entry]) => {
         if (entry.pinned) {
-          entry.backend.abort();
+          try {
+            entry.backend.abort();
+          } catch (error) {
+            errors.push(error);
+          }
         }
-        await entry.backend.stop();
-        toEvict.push(key);
-      }
-    }
-    for (const key of toEvict) {
+        try {
+          await entry.backend.stop();
+        } catch (error) {
+          errors.push(error);
+        }
+      }),
+    );
+    for (const [key] of toEvict) {
       this.pool.delete(key);
+      this.leaseRefs.delete(key);
+      this.legacyPins.delete(key);
     }
+    if (errors.length > 0) throw errors[0];
   }
 
   /**
@@ -157,6 +236,8 @@ export class ConversationPool {
     }
     for (const key of toEvict) {
       this.pool.delete(key);
+      this.leaseRefs.delete(key);
+      this.legacyPins.delete(key);
     }
   }
 
@@ -170,10 +251,13 @@ export class ConversationPool {
   }
 
   async clear(): Promise<void> {
-    for (const entry of this.pool.values()) {
-      await entry.backend.stop();
-    }
+    const entries = [...this.pool.values()];
+    const results = await Promise.allSettled(entries.map((entry) => entry.backend.stop()));
     this.pool.clear();
+    this.leaseRefs.clear();
+    this.legacyPins.clear();
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   }
 
   stats(): { size: number; maxSize: number; pinned: number; agents: Record<string, number> } {
