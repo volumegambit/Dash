@@ -105,19 +105,20 @@ describe('PiAgentBackend', () => {
     expect(() => makeBackend()).not.toThrow();
   });
 
-  it('throws when run() called before start()', async () => {
+  it('throws synchronously when run() is called before start()', () => {
     const backend = makeBackend();
-    const gen = backend.run(
-      {
-        channelId: 'ch-1',
-        conversationId: 'conv-1',
-        model: 'anthropic/claude-sonnet-4-20250514',
-        message: 'hello',
-        systemPrompt: '',
-      },
-      {},
-    );
-    await expect(gen.next()).rejects.toThrow('PiAgentBackend not started');
+    expect(() =>
+      backend.run(
+        {
+          channelId: 'ch-1',
+          conversationId: 'conv-1',
+          model: 'anthropic/claude-sonnet-4-20250514',
+          message: 'hello',
+          systemPrompt: '',
+        },
+        {},
+      ),
+    ).toThrow('PiAgentBackend not started');
   });
 
   it('stop() succeeds even when not started', async () => {
@@ -793,6 +794,7 @@ describe('PiAgentBackend ordered steering', () => {
       sessionManager,
       agent,
       dispose: vi.fn(),
+      steer: vi.fn(async () => {}),
       subscribe: vi.fn((listener: (event: unknown) => void) => {
         sessionListeners.add(listener);
         return vi.fn(() => sessionListeners.delete(listener));
@@ -852,7 +854,10 @@ describe('PiAgentBackend ordered steering', () => {
     };
   }
 
-  async function mountSteeringBackend(harness: ReturnType<typeof makeSteeringHarness>) {
+  async function mountSteeringBackend(
+    harness: ReturnType<typeof makeSteeringHarness>,
+    backend = makeBackend(),
+  ) {
     const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
     vi.mocked(createAgentSession).mockResolvedValueOnce({
       // biome-ignore lint/suspicious/noExplicitAny: focused partial AgentSession test double
@@ -860,7 +865,6 @@ describe('PiAgentBackend ordered steering', () => {
       // biome-ignore lint/suspicious/noExplicitAny: focused partial creation result
       extensionsResult: {} as any,
     });
-    const backend = makeBackend();
     await backend.start('/tmp/test');
     return backend;
   }
@@ -1063,11 +1067,90 @@ describe('PiAgentBackend ordered steering', () => {
     harness.finishFirstTurn.resolve();
     await first;
 
-    const next = backend.run(state('conv-2'), {
+    expect(() =>
+      backend.run(state('conv-2'), {
+        runId: 'run-2',
+        onSteerConsumed: async () => {},
+      }),
+    ).toThrow(/unsealed/);
+  });
+
+  it('claims run ownership synchronously before the first iterator pull', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const first = backend.run(state(), {
+      runId: RUN_ID,
+      onSteerConsumed: async () => {},
+    });
+
+    expect(() =>
+      backend.run(state('conv-2'), {
+        runId: 'run-2',
+        onSteerConsumed: async () => {},
+      }),
+    ).toThrow(/in progress/);
+    expect(() => backend.run(state('conv-legacy'), {})).toThrow(/in progress/);
+
+    await first.return(undefined as never);
+    const replacement = backend.run(state('conv-2'), {
       runId: 'run-2',
       onSteerConsumed: async () => {},
     });
-    await expect(next.next()).rejects.toThrow(/unsealed/);
+    await replacement.return(undefined as never);
+  });
+
+  it('keeps run ownership through early seal and asynchronous unwind', async () => {
+    const harness = makeSteeringHarness();
+    const stopStarted = deferred<void>();
+    const finishStop = deferred<void>();
+    const hookRunner = {
+      runPreToolUse: vi.fn().mockResolvedValue({ block: false }),
+      runPostToolUse: vi.fn().mockResolvedValue({ block: false }),
+      runSessionStart: vi.fn().mockResolvedValue({}),
+      runStop: vi.fn(async () => {
+        stopStarted.resolve();
+        await finishStop.promise;
+        return {};
+      }),
+      hasHooks: true,
+    };
+    const backend = new PiAgentBackend(
+      { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'You are helpful.' },
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      [],
+      hookRunner,
+    );
+    await mountSteeringBackend(harness, backend);
+    const first = collectEvents(
+      backend.run(state(), { runId: RUN_ID, onSteerConsumed: async () => {} }),
+    );
+    await harness.providerStarted.promise;
+    await backend.sealSteering(RUN_ID);
+    harness.finishFirstTurn.resolve();
+    await stopStarted.promise;
+
+    expect(() =>
+      backend.run(state('conv-2'), {
+        runId: 'run-2',
+        onSteerConsumed: async () => {},
+      }),
+    ).toThrow(/in progress/);
+    expect(() => backend.run(state('conv-legacy'), {})).toThrow(/in progress/);
+
+    finishStop.resolve();
+    await first;
+    const replacement = backend.run(state('conv-2'), {
+      runId: 'run-2',
+      onSteerConsumed: async () => {},
+    });
+    await replacement.return(undefined as never);
   });
 
   it('reconciles runtime and full branch independently in canonical order', async () => {
@@ -1190,6 +1273,20 @@ describe('PiAgentBackend ordered steering', () => {
     backend.abort();
     harness.finishFirstTurn.resolve();
     await eventsPromise;
+  });
+
+  it('keeps legacy session steering separate from typed correlated steering', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    const images = [{ type: 'image' as const, mediaType: 'image/webp' as const, data: 'd2VicA==' }];
+
+    await backend.steerLegacy('legacy text', images);
+
+    expect(harness.session.steer).toHaveBeenCalledWith('legacy text', [
+      { type: 'image', mimeType: 'image/webp', data: 'd2VicA==' },
+    ]);
+    expect(harness.agent.steer).not.toHaveBeenCalled();
+    expect(typeof backend.steer).toBe('function');
   });
 });
 

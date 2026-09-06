@@ -27,11 +27,41 @@ interface LeaseRefState {
   count: number;
 }
 
+interface PendingCreation {
+  key: string;
+  agentName: string;
+  conversationId: string;
+  epoch: number;
+  retired: boolean;
+  promise: Promise<PoolEntry>;
+}
+
+interface RetiredEntry {
+  key: string;
+  entry: PoolEntry;
+}
+
+interface RetiringGeneration {
+  key: string;
+  settled: Promise<void>;
+  resolve(): void;
+}
+
+class PoolCreationRetiredError extends Error {
+  constructor(agentName: string, conversationId: string) {
+    super(`Pool creation for '${agentName}/${conversationId}' was retired`);
+    this.name = 'PoolCreationRetiredError';
+  }
+}
+
 export class ConversationPool {
   private pool = new Map<string, PoolEntry>();
-  private pending = new Map<string, Promise<PoolEntry>>();
+  private pending = new Map<string, PendingCreation>();
+  private retiring = new Map<string, RetiringGeneration>();
   private leaseRefs = new Map<string, LeaseRefState>();
   private legacyPins = new Set<string>();
+  private slotEpochs = new Map<string, number>();
+  private nextSlotEpoch = 0;
   private readonly maxSize: number;
   private readonly backendFactory: PoolBackendFactory;
 
@@ -48,60 +78,141 @@ export class ConversationPool {
     return `${agentName}/${conversationId}`;
   }
 
-  async getOrCreate(agentName: string, conversationId: string): Promise<PoolEntry> {
+  getOrCreate(agentName: string, conversationId: string): Promise<PoolEntry> {
     const k = this.key(agentName, conversationId);
     const existing = this.pool.get(k);
     if (existing) {
       existing.lastActive = Date.now();
-      return existing;
+      return Promise.resolve(existing);
+    }
+
+    // An LRU victim is detached before stop() begins. A same-key caller must
+    // wait until that slot transfer settles, then retry against the surviving
+    // generation instead of receiving the doomed entry or racing its teardown.
+    const retiring = this.retiring.get(k);
+    if (retiring) {
+      return retiring.settled.then(() => this.getOrCreate(agentName, conversationId));
     }
 
     // Deduplicate concurrent creates for the same key
     const inflight = this.pending.get(k);
-    if (inflight) return inflight;
+    if (inflight) return inflight.promise;
 
-    let startCreation!: () => void;
-    const startGate = new Promise<void>((resolve) => {
-      startCreation = resolve;
+    let victim: RetiredEntry | undefined;
+    try {
+      victim = this.reserveSlot();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    let resolveCreation!: (entry: PoolEntry) => void;
+    let rejectCreation!: (error: unknown) => void;
+    const promise = new Promise<PoolEntry>((resolve, reject) => {
+      resolveCreation = resolve;
+      rejectCreation = reject;
     });
-    const promise = (async () => {
-      await startGate;
-      try {
-        return await this.createEntry(k, agentName, conversationId);
-      } finally {
-        this.pending.delete(k);
-      }
-    })();
-    this.pending.set(k, promise);
-    startCreation();
+    const creation: PendingCreation = {
+      key: k,
+      agentName,
+      conversationId,
+      epoch: ++this.nextSlotEpoch,
+      retired: false,
+      promise,
+    };
+    this.slotEpochs.set(k, creation.epoch);
+    this.pending.set(k, creation);
+    this.finishCreation(creation, victim).then(resolveCreation, rejectCreation);
     return promise;
   }
 
-  private async createEntry(
-    k: string,
-    agentName: string,
-    conversationId: string,
-  ): Promise<PoolEntry> {
-    // `pending` already contains this creation. Counting it reserves capacity
-    // before the factory awaits, closing the old getOrCreate()/pin() race.
-    if (this.pool.size + this.pending.size > this.maxSize) {
-      const evicted = await this.evictLRU();
-      if (!evicted) {
-        throw new Error(
-          `Pool is full (${this.maxSize} entries, all pinned, leased, or reserved). Cannot create new conversation.`,
-        );
-      }
+  private reserveSlot(): RetiredEntry | undefined {
+    if (this.pool.size + this.pending.size < this.maxSize) return undefined;
+
+    let oldest: { key: string; entry: PoolEntry } | undefined;
+    for (const [key, entry] of this.pool) {
+      if (entry.pinned) continue;
+      if (!oldest || entry.lastActive < oldest.entry.lastActive) oldest = { key, entry };
+    }
+    if (!oldest) {
+      throw new Error(
+        `Pool is full (${this.maxSize} entries, all pinned, leased, or reserved). Cannot create new conversation.`,
+      );
     }
 
-    const { backend, agent } = await this.backendFactory(agentName, conversationId);
-    const entry: PoolEntry = {
-      backend,
-      agent,
-      lastActive: Date.now(),
-      pinned: (this.leaseRefs.get(k)?.count ?? 0) > 0 || this.legacyPins.has(k),
-    };
-    this.pool.set(k, entry);
-    return entry;
+    // Retire the victim atomically before stop() can yield. No same-key caller
+    // can rediscover or pin an entry whose capacity slot is being transferred.
+    this.retireEntry(oldest.key);
+    return oldest;
+  }
+
+  private async finishCreation(
+    creation: PendingCreation,
+    victim?: RetiredEntry,
+  ): Promise<PoolEntry> {
+    let installed = false;
+    let retiring: RetiringGeneration | undefined;
+    try {
+      if (victim) {
+        retiring = this.beginRetirement(victim);
+        await victim.entry.backend.stop();
+      }
+      this.assertCurrentCreation(creation);
+
+      const { backend, agent } = await this.backendFactory(
+        creation.agentName,
+        creation.conversationId,
+      );
+      if (!this.isCurrentCreation(creation)) {
+        await backend.stop();
+        throw new PoolCreationRetiredError(creation.agentName, creation.conversationId);
+      }
+
+      const entry: PoolEntry = {
+        backend,
+        agent,
+        lastActive: Date.now(),
+        pinned:
+          (this.leaseRefs.get(creation.key)?.count ?? 0) > 0 || this.legacyPins.has(creation.key),
+      };
+      this.pool.set(creation.key, entry);
+      installed = true;
+      return entry;
+    } finally {
+      if (this.pending.get(creation.key) === creation) {
+        this.pending.delete(creation.key);
+        if (!installed && this.slotEpochs.get(creation.key) === creation.epoch) {
+          this.slotEpochs.delete(creation.key);
+        }
+      }
+      if (retiring) {
+        if (this.retiring.get(retiring.key) === retiring) this.retiring.delete(retiring.key);
+        retiring.resolve();
+      }
+    }
+  }
+
+  private beginRetirement(victim: RetiredEntry): RetiringGeneration {
+    let resolve!: () => void;
+    const settled = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const retiring = { key: victim.key, settled, resolve };
+    this.retiring.set(victim.key, retiring);
+    return retiring;
+  }
+
+  private isCurrentCreation(creation: PendingCreation): boolean {
+    return (
+      !creation.retired &&
+      this.pending.get(creation.key) === creation &&
+      this.slotEpochs.get(creation.key) === creation.epoch
+    );
+  }
+
+  private assertCurrentCreation(creation: PendingCreation): void {
+    if (!this.isCurrentCreation(creation)) {
+      throw new PoolCreationRetiredError(creation.agentName, creation.conversationId);
+    }
   }
 
   async acquire(agentName: string, conversationId: string): Promise<PoolLease> {
@@ -144,23 +255,55 @@ export class ConversationPool {
     if (entry) entry.pinned = next > 0 || this.legacyPins.has(k);
   }
 
-  private async evictLRU(): Promise<boolean> {
-    let oldest: { key: string; time: number } | null = null;
-    for (const [key, entry] of this.pool) {
-      if (entry.pinned) continue;
-      if (!oldest || entry.lastActive < oldest.time) {
-        oldest = { key, time: entry.lastActive };
+  private retireEntry(key: string): PoolEntry | undefined {
+    const entry = this.pool.get(key);
+    if (!entry) return undefined;
+    this.pool.delete(key);
+    this.leaseRefs.delete(key);
+    this.legacyPins.delete(key);
+    this.slotEpochs.delete(key);
+    return entry;
+  }
+
+  private retirePending(matches: (creation: PendingCreation) => boolean): PendingCreation[] {
+    const retired: PendingCreation[] = [];
+    for (const [key, creation] of this.pending) {
+      if (!matches(creation)) continue;
+      creation.retired = true;
+      this.pending.delete(key);
+      if (this.slotEpochs.get(key) === creation.epoch) this.slotEpochs.delete(key);
+      this.leaseRefs.delete(key);
+      this.legacyPins.delete(key);
+      retired.push(creation);
+    }
+    return retired;
+  }
+
+  private async stopEntry(entry: PoolEntry, abortPinned: boolean): Promise<unknown[]> {
+    const errors: unknown[] = [];
+    if (abortPinned && entry.pinned) {
+      try {
+        entry.backend.abort();
+      } catch (error) {
+        errors.push(error);
       }
     }
-    if (oldest) {
-      const entry = this.pool.get(oldest.key);
-      if (entry) {
-        await entry.backend.stop();
-        this.pool.delete(oldest.key);
-        return true;
-      }
+    try {
+      await entry.backend.stop();
+    } catch (error) {
+      errors.push(error);
     }
-    return false;
+    return errors;
+  }
+
+  private async awaitRetiredCreations(creations: PendingCreation[]): Promise<unknown[]> {
+    const results = await Promise.allSettled(creations.map((creation) => creation.promise));
+    return results.flatMap((result) => {
+      if (result.status === 'fulfilled' || result.reason instanceof PoolCreationRetiredError) {
+        return [];
+      }
+      return [result.reason];
+    });
   }
 
   pin(agentName: string, conversationId: string): void {
@@ -187,32 +330,18 @@ export class ConversationPool {
 
   async evictAgent(agentName: string): Promise<void> {
     const prefix = `${agentName}/`;
-    const toEvict: Array<[string, PoolEntry]> = [];
+    const toEvict: PoolEntry[] = [];
     for (const [key, entry] of this.pool) {
-      if (key.startsWith(prefix)) toEvict.push([key, entry]);
+      if (!key.startsWith(prefix)) continue;
+      this.retireEntry(key);
+      toEvict.push(entry);
     }
-    const errors: unknown[] = [];
-    await Promise.all(
-      toEvict.map(async ([, entry]) => {
-        if (entry.pinned) {
-          try {
-            entry.backend.abort();
-          } catch (error) {
-            errors.push(error);
-          }
-        }
-        try {
-          await entry.backend.stop();
-        } catch (error) {
-          errors.push(error);
-        }
-      }),
-    );
-    for (const [key] of toEvict) {
-      this.pool.delete(key);
-      this.leaseRefs.delete(key);
-      this.legacyPins.delete(key);
-    }
+    const pending = this.retirePending((creation) => creation.agentName === agentName);
+    const [entryErrors, pendingErrors] = await Promise.all([
+      Promise.all(toEvict.map((entry) => this.stopEntry(entry, true))),
+      this.awaitRetiredCreations(pending),
+    ]);
+    const errors = [...entryErrors.flat(), ...pendingErrors];
     if (errors.length > 0) throw errors[0];
   }
 
@@ -228,17 +357,14 @@ export class ConversationPool {
    * (aborts pinned) — neither fits the "reset idle, drain pinned" semantics.
    */
   async evictIdle(): Promise<void> {
-    const toEvict: string[] = [];
+    const toEvict: PoolEntry[] = [];
     for (const [key, entry] of this.pool) {
       if (entry.pinned) continue;
-      await entry.backend.stop();
-      toEvict.push(key);
+      this.retireEntry(key);
+      toEvict.push(entry);
     }
-    for (const key of toEvict) {
-      this.pool.delete(key);
-      this.leaseRefs.delete(key);
-      this.legacyPins.delete(key);
-    }
+    const errors = (await Promise.all(toEvict.map((entry) => this.stopEntry(entry, false)))).flat();
+    if (errors.length > 0) throw errors[0];
   }
 
   async forAgent(agentName: string, fn: (entry: PoolEntry) => Promise<void>): Promise<void> {
@@ -251,13 +377,18 @@ export class ConversationPool {
   }
 
   async clear(): Promise<void> {
-    const entries = [...this.pool.values()];
-    const results = await Promise.allSettled(entries.map((entry) => entry.backend.stop()));
-    this.pool.clear();
-    this.leaseRefs.clear();
-    this.legacyPins.clear();
-    const failure = results.find((result) => result.status === 'rejected');
-    if (failure?.status === 'rejected') throw failure.reason;
+    const entries: PoolEntry[] = [];
+    for (const [key, entry] of this.pool) {
+      this.retireEntry(key);
+      entries.push(entry);
+    }
+    const pending = this.retirePending(() => true);
+    const [entryErrors, pendingErrors] = await Promise.all([
+      Promise.all(entries.map((entry) => this.stopEntry(entry, false))),
+      this.awaitRetiredCreations(pending),
+    ]);
+    const errors = [...entryErrors.flat(), ...pendingErrors];
+    if (errors.length > 0) throw errors[0];
   }
 
   stats(): { size: number; maxSize: number; pinned: number; agents: Record<string, number> } {

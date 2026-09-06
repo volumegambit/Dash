@@ -25,6 +25,7 @@ import type {
   InstalledSkill,
   MemoryInfo,
   MemoryRecord,
+  PoolLease,
   SaveMemoryInput,
   SkillDiscoveryResult,
   SteerContent,
@@ -426,9 +427,25 @@ export function createAgentChatCoordinator(
       return { backend, agent };
     },
   });
-  const runLeases = new Map<string, { release(): void }>();
-  const runLeaseKey = (agentId: string, conversationId: string, runId: string) =>
-    `${agentId}/${conversationId}/${runId}`;
+  interface ConversationRunOwner {
+    key: string;
+    runId: string;
+    lease: PoolLease;
+    iteratorSettled: boolean;
+    sealed: boolean;
+    released: boolean;
+  }
+  const runOwners = new Map<string, ConversationRunOwner>();
+  const runOwnerKey = (agentId: string, conversationId: string) => `${agentId}/${conversationId}`;
+  const releaseRunOwner = (owner: ConversationRunOwner) => {
+    if (owner.released) return;
+    owner.released = true;
+    if (runOwners.get(owner.key) === owner) runOwners.delete(owner.key);
+    owner.lease.release();
+  };
+  const maybeReleaseRunOwner = (owner: ConversationRunOwner) => {
+    if (owner.iteratorSettled && owner.sealed) releaseRunOwner(owner);
+  };
 
   const listSkillsFor = async (agentId: string): Promise<SkillDiscoveryResult[]> => {
     const entry = registry.get(agentId);
@@ -490,26 +507,48 @@ export function createAgentChatCoordinator(
 
       const lease = await pool.acquire(request.agentId, request.conversationId);
       const poolEntry = lease.entry;
-      let retainLeaseForSeal = false;
-      let leaseKey: string | undefined;
-      const provisionRunLease = () => {
+      let runOwner: ConversationRunOwner | undefined;
+      const claimRunOwner = () => {
         if (!request.runId) return;
-        leaseKey = runLeaseKey(request.agentId, request.conversationId, request.runId);
-        if (runLeases.has(leaseKey)) {
-          throw new Error(`Run '${request.runId}' already owns a conversation lease`);
+        const key = runOwnerKey(request.agentId, request.conversationId);
+        const existing = runOwners.get(key);
+        if (existing) {
+          throw new Error(
+            `Conversation '${request.conversationId}' already owns run '${existing.runId}'`,
+          );
         }
-        runLeases.set(leaseKey, lease);
-        retainLeaseForSeal = true;
+        runOwner = {
+          key,
+          runId: request.runId,
+          lease,
+          iteratorSettled: false,
+          sealed: false,
+          released: false,
+        };
+        runOwners.set(key, runOwner);
       };
       const failRunStart = () => {
-        if (leaseKey && runLeases.get(leaseKey) === lease) runLeases.delete(leaseKey);
-        retainLeaseForSeal = false;
+        if (runOwner) releaseRunOwner(runOwner);
+      };
+      const settleRun = () => {
+        if (!runOwner || runOwner.released) return;
+        runOwner.iteratorSettled = true;
+        maybeReleaseRunOwner(runOwner);
       };
 
       try {
-        await poolEntry.backend.reconcileSteers?.(request.deliveredSteers ?? []);
+        claimRunOwner();
+        let swarmEnabled: boolean;
+        try {
+          if (request.deliveredSteers !== undefined) {
+            await poolEntry.backend.reconcileSteers?.(request.deliveredSteers);
+          }
+          swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;
+        } catch (error) {
+          failRunStart();
+          throw error;
+        }
 
-        const swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;
         if (!swarmEnabled) {
           // The backend owns cancellation here (chat-ws aborts it directly).
           const gen = poolEntry.agent.chat(
@@ -524,7 +563,6 @@ export function createAgentChatCoordinator(
               onSteerConsumed: request.onSteerConsumed,
             },
           );
-          provisionRunLease();
           let runStarted = false;
           let completed = false;
           try {
@@ -547,7 +585,12 @@ export function createAgentChatCoordinator(
             if (!runStarted) failRunStart();
             throw error;
           } finally {
-            if (!completed) await gen.return(undefined as never);
+            try {
+              if (!completed) await gen.return(undefined as never);
+            } finally {
+              if (runStarted) settleRun();
+              else failRunStart();
+            }
           }
           return;
         }
@@ -564,32 +607,38 @@ export function createAgentChatCoordinator(
         // one silently loses events from both the live stream and the durable log.
         const swarm = options.swarm;
         if (!swarm) throw new Error('unreachable: swarm path without swarm wiring');
-        const attachment = swarm.coordinator.attach({
-          agentId: request.agentId,
-          agentName: entry.config.name,
-          conversationId: request.conversationId,
-          messageId: request.messageId,
-          // Cooperative abort of the orchestrator (pool-entry backend.abort).
-          orchestratorAbort: () => poolEntry.backend.abort(),
-          // Live registry read of the agent's swarm-enabled + disabled gate so a
-          // mid-turn PUT /agents/:id that flips either takes effect on the next
-          // spawn (the coordinator re-reads this per spawn).
-          getAgentGate: () => {
-            const e = registry.get(request.agentId);
-            return {
-              enabled: e?.config.swarm?.enabled === true,
-              disabled: e?.status === 'disabled',
-            };
-          },
-          caps: entry.config.swarm,
-          allowedModels: entry.config.swarm?.allowedModels,
-          orchestratorModel: entry.config.model,
-          orchestratorFallbackModels: entry.config.fallbackModels,
-          orchestratorTools: entry.config.tools,
-          // Workers sandbox to the orchestrator's workspace (not the gateway's
-          // process cwd). Absent → spawnWorker falls back to process.cwd().
-          workspace: entry.config.workspace,
-        });
+        let attachment: ReturnType<SwarmCoordinator['attach']>;
+        try {
+          attachment = swarm.coordinator.attach({
+            agentId: request.agentId,
+            agentName: entry.config.name,
+            conversationId: request.conversationId,
+            messageId: request.messageId,
+            // Cooperative abort of the orchestrator (pool-entry backend.abort).
+            orchestratorAbort: () => poolEntry.backend.abort(),
+            // Live registry read of the agent's swarm-enabled + disabled gate so a
+            // mid-turn PUT /agents/:id that flips either takes effect on the next
+            // spawn (the coordinator re-reads this per spawn).
+            getAgentGate: () => {
+              const e = registry.get(request.agentId);
+              return {
+                enabled: e?.config.swarm?.enabled === true,
+                disabled: e?.status === 'disabled',
+              };
+            },
+            caps: entry.config.swarm,
+            allowedModels: entry.config.swarm?.allowedModels,
+            orchestratorModel: entry.config.model,
+            orchestratorFallbackModels: entry.config.fallbackModels,
+            orchestratorTools: entry.config.tools,
+            // Workers sandbox to the orchestrator's workspace (not the gateway's
+            // process cwd). Absent → spawnWorker falls back to process.cwd().
+            workspace: entry.config.workspace,
+          });
+        } catch (error) {
+          failRunStart();
+          throw error;
+        }
 
         const gen = poolEntry.agent.chat(
           request.channelId ?? 'direct',
@@ -603,7 +652,6 @@ export function createAgentChatCoordinator(
             onSteerConsumed: request.onSteerConsumed,
           },
         );
-        provisionRunLease();
         let runStarted = false;
         const nextGen = () =>
           gen.next().then(
@@ -621,20 +669,46 @@ export function createAgentChatCoordinator(
         // done; `chanNext === null` marks the channel drained/closed. Both are
         // created up front and only re-created when their own value is consumed —
         // the loser of a race is kept, never re-issued.
-        let genNext: Promise<IteratorResult<AgentEvent>> | null = nextGen();
-        let chanNext: Promise<IteratorResult<AgentEvent>> | null = attachment.channel.take();
+        let genNext: Promise<IteratorResult<AgentEvent>> | null = null;
+        let chanNext: Promise<IteratorResult<AgentEvent>> | null = null;
         let completedNormally = false;
-
-        // A SINGLE abort promise for the whole turn (one `once` listener, created
-        // outside the loop so a long turn never accumulates listeners). Raced as a
-        // dedicated arm so an aborted turn breaks the loop the moment the signal
-        // fires — without waiting for the next orchestrator/worker event — and
-        // reaches finally (finalize). The arm never yields; it only breaks.
-        const abortArm: Promise<{ src: 'abort' }> | null = request.signal
-          ? abortRace(request.signal).then(() => ({ src: 'abort' as const }))
-          : null;
+        const cleanupSwarm = async () => {
+          let cleanupFailed = false;
+          let cleanupError: unknown;
+          try {
+            await attachment.finalize({ consumerAlive: completedNormally });
+          } catch (error) {
+            cleanupFailed = true;
+            cleanupError = error;
+          }
+          if (!completedNormally) {
+            try {
+              await gen.return(undefined as never);
+            } catch (error) {
+              if (!cleanupFailed) {
+                cleanupFailed = true;
+                cleanupError = error;
+              }
+            }
+          }
+          if (runStarted) settleRun();
+          else failRunStart();
+          if (cleanupFailed) throw cleanupError;
+        };
 
         try {
+          // Establish the attachment side before starting Pi. If either setup
+          // call throws, the same finally below finalizes the attachment and
+          // releases the pre-run owner.
+          chanNext = attachment.channel.take();
+          genNext = nextGen();
+
+          // A SINGLE abort promise for the whole turn (one `once` listener,
+          // created outside the loop so a long turn never accumulates listeners).
+          const abortArm: Promise<{ src: 'abort' }> | null = request.signal
+            ? abortRace(request.signal).then(() => ({ src: 'abort' as const }))
+            : null;
+
           // Already aborted before the first race: skip straight to finally.
           if (!request.signal?.aborted) {
             while (genNext !== null) {
@@ -700,10 +774,10 @@ export function createAgentChatCoordinator(
           // orchestrator, and (inside the coordinator) appending straggler
           // worker_done events out-of-band to the event log. The abort listener
           // is `once` and self-cleaning, so there is nothing to remove here.
-          await attachment.finalize({ consumerAlive: completedNormally });
+          await cleanupSwarm();
         }
       } finally {
-        if (!retainLeaseForSeal) lease.release();
+        if (!runOwner || runOwner.released) lease.release();
       }
     },
 
@@ -780,11 +854,8 @@ export function createAgentChatCoordinator(
     async steer(agentId, conversationId, text, images) {
       const entry = pool.get(agentId, conversationId);
       if (!entry) throw new Error('No active conversation to steer');
-      const backend = entry.backend as AgentBackend & {
-        steer?: (text: string, images?: ImageBlock[]) => Promise<void>;
-      };
-      if (backend.steer) {
-        await backend.steer(text, images);
+      if (entry.backend.steerLegacy) {
+        await entry.backend.steerLegacy(text, images);
       }
     },
 
@@ -797,11 +868,10 @@ export function createAgentChatCoordinator(
     async sealSteering(agentId, conversationId, runId) {
       const entry = pool.get(agentId, conversationId);
       const inputIds = entry?.backend.sealSteering ? await entry.backend.sealSteering(runId) : [];
-      const key = runLeaseKey(agentId, conversationId, runId);
-      const runLease = runLeases.get(key);
-      if (runLease) {
-        runLeases.delete(key);
-        runLease.release();
+      const owner = runOwners.get(runOwnerKey(agentId, conversationId));
+      if (owner?.runId === runId) {
+        owner.sealed = true;
+        maybeReleaseRunOwner(owner);
       }
       return inputIds;
     },
@@ -839,10 +909,9 @@ export function createAgentChatCoordinator(
         await pool.evictAgent(agentId);
       } finally {
         const prefix = `${agentId}/`;
-        for (const [key, lease] of runLeases) {
+        for (const [key, owner] of runOwners) {
           if (!key.startsWith(prefix)) continue;
-          runLeases.delete(key);
-          lease.release();
+          releaseRunOwner(owner);
         }
       }
     },
@@ -856,8 +925,8 @@ export function createAgentChatCoordinator(
     },
 
     async stop() {
-      for (const lease of runLeases.values()) lease.release();
-      runLeases.clear();
+      for (const owner of runOwners.values()) releaseRunOwner(owner);
+      runOwners.clear();
       await pool.clear();
     },
   };

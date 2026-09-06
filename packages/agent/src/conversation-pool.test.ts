@@ -432,6 +432,139 @@ describe('ConversationPool', () => {
     replacement.release();
     expect(pool.stats().pinned).toBe(0);
   });
+
+  it('atomically retires a same-key LRU entry before awaiting its blocked stop', async () => {
+    const stopGate = deferred<void>();
+    const retiredBackend = mockBackend('retired');
+    retiredBackend.stop = vi.fn(() => stopGate.promise);
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: retiredBackend, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: mockBackend('new-key'), agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: mockBackend('same-key replacement'), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+    const retired = await pool.getOrCreate('a', 'old');
+
+    const replacementPromise = pool.getOrCreate('b', 'new');
+    expect(retiredBackend.stop).toHaveBeenCalledTimes(1);
+    expect(pool.get('a', 'old')).toBeUndefined();
+    let retrySettled = false;
+    const retryPromise = pool.acquire('a', 'old').then((lease) => {
+      retrySettled = true;
+      return lease;
+    });
+    await Promise.resolve();
+    expect(retrySettled).toBe(false);
+    expect(pool.get('a', 'old')).not.toBe(retired);
+
+    stopGate.resolve();
+    await replacementPromise;
+    const retried = await retryPromise;
+    expect(retried.entry).not.toBe(retired);
+    expect(retried.entry.backend.name).toBe('same-key replacement');
+    retried.release();
+  });
+
+  it('reserves capacity atomically for two creators while stopping one LRU only once', async () => {
+    const stopGate = deferred<void>();
+    const retiredBackend = mockBackend('retired');
+    retiredBackend.stop = vi.fn(() => stopGate.promise);
+    const factory = vi.fn(async (agentName: string) => ({
+      backend: agentName === 'old' ? retiredBackend : mockBackend(agentName),
+      agent: mockAgent(),
+    }));
+    const pool = new ConversationPool({ maxSize: 2, backendFactory: factory });
+    await pool.getOrCreate('old', 'conversation');
+
+    const firstPromise = pool.acquire('first', 'conversation');
+    const secondPromise = pool.acquire('second', 'conversation');
+    expect(retiredBackend.stop).toHaveBeenCalledTimes(1);
+    stopGate.resolve();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(pool.size).toBe(2);
+    expect(first.entry.backend.name).toBe('first');
+    expect(second.entry.backend.name).toBe('second');
+    first.release();
+    second.release();
+  });
+
+  it('retires a failed-stop victim and releases the creator reservation for retry', async () => {
+    const stopGate = deferred<void>();
+    const retiredBackend = mockBackend('retired');
+    retiredBackend.stop = vi.fn(() => stopGate.promise);
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: retiredBackend, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: mockBackend('fresh'), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+    await pool.getOrCreate('a', 'old');
+
+    const failedCreator = pool.acquire('b', 'new');
+    const sameKeyRetry = pool.acquire('a', 'old');
+    stopGate.reject(new Error('stop failed'));
+
+    await expect(failedCreator).rejects.toThrow('stop failed');
+    expect(pool.has('b', 'new')).toBe(false);
+
+    const retry = await sameKeyRetry;
+    expect(retry.entry.backend).not.toBe(retiredBackend);
+    expect(retry.entry.backend.name).toBe('fresh');
+    expect(factory).toHaveBeenCalledTimes(2);
+    retry.release();
+  });
+
+  it('clear retires and awaits a pending factory, then disposes its late backend', async () => {
+    const pending = deferredFactory();
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: vi.fn(() => pending.promise) });
+    const acquireOutcome = pool.acquire('a', 'conversation').then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    let clearSettled = false;
+    const clearPromise = pool.clear().then(() => {
+      clearSettled = true;
+    });
+    await Promise.resolve();
+    expect(clearSettled).toBe(false);
+
+    const lateBackend = mockBackend('late');
+    pending.resolve({ backend: lateBackend, agent: mockAgent() });
+    await clearPromise;
+    expect(await acquireOutcome).toMatchObject({ message: expect.stringMatching(/retired/) });
+    expect(lateBackend.stop).toHaveBeenCalledTimes(1);
+    expect(pool.size).toBe(0);
+  });
+
+  it('evictAgent retires an old pending epoch without deleting its same-key replacement', async () => {
+    const pending = deferredFactory();
+    const freshBackend = mockBackend('fresh');
+    const factory = vi
+      .fn()
+      .mockImplementationOnce(() => pending.promise)
+      .mockResolvedValueOnce({ backend: freshBackend, agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+    const staleOutcome = pool.acquire('a', 'conversation').then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    const eviction = pool.evictAgent('a');
+    const freshPromise = pool.acquire('a', 'conversation');
+    const staleBackend = mockBackend('stale');
+    pending.resolve({ backend: staleBackend, agent: mockAgent() });
+
+    await eviction;
+    const fresh = await freshPromise;
+    expect(await staleOutcome).toMatchObject({ message: expect.stringMatching(/retired/) });
+    expect(staleBackend.stop).toHaveBeenCalledTimes(1);
+    expect(pool.get('a', 'conversation')?.backend).toBe(freshBackend);
+    expect(pool.stats().pinned).toBe(1);
+    fresh.release();
+  });
 });
 
 function deferredFactory() {
@@ -443,5 +576,15 @@ function deferredFactory() {
       reject = rej;
     },
   );
+  return { promise, resolve, reject };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
   return { promise, resolve, reject };
 }

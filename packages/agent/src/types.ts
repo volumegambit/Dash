@@ -292,6 +292,7 @@ export interface AgentBackend {
   stop(): Promise<void>;
   run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
+  steerLegacy?(text: string, images?: ImageBlock[]): Promise<void>;
   steer?(runId: string, inputId: string, content: SteerContent): Promise<SteerResult>;
   sealSteering?(runId: string): Promise<string[]>;
   reconcileSteers?(records: readonly DeliveredSteerRecord[]): Promise<void>;

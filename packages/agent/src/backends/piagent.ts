@@ -335,6 +335,7 @@ export class PiAgentBackend implements AgentBackend {
   private cachedSeal: { runId: string; inputIds: string[] } | null = null;
   private unsubscribeSteeringListener: (() => void) | null = null;
   private pendingPersistenceRepairs = new Map<string, { manager: object; entry: unknown }>();
+  private runInProgress = false;
 
   /** Track the compaction reason from auto_compaction_start for use in auto_compaction_end */
   private lastCompactionReason: 'threshold' | 'overflow' = 'threshold';
@@ -966,14 +967,61 @@ export class PiAgentBackend implements AgentBackend {
    * 3. Pull from the queue and yield normalized events
    * 4. Return when agent_end is received
    */
-  async *run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
+  run(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
     if (!this.session) {
       throw new Error('PiAgentBackend not started. Call start() first.');
+    }
+    if (this.runInProgress) {
+      throw new Error('Cannot start a Pi run while another run is in progress');
     }
     if (this.steeringPhase === 'ended-unsealed') {
       throw new Error(
         `Cannot start run '${options.runId ?? 'legacy'}' while the prior run is ended-unsealed`,
       );
+    }
+
+    this.runInProgress = true;
+    const inner = this.runOwned(state, options);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.runInProgress = false;
+    };
+    return {
+      next: async (...args) => {
+        try {
+          const result = await inner.next(...args);
+          if (result.done) release();
+          return result;
+        } catch (error) {
+          release();
+          throw error;
+        }
+      },
+      return: async (value) => {
+        try {
+          return await inner.return(value);
+        } finally {
+          release();
+        }
+      },
+      throw: async (error) => {
+        try {
+          return await inner.throw(error);
+        } finally {
+          release();
+        }
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+  }
+
+  private async *runOwned(state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
+    if (!this.session) {
+      throw new Error('PiAgentBackend not started. Call start() first.');
     }
 
     this.abortRequested = false;
@@ -1510,6 +1558,13 @@ export class PiAgentBackend implements AgentBackend {
     this.acceptedSteers.set(inputId, content);
     this.session.agent.steer(this.createTaggedSteer(inputId, content) as PiAgentMessage);
     return { accepted: true };
+  }
+
+  async steerLegacy(text: string, images?: SteerContent['images']): Promise<void> {
+    if (!this.session) {
+      throw new Error('PiAgentBackend not started. Call start() first.');
+    }
+    await this.session.steer(text, this.toPiImages(images));
   }
 
   async sealSteering(runId: string): Promise<string[]> {

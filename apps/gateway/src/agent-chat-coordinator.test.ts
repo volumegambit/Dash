@@ -8,8 +8,9 @@ import type {
   DeliveredSteerRecord,
   RunOptions,
 } from '@dash/agent';
-import { MemoryStore } from '@dash/agent';
+import { MemoryStore, PiAgentBackend } from '@dash/agent';
 import {
+  AsyncChannel,
   SwarmCoordinator,
   type SwarmEventLogSink,
   type WorkerBackend,
@@ -781,6 +782,19 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await agents.stop();
   });
 
+  it('does not reconcile a legacy swarm request when deliveredSteers is absent', async () => {
+    const { id, controller, agents } = setup({ swarmEnabled: true });
+    const stream = agents.chat({ agentId: id, conversationId: 'c1', text: 'legacy' });
+
+    await controller.emit({ type: 'text_delta', text: 'one' });
+    expect(await stream.next()).toMatchObject({ done: false });
+    controller.end();
+    await drain(stream);
+
+    expect(controller.reconciliations()).toEqual([]);
+    await agents.stop();
+  });
+
   // (b) Adversarial interleaving: every orchestrator AND worker event appears
   // exactly once; each source's relative order is preserved.
   it('(b) interleaves orchestrator and worker events with no loss, per-source order preserved', async () => {
@@ -1438,18 +1452,218 @@ describe('AgentChatCoordinator typed run steering controls', () => {
     await second.agents.stop();
   });
 
-  it('preserves the frozen legacy steer signature without binding it to steerRun arguments', async () => {
-    const legacySteer = vi.fn(async (_text: string, _images?: unknown[]) => {});
-    const legacyBackend = {
-      ...makeMockBackend([]),
-      steer: legacySteer,
-    } as unknown as AgentBackend;
-    const { id, agents } = setupCoordinator(async () => legacyBackend);
+  it('routes frozen legacy steering through the separate hook on dual-capability Pi', async () => {
+    const backend = new PiAgentBackend({
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'test',
+    });
+    vi.spyOn(backend, 'start').mockResolvedValue();
+    vi.spyOn(backend, 'stop').mockResolvedValue();
+    vi.spyOn(backend, 'run').mockImplementation(async function* () {});
+    const typedSteer = vi.spyOn(backend, 'steer').mockResolvedValue({ accepted: true });
+    const steerLegacy = vi.spyOn(backend, 'steerLegacy').mockResolvedValue();
+    const { id, agents } = setupCoordinator(async () => backend);
     await drain(agents.chat({ agentId: id, conversationId: 'legacy', text: 'warm' }));
     const images = [{ type: 'image' as const, mediaType: 'image/png' as const, data: 'abc' }];
 
     await agents.steer(id, 'legacy', 'old text', images);
-    expect(legacySteer).toHaveBeenCalledWith('old text', images);
+    expect(steerLegacy).toHaveBeenCalledWith('old text', images);
+    expect(typedSteer).not.toHaveBeenCalled();
+    await agents.stop();
+  });
+
+  it('does not reconcile a legacy plain request when deliveredSteers is absent', async () => {
+    const controls = setupBackend([]);
+    const { id, agents } = setupCoordinator(async () => controls.backend);
+
+    await drain(agents.chat({ agentId: id, conversationId: 'legacy', text: 'start' }));
+
+    expect(controls.reconcileSteers).not.toHaveBeenCalled();
+    await agents.stop();
+  });
+
+  it('retains per-conversation ownership when seal arrives before iterator completion', async () => {
+    const finishFirst = deferred<void>();
+    let calls = 0;
+    const controls = setupBackend([]);
+    controls.backend.run = async function* (_state, options) {
+      calls++;
+      controls.options.push(options);
+      yield { type: 'text_delta', text: `run-${calls}` };
+      if (calls === 1) await finishFirst.promise;
+    };
+    const { id, agents } = setupCoordinator(async () => controls.backend);
+    const first = agents.chat({
+      agentId: id,
+      conversationId: 'conversation-1',
+      runId: RUN_ID,
+      text: 'first',
+      onSteerConsumed: async () => {},
+    });
+    expect(await first.next()).toMatchObject({ done: false });
+    await agents.sealSteering(id, 'conversation-1', RUN_ID);
+
+    await expect(
+      agents
+        .chat({
+          agentId: id,
+          conversationId: 'conversation-1',
+          runId: 'run-typed-2',
+          text: 'second',
+          onSteerConsumed: async () => {},
+        })
+        .next(),
+    ).rejects.toThrow(/already owns/);
+
+    finishFirst.resolve(undefined);
+    await drain(first);
+    await drain(
+      agents.chat({
+        agentId: id,
+        conversationId: 'conversation-1',
+        runId: 'run-typed-2',
+        text: 'second',
+        onSteerConsumed: async () => {},
+      }),
+    );
+    await agents.sealSteering(id, 'conversation-1', 'run-typed-2');
+    await agents.stop();
+  });
+
+  it('claims swarm ownership before attach and releases it when attach throws', async () => {
+    const controls = setupBackend([]);
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'swarm-ownership',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'test',
+      swarm: { enabled: true },
+    });
+    const { factory } = makeWorkerFactory();
+    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const attach = vi.spyOn(coordinator, 'attach').mockImplementationOnce(() => {
+      throw new Error('attach failed');
+    });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => controls.backend,
+      swarm: { coordinator, isEnabled: () => true },
+    });
+    const request = {
+      agentId: id,
+      conversationId: 'conversation-1',
+      runId: RUN_ID,
+      text: 'start',
+      onSteerConsumed: async () => {},
+    };
+
+    await expect(agents.chat(request).next()).rejects.toThrow('attach failed');
+    expect(agents.stats().pinned).toBe(0);
+    await drain(agents.chat(request));
+    expect(attach).toHaveBeenCalledTimes(2);
+    await agents.sealSteering(id, 'conversation-1', RUN_ID);
+    await agents.stop();
+  });
+
+  it('finalizes a swarm attachment and releases ownership when later setup throws', async () => {
+    const controls = setupBackend([]);
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'swarm-setup-cleanup',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'test',
+      swarm: { enabled: true },
+    });
+    const { factory } = makeWorkerFactory();
+    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const brokenChannel = new AsyncChannel<AgentEvent>();
+    vi.spyOn(brokenChannel, 'take').mockImplementationOnce(() => {
+      throw new Error('channel setup failed');
+    });
+    const finalize = vi.fn();
+    vi.spyOn(coordinator, 'attach').mockReturnValueOnce({
+      runIdHint: 'broken',
+      channel: brokenChannel,
+      closed: new AbortController().signal,
+      live: true,
+      finalize,
+    });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => controls.backend,
+      swarm: { coordinator, isEnabled: () => true },
+    });
+    const request = {
+      agentId: id,
+      conversationId: 'conversation-1',
+      runId: RUN_ID,
+      text: 'start',
+      onSteerConsumed: async () => {},
+    };
+
+    await expect(agents.chat(request).next()).rejects.toThrow('channel setup failed');
+    expect(finalize).toHaveBeenCalledWith({ consumerAlive: false });
+    expect(agents.stats().pinned).toBe(0);
+
+    await drain(agents.chat(request));
+    await agents.sealSteering(id, 'conversation-1', RUN_ID);
+    await agents.stop();
+  });
+
+  it('rejects a second swarm owner before creating another attachment', async () => {
+    const finishFirst = deferred<void>();
+    let calls = 0;
+    const controls = setupBackend([]);
+    controls.backend.run = async function* () {
+      calls++;
+      yield { type: 'text_delta', text: `run-${calls}` };
+      if (calls === 1) await finishFirst.promise;
+    };
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'swarm-conflict',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'test',
+      swarm: { enabled: true },
+    });
+    const { factory } = makeWorkerFactory();
+    const coordinator = new SwarmCoordinator({ workerFactory: factory });
+    const attach = vi.spyOn(coordinator, 'attach');
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => controls.backend,
+      swarm: { coordinator, isEnabled: () => true },
+    });
+    const first = agents.chat({
+      agentId: id,
+      conversationId: 'conversation-1',
+      runId: RUN_ID,
+      text: 'first',
+      onSteerConsumed: async () => {},
+    });
+    expect(await first.next()).toMatchObject({ done: false });
+
+    await expect(
+      agents
+        .chat({
+          agentId: id,
+          conversationId: 'conversation-1',
+          runId: 'run-typed-2',
+          text: 'second',
+          onSteerConsumed: async () => {},
+          deliveredSteers: [],
+        })
+        .next(),
+    ).rejects.toThrow(/already owns/);
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(controls.reconcileSteers).not.toHaveBeenCalled();
+
+    finishFirst.resolve(undefined);
+    await drain(first);
+    await agents.sealSteering(id, 'conversation-1', RUN_ID);
     await agents.stop();
   });
 
