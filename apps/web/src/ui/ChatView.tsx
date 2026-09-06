@@ -12,6 +12,7 @@ import {
 } from './attachments.js';
 import { ContentBlocks, getMessageCopyText } from './blocks/ContentBlocks.js';
 import { usePinnedScroll } from './hooks/usePinnedScroll.js';
+import { notificationRowLabel } from './notification-row.js';
 
 export interface ChatViewProps {
   conversationId: string | null;
@@ -346,6 +347,43 @@ function MessageEditor({
 }
 
 /**
+ * A `role: 'user'` row the USER did not write (sub-agents design 8.5): the
+ * gateway started this turn to wake the orchestrator with a background
+ * sub-agent's result, and the row's text is the
+ * `[SYSTEM NOTIFICATION - NOT USER INPUT]` block it was fed. Renders as a
+ * compact muted system line — never a user bubble, never editable, never
+ * resendable (`resendFromMessage` refuses it independently).
+ */
+function isNotificationRow(message: ConversationMessage): boolean {
+  return message.role === 'user' && message.origin !== undefined && message.origin !== 'user';
+}
+
+function BellIcon(): ReactNode {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M6 9a6 6 0 1 1 12 0c0 4 1.5 5.5 1.5 5.5h-15S6 13 6 9Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M10 18.5a2 2 0 0 0 4 0" fill="none" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function NotificationRow({ message }: { message: ConversationMessage }): ReactNode {
+  const text = message.content.type === 'user' ? message.content.text : '';
+  return (
+    <div className="chat-notification-row" data-testid="notification-row" data-role="notification">
+      <BellIcon />
+      <span>{notificationRowLabel(text)}</span>
+    </div>
+  );
+}
+
+/**
  * One confirmed message's row: `ContentBlocks` (markdown/tool-card
  * rendering) plus its message-actions toolbar (copy/retry/edit & resend) and
  * failed-send indicator.
@@ -397,6 +435,11 @@ const MessageRow = memo(function MessageRow({
   // editing — kept OUTSIDE `isEditing`'s toggle so re-submitting after a
   // blocked attempt clears the stale note rather than stacking a second one.
   const [blockedNote, setBlockedNote] = useState<string | null>(null);
+
+  // Checked after the hooks above so hook order stays unconditional.
+  if (isNotificationRow(message)) {
+    return <NotificationRow message={message} />;
+  }
 
   if (isEditing) {
     return (

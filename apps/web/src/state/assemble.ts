@@ -1,6 +1,7 @@
 import type {
   ConversationContent,
   ConversationMessage,
+  ConversationMessageOrigin,
   ConversationMessageStatus,
   MobileAgentEvent,
   MobileApiErrorCode,
@@ -21,6 +22,15 @@ export interface PendingTurn {
   turnId: string;
   conversationId: string;
   assistantMessageId: string;
+  /**
+   * Who caused this turn (sub-agents design 7.6), carried from the `accepted`
+   * frame so `done` can stamp it on the finalized assistant row. Absent on a
+   * LIVE `accepted` means `'user'` — the gateway omits both `origin` and
+   * `kind` for an ordinary user turn so a pre-subscription client sees the
+   * bytes it always did — and it stays absent here rather than being
+   * defaulted, because on the REPLAY path absent means UNKNOWN, not `'user'`.
+   */
+  origin?: ConversationMessageOrigin;
 }
 
 /** The most recent `error` frame surfaced for this conversation, if any. */
@@ -105,6 +115,9 @@ function finalizeAssistantMessage(
       content: finalized.content,
       createdAt: finalized.now,
       updatedAt: finalized.now,
+      // Spread, not `origin: pending.origin`: an ordinary turn's rows must
+      // stay byte-identical to what they were before origins existed.
+      ...(pending.origin ? { origin: pending.origin } : {}),
     };
     return [...messages, appended];
   }
@@ -121,6 +134,9 @@ function finalizeAssistantMessage(
     status: finalized.status,
     content: finalized.content,
     updatedAt: finalized.now,
+    // Never downgrade an origin the REST row already knows to `undefined`:
+    // on the replay path an absent origin means UNKNOWN, not `'user'`.
+    ...(pending.origin ? { origin: pending.origin } : {}),
   };
   return next;
 }
@@ -146,6 +162,7 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
           turnId: frame.id,
           conversationId: frame.conversationId,
           assistantMessageId: frame.assistantMessageId,
+          ...(frame.origin ? { origin: frame.origin } : {}),
         },
       };
     }

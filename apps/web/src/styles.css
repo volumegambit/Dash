@@ -1303,6 +1303,23 @@ textarea:focus-visible {
 }
 
 /* ---------------------------------------------------------------------
+ * Notification row (sub-agents design 8.5, task C7): the user-side row of a
+ * turn the GATEWAY started to deliver a background sub-agent's result. A
+ * compact muted line with a bell glyph — deliberately NOT the user bubble
+ * treatment, because nobody typed it. No animation of its own: it inherits
+ * `.chat-message-enter`'s reduced-motion-gated entrance from its container.
+ * ------------------------------------------------------------------- */
+
+.chat-notification-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+}
+
+/* ---------------------------------------------------------------------
  * Message actions toolbar: retry / edit & resend (chat-ux Phase 2 Task 4,
  * audit #5) — shares the copy button's hover/focus-within reveal pattern.
  * ------------------------------------------------------------------- */

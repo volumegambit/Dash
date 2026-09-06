@@ -301,6 +301,75 @@ function mergeMessagesById(
   return [...byId.values()].sort((a, b) => a.ordinal - b.ordinal);
 }
 
+type AcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
+
+/**
+ * Reconciles the user side of an `accepted` frame (sub-agents design 7.6).
+ *
+ * Two cases, and before task C7 only the first existed:
+ *
+ * 1. **A turn this client started.** The client-chosen turn id (sent as `id`
+ *    on the ChatSend frame) is what the optimistic user message was tagged
+ *    with as `turnId` (see `sendMessage`); it becomes the server-assigned
+ *    `userMessageId` now that the turn is accepted.
+ * 2. **A turn the GATEWAY started** — `origin: 'notification'` (a background
+ *    sub-agent finished and woke this conversation) or `origin: 'parent'`
+ *    (inside a child transcript). There is no optimistic row to reconcile, so
+ *    one is materialised here; without it `applyServerFrame` would open a
+ *    pending assistant slot whose reply lands in the transcript with nothing
+ *    above it. The row renders as a compact system row, not a user bubble
+ *    (design 8.5) — its text only arrives with the next REST replay, since
+ *    `accepted` carries ids, not content.
+ *
+ * An `accepted` with NO `origin` stays in case 1 even when its turn is
+ * unknown: on the live wire the gateway omits `origin` exactly when the turn
+ * is an ordinary user turn, so absent means `'user'` there, and inventing a
+ * user row for one would put an empty bubble in the transcript.
+ */
+function reconcileAccepted(
+  t: Transcript,
+  frame: AcceptedFrame,
+  conversationId: string,
+): Transcript {
+  const origin = frame.origin;
+  const optimistic = t.messages.findIndex((m) => m.role === 'user' && m.turnId === frame.id);
+  if (optimistic !== -1) {
+    const messages = [...t.messages];
+    messages[optimistic] = {
+      ...messages[optimistic],
+      id: frame.userMessageId,
+      status: 'completed',
+      ...(origin ? { origin } : {}),
+    };
+    return { ...t, messages };
+  }
+
+  const known = t.messages.findIndex((m) => m.id === frame.userMessageId);
+  if (known !== -1) {
+    if (!origin) return t;
+    const messages = [...t.messages];
+    messages[known] = { ...messages[known], origin };
+    return { ...t, messages };
+  }
+
+  if (!origin || origin === 'user') return t;
+
+  const now = new Date().toISOString();
+  const materialised: ConversationMessage = {
+    id: frame.userMessageId,
+    conversationId,
+    turnId: frame.id,
+    ordinal: t.messages.length + 1,
+    role: 'user',
+    status: 'completed',
+    content: { type: 'user', text: '' },
+    createdAt: now,
+    updatedAt: now,
+    origin,
+  };
+  return { ...t, messages: [...t.messages, materialised] };
+}
+
 /**
  * Conversation store: streaming assembly (via `assemble.ts`) plus REST
  * replay and WS resume-based reconnect. Built on zustand v5's `create` (the
@@ -317,6 +386,29 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
   let currentConversationId: string | null = null;
   let socket: ChatSocket | null = null;
+  /**
+   * The conversation this socket is subscribed to (sub-agents design 7.6),
+   * and the agent id the `unsubscribe` frame needs. Exactly one at a time:
+   * the store watches the conversation the user has open, and drops it on the
+   * way out so a long session can't accumulate subscriptions. `message` and
+   * `resume` auto-subscribe server-side, but this store subscribes
+   * EXPLICITLY, so a conversation that is merely open — never typed into —
+   * still receives the server-initiated turns that carry a background
+   * sub-agent's completion notification.
+   */
+  let subscribedConversationId: string | null = null;
+  let subscribedAgentId: string | null = null;
+  /**
+   * Correlation ids of the `subscribe`/`unsubscribe` frames this store sent.
+   * An OLDER gateway does not know those frame types: `parseChatClientFrame`
+   * returns null and it answers with `{ type: 'error', id: <that id>,
+   * conversationId, code: 'validation_failed' }`. Routed normally that would
+   * mark the conversation `'interrupted'` and raise a red banner on EVERY
+   * open — a new client would look broken against an old gateway, which is
+   * exactly the backward compatibility this feature promises. Ignored here
+   * instead, by id, so a genuine error frame for a real turn is untouched.
+   */
+  const subscriptionFrameIds = new Set<string>();
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -331,6 +423,51 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+  }
+
+  /**
+   * Watch `conversationId` on `target` so the gateway fans server-initiated
+   * turns out to it. Best-effort: a send failure here must never take down an
+   * otherwise healthy connection — an older gateway that has never heard of
+   * `subscribe` simply answers with a `validation_failed` error frame, and
+   * ordinary chat keeps working without it.
+   */
+  function sendSubscribe(target: ChatSocket, agentId: string, conversationId: string): void {
+    const frame: MobileWsClientFrame = {
+      type: 'subscribe',
+      id: crypto.randomUUID(),
+      agentId,
+      conversationId,
+    };
+    subscriptionFrameIds.add(frame.id);
+    try {
+      target.send(frame);
+      subscribedConversationId = conversationId;
+      subscribedAgentId = agentId;
+    } catch (err) {
+      console.error('WebAppStore: failed to send subscribe frame', err);
+    }
+  }
+
+  /** Drops the live subscription, if any, over the socket that holds it. */
+  function sendUnsubscribe(): void {
+    const conversationId = subscribedConversationId;
+    const agentId = subscribedAgentId;
+    subscribedConversationId = null;
+    subscribedAgentId = null;
+    if (!socket || !conversationId || !agentId) return;
+    const frame: MobileWsClientFrame = {
+      type: 'unsubscribe',
+      id: crypto.randomUUID(),
+      agentId,
+      conversationId,
+    };
+    subscriptionFrameIds.add(frame.id);
+    try {
+      socket.send(frame);
+    } catch (err) {
+      console.error('WebAppStore: failed to send unsubscribe frame', err);
     }
   }
 
@@ -447,7 +584,38 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }
     }
 
+    /**
+     * Subscribes `target` to the conversation the user just opened
+     * (sub-agents design 7.6, ruling 1).
+     *
+     * Every failure here is swallowed, INCLUDING a 401 — unlike everywhere
+     * else in this store, which routes one to `enterUnauthorized()`. Two
+     * reasons: a missing subscription costs server-initiated turns, never the
+     * conversation itself, so it must not be able to fail an otherwise
+     * healthy open; and `openConversation`'s own history replay is a REST
+     * call that already succeeded moments earlier on this same credential, so
+     * a credential that dies in the gap is detected by the very next call
+     * (the reconnect path's `resolveAgentId`, `maybeRefreshAutoTitle`, …)
+     * rather than being lost.
+     */
+    async function subscribeToOpenConversation(
+      target: ChatSocket,
+      conversationId: string,
+    ): Promise<void> {
+      let agentId: string | null = null;
+      try {
+        agentId = await resolveAgentId(conversationId);
+      } catch {
+        return;
+      }
+      if (!agentId || disposed || socket !== target) return;
+      sendSubscribe(target, agentId, conversationId);
+    }
+
     function handleFrame(frame: MobileWsServerFrame): void {
+      // An older gateway rejecting our `subscribe`/`unsubscribe` (see
+      // `subscriptionFrameIds`). Never a transcript or conversation event.
+      if (frame.type === 'error' && subscriptionFrameIds.delete(frame.id)) return;
       const frameConversationId = 'conversationId' in frame ? frame.conversationId : undefined;
       const conversationId = frameConversationId ?? currentConversationId;
       if (!conversationId) return;
@@ -480,21 +648,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }
 
       updateTranscript(conversationId, (t) => {
-        // The client-chosen turn id (sent as `id` on the ChatSend frame) is
-        // what the optimistic user message was tagged with as `turnId`
-        // (see sendMessage); reconcile it to the server-assigned
-        // `userMessageId` now that the turn has been accepted.
         const reconciled: Transcript =
-          frame.type === 'accepted'
-            ? {
-                ...t,
-                messages: t.messages.map((m) =>
-                  m.role === 'user' && m.turnId === frame.id
-                    ? { ...m, id: frame.userMessageId, status: 'completed' as const }
-                    : m,
-                ),
-              }
-            : t;
+          frame.type === 'accepted' ? reconcileAccepted(t, frame, conversationId) : t;
         return applyServerFrame(reconciled, frame);
       });
 
@@ -560,6 +715,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       disposed = true;
       currentConversationId = null;
       clearReconnectTimer();
+      // Drop the conversation subscription over the socket that still holds
+      // it, before the close below takes that socket away.
+      sendUnsubscribe();
+      subscriptionFrameIds.clear();
       if (socket) {
         const closing = socket;
         socket = null;
@@ -670,6 +829,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           sinceSeq: lastSeq,
         };
         attempted.send(resumeFrame);
+        // `resume` auto-subscribes server-side, but say it explicitly: the
+        // resume frame can be rejected (an unknown/finished turn id) before
+        // the hub ever registers this socket as a watcher, and the whole
+        // point of the subscription is that it outlives any one turn.
+        sendSubscribe(attempted, agentId, conversationId);
         reconnectAttempt = 0;
         set({ connection: 'connected' });
       } catch (err) {
@@ -719,9 +883,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
       async openConversation(conversationId: string) {
         if (socket) {
+          // Leaving this conversation: drop its subscription first, so a long
+          // session that visits many conversations never accumulates them
+          // server-side (sub-agents design 7.6).
+          sendUnsubscribe();
           socket.close();
           socket = null;
         }
+        // Nothing outstanding can be answered over a socket that is gone.
+        subscriptionFrameIds.clear();
         clearReconnectTimer();
         reconnectAttempt = 0;
         disposed = false; // a disposed store is reusable — this is a fresh connect intent.
@@ -807,6 +977,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           attached.close();
           return;
         }
+        await subscribeToOpenConversation(attached, conversationId);
+        if (disposed) return;
         set({ connection: 'connected' });
       },
 
@@ -891,6 +1063,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         const index =
           transcript?.messages.findIndex((m) => m.id === messageId && m.role === 'user') ?? -1;
         if (!transcript || index === -1) return false;
+        // A `role: 'user'` row whose origin is NOT the user is a system
+        // notification the gateway wrote (sub-agents design 7.3/8.5) — its
+        // text is the `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the
+        // orchestrator was fed. Resending it would submit that block as if
+        // the user had typed it. `ChatView` hides the affordance too; this
+        // guard holds regardless of caller.
+        if (transcript.messages[index].origin && transcript.messages[index].origin !== 'user') {
+          return false;
+        }
         const target = transcript.messages[index];
         const text = editedText ?? (target.content.type === 'user' ? target.content.text : '');
 

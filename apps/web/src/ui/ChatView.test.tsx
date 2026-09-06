@@ -93,6 +93,13 @@ class ScriptedChatSocket {
     this.sent.push(frame);
   }
 
+  /** Frames excluding the `subscribe`/`unsubscribe` bookkeeping the store now
+   * sends on every connect and conversation switch (task C7) — this is the
+   * turn traffic a test means when it asserts on "what was sent". */
+  get turnFrames(): MobileWsClientFrame[] {
+    return this.sent.filter((f) => f.type !== 'subscribe' && f.type !== 'unsubscribe');
+  }
+
   close(): void {
     this.closed = true;
   }
@@ -187,8 +194,8 @@ describe('ChatView', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -229,8 +236,8 @@ describe('ChatView', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     // Right after `accepted`, before any `event` frame: `streaming` is a
     // non-null empty-events shell (`assemble.ts`) — this is exactly the
@@ -279,8 +286,8 @@ describe('ChatView', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -395,8 +402,8 @@ describe('ChatView', () => {
     fireEvent.change(input, { target: { value: 'hello there' } });
     fireEvent.click(screen.getByText('Send'));
 
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'hello there' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'hello there' });
     await waitFor(() => expect(input.value).toBe(''));
   });
 
@@ -689,11 +696,11 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.change(textarea, { target: { value: 'hello' } });
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
 
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'hello' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'hello' });
   });
 
   it('ignores Enter while an IME composition is in progress (isComposing, and the legacy keyCode 229 fallback)', async () => {
@@ -704,7 +711,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
     fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
 
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('autogrows the textarea by matching its scrollHeight on every keystroke', async () => {
@@ -727,8 +734,8 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -747,7 +754,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.click(stopButton);
     await waitFor(() =>
-      expect(sockets[0].sent).toContainEqual(
+      expect(sockets[0].turnFrames).toContainEqual(
         expect.objectContaining({ type: 'cancel', id: turnId }),
       ),
     );
@@ -839,7 +846,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'sent from A' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
     await waitFor(() =>
       expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe(''),
     );
@@ -923,7 +930,7 @@ describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remain
 
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
     expect(textarea.value).toBe(STARTER_PROMPTS[0]);
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('hides the greeting once the conversation has a message', async () => {
@@ -939,13 +946,13 @@ describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remain
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
     // A brand-new optimistic user message already makes `messages.length`
     // nonzero here, but assert the greeting is gone regardless — belt and
     // suspenders against a future change to how the optimistic send works.
     expect(screen.queryByTestId('chat-empty-state')).toBeNull();
 
-    const turnId = sockets[0].sent[0].id;
+    const turnId = sockets[0].turnFrames[0].id;
     act(() => {
       onFrames[0]({
         type: 'accepted',
@@ -1040,8 +1047,8 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     fireEvent.click(screen.getByLabelText('Retry sending this message'));
 
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Retry me' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'Retry me' });
     // The failed message is gone, replaced by the fresh optimistic send.
     await waitFor(() => expect(screen.queryByText('Failed to send')).toBeNull());
   });
@@ -1061,8 +1068,8 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
     fireEvent.change(editor, { target: { value: 'Edited version' } });
     fireEvent.keyDown(editor, { key: 'Enter' });
 
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Edited version' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'Edited version' });
   });
 
   it('Edit & resend: Shift+Enter does not submit, Escape cancels back to the rendered bubble', async () => {
@@ -1077,12 +1084,12 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     fireEvent.change(editor, { target: { value: 'Original\nmore' } });
     fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true });
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
 
     fireEvent.keyDown(editor, { key: 'Escape' });
     expect(screen.queryByLabelText('Edit message')).toBeNull();
     expect(screen.getByText('Original')).toBeTruthy();
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('Edit & resend: the Resend button is disabled for empty/whitespace-only text', async () => {
@@ -1164,8 +1171,8 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
     // reachable via :focus-within) throughout the whole stream.
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'newer message' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -1184,7 +1191,7 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     // A stray click can't reach a button that isn't rendered — the
     // regression this guards against.
-    expect(sockets[0].sent).toHaveLength(1);
+    expect(sockets[0].turnFrames).toHaveLength(1);
 
     act(() => {
       onFrames[0]({
@@ -1225,7 +1232,7 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
 
     await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(3));
     const rows = screen.getAllByTestId('chat-message');
@@ -1288,8 +1295,8 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
     const { sockets, onFrames } = await renderConnected();
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
     expect(screen.getAllByTestId('chat-message')[0].classList.contains('chat-message-enter')).toBe(
       true,
     );
@@ -1357,8 +1364,8 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
     expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({
       type: 'message',
       text: '',
       images: [{ mediaType: 'image/png', data: 'aGk=' }],
@@ -1573,8 +1580,8 @@ describe('ChatView message row memoization', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -1622,5 +1629,57 @@ describe('ChatView message row memoization', () => {
     // reference never changed — a memoized row must not have re-rendered
     // for it.
     expect(confirmedMessageRenderCount()).toBe(before);
+  });
+});
+
+/**
+ * Task C7 (sub-agents design 8.5): the user-side row of a server-initiated
+ * turn carries `origin: 'notification'` and renders as a compact system row,
+ * NOT a user bubble — its text is the `[SYSTEM NOTIFICATION …]` block the
+ * orchestrator was fed, which must never look like something the user typed
+ * (and must never be resendable).
+ */
+describe('ChatView notification rows (C7)', () => {
+  const NOTIFICATION_TEXT = [
+    '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+    '',
+    '<task-notification>',
+    '<summary>Agent "Map gateway internals" finished</summary>',
+    '</task-notification>',
+  ].join('\n');
+
+  function notificationMessage(): ConversationMessage {
+    return message({
+      id: 'notif-user-1',
+      turnId: 'turn-notification-1',
+      role: 'user',
+      origin: 'notification',
+      content: { type: 'user', text: NOTIFICATION_TEXT },
+    });
+  }
+
+  it('renders the notification as a compact system row instead of a user bubble', async () => {
+    await renderConnected({ messages: [notificationMessage()] });
+
+    const row = screen.getByTestId('notification-row');
+    expect(row.textContent).toContain('Agent "Map gateway internals" finished');
+    expect(row.textContent).not.toContain('[SYSTEM NOTIFICATION - NOT USER INPUT]');
+    expect(screen.queryByTestId('chat-message')).toBeNull();
+  });
+
+  it('offers no edit/retry affordance on a notification row', async () => {
+    await renderConnected({ messages: [notificationMessage()] });
+
+    expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
+    expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+
+  it('still renders an ordinary user message as a bubble', async () => {
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    expect(screen.queryByTestId('notification-row')).toBeNull();
+    expect(screen.getByTestId('chat-message').getAttribute('data-role')).toBe('user');
   });
 });

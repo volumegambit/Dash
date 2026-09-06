@@ -30,6 +30,9 @@ const error = readFixture<MobileWsServerFrame>('chat-error.json');
 // The full happy-path turn: accepted -> event -> event -> event -> done.
 // Real fixture, format: jsonl, schema: MobileWsServerFrame (Task 8's manifest).
 const stream = readJsonl<MobileWsServerFrame>('chat-stream.jsonl');
+// A server-initiated turn: the gateway started it to deliver a background
+// sub-agent's completion notification (sub-agents design 7.3/7.6).
+const acceptedNotification = readFixture<MobileWsServerFrame>('chat-accepted-notification.json');
 
 describe('applyServerFrame', () => {
   describe('accepted', () => {
@@ -222,6 +225,34 @@ describe('applyServerFrame', () => {
       const result = applyServerFrame(t, null as unknown as MobileWsServerFrame);
 
       expect(result).toBe(t);
+    });
+  });
+
+  describe('origin (task C7, sub-agents design 7.6/8.5)', () => {
+    it("carries the accepted frame's origin onto the finalized assistant message", () => {
+      let t = applyServerFrame(emptyTranscript(), acceptedNotification);
+      expect(t.pending?.origin).toBe('notification');
+
+      t = applyServerFrame(t, {
+        type: 'done',
+        id: t.pending?.turnId ?? '',
+        conversationId: t.pending?.conversationId,
+        seq: 10,
+        outcome: 'completed',
+      });
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].origin).toBe('notification');
+    });
+
+    it("leaves origin absent for an ordinary turn, so a pre-origin gateway's turns look unchanged", () => {
+      let t = applyServerFrame(emptyTranscript(), accepted);
+      expect(t.pending?.origin).toBeUndefined();
+
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect('origin' in t.messages[0]).toBe(false);
     });
   });
 

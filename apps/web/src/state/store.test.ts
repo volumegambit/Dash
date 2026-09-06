@@ -87,6 +87,13 @@ class ScriptedChatSocket {
     this.sent.push(frame);
   }
 
+  /** Frames excluding the `subscribe`/`unsubscribe` bookkeeping the store now
+   * sends on every connect and conversation switch (task C7) — this is the
+   * turn traffic a test means when it asserts on "what was sent". */
+  get turnFrames(): MobileWsClientFrame[] {
+    return this.sent.filter((f) => f.type !== 'subscribe' && f.type !== 'unsubscribe');
+  }
+
   close(): void {
     this.closed = true;
   }
@@ -469,8 +476,8 @@ describe('createWebAppStore', () => {
         content: { type: 'user', text: 'hello there' },
       });
 
-      expect(sockets[0].sent).toHaveLength(1);
-      const sent = sockets[0].sent[0];
+      expect(sockets[0].turnFrames).toHaveLength(1);
+      const sent = sockets[0].turnFrames[0];
       expect(sent).toMatchObject({
         type: 'message',
         agentId: 'agent-01',
@@ -499,7 +506,7 @@ describe('createWebAppStore', () => {
         role: 'user',
         content: { type: 'user', text: '', images },
       });
-      expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: '', images });
+      expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: '', images });
     });
 
     it('omits the images field from the frame and the optimistic message when none are attached', async () => {
@@ -511,7 +518,7 @@ describe('createWebAppStore', () => {
 
       await store.getState().sendMessage(CONVERSATION_ID, 'text only');
 
-      expect('images' in (sockets[0].sent[0] as object)).toBe(false);
+      expect('images' in (sockets[0].turnFrames[0] as object)).toBe(false);
       const content = store.getState().transcripts[CONVERSATION_ID]?.messages[0]?.content;
       expect(content && 'images' in content).toBe(false);
     });
@@ -540,7 +547,7 @@ describe('createWebAppStore', () => {
       socket.sendShouldThrow = true;
       await expect(store.getState().sendMessage(CONVERSATION_ID, 'fails')).rejects.toThrow();
 
-      expect(socket.sent).toHaveLength(0);
+      expect(socket.turnFrames).toHaveLength(0);
       const transcript = store.getState().transcripts[CONVERSATION_ID];
       expect(transcript?.messages).toHaveLength(1);
       expect(transcript?.messages[0]).toMatchObject({
@@ -597,8 +604,8 @@ describe('createWebAppStore', () => {
       expect(messages).toHaveLength(2);
       expect(messages[0]).toBe(kept);
       expect(messages[1]).toMatchObject({ role: 'user', content: { type: 'user', text: 'Hello' } });
-      expect(sockets[0].sent).toHaveLength(1);
-      expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Hello' });
+      expect(sockets[0].turnFrames).toHaveLength(1);
+      expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'Hello' });
     });
 
     it('sends editedText instead of the original when provided (edit & resend)', async () => {
@@ -628,7 +635,7 @@ describe('createWebAppStore', () => {
       const messages = store.getState().transcripts[CONVERSATION_ID]?.messages ?? [];
       expect(messages).toHaveLength(1);
       expect(messages[0]).toMatchObject({ content: { type: 'user', text: 'Edited text' } });
-      expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Edited text' });
+      expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'Edited text' });
     });
 
     it('is a no-op for an id that is not a user message in the transcript', async () => {
@@ -659,7 +666,7 @@ describe('createWebAppStore', () => {
       ).resolves.toBe(false);
 
       expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toEqual([assistantOnly]);
-      expect(sockets[0].sent).toHaveLength(0);
+      expect(sockets[0].turnFrames).toHaveLength(0);
     });
 
     it('throws and truncates nothing when not connected', async () => {
@@ -727,7 +734,7 @@ describe('createWebAppStore', () => {
       await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).resolves.toBe(false);
 
       expect(store.getState().transcripts[CONVERSATION_ID]).toEqual(transcriptBefore);
-      expect(sockets[0].sent).toHaveLength(0);
+      expect(sockets[0].turnFrames).toHaveLength(0);
     });
 
     it('is a no-op while a turn is merely pending (accepted but no event yet), not just while actively streaming', async () => {
@@ -760,7 +767,7 @@ describe('createWebAppStore', () => {
       await expect(store.getState().resendFromMessage(CONVERSATION_ID, 'u1')).resolves.toBe(false);
 
       expect(store.getState().transcripts[CONVERSATION_ID]).toEqual(transcriptBefore);
-      expect(sockets[0].sent).toHaveLength(0);
+      expect(sockets[0].turnFrames).toHaveLength(0);
     });
   });
 
@@ -773,7 +780,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
 
       const accepted: MobileWsServerFrame = {
         type: 'accepted',
@@ -827,7 +834,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -876,7 +883,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hi');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -924,7 +931,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hi');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -969,7 +976,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hi');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -1005,7 +1012,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hi');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -1315,7 +1322,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -1328,7 +1335,7 @@ describe('createWebAppStore', () => {
 
       store.getState().cancelTurn(CONVERSATION_ID);
 
-      expect(sockets[0].sent).toContainEqual({ type: 'cancel', id: turnId });
+      expect(sockets[0].turnFrames).toContainEqual({ type: 'cancel', id: turnId });
     });
 
     it('is a no-op before any turn has been accepted (no pending turnId yet)', async () => {
@@ -1340,7 +1347,7 @@ describe('createWebAppStore', () => {
 
       store.getState().cancelTurn(CONVERSATION_ID);
 
-      expect(sockets[0].sent).toHaveLength(0);
+      expect(sockets[0].turnFrames).toHaveLength(0);
     });
 
     it('is a no-op for a conversation id other than the one the live socket is attached to', async () => {
@@ -1351,7 +1358,7 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -1362,11 +1369,11 @@ describe('createWebAppStore', () => {
         seq: 1,
       });
 
-      const sentBefore = sockets[0].sent.length;
+      const sentBefore = sockets[0].turnFrames.length;
       store.getState().cancelTurn('some-other-conversation');
 
-      expect(sockets[0].sent).toHaveLength(sentBefore);
-      expect(sockets[0].sent.some((frame) => frame.type === 'cancel')).toBe(false);
+      expect(sockets[0].turnFrames).toHaveLength(sentBefore);
+      expect(sockets[0].turnFrames.some((frame) => frame.type === 'cancel')).toBe(false);
     });
 
     it('logs and swallows a cancel send failure instead of throwing (stop button stays until a real done/error frame lands)', async () => {
@@ -1377,7 +1384,7 @@ describe('createWebAppStore', () => {
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendMessage(CONVERSATION_ID, 'hello there');
-      const turnId = sockets[0].sent[0].id;
+      const turnId = sockets[0].turnFrames[0].id;
       onFrames[0]({
         type: 'accepted',
         id: turnId,
@@ -1442,8 +1449,8 @@ describe('createWebAppStore', () => {
       sockets[1].open();
       await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
 
-      expect(sockets[1].sent).toHaveLength(1);
-      expect(sockets[1].sent[0]).toMatchObject({
+      expect(sockets[1].turnFrames).toHaveLength(1);
+      expect(sockets[1].turnFrames[0]).toMatchObject({
         type: 'resume',
         conversationId: CONV_B,
         agentId: 'agent-b',
@@ -1508,7 +1515,7 @@ describe('createWebAppStore', () => {
 
       // CRITICAL-1: a typed `resume` frame — matching the real fixture
       // exactly — not a REST refetch.
-      expect(sockets[1].sent).toEqual([expectedResumeFrame]);
+      expect(sockets[1].turnFrames).toEqual([expectedResumeFrame]);
       expect(getMessages).toHaveBeenCalledTimes(1); // only the initial replay — never again on reconnect
 
       for (const frame of replayFrames) onFrames[1](frame);
@@ -1900,6 +1907,273 @@ describe('createWebAppStore', () => {
 
       await openAndConnect(store, sockets, CONVERSATION_ID);
       expect(store.getState().connection).toBe('connected');
+    });
+  });
+  /**
+   * Task C7 (sub-agents design 7.6): the gateway can start a turn on its own
+   * to deliver a background child's completion notification, and fans it out
+   * to per-conversation subscribers. These cover the client half — the
+   * subscription itself, and rendering a turn this client never started.
+   */
+  describe('conversation subscriptions (C7)', () => {
+    function subscriptionFrames(socket: ScriptedChatSocket): MobileWsClientFrame[] {
+      return socket.sent.filter((f) => f.type === 'subscribe' || f.type === 'unsubscribe');
+    }
+
+    it('subscribes to the open conversation once the socket connects', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      expect(subscriptionFrames(socket)).toEqual([
+        {
+          type: 'subscribe',
+          id: expect.any(String),
+          agentId: 'agent-01',
+          conversationId: CONVERSATION_ID,
+        },
+      ]);
+    });
+
+    it('unsubscribes the conversation it is leaving when switching to another one', async () => {
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2' })],
+          nextCursor: null,
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+
+      const first = await openAndConnect(store, sockets, CONVERSATION_ID);
+      const second = await openAndConnect(store, sockets, 'conv-2');
+
+      expect(subscriptionFrames(first)).toEqual([
+        {
+          type: 'subscribe',
+          id: expect.any(String),
+          agentId: 'agent-01',
+          conversationId: CONVERSATION_ID,
+        },
+        {
+          type: 'unsubscribe',
+          id: expect.any(String),
+          agentId: 'agent-01',
+          conversationId: CONVERSATION_ID,
+        },
+      ]);
+      expect(subscriptionFrames(second)).toEqual([
+        {
+          type: 'subscribe',
+          id: expect.any(String),
+          agentId: 'agent-01',
+          conversationId: 'conv-2',
+        },
+      ]);
+    });
+
+    it('re-subscribes over the fresh socket after a reconnect', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onCloses[0]('error');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(sockets.length).toBe(2));
+      sockets[1].open();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+      expect(subscriptionFrames(sockets[1])).toEqual([
+        {
+          type: 'subscribe',
+          id: expect.any(String),
+          agentId: 'agent-01',
+          conversationId: CONVERSATION_ID,
+        },
+      ]);
+    });
+
+    it("ignores an older gateway's rejection of the subscribe frame instead of showing an outage", async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+      const subscribe = subscriptionFrames(socket)[0];
+
+      // Exactly what a pre-`subscribe` gateway answers: `parseChatClientFrame`
+      // does not know the type, so it echoes the frame's own id back as a
+      // validation error (apps/gateway/src/chat-ws.ts).
+      onFrames[0]({
+        type: 'error',
+        id: subscribe.id,
+        conversationId: CONVERSATION_ID,
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      expect(store.getState().transcripts[CONVERSATION_ID]?.error ?? null).toBeNull();
+      expect(store.getState().conversations.find((c) => c.id === CONVERSATION_ID)?.status).not.toBe(
+        'interrupted',
+      );
+      expect(store.getState().connection).toBe('connected');
+    });
+
+    it('still surfaces a genuine error frame for a real turn', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onFrames[0]({
+        type: 'error',
+        id: 'turn-1',
+        conversationId: CONVERSATION_ID,
+        error: 'Agent exploded',
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      expect(store.getState().transcripts[CONVERSATION_ID].error?.message).toBe('Agent exploded');
+    });
+
+    it('unsubscribes before tearing the socket down on dispose()', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().dispose();
+
+      expect(subscriptionFrames(socket).at(-1)).toMatchObject({
+        type: 'unsubscribe',
+        conversationId: CONVERSATION_ID,
+      });
+      expect(socket.closed).toBe(true);
+    });
+  });
+
+  /**
+   * Task C7: a turn the gateway started on its own (`accepted` carrying
+   * `origin: 'notification'`) for a turn id this client never issued. Before
+   * C7 the reconcile matched on `m.turnId === frame.id`, found nothing, and
+   * left the assistant reply hanging with no user row at all.
+   */
+  describe('server-initiated turns (C7)', () => {
+    const NOTIFICATION_TURN = 'turn-notification-1';
+
+    async function deliverNotificationTurn(
+      store: ReturnType<typeof createWebAppStore>,
+      onFrame: FrameHandler,
+    ) {
+      onFrame({
+        type: 'accepted',
+        id: NOTIFICATION_TURN,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'notif-user-1',
+        assistantMessageId: 'notif-assistant-1',
+        revision: 4,
+        seq: 7,
+        origin: 'notification',
+        kind: 'user',
+      });
+      onFrame({
+        type: 'event',
+        id: NOTIFICATION_TURN,
+        conversationId: CONVERSATION_ID,
+        seq: 8,
+        event: { type: 'text_delta', text: 'The child finished.' },
+      });
+      onFrame({
+        type: 'done',
+        id: NOTIFICATION_TURN,
+        conversationId: CONVERSATION_ID,
+        seq: 9,
+        outcome: 'completed',
+      });
+      await vi.waitFor(() =>
+        expect(store.getState().transcripts[CONVERSATION_ID]?.streaming).toBeNull(),
+      );
+    }
+
+    it('materialises the notification user row and attaches the assistant reply to it', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await deliverNotificationTurn(store, onFrames[0]);
+
+      const messages = store.getState().transcripts[CONVERSATION_ID].messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({
+        id: 'notif-user-1',
+        turnId: NOTIFICATION_TURN,
+        role: 'user',
+        origin: 'notification',
+      });
+      expect(messages[1]).toMatchObject({
+        id: 'notif-assistant-1',
+        turnId: NOTIFICATION_TURN,
+        role: 'assistant',
+        status: 'completed',
+        origin: 'notification',
+      });
+      expect(messages[1].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'The child finished.' }],
+      });
+    });
+
+    it('never fabricates a user row for an ordinary turn whose accepted carries no origin', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onFrames[0]({
+        type: 'accepted',
+        id: 'turn-from-a-peer',
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'peer-user-1',
+        assistantMessageId: 'peer-assistant-1',
+        revision: 4,
+        seq: 7,
+      });
+
+      await vi.waitFor(() =>
+        expect(store.getState().transcripts[CONVERSATION_ID]?.pending?.turnId).toBe(
+          'turn-from-a-peer',
+        ),
+      );
+      expect(store.getState().transcripts[CONVERSATION_ID].messages).toEqual([]);
+    });
+
+    it('refuses to resend a notification row (its text is a system notification, not user input)', async () => {
+      const notification = message({
+        id: 'notif-user-1',
+        turnId: NOTIFICATION_TURN,
+        role: 'user',
+        origin: 'notification',
+        content: { type: 'user', text: '[SYSTEM NOTIFICATION - NOT USER INPUT]' },
+      });
+      const { rest } = fakeRest({
+        messagePages: [{ items: [notification], nextCursor: null, throughSeq: 9 }],
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      const sent = await store.getState().resendFromMessage(CONVERSATION_ID, 'notif-user-1');
+
+      expect(sent).toBe(false);
+      expect(socket.turnFrames).toHaveLength(0);
+      expect(store.getState().transcripts[CONVERSATION_ID].messages).toHaveLength(1);
     });
   });
 });
