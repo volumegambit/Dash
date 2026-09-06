@@ -78,7 +78,11 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(app.buttons["Show thinking"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.question.ui-question"].exists)
     XCTAssertTrue(app.descendants(matching: .any)["chat.tool.ui-tool"].exists)
-    XCTAssertTrue(app.descendants(matching: .any)["chat.worker.ui-worker"].exists)
+    // One card for a child that emits BOTH the legacy `worker_*` mirrors and
+    // the canonical `subagent_*` events — they share an id, so they must never
+    // produce two rows (task D4, ruling 4).
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.subagent.ui-subagent").count, 1)
     XCTAssertTrue(message.exists, "Partial response must remain mounted while reconnecting")
 
     let final = element("chat.final.response", in: app, timeout: 8)

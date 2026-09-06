@@ -1633,8 +1633,14 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
+        // BOTH families for one child, in the order the gateway really emits
+        // them (`coordinator.ts` pushes `worker_spawned` immediately before the
+        // handle emits `subagent_started`). The id is shared because a worker
+        // id IS the child's conversation id, and `ConversationUITests` asserts
+        // exactly ONE `chat.subagent.ui-subagent` element exists — that is
+        // ruling 4 proven in the running app, not just in the reducer.
         .workerSpawned(
-          workerId: "ui-worker",
+          workerId: "ui-subagent",
           runId: "ui-run",
           role: "researcher",
           brief: "Check launch readiness",
@@ -1644,11 +1650,37 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
-        .workerStatus(
-          workerId: "ui-worker",
-          runId: "ui-run",
-          role: "researcher",
+        .subagentStarted(
+          subagentId: "ui-subagent",
+          name: "scout",
+          subagentType: "researcher",
+          description: "Check launch readiness",
+          prompt: "Check whether the launch checklist is complete",
+          // `background: true` is load-bearing for the UI assertions, not
+          // decoration. This scenario's child never reports a terminal event
+          // and the parent turn DOES end, so a foreground child would be
+          // end-of-stream terminalized to `cancelled` mid-test — the row's
+          // label would depend on whether the assertion won the race against
+          // the scripted `done`. A background child is exempt (it is spawned
+          // to outlive its turn), so the row reads "Running" in both phases,
+          // and the exemption is pinned in the running app rather than only in
+          // the reducer.
+          model: "openai/gpt-5",
+          background: true,
+          depth: 1,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+          isolation: nil,
+          parentTurnId: turnID
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .subagentProgress(
+          subagentId: "ui-subagent",
           status: .running,
+          toolCallCount: 3,
+          elapsedMs: 7200,
           detail: "Reviewing the checklist",
           question: nil
         )

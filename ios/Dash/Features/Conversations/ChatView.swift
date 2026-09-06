@@ -611,9 +611,12 @@ struct ChatTranscriptSignature: Equatable {
     let textCount: Int = assistant?.text.count ?? 0
     let thinkingCount: Int = assistant?.thinking.count ?? 0
     let toolCount: Int = assistant?.toolCards.count ?? 0
-    let workerCount: Int = assistant?.workerCards.count ?? 0
+    // The DRAFT count, not `subagentCards.count`: they are always equal, and
+    // this signature runs on every transcript change, so it must not pay for
+    // the fold's sort.
+    let subagentCount: Int = assistant?.subagentDrafts.count ?? 0
     let statusCount: Int = assistant?.statusRows.count ?? 0
-    let contentCount = textCount + thinkingCount + toolCount + workerCount + statusCount
+    let contentCount = textCount + thinkingCount + toolCount + subagentCount + statusCount
     return ChatTranscriptSignature(
       messageID: last.id,
       status: last.status,

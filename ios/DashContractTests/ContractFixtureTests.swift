@@ -90,6 +90,9 @@ struct ContractFixtureTests {
       #"{"type":"worker_spawned","workerId":"w1","runId":"r1","role":"reviewer","brief":"review","model":"openai/gpt-5"}"#,
       #"{"type":"worker_status","workerId":"w1","runId":"r1","role":"reviewer","status":"waiting_input","detail":"paused","question":"continue?"}"#,
       #"{"type":"worker_done","workerId":"w1","runId":"r1","role":"reviewer","status":"done","report":"ok","usage":{"inputTokens":3,"outputTokens":2}}"#,
+      #"{"type":"subagent_started","subagentId":"s1","name":"reviewer","subagentType":"code-reviewer","description":"Review","prompt":"Review it","model":"anthropic/claude-opus-4","background":true,"depth":1,"startedAt":"2026-09-04T00:00:00.000Z","isolation":"worktree","parentTurnId":"t1"}"#,
+      #"{"type":"subagent_progress","subagentId":"s1","status":"waiting_input","toolCallCount":3,"elapsedMs":7200,"detail":"reading files","question":"Which branch?"}"#,
+      #"{"type":"subagent_finished","subagentId":"s1","name":"reviewer","subagentType":"code-reviewer","description":"Review","status":"max_turns","report":"stopped","usage":{"inputTokens":3,"outputTokens":2},"toolCallCount":5,"startedAt":"2026-09-04T00:00:00.000Z","endedAt":"2026-09-04T00:01:12.000Z"}"#,
       #"{"type":"agent_retry","attempt":2,"reason":"network"}"#,
       #"{"type":"context_compacted","overflow":true}"#,
       #"{"type":"question","id":"q1","question":"Proceed?","options":["Yes","No"]}"#,
@@ -225,6 +228,49 @@ struct ContractFixtureTests {
         Issue.record("unclassified mixed stream discriminator: \(type)")
       }
     }
+  }
+
+  /// `subagent-events.jsonl` (sub-agents design §7.2, §8.7: started → progress
+  /// → finished) is already in the manifest, but the manifest's own dispatcher
+  /// only decodes each line as a `MobileWSServerFrame` — and that CANNOT FAIL
+  /// for an event this build has never heard of, because `AgentEvent` falls
+  /// back to `.unknown(type:raw:)` by design and `.unknown` re-encodes its raw
+  /// object byte-for-byte. Before D4, all three lines passed the manifest test
+  /// as unknown events.
+  ///
+  /// This is the assertion that discriminates: every event in the fixture must
+  /// decode as a KNOWN case AND re-encode to the same canonical bytes, so a
+  /// missing `knownTypes` entry, a dropped field or a mistyped coding key all
+  /// redden here.
+  @Test("every sub-agent event in the fixture decodes as a known case and re-encodes")
+  func subagentStreamFixtureIsCanonical() throws {
+    let lines = try jsonLines("subagent-events.jsonl")
+    #expect(lines.count == 3)
+
+    var seen: [String] = []
+    for line in lines {
+      let frame = try ContractCoding.decoder().decode(MobileWSServerFrame.self, from: line)
+      guard case let .event(_, _, _, event) = frame else {
+        Issue.record("expected an event frame")
+        continue
+      }
+      if case let .unknown(type, _) = event {
+        Issue.record("sub-agent event decoded as unknown: \(type)")
+        continue
+      }
+      let source = try #require(
+        JSONSerialization.jsonObject(with: line) as? [String: Any]
+      )
+      let sourceEvent = try #require(source["event"] as? [String: Any])
+      seen.append(try #require(sourceEvent["type"] as? String))
+      let encoded = try canonicalJSON(ContractCoding.encoder().encode(event))
+      let expected = try canonicalJSON(
+        try JSONSerialization.data(withJSONObject: sourceEvent)
+      )
+      #expect(encoded == expected, "round-trip failed for \(sourceEvent["type"] ?? "?")")
+    }
+
+    #expect(seen == ["subagent_started", "subagent_progress", "subagent_finished"])
   }
 
   @Test("legacy frames decode but capable validation rejects ambiguous cursors")

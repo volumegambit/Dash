@@ -98,7 +98,20 @@ struct AssistantMessageProjection: Equatable, Sendable {
   // thinking"/"Hide thinking" toggle (`ThinkingView`) changes visibility.
   var isThinkingCollapsed = true
   var toolCards: [ToolCardState] = []
-  var workerCards: [WorkerCardState] = []
+  /// Per-child accumulators for the sub-agent fold. Deliberately NOT the
+  /// rendered rows: precedence between the canonical `subagent_*` family and
+  /// the legacy `worker_*` mirrors is resolved at read time (`subagentCards`),
+  /// which is what makes it independent of arrival order, and end-of-stream
+  /// terminalization is a function of `terminal` — a value that is written
+  /// AFTER the fold loop runs in `projectMessage`.
+  fileprivate(set) var subagentDrafts: [SubagentDraft] = []
+  /// How many events have been projected onto this message, and how many of
+  /// those were not sub-agent chrome. Bookkeeping for the fold: the first
+  /// gives each row a stable anchor position, the second is what §8.2's
+  /// adjacency ("nothing but sub-agent chrome between two spawns") is measured
+  /// against without keeping the whole event list around.
+  fileprivate(set) var projectedEventCount = 0
+  fileprivate(set) var nonChromeEventCount = 0
   var statusRows: [StatusRowState] = []
   var pendingQuestion: QuestionState?
   var usage: UsageDTO?
@@ -119,8 +132,24 @@ struct AssistantMessageProjection: Equatable, Sendable {
   /// rendering it per-turn, so its presence no longer corresponds to
   /// anything visible.
   var isEmpty: Bool {
-    thinking.isEmpty && text.isEmpty && toolCards.isEmpty && workerCards.isEmpty
+    thinking.isEmpty && text.isEmpty && toolCards.isEmpty && subagentDrafts.isEmpty
       && statusRows.isEmpty && pendingQuestion == nil && terminal == nil
+  }
+
+  /// The collapsed sub-agent rows (§8.1), one per child, in anchor order.
+  ///
+  /// Computed rather than stored so that every terminal path — `done`,
+  /// `error`, and each of `projectMessage`'s four message statuses — gets
+  /// end-of-stream terminalization, the `background` exemption and the
+  /// question gate for free, without any of them having to remember to
+  /// re-fold. `terminal == nil` IS the parent turn's liveness, the iOS twin of
+  /// web's `isStreaming` argument.
+  var subagentCards: [SubagentCardState] {
+    let isStreaming = terminal == nil
+    let ordered = subagentDrafts.sorted { $0.anchorIndex < $1.anchorIndex }
+    return ordered.enumerated().map { index, draft in
+      draft.resolve(isStreaming: isStreaming, previous: index > 0 ? ordered[index - 1] : nil)
+    }
   }
 }
 
@@ -140,31 +169,191 @@ struct ToolCardState: Equatable, Identifiable, Sendable {
   var details: JSONValue?
 }
 
-struct WorkerKey: Equatable, Hashable, Sendable {
-  let runID: String
-  let workerID: String
-}
-
-enum WorkerCardStatus: Equatable, Sendable {
+/// Coalesced lifecycle state for one child, as the collapsed row renders it
+/// (sub-agents design §8.1). The iOS twin of web's `SubagentStatus` in
+/// `apps/web/src/ui/blocks/subagents.ts`; the wire's `waiting_input` is
+/// `waiting` here, exactly as it is there.
+enum SubagentCardStatus: Equatable, Hashable, Sendable {
   case running
-  case waitingInput
+  case waiting
   case done
   case failed
   case cancelled
+  case interrupted
+  case maxTurns
+
+  /// True when the child has finished, whatever the outcome. All five terminal
+  /// outcomes count — §8.1 gives all five a finished glyph, and this is the
+  /// ONE predicate, so nothing can grow a second list that has never heard of
+  /// `interrupted` or `max_turns`.
+  var isTerminal: Bool {
+    switch self {
+    case .running, .waiting: false
+    case .done, .failed, .cancelled, .interrupted, .maxTurns: true
+    }
+  }
+
+  init(_ status: SubagentTerminalStatus) {
+    switch status {
+    case .done: self = .done
+    case .failed: self = .failed
+    case .cancelled: self = .cancelled
+    case .interrupted: self = .interrupted
+    case .maxTurns: self = .maxTurns
+    }
+  }
+
+  init(_ status: SubagentLiveStatus) {
+    switch status {
+    case .running: self = .running
+    case .waitingInput: self = .waiting
+    }
+  }
 }
 
-struct WorkerCardState: Equatable, Identifiable, Sendable {
-  let key: WorkerKey
-  var role: String
-  var brief: String?
-  var model: String?
-  var status: WorkerCardStatus
+/// Everything the collapsed row (§8.1) needs for one child, folded from every
+/// event in a single assistant message that names it.
+///
+/// **Expansion state, the loaded child transcript and `oneShot` are
+/// deliberately NOT here.** `ChatReducer` re-projects whole messages from
+/// scratch on `cachedMessagesLoaded` and `olderMessagesLoaded`, so anything
+/// hung off a folded card is destroyed by the next transcript refresh — that
+/// is web's D2 CRITICAL 1 in iOS form, and web's fix was to hoist exactly
+/// those into a store slice keyed by the child id (later D3's single
+/// `subagentUi`). D5 adds the iOS equivalent on `ChatState` when it adds the
+/// writers; do not move them onto this struct.
+struct SubagentCardState: Equatable, Identifiable, Sendable {
+  /// The child's conversation id — also its legacy `workerId`. One id, one
+  /// row: `subagentId === workerId === childConversationId`
+  /// (`coordinator.ts:499-510`, `child-handle.ts:169`), so a child emitting
+  /// BOTH families can never produce two rows.
+  let id: String
+  /// Optional human name from the `agent` tool call.
+  var name: String?
+  /// `subagentType`, or a legacy-only child's `role`.
+  var type: String
+  /// One-line description, or a legacy-only child's `brief`.
+  var description: String
+  var status: SubagentCardStatus
+  /// True when the child was spawned to outlive the turn.
+  var background: Bool
+  /// 1 for a child of a user conversation.
+  var depth: Int
+  /// `nil` for a legacy-only child: `worker_*` carries no timestamps at all.
+  /// Moot once D8 removes the mirrors.
+  var startedAt: Date?
+  /// Present only once a terminal event has arrived. A terminal row with no
+  /// `endedAt` must render NOTHING for elapsed, never the row's own age.
+  var endedAt: Date?
+  var toolCallCount: Int
+  /// One-line detail for the collapsed row: newest question, else newest
+  /// detail, else the kickoff description (MC's `latestWorkerDetail`).
   var detail: String?
+  /// The pending question, present only while the row is NOT terminal — §8.1
+  /// hangs the inline reply affordance off this field. The text survives in
+  /// `detail` as the last thing the child said.
   var question: String?
   var report: String?
   var usage: UsageDTO?
+  /// True when no start event for this child appeared in THIS message —
+  /// crash-reconcile can split one child across two persisted messages.
+  var isOrphan: Bool
+  /// True when this row's start event is adjacent to the previous row's in the
+  /// same message (§8.2's parallel group). Computed in the fold because it
+  /// needs the event stream, which the card list does not carry; orphans never
+  /// join a cluster.
+  var isAdjacentToPrevious: Bool
+}
 
-  var id: WorkerKey { key }
+/// Per-family accumulator for one child, before precedence is resolved.
+///
+/// Keeping the two families in separate slots — rather than last-writer-wins —
+/// is what makes precedence order-independent: the `subagent_*` slot is
+/// preferred at resolve time no matter which family arrived first. Today the
+/// gateway emits `worker_spawned` immediately before `subagent_started` and
+/// `worker_done` immediately before `subagent_finished`, but the fold does not
+/// depend on that staying true.
+struct SubagentDraft: Equatable, Sendable {
+  let subagentID: String
+  /// Position of this row's start event (or, for an orphan, of the first event
+  /// that named the child). Rows render in this order.
+  var anchorIndex: Int
+  /// Non-chrome events seen before the anchor. Two anchors with the same rank
+  /// have only sub-agent chrome between them.
+  var chromeRank: Int
+  var hasStart = false
+  var isOrphan = true
+  /// Once the canonical family reports progress the `worker_status` mirror is
+  /// ignored WHOLESALE. A per-field `modern ?? legacy` is not enough, because
+  /// `question` is deliberately cleared by a running progress event and an
+  /// absent modern value would let a stale mirrored question leak back onto a
+  /// row that is running again.
+  var sawModernProgress = false
+  var name: String?
+  var modernType: String?
+  var legacyType: String?
+  var modernDescription: String?
+  var legacyDescription: String?
+  var background: Bool?
+  var depth: Int?
+  var startedAt: Date?
+  var endedAt: Date?
+  var modernTerminal: SubagentCardStatus?
+  var legacyTerminal: SubagentCardStatus?
+  var modernReport: String?
+  var legacyReport: String?
+  var modernLive: SubagentCardStatus?
+  var legacyLive: SubagentCardStatus?
+  var modernDetail: String?
+  var legacyDetail: String?
+  var modernQuestion: String?
+  var legacyQuestion: String?
+  var modernUsage: UsageDTO?
+  var legacyUsage: UsageDTO?
+  var progressToolCallCount: Int?
+  var finishedToolCallCount: Int?
+
+  func resolve(isStreaming: Bool, previous: SubagentDraft?) -> SubagentCardState {
+    let description = modernDescription ?? legacyDescription ?? ""
+    let terminal = modernTerminal ?? legacyTerminal
+    // The progress slots resolve as a UNIT, not field by field — see
+    // `sawModernProgress`.
+    let live = sawModernProgress ? modernLive : legacyLive
+    let question = sawModernProgress ? modernQuestion : legacyQuestion
+    let latestDetail = sawModernProgress ? modernDetail : legacyDetail
+    let isBackground = background ?? false
+    // End-of-stream terminalization (MC's `deriveWorkerStatus`): the turn is
+    // over and this child never reported back. The one exemption MC never
+    // needed is `background`, which is spawned precisely to OUTLIVE the turn —
+    // reporting `cancelled` there would draw a healthy agent as dead in every
+    // finished message that ever spawned one.
+    let status = terminal ?? ((isStreaming || isBackground) ? (live ?? .running) : .cancelled)
+
+    return SubagentCardState(
+      id: subagentID,
+      name: name,
+      type: modernType ?? legacyType ?? "",
+      description: description,
+      status: status,
+      background: isBackground,
+      depth: depth ?? 1,
+      startedAt: startedAt,
+      endedAt: endedAt,
+      toolCallCount: finishedToolCallCount ?? progressToolCallCount ?? 0,
+      detail: latestDetail ?? (description.isEmpty ? nil : description),
+      // Gated on the RESOLVED status, not on the presence of a terminal event:
+      // end-of-stream terminalization reaches `cancelled` with no terminal
+      // event at all, and a dead child must never carry a live reply
+      // affordance.
+      question: status.isTerminal ? nil : question,
+      report: modernReport ?? legacyReport,
+      usage: modernUsage ?? legacyUsage,
+      isOrphan: isOrphan,
+      isAdjacentToPrevious: previous.map {
+        $0.isOrphan == false && isOrphan == false && $0.chromeRank == chromeRank
+      } ?? false
+    )
+  }
 }
 
 struct QuestionState: Equatable, Identifiable, Sendable {
@@ -541,6 +730,17 @@ enum ChatReducer {
 
   private static func project(_ event: AgentEvent, onto assistant: inout AssistantMessageProjection)
   {
+    // Bookkeeping for the sub-agent fold. Every event gets a position (rows
+    // render in anchor order) and every NON-chrome event bumps the rank that
+    // §8.2 adjacency is measured against. Both counters advance before the
+    // switch so a folded event's own rank is the count of content that
+    // preceded it.
+    let eventIndex = assistant.projectedEventCount
+    assistant.projectedEventCount += 1
+    if isSubagentChrome(event) == false {
+      assistant.nonChromeEventCount += 1
+    }
+
     switch event {
     case let .textDelta(text):
       assistant.text += text
@@ -635,38 +835,72 @@ enum ChatReducer {
         onto: &assistant
       )
 
-    case let .workerSpawned(workerID, runID, role, brief, model):
-      let key = WorkerKey(runID: runID, workerID: workerID)
-      upsertWorker(key: key, onto: &assistant) { worker in
-        worker.role = role
-        worker.brief = brief
-        worker.model = model
-        worker.status = .running
+    // Legacy `worker_*` mirrors. They key on the SAME id as the canonical
+    // family (a worker id is the child's conversation id), so both families
+    // land on one card; `runId` is dropped because the canonical family has no
+    // such concept. D8 removes these three branches with the mirrors.
+    case let .workerSpawned(workerID, _, role, brief, _):
+      upsertSubagent(id: workerID, at: eventIndex, isStart: true, onto: &assistant) { draft in
+        draft.legacyType = nonEmpty(role) ?? draft.legacyType
+        draft.legacyDescription = nonEmpty(brief) ?? draft.legacyDescription
       }
 
-    case let .workerStatus(workerID, runID, role, status, detail, question):
-      let key = WorkerKey(runID: runID, workerID: workerID)
-      upsertWorker(key: key, onto: &assistant) { worker in
-        worker.role = role
-        worker.status = status == .running ? .running : .waitingInput
-        worker.detail = detail
-        worker.question = question
+    case let .workerStatus(workerID, _, role, status, detail, question):
+      upsertSubagent(id: workerID, at: eventIndex, isStart: false, onto: &assistant) { draft in
+        draft.legacyLive = SubagentCardStatus(status)
+        draft.legacyQuestion = nonEmpty(question)
+        // Sticky, like MC's `latestWorkerDetail`: a later event with no detail
+        // must not blank the line the row is already showing.
+        draft.legacyDetail = nonEmpty(question) ?? nonEmpty(detail) ?? draft.legacyDetail
+        draft.legacyType = nonEmpty(role) ?? draft.legacyType
       }
 
-    case let .workerDone(workerID, runID, role, status, report, usage):
-      let key = WorkerKey(runID: runID, workerID: workerID)
-      upsertWorker(key: key, onto: &assistant) { worker in
-        worker.role = role
-        worker.status =
-          switch status {
-          case .done: .done
-          case .failed: .failed
-          case .cancelled: .cancelled
-          }
-        worker.detail = nil
-        worker.question = nil
-        worker.report = report
-        worker.usage = usage
+    case let .workerDone(workerID, _, role, status, report, usage):
+      upsertSubagent(id: workerID, at: eventIndex, isStart: false, onto: &assistant) { draft in
+        draft.legacyTerminal = SubagentCardStatus(status)
+        draft.legacyReport = nonEmpty(report)
+        draft.legacyType = nonEmpty(role) ?? draft.legacyType
+        draft.legacyUsage = usage ?? draft.legacyUsage
+      }
+
+    case let .subagentStarted(
+      subagentID, name, subagentType, description, _, _, background, depth, startedAt, _, _):
+      upsertSubagent(id: subagentID, at: eventIndex, isStart: true, onto: &assistant) { draft in
+        draft.name = nonEmpty(name) ?? draft.name
+        draft.modernType = nonEmpty(subagentType) ?? draft.modernType
+        draft.modernDescription = nonEmpty(description) ?? draft.modernDescription
+        draft.background = background
+        draft.depth = depth
+        draft.startedAt = startedAt
+      }
+
+    case let .subagentProgress(subagentID, status, toolCallCount, _, detail, question):
+      upsertSubagent(id: subagentID, at: eventIndex, isStart: false, onto: &assistant) { draft in
+        draft.sawModernProgress = true
+        draft.modernLive = SubagentCardStatus(status)
+        draft.modernQuestion = nonEmpty(question)
+        draft.modernDetail = nonEmpty(question) ?? nonEmpty(detail) ?? draft.modernDetail
+        draft.progressToolCallCount = toolCallCount
+        // `elapsedMs` is deliberately DISCARDED. It is a server-side stopwatch
+        // sampled at most once a second and never replayed, so a row that read
+        // it would freeze on reconnect and disagree with itself across a
+        // refresh. Elapsed is derived from `startedAt`/`endedAt` instead — and
+        // a legacy-only child, which has neither, renders nothing for it.
+      }
+
+    case let .subagentFinished(
+      subagentID, name, subagentType, description, status, report, usage, toolCallCount, startedAt,
+      endedAt):
+      upsertSubagent(id: subagentID, at: eventIndex, isStart: false, onto: &assistant) { draft in
+        draft.name = nonEmpty(name) ?? draft.name
+        draft.modernType = nonEmpty(subagentType) ?? draft.modernType
+        draft.modernDescription = nonEmpty(description) ?? draft.modernDescription
+        draft.modernTerminal = SubagentCardStatus(status)
+        draft.modernReport = nonEmpty(report)
+        draft.finishedToolCallCount = toolCallCount
+        draft.startedAt = startedAt
+        draft.endedAt = endedAt
+        draft.modernUsage = usage ?? draft.modernUsage
       }
 
     case let .agentRetry(attempt, reason):
@@ -741,31 +975,52 @@ enum ChatReducer {
     )
   }
 
-  private static func upsertWorker(
-    key: WorkerKey,
+  /// True for an event that renders nothing of its own between two sub-agent
+  /// rows. `agent_spawned` is the coordinator's name-only announcement, pushed
+  /// between a child's `worker_spawned` and its `subagent_started`; treating it
+  /// as chrome is what lets back-to-back spawns still read as one parallel
+  /// group (§8.2).
+  private static func isSubagentChrome(_ event: AgentEvent) -> Bool {
+    switch event {
+    case .subagentStarted, .subagentProgress, .subagentFinished,
+      .workerSpawned, .workerStatus, .workerDone, .agentSpawned:
+      true
+    default:
+      false
+    }
+  }
+
+  private static func upsertSubagent(
+    id: String,
+    at index: Int,
+    isStart: Bool,
     onto assistant: inout AssistantMessageProjection,
-    update: (inout WorkerCardState) -> Void
+    update: (inout SubagentDraft) -> Void
   ) {
-    let index: Int
-    if let existing = assistant.workerCards.firstIndex(where: { $0.key == key }) {
-      index = existing
+    let slot: Int
+    if let existing = assistant.subagentDrafts.firstIndex(where: { $0.subagentID == id }) {
+      slot = existing
     } else {
-      assistant.workerCards.append(
-        WorkerCardState(
-          key: key,
-          role: "Worker",
-          brief: nil,
-          model: nil,
-          status: .running,
-          detail: nil,
-          question: nil,
-          report: nil,
-          usage: nil
+      // Provisionally an orphan until (and unless) a start event shows up.
+      assistant.subagentDrafts.append(
+        SubagentDraft(
+          subagentID: id,
+          anchorIndex: index,
+          chromeRank: assistant.nonChromeEventCount
         )
       )
-      index = assistant.workerCards.index(before: assistant.workerCards.endIndex)
+      slot = assistant.subagentDrafts.index(before: assistant.subagentDrafts.endIndex)
     }
-    update(&assistant.workerCards[index])
+    if isStart, assistant.subagentDrafts[slot].hasStart == false {
+      // The FIRST start wins the anchor: a child emits `worker_spawned` and
+      // `subagent_started` back to back, and the row belongs at the earlier of
+      // the two so it does not jump when D8 removes the mirror.
+      assistant.subagentDrafts[slot].anchorIndex = index
+      assistant.subagentDrafts[slot].chromeRank = assistant.nonChromeEventCount
+      assistant.subagentDrafts[slot].hasStart = true
+      assistant.subagentDrafts[slot].isOrphan = false
+    }
+    update(&assistant.subagentDrafts[slot])
   }
 
   private static func projectMessage(_ message: ConversationMessageDTO) -> ChatMessageState {
@@ -994,4 +1249,13 @@ enum ChatReducer {
       deletedAt: value.deletedAt
     )
   }
+}
+
+/// `nil` for a missing OR empty string. The sub-agent fold treats `""` as
+/// "not reported" so an empty field never blanks a value an earlier event
+/// already supplied — the same rule as web's `str()` in
+/// `apps/web/src/ui/blocks/subagents.ts`.
+private func nonEmpty(_ value: String?) -> String? {
+  guard let value, value.isEmpty == false else { return nil }
+  return value
 }

@@ -7,15 +7,28 @@ struct UsageDTO: Codable, Hashable, Sendable {
   let cacheWriteTokens: Int?
 }
 
-enum WorkerLiveStatus: String, Codable, Hashable, Sendable {
+/// The live half of a child's lifecycle, shared by the canonical
+/// `subagent_progress` event and the legacy `worker_status` mirror it
+/// replaces (sub-agents design §7.2). One enum for both families so the two
+/// vocabularies cannot drift before D8 retires the mirrors.
+enum SubagentLiveStatus: String, Codable, Hashable, Sendable {
   case running
   case waitingInput = "waiting_input"
 }
 
-enum WorkerTerminalStatus: String, Codable, Hashable, Sendable {
+/// The terminal half, likewise shared by `subagent_finished` and `worker_done`.
+///
+/// This has FIVE cases, not three. `packages/agent/src/types.ts:81` has given
+/// `worker_done.status` `interrupted` and `max_turns` since Phase A, and iOS
+/// modelled only `done`/`failed`/`cancelled` — so a real interrupted child
+/// threw `DecodingError` out of `AgentEvent.init(from:)` and took its whole
+/// frame down. §8.1 gives all five a finished glyph.
+enum SubagentTerminalStatus: String, Codable, Hashable, Sendable {
   case done
   case failed
   case cancelled
+  case interrupted
+  case maxTurns = "max_turns"
 }
 
 enum AgentEvent: Codable, Hashable, Sendable {
@@ -39,7 +52,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
     workerId: String,
     runId: String,
     role: String,
-    status: WorkerLiveStatus,
+    status: SubagentLiveStatus,
     detail: String?,
     question: String?
   )
@@ -47,9 +60,50 @@ enum AgentEvent: Codable, Hashable, Sendable {
     workerId: String,
     runId: String,
     role: String,
-    status: WorkerTerminalStatus,
+    status: SubagentTerminalStatus,
     report: String,
     usage: UsageDTO?
+  )
+  /// Canonical child lifecycle (sub-agents design §7.2). Persisted in the
+  /// parent's event log; the legacy `worker_spawned` mirror carries the same
+  /// child under the same id until D8.
+  case subagentStarted(
+    subagentId: String,
+    name: String?,
+    subagentType: String,
+    description: String,
+    prompt: String,
+    model: String,
+    background: Bool,
+    depth: Int,
+    startedAt: Date,
+    /// `"worktree"` today. Modelled as a free string, not an enum, so a new
+    /// isolation kind degrades to an unrecognised value rather than failing
+    /// the frame.
+    isolation: String?,
+    parentTurnId: String?
+  )
+  /// Transient: live stream only, never logged. Clients derive the same state
+  /// from the child transcript on replay.
+  case subagentProgress(
+    subagentId: String,
+    status: SubagentLiveStatus,
+    toolCallCount: Int,
+    elapsedMs: Int,
+    detail: String?,
+    question: String?
+  )
+  case subagentFinished(
+    subagentId: String,
+    name: String?,
+    subagentType: String,
+    description: String,
+    status: SubagentTerminalStatus,
+    report: String,
+    usage: UsageDTO?,
+    toolCallCount: Int,
+    startedAt: Date,
+    endedAt: Date
   )
   case agentRetry(attempt: Int, reason: String)
   case contextCompacted(overflow: Bool)
@@ -88,6 +142,17 @@ enum AgentEvent: Codable, Hashable, Sendable {
     case options
     case description
     case server
+    case subagentId
+    case subagentType
+    case prompt
+    case background
+    case depth
+    case startedAt
+    case endedAt
+    case isolation
+    case parentTurnId
+    case toolCallCount
+    case elapsedMs
   }
 
   private struct Payload: Decodable {
@@ -119,6 +184,17 @@ enum AgentEvent: Codable, Hashable, Sendable {
     let options: [String]?
     let description: String?
     let server: String?
+    let subagentId: String?
+    let subagentType: String?
+    let prompt: String?
+    let background: Bool?
+    let depth: Int?
+    let startedAt: Date?
+    let endedAt: Date?
+    let isolation: String?
+    let parentTurnId: String?
+    let toolCallCount: Int?
+    let elapsedMs: Int?
 
     private enum CodingKeys: String, CodingKey {
       case type
@@ -149,6 +225,17 @@ enum AgentEvent: Codable, Hashable, Sendable {
       case options
       case description
       case server
+      case subagentId
+      case subagentType
+      case prompt
+      case background
+      case depth
+      case startedAt
+      case endedAt
+      case isolation
+      case parentTurnId
+      case toolCallCount
+      case elapsedMs
     }
   }
 
@@ -175,6 +262,9 @@ enum AgentEvent: Codable, Hashable, Sendable {
       "worker_spawned",
       "worker_status",
       "worker_done",
+      "subagent_started",
+      "subagent_progress",
+      "subagent_finished",
       "agent_retry",
       "context_compacted",
       "question",
@@ -231,7 +321,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
       )
     case "worker_status":
       let statusValue: String = try required(payload.status, "status", type)
-      guard let status = WorkerLiveStatus(rawValue: statusValue) else {
+      guard let status = SubagentLiveStatus(rawValue: statusValue) else {
         throw corrupt("status", type)
       }
       self = .workerStatus(
@@ -244,7 +334,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
       )
     case "worker_done":
       let statusValue: String = try required(payload.status, "status", type)
-      guard let status = WorkerTerminalStatus(rawValue: statusValue) else {
+      guard let status = SubagentTerminalStatus(rawValue: statusValue) else {
         throw corrupt("status", type)
       }
       self = .workerDone(
@@ -254,6 +344,50 @@ enum AgentEvent: Codable, Hashable, Sendable {
         status: status,
         report: try required(payload.report, "report", type),
         usage: payload.usage
+      )
+    case "subagent_started":
+      self = .subagentStarted(
+        subagentId: try required(payload.subagentId, "subagentId", type),
+        name: payload.name,
+        subagentType: try required(payload.subagentType, "subagentType", type),
+        description: try required(payload.description, "description", type),
+        prompt: try required(payload.prompt, "prompt", type),
+        model: try required(payload.model, "model", type),
+        background: try required(payload.background, "background", type),
+        depth: try required(payload.depth, "depth", type),
+        startedAt: try required(payload.startedAt, "startedAt", type),
+        isolation: payload.isolation,
+        parentTurnId: payload.parentTurnId
+      )
+    case "subagent_progress":
+      let statusValue: String = try required(payload.status, "status", type)
+      guard let status = SubagentLiveStatus(rawValue: statusValue) else {
+        throw corrupt("status", type)
+      }
+      self = .subagentProgress(
+        subagentId: try required(payload.subagentId, "subagentId", type),
+        status: status,
+        toolCallCount: try required(payload.toolCallCount, "toolCallCount", type),
+        elapsedMs: try required(payload.elapsedMs, "elapsedMs", type),
+        detail: payload.detail,
+        question: payload.question
+      )
+    case "subagent_finished":
+      let statusValue: String = try required(payload.status, "status", type)
+      guard let status = SubagentTerminalStatus(rawValue: statusValue) else {
+        throw corrupt("status", type)
+      }
+      self = .subagentFinished(
+        subagentId: try required(payload.subagentId, "subagentId", type),
+        name: payload.name,
+        subagentType: try required(payload.subagentType, "subagentType", type),
+        description: try required(payload.description, "description", type),
+        status: status,
+        report: try required(payload.report, "report", type),
+        usage: payload.usage,
+        toolCallCount: try required(payload.toolCallCount, "toolCallCount", type),
+        startedAt: try required(payload.startedAt, "startedAt", type),
+        endedAt: try required(payload.endedAt, "endedAt", type)
       )
     case "agent_retry":
       self = .agentRetry(
@@ -351,6 +485,43 @@ enum AgentEvent: Codable, Hashable, Sendable {
       try container.encode(status, forKey: .status)
       try container.encode(report, forKey: .report)
       try container.encodeIfPresent(usage, forKey: .usage)
+    case let .subagentStarted(
+      subagentID, name, subagentType, description, prompt, model, background, depth, startedAt,
+      isolation, parentTurnID):
+      try container.encode("subagent_started", forKey: .type)
+      try container.encode(subagentID, forKey: .subagentId)
+      try container.encodeIfPresent(name, forKey: .name)
+      try container.encode(subagentType, forKey: .subagentType)
+      try container.encode(description, forKey: .description)
+      try container.encode(prompt, forKey: .prompt)
+      try container.encode(model, forKey: .model)
+      try container.encode(background, forKey: .background)
+      try container.encode(depth, forKey: .depth)
+      try container.encode(startedAt, forKey: .startedAt)
+      try container.encodeIfPresent(isolation, forKey: .isolation)
+      try container.encodeIfPresent(parentTurnID, forKey: .parentTurnId)
+    case let .subagentProgress(subagentID, status, toolCallCount, elapsedMs, detail, question):
+      try container.encode("subagent_progress", forKey: .type)
+      try container.encode(subagentID, forKey: .subagentId)
+      try container.encode(status, forKey: .status)
+      try container.encode(toolCallCount, forKey: .toolCallCount)
+      try container.encode(elapsedMs, forKey: .elapsedMs)
+      try container.encodeIfPresent(detail, forKey: .detail)
+      try container.encodeIfPresent(question, forKey: .question)
+    case let .subagentFinished(
+      subagentID, name, subagentType, description, status, report, usage, toolCallCount, startedAt,
+      endedAt):
+      try container.encode("subagent_finished", forKey: .type)
+      try container.encode(subagentID, forKey: .subagentId)
+      try container.encodeIfPresent(name, forKey: .name)
+      try container.encode(subagentType, forKey: .subagentType)
+      try container.encode(description, forKey: .description)
+      try container.encode(status, forKey: .status)
+      try container.encode(report, forKey: .report)
+      try container.encodeIfPresent(usage, forKey: .usage)
+      try container.encode(toolCallCount, forKey: .toolCallCount)
+      try container.encode(startedAt, forKey: .startedAt)
+      try container.encode(endedAt, forKey: .endedAt)
     case let .agentRetry(attempt, reason):
       try container.encode("agent_retry", forKey: .type)
       try container.encode(attempt, forKey: .attempt)

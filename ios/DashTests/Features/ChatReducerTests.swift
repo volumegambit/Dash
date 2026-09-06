@@ -396,13 +396,25 @@ struct ChatReducerTests {
     #expect(card?.details == .object(["exitCode": .number(1)]))
   }
 
-  @Test("worker updates are keyed by run and worker ids")
-  func workerProjection() {
+  /// The row is keyed on the CHILD ID ALONE, not on `(runId, workerId)`.
+  ///
+  /// This replaces the old "worker updates are keyed by run and worker ids"
+  /// test, which asserted that the same `workerId` under two `runId`s produced
+  /// TWO cards. That was never reachable — a worker id IS the child's
+  /// conversation id (`coordinator.ts:499-510`, `child-handle.ts:169`), so it
+  /// is unique across runs — and it is incompatible with the canonical family,
+  /// which carries no `runId` at all. Keying on the id alone is what makes
+  /// ruling 4 hold: `subagentId === workerId === childConversationId`, so a
+  /// child emitting BOTH families lands on exactly one card.
+  @Test("both event families for one child fold into a single card")
+  func subagentDualFamilyFoldsIntoOneCard() {
     var state = acceptedState(cursor: 1)
 
+    // Emission order as the gateway actually produces it today: the legacy
+    // mirror first, the canonical event immediately after.
     _ = apply(
       .workerSpawned(
-        workerId: "worker-1",
+        workerId: "child-1",
         runId: "run-1",
         role: "researcher",
         brief: "Inspect",
@@ -412,49 +424,386 @@ struct ChatReducerTests {
       to: &state
     )
     _ = apply(
-      .workerSpawned(
-        workerId: "worker-1",
-        runId: "run-2",
-        role: "reviewer",
-        brief: "Review",
-        model: "test/model"
+      .subagentStarted(
+        subagentId: "child-1",
+        name: "scout",
+        subagentType: "Explore",
+        description: "map code",
+        prompt: "map it",
+        model: "test/model",
+        background: false,
+        depth: 1,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        isolation: nil,
+        parentTurnId: nil
       ),
       seq: 3,
       to: &state
     )
     _ = apply(
+      .subagentProgress(
+        subagentId: "child-1",
+        status: .running,
+        toolCallCount: 3,
+        elapsedMs: 7200,
+        detail: "reading files",
+        question: nil
+      ),
+      seq: 4,
+      to: &state
+    )
+    _ = apply(
+      .subagentFinished(
+        subagentId: "child-1",
+        name: "scout",
+        subagentType: "Explore",
+        description: "map code",
+        status: .done,
+        report: "Two findings.",
+        usage: usage(),
+        toolCallCount: 3,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        endedAt: Date(timeIntervalSince1970: 1_788_480_072)
+      ),
+      seq: 5,
+      to: &state
+    )
+
+    let cards = state.messages.last?.assistant?.subagentCards ?? []
+    #expect(cards.count == 1)
+    let card = cards.first
+    #expect(card?.id == "child-1")
+    #expect(card?.name == "scout")
+    #expect(card?.type == "Explore")
+    #expect(card?.description == "map code")
+    #expect(card?.status == .done)
+    #expect(card?.toolCallCount == 3)
+    #expect(card?.report == "Two findings.")
+    #expect(card?.usage == usage())
+    #expect(card?.startedAt == Date(timeIntervalSince1970: 1_788_480_000))
+    #expect(card?.endedAt == Date(timeIntervalSince1970: 1_788_480_072))
+    #expect(card?.depth == 1)
+    #expect(card?.background == false)
+    #expect(card?.isOrphan == false)
+  }
+
+  /// Field precedence must not depend on which family happens to arrive last.
+  /// The web twin keeps the two families in separate slots and prefers the
+  /// canonical one at resolve time for exactly this reason.
+  @Test("the canonical family wins even when the legacy mirror arrives after it")
+  func subagentCanonicalWinsRegardlessOfOrder() {
+    var state = acceptedState(cursor: 1)
+
+    _ = apply(
+      .subagentFinished(
+        subagentId: "child-1",
+        name: nil,
+        subagentType: "Explore",
+        description: "map code",
+        status: .done,
+        report: "canonical report",
+        usage: nil,
+        toolCallCount: 4,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        endedAt: Date(timeIntervalSince1970: 1_788_480_072)
+      ),
+      seq: 2,
+      to: &state
+    )
+    _ = apply(
+      .workerDone(
+        workerId: "child-1",
+        runId: "run-1",
+        role: "researcher",
+        status: .failed,
+        report: "legacy report",
+        usage: nil
+      ),
+      seq: 3,
+      to: &state
+    )
+
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.status == .done)
+    #expect(card?.report == "canonical report")
+    #expect(card?.type == "Explore")
+  }
+
+  /// A running canonical progress event deliberately CLEARS the question. A
+  /// per-field `modern ?? legacy` fallback would let the stale mirrored
+  /// question reappear, so the two progress slots resolve as a unit.
+  @Test("a running canonical progress clears a question the legacy mirror set")
+  func subagentRunningProgressClearsMirroredQuestion() {
+    var state = acceptedState(cursor: 1)
+
+    _ = apply(
       .workerStatus(
-        workerId: "worker-1",
+        workerId: "child-1",
         runId: "run-1",
         role: "researcher",
         status: .waitingInput,
         detail: "Need context",
         question: "Continue?"
       ),
-      seq: 4,
+      seq: 2,
       to: &state
     )
     _ = apply(
-      .workerDone(
-        workerId: "worker-1",
-        runId: "run-1",
-        role: "researcher",
-        status: .done,
-        report: "Complete",
-        usage: usage()
+      .subagentProgress(
+        subagentId: "child-1",
+        status: .running,
+        toolCallCount: 1,
+        elapsedMs: 100,
+        detail: nil,
+        question: nil
       ),
-      seq: 5,
+      seq: 3,
       to: &state
     )
 
-    let workers = state.messages.last?.assistant?.workerCards ?? []
-    #expect(workers.count == 2)
-    let first = workers.first { $0.key == WorkerKey(runID: "run-1", workerID: "worker-1") }
-    let second = workers.first { $0.key == WorkerKey(runID: "run-2", workerID: "worker-1") }
-    #expect(first?.status == .done)
-    #expect(first?.report == "Complete")
-    #expect(first?.usage == usage())
-    #expect(second?.status == .running)
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.status == .running)
+    #expect(card?.question == nil)
+  }
+
+  @Test("interrupted and max_turns are first-class terminal statuses")
+  func subagentWiderTerminalStatuses() {
+    for (wire, expected) in [
+      (SubagentTerminalStatus.interrupted, SubagentCardStatus.interrupted),
+      (SubagentTerminalStatus.maxTurns, SubagentCardStatus.maxTurns),
+    ] {
+      var state = acceptedState(cursor: 1)
+      _ = apply(
+        .subagentFinished(
+          subagentId: "child-1",
+          name: nil,
+          subagentType: "Explore",
+          description: "map code",
+          status: wire,
+          report: "stopped",
+          usage: nil,
+          toolCallCount: 0,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+          endedAt: Date(timeIntervalSince1970: 1_788_480_072)
+        ),
+        seq: 2,
+        to: &state
+      )
+      let card = state.messages.last?.assistant?.subagentCards.first
+      #expect(card?.status == expected)
+      #expect(card?.status.isTerminal == true)
+    }
+  }
+
+  /// End-of-stream terminalization (Mission Control's `deriveWorkerStatus`,
+  /// ported to web in D1): the parent turn ended and this child never reported
+  /// back, so the row reads `cancelled` — and, critically, must NOT keep the
+  /// question it was waiting on. This path reaches a terminal status with NO
+  /// terminal event at all, which is why the question gate reads the RESOLVED
+  /// status rather than the presence of a terminal event.
+  @Test("a waiting child with no terminal event is cancelled at end of stream, without its question")
+  func subagentEndOfStreamTerminalization() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .subagentProgress(
+        subagentId: "child-1",
+        status: .waitingInput,
+        toolCallCount: 2,
+        elapsedMs: 500,
+        detail: nil,
+        question: "Which branch?"
+      ),
+      seq: 2,
+      to: &state
+    )
+
+    let live = state.messages.last?.assistant?.subagentCards.first
+    #expect(live?.status == .waiting)
+    #expect(live?.question == "Which branch?")
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 3, outcome: .completed))
+    )
+
+    let ended = state.messages.last?.assistant?.subagentCards.first
+    #expect(ended?.status == .cancelled)
+    #expect(ended?.question == nil)
+    // The question survives as the last thing the child said, so the row can
+    // still show it as context — it just no longer means "reply here".
+    #expect(ended?.detail == "Which branch?")
+  }
+
+  /// A background child is spawned precisely to OUTLIVE the turn that spawned
+  /// it, so the parent's message ending says nothing about whether it is still
+  /// working. Only a real terminal event ends one.
+  @Test("a background child is exempt from end-of-stream cancellation")
+  func subagentBackgroundExemptFromEndOfStream() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .subagentStarted(
+        subagentId: "child-1",
+        name: nil,
+        subagentType: "Explore",
+        description: "map code",
+        prompt: "map it",
+        model: "m",
+        background: true,
+        depth: 1,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        isolation: nil,
+        parentTurnId: nil
+      ),
+      seq: 2,
+      to: &state
+    )
+    _ = apply(
+      .subagentProgress(
+        subagentId: "child-1",
+        status: .waitingInput,
+        toolCallCount: 0,
+        elapsedMs: 10,
+        detail: nil,
+        question: "Which branch?"
+      ),
+      seq: 3,
+      to: &state
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 4, outcome: .completed))
+    )
+
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.background == true)
+    #expect(card?.status == .waiting)
+    // Still live, so the inline reply affordance stays.
+    #expect(card?.question == "Which branch?")
+  }
+
+  /// Crash-reconcile can split one child across two persisted messages: the
+  /// start lands in message A and the terminal event in message B. In B the
+  /// terminal is an orphan — it still yields a row, flagged so the renderer
+  /// can draw the compact standalone form and keep it out of a parallel
+  /// cluster.
+  @Test("a terminal event with no start in the same message is an orphan row")
+  func subagentOrphanTerminal() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .subagentFinished(
+        subagentId: "child-1",
+        name: nil,
+        subagentType: "Explore",
+        description: "map code",
+        status: .done,
+        report: "done",
+        usage: nil,
+        toolCallCount: 1,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        endedAt: Date(timeIntervalSince1970: 1_788_480_072)
+      ),
+      seq: 2,
+      to: &state
+    )
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.isOrphan == true)
+    #expect(card?.isAdjacentToPrevious == false)
+  }
+
+  /// §8.2: children whose start events are adjacent — nothing but sub-agent
+  /// chrome between them — render inside one parallel group. Adjacency is
+  /// computed in the fold because it needs the event stream, which the card
+  /// list no longer carries.
+  @Test("adjacent spawns are marked adjacent and a text delta between them breaks it")
+  func subagentAdjacency() {
+    func start(_ id: String) -> AgentEvent {
+      .subagentStarted(
+        subagentId: id,
+        name: nil,
+        subagentType: "Explore",
+        description: "map code",
+        prompt: "map it",
+        model: "m",
+        background: false,
+        depth: 1,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        isolation: nil,
+        parentTurnId: nil
+      )
+    }
+
+    var parallel = acceptedState(cursor: 1)
+    _ = apply(start("a"), seq: 2, to: &parallel)
+    // `agent_spawned` is the coordinator's name-only announcement, pushed
+    // between two spawns; it is chrome, not content.
+    _ = apply(.agentSpawned(name: "b"), seq: 3, to: &parallel)
+    _ = apply(start("b"), seq: 4, to: &parallel)
+    let parallelCards = parallel.messages.last?.assistant?.subagentCards ?? []
+    #expect(parallelCards.map(\.id) == ["a", "b"])
+    #expect(parallelCards.first?.isAdjacentToPrevious == false)
+    #expect(parallelCards.last?.isAdjacentToPrevious == true)
+
+    var split = acceptedState(cursor: 1)
+    _ = apply(start("a"), seq: 2, to: &split)
+    _ = apply(.textDelta(text: "thinking about it"), seq: 3, to: &split)
+    _ = apply(start("b"), seq: 4, to: &split)
+    let splitCards = split.messages.last?.assistant?.subagentCards ?? []
+    #expect(splitCards.map(\.id) == ["a", "b"])
+    #expect(splitCards.last?.isAdjacentToPrevious == false)
+  }
+
+  /// A legacy-only child (no canonical event ever arrives) still renders, with
+  /// `role`/`brief` standing in for `subagentType`/`description`. It carries no
+  /// timestamps at all, which is why `startedAt` is optional: D5 must render
+  /// nothing for elapsed rather than the row's own age.
+  @Test("a legacy-only child folds with no timestamps")
+  func subagentLegacyOnly() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .workerSpawned(
+        workerId: "child-1",
+        runId: "run-1",
+        role: "researcher",
+        brief: "Inspect",
+        model: "test/model"
+      ),
+      seq: 2,
+      to: &state
+    )
+
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.id == "child-1")
+    #expect(card?.type == "researcher")
+    #expect(card?.description == "Inspect")
+    #expect(card?.status == .running)
+    #expect(card?.startedAt == nil)
+    #expect(card?.endedAt == nil)
+    #expect(card?.toolCallCount == 0)
+  }
+
+  /// The fold DISCARDS `subagent_progress.elapsedMs` — D1 parked this and D2
+  /// confirmed it — so elapsed is derived from `startedAt`/`endedAt` and a
+  /// terminal run with no `endedAt` must render nothing rather than its own
+  /// age. Pinned here so nobody "helpfully" adds the field back and gives D5
+  /// two disagreeing sources.
+  @Test("elapsedMs is not folded onto the card")
+  func subagentDiscardsElapsedMs() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .subagentProgress(
+        subagentId: "child-1",
+        status: .running,
+        toolCallCount: 1,
+        elapsedMs: 999_999,
+        detail: nil,
+        question: nil
+      ),
+      seq: 2,
+      to: &state
+    )
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.startedAt == nil)
+    #expect(card?.endedAt == nil)
   }
 
   @Test("question supports options and a free-text answer")
@@ -489,12 +838,56 @@ struct ChatReducerTests {
     #expect(draft.text.isEmpty)
   }
 
-  @Test("worker done clears waiting-input detail and question")
-  func workerDoneClearsWaitingInput() {
+  /// An explicit terminal event is the OTHER path by which a question can leak
+  /// onto a dead row (the first is end-of-stream terminalization above). §8.1
+  /// hangs the inline reply affordance off `question`, so a finished child
+  /// carrying one renders a live reply box on a corpse.
+  @Test("an explicit terminal event clears the waiting-input question")
+  func subagentTerminalEventClearsQuestion() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .subagentProgress(
+        subagentId: "child-1",
+        status: .waitingInput,
+        toolCallCount: 1,
+        elapsedMs: 100,
+        detail: "Need context",
+        question: "Continue?"
+      ),
+      seq: 2,
+      to: &state
+    )
+    _ = apply(
+      .subagentFinished(
+        subagentId: "child-1",
+        name: nil,
+        subagentType: "Explore",
+        description: "map code",
+        status: .cancelled,
+        report: "",
+        usage: nil,
+        toolCallCount: 1,
+        startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+        endedAt: Date(timeIntervalSince1970: 1_788_480_072)
+      ),
+      seq: 3,
+      to: &state
+    )
+
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.status == .cancelled)
+    #expect(card?.question == nil)
+    #expect(card?.detail == "Continue?")
+  }
+
+  /// The same clearing for the legacy family, which is how the pre-D4 reducer
+  /// behaved (`worker_done` blanked `detail` and `question` outright).
+  @Test("worker done clears the waiting-input question")
+  func legacyWorkerDoneClearsWaitingInput() {
     var state = acceptedState(cursor: 1)
     _ = apply(
       .workerStatus(
-        workerId: "worker-1",
+        workerId: "child-1",
         runId: "run-1",
         role: "researcher",
         status: .waitingInput,
@@ -506,7 +899,7 @@ struct ChatReducerTests {
     )
     _ = apply(
       .workerDone(
-        workerId: "worker-1",
+        workerId: "child-1",
         runId: "run-1",
         role: "researcher",
         status: .done,
@@ -517,10 +910,10 @@ struct ChatReducerTests {
       to: &state
     )
 
-    let worker = state.messages.last?.assistant?.workerCards.first
-    #expect(worker?.status == .done)
-    #expect(worker?.detail == nil)
-    #expect(worker?.question == nil)
+    let card = state.messages.last?.assistant?.subagentCards.first
+    #expect(card?.status == .done)
+    #expect(card?.question == nil)
+    #expect(card?.report == "Complete")
   }
 
   @Test("response content is a fallback and usage is retained")
