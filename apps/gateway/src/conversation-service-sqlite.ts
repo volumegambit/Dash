@@ -11,13 +11,40 @@ import type {
   ConversationSummary,
   MobileAgentEvent,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2SequencedFrame,
+} from '@dash/mobile-contract-v2';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import { mapConversationV1, mapMessageV1 } from './conversation-contract-mappers.js';
 import {
   decodeConversationCursor,
   decodeMessageCursor,
   encodeConversationCursor,
   encodeMessageCursor,
 } from './conversation-cursors.js';
+import type {
+  AcceptRunInput,
+  AcceptedRun,
+  AppendRunEventInput,
+  CommandMutationResult,
+  DeliverSteerInput,
+  DeliveredInput,
+  DeliveredSteerContext,
+  EditFollowUpCommand,
+  EnqueueInputCommand,
+  FinishRunInput,
+  FinishRunResult,
+  PersistedInputTransition,
+  PersistedQueueTransition,
+  PersistedRunFrames,
+  RemoveFollowUpCommand,
+  ResumeFollowUpsCommand,
+  StoredConversation,
+  StoredConversationMessage,
+  TerminalizeSteersInput,
+  V2RecoveryResult,
+} from './conversation-domain.js';
 import {
   type AcceptTurnInput,
   type AcceptedTurn,
@@ -186,14 +213,28 @@ export class SqliteConversationService implements ConversationService {
     return content.type === 'user' ? collapsePreview(content.text) : null;
   }
 
-  private mapStoredMessage(row: ConversationMessageRow): ConversationMessage {
+  private nextMessageOrdinal(conversationId: string): number {
+    const row = this.db
+      .prepare(`
+        SELECT COALESCE(MAX(ordinal), 0) + 1 AS next
+        FROM conversation_messages
+        WHERE conversation_id = ?
+      `)
+      .get(conversationId) as { next: number };
+    return row.next;
+  }
+
+  private mapStoredMessage(row: ConversationMessageRow): StoredConversationMessage {
     return {
       id: row.id,
       conversationId: row.conversation_id,
       turnId: row.turn_id,
+      runId: row.turn_id,
+      segmentIndex: 0,
       ordinal: row.ordinal,
       role: row.role,
       status: row.status,
+      deliveryKind: 'normal',
       content: parseContent(row.content),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -231,23 +272,33 @@ export class SqliteConversationService implements ConversationService {
     }
   }
 
-  private mapConversation(row: ConversationRow): ConversationSummary {
+  private mapStoredConversation(row: ConversationRow): StoredConversation {
     return {
       id: row.id,
+      createRequestId: row.create_request_id,
       agentId: row.agent_id,
       agentName: row.agent_name_snapshot,
       title: row.title,
       revision: row.revision,
       status: row.status,
-      activeTurnId: row.active_turn_id,
+      activeRunId: row.active_turn_id,
       owningIssueId: row.owning_issue_id,
       projectId: row.project_id,
       lastSeq: row.last_seq,
+      v2LastSeq: 0,
+      queuePaused: false,
+      queueRevision: 0,
+      nextMessageOrdinal: this.nextMessageOrdinal(row.id),
+      pendingFollowUpCount: 0,
       lastMessagePreview: this.lastMessagePreview(row.id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       ...(row.deleted_at ? { deletedAt: row.deleted_at } : {}),
     };
+  }
+
+  private mapConversation(row: ConversationRow): ConversationSummary {
+    return mapConversationV1(this.mapStoredConversation(row));
   }
 
   private requireConversationRow(id: string, includeDeleted = false): ConversationRow {
@@ -493,24 +544,14 @@ export class SqliteConversationService implements ConversationService {
     const boundary = hasMore ? pageRows[0] : undefined;
     const allEvents = this.eventLog.readSince(conversation.agent_id, conversation.id, 0);
     const items = pageRows.map((row): ConversationMessage => {
-      let content = parseContent(row.content);
+      const stored = this.mapStoredMessage(row);
       if (row.role === 'assistant') {
         const events: MobileAgentEvent[] = allEvents
           .filter((entry) => entry.msgId === row.turn_id && entry.payload.type === 'event')
           .map((entry) => (entry.payload as { type: 'event'; event: MobileAgentEvent }).event);
-        content = { type: 'assistant', events };
+        stored.content = { type: 'assistant', events };
       }
-      return {
-        id: row.id,
-        conversationId: row.conversation_id,
-        turnId: row.turn_id,
-        ordinal: row.ordinal,
-        role: row.role,
-        status: row.status,
-        content,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      };
+      return mapMessageV1(stored);
     });
     return {
       items,
@@ -567,8 +608,8 @@ export class SqliteConversationService implements ConversationService {
         }
         return {
           conversation: this.mapConversation(current),
-          userMessage: this.mapStoredMessage(user),
-          assistantMessage: this.mapStoredMessage(assistant),
+          userMessage: mapMessageV1(this.mapStoredMessage(user)),
+          assistantMessage: mapMessageV1(this.mapStoredMessage(assistant)),
           seq: accepted.seq,
           revision: accepted.payload.revision,
           created: false,
@@ -673,8 +714,8 @@ export class SqliteConversationService implements ConversationService {
       const assistant = rows.find((row) => row.role === 'assistant') as ConversationMessageRow;
       return {
         conversation: this.mapConversation(this.requireConversationRow(value.conversationId)),
-        userMessage: this.mapStoredMessage(user),
-        assistantMessage: this.mapStoredMessage(assistant),
+        userMessage: mapMessageV1(this.mapStoredMessage(user)),
+        assistantMessage: mapMessageV1(this.mapStoredMessage(assistant)),
         seq,
         revision: nextRevision,
         created: true,
@@ -927,6 +968,79 @@ export class SqliteConversationService implements ConversationService {
       }
       return { conversationsInterrupted, terminalsAppended };
     })();
+  }
+
+  acceptRun(_input: AcceptRunInput): AcceptedRun {
+    throw new Error('Conversation v2 run acceptance is not implemented');
+  }
+
+  appendRunEvent(_input: AppendRunEventInput): PersistedRunFrames | null {
+    throw new Error('Conversation v2 run events are not implemented');
+  }
+
+  appendCurrentRunEvent(
+    _agentId: string,
+    _conversationId: string,
+    _runId: string,
+    _event: AgentEvent,
+  ): PersistedRunFrames | null {
+    throw new Error('Conversation v2 current-run events are not implemented');
+  }
+
+  deliverSteer(_input: DeliverSteerInput): DeliveredInput {
+    throw new Error('Conversation v2 steer delivery is not implemented');
+  }
+
+  terminalizeSteersNotDelivered(_input: TerminalizeSteersInput): PersistedInputTransition[] {
+    throw new Error('Conversation v2 steer terminalization is not implemented');
+  }
+
+  enqueueInput(_input: EnqueueInputCommand): CommandMutationResult {
+    throw new Error('Conversation v2 input enqueueing is not implemented');
+  }
+
+  editFollowUp(_input: EditFollowUpCommand): CommandMutationResult {
+    throw new Error('Conversation v2 follow-up editing is not implemented');
+  }
+
+  removeFollowUp(_input: RemoveFollowUpCommand): CommandMutationResult {
+    throw new Error('Conversation v2 follow-up removal is not implemented');
+  }
+
+  resumeFollowUps(_input: ResumeFollowUpsCommand): CommandMutationResult {
+    throw new Error('Conversation v2 follow-up resumption is not implemented');
+  }
+
+  pauseFollowUpsForAgentDisable(_agentId: string): PersistedQueueTransition[] {
+    throw new Error('Conversation v2 follow-up pausing is not implemented');
+  }
+
+  finishRunAndClaimNext(_input: FinishRunInput): FinishRunResult {
+    throw new Error('Conversation v2 run completion is not implemented');
+  }
+
+  bootstrapV2(_input: ListMessagesInput): MobileV2ConversationBootstrap {
+    throw new Error('Conversation v2 bootstrap is not implemented');
+  }
+
+  readV2Since(
+    _agentId: string,
+    _conversationId: string,
+    _sinceV2Seq: number,
+  ): MobileV2SequencedFrame[] {
+    throw new Error('Conversation v2 journal reads are not implemented');
+  }
+
+  listDeliveredSteers(_conversationId: string): DeliveredSteerContext[] {
+    throw new Error('Conversation v2 delivered steer reads are not implemented');
+  }
+
+  recoverV2State(): V2RecoveryResult {
+    throw new Error('Conversation v2 recovery is not implemented');
+  }
+
+  listRunMessages(_conversationId: string, _runId: string): StoredConversationMessage[] {
+    throw new Error('Conversation v2 run message reads are not implemented');
   }
 
   close(): void {

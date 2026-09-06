@@ -9,6 +9,31 @@ import type {
   MobileApiError,
   MobileImage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2SequencedFrame,
+} from '@dash/mobile-contract-v2';
+import type {
+  AcceptRunInput,
+  AcceptedRun,
+  AppendRunEventInput,
+  CommandMutationResult,
+  DeliverSteerInput,
+  DeliveredInput,
+  DeliveredSteerContext,
+  EditFollowUpCommand,
+  EnqueueInputCommand,
+  FinishRunInput,
+  FinishRunResult,
+  PersistedInputTransition,
+  PersistedQueueTransition,
+  PersistedRunFrames,
+  RemoveFollowUpCommand,
+  ResumeFollowUpsCommand,
+  StoredConversationMessage,
+  TerminalizeSteersInput,
+  V2RecoveryResult,
+} from './conversation-domain.js';
 import type { EventLogPayload, EventLogStore } from './event-log-store.js';
 
 export const DEFAULT_CONVERSATION_TITLE = 'New Conversation';
@@ -86,6 +111,31 @@ export interface ConversationService {
   trySetAutoTitle(id: string, title: string): ConversationSummary | null;
   archiveAgentConversations(agentId: string): ConversationSummary[];
   recoverInterruptedTurns(): { conversationsInterrupted: number; terminalsAppended: number };
+  acceptRun(input: AcceptRunInput): AcceptedRun;
+  appendRunEvent(input: AppendRunEventInput): PersistedRunFrames | null;
+  appendCurrentRunEvent(
+    agentId: string,
+    conversationId: string,
+    runId: string,
+    event: AgentEvent,
+  ): PersistedRunFrames | null;
+  deliverSteer(input: DeliverSteerInput): DeliveredInput;
+  terminalizeSteersNotDelivered(input: TerminalizeSteersInput): PersistedInputTransition[];
+  enqueueInput(input: EnqueueInputCommand): CommandMutationResult;
+  editFollowUp(input: EditFollowUpCommand): CommandMutationResult;
+  removeFollowUp(input: RemoveFollowUpCommand): CommandMutationResult;
+  resumeFollowUps(input: ResumeFollowUpsCommand): CommandMutationResult;
+  pauseFollowUpsForAgentDisable(agentId: string): PersistedQueueTransition[];
+  finishRunAndClaimNext(input: FinishRunInput): FinishRunResult;
+  bootstrapV2(input: ListMessagesInput): MobileV2ConversationBootstrap;
+  readV2Since(
+    agentId: string,
+    conversationId: string,
+    sinceV2Seq: number,
+  ): MobileV2SequencedFrame[];
+  listDeliveredSteers(conversationId: string): DeliveredSteerContext[];
+  recoverV2State(): V2RecoveryResult;
+  listRunMessages(conversationId: string, runId: string): StoredConversationMessage[];
   close(): void;
 }
 
