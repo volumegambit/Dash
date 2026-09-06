@@ -1,13 +1,20 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-contract';
+import { CHAT_INPUT_QUEUE_CAPABILITY, type MobileV2WsServerFrame } from '@dash/mobile-contract-v2';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { parseMobileV2ClientFrame, summarizeMobileV2Inbound } from './chat-ws-v2.js';
 import { toClientLocation } from './client-location.js';
 import { toMobileApiError } from './conversation-routes.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
-import type { ResumableChatHub, ResumableSendFrame, TurnFrameSink } from './resumable-chat-hub.js';
+import type {
+  ResumableChatHub,
+  ResumableSendFrame,
+  TurnFrameSink,
+  V2ConversationFrameSink,
+} from './resumable-chat-hub.js';
 import type { WsTicketStore } from './ws-ticket-store.js';
 
 export interface ChatWsOptions {
@@ -45,6 +52,19 @@ export interface ChatWsOptions {
 }
 
 const KNOWN_CLIENT_FRAME_TYPES = new Set(['message', 'resume', 'answer', 'cancel']);
+const V2_ONLY_CLIENT_FRAME_TYPES = new Set([
+  'subscribe_conversation',
+  'enqueue_input',
+  'edit_follow_up',
+  'remove_follow_up',
+  'resume_follow_ups',
+]);
+type ConnectionMode = 'pending' | 'v1' | 'v2' | 'closing';
+type ProtocolCloseReason =
+  | 'unsupported_version'
+  | 'unexpected_hello'
+  | 'hello_required'
+  | 'invalid_frame';
 const STRUCTURAL_CLIENT_FIELDS = new Set([
   'type',
   'id',
@@ -129,11 +149,12 @@ type WsServerMessage =
   | { type: 'error'; id: string; seq?: number; error: string };
 
 function summarizeOutboundForLog(
-  msg: WsServerMessage | MobileWsServerFrame,
+  msg: WsServerMessage | MobileWsServerFrame | MobileV2WsServerFrame,
 ): Record<string, unknown> {
   const summary: Record<string, unknown> = { frameType: msg.type };
-  if (typeof msg.id === 'string') summary.idLength = msg.id.length;
+  if ('id' in msg && typeof msg.id === 'string') summary.idLength = msg.id.length;
   if ('seq' in msg && typeof msg.seq === 'number') summary.seq = msg.seq;
+  if ('v2Seq' in msg && typeof msg.v2Seq === 'number') summary.v2Seq = msg.v2Seq;
   if (msg.type === 'event') summary.eventType = msg.event?.type ?? 'unknown';
   if (msg.type === 'error') {
     summary.errorMessageLength = msg.error.length;
@@ -277,7 +298,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
   const sendServerMessage = (
     ws: { send(data: string): void },
-    msg: WsServerMessage | MobileWsServerFrame,
+    msg: WsServerMessage | MobileWsServerFrame | MobileV2WsServerFrame,
   ): void => {
     const payload = JSON.stringify(msg, (_key, value) =>
       value instanceof Error ? value.message : value,
@@ -315,13 +336,21 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
     id: string,
     conversationId: string | undefined,
     operation: () => void | Promise<void>,
+    shouldReply: () => boolean = () => true,
   ): void => {
-    try {
-      void Promise.resolve(operation()).catch((error) => {
+    const reply = (error: unknown): void => {
+      if (!shouldReply()) return;
+      try {
         sendHubError(ws, id, conversationId, error);
-      });
+      } catch {
+        // The transport can disappear before onClose. Never turn an attempted
+        // error reply into a second, unhandled dispatch rejection.
+      }
+    };
+    try {
+      void Promise.resolve(operation()).catch(reply);
     } catch (error) {
-      sendHubError(ws, id, conversationId, error);
+      reply(error);
     }
   };
 
@@ -365,29 +394,213 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       >();
       // Track active streams by conversation key for steer/followUp detection
       const conversationStreams = new Map<string, string>(); // convKey → messageId
+      let mode: ConnectionMode = 'pending';
       let connectionSocket: { send(data: string): void } | undefined;
-      const sink: TurnFrameSink = {
-        send(frame) {
-          if (!connectionSocket) throw new Error('Chat WebSocket is not open');
+      const connectionSink = {
+        send(frame: MobileWsServerFrame | MobileV2WsServerFrame) {
+          if (mode === 'closing' || !connectionSocket) {
+            throw new Error('Chat WebSocket is not open');
+          }
           sendServerMessage(connectionSocket, frame);
         },
+      };
+      const sink = connectionSink as TurnFrameSink;
+      const v2Sink = connectionSink as V2ConversationFrameSink;
+
+      const closeProtocol = (
+        ws: { close(code?: number, reason?: string): void },
+        reason: ProtocolCloseReason,
+      ): void => {
+        if (mode === 'closing') return;
+        mode = 'closing';
+        connectionSocket = undefined;
+        ws.close(1002, reason);
+      };
+
+      const canReply = (): boolean => mode !== 'closing' && connectionSocket !== undefined;
+
+      const sendV2CommandError = (
+        ws: { send(data: string): void },
+        id: string,
+        conversationId: string | undefined,
+        error: unknown,
+      ): void => {
+        if (!canReply()) return;
+        if (!(error instanceof ConversationServiceError)) {
+          console.error('[chat-ws] v2 dispatch failed', summarizeErrorForLog(error));
+        }
+        const mapped = toMobileApiError(error);
+        sendServerMessage(ws, {
+          type: 'command_rejected',
+          id,
+          ...(conversationId !== undefined ? { conversationId } : {}),
+          code: mapped.body.code,
+          error: mapped.body.error,
+          retryable: mapped.body.retryable,
+          ...(mapped.body.details !== undefined ? { details: mapped.body.details } : {}),
+        });
+      };
+
+      const dispatchV2Hub = (
+        ws: { send(data: string): void },
+        id: string,
+        conversationId: string | undefined,
+        operation: () => void | Promise<void>,
+      ): void => {
+        const reply = (error: unknown): void => {
+          try {
+            sendV2CommandError(ws, id, conversationId, error);
+          } catch {
+            // A failed socket write must not escape a Promise rejection handler.
+          }
+        };
+        try {
+          void Promise.resolve(operation()).catch(reply);
+        } catch (error) {
+          reply(error);
+        }
       };
 
       return {
         onOpen(_event, ws) {
-          connectionSocket = ws;
+          if (mode !== 'closing') connectionSocket = ws;
         },
 
         onMessage(event, ws) {
+          if (mode === 'closing') return;
           connectionSocket = ws;
           const raw = typeof event.data === 'string' ? event.data : '';
           let parsed: unknown;
           try {
             parsed = JSON.parse(raw);
           } catch {
+            if (mode === 'v2') {
+              if (verbose) {
+                console.log(
+                  '[chat-ws] ← invalid v2 JSON',
+                  JSON.stringify(summarizeMobileV2Inbound(raw, undefined)),
+                );
+              }
+              closeProtocol(ws, 'invalid_frame');
+              return;
+            }
+            if (mode === 'pending') mode = 'v1';
             if (verbose) console.log(`[chat-ws] ← invalid JSON (${raw.length} bytes)`);
             sendServerMessage(ws, { type: 'error', id: '', error: 'Invalid JSON' });
             return;
+          }
+
+          const record =
+            typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+              ? (parsed as Record<string, unknown>)
+              : undefined;
+          const frameType = typeof record?.type === 'string' ? record.type : undefined;
+
+          if (mode === 'pending') {
+            if (frameType === 'hello') {
+              if (record?.contractVersion !== 2) {
+                closeProtocol(ws, 'unsupported_version');
+                return;
+              }
+              mode = 'v2';
+              const hello = parseMobileV2ClientFrame(parsed);
+              if (hello.kind !== 'valid' || hello.frame.type !== 'hello') {
+                closeProtocol(ws, 'invalid_frame');
+                return;
+              }
+              if (verbose) {
+                console.log(
+                  '[chat-ws] ← inbound',
+                  JSON.stringify(summarizeMobileV2Inbound(raw, parsed)),
+                );
+              }
+              sendServerMessage(ws, {
+                type: 'hello_ack',
+                contractVersion: 2,
+                capabilities: hello.frame.capabilities.filter(
+                  (capability) => capability === CHAT_INPUT_QUEUE_CAPABILITY,
+                ),
+              });
+              return;
+            }
+            if (frameType !== undefined && V2_ONLY_CLIENT_FRAME_TYPES.has(frameType)) {
+              closeProtocol(ws, 'hello_required');
+              return;
+            }
+            mode = 'v1';
+          } else if (frameType === 'hello') {
+            closeProtocol(ws, 'unexpected_hello');
+            return;
+          }
+
+          if (mode === 'v2') {
+            if (verbose) {
+              console.log(
+                '[chat-ws] ← inbound',
+                JSON.stringify(summarizeMobileV2Inbound(raw, parsed)),
+              );
+            }
+            const result = parseMobileV2ClientFrame(parsed);
+            if (result.kind === 'fatal') {
+              closeProtocol(ws, result.reason);
+              return;
+            }
+            if (result.kind === 'rejectable') {
+              sendServerMessage(ws, {
+                type: 'command_rejected',
+                id: result.id,
+                ...(result.conversationId !== undefined
+                  ? { conversationId: result.conversationId }
+                  : {}),
+                code: result.code,
+                error: result.error,
+                retryable: false,
+              });
+              return;
+            }
+
+            const msg = result.frame;
+            switch (msg.type) {
+              case 'subscribe_conversation':
+                dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
+                  resumableChatHub.subscribeConversation(msg, v2Sink),
+                );
+                return;
+              case 'message':
+                dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
+                  resumableChatHub.startV2(msg, v2Sink),
+                );
+                return;
+              case 'enqueue_input':
+                dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
+                  resumableChatHub.enqueueInput(msg, v2Sink),
+                );
+                return;
+              case 'edit_follow_up':
+                dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
+                  resumableChatHub.editFollowUp(msg, v2Sink),
+                );
+                return;
+              case 'remove_follow_up':
+                dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
+                  resumableChatHub.removeFollowUp(msg, v2Sink),
+                );
+                return;
+              case 'resume_follow_ups':
+                dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
+                  resumableChatHub.resumeFollowUps(msg, v2Sink),
+                );
+                return;
+              case 'answer':
+                dispatchV2Hub(ws, msg.id, undefined, () => resumableChatHub.answerV2(msg, v2Sink));
+                return;
+              case 'cancel':
+                dispatchV2Hub(ws, msg.id, undefined, () => resumableChatHub.cancelV2(msg, v2Sink));
+                return;
+              case 'hello':
+                closeProtocol(ws, 'unexpected_hello');
+                return;
+            }
           }
 
           logInbound(raw, parsed);
@@ -413,24 +626,39 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           }
 
           if (msg.type === 'resume') {
-            dispatchHub(ws, msg.id, msg.conversationId, () => resumableChatHub.resume(msg, sink));
+            dispatchHub(
+              ws,
+              msg.id,
+              msg.conversationId,
+              () => resumableChatHub.resume(msg, sink),
+              canReply,
+            );
             return;
           }
 
           if (msg.type === 'answer') {
             const entry = activeStreams.get(msg.id);
             if (entry) {
-              dispatchHub(ws, msg.id, undefined, () =>
-                agents.answerQuestion(
-                  entry.agentId,
-                  entry.conversationId,
-                  msg.questionId,
-                  msg.answer,
-                ),
+              dispatchHub(
+                ws,
+                msg.id,
+                undefined,
+                () =>
+                  agents.answerQuestion(
+                    entry.agentId,
+                    entry.conversationId,
+                    msg.questionId,
+                    msg.answer,
+                  ),
+                canReply,
               );
             } else {
-              dispatchHub(ws, msg.id, undefined, () =>
-                resumableChatHub.answer(msg.id, msg.questionId, msg.answer),
+              dispatchHub(
+                ws,
+                msg.id,
+                undefined,
+                () => resumableChatHub.answer(msg.id, msg.questionId, msg.answer, sink),
+                canReply,
               );
             }
             return;
@@ -450,15 +678,25 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
               options.swarmCoordinator?.cancelTurn(entry.agentId, entry.conversationId);
               sendServerMessage(ws, { type: 'done', id: msg.id });
             } else {
-              dispatchHub(ws, msg.id, undefined, () => resumableChatHub.cancel(msg.id, sink));
+              dispatchHub(
+                ws,
+                msg.id,
+                undefined,
+                () => resumableChatHub.cancel(msg.id, sink),
+                canReply,
+              );
             }
             return;
           }
 
           if (msg.type === 'message') {
             if (msg.resumable === true) {
-              dispatchHub(ws, msg.id, msg.conversationId, () =>
-                resumableChatHub.start(msg as ResumableSendFrame, sink),
+              dispatchHub(
+                ws,
+                msg.id,
+                msg.conversationId,
+                () => resumableChatHub.start(msg as ResumableSendFrame, sink),
+                canReply,
               );
               return;
             }
@@ -562,7 +800,9 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
         },
 
         onClose() {
-          resumableChatHub.detach(sink);
+          mode = 'closing';
+          connectionSocket = undefined;
+          resumableChatHub.detach(connectionSink);
           for (const { controller, agentId, conversationId } of activeStreams.values()) {
             controller.abort();
             agents.cancel(agentId, conversationId);
@@ -570,7 +810,6 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           }
           activeStreams.clear();
           conversationStreams.clear();
-          connectionSocket = undefined;
         },
       };
     }),

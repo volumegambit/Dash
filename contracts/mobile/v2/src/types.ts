@@ -10,6 +10,20 @@ import type {
 
 export const MOBILE_V2_CONTRACT_VERSION = 2 as const;
 export const CHAT_INPUT_QUEUE_CAPABILITY = 'chat-input-queue-v1' as const;
+export const MOBILE_V2_LEGACY_RUN_ID_MAX_UTF8_BYTES = 256 as const;
+
+/** Validate inherited v1 run correlations without trimming or Unicode normalization. */
+export function isMobileV2LegacyRunId(value: unknown): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length > MOBILE_V2_LEGACY_RUN_ID_MAX_UTF8_BYTES ||
+    !/[^ \t\r\n]/.test(value)
+  ) {
+    return false;
+  }
+  const byteLength = new TextEncoder().encode(value).byteLength;
+  return byteLength >= 1 && byteLength <= MOBILE_V2_LEGACY_RUN_ID_MAX_UTF8_BYTES;
+}
 
 export interface MobileV2HealthResponse extends Omit<MobileHealth, 'apiVersion' | 'capabilities'> {
   apiVersion: 2;

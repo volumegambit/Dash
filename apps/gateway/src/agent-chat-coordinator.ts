@@ -117,9 +117,9 @@ export interface ChatRequest {
   text: string;
   images?: ImageBlock[];
   /**
-   * Location the client reported for this message, already validated by
-   * `toClientLocation`. Undefined for channel adapters (Slack, iMessage),
-   * which have no client context to report.
+   * Location the client reported for this message, already normalized at its
+   * protocol boundary. Undefined for channel adapters (Slack, iMessage), which
+   * have no client context to report.
    */
   location?: ClientLocation;
   /**

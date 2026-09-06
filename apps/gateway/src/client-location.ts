@@ -14,6 +14,71 @@ function num(value: unknown, lo: number, hi: number): number | undefined {
     : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  required: readonly string[],
+): boolean {
+  const allowedSet = new Set(allowed);
+  return (
+    Object.keys(value).every((key) => allowedSet.has(key)) &&
+    required.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function v2String(value: unknown, min: number, max: number): string | undefined {
+  if (typeof value !== 'string' || value.length < min || value.length > max * 2) return undefined;
+  const length = Array.from(value).length;
+  return length >= min && length <= max ? value : undefined;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leap ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+function isV2Rfc3339(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)(?:[Zz]|([+-])(\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second >= 61
+  ) {
+    return false;
+  }
+  const offsetSign = match[7] === '-' ? -1 : 1;
+  const offsetHour = Number(match[8] ?? 0);
+  const offsetMinute = Number(match[9] ?? 0);
+  if (match[7] !== undefined && (offsetHour > 23 || offsetMinute > 59)) return false;
+  if (second < 60) return true;
+
+  const utcMinute = minute - offsetMinute * offsetSign;
+  const utcHour = hour - offsetHour * offsetSign - (utcMinute < 0 ? 1 : 0);
+  return (utcHour === 23 || utcHour === -1) && (utcMinute === 59 || utcMinute === -1);
+}
+
 function toPrecise(raw: unknown): PreciseLocation | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const p = raw as Record<string, unknown>;
@@ -67,5 +132,81 @@ export function toClientLocation(raw: unknown): ClientLocation | undefined {
     locale,
     ...(region ? { region } : {}),
     ...(precise ? { precise } : {}),
+  };
+}
+
+/** Strict v2 location normalization shared by frame admission and provider dispatch. */
+export function toClientLocationV2(raw: unknown): ClientLocation | undefined {
+  if (
+    !isRecord(raw) ||
+    !hasExactKeys(
+      raw,
+      ['timezone', 'utcOffsetMinutes', 'locale', 'region', 'precise'],
+      ['timezone', 'utcOffsetMinutes', 'locale'],
+    )
+  ) {
+    return undefined;
+  }
+  const timezone = v2String(raw.timezone, 1, MAX_STRING);
+  const locale = v2String(raw.locale, 1, MAX_STRING);
+  if (
+    timezone === undefined ||
+    locale === undefined ||
+    !Number.isSafeInteger(raw.utcOffsetMinutes) ||
+    (raw.utcOffsetMinutes as number) < -MAX_OFFSET_MINUTES ||
+    (raw.utcOffsetMinutes as number) > MAX_OFFSET_MINUTES
+  ) {
+    return undefined;
+  }
+
+  let region: string | undefined;
+  if (Object.hasOwn(raw, 'region')) {
+    region = v2String(raw.region, 2, 2);
+    if (region === undefined) return undefined;
+  }
+
+  let precise: PreciseLocation | undefined;
+  if (Object.hasOwn(raw, 'precise')) {
+    if (
+      !isRecord(raw.precise) ||
+      !hasExactKeys(
+        raw.precise,
+        ['latitude', 'longitude', 'accuracyMeters', 'capturedAt', 'place'],
+        ['latitude', 'longitude', 'accuracyMeters', 'capturedAt'],
+      ) ||
+      typeof raw.precise.latitude !== 'number' ||
+      !Number.isFinite(raw.precise.latitude) ||
+      raw.precise.latitude < -90 ||
+      raw.precise.latitude > 90 ||
+      typeof raw.precise.longitude !== 'number' ||
+      !Number.isFinite(raw.precise.longitude) ||
+      raw.precise.longitude < -180 ||
+      raw.precise.longitude > 180 ||
+      !Number.isSafeInteger(raw.precise.accuracyMeters) ||
+      (raw.precise.accuracyMeters as number) < 0 ||
+      !isV2Rfc3339(raw.precise.capturedAt)
+    ) {
+      return undefined;
+    }
+    let place: string | undefined;
+    if (Object.hasOwn(raw.precise, 'place')) {
+      place = v2String(raw.precise.place, 1, MAX_STRING);
+      if (place === undefined) return undefined;
+    }
+    precise = {
+      latitude: raw.precise.latitude,
+      longitude: raw.precise.longitude,
+      accuracyMeters: raw.precise.accuracyMeters as number,
+      capturedAt: raw.precise.capturedAt,
+      ...(place !== undefined ? { place } : {}),
+    };
+  }
+
+  return {
+    timezone,
+    utcOffsetMinutes: raw.utcOffsetMinutes as number,
+    locale,
+    ...(region !== undefined ? { region } : {}),
+    ...(precise !== undefined ? { precise } : {}),
   };
 }

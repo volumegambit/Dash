@@ -406,18 +406,40 @@ function makeScriptedStream(initialEvents: AgentEvent[] = []): ScriptedStream {
 
 function makeResumableHub() {
   const start = vi.fn<ResumableChatHub['start']>();
+  const startV2 = vi.fn<ResumableChatHub['startV2']>();
   const resume = vi.fn<ResumableChatHub['resume']>();
+  const subscribeConversation = vi.fn<ResumableChatHub['subscribeConversation']>();
   const answer = vi.fn<ResumableChatHub['answer']>().mockResolvedValue(undefined);
+  const answerV2 = vi.fn<ResumableChatHub['answerV2']>().mockResolvedValue(undefined);
   const cancel = vi.fn<ResumableChatHub['cancel']>().mockResolvedValue(undefined);
+  const cancelV2 = vi.fn<ResumableChatHub['cancelV2']>().mockResolvedValue(undefined);
+  const enqueueInput = vi.fn<ResumableChatHub['enqueueInput']>().mockResolvedValue(undefined);
+  const editFollowUp = vi.fn<ResumableChatHub['editFollowUp']>().mockResolvedValue(undefined);
+  const removeFollowUp = vi.fn<ResumableChatHub['removeFollowUp']>().mockResolvedValue(undefined);
+  const resumeFollowUps = vi.fn<ResumableChatHub['resumeFollowUps']>().mockResolvedValue(undefined);
+  const resumeRecoveredQueues = vi
+    .fn<ResumableChatHub['resumeRecoveredQueues']>()
+    .mockResolvedValue(undefined);
+  const suspend = vi.fn<ResumableChatHub['suspend']>().mockResolvedValue(undefined);
   const detach = vi.fn<ResumableChatHub['detach']>();
   const cancelAgent = vi.fn<ResumableChatHub['cancelAgent']>().mockResolvedValue(undefined);
   const allowAgent = vi.fn<ResumableChatHub['allowAgent']>();
   const stop = vi.fn<ResumableChatHub['stop']>().mockResolvedValue(undefined);
   const hub: ResumableChatHub = {
     start,
+    startV2,
     resume,
+    subscribeConversation,
     answer,
+    answerV2,
     cancel,
+    cancelV2,
+    enqueueInput,
+    editFollowUp,
+    removeFollowUp,
+    resumeFollowUps,
+    resumeRecoveredQueues,
+    suspend,
     detach,
     cancelAgent,
     allowAgent,
@@ -906,8 +928,53 @@ describe('mountChatWs protocol ownership', () => {
         'question-01',
         'Yes',
       );
-      expect(harness.hub.answer).toHaveBeenCalledWith('resumable-turn', 'question-02', 'No');
+      expect(harness.hub.answer).toHaveBeenCalledWith(
+        'resumable-turn',
+        'question-02',
+        'No',
+        expect.any(Object),
+      );
     });
+  });
+
+  it('scopes duplicate opaque v1 answer correlations to each connection sink', async () => {
+    const harness = makeWsHarness();
+    const first = harness.connect();
+    const second = harness.connect();
+    dispatch(first, { ...RESUMABLE_MESSAGE, id: 'turn-01', conversationId: 'conversation-01' });
+    dispatch(second, { ...RESUMABLE_MESSAGE, id: 'turn-01', conversationId: 'conversation-02' });
+    const firstSink = harness.hub.start.mock.calls[0]?.[1];
+    const secondSink = harness.hub.start.mock.calls[1]?.[1];
+
+    dispatch(first, {
+      type: 'answer',
+      id: 'turn-01',
+      questionId: 'question-01',
+      answer: 'First',
+    });
+    dispatch(second, {
+      type: 'answer',
+      id: 'turn-01',
+      questionId: 'question-02',
+      answer: 'Second',
+    });
+
+    await vi.waitFor(() => expect(harness.hub.answer).toHaveBeenCalledTimes(2));
+    expect(firstSink).not.toBe(secondSink);
+    expect(harness.hub.answer).toHaveBeenNthCalledWith(
+      1,
+      'turn-01',
+      'question-01',
+      'First',
+      firstSink,
+    );
+    expect(harness.hub.answer).toHaveBeenNthCalledWith(
+      2,
+      'turn-01',
+      'question-02',
+      'Second',
+      secondSink,
+    );
   });
 
   it('cancels a matching legacy stream before falling back to the hub', async () => {
@@ -1053,6 +1120,38 @@ describe('mountChatWs protocol ownership', () => {
       errorMessageLength: 'hub unavailable'.length,
     });
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain('hub unavailable');
+    consoleError.mockRestore();
+  });
+
+  it('contains a failed v1 error write from an asynchronously rejected hub call', async () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let rejectOperation!: (error: Error) => void;
+    harness.hub.answer.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectOperation = reject;
+        }),
+    );
+    dispatch(connection, {
+      type: 'answer',
+      id: 'turn-answer',
+      questionId: 'question-01',
+      answer: 'Yes',
+    });
+    connection.socket.send.mockImplementationOnce(() => {
+      throw new Error('private network write failure');
+    });
+
+    rejectOperation(new Error('private deferred hub failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(connection.socket.send).toHaveBeenCalledOnce();
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('private deferred hub failure');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('private network write failure');
     consoleError.mockRestore();
   });
 });

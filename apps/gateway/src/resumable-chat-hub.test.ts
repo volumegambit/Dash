@@ -380,6 +380,65 @@ describe('ResumableChatHub', () => {
     expect(harness.chat.mock.calls[0][0].location).toBeUndefined();
   });
 
+  it('forwards a standards-correct v2 Unicode location to the provider without legacy reprocessing', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeV2Sink();
+    const location = {
+      timezone: '🚀'.repeat(200),
+      utcOffsetMinutes: 480,
+      locale: '🌏'.repeat(200),
+      region: '🚀🌏',
+      precise: {
+        latitude: 1.2966,
+        longitude: 103.7764,
+        accuracyMeters: 12,
+        capturedAt: '1990-12-31T23:59:60Z',
+        place: '🚀'.repeat(200),
+      },
+    };
+    hub.subscribeConversation(subscriptionFrame(conversation), sink);
+
+    hub.startV2({ ...v2SendFrame(conversation), location }, sink);
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].location).toEqual(location);
+  });
+
+  it('authorizes before rejecting an invalid v2 location without durable or provider side effects', () => {
+    const conversation = createConversation();
+    register(conversation.id);
+    const sink = makeV2Sink();
+    const detached = makeV2Sink();
+    const frame = {
+      ...v2SendFrame(conversation),
+      location: { timezone: '', utcOffsetMinutes: 0, locale: 'en' },
+    };
+    const acceptRun = vi.spyOn(conversations, 'acceptRun');
+
+    expect(() => hub.startV2(frame, detached)).toThrow(
+      'V2 sink is not subscribed to this conversation',
+    );
+    hub.subscribeConversation(subscriptionFrame(conversation), sink);
+    sink.frames.length = 0;
+    sink.send.mockClear();
+
+    let failure: unknown;
+    try {
+      hub.startV2(frame, sink);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(ConversationServiceError);
+    expect(failure).toMatchObject({ code: 'validation_failed', retryable: false, status: 400 });
+    expect(acceptRun).not.toHaveBeenCalled();
+    expect(harness.chat).not.toHaveBeenCalled();
+    expect(sink.frames).toEqual([]);
+    expect(sink.send).not.toHaveBeenCalled();
+  });
+
   async function waitForFrames(sink: TestSink, count: number): Promise<void> {
     await vi.waitFor(() => expect(sink.frames).toHaveLength(count));
   }

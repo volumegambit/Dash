@@ -7,8 +7,10 @@ import { parse } from 'yaml';
 import {
   CHAT_INPUT_QUEUE_CAPABILITY,
   MOBILE_V2_CONTRACT_VERSION,
+  MOBILE_V2_LEGACY_RUN_ID_MAX_UTF8_BYTES,
   type MobileV2ControlFrame,
   type MobileV2SequencedFrame,
+  isMobileV2LegacyRunId,
 } from './index.js';
 
 interface FixtureCase {
@@ -46,6 +48,15 @@ async function validateWsFixture(file: string): Promise<boolean> {
   return validate(await fixture(file));
 }
 
+async function validateWsValue(schemaName: string, value: unknown): Promise<boolean> {
+  const schema = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as object;
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+  ajv.addSchema(schema, 'mobile-v2-chat-ws');
+  const validate = ajv.compile({ $ref: `mobile-v2-chat-ws#/$defs/${schemaName}` });
+  return validate(value);
+}
+
 async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
   const output: string[] = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -63,6 +74,323 @@ describe('mobile v2 contract', () => {
   it('exports the v2 contract version and queue capability', () => {
     expect(MOBILE_V2_CONTRACT_VERSION).toBe(2);
     expect(CHAT_INPUT_QUEUE_CAPABILITY).toBe('chat-input-queue-v1');
+  });
+
+  it('exports one browser-safe 256-byte validator for inherited run correlations', () => {
+    expect(MOBILE_V2_LEGACY_RUN_ID_MAX_UTF8_BYTES).toBe(256);
+
+    const asciiAtLimit = 'a'.repeat(256);
+    const asciiOverLimit = 'a'.repeat(257);
+    const multibyteAtLimit = '🚀'.repeat(64);
+    const multibyteOverLimit = `${multibyteAtLimit}a`;
+    const acceptedWithWhitespace = ' \tturn-01\r\n';
+
+    expect(isMobileV2LegacyRunId(asciiAtLimit)).toBe(true);
+    expect(isMobileV2LegacyRunId(asciiOverLimit)).toBe(false);
+    expect(isMobileV2LegacyRunId(multibyteAtLimit)).toBe(true);
+    expect(isMobileV2LegacyRunId(multibyteOverLimit)).toBe(false);
+    expect(isMobileV2LegacyRunId(' \t\r\n')).toBe(false);
+    expect(isMobileV2LegacyRunId('\u00a0')).toBe(true);
+    expect(isMobileV2LegacyRunId('')).toBe(false);
+    expect(isMobileV2LegacyRunId(null)).toBe(false);
+
+    const preserve = (value: unknown): string | undefined =>
+      isMobileV2LegacyRunId(value) ? value : undefined;
+    expect(preserve(acceptedWithWhitespace)).toBe(acceptedWithWhitespace);
+  });
+
+  it('uses TextEncoder byte counts and never depends on the Node Buffer global', () => {
+    const corpus = [
+      'turn-01',
+      'a'.repeat(256),
+      '🚀'.repeat(64),
+      `${'🚀'.repeat(63)}abc`,
+      ' \tturn-01\r\n',
+    ];
+    const encoder = new TextEncoder();
+    for (const value of corpus) {
+      expect(encoder.encode(value).byteLength).toBe(Buffer.byteLength(value));
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'Buffer');
+    Object.defineProperty(globalThis, 'Buffer', {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    });
+    try {
+      expect(isMobileV2LegacyRunId('turn-01')).toBe(true);
+      expect(isMobileV2LegacyRunId('🚀'.repeat(64))).toBe(true);
+      expect(isMobileV2LegacyRunId(`${'🚀'.repeat(64)}a`)).toBe(false);
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'Buffer', descriptor);
+      else Reflect.deleteProperty(globalThis, 'Buffer');
+    }
+  });
+
+  it('rejects overlong legacy IDs before allocating a UTF-8 byte buffer', () => {
+    const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+    try {
+      expect(isMobileV2LegacyRunId('a'.repeat(257))).toBe(false);
+      expect(isMobileV2LegacyRunId('🚀'.repeat(129))).toBe(false);
+      expect(encode).not.toHaveBeenCalled();
+    } finally {
+      encode.mockRestore();
+    }
+  });
+
+  it('uses LegacyRunId for every inherited run correlation in the WebSocket schema', async () => {
+    const runId = 'turn-01';
+    const conversationId = '00000000-0000-4000-8000-000000000002';
+    const inputId = '00000000-0000-4000-8000-000000000003';
+    const segmentTurnId = '00000000-0000-4000-8000-000000000004';
+    const pendingInput = {
+      inputId,
+      kind: 'steer',
+      targetTurnId: runId,
+      text: 'Steer',
+      state: 'delivered',
+      revision: 1,
+      enqueueOrder: 1,
+      runId,
+      segmentTurnId,
+      createdAt: '2026-09-06T01:02:03Z',
+      updatedAt: '2026-09-06T01:02:04Z',
+    };
+    expect(
+      await validateWsValue('ChatSend', {
+        type: 'message',
+        id: runId,
+        agentId: 'agent-01',
+        channelId: 'mobile-ios',
+        conversationId,
+        text: 'Hello',
+        resumable: true,
+      }),
+    ).toBe(true);
+    expect(
+      await validateWsValue('ChatAnswer', {
+        type: 'answer',
+        id: runId,
+        questionId: 'question-01',
+        answer: 'Yes',
+      }),
+    ).toBe(true);
+    expect(await validateWsValue('ChatCancel', { type: 'cancel', id: runId })).toBe(true);
+    expect(
+      await validateWsValue('ChatEnqueueInput', {
+        type: 'enqueue_input',
+        id: '00000000-0000-4000-8000-000000000005',
+        inputId,
+        agentId: 'agent-01',
+        channelId: 'mobile-ios',
+        conversationId,
+        text: 'Steer',
+        behavior: 'steer',
+        expectedActiveTurnId: runId,
+      }),
+    ).toBe(true);
+    expect(
+      await validateWsValue('CommandRejected', {
+        type: 'command_rejected',
+        id: runId,
+        conversationId,
+        code: 'not_found',
+        error: 'Run not found',
+        retryable: false,
+      }),
+    ).toBe(true);
+    expect(await validateWsValue('MobileV2PendingInput', pendingInput)).toBe(true);
+
+    const modelFrames: Array<[string, Record<string, unknown>]> = [
+      [
+        'ChatAccepted',
+        {
+          type: 'accepted',
+          id: runId,
+          conversationId,
+          runId,
+          segmentTurnId: runId,
+          v2Seq: 1,
+          userMessageId: '00000000-0000-4000-8000-000000000006',
+          assistantMessageId: '00000000-0000-4000-8000-000000000007',
+          revision: 1,
+        },
+      ],
+      [
+        'ChatEvent',
+        {
+          type: 'event',
+          id: runId,
+          conversationId,
+          runId,
+          segmentTurnId: runId,
+          v2Seq: 2,
+          event: { type: 'text_delta', text: 'Hello' },
+        },
+      ],
+      [
+        'ChatDone',
+        {
+          type: 'done',
+          id: runId,
+          conversationId,
+          runId,
+          segmentTurnId: runId,
+          v2Seq: 3,
+          outcome: 'completed',
+        },
+      ],
+      [
+        'ChatError',
+        {
+          type: 'error',
+          id: runId,
+          conversationId,
+          runId,
+          segmentTurnId: runId,
+          v2Seq: 4,
+          error: 'Run failed',
+        },
+      ],
+    ];
+    for (const [schemaName, frame] of modelFrames) {
+      expect(await validateWsValue(schemaName, frame), schemaName).toBe(true);
+    }
+
+    const deliveredFrame = {
+      type: 'input_delivered',
+      id: '00000000-0000-4000-8000-000000000008',
+      conversationId,
+      v2Seq: 5,
+      queueRevision: 2,
+      input: pendingInput,
+      runId,
+      segmentTurnId,
+      userMessageId: '00000000-0000-4000-8000-000000000009',
+      assistantMessageId: '00000000-0000-4000-8000-000000000010',
+    };
+    expect(await validateWsValue('InputDelivered', deliveredFrame)).toBe(true);
+    expect(
+      await validateWsValue('InputDelivered', {
+        ...deliveredFrame,
+        segmentTurnId: runId,
+      }),
+    ).toBe(false);
+  });
+
+  it('publishes the LegacyRunId schema bounds and ASCII-only nonblank rule', async () => {
+    const schema = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs: Record<string, Record<string, unknown>>;
+    };
+    expect(schema.$defs.LegacyRunId).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      'x-maxUtf8Bytes': 256,
+    });
+    expect(await validateWsValue('LegacyRunId', 'a'.repeat(256))).toBe(true);
+    expect(await validateWsValue('LegacyRunId', 'a'.repeat(257))).toBe(false);
+    expect(await validateWsValue('LegacyRunId', ' \t\r\n')).toBe(false);
+    expect(await validateWsValue('LegacyRunId', '\u00a0')).toBe(true);
+  });
+
+  it('centralizes every UUID-only WebSocket field on one canonical UUID definition', async () => {
+    const schema = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs: Record<string, Record<string, unknown>>;
+    };
+    expect(schema.$defs.CanonicalUuid).toEqual({
+      type: 'string',
+      format: 'uuid',
+      pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$',
+    });
+    const canonical = '00000000-0000-4000-8000-000000000001';
+    expect(await validateWsValue('CanonicalUuid', canonical)).toBe(true);
+    expect(await validateWsValue('CanonicalUuid', `urn:uuid:${canonical}`)).toBe(false);
+
+    const rawUuidFormats: Record<string, unknown>[] = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item);
+        return;
+      }
+      if (typeof value !== 'object' || value === null) return;
+      const record = value as Record<string, unknown>;
+      if (record.format === 'uuid') rawUuidFormats.push(record);
+      for (const nested of Object.values(record)) visit(nested);
+    };
+    visit(schema);
+    expect(rawUuidFormats).toHaveLength(1);
+    expect(rawUuidFormats[0]).toBe(schema.$defs.CanonicalUuid);
+  });
+
+  it('keeps command, entity, conversation, transition, and message identities UUID-only', async () => {
+    const commandId = '00000000-0000-4000-8000-000000000011';
+    const inputId = '00000000-0000-4000-8000-000000000012';
+    const conversationId = '00000000-0000-4000-8000-000000000013';
+    const segmentTurnId = '00000000-0000-4000-8000-000000000014';
+    const userMessageId = '00000000-0000-4000-8000-000000000015';
+    const pendingInput = {
+      inputId,
+      kind: 'follow_up',
+      text: 'Later',
+      state: 'queued',
+      revision: 0,
+      enqueueOrder: 1,
+      segmentTurnId,
+      userMessageId,
+      createdAt: '2026-09-06T01:02:03Z',
+      updatedAt: '2026-09-06T01:02:03Z',
+    };
+    const enqueue = {
+      type: 'enqueue_input',
+      id: commandId,
+      inputId,
+      agentId: 'agent-01',
+      channelId: 'mobile-ios',
+      conversationId,
+      text: 'Later',
+      behavior: 'followUp',
+    };
+
+    expect(
+      await validateWsValue('ChatSubscribe', {
+        type: 'subscribe_conversation',
+        id: 'turn-01',
+        agentId: 'agent-01',
+        conversationId,
+        sinceV2Seq: 0,
+      }),
+    ).toBe(false);
+    expect(await validateWsValue('ChatEnqueueInput', { ...enqueue, id: 'turn-01' })).toBe(false);
+    expect(await validateWsValue('ChatEnqueueInput', { ...enqueue, inputId: 'turn-01' })).toBe(
+      false,
+    );
+    expect(
+      await validateWsValue('ChatEnqueueInput', { ...enqueue, conversationId: 'turn-01' }),
+    ).toBe(false);
+    expect(
+      await validateWsValue('MobileV2PendingInput', {
+        ...pendingInput,
+        segmentTurnId: 'turn-01',
+      }),
+    ).toBe(false);
+    expect(
+      await validateWsValue('MobileV2PendingInput', {
+        ...pendingInput,
+        userMessageId: 'turn-01',
+      }),
+    ).toBe(false);
+    expect(
+      await validateWsValue('InputAccepted', {
+        type: 'input_accepted',
+        id: 'turn-01',
+        conversationId,
+        v2Seq: 1,
+        queueRevision: 1,
+        input: pendingInput,
+      }),
+    ).toBe(false);
   });
 
   it('keeps control frames unsequenced and every durable frame sequenced', async () => {

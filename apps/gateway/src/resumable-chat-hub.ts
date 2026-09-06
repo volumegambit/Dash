@@ -1,3 +1,4 @@
+import type { ClientLocation } from '@dash/agent';
 import type {
   ConversationSummary,
   MobileApiErrorCode,
@@ -10,7 +11,7 @@ import type {
   MobileV2WsServerFrame,
 } from '@dash/mobile-contract-v2';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
-import { toClientLocation } from './client-location.js';
+import { toClientLocation, toClientLocationV2 } from './client-location.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import { mapConversationV1 } from './conversation-contract-mappers.js';
 import type {
@@ -658,7 +659,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   const runLive = async (
     live: LiveRun,
     accepted: AcceptedRun,
-    location?: Extract<MobileWsClientFrame, { type: 'message' }>['location'],
+    location?: ClientLocation,
   ): Promise<ExecutionResult> => {
     let stream: ReturnType<AgentChatCoordinator['chat']> | undefined;
     let providerError: unknown;
@@ -694,7 +695,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         channelId: live.channelId,
         text: accepted.text,
         images: accepted.images?.map((image) => ({ type: 'image' as const, ...image })),
-        location: toClientLocation(location),
+        location,
         messageId: accepted.userMessage.id,
         signal: live.controller.signal,
         deliveredSteers,
@@ -748,11 +749,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     return result;
   };
 
-  const beginLiveRun = (
-    live: LiveRun,
-    accepted: AcceptedRun,
-    location?: Extract<MobileWsClientFrame, { type: 'message' }>['location'],
-  ): void => {
+  const beginLiveRun = (live: LiveRun, accepted: AcceptedRun, location?: ClientLocation): void => {
     if (live.executionStarted || live.terminal) return;
     if (live.terminalIntent !== undefined || live.cancelRequested) {
       live.providerFinished = true;
@@ -784,7 +781,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   const activateLiveRun = (
     live: LiveRun,
     accepted: AcceptedRun,
-    location?: Extract<MobileWsClientFrame, { type: 'message' }>['location'],
+    location?: ClientLocation,
   ): void => {
     scheduleAutoTitle(live, accepted);
     beginLiveRun(live, accepted, location);
@@ -792,7 +789,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
 
   const registerAcceptedRun = (
     accepted: AcceptedRun,
-    location?: Extract<MobileWsClientFrame, { type: 'message' }>['location'],
+    location?: ClientLocation,
     v1Sink?: V1TurnFrameSink,
   ): LiveRun => {
     const live = installLiveRun(accepted, v1Sink);
@@ -1140,6 +1137,20 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       protocol === 'v2' && v2Sink
         ? requireV2Subscription(v2Sink, frame.conversationId, frame.agentId)
         : undefined;
+    let location: ClientLocation | undefined;
+    if (protocol === 'v2' && Object.hasOwn(frame, 'location')) {
+      location = toClientLocationV2(frame.location);
+      if (location === undefined) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          'Location must be a valid v2 client location',
+          400,
+          false,
+        );
+      }
+    } else if (protocol === 'v1') {
+      location = toClientLocation(frame.location);
+    }
     const accepted = conversations.acceptRun({
       protocol,
       agentId: frame.agentId,
@@ -1191,7 +1202,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       }
       return;
     }
-    registerAcceptedRun(accepted, frame.location, v1Sink);
+    registerAcceptedRun(accepted, location, v1Sink);
   };
 
   const hub: ResumableChatHub = {

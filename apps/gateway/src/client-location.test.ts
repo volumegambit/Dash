@@ -1,4 +1,4 @@
-import { toClientLocation } from './client-location.js';
+import { toClientLocation, toClientLocationV2 } from './client-location.js';
 
 const coarse = {
   timezone: 'Asia/Singapore',
@@ -84,5 +84,37 @@ describe('toClientLocation', () => {
 
   it('ignores unknown extra properties rather than failing the whole location', () => {
     expect(toClientLocation({ ...coarse, altitude: 30 })).toEqual(coarse);
+  });
+
+  it('keeps v1 code-unit and Date.parse degradation for v2-only edge forms', () => {
+    expect(toClientLocation({ ...coarse, timezone: '🚀'.repeat(200) })).toBeUndefined();
+    expect(toClientLocation({ ...coarse, region: '🚀🌏' })).toBeUndefined();
+    expect(
+      toClientLocation({ ...coarse, precise: { ...precise, place: '🚀'.repeat(200) } }),
+    ).toEqual(coarse);
+    expect(
+      toClientLocation({
+        ...coarse,
+        precise: { ...precise, capturedAt: '1990-12-31T23:59:60Z' },
+      }),
+    ).toEqual(coarse);
+  });
+});
+
+describe('toClientLocationV2', () => {
+  it('preserves 200 astral code points, a two-code-point region, and RFC 3339 leap seconds', () => {
+    const location = {
+      timezone: '🚀'.repeat(200),
+      utcOffsetMinutes: 480,
+      locale: '🌏'.repeat(200),
+      region: '🚀🌏',
+      precise: {
+        ...precise,
+        capturedAt: '1990-12-31T23:59:60Z',
+        place: '🚀'.repeat(200),
+      },
+    };
+
+    expect(toClientLocationV2(location)).toEqual(location);
   });
 });
