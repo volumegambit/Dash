@@ -14,7 +14,15 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
   /// `UserDefaults` key for the opt-in. Absent or `false` means off.
   static let enabledKey = "dash.location.precise"
 
-  private let manager = CLLocationManager()
+  /// Created lazily, and only from `@MainActor` entry points.
+  ///
+  /// `CLLocationManager` must be created on a thread with an active run loop
+  /// or its delegate callbacks never fire. `LocationProvider.current()` is
+  /// called from `ChatConnection`, which is an `actor` and therefore NOT the
+  /// main thread — so constructing the manager in `init` would tie its
+  /// lifetime to whichever executor happened to touch `.shared` first.
+  /// `cachedFix()` deliberately never touches it.
+  private var manager: CLLocationManager?
   private let defaults: UserDefaults
   private let lock = NSLock()
   private var fix: PreciseLocation?
@@ -23,10 +31,18 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     super.init()
-    manager.delegate = self
+  }
+
+  @MainActor
+  private func ensureManager() -> CLLocationManager {
+    if let manager { return manager }
+    let created = CLLocationManager()
+    created.delegate = self
     // Hundred-metre accuracy is plenty to answer "roughly where am I" and is
     // far cheaper on battery than kCLLocationAccuracyBest.
-    manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    created.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    manager = created
+    return created
   }
 
   var isEnabled: Bool {
@@ -36,8 +52,10 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
   /// Turn the opt-in on or off. Turning it on asks for authorization and starts
   /// updates; turning it off stops updates AND forgets the position already
   /// held, not merely future refreshes.
+  @MainActor
   func setEnabled(_ enabled: Bool) {
     defaults.set(enabled, forKey: Self.enabledKey)
+    let manager = ensureManager()
     if enabled {
       manager.requestWhenInUseAuthorization()
       manager.startUpdatingLocation()
@@ -50,8 +68,12 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
   }
 
   /// Start updates if the user already opted in during a previous launch.
+  /// Called from app startup — without it the opt-in survives a relaunch in
+  /// `UserDefaults` but no fix is ever captured again.
+  @MainActor
   func resumeIfEnabled() {
     guard isEnabled else { return }
+    let manager = ensureManager()
     manager.requestWhenInUseAuthorization()
     manager.startUpdatingLocation()
   }
@@ -96,6 +118,8 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
       lock.unlock()
     case .authorizedWhenInUse, .authorizedAlways:
       if isEnabled { manager.startUpdatingLocation() }
+    case .notDetermined:
+      break
     default:
       break
     }
