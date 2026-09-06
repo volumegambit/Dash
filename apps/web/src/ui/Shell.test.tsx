@@ -634,7 +634,7 @@ describe('Shell', () => {
 
     /** Parity with the sidebar drawer, whose overlay Escape already closes
      * (see `ChatWorkspace`'s doc comment on the precedence). */
-    it('closes on Escape, without disturbing a streaming turn', async () => {
+    it('closes on Escape', async () => {
       await renderChatWorkspace();
       withChildren(['running']);
       fireEvent.click(screen.getByText('Chat about the roadmap'));
@@ -644,6 +644,59 @@ describe('Shell', () => {
 
       expect(screen.getByTestId('tasks-panel-toggle').getAttribute('aria-expanded')).toBe('false');
       expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Fix M2. The test above used to be called "closes on Escape, without
+     * disturbing a streaming turn" and never put a `streaming` content on the
+     * transcript — so `isStreaming` was `false` and `cancelTurn` could not
+     * have fired under ANY implementation. The precedence it named
+     * (stop-generation outranks close-panel, for the same reason the sidebar
+     * ranks below it: a user watching a turn run means the stop) needs a real
+     * streaming turn to be observable at all.
+     */
+    it('leaves the panel open and stops the turn when Escape lands mid-stream', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      act(() => {
+        createdStores[0].setState({
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        } as never);
+      });
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).toHaveBeenCalledWith('conv-1');
+      expect(screen.getByTestId('tasks-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+    });
+
+    /**
+     * Fix M1. `tasksVisible` (not `tasksOpen`) is what decides whether the
+     * panel EXISTS, and `tasksOpen` is only cleared on a conversation switch
+     * — never on `setScreen('devices')` and never when the open conversation
+     * is deleted. Gated on `tasksOpen`, the Escape handler therefore consumed
+     * a keypress clearing an invisible flag, and the drawer the user was
+     * actually looking at stayed open until a SECOND Escape.
+     */
+    it('does not swallow Escape for an invisible panel on the Devices tab', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      fireEvent.click(screen.getByRole('button', { name: 'Devices' }));
+      expect(screen.queryByTestId('subagent-tasks-panel')).toBeNull();
+
+      const hamburger = screen.getByLabelText('Toggle conversations menu');
+      fireEvent.click(hamburger);
+      expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(hamburger.getAttribute('aria-expanded')).toBe('false');
     });
 
     /** Switching conversations must not leave the previous one's panel open

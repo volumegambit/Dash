@@ -444,7 +444,13 @@ function ChatWorkspace({
         // is the same kind of overlay, and an overlay Escape cannot dismiss
         // is a trap. Ranked below "stop generation" for the same reason the
         // sidebar is — a user watching a turn run means the stop.
-        if (tasksOpen) {
+        // `tasksVisible`, not `tasksOpen` (fix M1): the flag outlives the
+        // panel — it is cleared on a conversation switch but not on
+        // `setScreen('devices')` and not when the open conversation is
+        // deleted — so gating on it swallowed a keypress clearing something
+        // the user could not see, leaving the drawer they WERE looking at
+        // open until a second Escape.
+        if (tasksVisible) {
           event.preventDefault();
           setTasksOpen(false);
           return;
@@ -457,7 +463,7 @@ function ChatWorkspace({
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [screen, sidebarOpen, tasksOpen, isStreaming, selectedConversationId, cancelTurn]);
+  }, [screen, sidebarOpen, tasksVisible, isStreaming, selectedConversationId, cancelTurn]);
 
   // Runs a shortcut action deferred above, once the render it asked for has
   // actually committed (`screen`/`sidebarOpen` reaching the state the
