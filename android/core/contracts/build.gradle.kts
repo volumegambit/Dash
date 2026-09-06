@@ -7,6 +7,7 @@ plugins {
 android {
   namespace = "app.dash.core.contracts"
   compileSdk = 36
+  sourceSets["test"].resources.srcDir("../../../contracts/mobile/v1/fixtures")
   defaultConfig {
     minSdk = 26
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
