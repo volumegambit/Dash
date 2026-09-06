@@ -19,6 +19,7 @@ import type {
   AgentEvent,
   ClientLocation,
   DashAgentConfig,
+  DeliveredSteerRecord,
   FlatSkillFile,
   ImageBlock,
   InstalledSkill,
@@ -26,6 +27,8 @@ import type {
   MemoryRecord,
   SaveMemoryInput,
   SkillDiscoveryResult,
+  SteerContent,
+  SteerResult,
   WrittenSkill,
 } from '@dash/agent';
 import type { SwarmCoordinator } from '@dash/swarm';
@@ -108,6 +111,7 @@ export interface AgentChatCoordinatorOptions {
 export interface ChatRequest {
   agentId: string;
   conversationId: string;
+  runId?: string;
   channelId?: string;
   text: string;
   images?: ImageBlock[];
@@ -131,6 +135,8 @@ export interface ChatRequest {
    * finalize path (when this generator can no longer yield straggler events).
    */
   messageId?: string;
+  onSteerConsumed?(inputId: string): Promise<void>;
+  deliveredSteers?: readonly DeliveredSteerRecord[];
 }
 
 export interface AgentChatCoordinatorStats {
@@ -161,6 +167,19 @@ export interface AgentChatCoordinator {
     conversationId: string,
     text: string,
     images?: ImageBlock[],
+  ): Promise<void>;
+  steerRun(
+    agentId: string,
+    conversationId: string,
+    runId: string,
+    inputId: string,
+    content: SteerContent,
+  ): Promise<SteerResult>;
+  sealSteering(agentId: string, conversationId: string, runId: string): Promise<string[]>;
+  reconcileSteers(
+    agentId: string,
+    conversationId: string,
+    records: readonly DeliveredSteerRecord[],
   ): Promise<void>;
   followUp(
     agentId: string,
@@ -407,6 +426,9 @@ export function createAgentChatCoordinator(
       return { backend, agent };
     },
   });
+  const runLeases = new Map<string, { release(): void }>();
+  const runLeaseKey = (agentId: string, conversationId: string, runId: string) =>
+    `${agentId}/${conversationId}/${runId}`;
 
   const listSkillsFor = async (agentId: string): Promise<SkillDiscoveryResult[]> => {
     const entry = registry.get(agentId);
@@ -466,157 +488,222 @@ export function createAgentChatCoordinator(
         return;
       }
 
-      const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
-      pool.pin(request.agentId, request.conversationId);
+      const lease = await pool.acquire(request.agentId, request.conversationId);
+      const poolEntry = lease.entry;
+      let retainLeaseForSeal = false;
+      let leaseKey: string | undefined;
+      const provisionRunLease = () => {
+        if (!request.runId) return;
+        leaseKey = runLeaseKey(request.agentId, request.conversationId, request.runId);
+        if (runLeases.has(leaseKey)) {
+          throw new Error(`Run '${request.runId}' already owns a conversation lease`);
+        }
+        runLeases.set(leaseKey, lease);
+        retainLeaseForSeal = true;
+      };
+      const failRunStart = () => {
+        if (leaseKey && runLeases.get(leaseKey) === lease) runLeases.delete(leaseKey);
+        retainLeaseForSeal = false;
+      };
 
-      const swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;
-      if (!swarmEnabled) {
-        // Untouched fast path — byte-identical to the pre-swarm behavior. The
-        // backend owns cancellation here (chat-ws aborts the backend directly).
-        try {
-          yield* poolEntry.agent.chat(
+      try {
+        await poolEntry.backend.reconcileSteers?.(request.deliveredSteers ?? []);
+
+        const swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;
+        if (!swarmEnabled) {
+          // The backend owns cancellation here (chat-ws aborts it directly).
+          const gen = poolEntry.agent.chat(
             request.channelId ?? 'direct',
             request.conversationId,
             request.text,
-            { images: request.images, location: request.location },
+            {
+              signal: request.signal,
+              images: request.images,
+              location: request.location,
+              runId: request.runId,
+              onSteerConsumed: request.onSteerConsumed,
+            },
           );
-        } finally {
-          pool.unpin(request.agentId, request.conversationId);
-        }
-        return;
-      }
-
-      // --- Swarm merge path ---
-      //
-      // Merge the orchestrator's own event stream (`gen`) with the swarm run's
-      // event channel (`attachment.channel`) so worker events (worker_spawned,
-      // worker_status, worker_done) interleave into the single AgentEvent
-      // stream the consumer iterates. The retained-promise invariant is the
-      // whole point: exactly ONE outstanding `gen.next()` and ONE outstanding
-      // `channel.take()` are kept across race iterations, and a settled loser is
-      // NEVER discarded — its value is yielded on a later iteration. Dropping
-      // one silently loses events from both the live stream and the durable log.
-      const swarm = options.swarm;
-      if (!swarm) throw new Error('unreachable: swarm path without swarm wiring');
-      const attachment = swarm.coordinator.attach({
-        agentId: request.agentId,
-        agentName: entry.config.name,
-        conversationId: request.conversationId,
-        messageId: request.messageId,
-        // Cooperative abort of the orchestrator (pool-entry backend.abort).
-        orchestratorAbort: () => poolEntry.backend.abort(),
-        // Live registry read of the agent's swarm-enabled + disabled gate so a
-        // mid-turn PUT /agents/:id that flips either takes effect on the next
-        // spawn (the coordinator re-reads this per spawn).
-        getAgentGate: () => {
-          const e = registry.get(request.agentId);
-          return {
-            enabled: e?.config.swarm?.enabled === true,
-            disabled: e?.status === 'disabled',
-          };
-        },
-        caps: entry.config.swarm,
-        allowedModels: entry.config.swarm?.allowedModels,
-        orchestratorModel: entry.config.model,
-        orchestratorFallbackModels: entry.config.fallbackModels,
-        orchestratorTools: entry.config.tools,
-        // Workers sandbox to the orchestrator's workspace (not the gateway's
-        // process cwd). Absent → spawnWorker falls back to process.cwd().
-        workspace: entry.config.workspace,
-      });
-
-      const gen = poolEntry.agent.chat(
-        request.channelId ?? 'direct',
-        request.conversationId,
-        request.text,
-        { images: request.images, location: request.location },
-      );
-
-      // The two retained promises. `genNext === null` marks the orchestrator
-      // done; `chanNext === null` marks the channel drained/closed. Both are
-      // created up front and only re-created when their own value is consumed —
-      // the loser of a race is kept, never re-issued.
-      let genNext: Promise<IteratorResult<AgentEvent>> | null = gen.next();
-      let chanNext: Promise<IteratorResult<AgentEvent>> | null = attachment.channel.take();
-      let completedNormally = false;
-
-      // A SINGLE abort promise for the whole turn (one `once` listener, created
-      // outside the loop so a long turn never accumulates listeners). Raced as a
-      // dedicated arm so an aborted turn breaks the loop the moment the signal
-      // fires — without waiting for the next orchestrator/worker event — and
-      // reaches finally (finalize). The arm never yields; it only breaks.
-      const abortArm: Promise<{ src: 'abort' }> | null = request.signal
-        ? abortRace(request.signal).then(() => ({ src: 'abort' as const }))
-        : null;
-
-      try {
-        // Already aborted before the first race: skip straight to finally.
-        if (!request.signal?.aborted) {
-          while (genNext !== null) {
-            const tagged = await Promise.race([
-              genNext.then((r) => ({ src: 'gen' as const, r })),
-              ...(chanNext ? [chanNext.then((r) => ({ src: 'chan' as const, r }))] : []),
-              ...(abortArm ? [abortArm] : []),
-            ]);
-            if (request.signal?.aborted) break;
-            if (tagged.src === 'abort') break;
-            if (tagged.src === 'gen') {
-              if (tagged.r.done) {
-                // Orchestrator finished. The retained `chanNext` is NOT
-                // discarded — the drain below starts from it.
-                completedNormally = true;
-                genNext = null;
-              } else {
-                yield tagged.r.value;
-                genNext = gen.next();
-                // `chanNext` is intentionally left as-is (retained loser).
+          provisionRunLease();
+          let runStarted = false;
+          let completed = false;
+          try {
+            const first = await gen.next();
+            runStarted = true;
+            if (first.done) {
+              completed = true;
+              return;
+            }
+            yield first.value;
+            while (true) {
+              const next = await gen.next();
+              if (next.done) {
+                completed = true;
+                break;
               }
-            } else {
-              // src === 'chan'
-              if (tagged.r.done) {
-                chanNext = null;
+              yield next.value;
+            }
+          } catch (error) {
+            if (!runStarted) failRunStart();
+            throw error;
+          } finally {
+            if (!completed) await gen.return(undefined as never);
+          }
+          return;
+        }
+
+        // --- Swarm merge path ---
+        //
+        // Merge the orchestrator's own event stream (`gen`) with the swarm run's
+        // event channel (`attachment.channel`) so worker events (worker_spawned,
+        // worker_status, worker_done) interleave into the single AgentEvent
+        // stream the consumer iterates. The retained-promise invariant is the
+        // whole point: exactly ONE outstanding `gen.next()` and ONE outstanding
+        // `channel.take()` are kept across race iterations, and a settled loser is
+        // NEVER discarded — its value is yielded on a later iteration. Dropping
+        // one silently loses events from both the live stream and the durable log.
+        const swarm = options.swarm;
+        if (!swarm) throw new Error('unreachable: swarm path without swarm wiring');
+        const attachment = swarm.coordinator.attach({
+          agentId: request.agentId,
+          agentName: entry.config.name,
+          conversationId: request.conversationId,
+          messageId: request.messageId,
+          // Cooperative abort of the orchestrator (pool-entry backend.abort).
+          orchestratorAbort: () => poolEntry.backend.abort(),
+          // Live registry read of the agent's swarm-enabled + disabled gate so a
+          // mid-turn PUT /agents/:id that flips either takes effect on the next
+          // spawn (the coordinator re-reads this per spawn).
+          getAgentGate: () => {
+            const e = registry.get(request.agentId);
+            return {
+              enabled: e?.config.swarm?.enabled === true,
+              disabled: e?.status === 'disabled',
+            };
+          },
+          caps: entry.config.swarm,
+          allowedModels: entry.config.swarm?.allowedModels,
+          orchestratorModel: entry.config.model,
+          orchestratorFallbackModels: entry.config.fallbackModels,
+          orchestratorTools: entry.config.tools,
+          // Workers sandbox to the orchestrator's workspace (not the gateway's
+          // process cwd). Absent → spawnWorker falls back to process.cwd().
+          workspace: entry.config.workspace,
+        });
+
+        const gen = poolEntry.agent.chat(
+          request.channelId ?? 'direct',
+          request.conversationId,
+          request.text,
+          {
+            signal: request.signal,
+            images: request.images,
+            location: request.location,
+            runId: request.runId,
+            onSteerConsumed: request.onSteerConsumed,
+          },
+        );
+        provisionRunLease();
+        let runStarted = false;
+        const nextGen = () =>
+          gen.next().then(
+            (result) => {
+              runStarted = true;
+              return result;
+            },
+            (error) => {
+              if (!runStarted) failRunStart();
+              throw error;
+            },
+          );
+
+        // The two retained promises. `genNext === null` marks the orchestrator
+        // done; `chanNext === null` marks the channel drained/closed. Both are
+        // created up front and only re-created when their own value is consumed —
+        // the loser of a race is kept, never re-issued.
+        let genNext: Promise<IteratorResult<AgentEvent>> | null = nextGen();
+        let chanNext: Promise<IteratorResult<AgentEvent>> | null = attachment.channel.take();
+        let completedNormally = false;
+
+        // A SINGLE abort promise for the whole turn (one `once` listener, created
+        // outside the loop so a long turn never accumulates listeners). Raced as a
+        // dedicated arm so an aborted turn breaks the loop the moment the signal
+        // fires — without waiting for the next orchestrator/worker event — and
+        // reaches finally (finalize). The arm never yields; it only breaks.
+        const abortArm: Promise<{ src: 'abort' }> | null = request.signal
+          ? abortRace(request.signal).then(() => ({ src: 'abort' as const }))
+          : null;
+
+        try {
+          // Already aborted before the first race: skip straight to finally.
+          if (!request.signal?.aborted) {
+            while (genNext !== null) {
+              const tagged = await Promise.race([
+                genNext.then((r) => ({ src: 'gen' as const, r })),
+                ...(chanNext ? [chanNext.then((r) => ({ src: 'chan' as const, r }))] : []),
+                ...(abortArm ? [abortArm] : []),
+              ]);
+              if (request.signal?.aborted) break;
+              if (tagged.src === 'abort') break;
+              if (tagged.src === 'gen') {
+                if (tagged.r.done) {
+                  // Orchestrator finished. The retained `chanNext` is NOT
+                  // discarded — the drain below starts from it.
+                  completedNormally = true;
+                  genNext = null;
+                } else {
+                  yield tagged.r.value;
+                  genNext = nextGen();
+                  // `chanNext` is intentionally left as-is (retained loser).
+                }
               } else {
-                yield tagged.r.value;
-                chanNext = attachment.channel.take();
-                // `genNext` is intentionally left as-is (retained loser).
+                // src === 'chan'
+                if (tagged.r.done) {
+                  chanNext = null;
+                } else {
+                  yield tagged.r.value;
+                  chanNext = attachment.channel.take();
+                  // `genNext` is intentionally left as-is (retained loser).
+                }
               }
             }
           }
-        }
 
-        // Normal-completion path finishes INSIDE the try (controller mandate):
-        // finalize FIRST (cancels stragglers and pushes their
-        // worker_done{cancelled} into the channel, then closes it), THEN drain —
-        // so those straggler events are yielded and durably logged
-        // (teardown-before-drain). The drain starts from any retained
-        // `chanNext` (a settled loser must not be discarded).
-        if (completedNormally) {
-          attachment.finalize({ consumerAlive: true });
-          while (true) {
-            const r = await (chanNext ?? attachment.channel.take());
-            chanNext = null;
-            if (r.done) break;
-            yield r.value;
+          // Normal-completion path finishes INSIDE the try (controller mandate):
+          // finalize FIRST (cancels stragglers and pushes their
+          // worker_done{cancelled} into the channel, then closes it), THEN drain —
+          // so those straggler events are yielded and durably logged
+          // (teardown-before-drain). The drain starts from any retained
+          // `chanNext` (a settled loser must not be discarded).
+          if (completedNormally) {
+            await attachment.finalize({ consumerAlive: true });
+            while (true) {
+              const r = await (chanNext ?? attachment.channel.take());
+              chanNext = null;
+              if (r.done) break;
+              yield r.value;
+            }
           }
+        } finally {
+          // Any retained promise abandoned by an abort/return break is swallowed
+          // so a late rejection (e.g. the orchestrator generator throwing after we
+          // stopped iterating it) never surfaces as an unhandled rejection.
+          // `channel.take()` never rejects; `gen.next()` normally yields error
+          // EVENTS rather than throwing, so this is belt-and-braces. Done BEFORE
+          // finalize (which aborts the orchestrator and may settle genNext).
+          genNext?.catch(() => {});
+          chanNext?.catch(() => {});
+          // Pure side-effect: never yields on ANY path. `finalize` is idempotent
+          // (calling it unconditionally is safe); on the consumer-gone / aborted
+          // path `completedNormally` is false, so it runs as
+          // finalize({consumerAlive:false}) — cancelling workers, aborting the
+          // orchestrator, and (inside the coordinator) appending straggler
+          // worker_done events out-of-band to the event log. The abort listener
+          // is `once` and self-cleaning, so there is nothing to remove here.
+          await attachment.finalize({ consumerAlive: completedNormally });
         }
       } finally {
-        // Any retained promise abandoned by an abort/return break is swallowed
-        // so a late rejection (e.g. the orchestrator generator throwing after we
-        // stopped iterating it) never surfaces as an unhandled rejection.
-        // `channel.take()` never rejects; `gen.next()` normally yields error
-        // EVENTS rather than throwing, so this is belt-and-braces. Done BEFORE
-        // finalize (which aborts the orchestrator and may settle genNext).
-        genNext?.catch(() => {});
-        chanNext?.catch(() => {});
-        // Pure side-effect: never yields on ANY path. `finalize` is idempotent
-        // (calling it unconditionally is safe); on the consumer-gone / aborted
-        // path `completedNormally` is false, so it runs as
-        // finalize({consumerAlive:false}) — cancelling workers, aborting the
-        // orchestrator, and (inside the coordinator) appending straggler
-        // worker_done events out-of-band to the event log. The abort listener
-        // is `once` and self-cleaning, so there is nothing to remove here.
-        attachment.finalize({ consumerAlive: completedNormally });
-        pool.unpin(request.agentId, request.conversationId);
+        if (!retainLeaseForSeal) lease.release();
       }
     },
 
@@ -701,6 +788,28 @@ export function createAgentChatCoordinator(
       }
     },
 
+    async steerRun(agentId, conversationId, runId, inputId, content) {
+      const entry = pool.get(agentId, conversationId);
+      if (!entry?.backend.steer) return { accepted: false, reason: 'idle' };
+      return entry.backend.steer(runId, inputId, content);
+    },
+
+    async sealSteering(agentId, conversationId, runId) {
+      const entry = pool.get(agentId, conversationId);
+      const inputIds = entry?.backend.sealSteering ? await entry.backend.sealSteering(runId) : [];
+      const key = runLeaseKey(agentId, conversationId, runId);
+      const runLease = runLeases.get(key);
+      if (runLease) {
+        runLeases.delete(key);
+        runLease.release();
+      }
+      return inputIds;
+    },
+
+    async reconcileSteers(agentId, conversationId, records) {
+      await pool.get(agentId, conversationId)?.backend.reconcileSteers?.(records);
+    },
+
     async followUp(agentId, conversationId, text, images) {
       const entry = pool.get(agentId, conversationId);
       if (!entry) throw new Error('No active conversation for followUp');
@@ -726,7 +835,16 @@ export function createAgentChatCoordinator(
     },
 
     async evict(agentId) {
-      await pool.evictAgent(agentId);
+      try {
+        await pool.evictAgent(agentId);
+      } finally {
+        const prefix = `${agentId}/`;
+        for (const [key, lease] of runLeases) {
+          if (!key.startsWith(prefix)) continue;
+          runLeases.delete(key);
+          lease.release();
+        }
+      }
     },
 
     async evictAll() {
@@ -738,6 +856,8 @@ export function createAgentChatCoordinator(
     },
 
     async stop() {
+      for (const lease of runLeases.values()) lease.release();
+      runLeases.clear();
       await pool.clear();
     },
   };

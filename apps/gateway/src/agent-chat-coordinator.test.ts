@@ -1,7 +1,13 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import type {
+  AgentBackend,
+  AgentEvent,
+  AgentState,
+  DeliveredSteerRecord,
+  RunOptions,
+} from '@dash/agent';
 import { MemoryStore } from '@dash/agent';
 import {
   SwarmCoordinator,
@@ -83,6 +89,8 @@ interface OrchestratorController {
   emit(event: AgentEvent): Promise<void>;
   end(): void;
   abortCalls(): number;
+  options(): RunOptions[];
+  reconciliations(): readonly DeliveredSteerRecord[][];
 }
 
 function makeScriptedBackend(): { backend: AgentBackend; controller: OrchestratorController } {
@@ -90,6 +98,8 @@ function makeScriptedBackend(): { backend: AgentBackend; controller: Orchestrato
   const takers: Array<(r: IteratorResult<AgentEvent>) => void> = [];
   let done = false;
   let aborts = 0;
+  const runOptions: RunOptions[] = [];
+  const reconciliations: Array<readonly DeliveredSteerRecord[]> = [];
 
   const push = (event: AgentEvent) => {
     const taker = takers.shift();
@@ -111,7 +121,11 @@ function makeScriptedBackend(): { backend: AgentBackend; controller: Orchestrato
       // generator so the merge wrapper's retained gen.next() settles `done`.
       finish();
     },
-    async *run(_state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
+    reconcileSteers: async (records) => {
+      reconciliations.push(records);
+    },
+    async *run(_state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
+      runOptions.push(options);
       while (true) {
         if (queue.length > 0) {
           yield queue.shift() as AgentEvent;
@@ -138,6 +152,8 @@ function makeScriptedBackend(): { backend: AgentBackend; controller: Orchestrato
       },
       end: finish,
       abortCalls: () => aborts,
+      options: () => runOptions,
+      reconciliations: () => reconciliations,
     },
   };
 }
@@ -726,6 +742,45 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await agents.stop();
   });
 
+  it('forwards run identity, location, callback, and reconciliation through the swarm path', async () => {
+    const { id, controller, agents } = setup({ swarmEnabled: true });
+    const callback = vi.fn(async () => {});
+    const location = {
+      timezone: 'Asia/Singapore',
+      utcOffsetMinutes: 480,
+      locale: 'en-SG',
+      region: 'SG',
+    };
+    const deliveredSteers: DeliveredSteerRecord[] = [
+      { inputId: 'delivered-1', content: { text: 'persisted' } },
+    ];
+    const stream = agents.chat({
+      agentId: id,
+      conversationId: 'c1',
+      runId: 'run-1',
+      text: 'hi',
+      location,
+      onSteerConsumed: callback,
+      deliveredSteers,
+    });
+
+    await controller.emit({ type: 'text_delta', text: 'one' });
+    expect(await stream.next()).toEqual({
+      done: false,
+      value: { type: 'text_delta', text: 'one' },
+    });
+    expect(controller.reconciliations()).toEqual([deliveredSteers]);
+    expect(controller.options()).toEqual([
+      expect.objectContaining({ runId: 'run-1', location, onSteerConsumed: callback }),
+    ]);
+    controller.end();
+    await drain(stream);
+    expect(agents.stats().pinned).toBe(1);
+    await agents.sealSteering(id, 'c1', 'run-1');
+    expect(agents.stats().pinned).toBe(0);
+    await agents.stop();
+  });
+
   // (b) Adversarial interleaving: every orchestrator AND worker event appears
   // exactly once; each source's relative order is preserved.
   it('(b) interleaves orchestrator and worker events with no loss, per-source order preserved', async () => {
@@ -1246,5 +1301,236 @@ describe('AgentChatCoordinator location gating', () => {
     // The tool is unregistered under the same condition, so the prompt must
     // not name it either.
     expect(prompt).not.toContain('get_location');
+  });
+});
+
+describe('AgentChatCoordinator typed run steering controls', () => {
+  const RUN_ID = 'run-typed-1';
+  const INPUT_ID = 'input-typed-1';
+
+  function setupBackend(events: AgentEvent[] = [{ type: 'text_delta', text: 'started' }]) {
+    const order: string[] = [];
+    const options: RunOptions[] = [];
+    const steer = vi.fn(async () => ({ accepted: true as const }));
+    const sealSteering = vi.fn(async () => [INPUT_ID]);
+    const reconcileSteers = vi.fn(async (_records: readonly DeliveredSteerRecord[]) => {
+      order.push('reconcile');
+    });
+    const backend: AgentBackend = {
+      name: 'typed-controls',
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      abort: vi.fn(),
+      steer,
+      sealSteering,
+      reconcileSteers,
+      async *run(_state, runOptions) {
+        order.push('run');
+        options.push(runOptions);
+        for (const event of events) yield event;
+      },
+    };
+    return { backend, steer, sealSteering, reconcileSteers, order, options };
+  }
+
+  function setupCoordinator(
+    createBackend: Parameters<typeof createAgentChatCoordinator>[0]['createBackend'],
+    poolMaxSize = 10,
+  ) {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: `typed-${Math.random().toString(36).slice(2)}`,
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'test',
+    });
+    return {
+      id,
+      agents: createAgentChatCoordinator({ registry, poolMaxSize, createBackend }),
+    };
+  }
+
+  it('reconciles before run and forwards typed controls through the plain path', async () => {
+    const controls = setupBackend();
+    const { id, agents } = setupCoordinator(async () => controls.backend);
+    const callback = vi.fn(async () => {});
+    const controller = new AbortController();
+    const location = {
+      timezone: 'Asia/Singapore',
+      utcOffsetMinutes: 480,
+      locale: 'en-SG',
+      region: 'SG',
+    };
+    const deliveredSteers: DeliveredSteerRecord[] = [
+      { inputId: 'delivered-a', content: { text: 'restored' } },
+    ];
+    const stream = agents.chat({
+      agentId: id,
+      conversationId: 'conversation-1',
+      runId: RUN_ID,
+      channelId: 'web',
+      text: 'start',
+      signal: controller.signal,
+      location,
+      onSteerConsumed: callback,
+      deliveredSteers,
+    });
+
+    expect(await stream.next()).toMatchObject({ done: false });
+    expect(controls.order).toEqual(['reconcile', 'run']);
+    expect(controls.reconcileSteers).toHaveBeenCalledWith(deliveredSteers);
+    expect(controls.options).toEqual([
+      {
+        signal: controller.signal,
+        images: undefined,
+        location,
+        runId: RUN_ID,
+        onSteerConsumed: callback,
+      },
+    ]);
+    await expect(
+      agents.steerRun(id, 'conversation-1', RUN_ID, INPUT_ID, { text: 'focus' }),
+    ).resolves.toEqual({ accepted: true });
+    expect(controls.steer).toHaveBeenCalledWith(RUN_ID, INPUT_ID, { text: 'focus' });
+    await drain(stream);
+    expect(agents.stats().pinned).toBe(1);
+
+    await expect(agents.sealSteering(id, 'conversation-1', RUN_ID)).resolves.toEqual([INPUT_ID]);
+    expect(agents.stats().pinned).toBe(0);
+    await agents.stop();
+  });
+
+  it('returns typed idle results when the backend is cold or lacks steering support', async () => {
+    const controls = setupBackend();
+    const { id, agents } = setupCoordinator(async () => controls.backend);
+    await expect(agents.steerRun(id, 'cold', RUN_ID, INPUT_ID, { text: 'focus' })).resolves.toEqual(
+      { accepted: false, reason: 'idle' },
+    );
+    await expect(agents.sealSteering(id, 'cold', RUN_ID)).resolves.toEqual([]);
+    await expect(agents.reconcileSteers(id, 'cold', [])).resolves.toBeUndefined();
+
+    const unsupported = makeMockBackend([]);
+    const stream = agents.chat({
+      agentId: id,
+      conversationId: 'unsupported',
+      runId: RUN_ID,
+      text: 'start',
+      onSteerConsumed: async () => {},
+    });
+    // The existing factory is per coordinator, so use a second coordinator for unsupported.
+    await stream.return(undefined as never);
+    await agents.stop();
+
+    const second = setupCoordinator(async () => unsupported);
+    await drain(
+      second.agents.chat({
+        agentId: second.id,
+        conversationId: 'unsupported',
+        runId: RUN_ID,
+        text: 'start',
+        onSteerConsumed: async () => {},
+      }),
+    );
+    await expect(
+      second.agents.steerRun(second.id, 'unsupported', RUN_ID, INPUT_ID, { text: 'focus' }),
+    ).resolves.toEqual({ accepted: false, reason: 'idle' });
+    await expect(second.agents.sealSteering(second.id, 'unsupported', RUN_ID)).resolves.toEqual([]);
+    expect(second.agents.stats().pinned).toBe(0);
+    await second.agents.stop();
+  });
+
+  it('preserves the frozen legacy steer signature without binding it to steerRun arguments', async () => {
+    const legacySteer = vi.fn(async (_text: string, _images?: unknown[]) => {});
+    const legacyBackend = {
+      ...makeMockBackend([]),
+      steer: legacySteer,
+    } as unknown as AgentBackend;
+    const { id, agents } = setupCoordinator(async () => legacyBackend);
+    await drain(agents.chat({ agentId: id, conversationId: 'legacy', text: 'warm' }));
+    const images = [{ type: 'image' as const, mediaType: 'image/png' as const, data: 'abc' }];
+
+    await agents.steer(id, 'legacy', 'old text', images);
+    expect(legacySteer).toHaveBeenCalledWith('old text', images);
+    await agents.stop();
+  });
+
+  it('releases the lease when reconciliation fails before run setup', async () => {
+    const broken = setupBackend();
+    broken.reconcileSteers.mockRejectedValueOnce(new Error('reconcile failed'));
+    const healthy = setupBackend([]);
+    let call = 0;
+    const { id, agents } = setupCoordinator(
+      async () => (call++ === 0 ? broken.backend : healthy.backend),
+      1,
+    );
+
+    await expect(
+      agents
+        .chat({
+          agentId: id,
+          conversationId: 'broken',
+          runId: RUN_ID,
+          text: 'start',
+          onSteerConsumed: async () => {},
+          deliveredSteers: [],
+        })
+        .next(),
+    ).rejects.toThrow('reconcile failed');
+    await expect(
+      drain(agents.chat({ agentId: id, conversationId: 'healthy', text: 'next' })),
+    ).resolves.toBeUndefined();
+    expect(broken.backend.stop).toHaveBeenCalledTimes(1);
+    await agents.stop();
+  });
+
+  it('retains a typed-run lease after iterator completion and permits eviction only after seal', async () => {
+    const first = setupBackend([]);
+    const second = setupBackend([]);
+    let call = 0;
+    const { id, agents } = setupCoordinator(
+      async () => (call++ === 0 ? first.backend : second.backend),
+      1,
+    );
+    await drain(
+      agents.chat({
+        agentId: id,
+        conversationId: 'first',
+        runId: RUN_ID,
+        text: 'start',
+        onSteerConsumed: async () => {},
+        deliveredSteers: [],
+      }),
+    );
+
+    expect(agents.stats().pinned).toBe(1);
+    await expect(
+      agents.chat({ agentId: id, conversationId: 'second', text: 'blocked' }).next(),
+    ).rejects.toThrow(/all leased|full/);
+    await agents.sealSteering(id, 'first', RUN_ID);
+    await expect(
+      drain(agents.chat({ agentId: id, conversationId: 'second', text: 'allowed' })),
+    ).resolves.toBeUndefined();
+    expect(first.backend.stop).toHaveBeenCalledTimes(1);
+    await agents.stop();
+  });
+
+  it('drops retained run leases even when agent eviction teardown rejects', async () => {
+    const controls = setupBackend([]);
+    vi.mocked(controls.backend.stop).mockRejectedValueOnce(new Error('stop failed'));
+    const { id, agents } = setupCoordinator(async () => controls.backend);
+    const request = {
+      agentId: id,
+      conversationId: 'conversation-1',
+      runId: RUN_ID,
+      text: 'start',
+      onSteerConsumed: async () => {},
+    };
+
+    await drain(agents.chat(request));
+    await expect(agents.evict(id)).rejects.toThrow('stop failed');
+    vi.mocked(controls.backend.stop).mockResolvedValue(undefined);
+
+    await expect(drain(agents.chat(request))).resolves.toBeUndefined();
+    await agents.sealSteering(id, 'conversation-1', RUN_ID);
+    await agents.stop();
   });
 });
