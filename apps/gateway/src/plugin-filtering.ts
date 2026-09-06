@@ -62,15 +62,15 @@ export function filterAgentDefFilesByAgent(
  *   selection. A selected plugin name that isn't loaded contributes nothing
  *   (no throw).
  */
-export function filterPluginsByAgent(
+export function filterPluginsByAgent<Command extends { file: string; namespace?: string }>(
   agentPlugins: string[] | undefined,
   allSkillDirs: string[],
-  allCommandFiles: Array<{ file: string; namespace: string }>,
+  allCommandFiles: Command[],
   skillDirsByPlugin: Record<string, string[]>,
   allAgentDefFiles: Array<{ file: string; namespace: string }>,
 ): {
   skillDirs: string[];
-  commandFiles: Array<{ file: string; namespace: string }>;
+  commandFiles: Command[];
   agentDefFiles: Array<{ file: string; namespace: string }>;
 } {
   // Backward compat: no per-agent selection → the agent sees everything.
@@ -103,7 +103,11 @@ export function filterPluginsByAgent(
   // Command files and agent definitions both carry their plugin in `namespace`
   // — filter each directly, keeping the two channels separate.
   const selectedNames = new Set(agentPlugins);
-  const commandFiles = allCommandFiles.filter((cf) => selectedNames.has(cf.namespace));
+  // A command file with no namespace belongs to no plugin, so no selection can
+  // include it — same result the un-narrowed `has(undefined)` produced.
+  const commandFiles = allCommandFiles.filter(
+    (cf) => cf.namespace !== undefined && selectedNames.has(cf.namespace),
+  );
   const agentDefFiles = filterAgentDefFilesByAgent(agentPlugins, allAgentDefFiles);
 
   return { skillDirs, commandFiles, agentDefFiles };

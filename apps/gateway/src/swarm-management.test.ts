@@ -19,6 +19,7 @@ import {
   createFakeChildDriver,
 } from './fake-child-driver.js';
 import type { DynamicGateway } from './gateway.js';
+import type { JsonBody } from './json-body.test-helpers.js';
 import { createGatewayManagementApp } from './management-api.js';
 
 // --- Mock factories (mirrors management-api-server.test.ts) ---
@@ -333,7 +334,7 @@ describe('swarm management routes', () => {
 
       const res = await app.request(`/agents/${id}/swarm/runs`, { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(Array.isArray(body.runs)).toBe(true);
       expect(body.runs).toHaveLength(1);
       expect(body.runs[0].runId).toBe(runId);
@@ -345,14 +346,14 @@ describe('swarm management routes', () => {
       const id = registerAgent(agentRegistry);
       const res = await app.request(`/agents/${id}/swarm/runs`, { headers: AUTH });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ runs: [] });
+      expect((await res.json()) as JsonBody).toEqual({ runs: [] });
     });
 
     it('404s for an unknown agent', async () => {
       const { app } = createApp({ swarmCoordinator: coordinator });
       const res = await app.request('/agents/ghost/swarm/runs', { headers: AUTH });
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'not found' });
+      expect((await res.json()) as JsonBody).toEqual({ error: 'not found' });
     });
   });
 
@@ -365,7 +366,7 @@ describe('swarm management routes', () => {
 
       const res = await app.request(`/agents/${id}/swarm/runs/${runId}`, { headers: AUTH });
       expect(res.status).toBe(200);
-      const snap = await res.json();
+      const snap = (await res.json()) as JsonBody;
       expect(snap.runId).toBe(runId);
       expect(snap.workers).toHaveLength(1);
       expect(snap.workers[0].workerId).toBe(workerId);
@@ -382,7 +383,7 @@ describe('swarm management routes', () => {
       const id = registerAgent(agentRegistry);
       const res = await app.request(`/agents/${id}/swarm/runs/nope`, { headers: AUTH });
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'not found' });
+      expect((await res.json()) as JsonBody).toEqual({ error: 'not found' });
     });
   });
 
@@ -398,7 +399,7 @@ describe('swarm management routes', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ cancelled: true });
+      expect((await res.json()) as JsonBody).toEqual({ cancelled: true });
       // The turn is finalized: spawning again for the same conversation throws.
       expect(() => coordinator.spawnWorker(id, 'conv-cancel', { role: 'r', brief: 'b' })).toThrow();
 
@@ -407,7 +408,7 @@ describe('swarm management routes', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(await again.json()).toEqual({ cancelled: false });
+      expect((await again.json()) as JsonBody).toEqual({ cancelled: false });
     });
 
     it('returns {cancelled:false} when the conversation has no live turn', async () => {
@@ -418,7 +419,7 @@ describe('swarm management routes', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ cancelled: false });
+      expect((await res.json()) as JsonBody).toEqual({ cancelled: false });
     });
 
     it('404s for an unknown agent', async () => {
@@ -442,7 +443,7 @@ describe('swarm management routes', () => {
         { method: 'POST', headers: AUTH },
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true });
+      expect((await res.json()) as JsonBody).toEqual({ ok: true });
     });
 
     it('404s for an unknown agent', async () => {
@@ -466,7 +467,7 @@ describe('swarm management routes', () => {
         { method: 'POST', headers: AUTH },
       );
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
       expect(body.reason).toBe('run finalized');
     });
@@ -485,7 +486,7 @@ describe('swarm management routes', () => {
         { method: 'POST', headers: AUTH },
       );
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
       expect(body.reason).toBe('worker terminal');
     });
@@ -504,7 +505,7 @@ describe('swarm management routes', () => {
         body: JSON.stringify({ message: 'refocus on X' }),
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true });
+      expect((await res.json()) as JsonBody).toEqual({ ok: true });
     });
 
     it('400s on a missing message', async () => {
@@ -553,7 +554,7 @@ describe('swarm management routes', () => {
         body: JSON.stringify({ message: 'hi' }),
       });
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
       expect(body.reason).toBe('run finalized');
     });
@@ -571,7 +572,7 @@ describe('swarm management routes', () => {
         body: JSON.stringify({ message: 'hi' }),
       });
       expect(res.status).toBe(409);
-      expect((await res.json()).reason).toBe('worker terminal');
+      expect(((await res.json()) as JsonBody).reason).toBe('worker terminal');
     });
   });
 

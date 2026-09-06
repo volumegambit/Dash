@@ -13,6 +13,7 @@ import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
+import type { JsonBody } from './json-body.test-helpers.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 
@@ -297,7 +298,7 @@ describe('createGatewayManagementApp', () => {
       // Both namespaces read the same registry, so a definition written from
       // the web app is immediately visible to the phone.
       expect(listFor).toHaveBeenCalledTimes(2);
-      expect(await mobile.json()).toEqual({
+      expect((await mobile.json()) as JsonBody).toEqual({
         types: [{ name: 'general-purpose', description: 'd', source: 'builtin' }],
         unknownAllowedTypes: [],
       });
@@ -313,7 +314,7 @@ describe('createGatewayManagementApp', () => {
         headers: MOBILE_AUTH,
       });
       expect(mobile404.status).toBe(404);
-      expect(await mobile404.json()).toEqual({
+      expect((await mobile404.json()) as JsonBody).toEqual({
         code: 'not_found',
         error: 'not found',
         retryable: false,
@@ -323,7 +324,7 @@ describe('createGatewayManagementApp', () => {
         headers: MOBILE_AUTH,
       });
       expect(mobile400.status).toBe(400);
-      expect(await mobile400.json()).toMatchObject({
+      expect((await mobile400.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         retryable: false,
       });
@@ -334,7 +335,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ raw: 'no frontmatter\n' }),
       });
       expect(mobile422.status).toBe(422);
-      expect(await mobile422.json()).toEqual({
+      expect((await mobile422.json()) as JsonBody).toEqual({
         code: 'validation_failed',
         error: 'frontmatter is required',
         retryable: false,
@@ -343,7 +344,7 @@ describe('createGatewayManagementApp', () => {
       // The loopback mount keeps the management shape the swarm/plugin/skills
       // routes use — it is not part of the frozen mobile contract.
       const loopback404 = await app.request('/agents/nope/subagent-types', { headers: AUTH });
-      expect(await loopback404.json()).toEqual({ error: 'not found' });
+      expect((await loopback404.json()) as JsonBody).toEqual({ error: 'not found' });
     });
 
     it('requires the namespace bearer on each mount', async () => {
@@ -393,7 +394,7 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       const res = await app.request('/health');
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.status).toBe('healthy');
       expect(body.startedAt).toBe('2026-04-03T00:00:00Z');
       expect(body.agents).toBe(0);
@@ -410,14 +411,14 @@ describe('createGatewayManagementApp', () => {
       });
       channelRegistry as unknown as { _addForTest: boolean }; // channels already empty
       const res = await app.request('/health');
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.agents).toBe(1);
     });
 
     it('advertises the frozen mobile capabilities without auth', async () => {
       const { app } = createApp();
       const response = await app.request('/health');
-      expect(await response.json()).toMatchObject({
+      expect((await response.json()) as JsonBody).toMatchObject({
         apiVersion: 1,
         capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
       });
@@ -445,7 +446,7 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       expect((await app.request('/identity')).status).toBe(401);
       const response = await app.request('/identity', { headers: AUTH });
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         gatewayId: 'gateway-test-id',
         publicKey: 'PUBKEY_B64',
       });
@@ -458,7 +459,7 @@ describe('createGatewayManagementApp', () => {
       const { app } = createApp();
       const res = await app.request('/agents');
       expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({
+      expect((await res.json()) as JsonBody).toEqual({
         code: 'unauthorized',
         error: 'Unauthorized',
         retryable: false,
@@ -579,7 +580,9 @@ describe('createGatewayManagementApp', () => {
       expect(mobileResponse.status).toBe(200);
       expect(coldLoadsBeforeRelease).toBe(1);
       expect(modelsStore.load).toHaveBeenCalledOnce();
-      expect(await mobileResponse.json()).toEqual(await legacyResponse.json());
+      expect((await mobileResponse.json()) as JsonBody).toEqual(
+        (await legacyResponse.json()) as JsonBody,
+      );
     });
 
     it('mounts health, identity, models, and the full agent lifecycle', async () => {
@@ -593,7 +596,7 @@ describe('createGatewayManagementApp', () => {
         headers: MOBILE_AUTH,
       });
       expect(debugModels.status).toBe(400);
-      expect(await debugModels.json()).toMatchObject({
+      expect((await debugModels.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         retryable: false,
       });
@@ -679,7 +682,7 @@ describe('createGatewayManagementApp', () => {
           }),
         });
         expect(response.status, key).toBe(400);
-        expect(await response.json()).toMatchObject({
+        expect((await response.json()) as JsonBody).toMatchObject({
           code: 'validation_failed',
           retryable: false,
         });
@@ -703,7 +706,7 @@ describe('createGatewayManagementApp', () => {
           body: JSON.stringify({ [key]: value }),
         });
         expect(response.status, key).toBe(400);
-        expect(await response.json()).toMatchObject({
+        expect((await response.json()) as JsonBody).toMatchObject({
           code: 'validation_failed',
           retryable: false,
         });
@@ -785,7 +788,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'bot', model: 'claude', systemPrompt: 'hello' }),
       });
       expect(res.status).toBe(201);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.id).toBeDefined();
       expect(body.name).toBe('bot');
       expect(body.status).toBe('registered');
@@ -806,7 +809,7 @@ describe('createGatewayManagementApp', () => {
           providerApiKeys: { anthropic: 'sk-secret' },
         }),
       });
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.config.providerApiKeys).toBeUndefined();
     });
 
@@ -831,7 +834,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/agents', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toHaveLength(1);
       expect(body[0].name).toBe('a1');
     });
@@ -847,7 +850,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request(`/agents/${entry.id}`, { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.name).toBe('x');
     });
 
@@ -872,7 +875,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ model: 'gpt-4' }),
       });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.config.model).toBe('gpt-4');
       expect(agentRegistry.save).toHaveBeenCalled();
     });
@@ -905,7 +908,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ subagents: { delegation: 'sometimes' } }),
       });
       expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({
+      expect((await res.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         error: 'subagents.delegation must be "auto" or "explicit"',
       });
@@ -933,7 +936,10 @@ describe('createGatewayManagementApp', () => {
           body: JSON.stringify({ subagents: value }),
         });
         expect(res.status, message).toBe(400);
-        expect(await res.json()).toMatchObject({ code: 'validation_failed', error: message });
+        expect((await res.json()) as JsonBody).toMatchObject({
+          code: 'validation_failed',
+          error: message,
+        });
       }
     });
 
@@ -950,7 +956,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ subagents: { maxDepth: 0 } }),
       });
       expect(res.status).toBe(200);
-      expect((await res.json()).config.subagents).toEqual({ maxDepth: 0 });
+      expect(((await res.json()) as JsonBody).config.subagents).toEqual({ maxDepth: 0 });
     });
 
     it('stores a valid subagents block and evicts warm backends when it changes', async () => {
@@ -966,7 +972,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ subagents: { enabled: false, allowedTypes: ['Explore'] } }),
       });
       expect(res.status).toBe(200);
-      expect((await res.json()).config.subagents).toEqual({
+      expect(((await res.json()) as JsonBody).config.subagents).toEqual({
         enabled: false,
         allowedTypes: ['Explore'],
       });
@@ -998,10 +1004,10 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(created.status).toBe(201);
-      const body = await created.json();
+      const body = (await created.json()) as JsonBody;
       expect(body.config.subagents).toEqual({ delegation: 'auto', maxPerTurn: 4 });
       const fetched = await app.request(`/agents/${body.id}`, { headers: AUTH });
-      expect((await fetched.json()).config.subagents).toEqual({
+      expect(((await fetched.json()) as JsonBody).config.subagents).toEqual({
         delegation: 'auto',
         maxPerTurn: 4,
       });
@@ -1026,12 +1032,12 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(created.status).toBe(201);
-      const createdBody = await created.json();
+      const createdBody = (await created.json()) as JsonBody;
       expect(createdBody.config.plugins).toEqual(['alpha', 'beta']);
 
       const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
       expect(fetched.status).toBe(200);
-      const fetchedBody = await fetched.json();
+      const fetchedBody = (await fetched.json()) as JsonBody;
       expect(fetchedBody.config.plugins).toEqual(['alpha', 'beta']);
     });
 
@@ -1043,7 +1049,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'legacy', model: 'claude', systemPrompt: 'hi' }),
       });
       expect(created.status).toBe(201);
-      const body = await created.json();
+      const body = (await created.json()) as JsonBody;
       // No selection → backward compat: the agent sees ALL loaded plugins. The
       // key must be absent (undefined), never coerced to an empty array.
       expect(body.config.plugins).toBeUndefined();
@@ -1058,7 +1064,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'none', model: 'claude', systemPrompt: 'hi', plugins: [] }),
       });
       expect(created.status).toBe(201);
-      const body = await created.json();
+      const body = (await created.json()) as JsonBody;
       expect(body.config.plugins).toEqual([]);
     });
 
@@ -1075,10 +1081,10 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ plugins: ['alpha'] }),
       });
       expect(updated.status).toBe(200);
-      expect((await updated.json()).config.plugins).toEqual(['alpha']);
+      expect(((await updated.json()) as JsonBody).config.plugins).toEqual(['alpha']);
 
       const fetched = await app.request(`/agents/${entry.id}`, { headers: AUTH });
-      expect((await fetched.json()).config.plugins).toEqual(['alpha']);
+      expect(((await fetched.json()) as JsonBody).config.plugins).toEqual(['alpha']);
     });
 
     // Regression for the "clear scoped plugins back to all no-ops over HTTP"
@@ -1104,7 +1110,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(created.status).toBe(201);
-      const createdBody = await created.json();
+      const createdBody = (await created.json()) as JsonBody;
       expect(createdBody.config.plugins).toEqual(['alpha']);
 
       // Clear via the null sentinel — body literally carries `"plugins":null`.
@@ -1114,14 +1120,14 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ plugins: null }),
       });
       expect(cleared.status).toBe(200);
-      const clearedBody = await cleared.json();
+      const clearedBody = (await cleared.json()) as JsonBody;
       // Read back: the key must be GONE (undefined = "all loaded plugins"),
       // not null (which would break filterPluginsByAgent) and not ['alpha'].
       expect(clearedBody.config.plugins).toBeUndefined();
       expect('plugins' in clearedBody.config).toBe(false);
 
       const fetched = await app.request(`/agents/${createdBody.id}`, { headers: AUTH });
-      const fetchedBody = await fetched.json();
+      const fetchedBody = (await fetched.json()) as JsonBody;
       expect(fetchedBody.config.plugins).toBeUndefined();
       expect('plugins' in fetchedBody.config).toBe(false);
     });
@@ -1255,10 +1261,14 @@ describe('createGatewayManagementApp', () => {
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
 
-        deleteRequest = app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
+        // Captured so the `expect(() => …)` closures below keep the narrowing.
+        const hub = resumableChatHub;
+        deleteRequest = Promise.resolve(
+          app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH }),
+        );
         await cleanupStarted.promise;
         expect(() =>
-          resumableChatHub.start(
+          hub.start(
             {
               type: 'message',
               id: 'turn-during-cancel',
@@ -1279,18 +1289,18 @@ describe('createGatewayManagementApp', () => {
         await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(agent.id));
         const allowAgent = vi.spyOn(resumableChatHub, 'allowAgent');
         let enableSettled = false;
-        enableRequest = app
-          .request(`/mobile/v1/agents/${agent.id}/enable`, {
+        enableRequest = Promise.resolve(
+          app.request(`/mobile/v1/agents/${agent.id}/enable`, {
             method: 'POST',
             headers: MOBILE_AUTH,
-          })
-          .then((response) => {
-            enableSettled = true;
-            return response;
-          });
+          }),
+        ).then((response) => {
+          enableSettled = true;
+          return response;
+        });
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(() =>
-          resumableChatHub.start(
+          hub.start(
             {
               type: 'message',
               id: 'turn-during-cleanup',
@@ -1488,7 +1498,7 @@ describe('createGatewayManagementApp', () => {
         body: testCase.body,
       });
       expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({
+      expect((await response.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         retryable: false,
       });
@@ -1509,7 +1519,7 @@ describe('createGatewayManagementApp', () => {
           body,
         });
         expect(response.status).toBe(400);
-        expect(await response.json()).toMatchObject({
+        expect((await response.json()) as JsonBody).toMatchObject({
           code: 'validation_failed',
           retryable: false,
         });
@@ -1530,7 +1540,7 @@ describe('createGatewayManagementApp', () => {
         ...(testCase.body ? { body: testCase.body } : {}),
       });
       expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'not_found',
         error: 'Agent not found',
         retryable: false,
@@ -1556,7 +1566,7 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'gateway_offline',
         error: 'Internal gateway error',
         retryable: true,
@@ -1595,12 +1605,12 @@ describe('createGatewayManagementApp', () => {
       });
       await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
       let recoverySettled = false;
-      const recovering = app
-        .request(`/agents/${entry.id}/enable`, { method: 'POST', headers: AUTH })
-        .then((response) => {
-          recoverySettled = true;
-          return response;
-        });
+      const recovering = Promise.resolve(
+        app.request(`/agents/${entry.id}/enable`, { method: 'POST', headers: AUTH }),
+      ).then((response) => {
+        recoverySettled = true;
+        return response;
+      });
       try {
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(recoverySettled).toBe(false);
@@ -1613,7 +1623,7 @@ describe('createGatewayManagementApp', () => {
 
       const response = await deleting;
       expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'gateway_offline',
         error: 'Internal gateway error',
         retryable: true,
@@ -1684,7 +1694,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('No credential found');
     });
 
@@ -1706,7 +1716,7 @@ describe('createGatewayManagementApp', () => {
         body: JSON.stringify({ name: 'ch1', adapter: 'slack', routing: [] }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('Unknown adapter');
     });
 
@@ -1752,7 +1762,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('allowedUsers must be an array');
     });
 
@@ -1771,7 +1781,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('ghost');
     });
 
@@ -1903,7 +1913,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/channels', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toHaveLength(1);
       expect(body[0].name).toBe('tg1');
     });
@@ -1920,7 +1930,7 @@ describe('createGatewayManagementApp', () => {
       });
       const res = await app.request('/channels/tg1', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.name).toBe('tg1');
     });
 
@@ -1976,7 +1986,7 @@ describe('createGatewayManagementApp', () => {
         }),
       });
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.error).toContain('ghost');
     });
 
@@ -2126,7 +2136,7 @@ describe('createGatewayManagementApp', () => {
       await credentialStore.set('k2', 'v2');
       const res = await app.request('/credentials', { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toEqual(['k1', 'k2']);
     });
   });
@@ -2194,7 +2204,7 @@ describe('skill routes', () => {
     ]);
     const res = await app.request(`/agents/${id}/skills`, { headers: AUTH });
     expect(res.status).toBe(200);
-    expect((await res.json())[0].name).toBe('s');
+    expect(((await res.json()) as JsonBody)[0].name).toBe('s');
   });
 
   it('GET /agents/:id/skills → 404 for an unknown agent', async () => {
@@ -2295,7 +2305,7 @@ describe('skill routes', () => {
       body: JSON.stringify({ paths: ['/extra/skills'] }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ paths: ['/extra/skills'] });
+    expect((await patched.json()) as JsonBody).toEqual({ paths: ['/extra/skills'] });
   });
 });
 
@@ -2315,7 +2325,7 @@ describe('POST /lifecycle/shutdown', () => {
     const { app } = createApp({ onShutdown });
     const res = await app.request('/lifecycle/shutdown', { method: 'POST', headers: AUTH });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect((await res.json()) as JsonBody).toEqual({ ok: true });
     // The handler must NOT run teardown before responding — the gateway's
     // shutdown sequence closes this very server and exits the process, which
     // would kill the in-flight response. It defers instead.
@@ -2354,7 +2364,7 @@ describe('POST /agents/:agentId/conversation-title', () => {
       body: JSON.stringify({ text: 'my login form crashes on submit' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ title: 'Login bug triage', project: null });
+    expect((await res.json()) as JsonBody).toEqual({ title: 'Login bug triage', project: null });
   });
 
   it('infers a project when the projects DB is wired', async () => {
@@ -2380,7 +2390,7 @@ describe('POST /agents/:agentId/conversation-title', () => {
       body: JSON.stringify({ text: 'my login form crashes on submit' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
+    expect((await res.json()) as JsonBody).toEqual({
       title: 'Fix login crash',
       project: { id: 'p1', key: 'AUTH' },
     });
@@ -2559,8 +2569,8 @@ describe('canonical and legacy conversation replay', () => {
       );
       expect(replay.status).toBe(200);
       expect(
-        (await replay.json()).entries.map(
-          (entry: { payload: { type: string } }) => entry.payload.type,
+        ((await replay.json()) as { entries: Array<{ payload: { type: string } }> }).entries.map(
+          (entry) => entry.payload.type,
         ),
       ).toEqual(['accepted', 'event', 'done']);
       expect(
@@ -2599,7 +2609,7 @@ describe('canonical and legacy conversation replay', () => {
         { headers: AUTH },
       );
       expect(replay.status).toBe(200);
-      expect(await replay.json()).toEqual({
+      expect((await replay.json()) as JsonBody).toEqual({
         entries: [
           expect.objectContaining({
             seq: 2,
@@ -2645,7 +2655,7 @@ describe('canonical and legacy conversation replay', () => {
         { headers: AUTH },
       );
       expect(wrongOwner.status).toBe(404);
-      expect(await wrongOwner.json()).toEqual({
+      expect((await wrongOwner.json()) as JsonBody).toEqual({
         code: 'not_found',
         error: 'Conversation not found',
         retryable: false,
@@ -2661,7 +2671,7 @@ describe('canonical and legacy conversation replay', () => {
         { headers: AUTH },
       );
       expect(tombstone.status).toBe(200);
-      expect(await tombstone.json()).toEqual({ entries: [] });
+      expect((await tombstone.json()) as JsonBody).toEqual({ entries: [] });
     } finally {
       conversationService.close();
       await rm(tmpDir, { recursive: true, force: true });

@@ -775,7 +775,7 @@ describe('mountChatWs protocol ownership', () => {
     ).toBe(true);
 
     const payloads = append.mock.calls.map(
-      (call) => call[3] as { type: string; event?: AgentEvent },
+      (call) => (call as unknown[])[3] as { type: string; event?: AgentEvent },
     );
     expect(payloads.some((p) => p.type === 'event' && p.event?.type === 'subagent_progress')).toBe(
       false,

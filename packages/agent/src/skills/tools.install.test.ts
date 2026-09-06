@@ -9,8 +9,8 @@ import type { SkillDiscoveryResult } from './types.js';
 
 const safeScanner: SkillSecurityScanner = async () => ({ verdict: 'safe', reasons: [] });
 
-function resultText(r: { content: { type: string; text: string }[] }): string {
-  return r.content.map((c) => c.text).join('\n');
+function resultText(r: { content: Array<{ type: string; text?: string }> }): string {
+  return r.content.map((c) => c.text ?? '').join('\n');
 }
 
 describe('install_skill / remove_skill tools', () => {

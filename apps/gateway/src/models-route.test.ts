@@ -24,15 +24,16 @@ function makeCredentialStore(keys: Record<string, string> = {}): GatewayCredenti
  * static (bootstrap) list; `supportedPatterns` feed the debug `patterns` block;
  * `reviewedAt` feeds the store fingerprint.
  */
-function makeCatalog(overrides: Partial<ProviderCatalog> & { id: string }): ProviderCatalog {
+function makeCatalog(
+  overrides: Partial<ProviderCatalog> & { id: string; name?: string },
+): ProviderCatalog {
   return {
-    id: overrides.id,
-    name: overrides.name ?? overrides.id,
     api: 'openai-completions',
     baseUrl: `https://${overrides.id}.example/v1`,
     models: [],
     ...overrides,
-  } as ProviderCatalog;
+    name: overrides.name ?? overrides.id,
+  } as unknown as ProviderCatalog;
 }
 
 function makeConfigs(catalogs: ProviderCatalog[]): ProviderConfigEntry[] {
@@ -46,7 +47,9 @@ const anthropicCatalog = makeCatalog({
   name: 'Anthropic',
   reviewedAt: '2026-07-01',
   ui: { sortOrder: 0 },
-  models: [{ id: 'claude-opus-4-5', name: 'Claude Opus 4.5' }],
+  models: [
+    { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', contextWindow: 200_000, maxTokens: 8192 },
+  ],
   supportedPatterns: [{ pattern: 'claude-opus', tier: 1 }],
 });
 
@@ -54,7 +57,7 @@ const myllmCatalog = makeCatalog({
   id: 'myllm',
   name: 'My LLM',
   ui: { sortOrder: 5 },
-  models: [{ id: 'm1', name: 'M One' }],
+  models: [{ id: 'm1', name: 'M One', contextWindow: 32_000, maxTokens: 4096 }],
 });
 
 describe('createModelsRoute', () => {

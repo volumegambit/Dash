@@ -18,7 +18,7 @@ function makeProbeTool(observed: { sessionId: string | null }, getSessionId: () 
 
 describe('PiAgentBackend extra tools + session id', () => {
   it('registers injected extra tools in the custom tool list', async () => {
-    const backend = new PiAgentBackend(
+    const backend: PiAgentBackend = new PiAgentBackend(
       { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'x', tools: [] },
       {},
       undefined,

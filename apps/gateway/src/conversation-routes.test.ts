@@ -7,6 +7,7 @@ import { AgentRegistry, type RegisteredAgent } from './agent-registry.js';
 import { mountConversationRoutes } from './conversation-routes.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { EventBus, type GatewayEvent } from './event-bus.js';
+import type { JsonBody } from './json-body.test-helpers.js';
 
 const AUTH = { Authorization: 'Bearer test-token' };
 const JSON_HEADERS = { ...AUTH, 'Content-Type': 'application/json' };
@@ -66,7 +67,7 @@ describe('conversation REST routes', () => {
     >) {
       const response = await app.request('/conversations', { headers });
       expect(response.status).toBe(401);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'unauthorized',
         error: 'Unauthorized',
         retryable: false,
@@ -104,7 +105,7 @@ describe('conversation REST routes', () => {
       body: JSON.stringify({ agentId: agent.id, requestId: 'create-01', title: 'Ignored' }),
     });
     expect(retryResponse.status).toBe(201);
-    expect(await retryResponse.json()).toEqual(first);
+    expect((await retryResponse.json()) as JsonBody).toEqual(first);
     expect(conversations.list({ limit: 10 }).items).toHaveLength(1);
   });
 
@@ -141,7 +142,7 @@ describe('conversation REST routes', () => {
         body: testCase.body,
       });
       expect(response.status, testCase.label).toBe(400);
-      expect(await response.json()).toMatchObject({
+      expect((await response.json()) as JsonBody).toMatchObject({
         code: 'validation_failed',
         retryable: false,
       });
@@ -154,7 +155,7 @@ describe('conversation REST routes', () => {
       body: JSON.stringify({ agentId: 'missing', requestId: 'request-01' }),
     });
     expect(missingAgent.status).toBe(404);
-    expect(await missingAgent.json()).toEqual({
+    expect((await missingAgent.json()) as JsonBody).toEqual({
       code: 'not_found',
       error: 'Agent not found',
       retryable: false,
@@ -179,28 +180,28 @@ describe('conversation REST routes', () => {
       headers: AUTH,
     });
     expect(filtered.status).toBe(200);
-    const firstPage = await filtered.json();
+    const firstPage = (await filtered.json()) as JsonBody;
     expect(firstPage.items).toHaveLength(1);
     expect(firstPage.items[0].agentId).toBe(agent.id);
     expect(firstPage.nextCursor).toEqual(expect.any(String));
     const secondPageResponse = await app.request(
-      `/conversations?agentId=${agent.id}&limit=1&cursor=${encodeURIComponent(firstPage.nextCursor)}`,
+      `/conversations?agentId=${agent.id}&limit=1&cursor=${encodeURIComponent(String(firstPage.nextCursor))}`,
       { headers: AUTH },
     );
     expect(secondPageResponse.status).toBe(200);
-    const secondPage = await secondPageResponse.json();
+    const secondPage = (await secondPageResponse.json()) as JsonBody;
     expect(secondPage.items).toHaveLength(1);
     expect(secondPage.items[0].id).not.toBe(firstPage.items[0].id);
     expect(secondPage.nextCursor).toBeNull();
 
     const all = await app.request('/conversations', { headers: AUTH });
     expect(all.status).toBe(200);
-    expect((await all.json()).items).toHaveLength(3);
+    expect(((await all.json()) as JsonBody).items).toHaveLength(3);
 
     for (const query of ['limit=', 'limit=0', 'limit=101', 'limit=1.5', 'limit=1&limit=2']) {
       const invalid = await app.request(`/conversations?${query}`, { headers: AUTH });
       expect(invalid.status, query).toBe(400);
-      expect(await invalid.json()).toMatchObject({ code: 'validation_failed' });
+      expect((await invalid.json()) as JsonBody).toMatchObject({ code: 'validation_failed' });
     }
   });
 
@@ -217,7 +218,7 @@ describe('conversation REST routes', () => {
         body: JSON.stringify({ title: 'Renamed' }),
       });
       expect(response.status, String(value)).toBe(400);
-      expect(await response.json()).toMatchObject({ code: 'validation_failed' });
+      expect((await response.json()) as JsonBody).toMatchObject({ code: 'validation_failed' });
     }
 
     const stale = await app.request(`/conversations/${created.id}`, {
@@ -226,7 +227,7 @@ describe('conversation REST routes', () => {
       body: JSON.stringify({ title: 'Renamed' }),
     });
     expect(stale.status).toBe(409);
-    expect(await stale.json()).toEqual({
+    expect((await stale.json()) as JsonBody).toEqual({
       code: 'revision_conflict',
       error: 'Conversation revision 0 is stale',
       retryable: false,
@@ -240,7 +241,7 @@ describe('conversation REST routes', () => {
         body: JSON.stringify(patch),
       });
       expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({ code: 'validation_failed' });
+      expect((await response.json()) as JsonBody).toMatchObject({ code: 'validation_failed' });
     }
 
     const renamedResponse = await app.request(`/conversations/${created.id}`, {
@@ -259,11 +260,11 @@ describe('conversation REST routes', () => {
     });
     expect(deletedResponse.status).toBe(200);
     expect(deletedResponse.headers.get('etag')).toBe('"3"');
-    const deleted = await deletedResponse.json();
+    const deleted = (await deletedResponse.json()) as JsonBody;
     const detail = await app.request(`/conversations/${created.id}`, { headers: AUTH });
     expect(detail.status).toBe(200);
     expect(detail.headers.get('etag')).toBe('"3"');
-    expect(await detail.json()).toEqual(deleted);
+    expect((await detail.json()) as JsonBody).toEqual(deleted);
 
     for (const mutation of [
       { method: 'PATCH', body: JSON.stringify({ title: 'Too late' }) },
@@ -275,7 +276,7 @@ describe('conversation REST routes', () => {
         ...(mutation.body ? { body: mutation.body } : {}),
       });
       expect(response.status).toBe(410);
-      expect(await response.json()).toEqual({
+      expect((await response.json()) as JsonBody).toEqual({
         code: 'not_found',
         error: 'Conversation was deleted',
         retryable: false,
@@ -301,7 +302,7 @@ describe('conversation REST routes', () => {
       headers: { ...AUTH, 'If-Match': '"0"' },
     });
     expect(busy.status).toBe(409);
-    expect(await busy.json()).toEqual({
+    expect((await busy.json()) as JsonBody).toEqual({
       code: 'conversation_busy',
       error: 'Conversation has an active turn',
       retryable: false,
@@ -325,7 +326,7 @@ describe('conversation REST routes', () => {
       },
     });
     expect(deleted.status).toBe(200);
-    expect((await deleted.json()).status).toBe('deleted');
+    expect(((await deleted.json()) as JsonBody).status).toBe('deleted');
   });
 
   it('returns canonical message pages and rejects malformed pagination', async () => {
@@ -348,7 +349,7 @@ describe('conversation REST routes', () => {
 
     const response = await app.request(`/conversations/${created.id}/messages`, { headers: AUTH });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
+    expect((await response.json()) as JsonBody).toMatchObject({
       items: [
         { role: 'user', content: { type: 'user', text: 'Hello' } },
         {
@@ -372,7 +373,7 @@ describe('conversation REST routes', () => {
         headers: AUTH,
       });
       expect(invalid.status, query).toBe(400);
-      expect(await invalid.json()).toMatchObject({ code: 'validation_failed' });
+      expect((await invalid.json()) as JsonBody).toMatchObject({ code: 'validation_failed' });
     }
   });
 

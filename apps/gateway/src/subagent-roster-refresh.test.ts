@@ -89,7 +89,7 @@ describe('createSubagentRosterRefresher', () => {
     registry.invalidate('a1');
     await refresher.whenIdle();
 
-    expect(refreshBackends.mock.calls.map((c) => c[0])).toEqual(['a1']);
+    expect(refreshBackends.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['a1']);
     refresher.dispose();
   });
 
@@ -102,7 +102,7 @@ describe('createSubagentRosterRefresher', () => {
     registry.invalidate();
     await refresher.whenIdle();
 
-    expect(refreshBackends.mock.calls.map((c) => c[0]).sort()).toEqual(['a1', 'a2']);
+    expect(refreshBackends.mock.calls.map((c) => (c as unknown[])[0]).sort()).toEqual(['a1', 'a2']);
     refresher.dispose();
   });
 
@@ -126,7 +126,7 @@ describe('createSubagentRosterRefresher', () => {
     registry.invalidate();
     await expect(refresher.whenIdle()).resolves.toBeUndefined();
 
-    expect(refreshBackends.mock.calls.map((c) => c[0])).toEqual(['a1', 'a2']);
+    expect(refreshBackends.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['a1', 'a2']);
     expect(warnings.some((w) => w.includes('pool exploded'))).toBe(true);
     refresher.dispose();
   });

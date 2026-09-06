@@ -12,7 +12,13 @@ import type {
   DashAgentConfigResolver,
   PiAgentBackendOptions,
 } from '@dash/agent';
-import { ChildHandle, type ChildSpec, type SwarmExtraTool, type WorkerSpec } from '@dash/swarm';
+import {
+  ChildHandle,
+  type ChildSpec,
+  type FinishedWorkerSpec,
+  type SwarmExtraTool,
+  type WorkerSpec,
+} from '@dash/swarm';
 import { AgentRegistry, type AgentSwarmConfig } from './agent-registry.js';
 import { DEFAULT_SWARM_CONFIG, resolveSwarmConfig } from './config.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
@@ -648,7 +654,16 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
           workspace: first.workspace,
         },
       });
-      conversations.putSubagentGrant(spec.workerId, grantFromSpec({ ...finished, workspace }));
+      conversations.putSubagentGrant(
+        spec.workerId,
+        grantFromSpec({
+          ...finished,
+          workspace,
+          childConversationId: spec.workerId,
+          parentConversationId: parent.id,
+          parentTurnId: 'parent-turn-1',
+        }),
+      );
       const rebuilt = reconstructChildSpec(spec.workerId, {
         conversations,
         liveSpec: () => undefined,
@@ -701,13 +716,14 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
   });
 
   describe('cleanupWorktreeForSpec', () => {
-    const finishedSpec = (over: Partial<WorkerSpec> = {}) => {
+    const finishedSpec = (over: Partial<WorkerSpec> & { workerStatus?: string } = {}) => {
+      const { workerStatus = 'done', ...specOver } = over;
       const { extraTools: _extraTools, ...rest } = makeSpec({
         workspace,
         isolation: 'worktree',
-        ...over,
+        ...specOver,
       });
-      return rest;
+      return { ...rest, workerStatus };
     };
 
     it('removes the worktree of a child that left it clean', async () => {
@@ -782,7 +798,9 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
 
     it('does nothing for a child that was not isolated', async () => {
       const { extraTools: _extraTools, ...spec } = makeSpec({ workspace });
-      await expect(cleanupWorktreeForSpec(spec, { dataDir })).resolves.toBeUndefined();
+      await expect(
+        cleanupWorktreeForSpec({ ...spec, workerStatus: 'done' }, { dataDir }),
+      ).resolves.toBeUndefined();
     });
 
     /**
@@ -829,7 +847,7 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     // Exactly what a cancel does: abort the child, then fire the terminal hook.
     child.backend.abort();
     const { extraTools: _extraTools, ...finished } = spec;
-    await hook(finished);
+    await hook({ ...finished, workerStatus: 'cancelled' });
 
     expect(await pathExists(path)).toBe(false);
   });
@@ -848,7 +866,7 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
       workspace: '/no/such/workspace',
       isolation: 'worktree',
     });
-    await expect(hook(finished)).resolves.toBeUndefined();
+    await expect(hook({ ...finished, workerStatus: 'done' })).resolves.toBeUndefined();
     expect(warnings).not.toHaveLength(0);
   });
 
@@ -891,7 +909,7 @@ describe('worktree isolation wiring', { timeout: 30_000 }, () => {
     function startHandle(
       spec: WorkerSpec,
       backend: WorkerBackend,
-      onFinished: (s: Omit<WorkerSpec, 'extraTools'>) => Promise<void>,
+      onFinished: (s: FinishedWorkerSpec) => Promise<void>,
     ) {
       const { extraTools: _extraTools, ...rest } = spec;
       const handleSpec: Omit<ChildSpec, 'extraTools'> = {

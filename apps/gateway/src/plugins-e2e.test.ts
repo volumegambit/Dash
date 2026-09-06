@@ -22,6 +22,7 @@ import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus, type GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
+import type { GatewayManagementOptions } from './management-api.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { ModelsStore } from './models-store.js';
 import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
@@ -310,7 +311,7 @@ async function boot(dataDir: string, opts: { mcp?: ReturnType<typeof recordingMc
       get: vi.fn(() => undefined),
       list: vi.fn(() => []),
       save: vi.fn().mockResolvedValue(undefined),
-    } as never,
+    } as unknown as GatewayManagementOptions['channelRegistry'],
     credentialStore,
     modelsStore,
     token: 'test-token',
@@ -320,7 +321,9 @@ async function boot(dataDir: string, opts: { mcp?: ReturnType<typeof recordingMc
     reloadPlugins,
     pluginsDir,
     dataDir,
-  });
+    // identity / conversationService / resumableChatHub are required by the app
+    // but unreachable from the plugin routes this harness drives.
+  } as GatewayManagementOptions);
 
   return {
     app,

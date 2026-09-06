@@ -231,6 +231,10 @@ describe('createChildTurnDriver', () => {
         oneShot: false,
       },
     });
+    // Both are optional on the ChildTurnDriver seam; this test is about them.
+    if (!driver.workspaceOf || !driver.updateChild) {
+      throw new Error('the gateway child driver must expose workspaceOf + updateChild');
+    }
     expect(driver.workspaceOf(childId)).toBeUndefined();
 
     driver.updateChild(childId, { info: { workspace: '/data/worktrees/Helper/child' } });

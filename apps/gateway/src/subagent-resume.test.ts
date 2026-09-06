@@ -214,7 +214,12 @@ describe('reconstructChildSpec', () => {
     persistChild(parent.id, 'sub_MID', { tools: ['read', 'bash'] });
     persistChild('sub_MID', 'sub_GRAND', { tools: ['read', 'bash'], depth: 2 });
     // The middle child is mid-turn and its live grant is narrower than the row.
-    const live = { ...specFor('sub_MID', parent.id), tools: ['read'], mcpTools: [] } as ChildSpec;
+    const live: ChildSpec = {
+      ...specFor('sub_MID', parent.id),
+      tools: ['read'],
+      mcpTools: [],
+      extraTools: [],
+    };
 
     const rebuilt = reconstructChildSpec(
       'sub_GRAND',
