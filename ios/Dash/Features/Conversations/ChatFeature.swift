@@ -1837,6 +1837,10 @@ final class ChatFeature {
     startEventTaskIfNeeded()
     guard isConnected == false else { return }
     try await transport.connect()
+    // A fresh connect replaces the socket, and `ChatConnection.connect()`
+    // clears its subscriptions with it — so nothing is watched until
+    // `subscribeToOpenConversation` says so again.
+    isSubscribed = false
     isConnected = true
     _ = ChatReducer.reduce(state: &state, action: .transportChanged(.connected))
   }
@@ -1900,10 +1904,17 @@ final class ChatFeature {
       let reconnectCompleted = wasReconnecting && transportState == .connected
       wasReconnecting = if case .reconnecting = transportState { true } else { false }
       isConnected = transportState == .connected
-      // `ChatConnection` replays its own subscriptions across a transient
-      // reconnect, but a suspend/detach/terminal failure drops them — so the
-      // feature only ever treats "connected" as still-subscribed.
-      if isConnected == false { isSubscribed = false }
+      // Mirror the transport truthfully rather than guessing from
+      // "not connected": `ChatConnection` REPLAYS its conversation
+      // subscriptions across a transient reconnect (`.reconnecting` →
+      // `.connected`), and only drops them where it calls `clearAllTurns` —
+      // `suspend()` (`.idle`) and `detach()` (`.detached`). A stale `false`
+      // here would make the next `subscribeToOpenConversation` send a
+      // duplicate frame for a conversation the gateway is already watching.
+      switch transportState {
+      case .idle, .detached: isSubscribed = false
+      case .connecting, .connected, .reconnecting: break
+      }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))
       if reconnectCompleted {
         await replayAndResumeActiveTurn()

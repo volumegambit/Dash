@@ -4673,6 +4673,41 @@ struct ChatFeatureTests {
     #expect(calls.contains(.subscribe(agentID: "agent-1", conversationID: "conv-1")))
   }
 
+  @Test("a transient reconnect does not re-subscribe: the connection replays its own subscriptions")
+  func transientReconnectKeepsTheSubscription() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await eventually { await chat.subscribeCount == 1 }
+
+    // `ChatConnection.replayTurnSubscriptions` re-sends the subscribe frame
+    // over the fresh socket, so the gateway is still watching — the feature
+    // must not believe otherwise and send a second one.
+    await chat.yield(.state(.reconnecting(attempt: 1)))
+    await eventually { await featureTransport(feature) == .reconnecting(attempt: 1) }
+    await chat.yield(.state(.connected))
+    await eventually { await featureTransport(feature) == .connected }
+    await feature.connectionDidBecomeOnline()
+
+    #expect(await chat.subscribeCount == 1)
+  }
+
+  @Test("a fresh connect re-subscribes, because connecting clears the connection's subscriptions")
+  func reconnectAfterDetachmentResubscribes() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await eventually { await chat.subscribeCount == 1 }
+
+    await feature.disappear()
+    await feature.appear()
+
+    await eventually { await chat.subscribeCount == 2 }
+    #expect(await chat.calls.filter { $0 == .connect }.count == 2)
+  }
+
   @Test("leaving the conversation unsubscribes it, so a long session cannot accumulate subscriptions")
   func disappearUnsubscribes() async {
     let chat = FakeChatFeatureTransport()
@@ -5392,6 +5427,10 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
   /// bookkeeping that `appear()` now performs unconditionally on an online
   /// conversation (task C7, sub-agents design 7.6) — a test asserting "this
   /// guard sent nothing" means no TURN was sent.
+  var subscribeCount: Int {
+    calls.filter { if case .subscribe = $0 { true } else { false } }.count
+  }
+
   var turnCalls: [FakeChatTransportCall] {
     calls.filter {
       switch $0 {
