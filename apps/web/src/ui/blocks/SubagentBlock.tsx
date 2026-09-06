@@ -39,8 +39,9 @@ import {
  *    cycle. `ContentBlocks` supplies a closure that re-enters itself one
  *    nesting level deeper.
  * 2. **Rows are keyed by `subagentId` by their caller**, and every scrap of
- *    per-row UI state — expansion, composer draft, last refusal — lives in the
- *    STORE under `subagentUi`, not in this component. Both matter and neither
+ *    per-row UI state — expansion, composer draft, last refusal, and whether a
+ *    send is in flight — lives in the STORE under `subagentUi`, not in this
+ *    component. Both matter and neither
  *    subsumes the other: a row keyed by the renderer's monotonic counter would
  *    be remounted whenever the number of nodes emitted before it changed as
  *    the parent streams, and even a stably-keyed row is remounted outright

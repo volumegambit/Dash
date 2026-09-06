@@ -594,9 +594,11 @@ describe('mountSubagentRuntimeRoutes', () => {
 
     // The route is `c.json(coordinator.sendToChild(...))` — the body IS the
     // coordinator's return value, so `mode` really does reach the client
-    // verbatim in both of its shapes. The web store branches on it (a
-    // `queued` message may never produce an `accepted` frame), so the runtime
-    // shape is pinned here rather than trusted from `SubagentResumeResponse`.
+    // verbatim in both of its shapes. `SubagentResumeResponse` declares it
+    // REQUIRED, so a runtime shape that dropped or renamed it would break a
+    // strict decoder; that is why it is pinned here rather than trusted from
+    // the type. (The web store no longer branches on it — correlation moved
+    // to `requestId` — but the contract still publishes it.)
     it('returns mode: queued verbatim for a live child', async () => {
       child('sub_a', { status: 'running' });
       sendResult = () => ({ ok: true, status: 'running', mode: 'queued' });
