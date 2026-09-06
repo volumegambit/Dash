@@ -496,6 +496,55 @@ final class ConversationUITests: DashUITestCase {
     )
   }
 
+  /// Review fix round 1 (Task 10, "also required"): `.draggable` landed on
+  /// the SAME modifier chain as this row's two `.swipeActions` (leading
+  /// Rename, trailing Delete), and nothing exercised either gesture before
+  /// this task. If the drag interaction claimed the touch first, a swipe
+  /// would lift-and-snap-back like a failed drag instead of revealing its
+  /// action buttons. Runs on both iPhone and iPad — the drag is gated on
+  /// `supportsMultipleScenes` but the swipe actions must survive its mere
+  /// presence in the chain on iPad regardless.
+  func testConversationRowSwipeActionsStillWorkWithDraggableAttached() {
+    let app = launch(scenario: "paired-online")
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    let row = element("conversation.row.shared-plan", in: app)
+
+    // Trailing edge: swiping the row left reveals "Delete".
+    row.swipeLeft()
+    let deleteAction = app.buttons["Delete"].firstMatch
+    XCTAssertTrue(
+      deleteAction.waitForExistence(timeout: 3),
+      "Expected the trailing swipe action to reveal Delete. UI: \(app.debugDescription)"
+    )
+    deleteAction.tap()
+    let deleteConfirmation = confirmationDialog(titled: "Delete this conversation?", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(deleteConfirmation.buttons["Delete"].firstMatch, timeout: 5),
+      "Expected the delete confirmation's destructive action to be available"
+    )
+    dismissConfirmation(deleteConfirmation, in: app)
+
+    // Leading edge: swiping the row right reveals "Rename".
+    XCTAssertTrue(
+      waitUntilHittable(row, timeout: 3),
+      "Expected the conversation row to become actionable again after dismissing the confirmation"
+    )
+    row.swipeRight()
+    let renameAction = app.buttons["Rename"].firstMatch
+    XCTAssertTrue(
+      renameAction.waitForExistence(timeout: 3),
+      "Expected the leading swipe action to reveal Rename. UI: \(app.debugDescription)"
+    )
+    renameAction.tap()
+    let renameAlert = app.alerts["Rename conversation"]
+    XCTAssertTrue(renameAlert.waitForExistence(timeout: 3))
+    XCTAssertEqual(renameAlert.textFields.firstMatch.value as? String, "Shared launch plan")
+    let cancelRename = renameAlert.buttons["Cancel"].firstMatch
+    XCTAssertTrue(waitUntilHittable(cancelRename, timeout: 3))
+    cancelRename.tap()
+    XCTAssertTrue(renameAlert.waitForNonExistence(timeout: 3))
+  }
+
   /// Review fix round 1 (Task 8, Important 1): `.draggable` and
   /// `.contextMenu` on a user bubble used to be applied to DIFFERENT views —
   /// `.draggable` inside `UserMessageView`'s own body, `.contextMenu` on the

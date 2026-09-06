@@ -573,10 +573,16 @@ struct ConversationListView: View {
           .accessibilityHint(actions.deleteDisabledHint)
         }
       }
+      // Review fix round 1 (Important 2): gated on `supportsMultipleScenes`
+      // too, matching the "Open in New Window" menu item above. Without it,
+      // every iPhone row lifted under a drag with no device-reachable
+      // consumer — worse than no drag at all.
       .draggableConversation(
-        appModel.selectedProfile.map {
-          ConversationWindowValue(gatewayID: $0.gatewayID, conversationID: conversation.id)
-        }
+        UIApplication.shared.supportsMultipleScenes
+          ? appModel.selectedProfile.map {
+            ConversationWindowValue(gatewayID: $0.gatewayID, conversationID: conversation.id)
+          }
+          : nil
       )
       // Audit #10: same `ConversationRowActionPolicy` the context
       // menu above uses — availability, disabled state, and hints

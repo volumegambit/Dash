@@ -168,6 +168,13 @@ final class IPadUITests: DashUITestCase {
     addTeardownBlock {
       app.terminate()
       app.launch()
+      // Review fix round 1 (Important 3): without this wait, whether the
+      // restored window was dismissed before this teardown's own
+      // `terminate()` fires is a race — and losing it hands the next test
+      // the exact poisoned session this teardown exists to prevent, just
+      // disguised as an unrelated failure. The main window's sidebar
+      // existing IS the evidence that the restored scene is already gone.
+      _ = element("conversation.list", in: app).waitForExistence(timeout: 10)
       app.terminate()
     }
 

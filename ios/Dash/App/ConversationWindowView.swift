@@ -25,11 +25,22 @@ struct ConversationWindowView: View {
         {
           ChatFeatureHostView(appModel: appModel, conversation: conversation)
         } else {
-          ContentUnavailableView(
-            "Conversation unavailable",
-            systemImage: "bubble.left.and.bubble.right",
-            description: Text("Open it from the main Dash window.")
-          )
+          // Review fix round 1 (Important 1): the old copy told the user to
+          // "Open it from the main Dash window" while affording no way to do
+          // that. This branch is reachable while shipping — relaunch signed
+          // out, and `selectedProfile` is nil — so it needs a real way out,
+          // not just instructions. `dismissWindow` is already bound above;
+          // closing this dead scene reveals the main window underneath it.
+          ContentUnavailableView {
+            Label("Conversation unavailable", systemImage: "bubble.left.and.bubble.right")
+          } description: {
+            Text("Open it from the main Dash window.")
+          } actions: {
+            Button("Show Main Window") {
+              dismissWindow()
+            }
+            .accessibilityIdentifier("conversationWindow.showMainWindow")
+          }
         }
       }
       .environment(appModel)
