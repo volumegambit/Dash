@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "algorithm": "Ed25519",
+  "outputPrefix": "RAW",
+  "seedBase64Url": "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A",
+  "publicKeyBase64Url": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+  "approvalId": "approval-vector-001",
+  "pairingId": "pairing-vector-001",
+  "decision": "approve",
+  "messageUtf8Base64Url": "YXBwcm92YWwtdmVjdG9yLTAwMQpwYWlyaW5nLXZlY3Rvci0wMDEKYXBwcm92ZQ",
+  "signatureBase64Url": "0hAWNxbxv2z2AXdnseLomG9tb42SVA138d4CRZzJOVmrY9OblnY09peDNMvn5YklPQjQYZAOLe16PjDZlcuGDA"
+}
