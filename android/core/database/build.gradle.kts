@@ -2,10 +2,11 @@ plugins {
   alias(libs.plugins.android.library)
   alias(libs.plugins.kotlin.android)
   alias(libs.plugins.kotlin.serialization)
+  alias(libs.plugins.kotlin.kapt)
 }
 
 android {
-  namespace = "app.dash.core.network"
+  namespace = "app.dash.core.database"
   compileSdk = 36
   defaultConfig {
     minSdk = 26
@@ -18,19 +19,12 @@ android {
   testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
-kotlin.sourceSets.named("main") { kotlin.exclude("app/dash/network/**") }
-kotlin.sourceSets.named("test") { kotlin.exclude("app/dash/network/**") }
-
 dependencies {
   api(project(":core:contracts"))
-  api(project(":core:security"))
   api(libs.kotlinx.coroutines.core)
-  api(libs.okhttp)
-  implementation(libs.androidx.core.ktx)
+  api(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
   implementation(libs.kotlinx.serialization.json)
-  implementation(libs.okhttp.sse)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
-  testImplementation(libs.okhttp.mockwebserver)
-  testImplementation(libs.turbine)
 }

@@ -1,26 +1,24 @@
 plugins {
   alias(libs.plugins.android.library)
   alias(libs.plugins.kotlin.android)
-  alias(libs.plugins.kotlin.compose)
+  alias(libs.plugins.kotlin.serialization)
 }
 
 android {
-  namespace = "app.dash.core.designsystem"
+  namespace = "app.dash.core.contracts"
   compileSdk = 36
   defaultConfig {
     minSdk = 26
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
   }
-  buildFeatures { compose = true }
+  testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
 dependencies {
-  api(platform(libs.androidx.compose.bom))
-  api(libs.androidx.compose.ui)
-  api(libs.androidx.compose.material3)
-  api(libs.androidx.compose.material.icons)
+  api(libs.kotlinx.serialization.json)
   testImplementation(libs.junit)
 }

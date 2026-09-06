@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-  namespace = "app.dash.core.network"
+  namespace = "app.dash.core.auth"
   compileSdk = 36
   defaultConfig {
     minSdk = 26
@@ -18,19 +18,18 @@ android {
   testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
-kotlin.sourceSets.named("main") { kotlin.exclude("app/dash/network/**") }
-kotlin.sourceSets.named("test") { kotlin.exclude("app/dash/network/**") }
-
 dependencies {
   api(project(":core:contracts"))
   api(project(":core:security"))
+  api(project(":core:network"))
+  api(project(":core:database"))
   api(libs.kotlinx.coroutines.core)
   api(libs.okhttp)
-  implementation(libs.androidx.core.ktx)
   implementation(libs.kotlinx.serialization.json)
-  implementation(libs.okhttp.sse)
+  implementation(libs.androidx.core.ktx)
+  implementation(libs.androidx.browser)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.okhttp.mockwebserver)
-  testImplementation(libs.turbine)
+  testImplementation(libs.robolectric)
 }

@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-  namespace = "app.dash.feature.chat"
+  namespace = "app.dash.feature.approval"
   compileSdk = 36
   defaultConfig {
     minSdk = 26
@@ -29,10 +29,6 @@ android {
     }
   }
 }
-
-// Remove both exclusions when the chat phase replaces these sources.
-kotlin.sourceSets.named("main") { kotlin.exclude("app/dash/feature/chat/**") }
-kotlin.sourceSets.named("test") { kotlin.exclude("app/dash/feature/chat/**") }
 
 dependencies {
   implementation(project(":core:contracts"))
