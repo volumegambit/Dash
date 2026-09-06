@@ -165,10 +165,12 @@ async function renderChatWorkspace(): Promise<void> {
   // and immediately `getByText('Chat about the roadmap')` against a DOM that
   // still held only skeleton rows — a load-sensitive race that failed ~1 full
   // `apps/web` run in 5 on this machine (2 of 10) and ~1 in 7 for the reviewer
-  // (3 of 22), always inside `tasks panel (D3)`, which is the only describe in
-  // this file whose clicks on that title are not individually wrapped in
-  // `waitFor`. Waiting once, here, fixes all ten of them at the source rather
-  // than ten times over.
+  // (3 of 22). Every observed failure was inside `tasks panel (D3)`, but the
+  // exposure is NOT confined to it: the keyboard-shortcut describe clicks the
+  // same title unwrapped (see the `fireEvent.click(screen.getByText('Chat
+  // about the roadmap'))` in the edit-and-resend test) and fails identically
+  // under a forced delay. Waiting once, here, fixes every such call site at
+  // the source rather than one at a time.
   await waitFor(() => expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull());
 }
 
