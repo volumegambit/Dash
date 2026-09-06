@@ -746,7 +746,14 @@ final class ChatFeature {
   @ObservationIgnored private var recoveryChangeOperationWaiters:
     [CheckedContinuation<Void, Never>] = []
   @ObservationIgnored private var hasLoadedCache = false
-  @ObservationIgnored private var isVisible = false
+  /// How many hosts currently have this feature on screen (whole-branch
+  /// final review, blocking 1). Task 10 made one `ChatFeature` serve TWO
+  /// hosts at once — the main window's detail column and the chat-only
+  /// scene `ConversationWindowView` opens — and this used to be a single
+  /// `Bool`, so the first host to tear down suspended the transport out
+  /// from under a host that was still visible. Incremented by `appear()`,
+  /// decremented by `disappear()`; only the transition to zero detaches.
+  @ObservationIgnored private var visibleHostCount = 0
   @ObservationIgnored private var isConnected = false
   @ObservationIgnored private var wasReconnecting = false
   @ObservationIgnored private var cancelRequestSent = false
@@ -868,10 +875,18 @@ final class ChatFeature {
     lifecycleChangeHandler = handler
   }
 
+  /// Whether any host still has this transcript on screen. `ChatView`'s
+  /// `onDisappear` cleanup (`clearScrollAnchor()` and the empty-compose
+  /// discard) is computed from the MAIN window's navigation state alone, so
+  /// it cannot tell "the user left this conversation" from "one of two
+  /// windows showing it went away" — this is what lets it tell the
+  /// difference.
+  var hasVisibleHosts: Bool { visibleHostCount > 0 }
+
   func appear() async {
     guard rejectIfShutdown() == false else { return }
+    visibleHostCount += 1
     let attachmentIntent = beginAttachmentIntent(attached: true)
-    isVisible = true
     startEventTaskIfNeeded()
     await startRecoveryChangeObservation()
     guard isShutdown == false else { return }
@@ -892,8 +907,25 @@ final class ChatFeature {
 
   func disappear() async {
     guard isShutdown == false else { return }
+    // Count down synchronously, before the first `await`: an appear from the
+    // other host can interleave around `persistDraft()` below, and a count
+    // read after that suspension is not the count this teardown belongs to.
+    // `> 0` rather than an unconditional decrement so an unbalanced extra
+    // teardown cannot drive the count negative, which would leave the next
+    // genuine departure unable to detach at all.
+    guard visibleHostCount > 0 else { return }
+    visibleHostCount -= 1
+    guard visibleHostCount == 0 else {
+      // Another host still has this transcript on screen. The draft is still
+      // worth flushing (it is shared state and this host may never run
+      // again), but nothing else about detachment applies — in particular
+      // NOT `beginAttachmentIntent(attached: false)`, which would cancel the
+      // other host's in-flight `appear()` at its `isCurrentAttachmentIntent`
+      // guards.
+      await persistDraft()
+      return
+    }
     let attachmentIntent = beginAttachmentIntent(attached: false)
-    isVisible = false
     await persistDraft()
     guard isCurrentAttachmentIntent(attachmentIntent, attached: false) else { return }
     guard state.activeTurnID == nil else { return }
@@ -1324,7 +1356,7 @@ final class ChatFeature {
     deferredReplayTurnID = nil
     deferredRecoveryFrames.removeAll()
     _ = beginAttachmentIntent(attached: false)
-    isVisible = false
+    visibleHostCount = 0
     eventTask?.cancel()
     cacheLoadGeneration &+= 1
     cacheLoadTask?.cancel()
@@ -2030,7 +2062,7 @@ final class ChatFeature {
         cancelRequestSent = false
         isCancelling = false
       }
-      if isVisible == false, state.activeTurnID == nil {
+      if hasVisibleHosts == false, state.activeTurnID == nil {
         await suspendForDetachment()
       }
     }

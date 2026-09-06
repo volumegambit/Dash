@@ -3562,6 +3562,70 @@ struct ChatFeatureTests {
     }
   }
 
+  // MARK: - Host reference counting (whole-branch final review, blocking 1)
+  //
+  // Task 10 made ONE `ChatFeature` serve TWO hosts at once — the main
+  // window's detail column and the chat-only scene `ConversationWindowView`
+  // opens (see `ChatFeatureHostView`'s doc comment). The lifecycle
+  // bookkeeping did not follow: visibility was a single `Bool`, so the FIRST
+  // host to leave suspended the transport out from under a host that was
+  // still on screen. This is over the counter itself — plain model logic, no
+  // scene needed.
+
+  @Test("one host leaving does not detach a transcript another host is still showing")
+  func twoHostsShareOneAttachment() async {
+    let running = summary(status: .running, activeTurnID: "turn-1", lastSeq: 2)
+    let persistence = FakeChatPersistence(cursor: 2)
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 2)))
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 2)))
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+
+    // Two hosts on the SAME feature: the main window's detail column, then
+    // the conversation window opened from "Open in New Window".
+    await feature.appear()
+    await feature.appear()
+    #expect(feature.hasVisibleHosts)
+    #expect(
+      await chat.calls.filter { $0 == .connect }.count == 1,
+      "the shared feature must really be connected, or the suspend assertions below are vacuous"
+    )
+
+    // The turn finishes while BOTH hosts are on screen, which leaves the
+    // feature connected AND idle — precisely the state in which `disappear()`
+    // suspends.
+    await chat.yield(
+      .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 3, outcome: .completed))
+    )
+    await eventually { await feature.state.activeTurnID == nil }
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty)
+
+    await feature.disappear()
+
+    #expect(
+      await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty,
+      "the other host is still on screen, so its transcript must stay attached"
+    )
+    #expect(feature.state.transport != .detached)
+    #expect(
+      feature.hasVisibleHosts,
+      "ChatView's onDisappear cleanup reads this to know the transcript is still shown somewhere"
+    )
+
+    await feature.disappear()
+
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
+    #expect(feature.hasVisibleHosts == false)
+
+    // An unbalanced extra teardown must not drive the count negative — that
+    // would leave the NEXT genuine departure unable to suspend at all.
+    await feature.disappear()
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
+    #expect(feature.hasVisibleHosts == false)
+  }
+
   @Test("cursor persistence cannot roll back a newer composer edit")
   func cursorPersistencePreservesComposer() async {
     let cursorGate = TestGate()

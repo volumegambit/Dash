@@ -260,7 +260,16 @@ struct ChatView: View {
       }
       Task {
         await feature.disappear()
-        guard stillNavigatedTo == false else { return }
+        // `feature.hasVisibleHosts` (whole-branch final review, blocking 1):
+        // `stillNavigatedTo` above is computed from the MAIN window's
+        // navigation state alone, so it is structurally blind to the
+        // chat-only scene `ConversationWindowView` puts on screen. Without
+        // this second condition, tapping a different conversation in the main
+        // window while the same one is open in its own window ran BOTH
+        // cleanups against a transcript that is still visible — discarding
+        // the other window's scroll position, and deleting the conversation
+        // outright when it was a still-empty compose-created one.
+        guard stillNavigatedTo == false, feature.hasVisibleHosts == false else { return }
         // Scroll anchor (iPad goal Phase A, Task 4): only drop the
         // remembered position when the conversation is genuinely being
         // left, mirroring the compose-cleanup branch right below — a
