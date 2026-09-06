@@ -7,7 +7,7 @@
   "input": {
     "inputId": "00000000-0000-4000-8000-000000000022",
     "kind": "steer",
-    "targetTurnId": "00000000-0000-4000-8000-000000000012",
+    "targetTurnId": "00000000-0000-4000-8000-000000000003",
     "text": "Use the updated constraint.",
     "state": "queued",
     "revision": 0,

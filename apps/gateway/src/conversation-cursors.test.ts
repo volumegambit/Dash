@@ -76,4 +76,12 @@ describe('conversation cursors', () => {
     expectInvalid(() => decodeMessageCursor(rawCursor({ v: 1, ordinal: 0, id: 'message-1' })));
     expectInvalid(() => decodeMessageCursor(rawCursor({ v: 1, ordinal: 1, id: '' })));
   });
+
+  it('rejects message ordinals outside JavaScript safe-integer precision', () => {
+    expectInvalid(() =>
+      decodeMessageCursor(
+        rawCursor({ v: 1, ordinal: 9_007_199_254_740_992, id: 'message-unsafe' }),
+      ),
+    );
+  });
 });

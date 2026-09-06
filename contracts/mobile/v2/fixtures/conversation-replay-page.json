@@ -1,0 +1,42 @@
+{
+  "frames": [
+    {
+      "type": "accepted",
+      "id": "turn-01",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "runId": "turn-01",
+      "segmentTurnId": "turn-01",
+      "v2Seq": 8,
+      "userMessageId": "00000000-0000-4000-8000-000000000111",
+      "assistantMessageId": "00000000-0000-4000-8000-000000000114",
+      "revision": 3
+    },
+    {
+      "type": "input_accepted",
+      "id": "00000000-0000-4000-8000-000000000115",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "v2Seq": 9,
+      "queueRevision": 4,
+      "input": {
+        "inputId": "00000000-0000-4000-8000-000000000116",
+        "kind": "follow_up",
+        "text": "Follow this up.",
+        "state": "queued",
+        "revision": 0,
+        "enqueueOrder": 2,
+        "createdAt": "2026-09-06T09:03:00.000Z",
+        "updatedAt": "2026-09-06T09:03:00.000Z"
+      }
+    },
+    {
+      "type": "event",
+      "id": "turn-01",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "runId": "turn-01",
+      "segmentTurnId": "turn-01",
+      "v2Seq": 10,
+      "event": { "type": "text_delta", "text": "Working." }
+    }
+  ],
+  "v2ThroughSeq": 10
+}

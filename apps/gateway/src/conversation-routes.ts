@@ -35,7 +35,7 @@ export function toMobileApiError(error: unknown): {
   };
 }
 
-function validationError(message: string): ConversationServiceError {
+export function validationError(message: string): ConversationServiceError {
   return new ConversationServiceError('validation_failed', message, 400, false);
 }
 
@@ -115,13 +115,13 @@ function urlFor(requestUrl: string): URL {
   return new URL(requestUrl);
 }
 
-function assertOnlyQueryKeys(url: URL, allowed: ReadonlySet<string>): void {
+export function assertOnlyQueryKeys(url: URL, allowed: ReadonlySet<string>): void {
   for (const key of url.searchParams.keys()) {
     if (!allowed.has(key)) throw validationError(`Unknown query parameter: ${key}`);
   }
 }
 
-function singleQueryValue(url: URL, key: string): string | undefined {
+export function singleQueryValue(url: URL, key: string): string | undefined {
   const values = url.searchParams.getAll(key);
   if (values.length === 0) return undefined;
   if (values.length !== 1 || values[0].length === 0) {
@@ -130,7 +130,7 @@ function singleQueryValue(url: URL, key: string): string | undefined {
   return values[0];
 }
 
-function parseLimit(url: URL, defaultValue: number, max: number): number {
+export function parseLimit(url: URL, defaultValue: number, max: number): number {
   const raw = singleQueryValue(url, 'limit');
   if (raw === undefined) return defaultValue;
   if (!/^[1-9][0-9]*$/.test(raw)) throw validationError('Invalid page limit');

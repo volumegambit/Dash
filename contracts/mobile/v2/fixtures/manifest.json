@@ -20,6 +20,30 @@
       "valid": true
     },
     {
+      "file": "conversation-page.json",
+      "document": "openapi",
+      "schema": "MobileV2ConversationPage",
+      "valid": true
+    },
+    {
+      "file": "conversation-message-page.json",
+      "document": "openapi",
+      "schema": "MobileV2ConversationMessagePage",
+      "valid": true
+    },
+    {
+      "file": "conversation-replay-page.json",
+      "document": "openapi",
+      "schema": "MobileV2ReplayPage",
+      "valid": true
+    },
+    {
+      "file": "conversation-bootstrap-legacy-run.json",
+      "document": "openapi",
+      "schema": "MobileV2ConversationBootstrap",
+      "valid": true
+    },
+    {
       "file": "chat-hello.json",
       "document": "chat-ws",
       "schema": "MobileV2WsFrame",
@@ -45,6 +69,30 @@
     },
     {
       "file": "chat-send.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-send-legacy-run.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-answer-legacy-run.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-cancel-legacy-run.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-send-legacy-run-max.json",
       "document": "chat-ws",
       "schema": "MobileV2WsFrame",
       "valid": true
@@ -152,7 +200,20 @@
       "valid": true
     },
     {
+      "file": "command-rejected-legacy-run.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
       "file": "chat-stream.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "chat-stream-legacy-run.jsonl",
       "document": "chat-ws",
       "schema": "MobileV2WsFrame",
       "valid": true,
@@ -190,6 +251,18 @@
     },
     {
       "file": "invalid/unknown-command-field.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/legacy-run-id-too-large.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/legacy-run-id-blank.json",
       "document": "chat-ws",
       "schema": "MobileV2WsFrame",
       "valid": false

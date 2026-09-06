@@ -17,18 +17,10 @@
     "MobileImage": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "mediaType",
-        "data"
-      ],
+      "required": ["mediaType", "data"],
       "properties": {
         "mediaType": {
-          "enum": [
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-            "image/webp"
-          ]
+          "enum": ["image/jpeg", "image/png", "image/gif", "image/webp"]
         },
         "data": {
           "type": "string",
@@ -39,12 +31,7 @@
     "MobilePreciseLocation": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "latitude",
-        "longitude",
-        "accuracyMeters",
-        "capturedAt"
-      ],
+      "required": ["latitude", "longitude", "accuracyMeters", "capturedAt"],
       "properties": {
         "latitude": {
           "type": "number",
@@ -76,11 +63,7 @@
     "MobileClientLocation": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "timezone",
-        "utcOffsetMinutes",
-        "locale"
-      ],
+      "required": ["timezone", "utcOffsetMinutes", "locale"],
       "properties": {
         "timezone": {
           "type": "string",
@@ -121,9 +104,7 @@
     },
     "MobileAgentEvent": {
       "type": "object",
-      "required": [
-        "type"
-      ],
+      "required": ["type"],
       "properties": {
         "type": {
           "type": "string",
@@ -150,10 +131,7 @@
           "$ref": "#/$defs/CanonicalUuid"
         },
         "kind": {
-          "enum": [
-            "steer",
-            "follow_up"
-          ]
+          "enum": ["steer", "follow_up"]
         },
         "targetTurnId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -163,26 +141,23 @@
         },
         "images": {
           "type": "array",
+          "maxItems": 4,
           "items": {
             "$ref": "#/$defs/MobileImage"
           }
         },
         "state": {
-          "enum": [
-            "queued",
-            "delivering",
-            "delivered",
-            "removed",
-            "failed"
-          ]
+          "enum": ["queued", "delivering", "delivered", "removed", "failed"]
         },
         "revision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "enqueueOrder": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "runId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -220,11 +195,7 @@
     "ChatHello": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "contractVersion",
-        "capabilities"
-      ],
+      "required": ["type", "contractVersion", "capabilities"],
       "properties": {
         "type": {
           "const": "hello"
@@ -245,13 +216,7 @@
     "ChatSubscribe": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "conversationId",
-        "sinceV2Seq"
-      ],
+      "required": ["type", "id", "agentId", "conversationId", "sinceV2Seq"],
       "properties": {
         "type": {
           "const": "subscribe_conversation"
@@ -268,22 +233,15 @@
         },
         "sinceV2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },
     "ChatSend": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "channelId",
-        "conversationId",
-        "text",
-        "resumable"
-      ],
+      "required": ["type", "id", "agentId", "channelId", "conversationId", "text", "resumable"],
       "properties": {
         "type": {
           "const": "message"
@@ -310,6 +268,7 @@
         },
         "images": {
           "type": "array",
+          "maxItems": 4,
           "items": {
             "$ref": "#/$defs/MobileImage"
           }
@@ -358,15 +317,13 @@
         },
         "images": {
           "type": "array",
+          "maxItems": 4,
           "items": {
             "$ref": "#/$defs/MobileImage"
           }
         },
         "behavior": {
-          "enum": [
-            "steer",
-            "followUp"
-          ]
+          "enum": ["steer", "followUp"]
         },
         "expectedActiveTurnId": {
           "$ref": "#/$defs/LegacyRunId"
@@ -380,29 +337,18 @@
         }
       },
       "then": {
-        "required": [
-          "expectedActiveTurnId"
-        ]
+        "required": ["expectedActiveTurnId"]
       },
       "else": {
         "not": {
-          "required": [
-            "expectedActiveTurnId"
-          ]
+          "required": ["expectedActiveTurnId"]
         }
       }
     },
     "ChatEditFollowUp": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "inputId",
-        "expectedRevision",
-        "text"
-      ],
+      "required": ["type", "id", "conversationId", "inputId", "expectedRevision", "text"],
       "properties": {
         "type": {
           "const": "edit_follow_up"
@@ -418,13 +364,15 @@
         },
         "expectedRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "text": {
           "type": "string"
         },
         "images": {
           "type": "array",
+          "maxItems": 4,
           "items": {
             "$ref": "#/$defs/MobileImage"
           }
@@ -434,13 +382,7 @@
     "ChatRemoveFollowUp": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "inputId",
-        "expectedRevision"
-      ],
+      "required": ["type", "id", "conversationId", "inputId", "expectedRevision"],
       "properties": {
         "type": {
           "const": "remove_follow_up"
@@ -456,19 +398,15 @@
         },
         "expectedRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },
     "ChatResumeFollowUps": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "expectedQueueRevision"
-      ],
+      "required": ["type", "id", "conversationId", "expectedQueueRevision"],
       "properties": {
         "type": {
           "const": "resume_follow_ups"
@@ -481,19 +419,15 @@
         },
         "expectedQueueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },
     "ChatAnswer": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "questionId",
-        "answer"
-      ],
+      "required": ["type", "id", "questionId", "answer"],
       "properties": {
         "type": {
           "const": "answer"
@@ -513,10 +447,7 @@
     "ChatCancel": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id"
-      ],
+      "required": ["type", "id"],
       "properties": {
         "type": {
           "const": "cancel"
@@ -529,11 +460,7 @@
     "ChatHelloAck": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "contractVersion",
-        "capabilities"
-      ],
+      "required": ["type", "contractVersion", "capabilities"],
       "properties": {
         "type": {
           "const": "hello_ack"
@@ -554,12 +481,7 @@
     "ChatConversationSubscribed": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "v2ThroughSeq"
-      ],
+      "required": ["type", "id", "conversationId", "v2ThroughSeq"],
       "properties": {
         "type": {
           "const": "conversation_subscribed"
@@ -572,20 +494,15 @@
         },
         "v2ThroughSeq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },
     "CommandRejected": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "code",
-        "error",
-        "retryable"
-      ],
+      "required": ["type", "id", "code", "error", "retryable"],
       "properties": {
         "type": {
           "const": "command_rejected"
@@ -645,7 +562,8 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "userMessageId": {
           "$ref": "#/$defs/CanonicalUuid"
@@ -655,22 +573,15 @@
         },
         "revision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },
     "ChatEvent": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "runId",
-        "segmentTurnId",
-        "v2Seq",
-        "event"
-      ],
+      "required": ["type", "id", "conversationId", "runId", "segmentTurnId", "v2Seq", "event"],
       "properties": {
         "type": {
           "const": "event"
@@ -690,7 +601,8 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "event": {
           "$ref": "#/$defs/MobileAgentEvent"
@@ -700,15 +612,7 @@
     "ChatDone": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "runId",
-        "segmentTurnId",
-        "v2Seq",
-        "outcome"
-      ],
+      "required": ["type", "id", "conversationId", "runId", "segmentTurnId", "v2Seq", "outcome"],
       "properties": {
         "type": {
           "const": "done"
@@ -728,29 +632,18 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "outcome": {
-          "enum": [
-            "completed",
-            "cancelled",
-            "interrupted"
-          ]
+          "enum": ["completed", "cancelled", "interrupted"]
         }
       }
     },
     "ChatError": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "runId",
-        "segmentTurnId",
-        "v2Seq",
-        "error"
-      ],
+      "required": ["type", "id", "conversationId", "runId", "segmentTurnId", "v2Seq", "error"],
       "properties": {
         "type": {
           "const": "error"
@@ -770,7 +663,8 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "error": {
           "type": "string",
@@ -787,14 +681,7 @@
     "InputAccepted": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "v2Seq",
-        "queueRevision",
-        "input"
-      ],
+      "required": ["type", "id", "conversationId", "v2Seq", "queueRevision", "input"],
       "properties": {
         "type": {
           "const": "input_accepted"
@@ -808,11 +695,13 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "input": {
           "$ref": "#/$defs/MobileV2PendingInput"
@@ -822,14 +711,7 @@
     "InputUpdated": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "v2Seq",
-        "queueRevision",
-        "input"
-      ],
+      "required": ["type", "id", "conversationId", "v2Seq", "queueRevision", "input"],
       "properties": {
         "type": {
           "const": "input_updated"
@@ -843,11 +725,13 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "input": {
           "$ref": "#/$defs/MobileV2PendingInput"
@@ -857,14 +741,7 @@
     "InputRemoved": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "v2Seq",
-        "queueRevision",
-        "input"
-      ],
+      "required": ["type", "id", "conversationId", "v2Seq", "queueRevision", "input"],
       "properties": {
         "type": {
           "const": "input_removed"
@@ -878,11 +755,13 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "input": {
           "$ref": "#/$defs/MobileV2PendingInput"
@@ -917,11 +796,13 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "input": {
           "$ref": "#/$defs/MobileV2PendingInput"
@@ -943,14 +824,7 @@
     "InputFailed": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "v2Seq",
-        "queueRevision",
-        "input"
-      ],
+      "required": ["type", "id", "conversationId", "v2Seq", "queueRevision", "input"],
       "properties": {
         "type": {
           "const": "input_failed"
@@ -964,11 +838,13 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "input": {
           "$ref": "#/$defs/MobileV2PendingInput"
@@ -999,18 +875,21 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queuePaused": {
           "type": "boolean"
         },
         "pendingFollowUpCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },
@@ -1038,18 +917,21 @@
         },
         "v2Seq": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queueRevision": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "queuePaused": {
           "type": "boolean"
         },
         "pendingFollowUpCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     },

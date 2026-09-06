@@ -14,6 +14,10 @@ import type {
 import type {
   MobileV2ControlFrame,
   MobileV2ConversationBootstrap,
+  MobileV2ConversationMessage,
+  MobileV2ConversationMessagePage,
+  MobileV2ConversationPage,
+  MobileV2ConversationSummary,
   MobileV2PendingInput,
   MobileV2SequencedFrame,
 } from '@dash/mobile-contract-v2';
@@ -413,6 +417,10 @@ export class SqliteConversationService implements ConversationService {
 
   private mapConversation(row: ConversationRow): ConversationSummary {
     return mapConversationV1(this.mapStoredConversation(row));
+  }
+
+  private mapConversationV2(row: ConversationRow): MobileV2ConversationSummary {
+    return mapConversationV2(this.mapStoredConversation(row));
   }
 
   private appendV2(
@@ -1072,14 +1080,18 @@ export class SqliteConversationService implements ConversationService {
     return row;
   }
 
-  private assertRevision(current: ConversationRow, expectedRevision: number): void {
+  private assertRevision(
+    current: ConversationRow,
+    expectedRevision: number,
+    mapper: (row: ConversationRow) => ConversationSummary = (row) => this.mapConversation(row),
+  ): void {
     if (current.revision === expectedRevision) return;
     throw new ConversationServiceError(
       'revision_conflict',
       `Conversation revision ${expectedRevision} is stale`,
       409,
       false,
-      { current: this.mapConversation(current) },
+      { current: mapper(current) },
     );
   }
 
@@ -1142,9 +1154,20 @@ export class SqliteConversationService implements ConversationService {
   }
 
   create(input: CreateConversationInput): ConversationSummary {
-    return this.db.transaction((value: CreateConversationInput) => {
+    return this.createMapped(input, (row) => this.mapConversation(row));
+  }
+
+  createV2(input: CreateConversationInput): MobileV2ConversationSummary {
+    return this.createMapped(input, (row) => this.mapConversationV2(row));
+  }
+
+  private createMapped<T extends ConversationSummary>(
+    input: CreateConversationInput,
+    mapper: (row: ConversationRow) => T,
+  ): T {
+    return this.db.transaction((value: CreateConversationInput): T => {
       const existing = this.selectByRequestId(value.requestId);
-      if (existing) return this.mapConversation(existing);
+      if (existing) return mapper(existing);
 
       const id = this.uuid();
       const timestamp = this.now();
@@ -1174,20 +1197,46 @@ export class SqliteConversationService implements ConversationService {
           });
       } catch (error) {
         const canonical = this.selectByRequestId(value.requestId);
-        if (canonical) return this.mapConversation(canonical);
+        if (canonical) return mapper(canonical);
         throw error;
       }
-      return this.mapConversation(this.requireConversationRow(id, true));
+      return mapper(this.requireConversationRow(id, true));
     })(input);
   }
 
   get(id: string, options: { includeDeleted?: boolean } = {}): ConversationSummary | null {
+    return this.getMapped(id, options, (row) => this.mapConversation(row));
+  }
+
+  getV2(
+    id: string,
+    options: { includeDeleted?: boolean } = {},
+  ): MobileV2ConversationSummary | null {
+    return this.getMapped(id, options, (row) => this.mapConversationV2(row));
+  }
+
+  private getMapped<T extends ConversationSummary>(
+    id: string,
+    options: { includeDeleted?: boolean },
+    mapper: (row: ConversationRow) => T,
+  ): T | null {
     const row = this.selectConversationRow(id);
     if (!row || (row.deleted_at && !options.includeDeleted)) return null;
-    return this.mapConversation(row);
+    return mapper(row);
   }
 
   list(input: ListConversationsInput): ConversationPage {
+    return this.listMapped(input, (row) => this.mapConversation(row));
+  }
+
+  listV2(input: ListConversationsInput): MobileV2ConversationPage {
+    return this.listMapped(input, (row) => this.mapConversationV2(row));
+  }
+
+  private listMapped<T extends ConversationSummary>(
+    input: ListConversationsInput,
+    mapper: (row: ConversationRow) => T,
+  ): { items: T[]; nextCursor: string | null } {
     if (!Number.isInteger(input.limit) || input.limit <= 0) {
       throw new ConversationServiceError('validation_failed', 'Invalid page limit', 400, false);
     }
@@ -1215,7 +1264,7 @@ export class SqliteConversationService implements ConversationService {
     const pageRows = rows.slice(0, input.limit);
     const boundary = hasMore ? pageRows.at(-1) : undefined;
     return {
-      items: pageRows.map((row) => this.mapConversation(row)),
+      items: pageRows.map(mapper),
       nextCursor: boundary
         ? encodeConversationCursor({ updatedAt: boundary.updated_at, id: boundary.id })
         : null,
@@ -1227,6 +1276,23 @@ export class SqliteConversationService implements ConversationService {
     expectedRevision: number,
     patch: ConversationPatchRequest,
   ): ConversationSummary {
+    return this.updateMapped(id, expectedRevision, patch, (row) => this.mapConversation(row));
+  }
+
+  updateV2(
+    id: string,
+    expectedRevision: number,
+    patch: ConversationPatchRequest,
+  ): MobileV2ConversationSummary {
+    return this.updateMapped(id, expectedRevision, patch, (row) => this.mapConversationV2(row));
+  }
+
+  private updateMapped<T extends ConversationSummary>(
+    id: string,
+    expectedRevision: number,
+    patch: ConversationPatchRequest,
+    mapper: (row: ConversationRow) => T,
+  ): T {
     const hasPatch = ['title', 'owningIssueId', 'projectId'].some(
       (key) =>
         Object.hasOwn(patch, key) && patch[key as keyof ConversationPatchRequest] !== undefined,
@@ -1253,7 +1319,7 @@ export class SqliteConversationService implements ConversationService {
           false,
         );
       }
-      this.assertRevision(current, expectedRevision);
+      this.assertRevision(current, expectedRevision, mapper);
       this.db
         .prepare(`
           UPDATE conversations
@@ -1272,11 +1338,23 @@ export class SqliteConversationService implements ConversationService {
           projectId: patch.projectId !== undefined ? patch.projectId : current.project_id,
           updatedAt: this.now(),
         });
-      return this.mapConversation(this.requireConversationRow(id, true));
+      return mapper(this.requireConversationRow(id, true));
     })();
   }
 
   delete(id: string, expectedRevision: number): ConversationSummary {
+    return this.deleteMapped(id, expectedRevision, (row) => this.mapConversation(row));
+  }
+
+  deleteV2(id: string, expectedRevision: number): MobileV2ConversationSummary {
+    return this.deleteMapped(id, expectedRevision, (row) => this.mapConversationV2(row));
+  }
+
+  private deleteMapped<T extends ConversationSummary>(
+    id: string,
+    expectedRevision: number,
+    mapper: (row: ConversationRow) => T,
+  ): T {
     return this.db.transaction(() => {
       const current = this.requireConversationRow(id, true);
       if (current.status === 'deleted') {
@@ -1299,7 +1377,7 @@ export class SqliteConversationService implements ConversationService {
           { activeTurnId: current.active_turn_id },
         );
       }
-      this.assertRevision(current, expectedRevision);
+      this.assertRevision(current, expectedRevision, mapper);
       const timestamp = this.now();
       this.db.prepare('DELETE FROM conversation_pending_inputs WHERE conversation_id = ?').run(id);
       this.db.prepare('DELETE FROM conversation_command_results WHERE conversation_id = ?').run(id);
@@ -1327,16 +1405,27 @@ export class SqliteConversationService implements ConversationService {
         }
         throw new Error(`Failed to tombstone conversation ${id}`);
       }
-      return this.mapConversation(this.requireConversationRow(id, true));
+      return mapper(this.requireConversationRow(id, true));
     })();
   }
 
   listMessages(input: ListMessagesInput): ConversationMessagePage {
+    return this.listMessagesMapped(input, mapMessageV1);
+  }
+
+  listMessagesV2(input: ListMessagesInput): MobileV2ConversationMessagePage {
+    return this.listMessagesMapped(input, mapMessageV2);
+  }
+
+  private listMessagesMapped<T extends ConversationMessage>(
+    input: ListMessagesInput,
+    mapper: (message: StoredConversationMessage) => T,
+  ): { items: T[]; nextCursor: string | null; throughSeq: number } {
     return this.db.transaction(() => {
       const conversation = this.requireConversationRow(input.conversationId);
       const page = this.selectMessagePageRows(input);
       return {
-        items: this.hydrateStoredMessages(conversation, page.rows).map(mapMessageV1),
+        items: this.hydrateStoredMessages(conversation, page.rows).map(mapper),
         nextCursor: page.nextCursor,
         throughSeq: conversation.last_seq,
       };

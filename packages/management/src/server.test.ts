@@ -15,6 +15,8 @@ describe('Management Server', () => {
   let onShutdown: ReturnType<typeof vi.fn>;
   const testInfo: InfoResponse = {
     agents: [{ name: 'default', model: 'claude-sonnet-4-20250514', tools: ['bash'] }],
+    conversationApiVersions: [1, 2],
+    chatCapabilities: ['chat-input-queue-v1'],
   };
 
   beforeEach(async () => {
@@ -69,6 +71,20 @@ describe('Management Server', () => {
 
     const body = await res.json();
     expect(body).toEqual(testInfo);
+  });
+
+  it('preserves a legacy InfoResponse when optional capability fields are absent', async () => {
+    const legacy: InfoResponse = { agents: [] };
+    const app = createManagementApp({
+      token: TEST_TOKEN,
+      getInfo: () => legacy,
+      onShutdown: async () => {},
+    });
+    const response = await app.request('/info', {
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(legacy);
   });
 
   it('POST /lifecycle/shutdown returns 200 and calls onShutdown', async () => {

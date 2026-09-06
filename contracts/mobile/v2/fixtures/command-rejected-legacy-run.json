@@ -1,0 +1,8 @@
+{
+  "type": "command_rejected",
+  "id": "turn-01",
+  "conversationId": "00000000-0000-4000-8000-000000000101",
+  "code": "validation_failed",
+  "error": "The inherited run is no longer active.",
+  "retryable": false
+}

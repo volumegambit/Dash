@@ -45,13 +45,18 @@ function makeRealManagementApp(webOrigins: string[] = []): Hono {
 function makeAuthedManagementApp(): Hono {
   const managementApp = new Hono();
   managementApp.use('*', async (c, next) => {
-    const mobileRoute = c.req.path === '/mobile/v1' || c.req.path.startsWith('/mobile/v1/');
+    const mobileRoute =
+      c.req.path === '/mobile/v1' ||
+      c.req.path.startsWith('/mobile/v1/') ||
+      c.req.path === '/mobile/v2' ||
+      c.req.path.startsWith('/mobile/v2/');
     if (mobileRoute && c.req.header('Authorization') !== `Bearer ${MOBILE_TOKEN}`) {
       return c.json({ code: 'unauthorized', error: 'Unauthorized', retryable: false }, 401);
     }
     await next();
   });
   managementApp.get('/mobile/v1/agents', async (c) => c.json({ path: c.req.path }));
+  managementApp.get('/mobile/v2/agents', async (c) => c.json({ path: c.req.path }));
   return managementApp;
 }
 
@@ -92,8 +97,54 @@ describe('createLanMobileApp', () => {
       body: '{"name":"phone"}',
     });
 
-    for (const path of ['/health', '/agents', '/mobile/v10', '/mobile/v1-admin', '/projects/ws']) {
+    const v2 = await app.request('/mobile/v2/conversations/id/bootstrap?limit=1');
+    expect(v2.status).toBe(200);
+    await expect(v2.json()).resolves.toMatchObject({
+      method: 'GET',
+      path: '/mobile/v2/conversations/id/bootstrap',
+    });
+
+    for (const path of [
+      '/health',
+      '/agents',
+      '/mobile/v10',
+      '/mobile/v20',
+      '/mobile/v1evil',
+      '/mobile/v2evil',
+      '/mobile/v1-admin',
+      '/projects/ws',
+    ]) {
       expect((await app.request(path)).status, path).toBe(404);
+    }
+  });
+
+  it('rejects encoded separators and traversal without reaching the management app', async () => {
+    const managementApp = new Hono();
+    const reached = vi.fn();
+    managementApp.all('*', (c) => {
+      reached(c.req.path);
+      return c.json({ reached: true });
+    });
+    const app = createLanMobileApp(managementApp);
+
+    for (const path of [
+      '/mobile/v1/conversations%2Fsecret',
+      '/mobile/v1/conversations%252Fsecret',
+      '/mobile/v2/conversations%5Csecret',
+      '/mobile/v2/conversations%255Csecret',
+      '/mobile/v1/%2e%2e/agents',
+      '/mobile/v2/%252e%252e/agents',
+      '/mobile/v2\\..\\agents',
+      '/mobile/v2/health#x',
+      '/mobile/v2/health?x#y',
+      '/mobile/v2/%',
+    ]) {
+      reached.mockClear();
+      const response = await app.fetch(new Request(`http://localhost${path}`), {
+        incoming: { url: path },
+      });
+      expect(response.status, path).toBe(400);
+      expect(reached, path).not.toHaveBeenCalled();
     }
   });
 });
@@ -128,6 +179,30 @@ describe('mountWsTicketRoute', () => {
     // The caller gets back the very store the route mints into — that identity
     // is what every `/ws/chat` mount depends on to redeem.
     expect(wsTickets.redeem(body.ticket)).toBe(true);
+  });
+
+  it('mints v1 and v2 tickets into the same single-use store for either socket mount', async () => {
+    const managementApp = makeAuthedManagementApp();
+    const wsTickets = mountWsTicketRoute(managementApp);
+    const app = createLanMobileApp(managementApp);
+
+    const v1 = await app.request('/mobile/v1/ws-ticket', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${MOBILE_TOKEN}` },
+    });
+    const v2 = await app.request('/mobile/v2/ws-ticket', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${MOBILE_TOKEN}` },
+    });
+    expect(v1.status).toBe(200);
+    expect(v2.status).toBe(200);
+    const v1Ticket = (await v1.json()).ticket as string;
+    const v2Ticket = (await v2.json()).ticket as string;
+
+    expect(wsTickets.redeem(v2Ticket)).toBe(true);
+    expect(wsTickets.redeem(v2Ticket)).toBe(false);
+    expect(wsTickets.redeem(v1Ticket)).toBe(true);
+    expect(wsTickets.redeem(v1Ticket)).toBe(false);
   });
 
   it('mints over the management app directly, not only through the LAN forward', async () => {
@@ -262,4 +337,41 @@ describe('management app CORS on /mobile/v1 (the relay replay path)', () => {
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
     expect(res.status).toBe(401);
   });
+});
+
+describe('management app CORS on both exact mobile versions', () => {
+  it.each(['/mobile/v1/agents', '/mobile/v2/agents'])(
+    'allows If-Match on PATCH and DELETE preflights for %s',
+    async (path) => {
+      const app = makeRealManagementApp([ALLOWED_ORIGIN]);
+      for (const method of ['PATCH', 'DELETE']) {
+        const response = await app.request(path, {
+          method: 'OPTIONS',
+          headers: {
+            origin: ALLOWED_ORIGIN,
+            'access-control-request-method': method,
+            'access-control-request-headers': 'authorization,if-match',
+          },
+        });
+        expect(response.status, method).toBe(204);
+        expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+        expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain(
+          'if-match',
+        );
+        expect(response.headers.get('access-control-allow-credentials')).toBeNull();
+      }
+    },
+  );
+
+  it.each(['/mobile/v10/agents', '/mobile/v20/agents', '/mobile/v1evil', '/mobile/v2evil'])(
+    'does not apply mobile CORS to lookalike %s',
+    async (path) => {
+      const app = makeRealManagementApp([ALLOWED_ORIGIN]);
+      const response = await app.request(path, {
+        method: 'OPTIONS',
+        headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'GET' },
+      });
+      expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    },
+  );
 });

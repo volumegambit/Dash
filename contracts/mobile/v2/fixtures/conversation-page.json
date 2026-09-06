@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-000000000101",
+      "agentId": "agent-01",
+      "agentName": "Mobile Helper",
+      "title": "Paged conversation",
+      "revision": 7,
+      "status": "running",
+      "activeTurnId": "turn-01",
+      "owningIssueId": "issue-01",
+      "projectId": "project-01",
+      "lastSeq": 5,
+      "lastMessagePreview": "A non-default page fixture.",
+      "createdAt": "2026-09-06T09:00:00.000Z",
+      "updatedAt": "2026-09-06T09:12:00.000Z",
+      "queuePaused": true,
+      "queueRevision": 4,
+      "pendingFollowUpCount": 2,
+      "v2LastSeq": 8
+    }
+  ],
+  "nextCursor": "eyJ2IjoxLCJ1cGRhdGVkQXQiOiIyMDI2LTA5LTA2VDA5OjEyOjAwLjAwMFoiLCJpZCI6IjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDEwMSJ9"
+}

@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { type Server, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import { MemoryOpError, listBooks, listPending, stagePending } from '@dash/agent';
+import { serve } from '@hono/node-server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -220,6 +222,30 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+async function rawHttpRequest(
+  server: Server,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; headers: import('node:http').IncomingHttpHeaders; body: string }> {
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ hostname: '127.0.0.1', port, path, headers }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.on('end', () => {
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 function createApp(overrides: Record<string, unknown> = {}) {
   const deps = {
     gateway: makeGateway(),
@@ -291,6 +317,44 @@ describe('createGatewayManagementApp', () => {
         capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
       });
     });
+
+    it('keeps v1 frozen and publishes a distinct public mobile v2 capability response', async () => {
+      const { app } = createApp();
+      const v1 = await (await app.request('/mobile/v1/health')).json();
+      const v2Response = await app.request('/mobile/v2/health');
+
+      expect(v1).toMatchObject({
+        apiVersion: 1,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      });
+      expect(v2Response.status).toBe(200);
+      expect(await v2Response.json()).toMatchObject({
+        apiVersion: 2,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1', 'chat-input-queue-v1'],
+      });
+    });
+  });
+
+  describe('GET /info capabilities', () => {
+    it('advertises conversation v1/v2 and exposes only the exact public agent projection', async () => {
+      const { app, agentRegistry } = createApp();
+      agentRegistry.register({
+        name: 'Private Helper',
+        model: 'test/private-model',
+        systemPrompt: 'secret prompt',
+        tools: ['read', 'write'],
+        workspace: '/secret/workspace',
+        providerApiKeys: { test: 'secret-key' },
+      });
+
+      const response = await app.request('/info', { headers: AUTH });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        agents: [{ name: 'Private Helper', model: 'test/private-model', tools: ['read', 'write'] }],
+        conversationApiVersions: [1, 2],
+        chatCapabilities: ['chat-input-queue-v1'],
+      });
+    });
   });
 
   describe('GET /lan-tls', () => {
@@ -348,12 +412,125 @@ describe('createGatewayManagementApp', () => {
       }
       expect((await app.request('/mobile/v1/agents', { headers: AUTH })).status).toBe(401);
       expect((await app.request('/mobile/v1/agents', { headers: MOBILE_AUTH })).status).toBe(200);
+      expect((await app.request('/mobile/v2/agents', { headers: AUTH })).status).toBe(401);
+      expect((await app.request('/mobile/v2/agents', { headers: MOBILE_AUTH })).status).toBe(200);
+    });
+
+    it('uses exact mobile prefixes and never grants auth exemptions to lookalikes', async () => {
+      const { app } = createApp();
+      for (const path of ['/mobile/v10', '/mobile/v20', '/mobile/v1evil', '/mobile/v2evil']) {
+        expect((await app.request(path, { headers: MOBILE_AUTH })).status, path).toBe(401);
+        expect((await app.request(path, { headers: AUTH })).status, path).toBe(404);
+      }
     });
 
     it('allows all routes when no token configured', async () => {
       const { app } = createApp({ token: undefined, mobileToken: undefined });
       expect((await app.request('/agents')).status).toBe(200);
       expect((await app.request('/mobile/v1/agents')).status).toBe(200);
+    });
+  });
+
+  describe('raw mobile request-target guard', () => {
+    it('rejects literal/encoded separators and traversal before normalization, auth, CORS, or routes', async () => {
+      const { app, agentRegistry } = createApp({ webOrigins: ['https://dash.example'] });
+      const list = vi.mocked(agentRegistry.list);
+      let server!: Server;
+      await new Promise<void>((resolve) => {
+        server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, resolve) as Server;
+      });
+      try {
+        for (const target of [
+          '/mobile/v2\\..\\agents',
+          '/mobile/v2/../agents',
+          '/mobile/v1/conversations%2Fsecret',
+          '/mobile/v1/conversations%252Fsecret',
+          '/mobile/v2/conversations%5Csecret',
+          '/mobile/v2/conversations%255Csecret',
+          '/mobile/v2/%252e%252e/agents',
+          '/mobile/v2/health#x',
+          '/mobile/v2/health?x#y',
+        ]) {
+          list.mockClear();
+          const response = await rawHttpRequest(server, target, {
+            Origin: 'https://dash.example',
+          });
+          expect(response.status, target).toBe(400);
+          expect(response.headers['access-control-allow-origin'], target).toBeUndefined();
+          expect(list, target).not.toHaveBeenCalled();
+          expect(JSON.parse(response.body)).toMatchObject({
+            code: 'validation_failed',
+            retryable: false,
+          });
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+  });
+
+  describe('explicit mobile v2 namespace', () => {
+    it('requires only the phone bearer for identity and a transactional bootstrap', async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'mobile-v2-bootstrap-auth-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      try {
+        const { app, agentRegistry } = createApp({ conversationService });
+        const agent = agentRegistry.register({
+          name: 'V2 helper',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const conversation = conversationService.create({
+          agentId: agent.id,
+          agentName: agent.name,
+          requestId: 'bootstrap-auth',
+        });
+
+        expect((await app.request('/mobile/v2/identity')).status).toBe(401);
+        expect((await app.request('/mobile/v2/identity', { headers: AUTH })).status).toBe(401);
+        expect((await app.request('/mobile/v2/identity', { headers: MOBILE_AUTH })).status).toBe(
+          200,
+        );
+
+        const mobilePath = `/mobile/v2/conversations/${conversation.id}/bootstrap`;
+        expect((await app.request(mobilePath, { headers: AUTH })).status).toBe(401);
+        expect((await app.request(mobilePath, { headers: MOBILE_AUTH })).status).toBe(200);
+
+        const managementPath = `/conversations/${conversation.id}/bootstrap`;
+        expect((await app.request(managementPath, { headers: MOBILE_AUTH })).status).toBe(401);
+        expect((await app.request(managementPath, { headers: AUTH })).status).toBe(200);
+      } finally {
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('mounts only the complete phone-safe surface and keeps administration private', async () => {
+      const { app } = createApp();
+      for (const path of ['/identity', '/agents', '/models', '/events']) {
+        const response = await app.request(`/mobile/v2${path}`, { headers: MOBILE_AUTH });
+        expect(response.status, path).toBe(200);
+      }
+      for (const path of [
+        '/credentials',
+        '/channels',
+        '/projects',
+        '/plugins',
+        '/runtime/plugins',
+        '/lifecycle/shutdown',
+        '/agents/missing/memory/config',
+      ]) {
+        const response = await app.request(`/mobile/v2${path}`, { headers: MOBILE_AUTH });
+        expect(response.status, path).toBe(404);
+      }
+      const invalidModels = await app.request('/mobile/v2/models?unknown=1', {
+        headers: MOBILE_AUTH,
+      });
+      expect(invalidModels.status).toBe(400);
+      expect(await invalidModels.json()).toMatchObject({
+        code: 'validation_failed',
+        retryable: false,
+      });
     });
   });
 
@@ -451,75 +628,81 @@ describe('createGatewayManagementApp', () => {
       expect(await mobileResponse.json()).toEqual(await legacyResponse.json());
     });
 
-    it('mounts health, identity, models, and the full agent lifecycle', async () => {
-      const { app } = createApp();
+    it.each([1, 2] as const)(
+      'mounts health, identity, models, and the full agent lifecycle on mobile v%s',
+      async (version) => {
+        const { app } = createApp();
+        const prefix = `/mobile/v${version}`;
 
-      expect((await app.request('/mobile/v1/health')).status).toBe(200);
-      expect((await app.request('/mobile/v1/identity')).status).toBe(401);
-      expect((await app.request('/mobile/v1/identity', { headers: MOBILE_AUTH })).status).toBe(200);
-      expect((await app.request('/mobile/v1/models', { headers: MOBILE_AUTH })).status).toBe(200);
-      const debugModels = await app.request('/mobile/v1/models?debug=true', {
-        headers: MOBILE_AUTH,
-      });
-      expect(debugModels.status).toBe(400);
-      expect(await debugModels.json()).toMatchObject({
-        code: 'validation_failed',
-        retryable: false,
-      });
-      expect(
-        (
-          await app.request('/mobile/v1/models/refresh', {
-            method: 'POST',
-            headers: MOBILE_AUTH,
-          })
-        ).status,
-      ).toBe(404);
+        expect((await app.request(`${prefix}/health`)).status).toBe(200);
+        expect((await app.request(`${prefix}/identity`)).status).toBe(401);
+        expect((await app.request(`${prefix}/identity`, { headers: MOBILE_AUTH })).status).toBe(
+          200,
+        );
+        expect((await app.request(`${prefix}/models`, { headers: MOBILE_AUTH })).status).toBe(200);
+        const debugModels = await app.request(`${prefix}/models?debug=true`, {
+          headers: MOBILE_AUTH,
+        });
+        expect(debugModels.status).toBe(400);
+        expect(await debugModels.json()).toMatchObject({
+          code: 'validation_failed',
+          retryable: false,
+        });
+        expect(
+          (
+            await app.request(`${prefix}/models/refresh`, {
+              method: 'POST',
+              headers: MOBILE_AUTH,
+            })
+          ).status,
+        ).toBe(404);
 
-      const created = await app.request('/mobile/v1/agents', {
-        method: 'POST',
-        headers: MOBILE_JSON_HEADERS,
-        body: JSON.stringify({ name: 'mobile', model: 'test/model', systemPrompt: 'Help.' }),
-      });
-      expect(created.status).toBe(201);
-      const agent = (await created.json()) as { id: string };
-      expect((await app.request('/mobile/v1/agents', { headers: MOBILE_AUTH })).status).toBe(200);
-      expect(
-        (await app.request(`/mobile/v1/agents/${agent.id}`, { headers: MOBILE_AUTH })).status,
-      ).toBe(200);
-      expect(
-        (
-          await app.request(`/mobile/v1/agents/${agent.id}`, {
-            method: 'PUT',
-            headers: MOBILE_JSON_HEADERS,
-            body: JSON.stringify({ systemPrompt: 'Updated.' }),
-          })
-        ).status,
-      ).toBe(200);
-      expect(
-        (
-          await app.request(`/mobile/v1/agents/${agent.id}/disable`, {
-            method: 'POST',
-            headers: MOBILE_AUTH,
-          })
-        ).status,
-      ).toBe(200);
-      expect(
-        (
-          await app.request(`/mobile/v1/agents/${agent.id}/enable`, {
-            method: 'POST',
-            headers: MOBILE_AUTH,
-          })
-        ).status,
-      ).toBe(200);
-      expect(
-        (
-          await app.request(`/mobile/v1/agents/${agent.id}`, {
-            method: 'DELETE',
-            headers: MOBILE_AUTH,
-          })
-        ).status,
-      ).toBe(200);
-    });
+        const created = await app.request(`${prefix}/agents`, {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({ name: 'mobile', model: 'test/model', systemPrompt: 'Help.' }),
+        });
+        expect(created.status).toBe(201);
+        const agent = (await created.json()) as { id: string };
+        expect((await app.request(`${prefix}/agents`, { headers: MOBILE_AUTH })).status).toBe(200);
+        expect(
+          (await app.request(`${prefix}/agents/${agent.id}`, { headers: MOBILE_AUTH })).status,
+        ).toBe(200);
+        expect(
+          (
+            await app.request(`${prefix}/agents/${agent.id}`, {
+              method: 'PUT',
+              headers: MOBILE_JSON_HEADERS,
+              body: JSON.stringify({ systemPrompt: 'Updated.' }),
+            })
+          ).status,
+        ).toBe(200);
+        expect(
+          (
+            await app.request(`${prefix}/agents/${agent.id}/disable`, {
+              method: 'POST',
+              headers: MOBILE_AUTH,
+            })
+          ).status,
+        ).toBe(200);
+        expect(
+          (
+            await app.request(`${prefix}/agents/${agent.id}/enable`, {
+              method: 'POST',
+              headers: MOBILE_AUTH,
+            })
+          ).status,
+        ).toBe(200);
+        expect(
+          (
+            await app.request(`${prefix}/agents/${agent.id}`, {
+              method: 'DELETE',
+              headers: MOBILE_AUTH,
+            })
+          ).status,
+        ).toBe(200);
+      },
+    );
 
     it('rejects every rich-only create and update key without registry side effects', async () => {
       const richOnlyCreateValues: Record<string, unknown> = {
@@ -2144,44 +2327,48 @@ describe('memory routes', () => {
     ).toBe(503);
   });
 
-  it('exposes the read + delete routes under /mobile/v1 but not the write/config routes', async () => {
-    const { app, agentRegistry, agents } = createApp();
-    const { id } = registerAgent(agentRegistry);
+  it.each([1, 2] as const)(
+    'exposes read + delete under /mobile/v%s but not write/config',
+    async (version) => {
+      const { app, agentRegistry, agents } = createApp();
+      const { id } = registerAgent(agentRegistry);
+      const prefix = `/mobile/v${version}`;
 
-    mock(agents.listMemories).mockResolvedValue([INFO]);
-    const list = await app.request(`/mobile/v1/agents/${id}/memory`, { headers: MOBILE_AUTH });
-    expect(list.status).toBe(200);
-    expect(await list.json()).toHaveLength(1);
+      mock(agents.listMemories).mockResolvedValue([INFO]);
+      const list = await app.request(`${prefix}/agents/${id}/memory`, { headers: MOBILE_AUTH });
+      expect(list.status).toBe(200);
+      expect(await list.json()).toHaveLength(1);
 
-    mock(agents.getMemory).mockResolvedValueOnce(RECORD);
-    expect(
-      (await app.request(`/mobile/v1/agents/${id}/memory/a`, { headers: MOBILE_AUTH })).status,
-    ).toBe(200);
+      mock(agents.getMemory).mockResolvedValueOnce(RECORD);
+      expect(
+        (await app.request(`${prefix}/agents/${id}/memory/a`, { headers: MOBILE_AUTH })).status,
+      ).toBe(200);
 
-    mock(agents.removeMemory).mockResolvedValueOnce(true);
-    expect(
-      (
-        await app.request(`/mobile/v1/agents/${id}/memory/a`, {
-          method: 'DELETE',
-          headers: MOBILE_AUTH,
-        })
-      ).status,
-    ).toBe(200);
+      mock(agents.removeMemory).mockResolvedValueOnce(true);
+      expect(
+        (
+          await app.request(`${prefix}/agents/${id}/memory/a`, {
+            method: 'DELETE',
+            headers: MOBILE_AUTH,
+          })
+        ).status,
+      ).toBe(200);
 
-    // Loopback-only: Mission Control is the only client that writes/configures.
-    const put = await app.request(`/mobile/v1/agents/${id}/memory/a`, {
-      method: 'PUT',
-      headers: MOBILE_JSON_HEADERS,
-      body: PUT_BODY,
-    });
-    expect(put.status).toBe(404);
-    const patch = await app.request(`/mobile/v1/agents/${id}/memory/config`, {
-      method: 'PATCH',
-      headers: MOBILE_JSON_HEADERS,
-      body: JSON.stringify({ sweep: 'off' }),
-    });
-    expect(patch.status).toBe(404);
-  });
+      // Loopback-only: Mission Control is the only client that writes/configures.
+      const put = await app.request(`${prefix}/agents/${id}/memory/a`, {
+        method: 'PUT',
+        headers: MOBILE_JSON_HEADERS,
+        body: PUT_BODY,
+      });
+      expect(put.status).toBe(404);
+      const patch = await app.request(`${prefix}/agents/${id}/memory/config`, {
+        method: 'PATCH',
+        headers: MOBILE_JSON_HEADERS,
+        body: JSON.stringify({ sweep: 'off' }),
+      });
+      expect(patch.status).toBe(404);
+    },
+  );
 
   it('serves GET /agents/:id/memory/config as the config, not as a memory named "config"', async () => {
     const { app, agentRegistry, agents } = createApp();

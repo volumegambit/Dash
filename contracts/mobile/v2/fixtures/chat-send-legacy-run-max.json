@@ -1,0 +1,9 @@
+{
+  "type": "message",
+  "id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "agentId": "agent-01",
+  "channelId": "mobile",
+  "conversationId": "00000000-0000-4000-8000-000000000101",
+  "text": "At the byte limit.",
+  "resumable": true
+}

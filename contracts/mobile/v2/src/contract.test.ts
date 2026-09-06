@@ -10,6 +10,7 @@ import {
   MOBILE_V2_LEGACY_RUN_ID_MAX_UTF8_BYTES,
   type MobileV2ControlFrame,
   type MobileV2SequencedFrame,
+  type MobileV2WsServerFrame,
   isMobileV2LegacyRunId,
 } from './index.js';
 
@@ -55,6 +56,37 @@ async function validateWsValue(schemaName: string, value: unknown): Promise<bool
   ajv.addSchema(schema, 'mobile-v2-chat-ws');
   const validate = ajv.compile({ $ref: `mobile-v2-chat-ws#/$defs/${schemaName}` });
   return validate(value);
+}
+
+async function validateOpenApiValue(schemaName: string, value: unknown): Promise<boolean> {
+  const schema = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as object;
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+  ajv.addSchema(schema, 'mobile-v2-openapi');
+  const validate = ajv.compile({ $ref: `mobile-v2-openapi#/components/schemas/${schemaName}` });
+  return validate(value);
+}
+
+function resolveLocalRef(document: unknown, ref: string): unknown {
+  let value = document;
+  for (const component of ref.slice(2).split('/')) {
+    value = (value as Record<string, unknown>)[
+      component.replaceAll('~1', '/').replaceAll('~0', '~')
+    ];
+  }
+  return value;
+}
+
+function collectLocalRefs(value: unknown, output: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const item of value) collectLocalRefs(item, output);
+    return output;
+  }
+  if (typeof value !== 'object' || value === null) return output;
+  const record = value as Record<string, unknown>;
+  if (typeof record.$ref === 'string' && record.$ref.startsWith('#/')) output.push(record.$ref);
+  for (const nested of Object.values(record)) collectLocalRefs(nested, output);
+  return output;
 }
 
 async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
@@ -404,8 +436,8 @@ describe('mobile v2 contract', () => {
     const frame = await fixture<MobileV2SequencedFrame>('input-delivered.json');
     expect(frame).toMatchObject({
       type: 'input_delivered',
-      id: '00000000-0000-4000-8000-000000000031',
-      runId: '00000000-0000-4000-8000-000000000041',
+      id: '00000000-0000-4000-8000-000000000021',
+      runId: '00000000-0000-4000-8000-000000000003',
       segmentTurnId: '00000000-0000-4000-8000-000000000042',
       userMessageId: '00000000-0000-4000-8000-000000000043',
       assistantMessageId: '00000000-0000-4000-8000-000000000044',
@@ -422,6 +454,315 @@ describe('mobile v2 contract', () => {
     const api = await readOpenApi();
     expect(api.servers).toEqual([{ url: '/mobile/v2' }]);
     expect(api.paths?.['/conversations/{id}/bootstrap']?.get).toBeDefined();
+  });
+
+  it('exports exact v2 page DTOs and one discriminator per control-frame branch', async () => {
+    const source = await readFile(join(root, 'src', 'types.ts'), 'utf8');
+    for (const declaration of [
+      'export interface MobileV2ConversationPage',
+      'export interface MobileV2ConversationMessagePage',
+      'export interface MobileV2ReplayPage',
+    ]) {
+      expect(source).toContain(declaration);
+    }
+
+    const rejected = {
+      type: 'command_rejected',
+      id: 'turn-01',
+      code: 'validation_failed',
+      error: 'Invalid',
+      retryable: false,
+    } satisfies MobileV2WsServerFrame;
+    expect(Object.keys(rejected).filter((key) => key === 'type')).toEqual(['type']);
+  });
+
+  it('keeps the linked initial run and Steer fixture identities coherent', async () => {
+    const summary = await fixture<Record<string, unknown>>('conversation-summary.json');
+    const bootstrap = await fixture<{
+      conversation: Record<string, unknown>;
+      messages: Array<Record<string, unknown>>;
+      pendingInputs: Array<Record<string, unknown>>;
+    }>('conversation-bootstrap.json');
+    const send = await fixture<Record<string, unknown>>('chat-send.json');
+    const enqueue = await fixture<Record<string, unknown>>('chat-enqueue-steer.json');
+    const accepted = await fixture<Record<string, unknown>>('chat-accepted.json');
+    const event = await fixture<Record<string, unknown>>('chat-event.json');
+    const done = await fixture<Record<string, unknown>>('chat-done.json');
+    const inputAccepted = await fixture<{ id: string; input: Record<string, unknown> }>(
+      'input-accepted.json',
+    );
+    const delivered = await fixture<{
+      id: string;
+      input: Record<string, unknown>;
+      runId: string;
+      segmentTurnId: string;
+    }>('input-delivered.json');
+    const error = await fixture<Record<string, unknown>>('chat-error.json');
+    const stream = (await readFile(join(root, 'fixtures', 'chat-stream.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    const outerRunId = send.id;
+    expect(summary.activeTurnId).toBe(outerRunId);
+    expect(bootstrap.conversation.activeTurnId).toBe(outerRunId);
+    for (const message of bootstrap.messages) {
+      expect(message.turnId).toBe(outerRunId);
+      expect(message.runId).toBe(outerRunId);
+      if (message.deliveryKind === 'normal') expect(message).not.toHaveProperty('deliveryStatus');
+    }
+    for (const frame of [accepted, event, done, ...stream]) {
+      expect(frame.id).toBe(outerRunId);
+      expect(frame.runId).toBe(outerRunId);
+      expect(frame.segmentTurnId).toBe(outerRunId);
+    }
+    expect(enqueue.expectedActiveTurnId).toBe(outerRunId);
+    expect(bootstrap.pendingInputs[0]?.targetTurnId).toBe(outerRunId);
+    expect(inputAccepted.id).toBe(enqueue.id);
+    expect(inputAccepted.input.inputId).toBe(enqueue.inputId);
+    expect(inputAccepted.input.targetTurnId).toBe(outerRunId);
+    expect(delivered.id).toBe(enqueue.id);
+    expect(delivered.input.inputId).toBe(enqueue.inputId);
+    expect(delivered.input.targetTurnId).toBe(outerRunId);
+    expect(delivered.runId).toBe(outerRunId);
+    expect(delivered.input.runId).toBe(outerRunId);
+    expect(delivered.segmentTurnId).not.toBe(outerRunId);
+    expect(delivered.input.segmentTurnId).toBe(delivered.segmentTurnId);
+    expect(error.id).toBe(error.runId);
+    expect(error.id).toBe(error.segmentTurnId);
+    expect(error.id).not.toBe(outerRunId);
+    expect(error.id).not.toBe(delivered.segmentTurnId);
+  });
+
+  it('publishes exact page/replay schemas, strict query errors, and archived mutation errors', async () => {
+    const api = (await readOpenApi()) as {
+      paths: Record<
+        string,
+        Record<string, { parameters?: unknown[]; responses: Record<string, unknown> }>
+      >;
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    for (const ref of collectLocalRefs(api)) {
+      expect(resolveLocalRef(api, ref), ref).toBeDefined();
+    }
+    expect(api.components.schemas).toHaveProperty('MobileV2ConversationPage');
+    expect(api.components.schemas).not.toHaveProperty('ConversationPage');
+    expect(api.components.schemas).toHaveProperty('MobileV2ConversationMessagePage');
+    expect(api.components.schemas.MobileV2ReplayPage).toMatchObject({
+      additionalProperties: false,
+      required: ['frames', 'v2ThroughSeq'],
+    });
+
+    const paths = api.paths;
+    expect(paths['/conversations'].get.responses).toHaveProperty('400');
+    expect(paths['/conversations'].post.responses).toHaveProperty('404');
+    expect(paths['/conversations/{id}'].patch.responses['409']).toBeDefined();
+    expect(paths['/conversations/{id}'].delete.responses).toHaveProperty('400');
+    expect(paths['/conversations/{id}/messages'].get.responses).toHaveProperty('400');
+    expect(paths['/conversations/{id}/bootstrap'].get.parameters).toEqual([
+      { $ref: '#/components/parameters/MessageLimit' },
+      { $ref: '#/components/parameters/BeforeCursor' },
+    ]);
+    expect(paths['/conversations/{id}/bootstrap'].get.responses).toHaveProperty('400');
+    expect(paths['/agents/{agentId}/conversations/{conversationId}/events'].get.parameters).toEqual(
+      [{ $ref: '#/components/parameters/SinceV2Seq' }],
+    );
+    expect(
+      paths['/agents/{agentId}/conversations/{conversationId}/events'].get.responses,
+    ).toHaveProperty('400');
+    expect(paths['/models'].get.responses).toHaveProperty('400');
+
+    const patchConflict = JSON.stringify(paths['/conversations/{id}'].patch.responses['409']);
+    const deleteConflict = JSON.stringify(paths['/conversations/{id}'].delete.responses['409']);
+    expect(patchConflict).toContain('ConversationArchivedError');
+    expect(deleteConflict).toContain('ConversationArchivedError');
+  });
+
+  it('bounds the reusable quoted safe-integer schema used by If-Match', async () => {
+    const api = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: {
+        parameters: Record<string, { schema: unknown }>;
+        schemas: Record<string, Record<string, unknown>>;
+      };
+    };
+    expect(api.components.parameters.IfMatch.schema).toEqual({
+      $ref: '#/components/schemas/QuotedSafeInteger',
+    });
+    expect(api.components.schemas.QuotedSafeInteger).toBeDefined();
+    expect(await validateOpenApiValue('QuotedSafeInteger', '"9007199254740991"')).toBe(true);
+    expect(await validateOpenApiValue('QuotedSafeInteger', '"9007199254740992"')).toBe(false);
+  });
+
+  it('keeps REST and WebSocket UUID-only fields canonical while inherited run IDs stay bounded', async () => {
+    const api = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const canonical = '00000000-0000-4000-8000-000000000001';
+    expect(api.components.schemas.CanonicalUuid).toEqual({
+      type: 'string',
+      format: 'uuid',
+      pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$',
+    });
+    expect(api.components.schemas.LegacyRunId).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+      'x-maxUtf8Bytes': 256,
+    });
+    expect(await validateOpenApiValue('CanonicalUuid', canonical)).toBe(true);
+    expect(await validateOpenApiValue('CanonicalUuid', `urn:uuid:${canonical}`)).toBe(false);
+    expect(await validateOpenApiValue('LegacyRunId', 'turn-01')).toBe(true);
+    expect(await validateOpenApiValue('LegacyRunId', ' '.repeat(4))).toBe(false);
+
+    const summary = await fixture<Record<string, unknown>>('conversation-summary.json');
+    expect(
+      await validateOpenApiValue('MobileV2ConversationSummary', {
+        ...summary,
+        id: `urn:uuid:${summary.id as string}`,
+      }),
+    ).toBe(false);
+    expect(
+      await validateOpenApiValue('MobileV2ConversationSummary', {
+        ...summary,
+        activeTurnId: 'turn-01',
+      }),
+    ).toBe(true);
+
+    const rawUuidFormats: Record<string, unknown>[] = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item);
+      } else if (typeof value === 'object' && value !== null) {
+        const record = value as Record<string, unknown>;
+        if (record.format === 'uuid') rawUuidFormats.push(record);
+        for (const nested of Object.values(record)) visit(nested);
+      }
+    };
+    visit(api);
+    expect(rawUuidFormats).toHaveLength(1);
+    expect(rawUuidFormats[0]).toBe(api.components.schemas.CanonicalUuid);
+  });
+
+  it('keeps REST sequenced frames structurally aligned with the WebSocket document', async () => {
+    const api = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs: Record<string, Record<string, unknown>>;
+    };
+    const branchNames = [
+      'ChatAccepted',
+      'ChatEvent',
+      'ChatDone',
+      'ChatError',
+      'InputAccepted',
+      'InputUpdated',
+      'InputRemoved',
+      'InputDelivered',
+      'InputFailed',
+      'QueuePaused',
+      'QueueResumed',
+    ];
+    for (const name of branchNames) {
+      const rest = api.components.schemas[name];
+      const socket = ws.$defs[name];
+      expect(rest, name).toBeDefined();
+      expect(rest.required, name).toEqual(socket.required);
+      expect(Object.keys(rest.properties as object).sort(), name).toEqual(
+        Object.keys(socket.properties as object).sort(),
+      );
+      expect(rest.additionalProperties, name).toBe(false);
+    }
+  });
+
+  it('caps wire counters/images and validates page plus legacy-run fixtures', async () => {
+    const api = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: {
+        parameters: Record<string, { schema: Record<string, unknown> }>;
+        schemas: Record<string, Record<string, unknown>>;
+      };
+    };
+    const safeMax = Number.MAX_SAFE_INTEGER;
+    expect(api.components.parameters.ConversationLimit.schema.maximum).toBe(100);
+    expect(api.components.parameters.MessageLimit.schema.maximum).toBe(200);
+    expect(api.components.parameters.SinceV2Seq.schema.maximum).toBe(safeMax);
+
+    const cappedIntegerFields = new Set([
+      'lastSeq',
+      'ordinal',
+      'queueRevision',
+      'revision',
+      'throughSeq',
+      'v2LastSeq',
+      'v2Seq',
+      'v2ThroughSeq',
+    ]);
+    const visitedCappedFields = new Set<string>();
+    const assertWireIntegerCaps = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => assertWireIntegerCaps(item, `${path}[${index}]`));
+        return;
+      }
+      if (value === null || typeof value !== 'object') return;
+      for (const [key, child] of Object.entries(value)) {
+        if (cappedIntegerFields.has(key) && child && typeof child === 'object') {
+          visitedCappedFields.add(key);
+          expect((child as Record<string, unknown>).maximum, `${path}.${key}`).toBe(safeMax);
+        }
+        assertWireIntegerCaps(child, `${path}.${key}`);
+      }
+    };
+    assertWireIntegerCaps(api.components.schemas, 'components.schemas');
+    expect([...visitedCappedFields].sort()).toEqual([...cappedIntegerFields].sort());
+    expect(
+      (
+        (api.components.schemas.ConversationContent.oneOf as Array<Record<string, unknown>>)[0]
+          .properties as Record<string, Record<string, unknown>>
+      ).images.maxItems,
+    ).toBe(4);
+    expect(
+      (
+        api.components.schemas.MobileV2PendingInput.properties as Record<
+          string,
+          Record<string, unknown>
+        >
+      ).images.maxItems,
+    ).toBe(4);
+
+    for (const [file, schemaName] of [
+      ['conversation-page.json', 'MobileV2ConversationPage'],
+      ['conversation-message-page.json', 'MobileV2ConversationMessagePage'],
+      ['conversation-replay-page.json', 'MobileV2ReplayPage'],
+      ['conversation-bootstrap-legacy-run.json', 'MobileV2ConversationBootstrap'],
+    ]) {
+      expect(await validateOpenApiValue(schemaName, await fixture(file)), file).toBe(true);
+    }
+    for (const file of [
+      'chat-send-legacy-run.json',
+      'chat-answer-legacy-run.json',
+      'chat-cancel-legacy-run.json',
+      'command-rejected-legacy-run.json',
+      'chat-send-legacy-run-max.json',
+    ]) {
+      expect(await validateWsFixture(file), file).toBe(true);
+    }
+    const maxLegacyRunId = (await fixture<{ id: string }>('chat-send-legacy-run-max.json')).id;
+    const tooLargeLegacyRunId = (
+      await fixture<{ id: string }>('invalid/legacy-run-id-too-large.json')
+    ).id;
+    expect(new TextEncoder().encode(maxLegacyRunId)).toHaveLength(256);
+    expect(new TextEncoder().encode(tooLargeLegacyRunId)).toHaveLength(257);
+    const legacyStream = (
+      await readFile(join(root, 'fixtures', 'chat-stream-legacy-run.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as unknown);
+    for (const frame of legacyStream) {
+      expect(await validateWsValue('MobileV2WsFrame', frame)).toBe(true);
+    }
+    expect(await validateWsFixture('invalid/legacy-run-id-too-large.json')).toBe(false);
+    expect(await validateWsFixture('invalid/legacy-run-id-blank.json')).toBe(false);
   });
 
   it('validates every fixture against its declared schema and polarity', async () => {
@@ -463,6 +804,8 @@ describe('mobile v2 contract', () => {
     expect([...files].sort()).toEqual(await listFixtureFiles(join(root, 'fixtures')));
     expect(files.filter((file) => file.startsWith('invalid/')).sort()).toEqual([
       'invalid/control-with-v2-seq.json',
+      'invalid/legacy-run-id-blank.json',
+      'invalid/legacy-run-id-too-large.json',
       'invalid/negative-revision.json',
       'invalid/non-uuid-command-id.json',
       'invalid/steer-without-target.json',

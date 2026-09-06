@@ -6,7 +6,7 @@
     "title": "Queue contract check",
     "revision": 4,
     "status": "running",
-    "activeTurnId": "00000000-0000-4000-8000-000000000012",
+    "activeTurnId": "00000000-0000-4000-8000-000000000003",
     "owningIssueId": null,
     "projectId": null,
     "lastSeq": 7,
@@ -22,7 +22,7 @@
     {
       "id": "00000000-0000-4000-8000-000000000013",
       "conversationId": "00000000-0000-4000-8000-000000000001",
-      "turnId": "00000000-0000-4000-8000-000000000012",
+      "turnId": "00000000-0000-4000-8000-000000000003",
       "ordinal": 1,
       "role": "user",
       "status": "completed",
@@ -32,15 +32,14 @@
       },
       "createdAt": "2026-09-06T09:01:00.000Z",
       "updatedAt": "2026-09-06T09:01:00.000Z",
-      "runId": "00000000-0000-4000-8000-000000000011",
+      "runId": "00000000-0000-4000-8000-000000000003",
       "segmentIndex": 0,
-      "deliveryKind": "normal",
-      "deliveryStatus": "delivered"
+      "deliveryKind": "normal"
     },
     {
       "id": "00000000-0000-4000-8000-000000000014",
       "conversationId": "00000000-0000-4000-8000-000000000001",
-      "turnId": "00000000-0000-4000-8000-000000000012",
+      "turnId": "00000000-0000-4000-8000-000000000003",
       "ordinal": 2,
       "role": "assistant",
       "status": "streaming",
@@ -55,7 +54,7 @@
       },
       "createdAt": "2026-09-06T09:02:00.000Z",
       "updatedAt": "2026-09-06T09:03:00.000Z",
-      "runId": "00000000-0000-4000-8000-000000000011",
+      "runId": "00000000-0000-4000-8000-000000000003",
       "segmentIndex": 0,
       "deliveryKind": "normal"
     }
@@ -65,7 +64,7 @@
     {
       "inputId": "00000000-0000-4000-8000-000000000022",
       "kind": "steer",
-      "targetTurnId": "00000000-0000-4000-8000-000000000012",
+      "targetTurnId": "00000000-0000-4000-8000-000000000003",
       "text": "Use the updated constraint.",
       "state": "queued",
       "revision": 0,

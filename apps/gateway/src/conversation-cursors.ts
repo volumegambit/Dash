@@ -74,7 +74,7 @@ export function decodeMessageCursor(cursor: string): { ordinal: number; id: stri
     !hasExactKeys(value, ['v', 'ordinal', 'id']) ||
     value.v !== 1 ||
     typeof value.ordinal !== 'number' ||
-    !Number.isInteger(value.ordinal) ||
+    !Number.isSafeInteger(value.ordinal) ||
     value.ordinal <= 0 ||
     typeof value.id !== 'string' ||
     value.id.length === 0

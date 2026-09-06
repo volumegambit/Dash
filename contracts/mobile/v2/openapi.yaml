@@ -205,6 +205,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MobileModelsResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
   /conversations:
@@ -220,7 +222,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConversationPage'
+                $ref: '#/components/schemas/MobileV2ConversationPage'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
     post:
@@ -242,6 +246,8 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /conversations/{id}:
     parameters:
       - $ref: '#/components/parameters/ConversationId'
@@ -282,11 +288,13 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Revision conflict.
+          description: Revision conflict or archived conversation.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RevisionConflictError'
+                oneOf:
+                  - $ref: '#/components/schemas/RevisionConflictError'
+                  - $ref: '#/components/schemas/ConversationArchivedError'
         '410':
           $ref: '#/components/responses/Gone'
     delete:
@@ -300,6 +308,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MobileV2ConversationSummary'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -312,6 +322,7 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/RevisionConflictError'
                   - $ref: '#/components/schemas/ConversationBusyError'
+                  - $ref: '#/components/schemas/ConversationArchivedError'
         '410':
           $ref: '#/components/responses/Gone'
   /conversations/{id}/messages:
@@ -329,6 +340,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MobileV2ConversationMessagePage'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -338,6 +351,9 @@ paths:
       - $ref: '#/components/parameters/ConversationId'
     get:
       operationId: getConversationBootstrap
+      parameters:
+        - $ref: '#/components/parameters/MessageLimit'
+        - $ref: '#/components/parameters/BeforeCursor'
       responses:
         '200':
           description: Transactional conversation, message, and pending-input snapshot.
@@ -345,6 +361,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MobileV2ConversationBootstrap'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -358,21 +376,20 @@ paths:
       - name: conversationId
         in: path
         required: true
-        schema: { type: string, format: uuid }
+        schema: { $ref: '#/components/schemas/CanonicalUuid' }
     get:
       operationId: replayConversationEvents
       parameters:
-        - name: sinceSeq
-          in: query
-          required: true
-          schema: { type: integer, minimum: 0 }
+        - $ref: '#/components/parameters/SinceV2Seq'
       responses:
         '200':
-          description: Replay entries strictly after sinceSeq.
+          description: Sequenced v2 frames strictly after sinceV2Seq.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ReplayPage'
+                $ref: '#/components/schemas/MobileV2ReplayPage'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -426,7 +443,7 @@ components:
       name: id
       in: path
       required: true
-      schema: { type: string, format: uuid }
+      schema: { $ref: '#/components/schemas/CanonicalUuid' }
     ConversationAgentId:
       name: agentId
       in: query
@@ -452,11 +469,16 @@ components:
       in: query
       required: false
       schema: { type: string, minLength: 1 }
+    SinceV2Seq:
+      name: sinceV2Seq
+      in: query
+      required: true
+      schema: { type: integer, minimum: 0, maximum: 9007199254740991 }
     IfMatch:
       name: If-Match
       in: header
       required: true
-      schema: { type: string, pattern: '^"(0|[1-9][0-9]*)"$' }
+      schema: { $ref: '#/components/schemas/QuotedSafeInteger' }
   responses:
     Unauthorized:
       description: Missing or invalid bearer token.
@@ -495,6 +517,19 @@ components:
           schema:
             $ref: '#/components/schemas/MobileApiError'
   schemas:
+    QuotedSafeInteger:
+      type: string
+      pattern: '^"(?:0|[1-9][0-9]{0,14}|[1-8][0-9]{15}|900[0-6][0-9]{12}|90070[0-9]{11}|90071[0-8][0-9]{10}|900719[0-8][0-9]{9}|9007199[01][0-9]{8}|90071992[0-4][0-9]{7}|900719925[0-3][0-9]{6}|9007199254[0-6][0-9]{5}|90071992547[0-3][0-9]{4}|9007199254740[0-8][0-9]{2}|90071992547409[0-8][0-9]|900719925474099[01])"$'
+    CanonicalUuid:
+      type: string
+      format: uuid
+      pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+    LegacyRunId:
+      type: string
+      minLength: 1
+      maxLength: 256
+      pattern: '[^ \t\r\n]'
+      x-maxUtf8Bytes: 256
     MobileV2HealthResponse:
       type: object
       additionalProperties: false
@@ -743,6 +778,7 @@ components:
             text: { type: string }
             images:
               type: array
+              maxItems: 4
               items:
                 $ref: '#/components/schemas/MobileImage'
         - type: object
@@ -759,46 +795,47 @@ components:
       additionalProperties: false
       required: [id, agentId, agentName, title, revision, status, activeTurnId, owningIssueId, projectId, lastSeq, lastMessagePreview, createdAt, updatedAt, queuePaused, queueRevision, pendingFollowUpCount, v2LastSeq]
       properties:
-        id: { type: string, format: uuid }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
         agentId: { type: string, minLength: 1 }
         agentName: { type: string, minLength: 1 }
         title: { type: string }
-        revision: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         status: { enum: [idle, running, interrupted, archived, deleted] }
         activeTurnId:
-          type: [string, 'null']
-          format: uuid
+          oneOf:
+            - $ref: '#/components/schemas/LegacyRunId'
+            - type: 'null'
         owningIssueId: { type: [string, 'null'] }
         projectId: { type: [string, 'null'] }
-        lastSeq: { type: integer, minimum: 0 }
+        lastSeq: { type: integer, minimum: 0, maximum: 9007199254740991 }
         lastMessagePreview: { type: [string, 'null'] }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         deletedAt: { type: string, format: date-time }
         queuePaused: { type: boolean }
-        queueRevision: { type: integer, minimum: 0 }
-        pendingFollowUpCount: { type: integer, minimum: 0 }
-        v2LastSeq: { type: integer, minimum: 0 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        pendingFollowUpCount: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        v2LastSeq: { type: integer, minimum: 0, maximum: 9007199254740991 }
     MobileV2ConversationMessage:
       type: object
       additionalProperties: false
       required: [id, conversationId, turnId, ordinal, role, status, content, createdAt, updatedAt, runId, segmentIndex, deliveryKind]
       properties:
-        id: { type: string, format: uuid }
-        conversationId: { type: string, format: uuid }
-        turnId: { type: string, format: uuid }
-        ordinal: { type: integer, minimum: 1 }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        turnId: { $ref: '#/components/schemas/LegacyRunId' }
+        ordinal: { type: integer, minimum: 1, maximum: 9007199254740991 }
         role: { enum: [user, assistant] }
         status: { enum: [accepted, streaming, completed, cancelled, failed, interrupted] }
         content:
           $ref: '#/components/schemas/ConversationContent'
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-        runId: { type: string, format: uuid }
-        segmentIndex: { type: integer, minimum: 0 }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentIndex: { type: integer, minimum: 0, maximum: 9007199254740991 }
         deliveryKind: { enum: [normal, steer, follow_up] }
         deliveryStatus: { enum: [pending, delivered, not_delivered] }
-    ConversationPage:
+    MobileV2ConversationPage:
       type: object
       additionalProperties: false
       required: [items, nextCursor]
@@ -818,27 +855,28 @@ components:
           items:
             $ref: '#/components/schemas/MobileV2ConversationMessage'
         nextCursor: { type: [string, 'null'] }
-        throughSeq: { type: integer, minimum: 0 }
+        throughSeq: { type: integer, minimum: 0, maximum: 9007199254740991 }
     MobileV2PendingInput:
       type: object
       additionalProperties: false
       required: [inputId, kind, text, state, revision, enqueueOrder, createdAt, updatedAt]
       properties:
-        inputId: { type: string, format: uuid }
+        inputId: { $ref: '#/components/schemas/CanonicalUuid' }
         kind: { enum: [steer, follow_up] }
-        targetTurnId: { type: string, format: uuid }
+        targetTurnId: { $ref: '#/components/schemas/LegacyRunId' }
         text: { type: string }
         images:
           type: array
+          maxItems: 4
           items:
             $ref: '#/components/schemas/MobileImage'
         state: { enum: [queued, delivering, delivered, removed, failed] }
-        revision: { type: integer, minimum: 0 }
-        enqueueOrder: { type: integer, minimum: 0 }
-        runId: { type: string, format: uuid }
-        segmentTurnId: { type: string, format: uuid }
-        userMessageId: { type: string, format: uuid }
-        assistantMessageId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        enqueueOrder: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentTurnId: { $ref: '#/components/schemas/CanonicalUuid' }
+        userMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+        assistantMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
         failureCode:
           $ref: '#/components/schemas/MobileApiErrorCode'
         failureMessage: { type: string, minLength: 1 }
@@ -862,8 +900,165 @@ components:
           items:
             $ref: '#/components/schemas/MobileV2PendingInput'
         queuePaused: { type: boolean }
-        queueRevision: { type: integer, minimum: 0 }
-        v2ThroughSeq: { type: integer, minimum: 0 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        v2ThroughSeq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    ChatAccepted:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, runId, segmentTurnId, v2Seq, userMessageId, assistantMessageId, revision]
+      properties:
+        type: { const: accepted }
+        id: { $ref: '#/components/schemas/LegacyRunId' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        userMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+        assistantMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+        revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    ChatEvent:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, runId, segmentTurnId, v2Seq, event]
+      properties:
+        type: { const: event }
+        id: { $ref: '#/components/schemas/LegacyRunId' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        event: { $ref: '#/components/schemas/MobileAgentEvent' }
+    ChatDone:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, runId, segmentTurnId, v2Seq, outcome]
+      properties:
+        type: { const: done }
+        id: { $ref: '#/components/schemas/LegacyRunId' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        outcome: { enum: [completed, cancelled, interrupted] }
+    ChatError:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, runId, segmentTurnId, v2Seq, error]
+      properties:
+        type: { const: error }
+        id: { $ref: '#/components/schemas/LegacyRunId' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentTurnId: { $ref: '#/components/schemas/LegacyRunId' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        error: { type: string, minLength: 1 }
+        code: { $ref: '#/components/schemas/MobileApiErrorCode' }
+        retryable: { type: boolean }
+    InputAccepted:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, v2Seq, queueRevision, input]
+      properties:
+        type: { const: input_accepted }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        input: { $ref: '#/components/schemas/MobileV2PendingInput' }
+    InputUpdated:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, v2Seq, queueRevision, input]
+      properties:
+        type: { const: input_updated }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        input: { $ref: '#/components/schemas/MobileV2PendingInput' }
+    InputRemoved:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, v2Seq, queueRevision, input]
+      properties:
+        type: { const: input_removed }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        input: { $ref: '#/components/schemas/MobileV2PendingInput' }
+    InputDelivered:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, v2Seq, queueRevision, input, runId, segmentTurnId, userMessageId, assistantMessageId]
+      properties:
+        type: { const: input_delivered }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        input: { $ref: '#/components/schemas/MobileV2PendingInput' }
+        runId: { $ref: '#/components/schemas/LegacyRunId' }
+        segmentTurnId: { $ref: '#/components/schemas/CanonicalUuid' }
+        userMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+        assistantMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+    InputFailed:
+      type: object
+      additionalProperties: false
+      required: [type, id, conversationId, v2Seq, queueRevision, input]
+      properties:
+        type: { const: input_failed }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        input: { $ref: '#/components/schemas/MobileV2PendingInput' }
+    QueuePaused:
+      type: object
+      additionalProperties: false
+      required: [type, conversationId, v2Seq, queueRevision, queuePaused, pendingFollowUpCount]
+      properties:
+        type: { const: queue_paused }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queuePaused: { type: boolean }
+        pendingFollowUpCount: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    QueueResumed:
+      type: object
+      additionalProperties: false
+      required: [type, conversationId, v2Seq, queueRevision, queuePaused, pendingFollowUpCount]
+      properties:
+        type: { const: queue_resumed }
+        id: { $ref: '#/components/schemas/CanonicalUuid' }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        v2Seq: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queueRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        queuePaused: { type: boolean }
+        pendingFollowUpCount: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    MobileV2SequencedFrame:
+      oneOf:
+        - $ref: '#/components/schemas/ChatAccepted'
+        - $ref: '#/components/schemas/ChatEvent'
+        - $ref: '#/components/schemas/ChatDone'
+        - $ref: '#/components/schemas/ChatError'
+        - $ref: '#/components/schemas/InputAccepted'
+        - $ref: '#/components/schemas/InputUpdated'
+        - $ref: '#/components/schemas/InputRemoved'
+        - $ref: '#/components/schemas/InputDelivered'
+        - $ref: '#/components/schemas/InputFailed'
+        - $ref: '#/components/schemas/QueuePaused'
+        - $ref: '#/components/schemas/QueueResumed'
+    MobileV2ReplayPage:
+      type: object
+      additionalProperties: false
+      required: [frames, v2ThroughSeq]
+      properties:
+        frames:
+          type: array
+          items: { $ref: '#/components/schemas/MobileV2SequencedFrame' }
+        v2ThroughSeq: { type: integer, minimum: 0, maximum: 9007199254740991 }
     ConversationCreateRequest:
       type: object
       additionalProperties: false
@@ -939,7 +1134,14 @@ components:
               additionalProperties: false
               required: [activeTurnId]
               properties:
-                activeTurnId: { type: string, minLength: 1 }
+                activeTurnId: { $ref: '#/components/schemas/LegacyRunId' }
+    ConversationArchivedError:
+      allOf:
+        - $ref: '#/components/schemas/MobileApiError'
+        - type: object
+          required: [code]
+          properties:
+            code: { const: validation_failed }
     ReplayPayload:
       oneOf:
         - type: object
@@ -947,9 +1149,9 @@ components:
           required: [type, userMessageId, assistantMessageId, revision]
           properties:
             type: { const: accepted }
-            userMessageId: { type: string, format: uuid }
-            assistantMessageId: { type: string, format: uuid }
-            revision: { type: integer, minimum: 1 }
+            userMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+            assistantMessageId: { $ref: '#/components/schemas/CanonicalUuid' }
+            revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
         - type: object
           additionalProperties: false
           required: [type, event]
@@ -977,10 +1179,10 @@ components:
       additionalProperties: false
       required: [seq, msgId, agentId, conversationId, timestamp, payload]
       properties:
-        seq: { type: integer, minimum: 1 }
+        seq: { type: integer, minimum: 1, maximum: 9007199254740991 }
         msgId: { type: string, minLength: 1 }
         agentId: { type: string, minLength: 1 }
-        conversationId: { type: string, format: uuid }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
         timestamp: { type: string, format: date-time }
         payload:
           $ref: '#/components/schemas/ReplayPayload'
@@ -999,16 +1201,16 @@ components:
       required: [type, conversationId, revision]
       properties:
         type: { const: 'conversation:changed' }
-        conversationId: { type: string, format: uuid }
-        revision: { type: integer, minimum: 1 }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     ConversationDeletedEvent:
       type: object
       additionalProperties: false
       required: [type, conversationId, revision]
       properties:
         type: { const: 'conversation:deleted' }
-        conversationId: { type: string, format: uuid }
-        revision: { type: integer, minimum: 1 }
+        conversationId: { $ref: '#/components/schemas/CanonicalUuid' }
+        revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     WsTicketResponse:
       type: object
       required: [ticket, expiresAt]

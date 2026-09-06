@@ -1,4 +1,9 @@
 import { Hono } from 'hono';
+import { classifyMobileRouteTarget, mobileRequestTarget } from './mobile-route-target.js';
+
+interface NodeBindings {
+  incoming?: { url?: string };
+}
 
 /**
  * Create the public-LAN HTTP surface. The native capability API is forwarded
@@ -21,9 +26,22 @@ import { Hono } from 'hono';
  *   the `Vary` header.
  */
 export function createLanMobileApp(managementApp: Hono): Hono {
-  const app = new Hono();
+  const app = new Hono<{ Bindings: NodeBindings }>();
   const forward = (request: Request) => managementApp.fetch(request);
-  app.all('/mobile/v1', (c) => forward(c.req.raw));
-  app.all('/mobile/v1/*', (c) => forward(c.req.raw));
+  app.all('*', async (c, next) => {
+    const target = classifyMobileRouteTarget(mobileRequestTarget(c.req.url, c.env?.incoming?.url));
+    if (target.kind === 'rejected') {
+      return c.json(
+        { code: 'validation_failed', error: 'Invalid request target', retryable: false },
+        400,
+      );
+    }
+    if (target.kind === 'mobile') return forward(c.req.raw);
+    if (target.pathname === '/ws/chat') {
+      await next();
+      return;
+    }
+    return c.notFound();
+  });
   return app;
 }

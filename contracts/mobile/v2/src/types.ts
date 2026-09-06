@@ -37,6 +37,11 @@ export interface MobileV2ConversationSummary extends ConversationSummary {
   v2LastSeq: number;
 }
 
+export interface MobileV2ConversationPage {
+  items: MobileV2ConversationSummary[];
+  nextCursor: string | null;
+}
+
 export type MobileV2DeliveryKind = 'normal' | 'steer' | 'follow_up';
 export type MobileV2DeliveryStatus = 'pending' | 'delivered' | 'not_delivered';
 export type MobileV2PendingInputKind = 'steer' | 'follow_up';
@@ -52,6 +57,12 @@ export interface MobileV2ConversationMessage extends ConversationMessage {
   segmentIndex: number;
   deliveryKind: MobileV2DeliveryKind;
   deliveryStatus?: MobileV2DeliveryStatus;
+}
+
+export interface MobileV2ConversationMessagePage {
+  items: MobileV2ConversationMessage[];
+  nextCursor: string | null;
+  throughSeq: number;
 }
 
 export interface MobileV2PendingInput {
@@ -215,3 +226,8 @@ export type MobileV2SequencedFrame =
     };
 
 export type MobileV2WsServerFrame = MobileV2ControlFrame | MobileV2SequencedFrame;
+
+export interface MobileV2ReplayPage {
+  frames: MobileV2SequencedFrame[];
+  v2ThroughSeq: number;
+}

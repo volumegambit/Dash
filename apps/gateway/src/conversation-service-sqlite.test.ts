@@ -261,6 +261,115 @@ describe('SqliteConversationService schema', () => {
     service.close();
   });
 
+  it('projects every conversation operation through explicit lossless v2 service methods', () => {
+    let uuidCounter = 0;
+    const service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => '2026-09-06T10:00:00.000Z',
+      uuid: () => `40000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
+    });
+    const v2 = service as SqliteConversationService & {
+      createV2: SqliteConversationService['create'];
+      getV2: SqliteConversationService['get'];
+      listV2: SqliteConversationService['list'];
+      updateV2: SqliteConversationService['update'];
+      deleteV2: SqliteConversationService['delete'];
+      listMessagesV2: SqliteConversationService['listMessages'];
+    };
+
+    const created = v2.createV2({
+      agentId: 'agent-v2',
+      agentName: 'V2 Helper',
+      requestId: 'request-v2',
+    });
+    expect(created).toMatchObject({
+      queuePaused: false,
+      queueRevision: 0,
+      pendingFollowUpCount: 0,
+      v2LastSeq: 0,
+    });
+
+    service.acceptRun({
+      protocol: 'v2',
+      agentId: 'agent-v2',
+      channelId: 'web',
+      conversationId: created.id,
+      runId: 'turn-01',
+      text: 'Initial',
+    });
+    service.enqueueInput({
+      commandId: '40000000-0000-4000-8000-000000000101',
+      inputId: '40000000-0000-4000-8000-000000000102',
+      agentId: 'agent-v2',
+      channelId: 'web',
+      conversationId: created.id,
+      text: 'Steer',
+      behavior: 'steer',
+      expectedActiveTurnId: 'turn-01',
+    });
+    service.deliverSteer({
+      conversationId: created.id,
+      runId: 'turn-01',
+      inputId: '40000000-0000-4000-8000-000000000102',
+    });
+
+    const current = v2.getV2(created.id);
+    expect(current).toMatchObject({
+      activeTurnId: 'turn-01',
+      queueRevision: 2,
+      v2LastSeq: 3,
+    });
+    expect(v2.listV2({ limit: 10 }).items[0]).toEqual(current);
+    expect(() => v2.updateV2(created.id, 0, { title: 'Stale' })).toThrowError(
+      expect.objectContaining({
+        code: 'revision_conflict',
+        details: { current },
+      }),
+    );
+    const page = v2.listMessagesV2({ conversationId: created.id, limit: 10 });
+    expect(page.items).toEqual([
+      expect.objectContaining({
+        turnId: 'turn-01',
+        runId: 'turn-01',
+        segmentIndex: 0,
+        deliveryKind: 'normal',
+      }),
+      expect.objectContaining({ runId: 'turn-01', deliveryKind: 'normal' }),
+      expect.objectContaining({
+        runId: 'turn-01',
+        segmentIndex: 1,
+        deliveryKind: 'steer',
+        deliveryStatus: 'delivered',
+      }),
+      expect.objectContaining({
+        runId: 'turn-01',
+        segmentIndex: 1,
+        deliveryKind: 'steer',
+      }),
+    ]);
+    expect(page.nextCursor).toBeNull();
+
+    service.finishRunAndClaimNext({
+      conversationId: created.id,
+      runId: 'turn-01',
+      segmentTurnId: page.items[3].turnId,
+      outcome: 'completed',
+    });
+    const idle = v2.getV2(created.id);
+    expect(idle).not.toBeNull();
+    expect(() => v2.deleteV2(created.id, 0)).toThrowError(
+      expect.objectContaining({ code: 'revision_conflict', details: { current: idle } }),
+    );
+    const tombstone = v2.deleteV2(created.id, idle?.revision ?? 0);
+    expect(tombstone).toMatchObject({
+      status: 'deleted',
+      queuePaused: false,
+      pendingFollowUpCount: 0,
+    });
+    expect(v2.getV2(created.id, { includeDeleted: true })).toEqual(tombstone);
+    service.close();
+  });
+
   it('paginates equal updatedAt values by descending id without loss', () => {
     const ids = [
       '00000000-0000-4000-8000-000000000003',

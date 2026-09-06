@@ -7,5 +7,5 @@
   "conversationId": "00000000-0000-4000-8000-000000000001",
   "text": "Use the updated constraint.",
   "behavior": "steer",
-  "expectedActiveTurnId": "00000000-0000-4000-8000-000000000012"
+  "expectedActiveTurnId": "00000000-0000-4000-8000-000000000003"
 }

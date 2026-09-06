@@ -31,6 +31,8 @@ describe('ManagementClient', () => {
     agents: [
       { name: 'assistant', model: 'claude-sonnet-4-20250514', tools: ['bash', 'read_file'] },
     ],
+    conversationApiVersions: [1, 2],
+    chatCapabilities: ['chat-input-queue-v1'],
   };
 
   beforeEach(async () => {
@@ -69,6 +71,33 @@ describe('ManagementClient', () => {
   it('info() returns typed InfoResponse', async () => {
     const res = await client.info();
     expect(res).toEqual(testInfo);
+  });
+
+  it('info() accepts an older gateway response without capability fields', async () => {
+    const legacyInfo: InfoResponse = { agents: [] };
+    const legacy = startManagementServer({
+      port: 0,
+      token: TEST_TOKEN,
+      getInfo: () => legacyInfo,
+      onShutdown: async () => {},
+    });
+    await new Promise<void>((resolve) => {
+      if (legacy.server.listening) resolve();
+      else legacy.server.once('listening', resolve);
+    });
+    const address = legacy.server.address();
+    const legacyPort = typeof address === 'object' && address ? address.port : 0;
+    try {
+      const response = await new ManagementClient(
+        `http://localhost:${legacyPort}`,
+        TEST_TOKEN,
+      ).info();
+      expect(response).toEqual(legacyInfo);
+      expect(response.conversationApiVersions).toBeUndefined();
+      expect(response.chatCapabilities).toBeUndefined();
+    } finally {
+      await legacy.close();
+    }
   });
 
   it('shutdown() returns typed ShutdownResponse', async () => {

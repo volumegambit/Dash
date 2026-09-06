@@ -21,14 +21,21 @@ describe('mobileCors', () => {
     });
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
-  it('answers preflight with methods and Authorization header, no credentials', async () => {
-    const res = await appWith(['https://app.example.com']).request('/x', {
-      method: 'OPTIONS',
-      headers: { origin: 'https://app.example.com', 'access-control-request-method': 'POST' },
-    });
-    expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-headers')).toContain('Authorization');
-    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  it('answers PATCH/DELETE preflight with Authorization and If-Match, no credentials', async () => {
+    for (const method of ['PATCH', 'DELETE']) {
+      const res = await appWith(['https://app.example.com']).request('/x', {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://app.example.com',
+          'access-control-request-method': method,
+          'access-control-request-headers': 'authorization,if-match',
+        },
+      });
+      expect(res.status, method).toBe(204);
+      expect(res.headers.get('access-control-allow-headers')).toContain('Authorization');
+      expect(res.headers.get('access-control-allow-headers')).toContain('If-Match');
+      expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+    }
   });
   it('allows the relay credential header on preflight (browser relay path)', async () => {
     // A browser sends x-dash-relay-credential on every /mobile/v1 request, so

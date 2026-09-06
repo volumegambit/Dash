@@ -13,6 +13,8 @@ export interface AgentInfo {
 
 export interface InfoResponse {
   agents: AgentInfo[];
+  conversationApiVersions?: number[];
+  chatCapabilities?: string[];
 }
 
 export interface ShutdownResponse {

@@ -1,0 +1,42 @@
+{
+  "conversation": {
+    "id": "00000000-0000-4000-8000-000000000101",
+    "agentId": "agent-01",
+    "agentName": "Mobile Helper",
+    "title": "Legacy run",
+    "revision": 2,
+    "status": "running",
+    "activeTurnId": "turn-01",
+    "owningIssueId": null,
+    "projectId": null,
+    "lastSeq": 1,
+    "lastMessagePreview": "Resume the old run.",
+    "createdAt": "2026-09-06T09:00:00.000Z",
+    "updatedAt": "2026-09-06T09:01:00.000Z",
+    "queuePaused": false,
+    "queueRevision": 0,
+    "pendingFollowUpCount": 0,
+    "v2LastSeq": 1
+  },
+  "messages": [
+    {
+      "id": "00000000-0000-4000-8000-000000000111",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "turnId": "turn-01",
+      "ordinal": 1,
+      "role": "user",
+      "status": "accepted",
+      "content": { "type": "user", "text": "Resume the old run." },
+      "createdAt": "2026-09-06T09:01:00.000Z",
+      "updatedAt": "2026-09-06T09:01:00.000Z",
+      "runId": "turn-01",
+      "segmentIndex": 0,
+      "deliveryKind": "normal"
+    }
+  ],
+  "nextCursor": null,
+  "pendingInputs": [],
+  "queuePaused": false,
+  "queueRevision": 0,
+  "v2ThroughSeq": 1
+}

@@ -130,4 +130,41 @@ describe('conversation contract mappers', () => {
   it('omits absent delivery status from v2 messages', () => {
     expect(mapMessageV2(steerUserMessage())).not.toHaveProperty('deliveryStatus');
   });
+
+  it('preserves tombstones, run segments, Follow Ups, and delivery state only in v2', () => {
+    const conversation = storedConversation();
+    conversation.status = 'deleted';
+    conversation.deletedAt = NOW;
+    conversation.activeRunId = null;
+    const v2Conversation = mapConversationV2(conversation);
+    expect(v2Conversation).toMatchObject({
+      status: 'deleted',
+      deletedAt: NOW,
+      activeTurnId: null,
+      queuePaused: true,
+      queueRevision: 5,
+      pendingFollowUpCount: 2,
+      v2LastSeq: 11,
+    });
+
+    const followUp = mapMessageV2(
+      steerUserMessage({
+        runId: 'follow-up-run',
+        turnId: 'follow-up-run',
+        segmentIndex: 2,
+        deliveryKind: 'follow_up',
+        deliveryStatus: 'delivered',
+      }),
+    );
+    expect(followUp).toMatchObject({
+      runId: 'follow-up-run',
+      turnId: 'follow-up-run',
+      segmentIndex: 2,
+      deliveryKind: 'follow_up',
+      deliveryStatus: 'delivered',
+    });
+    expect(mapMessageV1(steerUserMessage({ deliveryStatus: 'delivered' }))).not.toHaveProperty(
+      'deliveryStatus',
+    );
+  });
 });

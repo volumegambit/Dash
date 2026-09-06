@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { WsTicketResponse } from '@dash/mobile-contract';
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 
 const TTL_MS = 30_000;
 
@@ -46,6 +46,8 @@ export class WsTicketStore {
  */
 export function mountWsTicketRoute(managementApp: Hono): WsTicketStore {
   const wsTickets = new WsTicketStore();
-  managementApp.post('/mobile/v1/ws-ticket', (c) => c.json(wsTickets.issue()));
+  const issue = (c: Context) => c.json(wsTickets.issue());
+  managementApp.post('/mobile/v1/ws-ticket', issue);
+  managementApp.post('/mobile/v2/ws-ticket', issue);
   return wsTickets;
 }

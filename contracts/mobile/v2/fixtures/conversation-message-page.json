@@ -1,0 +1,50 @@
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-000000000111",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "turnId": "turn-01",
+      "ordinal": 1,
+      "role": "user",
+      "status": "completed",
+      "content": { "type": "user", "text": "Start the run." },
+      "createdAt": "2026-09-06T09:01:00.000Z",
+      "updatedAt": "2026-09-06T09:01:00.000Z",
+      "runId": "turn-01",
+      "segmentIndex": 0,
+      "deliveryKind": "normal"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000112",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "turnId": "00000000-0000-4000-8000-000000000121",
+      "ordinal": 2,
+      "role": "user",
+      "status": "accepted",
+      "content": { "type": "user", "text": "Steer here." },
+      "createdAt": "2026-09-06T09:02:00.000Z",
+      "updatedAt": "2026-09-06T09:02:00.000Z",
+      "runId": "turn-01",
+      "segmentIndex": 1,
+      "deliveryKind": "steer",
+      "deliveryStatus": "pending"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000113",
+      "conversationId": "00000000-0000-4000-8000-000000000101",
+      "turnId": "00000000-0000-4000-8000-000000000122",
+      "ordinal": 3,
+      "role": "user",
+      "status": "completed",
+      "content": { "type": "user", "text": "Follow this up." },
+      "createdAt": "2026-09-06T09:03:00.000Z",
+      "updatedAt": "2026-09-06T09:04:00.000Z",
+      "runId": "00000000-0000-4000-8000-000000000122",
+      "segmentIndex": 0,
+      "deliveryKind": "follow_up",
+      "deliveryStatus": "delivered"
+    }
+  ],
+  "nextCursor": null,
+  "throughSeq": 5
+}

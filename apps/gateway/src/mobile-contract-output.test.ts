@@ -14,6 +14,7 @@ type ContractDocument = 'openapi' | 'chat-ws';
 type JsonObject = Record<string, unknown>;
 
 const contractRoot = fileURLToPath(new URL('../../../contracts/mobile/v1/', import.meta.url));
+const v2ContractRoot = fileURLToPath(new URL('../../../contracts/mobile/v2/', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const fixturesRoot = join(contractRoot, 'fixtures');
 const openapi = parse(readFileSync(join(contractRoot, 'openapi.yaml'), 'utf8')) as object;
@@ -24,12 +25,29 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
 (addFormats as unknown as (instance: Ajv2020) => void)(ajv);
 ajv.addSchema(openapi, 'mobile-openapi');
 ajv.addSchema(chatWs, 'mobile-chat-ws');
+const v2Openapi = parse(readFileSync(join(v2ContractRoot, 'openapi.yaml'), 'utf8')) as object;
+const v2ChatWs = JSON.parse(
+  readFileSync(join(v2ContractRoot, 'chat-ws.schema.json'), 'utf8'),
+) as object;
+const v2Ajv = new Ajv2020({ allErrors: true, strict: false });
+(addFormats as unknown as (instance: Ajv2020) => void)(v2Ajv);
+v2Ajv.addSchema(v2Openapi, 'mobile-v2-openapi-output');
+v2Ajv.addSchema(v2ChatWs, 'mobile-v2-chat-ws-output');
 
 function expectSchema(document: ContractDocument, schema: string, value: unknown): void {
   const prefix =
     document === 'openapi' ? 'mobile-openapi#/components/schemas/' : 'mobile-chat-ws#/$defs/';
   const validate = ajv.compile({ $ref: `${prefix}${schema}` });
   expect(validate(value), ajv.errorsText(validate.errors)).toBe(true);
+}
+
+function expectV2Schema(document: ContractDocument, schema: string, value: unknown): void {
+  const prefix =
+    document === 'openapi'
+      ? 'mobile-v2-openapi-output#/components/schemas/'
+      : 'mobile-v2-chat-ws-output#/$defs/';
+  const validate = v2Ajv.compile({ $ref: `${prefix}${schema}` });
+  expect(validate(value), v2Ajv.errorsText(validate.errors)).toBe(true);
 }
 
 function loadFixture<T>(name: string): T {
@@ -91,6 +109,16 @@ function mobileRequest(
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${harness.chatToken}`);
   return fetch(`${harness.managementBaseUrl}/mobile/v1${path}`, { ...init, headers });
+}
+
+function mobileV2Request(
+  harness: RunningMobileTestHarness,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${harness.chatToken}`);
+  return fetch(`${harness.managementBaseUrl}/mobile/v2${path}`, { ...init, headers });
 }
 
 async function createConversation(harness: RunningMobileTestHarness): Promise<ConversationSummary> {
@@ -169,6 +197,17 @@ async function openChat(harness: RunningMobileTestHarness): Promise<FrameInbox> 
   return new FrameInbox(socket);
 }
 
+async function openChatWithTicket(url: string, ticket: string): Promise<FrameInbox> {
+  const socket = new WebSocket(`${url}?ticket=${encodeURIComponent(ticket)}`, {
+    rejectUnauthorized: false,
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true });
+    socket.addEventListener('error', (event) => reject(event.error), { once: true });
+  });
+  return new FrameInbox(socket);
+}
+
 class SseInbox {
   private buffer = '';
   private readonly decoder = new TextDecoder();
@@ -203,6 +242,127 @@ class SseInbox {
 }
 
 describe('mobile harness emitted contract output', () => {
+  it('validates the complete mobile v2 REST surface and transactional bootstrap', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      const healthResponse = await fetch(`${harness.managementBaseUrl}/mobile/v2/health`);
+      expect(healthResponse.status).toBe(200);
+      const health = await healthResponse.json();
+      expectV2Schema('openapi', 'MobileV2HealthResponse', health);
+      expect(health).toMatchObject({
+        apiVersion: 2,
+        capabilities: ['conversation-sync-v1', 'chat-resume-v1', 'chat-input-queue-v1'],
+      });
+
+      const identityResponse = await mobileV2Request(harness, '/identity');
+      expect(identityResponse.status).toBe(200);
+      expectV2Schema('openapi', 'GatewayIdentity', await identityResponse.json());
+
+      const createResponse = await mobileV2Request(harness, '/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: harness.agentId, requestId: randomUUID() }),
+      });
+      expect(createResponse.status).toBe(201);
+      const created = (await createResponse.json()) as JsonObject;
+      expectV2Schema('openapi', 'MobileV2ConversationSummary', created);
+      expect(created).toMatchObject({ queueRevision: 0, pendingFollowUpCount: 0, v2LastSeq: 0 });
+
+      const listResponse = await mobileV2Request(harness, '/conversations?limit=10');
+      expect(listResponse.status).toBe(200);
+      expectV2Schema('openapi', 'MobileV2ConversationPage', await listResponse.json());
+
+      const getResponse = await mobileV2Request(harness, `/conversations/${created.id as string}`);
+      expect(getResponse.status).toBe(200);
+      expectV2Schema('openapi', 'MobileV2ConversationSummary', await getResponse.json());
+
+      const patchResponse = await mobileV2Request(
+        harness,
+        `/conversations/${created.id as string}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'If-Match': `"${created.revision as number}"`,
+          },
+          body: JSON.stringify({ title: 'V2 conversation' }),
+        },
+      );
+      expect(patchResponse.status).toBe(200);
+      const patched = (await patchResponse.json()) as JsonObject;
+      expectV2Schema('openapi', 'MobileV2ConversationSummary', patched);
+
+      const messagesResponse = await mobileV2Request(
+        harness,
+        `/conversations/${created.id as string}/messages`,
+      );
+      expect(messagesResponse.status).toBe(200);
+      expectV2Schema('openapi', 'MobileV2ConversationMessagePage', await messagesResponse.json());
+
+      const bootstrapResponse = await mobileV2Request(
+        harness,
+        `/conversations/${created.id as string}/bootstrap?limit=10`,
+      );
+      expect(bootstrapResponse.status).toBe(200);
+      const bootstrap = await bootstrapResponse.json();
+      expectV2Schema('openapi', 'MobileV2ConversationBootstrap', bootstrap);
+      expect(bootstrap.v2ThroughSeq).toBe(bootstrap.conversation.v2LastSeq);
+
+      const replayResponse = await mobileV2Request(
+        harness,
+        `/agents/${harness.agentId}/conversations/${created.id as string}/events?sinceV2Seq=0`,
+      );
+      expect(replayResponse.status).toBe(200);
+      expectV2Schema('openapi', 'MobileV2ReplayPage', await replayResponse.json());
+
+      const deleteResponse = await mobileV2Request(
+        harness,
+        `/conversations/${created.id as string}`,
+        {
+          method: 'DELETE',
+          headers: { 'If-Match': `"${patched.revision as number}"` },
+        },
+      );
+      expect(deleteResponse.status).toBe(200);
+      expectV2Schema('openapi', 'MobileV2ConversationSummary', await deleteResponse.json());
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('redeems tickets minted by either namespace on either chat socket exactly once', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    try {
+      for (const namespace of ['/mobile/v1', '/mobile/v2']) {
+        for (const socketUrl of [harness.chatWebSocketUrl, harness.mobileChatWebSocketUrl]) {
+          const ticketResponse = await fetch(`${harness.managementBaseUrl}${namespace}/ws-ticket`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${harness.chatToken}` },
+          });
+          expect(ticketResponse.status, `${namespace} -> ${socketUrl}`).toBe(200);
+          const { ticket } = (await ticketResponse.json()) as { ticket: string };
+          const chat = await openChatWithTicket(socketUrl, ticket);
+          await chat.close();
+
+          const replay = new WebSocket(`${socketUrl}?ticket=${encodeURIComponent(ticket)}`, {
+            rejectUnauthorized: false,
+          });
+          const close = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+            replay.addEventListener(
+              'close',
+              (event) => resolve({ code: event.code, reason: event.reason }),
+              { once: true },
+            );
+            replay.addEventListener('error', (event) => reject(event.error), { once: true });
+          });
+          expect(close).toEqual({ code: 4001, reason: 'Unauthorized' });
+        }
+      }
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it('documents the mobile conversation surface', async () => {
     const docs = await readFile(join(repoRoot, 'docs/api-reference.mdx'), 'utf8');
     for (const term of [

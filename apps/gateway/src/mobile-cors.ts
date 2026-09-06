@@ -23,6 +23,6 @@ export function mobileCors(allowedOrigins: readonly string[]): MiddlewareHandler
     // every relayed `/mobile/v1` request. It is consumed and stripped at the
     // relay edge (it never reaches this server), but the browser still needs it
     // preflight-approved or it will not issue the real request at all.
-    allowHeaders: ['Authorization', 'Content-Type', 'x-dash-relay-credential'],
+    allowHeaders: ['Authorization', 'Content-Type', 'If-Match', 'x-dash-relay-credential'],
   });
 }

@@ -9,7 +9,12 @@ import type {
   MobileApiError,
   MobileImage,
 } from '@dash/mobile-contract';
-import type { MobileV2ConversationBootstrap } from '@dash/mobile-contract-v2';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+  MobileV2ConversationPage,
+  MobileV2ConversationSummary,
+} from '@dash/mobile-contract-v2';
 import type {
   AcceptRunInput,
   AcceptedRun,
@@ -93,15 +98,25 @@ export interface PersistedTurnFrame {
 export interface ConversationService {
   readonly eventLog: EventLogStore;
   create(input: CreateConversationInput): ConversationSummary;
+  createV2(input: CreateConversationInput): MobileV2ConversationSummary;
   get(id: string, options?: { includeDeleted?: boolean }): ConversationSummary | null;
+  getV2(id: string, options?: { includeDeleted?: boolean }): MobileV2ConversationSummary | null;
   list(input: ListConversationsInput): ConversationPage;
+  listV2(input: ListConversationsInput): MobileV2ConversationPage;
   update(
     id: string,
     expectedRevision: number,
     patch: ConversationPatchRequest,
   ): ConversationSummary;
+  updateV2(
+    id: string,
+    expectedRevision: number,
+    patch: ConversationPatchRequest,
+  ): MobileV2ConversationSummary;
   delete(id: string, expectedRevision: number): ConversationSummary;
+  deleteV2(id: string, expectedRevision: number): MobileV2ConversationSummary;
   listMessages(input: ListMessagesInput): ConversationMessagePage;
+  listMessagesV2(input: ListMessagesInput): MobileV2ConversationMessagePage;
   acceptTurn(input: AcceptTurnInput): AcceptedTurn;
   appendTurnEvent(
     conversationId: string,

@@ -12,6 +12,7 @@ import type {
   MobileCapability,
   ReplayEntry,
 } from '@dash/mobile-contract';
+import { CHAT_INPUT_QUEUE_CAPABILITY } from '@dash/mobile-contract-v2';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
@@ -23,6 +24,10 @@ import type { BlankEnv } from 'hono/types';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
+import {
+  mountConversationV2ManagementRoutes,
+  mountConversationV2Routes,
+} from './conversation-routes-v2.js';
 import { mountConversationRoutes } from './conversation-routes.js';
 import type { ConversationService } from './conversation-service.js';
 import { type CompleteFn, generateConversationTitle } from './conversation-title.js';
@@ -32,6 +37,7 @@ import type { DynamicGateway } from './gateway.js';
 import type { McpManagementDeps } from './mcp-management.js';
 import { mountMcpRoutes } from './mcp-management.js';
 import { mobileCors } from './mobile-cors.js';
+import { classifyMobileRouteTarget, mobileRequestTarget } from './mobile-route-target.js';
 import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
@@ -39,7 +45,8 @@ import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { applyPendingLessons } from './skill-review.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
-const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+const MOBILE_V1_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+const MOBILE_V2_CAPABILITIES = [...MOBILE_V1_CAPABILITIES, CHAT_INPUT_QUEUE_CAPABILITY];
 
 export interface GatewayManagementOptions {
   gateway: DynamicGateway;
@@ -394,6 +401,11 @@ export function mapPluginError(err: unknown): {
 /** Shared by the loopback and `/mobile/v1` registrations of the replay route. */
 const REPLAY_EVENTS_PATH = '/agents/:agentId/conversations/:conversationId/events' as const;
 
+function classifyRequestTarget(c: Context) {
+  const incomingUrl = (c.env as { incoming?: { url?: string } } | undefined)?.incoming?.url;
+  return classifyMobileRouteTarget(mobileRequestTarget(c.req.url, incomingUrl));
+}
+
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
   const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
     options;
@@ -401,6 +413,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
   const mobileV1 = new Hono();
+  const mobileV2 = new Hono();
+
+  // The Node adapter's incoming.url is the only unnormalized request-target.
+  // Reject malformed targets before logging, CORS, auth, or any route handler.
+  app.use('*', async (c, next) => {
+    if (classifyRequestTarget(c).kind === 'rejected') {
+      return c.json(mobileValidationError('Invalid request target'), 400);
+    }
+    await next();
+  });
 
   // Request/response logging middleware. Placed first so unauthorized
   // attempts are logged too, and so the duration measurement wraps auth +
@@ -411,7 +433,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   // persists this stream to gateway.log. Shape-only metadata is sufficient
   // for request diagnostics without creating a second transcript.
   app.use('*', async (c, next) => {
-    if (c.req.path === '/health' || c.req.path === '/mobile/v1/health') {
+    const target = classifyRequestTarget(c);
+    if (
+      c.req.path === '/health' ||
+      (target.kind === 'mobile' && target.pathname === `/mobile/v${target.version}/health`)
+    ) {
       await next();
       return;
     }
@@ -515,31 +541,33 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     }
   }
 
-  // CORS for the `/mobile/v1` namespace, registered BEFORE the auth middleware
+  // CORS for the exact mobile namespaces, registered BEFORE the auth middleware
   // so a preflight OPTIONS is answered and short-circuited here: browsers strip
   // author-set headers from preflights, so one can never carry a bearer. Scoped
   // to `/mobile/v1` only — every administrative route stays CORS-free. See
   // mobile-cors.ts for the exact-origin/no-credentials ruleset; an empty
   // allowlist (the default) mounts a no-op.
   const mobileCorsMiddleware = mobileCors(options.webOrigins ?? []);
-  app.use('/mobile/v1', mobileCorsMiddleware);
-  app.use('/mobile/v1/*', mobileCorsMiddleware);
+  app.use('*', async (c, next) => {
+    if (classifyRequestTarget(c).kind === 'mobile') {
+      return mobileCorsMiddleware(c, next);
+    }
+    await next();
+  });
 
   // Auth middleware — /health is exempt. /projects/ws is exempt too:
   // WebSocket clients cannot send an Authorization header, and the route
   // (mounted on this app by the gateway via mountProjectsWs) enforces the
   // same token itself through its ?token= query param.
   app.use('*', async (c, next) => {
-    if (
-      c.req.path === '/health' ||
-      c.req.path === '/mobile/v1/health' ||
-      c.req.path === '/projects/ws'
-    ) {
+    const target = classifyRequestTarget(c);
+    const publicMobileHealth =
+      target.kind === 'mobile' && target.pathname === `/mobile/v${target.version}/health`;
+    if (c.req.path === '/health' || publicMobileHealth || c.req.path === '/projects/ws') {
       await next();
       return;
     }
-    const mobileRoute = c.req.path === '/mobile/v1' || c.req.path.startsWith('/mobile/v1/');
-    const expectedToken = mobileRoute ? options.mobileToken : token;
+    const expectedToken = target.kind === 'mobile' ? options.mobileToken : token;
     const authConfigured = token !== undefined || options.mobileToken !== undefined;
     if (authConfigured) {
       const auth = c.req.header('Authorization');
@@ -552,27 +580,43 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   // --- Health ---
 
+  const healthPayload = (apiVersion: 1 | 2, capabilities: string[]) => ({
+    status: 'healthy' as const,
+    startedAt,
+    // `pid` is load-bearing for MC's GatewaySupervisor: it lets the
+    // supervisor identify the actual process holding port 9300
+    // independently of its own gateway-state.json file. When state
+    // drifts (e.g. an orphan gateway inherited by init after a parent
+    // crashed), the supervisor's `state.pid` can point at the wrong
+    // process — we'd SIGTERM the wrong thing and then hit EADDRINUSE
+    // trying to spawn. Reading the real PID from the server itself
+    // lets the supervisor kill the correct process every time.
+    pid: process.pid,
+    agents: agentRegistry.list().length,
+    channels: channelRegistry.list().length,
+    apiVersion,
+    capabilities,
+  });
   const healthHandler = (c: Context) => {
     return c.json({
-      status: 'healthy',
-      startedAt,
-      // `pid` is load-bearing for MC's GatewaySupervisor: it lets the
-      // supervisor identify the actual process holding port 9300
-      // independently of its own gateway-state.json file. When state
-      // drifts (e.g. an orphan gateway inherited by init after a parent
-      // crashed), the supervisor's `state.pid` can point at the wrong
-      // process — we'd SIGTERM the wrong thing and then hit EADDRINUSE
-      // trying to spawn. Reading the real PID from the server itself
-      // lets the supervisor kill the correct process every time.
-      pid: process.pid,
-      agents: agentRegistry.list().length,
-      channels: channelRegistry.list().length,
-      apiVersion: 1,
-      capabilities: MOBILE_CAPABILITIES,
+      ...healthPayload(1, MOBILE_V1_CAPABILITIES),
     });
   };
   app.get('/health', healthHandler);
   mobileV1.get('/health', healthHandler);
+  mobileV2.get('/health', (c) => c.json(healthPayload(2, MOBILE_V2_CAPABILITIES)));
+
+  app.get('/info', (c) =>
+    c.json({
+      agents: agentRegistry.list().map((entry) => ({
+        name: entry.name,
+        model: entry.config.model,
+        tools: entry.config.tools ?? [],
+      })),
+      conversationApiVersions: [1, 2],
+      chatCapabilities: [CHAT_INPUT_QUEUE_CAPABILITY],
+    }),
+  );
 
   // --- Lifecycle ---
   // Bearer-authed (the app.use('*') middleware above). MC's GatewaySupervisor
@@ -599,6 +643,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   const identityHandler = (c: Context) => c.json(options.identity);
   app.get('/identity', identityHandler);
   mobileV1.get('/identity', identityHandler);
+  mobileV2.get('/identity', identityHandler);
 
   // Mission Control reads this over the loopback-only administrative API when
   // constructing a LAN pairing payload. It is deliberately absent from the
@@ -614,6 +659,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     eventBus,
   });
   mountConversationRoutes(mobileV1, {
+    conversations: options.conversationService,
+    agentRegistry,
+    eventBus,
+  });
+  mountConversationV2Routes(mobileV2, {
+    conversations: options.conversationService,
+    agentRegistry,
+    eventBus,
+  });
+  mountConversationV2ManagementRoutes(app, {
     conversations: options.conversationService,
     agentRegistry,
     eventBus,
@@ -1021,6 +1076,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
 
   mountAgentRoutes(app, AGENT_CREATE_KEYS, AGENT_UPDATE_KEYS);
   mountAgentRoutes(mobileV1, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);
+  mountAgentRoutes(mobileV2, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);
 
   // --- Skill routes ---
   const mapSkillError = (
@@ -1459,6 +1515,10 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     '/models',
     createModelsRoute({ ...modelsOptions, controller: modelsController, strictReadOnly: true }),
   );
+  mobileV2.route(
+    '/models',
+    createModelsRoute({ ...modelsOptions, controller: modelsController, strictReadOnly: true }),
+  );
 
   // --- Event-log replay ---
   //
@@ -1868,9 +1928,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     };
     app.get('/events', eventsHandler);
     mobileV1.get('/events', eventsHandler);
+    mobileV2.get('/events', eventsHandler);
   }
 
   app.route('/mobile/v1', mobileV1);
+  app.route('/mobile/v2', mobileV2);
 
   return app;
 }
