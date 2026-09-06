@@ -239,3 +239,119 @@ describe('DashAgent memory prompt', () => {
     expect(seen[0]).not.toContain('MEMORY.md');
   });
 });
+
+describe('DashAgent location prompt', () => {
+  const location = {
+    timezone: 'Asia/Singapore',
+    utcOffsetMinutes: 480,
+    locale: 'en-SG',
+    region: 'SG',
+  };
+
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dash-agent-location-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('appends an <environment> block when the client reported a location', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-sonnet-5', systemPrompt: 'base' }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { location }));
+
+    expect(seen[0]).toContain('base\n\n<environment>');
+    expect(seen[0]).toContain('- Time zone: Asia/Singapore');
+  });
+
+  it('carries the location onto AgentState for the backend', async () => {
+    let captured: AgentState | undefined;
+    const backend = makeBackend([], (state) => {
+      captured = state;
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-sonnet-5', systemPrompt: 'base' }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { location }));
+
+    expect(captured?.location).toEqual(location);
+  });
+
+  it('appends nothing when the client reported no location', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-sonnet-5', systemPrompt: 'base' }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi'));
+
+    expect(seen[0]).not.toContain('<environment>');
+    expect(seen[0]).toBe('base');
+  });
+
+  it('suppresses the block when the agent has location disabled', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-sonnet-5',
+        systemPrompt: 'base',
+        location: { enabled: false },
+      }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { location }));
+
+    expect(seen[0]).not.toContain('<environment>');
+  });
+
+  it('orders <environment> before <memory>', async () => {
+    await new MemoryStore(dir).save({
+      name: 'user-timezone',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      content: 'UTC+8',
+      source: 'agent',
+    });
+
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-sonnet-5',
+        systemPrompt: 'base',
+        memory: { dir },
+      }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { location }));
+
+    const env = seen[0].indexOf('<environment>');
+    const mem = seen[0].indexOf('<memory>');
+    expect(env).toBeGreaterThan(-1);
+    expect(mem).toBeGreaterThan(-1);
+    expect(env).toBeLessThan(mem);
+  });
+});
