@@ -5,7 +5,7 @@ import type {
 } from '@dash/mobile-contract';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { create } from 'zustand';
-import type { WebAppState } from '../../state/store.js';
+import type { SubagentFacts, WebAppState } from '../../state/store.js';
 import { WebAppStoreContext } from '../Shell.js';
 import { ContentBlocks } from './ContentBlocks.js';
 
@@ -299,7 +299,17 @@ describe('SubagentBlock', () => {
       // No `answering` hint any more: whether this answers the parked
       // `ask_orchestrator` question or steers is the server's to decide, and
       // the store no longer needs the guess (see `sendToSubagent`).
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'yes please');
+      //
+      // `optimistic: false` because the row is COLLAPSED (fix I2): it renders
+      // no transcript and holds no child subscription, so there is nowhere to
+      // show a local row and no `accepted` coming to reconcile one. Usually
+      // this text becomes an `ask_orchestrator` tool result with no server
+      // row at all — but if the question resolved between render and submit
+      // it becomes a queued steer, and the row this block would have written
+      // is the one D2 found duplicated.
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'yes please', {
+        optimistic: false,
+      });
     });
   });
 
@@ -461,7 +471,12 @@ describe('SubagentBlock', () => {
         fireEvent.submit(composer);
       });
 
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay');
+      // Opted in: the body composer only exists while the row is open and
+      // nested, which is exactly when this block has loaded the transcript
+      // and holds the subscription that redeems the row (fix I2).
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay', {
+        optimistic: true,
+      });
     });
 
     /**
@@ -522,7 +537,7 @@ describe('SubagentBlock', () => {
      * (skipping a field-equal write outright) is pinned in store.test.ts.
      */
     it('does not re-render the nested transcript on an identical facts refresh', () => {
-      const facts = () => ({
+      const facts = (): SubagentFacts => ({
         type: 'Explore',
         description: 'Map gateway internals',
         status: 'running',
@@ -946,7 +961,9 @@ describe('SubagentBlock', () => {
       await act(async () => {
         fireEvent.submit(composer);
       });
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'keep going');
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'keep going', {
+        optimistic: true,
+      });
     });
 
     // Round 2, ruling 8. Round 1 widened the one-shot disable to the
@@ -986,7 +1003,12 @@ describe('SubagentBlock', () => {
       await act(async () => {
         fireEvent.submit(reply);
       });
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'the staging one');
+      // Open, so the reply composer opts in here even though the collapsed
+      // one above does not — the choice belongs to the BLOCK's state, not to
+      // which of its two composers was used.
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'the staging one', {
+        optimistic: true,
+      });
 
       // The body composer is still refused — a steer to a one-shot child is
       // what the coordinator rejects, and the web disable agrees with it.

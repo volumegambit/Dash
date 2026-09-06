@@ -259,12 +259,20 @@ function TasksRow({
       ) : null}
       {resumeOpen && canResume ? (
         // The SAME composer the block uses, sending through the SAME store
-        // action: `sendToSubagent` puts the optimistic row in the child's
-        // transcript, carries its id as the resume's `requestId`, and
-        // reconciles on the echo. A second correlation scheme here would
-        // duplicate or strand that row the first time an `accepted` went
-        // missing. Its draft gets a `tasks:` key of its own so a keystroke
-        // cannot re-render the block's row (see `bodyComposerKey`).
+        // action. A second correlation scheme here would duplicate or strand
+        // a row the first time an `accepted` went missing. Its draft gets a
+        // `tasks:` key of its own so a keystroke cannot re-render the block's
+        // row (see `bodyComposerKey`).
+        //
+        // It declines the optimistic row (fix I2). That row is reconciled by
+        // the `accepted` frame echoing its id, which only reaches a client
+        // SUBSCRIBED to the child — and point 2 above is that this panel
+        // never subscribes. So the row could never be reconciled here, and
+        // the next time the user expanded the block the REST read merged the
+        // server's own copy alongside it: the sentence twice, until the
+        // conversation was left. Nothing is lost by declining, because the
+        // panel renders no transcript for the row to appear in; the refusal
+        // path still reports itself through the composer's error line.
         <InlineComposer
           store={store}
           uiKey={resumeComposerKey(subagentId)}

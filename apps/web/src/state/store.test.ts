@@ -3214,7 +3214,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay', { optimistic: true });
 
       expect(resumeSubagent).toHaveBeenCalledWith(
         CHILD_ID,
@@ -3230,6 +3230,118 @@ describe('createWebAppStore', () => {
         content: { type: 'user', text: 'also check the relay' },
       });
       expect(store.getState().transcripts[CONVERSATION_ID].messages).toHaveLength(0);
+    });
+
+    /**
+     * Round-1 fix I2. The optimistic row only ever reconciles if this client
+     * is SUBSCRIBED to the child — the `accepted` echoing its `requestId` is
+     * the only correlation there is — and the tasks panel deliberately never
+     * subscribes (it renders a list, not a transcript). A resume sent from a
+     * panel row whose block has never been expanded therefore left the row
+     * unreconciled forever: `mergeMessagesById` only deletes an existing row
+     * when the incoming page carries its `turnId`, and the local row's
+     * `turnId` is a client uuid the server never saw. The next expansion
+     * showed the user's sentence TWICE.
+     *
+     * The row is now the caller's to ask for. A caller that renders no
+     * transcript wants no row: nothing displays it, the composer's own error
+     * line already reports a refusal, and there is no interleaving in which
+     * it can duplicate.
+     */
+    it('writes no optimistic row for a caller that did not ask for one', async () => {
+      const serverRow = message({
+        id: 'server-user-row',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-1',
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+      const { rest, resumeSubagent } = fakeRest({
+        resumeSubagentImpl: async () => ({ ok: true, status: 'running', mode: 'resumed' }),
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [serverRow] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      // The panel's call: no expansion, no subscription, no opt-in.
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+
+      // Nothing rendered that transcript, so nothing was written to it — and
+      // no correlation id was minted for a row that does not exist.
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+      expect(resumeSubagent).toHaveBeenCalledWith(CHILD_ID, 'also check the relay', undefined);
+
+      // Now the user clicks the row to watch the reply. Before the fix this
+      // is where the duplicate became visible.
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0].id).toBe('server-user-row');
+    });
+
+    /**
+     * The other half of the same case: the block for that child IS expanded
+     * and subscribed when the panel's resume lands. The `accepted` names no
+     * local row, so it takes the same path a resume issued by a PEER client
+     * takes — materialise the server's row, then fill its text from the
+     * replay `done` triggers. Still exactly one row.
+     */
+    it('shows a panel resume once in a transcript that is already open', async () => {
+      const serverRow = message({
+        id: 'server-user-1',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-1',
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+      const { rest, getMessages } = fakeRest({
+        resumeSubagentImpl: async () => ({ ok: true, status: 'running', mode: 'resumed' }),
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [serverRow] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      // The block is open: transcript loaded and child subscribed.
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      store.getState().subscribeSubagent(CHILD_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      onFrames[0](childAccepted());
+      onFrames[0]({
+        type: 'done',
+        id: 'server-turn-1',
+        conversationId: CHILD_ID,
+        seq: 8,
+        outcome: 'completed',
+      } as MobileWsServerFrame);
+      await vi.waitFor(() =>
+        expect(
+          getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length,
+        ).toBeGreaterThanOrEqual(2),
+      );
+
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id: 'server-user-1',
+        content: { type: 'user', text: 'also check the relay' },
+      });
     });
 
     /**
@@ -3282,7 +3394,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay', { optimistic: true });
       onFrames[0](childAccepted({ requestId: resumeSubagent.mock.calls[0][2] as string }));
 
       const messages = store.getState().transcripts[CHILD_ID].messages;
@@ -3361,7 +3473,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay', { optimistic: true });
       // The REST read wins the race and merges the server's row first.
       await store.getState().loadSubagentTranscript(CHILD_ID);
       expect(store.getState().transcripts[CHILD_ID].messages).toHaveLength(2);
@@ -3400,7 +3512,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay', { optimistic: true });
       // A uuid collision: the server's id for the user row IS the client's
       // correlation id.
       onFrames[0](childAccepted({ requestId, userMessageId: requestId }));
@@ -3548,7 +3660,7 @@ describe('createWebAppStore', () => {
       // promise's executor — and therefore `release` — is already set here.
       // The correlation id travels IN the request, so the gateway can echo it
       // on a frame that beats the response.
-      const sent = store.getState().sendToSubagent(CHILD_ID, 'early');
+      const sent = store.getState().sendToSubagent(CHILD_ID, 'early', { optimistic: true });
       expect(release).not.toBeNull();
       onFrames[0](childAccepted({ requestId }));
       (release as unknown as () => void)();
@@ -3567,7 +3679,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'and the gateway too');
+      await store.getState().sendToSubagent(CHILD_ID, 'and the gateway too', { optimistic: true });
 
       // Nothing has come back yet, but the send DID succeed: the row must not
       // sit at `accepted` for the life of the store.
@@ -3598,7 +3710,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'the staging one');
+      await store.getState().sendToSubagent(CHILD_ID, 'the staging one', { optimistic: true });
       expect(store.getState().transcripts[CHILD_ID].messages[0].status).toBe('completed');
 
       // An unrelated later turn on the child (the orchestrator's own
@@ -3628,8 +3740,8 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'first follow-up');
-      await store.getState().sendToSubagent(CHILD_ID, 'second follow-up');
+      await store.getState().sendToSubagent(CHILD_ID, 'first follow-up', { optimistic: true });
+      await store.getState().sendToSubagent(CHILD_ID, 'second follow-up', { optimistic: true });
       const secondRequestId = resumeSubagent.mock.calls[1][2] as string;
 
       // Turn 1's `accepted` never arrives (the row was collapsed while the
@@ -3667,7 +3779,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'the user typed this');
+      await store.getState().sendToSubagent(CHILD_ID, 'the user typed this', { optimistic: true });
       const userRequestId = resumeSubagent.mock.calls[0][2] as string;
 
       // The orchestrator's turn: `origin: 'parent'`, no correlation id.
@@ -3712,7 +3824,7 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay', { optimistic: true });
       onFrames[0](childAccepted());
 
       const messages = store.getState().transcripts[CHILD_ID].messages;
@@ -3731,7 +3843,9 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      const sent = store.getState().sendToSubagent(CHILD_ID, 'and the gateway too');
+      const sent = store
+        .getState()
+        .sendToSubagent(CHILD_ID, 'and the gateway too', { optimistic: true });
       const localId = store.getState().transcripts[CHILD_ID].messages[0].id;
       await sent;
 
@@ -3755,7 +3869,9 @@ describe('createWebAppStore', () => {
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await expect(
-        store.getState().sendToSubagent(CHILD_ID, 'it went through after all'),
+        store
+          .getState()
+          .sendToSubagent(CHILD_ID, 'it went through after all', { optimistic: true }),
       ).rejects.toBeInstanceOf(MobileApiError);
       expect(store.getState().transcripts[CHILD_ID].messages[0].status).toBe('failed');
 
@@ -3780,9 +3896,9 @@ describe('createWebAppStore', () => {
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await expect(store.getState().sendToSubagent(CHILD_ID, 'nope')).rejects.toBeInstanceOf(
-        MobileApiError,
-      );
+      await expect(
+        store.getState().sendToSubagent(CHILD_ID, 'nope', { optimistic: true }),
+      ).rejects.toBeInstanceOf(MobileApiError);
 
       expect(store.getState().transcripts[CHILD_ID].messages[0]).toMatchObject({
         status: 'failed',

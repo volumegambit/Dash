@@ -250,7 +250,12 @@ describe('TasksPanel', () => {
         fireEvent.submit(composer);
       });
 
+      // Exactly two arguments: the panel DECLINES the optimistic row (fix
+      // I2). It never subscribes to the child, so nothing would ever
+      // reconcile one, and the next expansion of that child's block merged
+      // the server's own copy alongside it — the sentence twice.
       expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay');
+      expect(scripted.sendToSubagent.mock.calls[0]).toHaveLength(2);
     });
 
     /** Its draft lives in the store under its own key, like every other

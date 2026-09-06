@@ -379,8 +379,28 @@ export interface WebAppState {
   unsubscribeSubagent(childId: string): void;
   /**
    * Types a user turn INTO a child ("type into a child's transcript", §8.3)
-   * via `POST /subagents/:id/resume`, with an optimistic user row in
-   * `transcripts[childId]` that is marked `failed` if the resume is refused.
+   * via `POST /subagents/:id/resume`.
+   *
+   * `optimistic` is the caller's declaration that it RENDERS this child's
+   * transcript and is subscribed to the child. It opts into a local user row
+   * in `transcripts[childId]`, marked `failed` if the resume is refused and
+   * reconciled by the `accepted` frame echoing its id as `requestId`.
+   *
+   * Off by default, and that default is the fix for round-1 I2. The echo is
+   * the only correlation there is, and it only reaches a client that is
+   * SUBSCRIBED to the child. The tasks panel deliberately never subscribes —
+   * it renders a list, not a transcript — so a resume sent from a panel row
+   * left a row nothing could ever reconcile, and the next expansion merged
+   * the server's own copy alongside it: the user's sentence, twice.
+   * `mergeMessagesById` cannot help, because it only supersedes a row whose
+   * `turnId` the incoming page carries and the local row's `turnId` is a
+   * client uuid the server never saw.
+   *
+   * A caller that renders nothing loses nothing by declining: no row is
+   * displayed, and a refusal still reaches the user through the composer's
+   * own error line. What it gains is that there is no interleaving in which
+   * the row can duplicate — no lifecycle, no second correlation scheme, and
+   * no subscription held open across a send.
    *
    * REST, not a WS `message` frame addressed to the child. The route matters:
    * only it reaches `coordinator.sendToChild` → `ChildHandle.send`, which is
@@ -403,7 +423,7 @@ export interface WebAppState {
    * matches anything — and a guess that was WRONG in either direction used to
    * duplicate or strand a row. See the implementation's docblock.
    */
-  sendToSubagent(childId: string, text: string): Promise<void>;
+  sendToSubagent(childId: string, text: string, options?: { optimistic?: boolean }): Promise<void>;
   /**
    * Re-reads `GET /conversations/:id/subagents` into `subagentIds` and the
    * `facts` half of `subagents` — the tasks panel's whole model (§8.4).
@@ -2042,6 +2062,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       /**
        * A follow-up typed into a child, over `POST /subagents/:id/resume`.
        *
+       * Everything below is about the OPTIMISTIC row, which only exists when
+       * the caller opted in (see `WebAppState.sendToSubagent`). Without it
+       * the method is a bare REST call: nothing local to reconcile, nothing
+       * to withdraw, no `requestId`.
+       *
        * The optimistic row's own id is sent as the request's `requestId`, and
        * the gateway echoes it on the `accepted` frame of whichever turn the
        * message becomes. That echo is the ONLY correlation there is: the
@@ -2074,36 +2099,52 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
        * either direction is self-correcting, because the echo — not the
        * client's guess — decides.
        */
-      async sendToSubagent(childId, text) {
-        childTranscriptIds.add(childId);
-        // The optimistic row goes in FIRST so the text is visible in the
-        // child's transcript while the resume is in flight, and so there is
-        // something to mark `failed` if it is refused. Its id doubles as the
-        // request's correlation id.
-        const localId = crypto.randomUUID();
-        const optimistic: ConversationMessage = {
-          id: localId,
-          conversationId: childId,
-          turnId: localId,
-          ordinal: (get().transcripts[childId]?.messages.length ?? 0) + 1,
-          role: 'user',
-          status: 'accepted',
-          content: { type: 'user', text },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          origin: 'parent',
-        };
-        updateTranscript(childId, (t) => ({ ...t, messages: [...t.messages, optimistic] }));
+      async sendToSubagent(childId, text, options) {
+        // Fix I2: no row unless the caller asked for one. A caller that
+        // renders no transcript is not subscribed to the child either, so
+        // there is no `accepted` coming to reconcile a row it would write —
+        // and an unreconciled row is duplicated by the next REST read of that
+        // transcript. `undefined` rather than a uuid nothing can ever match:
+        // on this path the row's id IS the correlation id, so with no row
+        // there is nothing to correlate. The gateway treats an absent
+        // `requestId` as "uncorrelated" by contract.
+        let localId: string | undefined;
+        if (options?.optimistic) {
+          // Registered only when something is actually written, so
+          // `clearChildSubscriptions` has no dead ids to walk.
+          childTranscriptIds.add(childId);
+          // The optimistic row goes in FIRST so the text is visible in the
+          // child's transcript while the resume is in flight, and so there is
+          // something to mark `failed` if it is refused. Its id doubles as the
+          // request's correlation id.
+          localId = crypto.randomUUID();
+          const optimistic: ConversationMessage = {
+            id: localId,
+            conversationId: childId,
+            turnId: localId,
+            ordinal: (get().transcripts[childId]?.messages.length ?? 0) + 1,
+            role: 'user',
+            status: 'accepted',
+            content: { type: 'user', text },
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            origin: 'parent',
+          };
+          updateTranscript(childId, (t) => ({ ...t, messages: [...t.messages, optimistic] }));
+        }
 
         try {
           await rest.resumeSubagent(childId, text, localId);
         } catch (err) {
-          updateTranscript(childId, (t) => ({
-            ...t,
-            messages: t.messages.map((m) =>
-              m.id === localId ? { ...m, status: 'failed' as const } : m,
-            ),
-          }));
+          if (localId !== undefined) {
+            const failedId = localId;
+            updateTranscript(childId, (t) => ({
+              ...t,
+              messages: t.messages.map((m) =>
+                m.id === failedId ? { ...m, status: 'failed' as const } : m,
+              ),
+            }));
+          }
           if (isAuthError(err)) enterUnauthorized();
           // Rethrown, unlike `cancelTurn`'s swallow: the user typed this and it
           // did not reach the agent, so the row that owns the composer has to
@@ -2111,16 +2152,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           throw err;
         }
 
+        if (localId === undefined) return;
         // The send succeeded, so the row must not sit at `accepted` for the
         // life of the store waiting for a frame that may be minutes away or
         // may never come (path 3). A no-op if the `accepted` already beat us
         // here: reconciliation renamed the row to the server's id.
+        const sentId = localId;
         updateTranscript(childId, (t) => ({
           ...t,
           messages: t.messages.map((m) =>
-            m.id === localId && m.status === 'accepted'
-              ? { ...m, status: 'completed' as const }
-              : m,
+            m.id === sentId && m.status === 'accepted' ? { ...m, status: 'completed' as const } : m,
           ),
         }));
       },

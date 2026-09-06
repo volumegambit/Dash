@@ -217,7 +217,19 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
     // guess it. Pairing is keyed on a `requestId` the gateway echoes, so a
     // message that never becomes a turn just never matches — see
     // `sendToSubagent`.
-    await store.getState().sendToSubagent(subagentId, text);
+    //
+    // `open && nested` is exactly the condition the subscription effect above
+    // uses, and that is the point (fix I2): the optimistic row is only
+    // reconcilable by an `accepted` that reaches a SUBSCRIBED client, so the
+    // row is asked for precisely when the subscription that redeems it is
+    // held — and when there is a rendered transcript to show it in. The
+    // collapsed `waiting` reply composer therefore declines it: an answer to
+    // `ask_orchestrator` usually becomes a tool result with no server row at
+    // all, but a child whose question resolved between render and submit
+    // falls through to a queued steer whose `accepted` this collapsed,
+    // unsubscribed row would never see — D2's narrow version of the same
+    // duplicate.
+    await store.getState().sendToSubagent(subagentId, text, { optimistic: open && nested });
   };
 
   return (
