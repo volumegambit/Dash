@@ -1,4 +1,6 @@
 import '@testing-library/jest-dom/vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ConversationRef, McConversationView } from '@dash/mc';
 import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -23,6 +25,45 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 const { Chat, MessageBubble } = await import('./chat.js');
+
+type ChatOrderExpected = {
+  kind: 'text' | 'thinking' | 'tool' | 'question';
+  label?: string;
+  text?: string;
+};
+
+type ChatOrderFixture = {
+  version: number;
+  cases: Array<{
+    name: string;
+    events: Record<string, unknown>[];
+    expected: ChatOrderExpected[];
+  }>;
+};
+
+const chatOrderFixture = JSON.parse(
+  readFileSync(
+    join(import.meta.dirname, '../../../../../../scripts/fixtures/chat-event-order.json'),
+    'utf8',
+  ),
+) as ChatOrderFixture;
+
+function orderedFixtureElements(expected: ChatOrderExpected[]): HTMLElement[] {
+  return expected.map((entry) => {
+    if (entry.kind === 'tool') {
+      return screen.getByRole('button', { name: new RegExp(entry.label ?? '') });
+    }
+    if (entry.kind === 'thinking') {
+      return screen.getByRole('button', { name: 'Show thinking' });
+    }
+    if (entry.kind === 'question') {
+      return screen.getByText((_, element) =>
+        Boolean(element?.tagName === 'P' && element.textContent?.includes(entry.text ?? '')),
+      );
+    }
+    return screen.getByText(entry.text ?? '');
+  });
+}
 
 const agent1 = {
   id: 'agent-1',
@@ -618,6 +659,20 @@ describe('MessageBubble tool rows (tool-use UX 2026-09-05)', () => {
       timestamp: '2026-07-06T00:00:00Z',
     };
   }
+
+  it.each(chatOrderFixture.cases)(
+    'matches shared assistant event order: $name',
+    ({ events, expected }) => {
+      render(<MessageBubble message={assistantMessage(events)} />);
+      const elements = orderedFixtureElements(expected);
+      for (let index = 1; index < elements.length; index++) {
+        expect(
+          elements[index - 1].compareDocumentPosition(elements[index]) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    },
+  );
 
   it('shows what a tool call returned in the collapsed header', () => {
     const { container } = render(

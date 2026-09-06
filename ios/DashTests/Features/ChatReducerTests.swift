@@ -450,6 +450,48 @@ struct ChatReducerTests {
     #expect(cards[0].content == "contents")
   }
 
+  @Test("assistant timeline preserves prose and tool chronology")
+  func assistantTimelineChronology() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Before"), seq: 2, to: &state)
+    _ = apply(.toolUseStart(id: "tool-1", name: "bash", input: nil), seq: 3, to: &state)
+    _ = apply(
+      .toolResult(id: "tool-1", name: "bash", content: "done", isError: false, details: nil),
+      seq: 4,
+      to: &state
+    )
+    _ = apply(.textDelta(text: "After"), seq: 5, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    #expect(timeline.count == 3)
+    guard timeline.count == 3 else { return }
+    #expect(timeline[0] == .text("Before"))
+    if case let .tool(tool) = timeline[1] {
+      #expect(tool.name == "bash")
+      #expect(tool.status == .succeeded)
+    } else {
+      Issue.record("Expected a tool in the middle of the timeline")
+    }
+    #expect(timeline[2] == .text("After"))
+  }
+
+  @Test("orphan tool results remain at their event position")
+  func orphanToolResultChronology() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Before"), seq: 2, to: &state)
+    _ = apply(
+      .toolResult(id: "tool-1", name: "bash", content: "done", isError: false, details: nil),
+      seq: 3,
+      to: &state
+    )
+    _ = apply(.textDelta(text: "After"), seq: 4, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    #expect(timeline.count == 3)
+    #expect(timeline.first == .text("Before"))
+    #expect(timeline.last == .text("After"))
+  }
+
   @Test("tool error preserves text and an icon-addressable failure state")
   func toolErrorProjection() {
     var state = acceptedState(cursor: 1)

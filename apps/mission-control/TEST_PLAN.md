@@ -778,6 +778,13 @@ There is no pre-send "missing credential" banner in chat; the input is not gated
 2. **Verify:** Write tool block shows the SVG rendered as an image (not raw XML)
 3. **Verify:** No script tags or event handlers execute (sanitized)
 
+### 16.7 Cross-Client Event Ordering
+1. Open the same conversation in Mission Control, web, iOS, and Android.
+2. Send a request that produces prose, a tool call, more prose, and a second tool call.
+3. **Verify:** Every client shows each prose segment and tool card in the order emitted.
+4. **Verify:** Tool completion updates the existing card without moving it below later prose.
+5. **Verify:** Consecutive tool calls remain separate cards in execution order.
+
 ---
 
 ## Section 17: Chat — Copy & Selection

@@ -427,7 +427,7 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
   let key = 0;
   let textBuffer = '';
   let thinkingBuffer = '';
-  let pendingTool: PendingTool | null = null;
+  const pendingTools = new Map<string, { tool: PendingTool; index: number; key: string }>();
 
   const flushText = (): void => {
     if (!textBuffer) return;
@@ -438,14 +438,6 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
     if (!thinkingBuffer) return;
     nodes.push(<ThinkingBlock key={`think-${key++}`} text={thinkingBuffer} />);
     thinkingBuffer = '';
-  };
-  /** Flushes an unresolved `pendingTool` (no `tool_result` arrived for it)
-   * as an in-progress block — used both when a *new* `tool_use_start`
-   * supersedes it and at the end of the event list. */
-  const flushPendingToolInProgress = (): void => {
-    if (!pendingTool) return;
-    nodes.push(<ToolUseBlock key={`tool-${key++}`} tool={pendingTool} />);
-    pendingTool = null;
   };
   const pushUnknown = (): void => {
     flushText();
@@ -481,17 +473,24 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
       }
 
       case 'tool_use_start': {
-        if (typeof event.name !== 'string') {
+        if (typeof event.id !== 'string' || typeof event.name !== 'string') {
           pushUnknown();
           break;
         }
         flushText();
         flushThinking();
-        flushPendingToolInProgress();
-        pendingTool = {
+        const pendingTool = {
           name: event.name,
           input: isRecord(event.input) ? (event.input as Record<string, unknown>) : undefined,
         };
+        const pendingToolKey = `tool-${key++}`;
+        const pendingToolIndex = nodes.length;
+        nodes.push(<ToolUseBlock key={pendingToolKey} tool={pendingTool} />);
+        pendingTools.set(event.id, {
+          tool: pendingTool,
+          index: pendingToolIndex,
+          key: pendingToolKey,
+        });
         break;
       }
 
@@ -536,19 +535,23 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
         }
         flushText();
         flushThinking();
-        const tool = pendingTool ?? (typeof event.name === 'string' ? { name: event.name } : null);
+        const pending = typeof event.id === 'string' ? pendingTools.get(event.id) : undefined;
+        const tool =
+          pending?.tool ?? (typeof event.name === 'string' ? { name: event.name } : null);
         if (!tool) {
           pushUnknown();
           break;
         }
-        nodes.push(
+        const toolNode = (
           <ToolUseBlock
-            key={`tool-${key++}`}
+            key={pending?.key || `tool-${key++}`}
             tool={tool}
             result={{ content, isError: event.isError === true, details: event.details }}
-          />,
+          />
         );
-        pendingTool = null;
+        if (pending == null) nodes.push(toolNode);
+        else nodes[pending.index] = toolNode;
+        if (typeof event.id === 'string') pendingTools.delete(event.id);
         break;
       }
 
@@ -590,7 +593,6 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
 
   flushText();
   flushThinking();
-  flushPendingToolInProgress();
 
   return nodes;
 }
