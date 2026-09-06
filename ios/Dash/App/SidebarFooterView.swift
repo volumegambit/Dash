@@ -39,6 +39,8 @@ struct SidebarFooterView: View {
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .hoverEffect(.highlight)
+    .focusable()
     .foregroundStyle(selectedTab == tab ? DashTheme.accent : Color.primary)
     .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
     .accessibilityIdentifier(identifier)

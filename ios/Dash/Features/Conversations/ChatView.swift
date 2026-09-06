@@ -942,6 +942,7 @@ private struct JumpToBottomButton: View {
         .contentShape(Circle())
     }
     .buttonStyle(.plain)
+    .hoverEffect(.lift)
     .frame(minWidth: 44, minHeight: 44)
     .accessibilityLabel("Jump to latest messages")
     .accessibilityIdentifier("chat.jumpToBottom")

@@ -54,6 +54,8 @@ struct AgentsListView: View {
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
+          .hoverEffect(.highlight)
+          .focusable()
           .listRowBackground(
             isSelected(agent.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
           )

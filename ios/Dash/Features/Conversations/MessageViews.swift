@@ -329,6 +329,7 @@ private struct InlineRetryButton: View {
         .font(.footnote.weight(.semibold))
     }
     .buttonStyle(.bordered)
+    .hoverEffect(.lift)
     .tint(.red)
     .frame(minHeight: 44)
     .accessibilityLabel("Retry sending this message")
@@ -416,6 +417,7 @@ private struct MessageImageView: View {
             .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
         }
         .buttonStyle(.plain)
+        .hoverEffect(.lift)
         .accessibilityLabel("Attached image \(index + 1)")
         .accessibilityHint("Opens full screen")
         .accessibilityIdentifier("chat.image.\(index)")
