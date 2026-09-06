@@ -1073,3 +1073,57 @@ describe('gateway resumable chat composition', () => {
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
   });
 });
+
+describe('mountChatWs client location', () => {
+  // A frame WITHOUT `resumable: true` takes the direct agents.chat() path in
+  // chat-ws.ts rather than the resumable hub. Mission Control's chat-service
+  // sends exactly this shape.
+  const DIRECT_MESSAGE = {
+    type: 'message',
+    id: 'turn-loc',
+    agentId: 'agent-01',
+    channelId: 'mission-control',
+    conversationId: 'conversation-01',
+    text: 'Where am I?',
+  } as const;
+
+  it('threads a client location through to the chat request', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, {
+      ...DIRECT_MESSAGE,
+      location: { timezone: 'Asia/Singapore', utcOffsetMinutes: 480, locale: 'en-SG' },
+    });
+
+    expect(harness.requests[0]?.location).toEqual({
+      timezone: 'Asia/Singapore',
+      utcOffsetMinutes: 480,
+      locale: 'en-SG',
+    });
+  });
+
+  it('drops a malformed location but still runs the turn', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, {
+      ...DIRECT_MESSAGE,
+      // Every coarse field is bad: empty strings and an impossible offset.
+      location: { timezone: '', utcOffsetMinutes: 9999, locale: '' },
+    });
+
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]?.text).toBe('Where am I?');
+    expect(harness.requests[0]?.location).toBeUndefined();
+  });
+
+  it('sends no location when the client reported none', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, DIRECT_MESSAGE);
+
+    expect(harness.requests[0]?.location).toBeUndefined();
+  });
+});

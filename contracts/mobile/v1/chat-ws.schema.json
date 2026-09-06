@@ -5,18 +5,10 @@
     "MobileImage": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "mediaType",
-        "data"
-      ],
+      "required": ["mediaType", "data"],
       "properties": {
         "mediaType": {
-          "enum": [
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-            "image/webp"
-          ]
+          "enum": ["image/jpeg", "image/png", "image/gif", "image/webp"]
         },
         "data": {
           "type": "string",
@@ -27,12 +19,7 @@
     "MobilePreciseLocation": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "latitude",
-        "longitude",
-        "accuracyMeters",
-        "capturedAt"
-      ],
+      "required": ["latitude", "longitude", "accuracyMeters", "capturedAt"],
       "properties": {
         "latitude": {
           "type": "number",
@@ -62,11 +49,7 @@
     "MobileClientLocation": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "timezone",
-        "utcOffsetMinutes",
-        "locale"
-      ],
+      "required": ["timezone", "utcOffsetMinutes", "locale"],
       "properties": {
         "timezone": {
           "type": "string",
@@ -111,15 +94,7 @@
     "ChatSend": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "channelId",
-        "conversationId",
-        "text",
-        "resumable"
-      ],
+      "required": ["type", "id", "agentId", "channelId", "conversationId", "text", "resumable"],
       "properties": {
         "type": {
           "const": "message"
@@ -153,10 +128,7 @@
           }
         },
         "streamingBehavior": {
-          "enum": [
-            "steer",
-            "followUp"
-          ]
+          "enum": ["steer", "followUp"]
         },
         "resumable": {
           "const": true
@@ -166,13 +138,7 @@
     "ChatResume": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "conversationId",
-        "sinceSeq"
-      ],
+      "required": ["type", "id", "agentId", "conversationId", "sinceSeq"],
       "properties": {
         "type": {
           "const": "resume"
@@ -198,12 +164,7 @@
     "ChatAnswer": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "questionId",
-        "answer"
-      ],
+      "required": ["type", "id", "questionId", "answer"],
       "properties": {
         "type": {
           "const": "answer"
@@ -224,10 +185,7 @@
     "ChatCancel": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id"
-      ],
+      "required": ["type", "id"],
       "properties": {
         "type": {
           "const": "cancel"
@@ -283,13 +241,7 @@
     "ChatEvent": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "seq",
-        "event"
-      ],
+      "required": ["type", "id", "conversationId", "seq", "event"],
       "properties": {
         "type": {
           "const": "event"
@@ -308,9 +260,7 @@
         },
         "event": {
           "type": "object",
-          "required": [
-            "type"
-          ],
+          "required": ["type"],
           "properties": {
             "type": {
               "type": "string",
@@ -324,13 +274,7 @@
     "ChatDone": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "seq",
-        "outcome"
-      ],
+      "required": ["type", "id", "conversationId", "seq", "outcome"],
       "properties": {
         "type": {
           "const": "done"
@@ -348,23 +292,14 @@
           "minimum": 1
         },
         "outcome": {
-          "enum": [
-            "completed",
-            "cancelled"
-          ]
+          "enum": ["completed", "cancelled"]
         }
       }
     },
     "ChatError": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "conversationId",
-        "seq",
-        "error"
-      ],
+      "required": ["type", "id", "conversationId", "seq", "error"],
       "properties": {
         "type": {
           "const": "error"
@@ -400,14 +335,7 @@
     "MobileWsMessageFrame": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "agentId",
-        "channelId",
-        "conversationId",
-        "text"
-      ],
+      "required": ["type", "id", "agentId", "channelId", "conversationId", "text"],
       "properties": {
         "type": {
           "const": "message"
@@ -441,10 +369,7 @@
           }
         },
         "streamingBehavior": {
-          "enum": [
-            "steer",
-            "followUp"
-          ]
+          "enum": ["steer", "followUp"]
         },
         "resumable": {
           "type": "boolean"
@@ -454,11 +379,7 @@
     "MobileWsEventFrame": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "event"
-      ],
+      "required": ["type", "id", "event"],
       "properties": {
         "type": {
           "const": "event"
@@ -477,9 +398,7 @@
         },
         "event": {
           "type": "object",
-          "required": [
-            "type"
-          ],
+          "required": ["type"],
           "properties": {
             "type": {
               "type": "string",
@@ -493,10 +412,7 @@
     "MobileWsDoneFrame": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id"
-      ],
+      "required": ["type", "id"],
       "properties": {
         "type": {
           "const": "done"
@@ -514,21 +430,14 @@
           "minimum": 1
         },
         "outcome": {
-          "enum": [
-            "completed",
-            "cancelled"
-          ]
+          "enum": ["completed", "cancelled"]
         }
       }
     },
     "MobileWsErrorFrame": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "type",
-        "id",
-        "error"
-      ],
+      "required": ["type", "id", "error"],
       "properties": {
         "type": {
           "const": "error"

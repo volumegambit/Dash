@@ -232,6 +232,50 @@ describe('ResumableChatHub', () => {
     };
   }
 
+  it('threads a client location through to the chat request', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(
+      {
+        ...sendFrame(conversation),
+        location: { timezone: 'Asia/Singapore', utcOffsetMinutes: 480, locale: 'en-SG' },
+      },
+      sink,
+    );
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].location).toEqual({
+      timezone: 'Asia/Singapore',
+      utcOffsetMinutes: 480,
+      locale: 'en-SG',
+    });
+  });
+
+  it('drops a malformed location but still runs the turn', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(
+      {
+        ...sendFrame(conversation, 'turn-01', 'still here'),
+        // Every coarse field is bad: empty strings and an impossible offset.
+        location: { timezone: '', utcOffsetMinutes: 9999, locale: '' },
+      },
+      sink,
+    );
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    // The turn still ran -- the message was NOT dropped.
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+    expect(harness.chat.mock.calls[0][0].text).toBe('still here');
+    expect(harness.chat.mock.calls[0][0].location).toBeUndefined();
+  });
+
   async function waitForFrames(sink: TestSink, count: number): Promise<void> {
     await vi.waitFor(() => expect(sink.frames).toHaveLength(count));
   }

@@ -116,6 +116,12 @@
       "valid": true
     },
     {
+      "file": "chat-send-with-location.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": true
+    },
+    {
       "file": "chat-resume.json",
       "document": "chat-ws",
       "schema": "ChatResume",

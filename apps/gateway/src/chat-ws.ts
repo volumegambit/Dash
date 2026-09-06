@@ -3,6 +3,7 @@ import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-cont
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { toClientLocation } from './client-location.js';
 import { toMobileApiError } from './conversation-routes.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
@@ -503,6 +504,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 channelId,
                 text,
                 images: images?.length ? images : undefined,
+                location: toClientLocation(msg.location),
                 messageId: msg.id,
                 signal: controller.signal,
               });

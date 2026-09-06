@@ -17,6 +17,7 @@ import {
 import type {
   AgentBackend,
   AgentEvent,
+  ClientLocation,
   DashAgentConfig,
   FlatSkillFile,
   ImageBlock,
@@ -110,6 +111,12 @@ export interface ChatRequest {
   channelId?: string;
   text: string;
   images?: ImageBlock[];
+  /**
+   * Location the client reported for this message, already validated by
+   * `toClientLocation`. Undefined for channel adapters (Slack, iMessage),
+   * which have no client context to report.
+   */
+  location?: ClientLocation;
   /**
    * Abort signal for the in-flight chat. The merge wrapper listens on it: an
    * abort breaks the race loop promptly (without waiting for the next
@@ -460,7 +467,7 @@ export function createAgentChatCoordinator(
             request.channelId ?? 'direct',
             request.conversationId,
             request.text,
-            { images: request.images },
+            { images: request.images, location: request.location },
           );
         } finally {
           pool.unpin(request.agentId, request.conversationId);
@@ -511,7 +518,7 @@ export function createAgentChatCoordinator(
         request.channelId ?? 'direct',
         request.conversationId,
         request.text,
-        { images: request.images },
+        { images: request.images, location: request.location },
       );
 
       // The two retained promises. `genNext === null` marks the orchestrator

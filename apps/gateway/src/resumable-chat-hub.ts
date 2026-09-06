@@ -4,6 +4,7 @@ import type {
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { toClientLocation } from './client-location.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import {
   type AcceptedTurn,
@@ -194,6 +195,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         images: frame.images?.length
           ? frame.images.map((image) => ({ type: 'image' as const, ...image }))
           : undefined,
+        location: toClientLocation(frame.location),
         messageId: frame.id,
         signal: live.controller.signal,
       });

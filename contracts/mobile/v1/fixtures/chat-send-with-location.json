@@ -5,6 +5,19 @@
   "channelId": "mobile-ios",
   "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
   "text": "Is the mobile connection ready?",
+  "location": {
+    "timezone": "Asia/Singapore",
+    "utcOffsetMinutes": 480,
+    "locale": "en-SG",
+    "region": "SG",
+    "precise": {
+      "latitude": 1.2966,
+      "longitude": 103.7764,
+      "accuracyMeters": 12,
+      "capturedAt": "2026-09-06T10:11:02Z",
+      "place": "National University of Singapore"
+    }
+  },
   "images": [
     {
       "mediaType": "image/png",
