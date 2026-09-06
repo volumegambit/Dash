@@ -82,6 +82,21 @@ MEMORY_E2E_MODEL=openrouter/openai/gpt-5.5 npm run memory:e2e   # or pin a model
 
 Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway (`~/.dash/gateway`). It makes real (small, ~cents) LLM calls, so like `plugins:e2e` it is **not** part of `npm test`/`preflight`/CI. Run it after changes to `packages/agent/src/memory/*`, the memory prompt/tool wiring in `packages/agent/src/backends/piagent.ts`, the gateway memory wiring in `apps/gateway/src/index.ts`, or the memory routes in `apps/gateway/src/management-api.ts`. It does **not** cover `memory-sweep*.ts`: the script pins the sweep `off` and drives a frame that never schedules one, so a green run says nothing about the sweep — use the unit tests for that. The harness helpers in `scripts/memory-e2e/harness.mjs` are copied from `scripts/plugins-e2e/run.mjs` (that script has no exports and runs on import).
 
+### Skill learning E2E
+
+```bash
+npm run skills:e2e                                            # auto-picks a model from ~/.dash/gateway/agents.json
+SKILLS_E2E_MODEL=openrouter/deepseek/deepseek-v4-pro npm run skills:e2e   # or pin a model
+```
+
+`scripts/skill-learning-e2e/run.mjs` boots a **real gateway** under an isolated temp `DASH_HOME` (reusing `scripts/memory-e2e/harness.mjs`), registers one agent with `skills.learning: 'on'` and `minToolCalls: 2`, creates a conversation, and drives one **resumable** turn that makes several real `bash` calls. It then polls the agent's managed skills directory until the post-turn review lands and asserts the mechanism: a lesson book appears carrying `.source` = `agent`, `version: 1`, at least one well-formed single-line lesson, a `SKILL.md` rendered beside it, and the learned skill present in `GET /agents/:id/skills` with `source: 'agent'` — i.e. a later session can actually see it.
+
+It asserts the **mechanism, never the wording**: the review is unattended and runs on the agent's own model, so which lesson it records is not deterministic.
+
+Two things it exists to catch, both invisible to the unit tests: (1) the agent-registration validator must accept the `skills.{learning,minToolCalls,approval}` keys, and (2) **only a `resumable: true` turn runs through `resumable-chat-hub.ts`** — a non-resumable turn streams straight through `chat-ws.ts` and is never reviewed. That second point applies equally to the memory sweep, which no E2E covers; `driveTurn` in the shared harness takes a `resumable` option (default `false`, so `memory:e2e` is unchanged).
+
+Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway. Real (small, ~cents) LLM calls, so like `plugins:e2e` it is **not** part of `npm test`/`preflight`/CI. Run it after changes to `packages/agent/src/skills/learning/*`, `apps/gateway/src/skill-review*.ts`, or the wiring in `apps/gateway/src/index.ts`. Step 1 needs a model that really calls tools and step 2 needs one that returns usable JSON — a model that does neither fails this smoke, and that is a real result about the model, not a broken script.
+
 ### Clerk auth E2E
 
 ```bash

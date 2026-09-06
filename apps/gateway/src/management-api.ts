@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentClient, MemoryType } from '@dash/agent';
-import { MemoryOpError } from '@dash/agent';
+import { MemoryOpError, listPending, readPending, removePending } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
@@ -31,6 +31,7 @@ import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import { applyPendingLessons } from './skill-review.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -62,6 +63,13 @@ export interface GatewayManagementOptions {
    * swarms still construct the app; the swarm routes simply aren't mounted.
    */
   swarmCoordinator?: SwarmCoordinator;
+  /**
+   * Resolves an agent's managed skills directory. Supplying it mounts the
+   * automatic-skill-learning approval routes; without it those routes are
+   * simply absent, so tests and embedders that do not run learning still
+   * construct the app.
+   */
+  managedSkillsDir?: (agentId: string) => string | null;
   /** Capability bearer accepted only by the `/mobile/v1` namespace. */
   mobileToken?: string;
   /** Administrative bearer accepted by every non-mobile management route. */
@@ -208,12 +216,28 @@ function requireAgentStringArray(value: unknown, field: string): void {
   }
 }
 
+const AGENT_SKILLS_KEYS = ['paths', 'urls', 'learning', 'minToolCalls', 'approval'];
+
 function validateAgentSkills(value: unknown): void {
-  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['paths', 'urls'].includes(key))) {
-    throw new Error('skills must contain only paths and urls');
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !AGENT_SKILLS_KEYS.includes(key))) {
+    throw new Error(`skills must contain only ${AGENT_SKILLS_KEYS.join(', ')}`);
   }
   if (value.paths !== undefined) requireAgentStringArray(value.paths, 'skills.paths');
   if (value.urls !== undefined) requireAgentStringArray(value.urls, 'skills.urls');
+  if (value.learning !== undefined && !['auto', 'on', 'off'].includes(value.learning as string)) {
+    throw new Error('skills.learning must be auto, on or off');
+  }
+  if (
+    value.minToolCalls !== undefined &&
+    (typeof value.minToolCalls !== 'number' ||
+      !Number.isInteger(value.minToolCalls) ||
+      value.minToolCalls < 0)
+  ) {
+    throw new Error('skills.minToolCalls must be a non-negative integer');
+  }
+  if (value.approval !== undefined && typeof value.approval !== 'boolean') {
+    throw new Error('skills.approval must be a boolean');
+  }
 }
 
 function validateAgentSwarm(value: unknown): void {
@@ -1033,13 +1057,81 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const parsed = await parseJsonBody<{
       paths?: string[];
       urls?: string[];
+      learning?: 'auto' | 'on' | 'off';
+      minToolCalls?: number;
+      approval?: boolean;
     }>(c);
     if (!parsed.ok) return parsed.response;
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
+    if (
+      parsed.body.learning !== undefined &&
+      !['auto', 'on', 'off'].includes(parsed.body.learning)
+    ) {
+      return c.json({ error: 'learning must be auto, on or off' }, 400);
+    }
+    if (
+      parsed.body.minToolCalls !== undefined &&
+      (typeof parsed.body.minToolCalls !== 'number' ||
+        !Number.isInteger(parsed.body.minToolCalls) ||
+        parsed.body.minToolCalls < 0)
+    ) {
+      return c.json({ error: 'minToolCalls must be a non-negative integer' }, 400);
+    }
+    if (parsed.body.approval !== undefined && typeof parsed.body.approval !== 'boolean') {
+      return c.json({ error: 'approval must be a boolean' }, 400);
+    }
     const skills = { ...entry.config.skills, ...parsed.body };
     agentRegistry.update(id, { skills });
     await agentRegistry.save();
     return c.json(skills);
   });
+
+  // Automatic-skill-learning approval queue. Registered BEFORE
+  // `/agents/:id/skills/:name` — otherwise `:name` matches "pending" and these
+  // 404 as "no skill named pending". Same ordering hazard as memory/config.
+  if (options.managedSkillsDir) {
+    const resolveManagedDir = options.managedSkillsDir;
+
+    app.get('/agents/:id/skills/pending', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json([]);
+      return c.json(await listPending(dir));
+    });
+
+    app.post('/agents/:id/skills/pending/:pendingId/approve', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+
+      const staged = await readPending(dir, c.req.param('pendingId'));
+      if (!staged) return c.json({ error: 'not found' }, 404);
+
+      // Same guard as the unattended path: an approved lesson must not land on
+      // a skill that is not a lesson book either.
+      const reservedNames = (await agents.listSkills(id).catch(() => [])).map(
+        (skill) => skill.name,
+      );
+      const result = await applyPendingLessons(dir, staged.deltas, reservedNames);
+      await removePending(dir, staged.id);
+      return c.json(result);
+    });
+
+    app.delete('/agents/:id/skills/pending/:pendingId', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+
+      const removed = await removePending(dir, c.req.param('pendingId'));
+      if (!removed) return c.json({ error: 'not found' }, 404);
+      return c.json({ removed: true });
+    });
+  }
 
   app.get('/agents/:id/skills/:name', async (c) => {
     const id = c.req.param('id');

@@ -38,6 +38,37 @@ describe('createLoadSkillTool', () => {
     });
   });
 
+  it('appends learned lessons that ride along with the loaded skill', async () => {
+    const augmenting = createLoadSkillTool(listSkillsFn, async (name) =>
+      name === 'deploy-staging' ? ['- Always drain the queue first.'] : [],
+    );
+
+    const result = await augmenting.execute('call-1', { name: 'deploy-staging' });
+    const text = (result.content[0] as { text: string }).text;
+
+    expect(text).toContain('Step 1: Run deploy script');
+    expect(text).toContain('Always drain the queue first.');
+    expect(text).toMatch(/learned/i);
+  });
+
+  it('does not append anything when nothing rides along', async () => {
+    const augmenting = createLoadSkillTool(listSkillsFn, async () => []);
+
+    const result = await augmenting.execute('call-1', { name: 'run-tests' });
+
+    expect((result.content[0] as { text: string }).text).toBe('Execute: npm test');
+  });
+
+  it('still returns the skill when collecting ride-alongs fails', async () => {
+    const augmenting = createLoadSkillTool(listSkillsFn, async () => {
+      throw new Error('disk gone');
+    });
+
+    const result = await augmenting.execute('call-1', { name: 'run-tests' });
+
+    expect((result.content[0] as { text: string }).text).toBe('Execute: npm test');
+  });
+
   it('returns error when skill not found', async () => {
     const result = await tool.execute('call-2', { name: 'nonexistent' });
 
