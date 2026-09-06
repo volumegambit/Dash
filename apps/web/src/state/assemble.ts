@@ -31,6 +31,16 @@ export interface PendingTurn {
    * defaulted, because on the REPLAY path absent means UNKNOWN, not `'user'`.
    */
   origin?: ConversationMessageOrigin;
+  /**
+   * Set only by `fallbackPending`: this turn was never announced to this
+   * client by an `accepted`, so `assistantMessageId` is a stand-in and the
+   * stream assembled under it may be a fragment of a turn the server has
+   * already finished. Carried on the pending turn rather than recomputed at
+   * `done`, because the first `event` frame is what materialises the
+   * fallback and by `done` there is a `pending` either way — see
+   * `keepExistingContent`.
+   */
+  fallback?: boolean;
 }
 
 /** The most recent `error` frame surfaced for this conversation, if any. */
@@ -71,7 +81,39 @@ function fallbackPending(frame: { id: string; conversationId?: string }): Pendin
     turnId: frame.id,
     conversationId: frame.conversationId ?? '',
     assistantMessageId: frame.id,
+    fallback: true,
   };
+}
+
+/**
+ * Whether `done` must leave a matched row's `content` alone (fix round 4,
+ * ruling 1 guard 2). Both cases are the same race from two angles: the
+ * server's FINALIZED row for this turn is already in `messages` (a REST read
+ * landed it) while this client's stream for that turn is missing or partial,
+ * so writing the stream over the row DESTROYS the reply the user can see.
+ *
+ * 1. **Nothing streamed.** The turn's whole output would be replaced by an
+ *    empty event list — a blank bubble. Never right, however `pending` was
+ *    obtained, so this arm is not gated on the fallback path.
+ * 2. **A straggler.** One late `event` beat the `done`, so the stream holds a
+ *    single fragment of a reply the server already completed. Gated on BOTH
+ *    the fallback path and the row not being `status: 'streaming'`: a row
+ *    still marked `streaming` is the mid-turn-open case, where the REST row
+ *    is deliberately a partial snapshot and the live stream is the better
+ *    copy — that one must still be replaced.
+ *
+ * `status`/`updatedAt` are written either way: the row is finalized, only its
+ * text is preserved.
+ */
+function keepExistingContent(
+  existing: ConversationMessage,
+  finalized: { content: ConversationContent; fallback: boolean },
+): boolean {
+  const incoming = finalized.content.type === 'assistant' ? finalized.content.events : [];
+  const held = existing.content.type === 'assistant' ? existing.content.events : [];
+  if (held.length === 0) return false;
+  if (incoming.length === 0) return true;
+  return finalized.fallback && existing.status !== 'streaming';
 }
 
 /**
@@ -96,6 +138,10 @@ function finalizeAssistantMessage(
     content: ConversationContent;
     status: ConversationMessageStatus;
     now: string;
+    /** True when `pending` came from `fallbackPending` — i.e. this client
+     * never saw the turn's `accepted`, so everything it knows about the turn
+     * came from a REST read. See `keepExistingContent`. */
+    fallback: boolean;
   },
 ): ConversationMessage[] {
   const matchIndex = messages.findIndex(
@@ -129,10 +175,11 @@ function finalizeAssistantMessage(
   // server-assigned id, and clobbering it would break subsequent lookups by id.
   const existing = messages[matchIndex];
   const next = [...messages];
+  const content = keepExistingContent(existing, finalized) ? existing.content : finalized.content;
   next[matchIndex] = {
     ...existing,
     status: finalized.status,
-    content: finalized.content,
+    content,
     updatedAt: finalized.now,
     // Never downgrade an origin the REST row already knows to `undefined`:
     // on the replay path an absent origin means UNKNOWN, not `'user'`.
@@ -179,6 +226,7 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
 
     case 'done': {
       const pending = t.pending ?? fallbackPending(frame);
+      const fallback = pending.fallback === true;
       const content: ConversationContent = {
         type: 'assistant',
         events: streamingEvents(t),
@@ -192,6 +240,7 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
           content,
           status,
           now,
+          fallback,
         }),
         streaming: null,
       };

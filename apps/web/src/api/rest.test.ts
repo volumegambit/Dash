@@ -510,6 +510,37 @@ describe('relay-generated errors (no JSON envelope)', () => {
       });
     });
 
+    /**
+     * Fix round 4, ruling 5. Nothing in this client sets a deadline, so a POST
+     * that hangs (a wedged relay, a half-open socket) never settles — and the
+     * composer that awaits it is disarmed in the STORE, so `sending: true`
+     * outlives a remount, a collapse and a re-expansion. Only this call is
+     * bounded: the whole-client gap is pre-existing and every other call is
+     * either idempotent or re-fired by a later read.
+     */
+    it('bounds the resume POST with an abort signal so a hung request cannot wedge the composer', async () => {
+      // Fresh `Response` per call — two requests are made below and a body can
+      // only be read once.
+      const fetchImpl = fakeFetch(() =>
+        jsonResponse({ ok: true, status: 'running', mode: 'queued' }),
+      );
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await client.resumeSubagent('child-1', 'also check the relay');
+      const signal = fetchImpl.mock.calls[0][1]?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal?.aborted).toBe(false);
+
+      // ...and only this call. A GET that outlives its deadline just means a
+      // slower page; aborting reads would be a behaviour change of its own.
+      await client.getMessages('child-1');
+      expect(fetchImpl.mock.calls[1][1]?.signal).toBeUndefined();
+    });
+
     it("keeps the gateway's actionable refusal text on the error", async () => {
       const fetchImpl = fakeFetch(
         jsonResponse(

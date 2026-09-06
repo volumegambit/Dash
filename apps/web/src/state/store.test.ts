@@ -2342,7 +2342,7 @@ describe('createWebAppStore', () => {
       );
     }
 
-    function childSummary(): ConversationSummary {
+    function childSummary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
       return summary({
         id: CHILD_ID,
         kind: 'subagent',
@@ -2359,6 +2359,7 @@ describe('createWebAppStore', () => {
           toolCallCount: 3,
           oneShot: true,
         },
+        ...overrides,
       });
     }
 
@@ -2604,6 +2605,55 @@ describe('createWebAppStore', () => {
       expect(store.getState().subagentUi).toEqual({});
     });
 
+    /**
+     * Fix round 4, ruling 4. `transcripts` is initialised once and was never
+     * reset: `clearChildSubscriptions` dropped the subscriptions, the replay
+     * cache and `subagentUi`, but left every child transcript in place. Every
+     * residue that lives in one — a duplicated row, an orphaned local row, a
+     * stale streaming ghost — therefore survived a conversation switch and
+     * accumulated for the store's lifetime. Clearing them bounds the growth
+     * and makes each of those recoverable by navigating away and back.
+     *
+     * The PARENT's transcript is deliberately kept: it is the conversation's
+     * own history, re-read on open, and not this function's to discard.
+     */
+    it("drops every child's cached transcript when the conversation changes", async () => {
+      const other = 'child-2';
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CONVERSATION_ID ? [message()] : [],
+          nextCursor: null,
+          throughSeq: 1,
+        }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      // One child still expanded...
+      store.getState().subscribeSubagent(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      // ...and one collapsed again, which leaves NO subscription and no
+      // replay-cache entry behind to find its transcript by.
+      store.getState().subscribeSubagent(other);
+      await store.getState().loadSubagentTranscript(other);
+      store.getState().unsubscribeSubagent(other);
+      await Promise.resolve();
+      expect(store.getState().transcripts[CHILD_ID]).toBeDefined();
+      expect(store.getState().transcripts[other]).toBeDefined();
+
+      await openAndConnect(store, sockets, 'conv-2');
+
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+      expect(store.getState().transcripts[other]).toBeUndefined();
+      // The conversation the user left keeps its own history.
+      expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toHaveLength(1);
+    });
+
     it("does not let a child subscription clobber the parent's own", async () => {
       const { rest } = fakeRest({
         conversationPage: {
@@ -2713,6 +2763,240 @@ describe('createWebAppStore', () => {
       store.getState().subscribeSubagent(CHILD_ID);
       await store.getState().loadSubagentTranscript(CHILD_ID);
       expect(getMessages.mock.calls.filter((c) => c[0] === CHILD_ID)).toHaveLength(2);
+    });
+
+    /**
+     * Fix round 4, ruling 1 guard 1. The re-read above repairs `messages` and
+     * nothing else, so a `done` missed while the row was collapsed leaves
+     * `streaming`/`pending` holding a half-finished copy of the very reply
+     * the re-read just landed — rendered by `ChildTranscript` as a live,
+     * permanently-spinning bubble UNDER the finished one. Since `transcripts`
+     * outlives the conversation it never cleared on its own.
+     *
+     * The summary is already fetched here, and a finished child reports
+     * `activeTurnId: null` (`conversation-service-sqlite.ts` `finishTurn`
+     * sets `status='idle', active_turn_id=NULL` in one statement).
+     */
+    async function streamThenCollapse(
+      store: ReturnType<typeof createWebAppStore>,
+      onFrame: (frame: MobileWsServerFrame) => void,
+    ): Promise<void> {
+      store.getState().subscribeSubagent(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      onFrame({
+        type: 'accepted',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        userMessageId: 'server-user-1',
+        assistantMessageId: 'server-assistant-1',
+        revision: 2,
+        seq: 1,
+        origin: 'parent',
+      });
+      onFrame({
+        type: 'event',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        seq: 2,
+        event: { type: 'text_delta', text: 'half a rep' },
+      });
+      await vi.waitFor(() =>
+        expect(store.getState().transcripts[CHILD_ID]?.streaming).not.toBeNull(),
+      );
+      // Collapse. The `done` is never delivered — the gateway replays nothing
+      // on the next `subscribe`.
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      await Promise.resolve();
+    }
+
+    const finalizedChildReply = message({
+      id: 'server-assistant-1',
+      conversationId: CHILD_ID,
+      turnId: 'child-turn-1',
+      ordinal: 2,
+      role: 'assistant',
+      status: 'completed',
+      content: {
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'half a reply, then the rest' }],
+      },
+    });
+
+    it("clears a child's stale stream when the re-read says its turn is over", async () => {
+      const { rest } = fakeRest({
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [finalizedChildReply] : [],
+          nextCursor: null,
+          throughSeq: 3,
+        }),
+        getConversationImpl: async (conversationId: string) =>
+          conversationId === CHILD_ID ? childSummary({ activeTurnId: null }) : summary(),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await streamThenCollapse(store, onFrames[0]);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      const transcript = store.getState().transcripts[CHILD_ID];
+      expect(transcript.streaming).toBeNull();
+      expect(transcript.pending).toBeUndefined();
+      // ...and the finished reply the re-read landed is still intact.
+      expect(transcript.messages.filter((m) => m.role === 'assistant')).toEqual([
+        finalizedChildReply,
+      ]);
+    });
+
+    /**
+     * The FOURTH case, from the other half of the `Promise.allSettled`: the
+     * two reads are independent requests, so `finishTurn` can land between
+     * them. The messages page is then the server's mid-turn snapshot (the
+     * assistant row at `status: 'streaming'`) while the summary already says
+     * the turn is over. Clearing there costs the `done` its `pending`, and
+     * with it `origin: 'parent'` — which is the ONLY thing that fires the
+     * post-`done` re-read (`handleFrame`'s `finishingOrigin`). The row would
+     * sit at the partial snapshot, marked completed, with nothing left to
+     * fetch the rest of it.
+     *
+     * So the messages read has to agree: a row it still reports as
+     * `streaming` means the turn was live when the page was built, and the
+     * stream is left alone.
+     */
+    it('leaves the stream alone when the messages page still reports the turn streaming', async () => {
+      const partial = message({
+        id: 'server-assistant-1',
+        conversationId: CHILD_ID,
+        turnId: 'child-turn-1',
+        ordinal: 2,
+        role: 'assistant',
+        status: 'streaming',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'half a rep' }] },
+      });
+      const { rest, getMessages } = fakeRest({
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [partial] : [],
+          nextCursor: null,
+          throughSeq: 5,
+        }),
+        // The summary was served AFTER `finishTurn`; the messages page before it.
+        getConversationImpl: async (conversationId: string) =>
+          conversationId === CHILD_ID ? childSummary({ activeTurnId: null }) : summary(),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await streamThenCollapse(store, onFrames[0]);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      expect(store.getState().transcripts[CHILD_ID].pending?.turnId).toBe('child-turn-1');
+      const before = getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length;
+
+      // The `done` still finds its pending turn, so the child's completion
+      // re-read fires and the partial row is replaced by the full one.
+      onFrames[0]({
+        type: 'done',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        seq: 11,
+        outcome: 'completed',
+      } as MobileWsServerFrame);
+      await vi.waitFor(() =>
+        expect(getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length).toBe(before + 1),
+      );
+    });
+
+    /**
+     * The third case, and the one the clear itself could have caused: the
+     * summary is a SNAPSHOT taken before the fetch resolved, while `t.pending`
+     * is read when the write lands. A turn that starts in between would be
+     * compared against a summary that predates it and its live stream wiped.
+     * So the clear also requires the pending turn to be the same one that was
+     * pending when the fetch began.
+     */
+    it('leaves a turn that started DURING the re-read alone', async () => {
+      let releaseSummary: (() => void) | null = null;
+      let childSummaryCall = 0;
+      const { rest } = fakeRest({
+        getMessagesImpl: async () => ({ items: [], nextCursor: null, throughSeq: 3 }),
+        // Only the RE-READ's child summary is held open — the first load (in
+        // `streamThenCollapse`) and the parent's own summary resolve at once,
+        // so nothing but the window under test depends on this test's timing.
+        getConversationImpl: (conversationId: string) => {
+          if (conversationId !== CHILD_ID) return Promise.resolve(summary());
+          childSummaryCall += 1;
+          if (childSummaryCall === 1) return Promise.resolve(childSummary({ activeTurnId: null }));
+          return new Promise((resolve) => {
+            releaseSummary = () => resolve(childSummary({ activeTurnId: null }));
+          });
+        },
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await streamThenCollapse(store, onFrames[0]);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      const reading = store.getState().loadSubagentTranscript(CHILD_ID);
+      expect(releaseSummary).not.toBeNull();
+
+      // A SECOND turn starts while the read is in flight — the summary about
+      // to resolve knows nothing about it.
+      onFrames[0]({
+        type: 'accepted',
+        id: 'child-turn-2',
+        conversationId: CHILD_ID,
+        userMessageId: 'server-user-2',
+        assistantMessageId: 'server-assistant-2',
+        revision: 4,
+        seq: 9,
+        origin: 'parent',
+      });
+      onFrames[0]({
+        type: 'event',
+        id: 'child-turn-2',
+        conversationId: CHILD_ID,
+        seq: 10,
+        event: { type: 'text_delta', text: 'starting over' },
+      });
+      (releaseSummary as unknown as () => void)();
+      await reading;
+
+      const transcript = store.getState().transcripts[CHILD_ID];
+      expect(transcript.pending?.turnId).toBe('child-turn-2');
+      expect(transcript.streaming).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'starting over' }],
+      });
+    });
+
+    // The other half of the guard: a child the server still reports as
+    // RUNNING that turn keeps its live stream. `refreshChildTranscripts`
+    // calls the same function on every reconnect, so a client that comes back
+    // mid-turn must not have its partial wiped out from under it.
+    it("leaves a child's stream alone when the server still reports that turn active", async () => {
+      const { rest } = fakeRest({
+        getMessagesImpl: async () => ({ items: [], nextCursor: null, throughSeq: 3 }),
+        getConversationImpl: async (conversationId: string) =>
+          conversationId === CHILD_ID ? childSummary({ activeTurnId: 'child-turn-1' }) : summary(),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await streamThenCollapse(store, onFrames[0]);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      const transcript = store.getState().transcripts[CHILD_ID];
+      expect(transcript.streaming).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'half a rep' }],
+      });
+      expect(transcript.pending?.turnId).toBe('child-turn-1');
     });
 
     // The mirror image, and the reason the delete is NOT also done in
@@ -2864,6 +3148,101 @@ describe('createWebAppStore', () => {
         .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
       expect(afterReplay).toHaveLength(1);
       expect(afterReplay[0].id).toBe('server-user-1');
+    });
+
+    /**
+     * Fix round 4, ruling 2 (round-3 review Minor 7, promoted). The echo can
+     * arrive correctly and STILL orphan the local row: once a REST read has
+     * merged the server's own user row, that row satisfies
+     * `reconcileAccepted`'s FIRST branch (`m.turnId === frame.id`), which
+     * returns before the `requestId` branch is ever reached. The local row is
+     * then stranded exactly as if the `accepted` had been missed.
+     *
+     * The realistic interleaving is `attemptReconnect`, which fires
+     * `refreshChildTranscripts()` while `flushChildSubscriptions` is still
+     * awaiting `resolveAgentId` — the REST read and the subscribe are
+     * genuinely concurrent there.
+     *
+     * Moving the `requestId` branch ahead of case 1 does NOT fix it: it would
+     * adopt the local row to an id the server row already holds, producing two
+     * rows with the same id (and a duplicate React key). The local row has to
+     * be DROPPED and the server row left to stand.
+     */
+    it('drops the local row when the server row for its turn was merged first', async () => {
+      const serverRow = message({
+        id: 'server-user-1',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-1',
+        ordinal: 4,
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+      const { rest, resumeSubagent } = fakeRest({
+        resumeSubagentImpl: async () => ({ ok: true, status: 'running', mode: 'queued' }),
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [serverRow] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      // The REST read wins the race and merges the server's row first.
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      expect(store.getState().transcripts[CHILD_ID].messages).toHaveLength(2);
+
+      onFrames[0](childAccepted({ requestId: resumeSubagent.mock.calls[0][2] as string }));
+
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id: 'server-user-1',
+        turnId: 'server-turn-1',
+        origin: 'parent',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+    });
+
+    /**
+     * The pathological edge of that drop: if the server's `userMessageId`
+     * were ever the SAME uuid the client chose as its `requestId`, the row
+     * matching the echo and the row proving the server's copy is present
+     * would be one and the same — dropping it would delete the only copy of
+     * the user's sentence. The drop therefore only fires when they are two
+     * different rows.
+     */
+    it('never drops the local row on the strength of ITSELF', async () => {
+      let requestId: string | undefined;
+      const { rest } = fakeRest({
+        resumeSubagentImpl: async (_childId: string, _message: string, id?: string) => {
+          requestId = id;
+          return { ok: true, status: 'running', mode: 'resumed' };
+        },
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      // A uuid collision: the server's id for the user row IS the client's
+      // correlation id.
+      onFrames[0](childAccepted({ requestId, userMessageId: requestId }));
+
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id: requestId,
+        turnId: 'server-turn-1',
+        content: { type: 'user', text: 'also check the relay' },
+      });
     });
 
     it('reconciles even when the accepted frame beats the REST response', async () => {

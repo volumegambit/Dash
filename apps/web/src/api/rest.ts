@@ -49,7 +49,22 @@ interface RequestOptions {
    * revision surfaces as a `revision_conflict` (409) `MobileApiError` rather
    * than silently clobbering a concurrent edit. */
   ifMatch?: number;
+  /** Per-call deadline, passed straight to `fetch`. Set by `resumeSubagent`
+   * only — see the note there. */
+  signal?: AbortSignal;
 }
+
+/**
+ * Deadline for `POST /subagents/:id/resume` (fix round 4, ruling 5).
+ *
+ * Generous against what the route actually does — validate, then
+ * `coordinator.sendToChild`, which either queues a steer or starts a turn:
+ * local work and DB writes, never a wait on a model — and still short enough
+ * that a user whose relay has wedged gets the composer, and their typed text,
+ * back inside the time they would spend wondering. Only this call is bounded;
+ * the client-wide absence of timeouts is pre-existing and out of scope.
+ */
+const RESUME_TIMEOUT_MS = 30_000;
 
 /**
  * Joins `path` onto `baseUrl` without dropping or duplicating the base's own
@@ -216,7 +231,15 @@ export class MobileRestClient {
       // Omitted rather than sent as `undefined`: the schema is
       // `additionalProperties: false` and JSON drops the key either way, but
       // a caller reading the body should see the two cases apart.
-      { body: requestId === undefined ? { message } : { message, requestId } },
+      {
+        body: requestId === undefined ? { message } : { message, requestId },
+        // A hung POST here is stickier than elsewhere: `sending: true` lives in
+        // the store, so it survives the row being collapsed and remounted, and
+        // only a conversation switch would clear it. Aborting turns the hang
+        // into an ordinary rejection, which the composer already renders and
+        // which disarms it.
+        signal: AbortSignal.timeout(RESUME_TIMEOUT_MS),
+      },
     );
   }
 
@@ -225,7 +248,7 @@ export class MobileRestClient {
   }
 
   private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
-    const { auth = true, body, query, ifMatch } = options;
+    const { auth = true, body, query, ifMatch, signal } = options;
     const headers: Record<string, string> = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (ifMatch !== undefined) headers['If-Match'] = `"${ifMatch}"`;
@@ -240,6 +263,7 @@ export class MobileRestClient {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
 
     if (!response.ok) {

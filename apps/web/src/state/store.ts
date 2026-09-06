@@ -435,6 +435,50 @@ function mergeMessagesById(
 type AcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
 
 /**
+ * A row THIS client created for a REST resume and the server has never seen.
+ *
+ * `sendToSubagent` gives the optimistic row the same client uuid for both
+ * `id` and `turnId`, and sends that uuid as the request's `requestId`. A
+ * persisted user row can never look like this: the gateway mints
+ * `userMessageId` independently of the turn id
+ * (`apps/gateway/src/conversation-service-sqlite.ts`), so its two ids always
+ * differ. The `turnId === id` clause is therefore free defence-in-depth — the
+ * `accepted` reaches every sink subscribed to the child, so without it a peer
+ * could echo a `requestId` naming a SERVER row already in the transcript and
+ * have every other watcher relabel it.
+ */
+function isLocalResumeRow(m: ConversationMessage, requestId: string): boolean {
+  return m.role === 'user' && m.id === requestId && m.turnId === m.id;
+}
+
+/**
+ * Fix round 4, ruling 2. `reconcileAccepted`'s first branch matches the
+ * server's own user row (`m.turnId === frame.id`) and returns, so once a REST
+ * read has merged that row the `requestId` branch below is UNREACHABLE and
+ * the local row is orphaned even though the echo arrived and was correct —
+ * a permanent duplicate of the user's own sentence.
+ *
+ * Adopting the local row first is not the fix: it would take the id the
+ * server row already holds, and two rows would share it. The local row is
+ * redundant the moment the server's row is present, so it is dropped here,
+ * before any branch runs, and the server row stands.
+ */
+function dropPreemptedLocalRow(t: Transcript, frame: AcceptedFrame): Transcript {
+  const requestId = frame.requestId;
+  if (requestId === undefined) return t;
+  const local = t.messages.findIndex((m) => isLocalResumeRow(m, requestId));
+  if (local === -1) return t;
+  // A DIFFERENT row: were the server's `userMessageId` ever the same uuid the
+  // client chose (a collision, nothing more), the row proving the server's
+  // copy exists would be the local row itself, and dropping it would delete
+  // the only copy of the user's sentence. Left to the `requestId` branch,
+  // which adopts it correctly.
+  const server = t.messages.findIndex((m) => m.id === frame.userMessageId);
+  if (server === -1 || server === local) return t;
+  return { ...t, messages: t.messages.filter((_, index) => index !== local) };
+}
+
+/**
  * Reconciles the user side of an `accepted` frame (sub-agents design 7.6).
  *
  * Two cases, and before task C7 only the first existed:
@@ -475,11 +519,14 @@ type AcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
  * user row for one would put an empty bubble in the transcript.
  */
 function reconcileAccepted(
-  t: Transcript,
+  base: Transcript,
   frame: AcceptedFrame,
   conversationId: string,
 ): Transcript {
   const origin = frame.origin;
+  // Ruling 2: runs BEFORE every branch below, because the first of them
+  // short-circuits on the very row that makes the local one redundant.
+  const t = dropPreemptedLocalRow(base, frame);
   const optimistic = t.messages.findIndex((m) => m.role === 'user' && m.turnId === frame.id);
   if (optimistic !== -1) {
     const messages = [...t.messages];
@@ -498,7 +545,8 @@ function reconcileAccepted(
   // marked `failed` by a REST call that timed out on a request the gateway
   // nonetheless acted on is repaired here rather than duplicated.
   if (frame.requestId !== undefined) {
-    const pending = t.messages.findIndex((m) => m.role === 'user' && m.id === frame.requestId);
+    const requestId = frame.requestId;
+    const pending = t.messages.findIndex((m) => isLocalResumeRow(m, requestId));
     if (pending !== -1) {
       const messages = [...t.messages];
       messages[pending] = {
@@ -597,6 +645,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
    * invalidate.
    */
   const loadedChildTranscripts = new Set<string>();
+  /**
+   * Every child this store has ever put a transcript under, whether it is
+   * still watched or not. `desiredChildSubscriptions`/`loadedChildTranscripts`
+   * both shrink when a row is collapsed, so neither can be used to find a
+   * collapsed child's leftover transcript at conversation-switch time — but
+   * that transcript is exactly the one nothing else would ever clear.
+   */
+  const childTranscriptIds = new Set<string>();
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -871,18 +927,75 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * a 401 from either still means this credential is dead.
      */
     async function fetchChildTranscript(childId: string): Promise<void> {
+      // Read BEFORE the fetch: the summary below is a snapshot taken at the
+      // same moment, and only a stream that was already stale then may be
+      // cleared against it. See the clear in the merge.
+      const pendingBefore = get().transcripts[childId]?.pending?.turnId;
       const [messages, childSummary] = await Promise.allSettled([
         rest.getMessages(childId),
         rest.getConversation(childId),
       ]);
 
+      const summary = childSummary.status === 'fulfilled' ? childSummary.value : undefined;
+
       if (messages.status === 'fulfilled') {
-        updateTranscript(childId, (t) => ({
-          ...t,
-          messages: mergeMessagesById(t.messages, messages.value.items),
-        }));
+        const items = messages.value.items;
+        // Re-registered AFTER the await: a conversation switch during the
+        // fetch cleared the set, and this write is about to recreate the
+        // entry it removed.
+        childTranscriptIds.add(childId);
+        updateTranscript(childId, (t) => {
+          const merged: Transcript = { ...t, messages: mergeMessagesById(t.messages, items) };
+          // Fix round 4, ruling 1. A `done` missed while nobody was watching
+          // (the collapse window ruling 2 exists to cover, or a reconnect gap)
+          // leaves `streaming`/`pending` holding a half-finished copy of the
+          // very reply this read just landed, which `ChildTranscript` renders
+          // as a live bubble under the finished one — forever, since
+          // `transcripts` outlives the row.
+          //
+          // Cleared ONLY when the server says that specific turn is over:
+          // `activeTurnId === pending.turnId` is a client that reconnected
+          // mid-turn and whose partial is the real thing. The bare
+          // `activeTurnId === null` test is not enough — the turn can finish
+          // DURING this fetch, and then the already-broadcast `done` arrives
+          // with no `pending` and blanks the row it matches (guarded from the
+          // other side in `assemble.ts`'s `keepExistingContent`).
+          //
+          // In the same `updateTranscript` as the merge on purpose: the user
+          // goes from stale-partial to finished-row in one commit, never to a
+          // transcript with neither.
+          //
+          // `pendingBefore` closes the third case, which is the one this clear
+          // could itself have caused: the summary predates the write, so a
+          // turn that STARTS during the fetch would be judged against a
+          // snapshot that never saw it, and its live stream wiped.
+          const pendingTurnId = t.pending?.turnId;
+          // The messages page has to AGREE that the turn is over. The two
+          // reads are independent requests, so `finishTurn` can land between
+          // them: a page built before it still carries the assistant row at
+          // `status: 'streaming'` while the summary already says `null`.
+          // Clearing on that pair would cost the `done` its `pending` — and
+          // with it the `origin: 'parent'` that is the only trigger for the
+          // post-`done` re-read (`handleFrame`'s `finishingOrigin`) — leaving
+          // the row stuck on the partial snapshot with nothing to fetch the
+          // rest of it.
+          const serverStillStreaming = merged.messages.some(
+            (m) => m.role === 'assistant' && m.turnId === pendingTurnId && m.status === 'streaming',
+          );
+          if (
+            summary &&
+            pendingTurnId !== undefined &&
+            pendingTurnId === pendingBefore &&
+            summary.activeTurnId !== pendingTurnId &&
+            !serverStillStreaming
+          ) {
+            const { pending: _cleared, ...rest } = merged;
+            return { ...rest, streaming: null };
+          }
+          return merged;
+        });
       }
-      const info = childSummary.status === 'fulfilled' ? childSummary.value.subagent : undefined;
+      const info = summary?.subagent;
       if (info) {
         set((state) => ({ subagentInfo: { ...state.subagentInfo, [childId]: info } }));
       }
@@ -926,12 +1039,28 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * auto-expanding every row the user ever looked at — each of which would
      * fire two REST calls and a `subscribe` on open. Rows collapsed on reopen
      * is the intended behaviour.
+     *
+     * The CHILD transcripts go with them (fix round 4, ruling 4). `transcripts`
+     * was otherwise never reset, so anything wrong in a child's copy — a
+     * duplicated row, an orphaned local row, a stale streaming ghost — was
+     * permanent for the life of the store instead of clearing on a navigation.
+     * Nothing depends on them surviving: every reader is a `SubagentBlock` row,
+     * which is collapsed on reopen (`subagentUi` cleared just below) and
+     * re-reads from REST when expanded (`loadedChildTranscripts` cleared just
+     * above). The PARENT conversation's transcript is not touched.
      */
     function clearChildSubscriptions(): void {
       desiredChildSubscriptions.clear();
       activeChildSubscriptions.clear();
       loadedChildTranscripts.clear();
-      set({ subagentUi: {} });
+      const children = [...childTranscriptIds];
+      childTranscriptIds.clear();
+      set((state) => {
+        if (children.length === 0) return { subagentUi: {} };
+        const transcripts = { ...state.transcripts };
+        for (const childId of children) delete transcripts[childId];
+        return { subagentUi: {}, transcripts };
+      });
     }
 
     function handleFrame(frame: MobileWsServerFrame): void {
@@ -1508,12 +1637,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       },
 
       async loadSubagentTranscript(childId) {
+        childTranscriptIds.add(childId);
         if (loadedChildTranscripts.has(childId)) return;
         loadedChildTranscripts.add(childId);
         await fetchChildTranscript(childId);
       },
 
       subscribeSubagent(childId) {
+        childTranscriptIds.add(childId);
         const holds = desiredChildSubscriptions.get(childId) ?? 0;
         desiredChildSubscriptions.set(childId, holds + 1);
         if (holds > 0) return;
@@ -1632,6 +1763,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
        * client's guess — decides.
        */
       async sendToSubagent(childId, text) {
+        childTranscriptIds.add(childId);
         // The optimistic row goes in FIRST so the text is visible in the
         // child's transcript while the resume is in flight, and so there is
         // something to mark `failed` if it is refused. Its id doubles as the

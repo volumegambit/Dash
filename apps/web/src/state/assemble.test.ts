@@ -188,6 +188,71 @@ describe('applyServerFrame', () => {
       expect(assistantMessages[0].id).toBe('server-assistant-1');
       expect(t.messages[0]).toBe(userRow); // untouched
     });
+
+    /**
+     * Fix round 4, ruling 1 guard 2 — a PRE-EXISTING race, independent of the
+     * `fetchChildTranscript` clear that guard 1 adds.
+     *
+     * A REST read (reconnect replay, or a child re-expansion) can land the
+     * server's FINALIZED assistant row while this client holds no `pending`
+     * for that turn — it never saw the `accepted`, or the turn finished
+     * during the fetch. The turn's `done` then arrives anyway: `pending`
+     * falls back to `fallbackPending`, `finalizeAssistantMessage` matches the
+     * REST row by `turnId`, and its correct, complete content is overwritten
+     * with an EMPTY stream. The user's reply is blanked.
+     */
+    it('does not blank a finalized assistant row when a late done arrives with nothing streamed', () => {
+      const turnId = accepted.type === 'accepted' ? accepted.id : '';
+      const restRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId,
+        ordinal: 2,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'the whole reply' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      // No `pending`, no `streaming`: exactly the state a REST-only read leaves.
+      const t = applyServerFrame({ messages: [restRow], streaming: null }, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].content).toEqual(restRow.content);
+      expect(t.messages[0].status).toBe('completed');
+      expect(t.streaming).toBeNull();
+    });
+
+    /**
+     * The straggler variant of the same race: one late `event` frame beats the
+     * `done`, so the stream is no longer empty — but it holds a single
+     * fragment of a reply the server has already finalized in full. Keyed off
+     * the fallback path plus the row's own non-`streaming` status, so the
+     * mid-turn-open case above (whose REST row IS `status: 'streaming'`) is
+     * untouched and still gets its content replaced.
+     */
+    it('does not replace a server-finalized row with a straggler event that arrives after it', () => {
+      const turnId = accepted.type === 'accepted' ? accepted.id : '';
+      const restRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId,
+        ordinal: 2,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'the whole reply' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      let t = applyServerFrame({ messages: [restRow], streaming: null }, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].content).toEqual(restRow.content);
+      expect(t.streaming).toBeNull();
+    });
   });
 
   describe('error', () => {
