@@ -62,6 +62,7 @@ struct AgentDetailView: View {
           }
 
           configurationSection(agent)
+          toolsSection(agent)
           integrationsSection(agent)
           memorySection(agent)
           swarmSection(agent)
@@ -161,7 +162,6 @@ struct AgentDetailView: View {
   private func configurationSection(_ agent: RegisteredAgentDTO) -> some View {
     Section("Configuration") {
       optionalList("Fallback models", agent.config.fallbackModels)
-      optionalList("Tools", agent.config.tools)
       if let workspace = agent.config.workspace, workspace.isEmpty == false {
         LabeledContent("Workspace", value: workspace)
       }
@@ -170,6 +170,26 @@ struct AgentDetailView: View {
       }
       optionalList("Providers", agent.config.providers)
       optionalList("Plugins", agent.config.plugins)
+    }
+  }
+
+  /// The agent's enabled tools, grouped and described the way the deploy
+  /// wizard and Mission Control's Tools card present them, rather than the
+  /// comma-joined raw ids (`web_fetch, read_file, …`) this used to show.
+  /// Omitted entirely when the agent has no tools — a section header is a
+  /// promise that content follows.
+  @ViewBuilder
+  private func toolsSection(_ agent: RegisteredAgentDTO) -> some View {
+    let enabled = agent.config.tools ?? []
+    if enabled.isEmpty == false {
+      let groups = AgentToolCatalog.groups(enabled: enabled)
+      Section {
+        ForEach(groups) { group in
+          AgentToolGroupRow(group: group)
+        }
+      } header: {
+        Text("Tools (\(enabled.count))")
+      }
     }
   }
 
@@ -319,5 +339,141 @@ struct AgentDetailView: View {
         horizontalSizeClass: horizontalSizeClass
       )
     )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tools group row
+// ---------------------------------------------------------------------------
+
+/// One functional tool group (Read & Search, Web, …) rendered as a labeled
+/// header, its plain-language description, and a wrapping row of tool-name
+/// chips. Mirrors the grouped, described treatment of Mission Control's
+/// agent-detail Tools card.
+private struct AgentToolGroupRow: View {
+  let group: AgentToolCatalog.ToolGroup
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(group.name)
+        .font(.subheadline.weight(.medium))
+      if let description = group.description {
+        Text(description)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      AgentToolChipFlow(tools: group.tools)
+        .padding(.top, 2)
+    }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(group.name): \(group.tools.map(AgentToolCatalog.label(for:)).joined(separator: ", "))")
+  }
+}
+
+/// A wrapping flow of tool-name chips. Uses SwiftUI's native `Layout` so the
+/// chips wrap to as many lines as the width needs, rather than clipping or
+/// scrolling.
+private struct AgentToolChipFlow: View {
+  let tools: [String]
+
+  var body: some View {
+    FlowLayout(spacing: 6, lineSpacing: 6) {
+      ForEach(tools, id: \.self) { id in
+        Text(AgentToolCatalog.label(for: id))
+          .font(.caption)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 3)
+          .background(
+            Color.secondary.opacity(DashTheme.Opacity.fillSubtle),
+            in: Capsule()
+          )
+          .overlay(Capsule().strokeBorder(Color.secondary.opacity(DashTheme.Opacity.fillMuted)))
+      }
+    }
+  }
+}
+
+/// Minimal wrapping layout: places subviews left to right, wrapping to a new
+/// line when the next subview would overflow the proposed width.
+private struct FlowLayout: Layout {
+  var spacing: CGFloat = 6
+  var lineSpacing: CGFloat = 6
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let maxWidth = proposal.width ?? .infinity
+    var rows = layout(subviews: subviews, maxWidth: maxWidth)
+    return rows.size
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    let rows = layout(subviews: subviews, maxWidth: bounds.width)
+    var y = bounds.minY
+    for row in rows.lines {
+      var x = bounds.minX
+      for index in row.indices {
+        let size = row.sizes[index - row.startIndex]
+        subviews[index].place(
+          at: CGPoint(x: x, y: y),
+          anchor: .topLeading,
+          proposal: ProposedViewSize(size))
+        x += size.width + spacing
+      }
+      y += row.height + lineSpacing
+    }
+  }
+
+  private struct Row {
+    var startIndex: Int
+    var indices: Range<Int>
+    var sizes: [CGSize]
+    var height: CGFloat
+  }
+
+  private struct Rows {
+    var lines: [Row]
+    var size: CGSize
+  }
+
+  private func layout(subviews: Subviews, maxWidth: CGFloat) -> Rows {
+    var lines: [Row] = []
+    var currentSizes: [CGSize] = []
+    var currentStart = 0
+    var x: CGFloat = 0
+    var rowHeight: CGFloat = 0
+    var totalHeight: CGFloat = 0
+    var maxRowWidth: CGFloat = 0
+
+    func flush(endIndex: Int) {
+      guard currentSizes.isEmpty == false else { return }
+      lines.append(
+        Row(
+          startIndex: currentStart,
+          indices: currentStart..<endIndex,
+          sizes: currentSizes,
+          height: rowHeight))
+      totalHeight += rowHeight + lineSpacing
+      maxRowWidth = max(maxRowWidth, x - spacing)
+    }
+
+    for index in subviews.indices {
+      let size = subviews[index].sizeThatFits(.unspecified)
+      if currentSizes.isEmpty == false, x + size.width > maxWidth {
+        flush(endIndex: index)
+        currentSizes = []
+        currentStart = index
+        x = 0
+        rowHeight = 0
+      }
+      currentSizes.append(size)
+      x += size.width + spacing
+      rowHeight = max(rowHeight, size.height)
+    }
+    flush(endIndex: subviews.endIndex)
+
+    let height = totalHeight > 0 ? totalHeight - lineSpacing : 0
+    return Rows(lines: lines, size: CGSize(width: maxRowWidth, height: height))
   }
 }
