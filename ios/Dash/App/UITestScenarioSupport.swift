@@ -55,6 +55,33 @@ extension AppDependenciesFactory {
         ?? arguments.uiTestValue(after: "--dash-ui-test-scenario")
       return raw == UITestScenario.longTranscript.rawValue
     }()
+
+    /// Whether this process is running a UI-test scenario at all. Used by
+    /// `ConversationWindowSceneGuard` to close conversation windows that
+    /// iPadOS RESTORED from a previous run's scene session.
+    ///
+    /// Why this exists: scene sessions outlive the app, and
+    /// `XCUIApplication.terminate()` does NOT destroy them. Measured on the
+    /// iPad 26.5 simulator, a run that opens a conversation window leaves
+    /// that scene behind, and the NEXT launch comes up with the chat-only
+    /// window frontmost and the main window demoted to "1 Hidden Window" —
+    /// which broke the two `IPadUITests` cases that happened to run next
+    /// (6 tests, 2 failures) even though nothing was wrong with the app.
+    /// Every other piece of cross-launch state the suite depends on is
+    /// already isolated per launch by `DASH_UI_TEST_DATA_IDENTIFIER`; scene
+    /// sessions are the one thing that identifier cannot reach.
+    ///
+    /// Deliberately NOT a change to shipping behaviour: restoring the
+    /// last-used window is what iPadOS does for every multi-window app, and
+    /// Dash keeps doing it in Release. This only makes the UI-test harness's
+    /// "each launch starts from the main window" assumption true.
+    @MainActor
+    static let isRunningUITestScenario: Bool = {
+      let environment = ProcessInfo.processInfo.environment
+      let arguments = ProcessInfo.processInfo.arguments
+      return environment["DASH_UI_TEST_SCENARIO"] != nil
+        || arguments.uiTestValue(after: "--dash-ui-test-scenario") != nil
+    }()
   }
 
   enum UITestScenarioError: Error, Equatable, Sendable {

@@ -1366,6 +1366,37 @@ struct AppModelTests {
     )
   }
 
+  /// `conversationSummary(id:)` became internal API on `AppModel` in Task 10
+  /// so the chat-only window scene (`ConversationWindowView`) can resolve a
+  /// `ConversationWindowValue` the same way `RootView`'s
+  /// `.navigationDestination` does. The snapshot fallback is the branch that
+  /// window leans on hardest: a freshly restored scene can be on screen
+  /// before `conversationListFeature` exists.
+  @Test("conversation summary resolves from the snapshot and is nil for an unknown id")
+  func conversationSummaryResolvesFromSnapshot() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let model = AppModel(dependencies: dependencies(profile: profile, engine: engine))
+    await model.start()
+    let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
+
+    await model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [cached],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    // Either way round in this harness — no list feature at all, or one
+    // holding nothing — the lookup below can only be answered by the
+    // snapshot, which is the branch being covered.
+    #expect(model.conversationListFeature?.conversations.isEmpty ?? true)
+    #expect(model.conversationSummary(id: cached.id) == cached.summary)
+    #expect(model.conversationSummary(id: "no-such-conversation") == nil)
+  }
+
   private func conversation() -> ConversationSummaryDTO {
     ConversationSummaryDTO(
       id: "conversation-cached",

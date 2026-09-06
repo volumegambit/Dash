@@ -467,6 +467,35 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
+  /// iPad goal Phase C: the ONE assertion that observes what
+  /// `UIApplication.shared.supportsMultipleScenes` actually reports on each
+  /// device, rather than assuming it. This suite runs on BOTH the iPhone and
+  /// the iPad, and neither branch skips: the "Rename" item proves the menu
+  /// really opened, and "Open in New Window" is then required to be present
+  /// exactly on the wide (iPad) layout and absent on the narrow (iPhone)
+  /// one. An affordance offered where `openWindow` could do nothing would
+  /// fail this on iPhone; a missing affordance on iPad would fail it there.
+  func testOpenInNewWindowIsOfferedOnlyWhereASecondSceneCanExist() {
+    let app = launch(scenario: "paired-online")
+    let row = element("conversation.row.shared-plan", in: app)
+    XCTAssertTrue(row.waitForExistence(timeout: 5))
+    row.press(forDuration: 1.0)
+
+    XCTAssertTrue(
+      app.buttons["Rename"].waitForExistence(timeout: 3),
+      "Expected the conversation row's context menu to open. UI: \(app.debugDescription)"
+    )
+    let supportsMultipleScenes = app.windows.firstMatch.frame.width >= 700
+    XCTAssertEqual(
+      app.buttons["Open in New Window"].exists,
+      supportsMultipleScenes,
+      """
+      "Open in New Window" must appear exactly where a second scene can \
+      exist. Window width \(app.windows.firstMatch.frame.width).
+      """
+    )
+  }
+
   /// Review fix round 1 (Task 8, Important 1): `.draggable` and
   /// `.contextMenu` on a user bubble used to be applied to DIFFERENT views —
   /// `.draggable` inside `UserMessageView`'s own body, `.contextMenu` on the

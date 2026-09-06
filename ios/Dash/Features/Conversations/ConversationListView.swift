@@ -134,6 +134,11 @@ enum ComposeAgentSelection {
 struct ConversationListView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(ConversationListFeature.self) private var feature
+  /// iPad goal Phase C: opens the `WindowGroup(id: "conversation", …)`
+  /// scene `DashApp` declares. A no-op on a device that cannot host a
+  /// second scene, which is why the affordance below is gated on
+  /// `supportsMultipleScenes` rather than being offered everywhere.
+  @Environment(\.openWindow) private var openWindow
 
   let presentation: NavigationPresentation
 
@@ -173,71 +178,7 @@ struct ConversationListView: View {
       } else if feature.conversations.isEmpty == false {
         Section("Conversations") {
           ForEach(filteredConversations) { conversation in
-            conversationRow(conversation)
-              .task {
-                // Review fix (audit #9): pass the FILTERED list a search is
-                // actively rendering from, not the canonical
-                // `feature.conversations` — see `loadOlderIfNeeded`'s doc
-                // comment for why the canonical list silently stalls
-                // pagination once a query hides its tail rows.
-                await feature.loadOlderIfNeeded(
-                  currentID: conversation.id,
-                  visibleConversations: filteredConversations
-                )
-              }
-              .contextMenu {
-                let actions = actionPolicy(for: conversation)
-
-                if actions.showsRename {
-                  Button {
-                    renameTarget = conversation
-                    renameTitle = conversation.summary.title
-                  } label: {
-                    Label("Rename", systemImage: "pencil")
-                  }
-                  .disabled(actions.canRename == false)
-                  .accessibilityHint(actions.renameDisabledHint)
-                }
-
-                if actions.showsDelete {
-                  Button(role: .destructive) {
-                    deleteTarget = conversation
-                  } label: {
-                    Label("Delete", systemImage: "trash")
-                  }
-                  .disabled(actions.canDelete == false)
-                  .accessibilityHint(actions.deleteDisabledHint)
-                }
-              }
-              // Audit #10: same `ConversationRowActionPolicy` the context
-              // menu above uses — availability, disabled state, and hints
-              // stay identical across both entry points.
-              .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                let actions = actionPolicy(for: conversation)
-                if actions.showsRename {
-                  Button {
-                    renameTarget = conversation
-                    renameTitle = conversation.summary.title
-                  } label: {
-                    Label("Rename", systemImage: "pencil")
-                  }
-                  .disabled(actions.canRename == false)
-                  .accessibilityHint(actions.renameDisabledHint)
-                  .tint(DashTheme.accent)
-                }
-              }
-              .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                let actions = actionPolicy(for: conversation)
-                if actions.showsDelete {
-                  Button(role: .destructive) {
-                    deleteTarget = conversation
-                  } label: {
-                    Label("Delete", systemImage: "trash")
-                  }
-                  .disabled(actions.canDelete == false)
-                  .accessibilityHint(actions.deleteDisabledHint)
-                }
-              }
+            decoratedConversationRow(conversation)
           }
 
           if filteredConversations.isEmpty {
@@ -559,6 +500,113 @@ struct ConversationListView: View {
         description: Text("Connect to the gateway to load conversations.")
       )
     }
+  }
+
+  /// The conversation row plus every per-row modifier, extracted from the
+  /// `List` body as one unit: with Task 10's "Open in New Window" item and
+  /// `.draggable` added inline, the `ForEach` closure tipped the type
+  /// checker over its budget ("unable to type-check this expression in
+  /// reasonable time"). Keeping the whole chain in ONE function preserves
+  /// the co-location of `.contextMenu` and `.draggable` that Task 8's review
+  /// fix (aeda641d) established, rather than scattering them across views.
+  @ViewBuilder
+  private func decoratedConversationRow(_ conversation: CachedConversation) -> some View {
+    conversationRow(conversation)
+      .task {
+        // Review fix (audit #9): pass the FILTERED list a search is
+        // actively rendering from, not the canonical
+        // `feature.conversations` — see `loadOlderIfNeeded`'s doc
+        // comment for why the canonical list silently stalls
+        // pagination once a query hides its tail rows.
+        await feature.loadOlderIfNeeded(
+          currentID: conversation.id,
+          visibleConversations: filteredConversations
+        )
+      }
+      // iPad goal Phase C (design §3.2). Gated on
+      // `supportsMultipleScenes` so the item never appears where
+      // tapping it could do nothing: UIKit reports `false` for any
+      // app that cannot host a second scene, which is the honest
+      // source of truth here rather than an idiom check.
+      // `.draggable` below is co-located on this same chain rather
+      // than pushed inside `conversationRow`, matching the
+      // arrangement Task 8's review fix (aeda641d) settled on for
+      // message bubbles.
+      .contextMenu {
+        let actions = actionPolicy(for: conversation)
+
+        if UIApplication.shared.supportsMultipleScenes,
+          let gatewayID = appModel.selectedProfile?.gatewayID
+        {
+          Button {
+            ConversationWindowSceneGuard.noteOpened()
+            openWindow(
+              value: ConversationWindowValue(
+                gatewayID: gatewayID,
+                conversationID: conversation.id
+              )
+            )
+          } label: {
+            Label("Open in New Window", systemImage: "macwindow.badge.plus")
+          }
+          .accessibilityIdentifier("conversation.openInWindow.\(conversation.id)")
+        }
+
+        if actions.showsRename {
+          Button {
+            renameTarget = conversation
+            renameTitle = conversation.summary.title
+          } label: {
+            Label("Rename", systemImage: "pencil")
+          }
+          .disabled(actions.canRename == false)
+          .accessibilityHint(actions.renameDisabledHint)
+        }
+
+        if actions.showsDelete {
+          Button(role: .destructive) {
+            deleteTarget = conversation
+          } label: {
+            Label("Delete", systemImage: "trash")
+          }
+          .disabled(actions.canDelete == false)
+          .accessibilityHint(actions.deleteDisabledHint)
+        }
+      }
+      .draggableConversation(
+        appModel.selectedProfile.map {
+          ConversationWindowValue(gatewayID: $0.gatewayID, conversationID: conversation.id)
+        }
+      )
+      // Audit #10: same `ConversationRowActionPolicy` the context
+      // menu above uses — availability, disabled state, and hints
+      // stay identical across both entry points.
+      .swipeActions(edge: .leading, allowsFullSwipe: true) {
+        let actions = actionPolicy(for: conversation)
+        if actions.showsRename {
+          Button {
+            renameTarget = conversation
+            renameTitle = conversation.summary.title
+          } label: {
+            Label("Rename", systemImage: "pencil")
+          }
+          .disabled(actions.canRename == false)
+          .accessibilityHint(actions.renameDisabledHint)
+          .tint(DashTheme.accent)
+        }
+      }
+      .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        let actions = actionPolicy(for: conversation)
+        if actions.showsDelete {
+          Button(role: .destructive) {
+            deleteTarget = conversation
+          } label: {
+            Label("Delete", systemImage: "trash")
+          }
+          .disabled(actions.canDelete == false)
+          .accessibilityHint(actions.deleteDisabledHint)
+        }
+      }
   }
 
   private func conversationRow(_ conversation: CachedConversation) -> some View {
@@ -1315,6 +1363,42 @@ struct RecoveryAttachmentIssuePresentation: Equatable {
     case .pendingMessage: "recovery.attachmentsUnavailable.\(conversationID)"
     case .coexistingDraft: "recovery.draft.attachmentsUnavailable.\(conversationID)"
     }
+  }
+}
+
+extension View {
+  /// Applies `.draggable` only when there IS a gateway to name in the
+  /// payload, rather than dragging a `ConversationWindowValue` with an empty
+  /// `gatewayID` that no consumer could ever match. Same shape as
+  /// `MessageViews`' `draggable(_:when:)` gate, under a distinct name so the
+  /// two don't read as overloads of each other.
+  @ViewBuilder
+  fileprivate func draggableConversation(_ value: ConversationWindowValue?) -> some View {
+    if let value {
+      draggable(value)
+    } else {
+      self
+    }
+  }
+}
+
+extension UTType {
+  /// The app's own exported type for a conversation reference, declared in
+  /// `Info.plist` under `UTExportedTypeDeclarations` (identifier
+  /// `app.dash.ios.conversation`, conforming to `public.data`) and kept in
+  /// the bundle id's reverse-DNS namespace. The plist declaration is what
+  /// makes this a DECLARED exported type rather than an undeclared one, so
+  /// the entry is load-bearing, not decoration.
+  static let dashConversation = UTType(exportedAs: "app.dash.ios.conversation")
+}
+
+extension ConversationWindowValue: Transferable {
+  /// Makes a conversation row a drag SOURCE carrying the same value
+  /// "Open in New Window" passes to `openWindow`. Honest scope: nothing in
+  /// Dash consumes this type yet — it is the payload half of the
+  /// drag-a-conversation-out gesture, not by itself a way to open a window.
+  static var transferRepresentation: some TransferRepresentation {
+    CodableRepresentation(contentType: .dashConversation)
   }
 }
 

@@ -339,7 +339,7 @@ struct RootView: View {
   private func conversationDestination(_ route: ConversationRoute) -> some View {
     switch route {
     case .transcript(let id):
-      if let conversation = conversationSummary(id: id) {
+      if let conversation = appModel.conversationSummary(id: id) {
         ChatFeatureHostView(appModel: appModel, conversation: conversation)
       } else {
         ContentUnavailableView(
@@ -372,11 +372,6 @@ struct RootView: View {
     }
   }
 
-  private func conversationSummary(id: String) -> ConversationSummaryDTO? {
-    appModel.conversationListFeature?.conversations.first { $0.id == id }?.summary
-      ?? appModel.snapshot?.conversations.first { $0.id == id }?.summary
-  }
-
   @ViewBuilder
   private func agentDestination(_ route: AgentRoute) -> some View {
     if let feature = appModel.agentsFeature {
@@ -405,60 +400,6 @@ struct RootView: View {
       FeatureSlotView(title: "Agent", systemImage: "person.crop.circle")
     }
   }
-}
-
-@MainActor
-private struct ChatFeatureHostView: View {
-  @Bindable var appModel: AppModel
-  let conversation: ConversationSummaryDTO
-
-  @State private var feature: ChatFeature?
-  @State private var didFailToLoad = false
-
-  var body: some View {
-    Group {
-      if let feature {
-        ChatView()
-          .environment(feature)
-          .id(ObjectIdentifier(feature))
-      } else if didFailToLoad {
-        ContentUnavailableView(
-          "Chat unavailable",
-          systemImage: "exclamationmark.bubble",
-          description: Text("Check this gateway's connection and try again.")
-        )
-        .navigationTitle(conversation.title)
-      } else {
-        ProgressView("Opening conversation")
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .navigationTitle(conversation.title)
-      }
-    }
-    .task(
-      id: ChatHostTaskID(
-        conversationID: conversation.id,
-        appGeneration: appModel.chatHostGeneration
-      )
-    ) {
-      feature = nil
-      didFailToLoad = false
-      let loaded = await appModel.makeChatFeature(conversation)
-      guard Task.isCancelled == false else { return }
-      feature = loaded
-      didFailToLoad = loaded == nil
-    }
-    .onChange(of: appModel.connectionState) { _, connection in
-      feature?.setConnection(connection)
-      if connection == .online, let feature {
-        Task { await feature.connectionDidBecomeOnline() }
-      }
-    }
-  }
-}
-
-private struct ChatHostTaskID: Equatable {
-  let conversationID: String
-  let appGeneration: UInt64
 }
 
 /// Signed-out entry point: `SignInView` until the Clerk account session has a

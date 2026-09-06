@@ -134,4 +134,74 @@ final class IPadUITests: DashUITestCase {
     image.press(forDuration: 1.0, thenDragTo: composer)
     XCTAssertTrue(app.descendants(matching: .any)["chat.attachment.0"].waitForExistence(timeout: 5))
   }
+
+  /// iPad goal Phase C (design §3.2): "Open in New Window" puts the same
+  /// conversation into its OWN scene, sharing the single `AppModel`
+  /// `AppLaunch` composed, so both windows are looking at one `ChatFeature`.
+  ///
+  /// The window count is asserted as a DIFFERENTIAL against the count taken
+  /// before the tap, not just as `>= 2`: an app hosting a single scene can
+  /// already report two or more `windows` (UIKit's own
+  /// `UITextEffectsWindow` appears once the `.searchable` field exists), so
+  /// a bare `>= 2` could pass without any second scene ever opening. The
+  /// brief's `>= 2` is kept alongside it rather than replaced.
+  func testOpenInNewWindowShowsASecondTranscript() throws {
+    let app = launch(scenario: "paired-online")
+    try XCTSkipUnless(app.windows.firstMatch.frame.width >= 700, "iPad-only")
+    XCTAssertTrue(element("conversation.list", in: app).waitForExistence(timeout: 5))
+    let baselineWindows = app.windows.count
+
+    element("conversation.row.shared-plan", in: app).press(forDuration: 1.0)
+    let open = app.buttons["Open in New Window"].firstMatch
+    XCTAssertTrue(open.waitForExistence(timeout: 3))
+    open.tap()
+    // `terminate()` alone does NOT close every scene: measured on iPad 26.5,
+    // the conversation scene's SESSION survives it, and the next launch
+    // comes up with the chat-only window frontmost, the main window demoted
+    // to "1 Hidden Window", and an EMPTY accessibility hierarchy for ~8s —
+    // which failed the two `IPadUITests` cases that happened to run next.
+    // `ConversationWindowSceneGuard` closes that restored window (and with
+    // it the session), but only from INSIDE the relaunched process, so one
+    // launch is still spent recovering. This teardown spends that launch
+    // here, in the test that created the state, instead of handing it to
+    // whichever test runs next.
+    addTeardownBlock {
+      app.terminate()
+      app.launch()
+      app.terminate()
+    }
+
+    let transcripts = app.descendants(matching: .any).matching(identifier: "chat.transcript")
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "count >= 1"), object: transcripts)
+    XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 8), .completed)
+    XCTAssertGreaterThanOrEqual(app.windows.count, 2, "a second scene should exist")
+    XCTAssertGreaterThan(
+      app.windows.count,
+      baselineWindows,
+      """
+      Expected opening a conversation window to ADD a window on top of the \
+      \(baselineWindows) the single-scene app already reported — a count that \
+      merely happens to be >= 2 proves nothing.
+      """
+    )
+
+    // The transcript is in the OTHER window, not this one: the main window's
+    // sidebar AND its empty-detail "New conversation" button are both still
+    // on screen, which is only possible if the main window never navigated.
+    // (Measured on iPad 26.5: `windows.count` goes 1 -> 5 across the tap,
+    // one transcript, `conversation.list` and `detail.newConversation` both
+    // still present.)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["conversation.list"].exists,
+      "the main window's sidebar should still be up"
+    )
+    XCTAssertTrue(
+      app.descendants(matching: .any)["detail.newConversation"].exists,
+      """
+      The main window's detail should still be EMPTY — if the transcript had \
+      opened in this window instead of a new one, this button would be gone.
+      """
+    )
+  }
 }

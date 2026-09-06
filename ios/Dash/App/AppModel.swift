@@ -519,6 +519,18 @@ final class AppModel {
     }
   }
 
+  /// The canonical summary for one conversation id, preferring the live
+  /// conversation list over the raw sync snapshot (the list carries the
+  /// locally-projected title/status a rename or delete has already applied).
+  /// Lifted out of `RootView` in Task 10 so the chat-only window scene
+  /// (`ConversationWindowView`) resolves a conversation exactly the way the
+  /// main window's `.navigationDestination` does, rather than growing a
+  /// second, subtly different lookup.
+  func conversationSummary(id: String) -> ConversationSummaryDTO? {
+    conversationListFeature?.conversations.first { $0.id == id }?.summary
+      ?? snapshot?.conversations.first { $0.id == id }?.summary
+  }
+
   func makeChatFeature(_ conversation: ConversationSummaryDTO) async -> ChatFeature? {
     guard let profile = selectedProfile, conversation.status != .deleted else { return nil }
     let scope = chatScope(gatewayID: profile.gatewayID, conversationID: conversation.id)
