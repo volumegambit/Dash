@@ -31,7 +31,10 @@ import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
 import type { SubagentDefinitionRegistry } from './subagent-definitions.js';
-import { mountSubagentDefinitionRoutes } from './subagent-management.js';
+import {
+  mountSubagentDefinitionRoutes,
+  mountSubagentRuntimeRoutes,
+} from './subagent-management.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -1367,6 +1370,7 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     mountSwarmRoutes(app, {
       swarmCoordinator: options.swarmCoordinator,
       agentRegistry,
+      conversations: options.conversationService,
     });
   }
 
@@ -1391,6 +1395,21 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           ? ({ code: 'not_found', error: message, retryable: false } satisfies MobileApiError)
           : mobileValidationError(message),
     });
+  }
+
+  // --- Sub-agent runtime routes (design §7.7) ---
+  // The tasks-panel surface: list a conversation's children, stop one, resume
+  // one. Dual-mounted like the definition routes above, and conditional on the
+  // coordinator dep for the same reason the swarm routes are — `stop` and
+  // `resume` have nothing to talk to without one. Both mounts return the typed
+  // `MobileApiError` envelope (see `mountSubagentRuntimeRoutes`).
+  if (options.swarmCoordinator) {
+    const runtimeDeps = {
+      conversations: options.conversationService,
+      coordinator: options.swarmCoordinator,
+    };
+    mountSubagentRuntimeRoutes(app, runtimeDeps);
+    mountSubagentRuntimeRoutes(mobileV1, runtimeDeps);
   }
 
   // --- MCP routes ---

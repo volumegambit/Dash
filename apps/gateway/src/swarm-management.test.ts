@@ -287,7 +287,7 @@ function spawnRun(
     role: 'Scout',
     brief: 'do a thing',
   });
-  const runs = coordinator.getRuns(agentId);
+  const runs = coordinator.runsForConversation(agentId, conversationId);
   const runId = runs[0].runId;
   return { attachment, runId, workerId };
 }
@@ -354,6 +354,88 @@ describe('swarm management routes', () => {
       const res = await app.request('/agents/ghost/swarm/runs', { headers: AUTH });
       expect(res.status).toBe(404);
       expect((await res.json()) as JsonBody).toEqual({ error: 'not found' });
+    });
+  });
+
+  // --- Restart: runs are a VIEW over child conversations, not a ring buffer ---
+  describe('runs that predate this process', () => {
+    it('groups persisted children by parentTurnId, with no live handle at all', async () => {
+      // Exactly the post-restart shape: the coordinator holds nothing, the
+      // store holds the children, and the panel still lists the run.
+      const driver = createFakeChildDriver(() => Promise.reject(new Error('never built')));
+      driver.persisted.push(
+        {
+          subagentId: 'sub_a',
+          workerId: 'sub_a',
+          parentConversationId: 'conv-restarted',
+          parentTurnId: 'turn-9',
+          role: 'Scout',
+          status: 'interrupted',
+          brief: 'survey',
+          model: MODEL,
+          report: 'interrupted by a restart',
+          usage: { inputTokens: 1, outputTokens: 2 },
+          startedAt: 1000,
+          endedAt: 2000,
+          subagentType: 'general-purpose',
+          description: 'survey the repo',
+          toolCallCount: 3,
+          background: true,
+          oneShot: false,
+          depth: 1,
+        },
+        {
+          subagentId: 'sub_b',
+          workerId: 'sub_b',
+          parentConversationId: 'conv-restarted',
+          parentTurnId: 'turn-9',
+          role: 'Scribe',
+          status: 'done',
+          brief: 'write',
+          model: MODEL,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          startedAt: 1500,
+          endedAt: 2500,
+          subagentType: 'general-purpose',
+          description: 'write it up',
+          toolCallCount: 1,
+          background: false,
+          oneShot: false,
+          depth: 1,
+        },
+      );
+      const restarted = new SwarmCoordinator({ childDriver: driver });
+      const conversationService = makeConversationService();
+      const { app, agentRegistry } = createApp({
+        swarmCoordinator: restarted,
+        conversationService,
+      });
+      const id = registerAgent(agentRegistry);
+      (conversationService.list as ReturnType<typeof vi.fn>).mockReturnValue({
+        items: [
+          { id: 'sub_a', parentConversationId: 'conv-restarted' },
+          { id: 'sub_b', parentConversationId: 'conv-restarted' },
+        ],
+        nextCursor: null,
+      });
+
+      const res = await app.request(`/agents/${id}/swarm/runs`, { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.runs).toHaveLength(1);
+      expect(body.runs[0]).toMatchObject({
+        runId: 'turn-9',
+        conversationId: 'conv-restarted',
+        workerCount: 2,
+        activeCount: 0,
+        finalized: true,
+      });
+
+      const snap = await app.request(`/agents/${id}/swarm/runs/turn-9`, { headers: AUTH });
+      expect(snap.status).toBe(200);
+      const detail = (await snap.json()) as { workers: Array<Record<string, unknown>> };
+      expect(detail.workers.map((worker) => worker.workerId)).toEqual(['sub_a', 'sub_b']);
+      expect(detail.workers[0]).toMatchObject({ status: 'interrupted' });
     });
   });
 
@@ -469,7 +551,9 @@ describe('swarm management routes', () => {
       expect(res.status).toBe(409);
       const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
-      expect(body.reason).toBe('run finalized');
+      // Finalizing the turn cancelled the worker, so the truthful reason is
+      // that the WORKER is terminal — `:runId` no longer resolves anything.
+      expect(body.reason).toBe('worker terminal');
     });
 
     it('409s when the worker is already terminal', async () => {
@@ -556,7 +640,9 @@ describe('swarm management routes', () => {
       expect(res.status).toBe(409);
       const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
-      expect(body.reason).toBe('run finalized');
+      // Finalizing the turn cancelled the worker, so the truthful reason is
+      // that the WORKER is terminal — `:runId` no longer resolves anything.
+      expect(body.reason).toBe('worker terminal');
     });
 
     it('409s when the worker is already terminal', async () => {
@@ -792,15 +878,20 @@ describe('lifecycle cascades', () => {
         orchestratorModel: MODEL,
       });
       coordinator.spawnWorker(entry.id, 'c1', { role: 'Scout', brief: 'b' });
-      expect(coordinator.getRuns(entry.id).some((r) => !r.finalized)).toBe(true);
+      expect(coordinator.runsForConversation(entry.id, 'c1').some((run) => !run.finalized)).toBe(
+        true,
+      );
 
       const res = await app.request(`/agents/${entry.id}/disable`, {
         method: 'POST',
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      // After disable the run is finalized (in history, not live).
-      expect(coordinator.getRuns(entry.id).every((r) => r.finalized)).toBe(true);
+      // After disable every worker of the run is terminal, so the grouping
+      // reports it finalized.
+      expect(coordinator.runsForConversation(entry.id, 'c1').every((run) => run.finalized)).toBe(
+        true,
+      );
     });
   });
 

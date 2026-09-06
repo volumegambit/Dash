@@ -255,7 +255,7 @@ describe('SwarmCoordinator', () => {
       // A's run is still live: another spawn succeeds and routes to A.
       const spawned = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r2', brief: 'b2' });
       expect(spawned.status).toBe('spawning');
-      const runs = coord.getRuns(AGENT_ID);
+      const runs = coord.runsForConversation(AGENT_ID, CONVO_ID);
       expect(runs).toHaveLength(1);
       expect(runs[0].runId).toBe(a.runIdHint);
     });
@@ -297,9 +297,9 @@ describe('SwarmCoordinator', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach());
-      expect(coord.getRuns(AGENT_ID)).toHaveLength(0);
+      expect(coord.runsForConversation(AGENT_ID, CONVO_ID)).toHaveLength(0);
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
-      expect(coord.getRuns(AGENT_ID)).toHaveLength(1);
+      expect(coord.runsForConversation(AGENT_ID, CONVO_ID)).toHaveLength(1);
     });
 
     it('spawnWorker throws "swarm turn is closed" when there is no live attachment', () => {
@@ -309,7 +309,7 @@ describe('SwarmCoordinator', () => {
         /swarm turn is closed/,
       );
       // No orphan run was created.
-      expect(coord.getRuns(AGENT_ID)).toHaveLength(0);
+      expect(coord.runsForConversation(AGENT_ID, CONVO_ID)).toHaveLength(0);
     });
 
     it('spawnWorker throws after the attachment is finalized (no zombie run)', () => {
@@ -879,80 +879,41 @@ describe('SwarmCoordinator', () => {
     });
   });
 
-  // Ring buffer retention.
-  describe('ring buffer', () => {
-    it('retains the last 20 runs per agent; the 21st run evicts the 1st', () => {
+  /**
+   * Design §7.7: the panel's run list is a VIEW over child conversations
+   * grouped by the parent turn that spawned them, not a ring buffer of
+   * finalized snapshots the coordinator remembers. That is what makes a run
+   * survive a restart and what makes it impossible for the panel to disagree
+   * with the transcripts it summarises.
+   */
+  describe('runs grouped by parent turn', () => {
+    it('groups a conversation-s children by parentTurnId and reports live counts', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
-      const runIds: string[] = [];
-      for (let i = 0; i < 21; i++) {
-        const a = coord.attach(baseAttach({ conversationId: `c-${i}` }));
-        runIds.push(a.runIdHint);
-        coord.spawnWorker(AGENT_ID, `c-${i}`, { role: 'r', brief: 'b' });
-        a.finalize({ consumerAlive: true });
-      }
-      const runs = coord.getRuns(AGENT_ID);
-      expect(runs).toHaveLength(20);
-      // The first run was evicted.
-      expect(coord.getRun(AGENT_ID, runIds[0])).toBeUndefined();
-      // The last run is retained.
-      expect(coord.getRun(AGENT_ID, runIds[20])).toBeDefined();
-    });
-  });
+      const first = coord.attach(baseAttach({ messageId: 'turn-1' }));
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r1', brief: 'b1' });
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r2', brief: 'b2' });
+      first.finalize({ consumerAlive: true });
+      const second = coord.attach(baseAttach({ messageId: 'turn-2' }));
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r3', brief: 'b3' });
 
-  // Boot-time crash recovery: restored snapshots surface via the panel API.
-  describe('restoreFinalizedRun', () => {
-    function restoredSnapshot() {
-      return {
-        runId: 'crashed-run',
-        agentId: AGENT_ID,
-        conversationId: CONVO_ID,
-        startedAt: 1000,
-        endedAt: 2000,
-        finalized: true,
-        workerCount: 1,
-        activeCount: 0,
-        workers: [
-          {
-            workerId: 'w-1',
-            role: 'researcher',
-            status: 'cancelled' as const,
-            brief: 'find things',
-            model: 'orch-model',
-            report: 'Gateway restarted while this worker was running.',
-            usage: { inputTokens: 0, outputTokens: 0 },
-            subagentType: 'general-purpose',
-            description: 'researcher',
-            toolCallCount: 0,
-            background: false,
-            oneShot: false,
-          },
-        ],
-      };
-    }
-
-    it('a restored snapshot is listed by getRuns and retrievable by getRun', () => {
-      const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
-
-      coord.restoreFinalizedRun(restoredSnapshot());
-
-      const runs = coord.getRuns(AGENT_ID);
-      expect(runs).toHaveLength(1);
-      expect(runs[0]).toMatchObject({ runId: 'crashed-run', finalized: true, workerCount: 1 });
-      const snap = coord.getRun(AGENT_ID, 'crashed-run');
-      expect(snap?.workers[0]).toMatchObject({ workerId: 'w-1', status: 'cancelled' });
+      const runs = coord.runsForConversation(AGENT_ID, CONVO_ID);
+      expect(runs.map((run) => run.runId)).toEqual(['turn-1', 'turn-2']);
+      expect(runs[0]).toMatchObject({ workerCount: 2, activeCount: 0, finalized: true });
+      expect(runs[1]).toMatchObject({ workerCount: 1, activeCount: 1, finalized: false });
+      expect(runs[1].workers[0]).toMatchObject({ role: 'r3', status: 'running' });
+      second.finalize({ consumerAlive: true });
     });
 
-    it('restored snapshots count toward the per-agent ring buffer cap', () => {
+    it('lists the conversations it holds children for, per agent', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
-      for (let i = 0; i < 21; i++) {
-        coord.restoreFinalizedRun({ ...restoredSnapshot(), runId: `run-${i}` });
-      }
-      expect(coord.getRuns(AGENT_ID)).toHaveLength(20);
-      expect(coord.getRun(AGENT_ID, 'run-0')).toBeUndefined();
-      expect(coord.getRun(AGENT_ID, 'run-20')).toBeDefined();
+      const a = coord.attach(baseAttach({ conversationId: 'c-1' }));
+      coord.spawnWorker(AGENT_ID, 'c-1', { role: 'r', brief: 'b' });
+      a.finalize({ consumerAlive: true });
+
+      expect(coord.liveConversations(AGENT_ID)).toEqual(['c-1']);
+      expect(coord.liveConversations('some-other-agent')).toEqual([]);
     });
   });
 
@@ -970,7 +931,11 @@ describe('SwarmCoordinator', () => {
       expect(res).toEqual({ ok: false, reason: 'worker terminal' });
     });
 
-    it('sendPanelMessage on a finalized run returns {ok:false, reason:"run finalized"}', () => {
+    // The `runId` no longer resolves anything (a run is a grouping, not an
+    // owner), so a finalized turn refuses for the reason that is actually
+    // true: finalizing cancelled the worker, and a cancelled worker is
+    // terminal.
+    it('sendPanelMessage after the turn finalized returns {ok:false, reason:"worker terminal"}', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
@@ -978,7 +943,27 @@ describe('SwarmCoordinator', () => {
       const runId = a.runIdHint;
       a.finalize({ consumerAlive: true });
       const res = coord.sendPanelMessage(AGENT_ID, runId, workerId, 'hi');
-      expect(res).toEqual({ ok: false, reason: 'run finalized' });
+      expect(res).toEqual({ ok: false, reason: 'worker terminal' });
+    });
+
+    /**
+     * The reach the run-scoped lookup did not have: a DETACHED background
+     * child outlives the turn that spawned it, so the panel has to be able to
+     * steer and cancel it after that turn has finalized.
+     */
+    it('reaches a detached background child after its spawning turn finalized', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      const a = coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        background: true,
+      });
+      a.finalize({ consumerAlive: true });
+
+      expect(coord.sendPanelMessage(AGENT_ID, 'whatever', workerId, 'hi')).toEqual({ ok: true });
+      expect(coord.cancelWorker(AGENT_ID, 'whatever', workerId)).toEqual({ ok: true });
     });
 
     it('cancelWorker on a live worker returns {ok:true} and aborts the backend', async () => {

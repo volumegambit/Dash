@@ -83,7 +83,6 @@ const DEFAULT_GLOBAL_MAX_CONCURRENT = 16;
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
 /** waitWorker waits on one named child for as long as the turn can live. */
 const WAIT_WORKER_TIMEOUT_SECONDS = 24 * 3600;
-const RING_BUFFER_SIZE = 20;
 
 const TERMINAL_STATUSES: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
   'done',
@@ -292,7 +291,6 @@ export class SwarmCoordinator {
   /** Live turns keyed by `${agentId}/${conversationId}`. */
   private readonly live = new Map<string, LiveTurn>();
   /** Finalized run snapshots, ring-buffered per agent (most-recent last). */
-  private readonly history = new Map<string, RunSnapshot[]>();
   /**
    * EVERY child this process still holds a handle for, keyed by its subagent
    * (= conversation) id. Independent of the run that spawned it: this is what
@@ -411,8 +409,6 @@ export class SwarmCoordinator {
           ).catch(() => {});
         }
       }
-      // Snapshot into the ring buffer for the panel API.
-      this.pushHistory(turn.opts.agentId, run.snapshot());
       this.onRunChanged?.(turn.opts.agentId, run.runId);
     } else {
       // No run was ever created; still fire the pre-run closed signal + channel.
@@ -1156,61 +1152,112 @@ export class SwarmCoordinator {
 
   // --- panel / management API ---
 
-  getRuns(agentId: string): RunSummary[] {
-    const summaries: RunSummary[] = [];
-    // Live runs first.
+  /**
+   * The parent conversations this process currently knows children (or a live
+   * turn) for, for one agent. Bounded by
+   * {@link MAX_TRACKED_PARENT_CONVERSATIONS}.
+   *
+   * The panel composes its run list from this PLUS the conversations the store
+   * knows about (see the gateway's `swarm-management.ts`): a run that predates
+   * a restart has no live handle, and a live turn that has not spawned yet has
+   * no persisted row.
+   */
+  liveConversations(agentId: string): string[] {
+    const ids = new Set<string>();
     for (const turn of this.live.values()) {
-      if (turn.opts.agentId === agentId && turn.run) summaries.push(turn.run.summary());
+      if (turn.opts.agentId === agentId) ids.add(turn.opts.conversationId);
     }
-    // Then finalized history.
-    for (const snap of this.history.get(agentId) ?? []) {
-      summaries.push({
-        runId: snap.runId,
-        agentId: snap.agentId,
-        conversationId: snap.conversationId,
-        startedAt: snap.startedAt,
-        endedAt: snap.endedAt,
-        finalized: snap.finalized,
-        workerCount: snap.workerCount,
-        activeCount: snap.activeCount,
+    for (const [parentConversationId, handles] of this.childrenByParent) {
+      if (handles.some((handle) => handle.agentId === agentId)) ids.add(parentConversationId);
+    }
+    return [...ids];
+  }
+
+  /**
+   * One conversation's runs: its children grouped by the PARENT TURN that
+   * spawned them (design §7.7 — "runs are grouped by parent turn for the MC
+   * panel's run list").
+   *
+   * This replaces the in-memory ring buffer of finalized `RunSnapshot`s. A run
+   * is no longer a thing the coordinator remembers; it is a view over the child
+   * conversations, so it survives a restart for free and can never disagree
+   * with the transcripts it summarises.
+   */
+  runsForConversation(agentId: string, conversationId: string): RunSnapshot[] {
+    const byTurn = new Map<string, ChildSnapshot[]>();
+    for (const child of this.childrenOf(conversationId)) {
+      const turnId = child.parentTurnId || conversationId;
+      const bucket = byTurn.get(turnId);
+      if (bucket) bucket.push(child);
+      else byTurn.set(turnId, [child]);
+    }
+    const snapshots: RunSnapshot[] = [];
+    for (const [runId, children] of byTurn) {
+      const active = children.filter((child) => !TERMINAL_STATUSES.has(child.status));
+      const startedAt = Math.min(...children.map((child) => child.startedAt ?? 0));
+      const endedAt = Math.max(...children.map((child) => child.endedAt ?? 0));
+      snapshots.push({
+        runId,
+        agentId,
+        conversationId,
+        startedAt,
+        ...(active.length === 0 && endedAt > 0 ? { endedAt } : {}),
+        finalized: active.length === 0,
+        workerCount: children.length,
+        activeCount: active.length,
+        workers: children.map((child) => ({
+          workerId: child.subagentId,
+          role: child.role,
+          status: child.status,
+          brief: child.brief,
+          model: child.model,
+          ...(child.report !== undefined ? { report: child.report } : {}),
+          usage: child.usage,
+          ...(child.startedAt !== undefined ? { startedAt: child.startedAt } : {}),
+          ...(child.endedAt !== undefined ? { endedAt: child.endedAt } : {}),
+          subagentType: child.subagentType,
+          description: child.description,
+          ...(child.name !== undefined ? { name: child.name } : {}),
+          toolCallCount: child.toolCallCount,
+          background: child.background,
+          oneShot: child.oneShot,
+          ...(child.workspace !== undefined ? { workspace: child.workspace } : {}),
+        })),
       });
     }
-    return summaries;
+    return snapshots.sort((a, b) => a.startedAt - b.startedAt);
   }
 
-  getRun(agentId: string, runId: string): RunSnapshot | undefined {
-    for (const turn of this.live.values()) {
-      if (turn.opts.agentId === agentId && turn.run?.runId === runId) {
-        return turn.run.snapshot();
-      }
-    }
-    for (const snap of this.history.get(agentId) ?? []) {
-      if (snap.runId === runId) return snap;
-    }
-    return undefined;
-  }
-
-  cancelWorker(agentId: string, runId: string, workerId: string): { ok: boolean; reason?: string } {
-    const run = this.findLiveRun(agentId, runId);
-    if (!run) return { ok: false, reason: 'run finalized' };
-    const handle = run.getHandle(workerId);
+  /**
+   * Panel cancel. The `runId` is NOT used to resolve the worker: a run is a
+   * grouping now, not an owner, and the child registry spans every turn — so a
+   * detached background child is cancellable from the panel exactly like a
+   * foreground one, which the run-scoped lookup this replaces could not do.
+   */
+  cancelWorker(
+    agentId: string,
+    _runId: string,
+    workerId: string,
+  ): {
+    ok: boolean;
+    reason?: string;
+  } {
+    const handle = this.children.get(workerId);
     if (!handle) return { ok: false, reason: 'worker terminal' };
     // Shared synchronous check+effect discipline (no await between).
     if (this.isHandleTerminal(handle.status)) return { ok: false, reason: 'worker terminal' };
     handle.cancel('cancelled by panel');
-    this.onRunChanged?.(agentId, run.runId);
+    this.onRunChanged?.(agentId, handle.parentTurnId);
     return { ok: true };
   }
 
   sendPanelMessage(
-    agentId: string,
-    runId: string,
+    _agentId: string,
+    _runId: string,
     workerId: string,
     message: string,
   ): { ok: boolean; reason?: string } {
-    const run = this.findLiveRun(agentId, runId);
-    if (!run) return { ok: false, reason: 'run finalized' };
-    const handle = run.getHandle(workerId);
+    const handle = this.children.get(workerId);
     if (!handle) return { ok: false, reason: 'worker terminal' };
     if (this.isHandleTerminal(handle.status)) return { ok: false, reason: 'worker terminal' };
     const res = handle.send(message);
@@ -1238,17 +1285,6 @@ export class SwarmCoordinator {
         this.finalizeTurn(k, turn, { consumerAlive: false });
       }
     }
-  }
-
-  /**
-   * Push an externally-reconstructed finalized run snapshot into the panel
-   * history ring buffer. Used at gateway boot to surface runs a previous
-   * process died in the middle of (rebuilt from the durable event log) —
-   * without it a crash-interrupted run vanishes from the panel entirely.
-   * Never touches live-turn state.
-   */
-  restoreFinalizedRun(snapshot: RunSnapshot): void {
-    this.pushHistory(snapshot.agentId, snapshot);
   }
 
   /** Non-terminal children across the whole gateway (the global ceiling). */
@@ -1742,12 +1778,5 @@ export class SwarmCoordinator {
     // Try to deliver immediately (ruling 2).
     // Fire-and-forget; failures are bounded.
     void this.deliverPending(handle.agentId, handle.parentConversationId).catch(() => {});
-  }
-
-  private pushHistory(agentId: string, snap: RunSnapshot): void {
-    const list = this.history.get(agentId) ?? [];
-    list.push(snap);
-    while (list.length > RING_BUFFER_SIZE) list.shift();
-    this.history.set(agentId, list);
   }
 }
