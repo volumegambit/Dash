@@ -3,36 +3,41 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LessonDelta } from '@dash/agent';
 import { listBooks, listPending } from '@dash/agent';
-import type {
-  ConversationContent,
-  ConversationMessage,
-  ConversationRole,
-} from '@dash/mobile-contract';
+import type { ConversationContent, ConversationRole } from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StoredConversationMessage } from './conversation-domain.js';
 import type { ConversationService } from './conversation-service.js';
 import type { SkillReviewOptions } from './skill-review.js';
 import { applyPendingLessons, createSkillReviewService } from './skill-review.js';
 
 interface MessageSpec {
   turnId: string;
+  runId?: string;
+  segmentIndex?: number;
   role: ConversationRole;
   content: ConversationContent;
 }
 
-function fakeConversations(specs: MessageSpec[]): Pick<ConversationService, 'listMessages'> {
-  const items: ConversationMessage[] = specs.map((spec, i) => ({
+function fakeConversations(specs: MessageSpec[]): Pick<ConversationService, 'listRunMessages'> {
+  const items: StoredConversationMessage[] = specs.map((spec, i) => ({
     id: `m${i}`,
     conversationId: 'c',
     turnId: spec.turnId,
+    runId: spec.runId ?? spec.turnId,
+    segmentIndex: spec.segmentIndex ?? 0,
     ordinal: i,
     role: spec.role,
     status: 'completed',
+    deliveryKind: (spec.segmentIndex ?? 0) > 0 ? 'steer' : 'normal',
     content: spec.content,
     createdAt: '2026-09-06T00:00:00.000Z',
     updatedAt: '2026-09-06T00:00:00.000Z',
   }));
   return {
-    listMessages: () => ({ items, nextCursor: null, throughSeq: items.length }),
+    listRunMessages: (conversationId, runId) =>
+      items.filter(
+        (message) => message.conversationId === conversationId && message.runId === runId,
+      ),
   };
 }
 
@@ -94,7 +99,7 @@ describe('createSkillReviewService', () => {
   it('reviews a turn that did real work and writes the learned skill', async () => {
     const { service, extract } = makeService();
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).toHaveBeenCalledTimes(1);
@@ -108,10 +113,94 @@ describe('createSkillReviewService', () => {
     expect(md).toContain('Re-run the generator first.');
   });
 
+  it('reviews all segments with aggregate tool count and first-seen loaded skills', async () => {
+    const extract = vi.fn(async () => []);
+    const service = createSkillReviewService({
+      conversations: fakeConversations([
+        {
+          turnId: 'run-1',
+          runId: 'run-1',
+          segmentIndex: 0,
+          role: 'user',
+          content: { type: 'user', text: 'initial' },
+        },
+        {
+          turnId: 'run-1',
+          runId: 'run-1',
+          segmentIndex: 0,
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              {
+                type: 'tool_use_start',
+                id: 'load-a',
+                name: 'load_skill',
+                input: { name: 'alpha' },
+              },
+              { type: 'tool_use_start', id: 'load-b', name: 'load_skill', input: { name: 'beta' } },
+              { type: 'tool_result', id: 'tool-1', name: 'bash', content: 'ok' },
+              { type: 'response', content: 'first', usage: {} },
+            ],
+          },
+        },
+        {
+          turnId: 'segment-1',
+          runId: 'run-1',
+          segmentIndex: 1,
+          role: 'user',
+          content: { type: 'user', text: 'steer' },
+        },
+        {
+          turnId: 'segment-1',
+          runId: 'run-1',
+          segmentIndex: 1,
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              {
+                type: 'tool_use_start',
+                id: 'load-b2',
+                name: 'load_skill',
+                input: { name: 'beta' },
+              },
+              {
+                type: 'tool_use_start',
+                id: 'load-c',
+                name: 'load_skill',
+                input: { name: 'gamma' },
+              },
+              { type: 'tool_result', id: 'tool-2', name: 'bash', content: 'ok' },
+              { type: 'tool_result', id: 'tool-3', name: 'bash', content: 'ok' },
+              { type: 'response', content: 'second', usage: {} },
+            ],
+          },
+        },
+      ]),
+      managedSkillsDir: () => dir,
+      shouldReview: () => true,
+      minToolCalls: () => 3,
+      extract,
+    });
+
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 'run-1' });
+    await service.flush();
+
+    expect(extract).toHaveBeenCalledOnce();
+    expect(extract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userText: 'initial\n\nsteer',
+        assistantText: 'first\n\nsecond',
+        loadedSkills: ['alpha', 'beta', 'gamma'],
+      }),
+    );
+  });
+
   it('does not call the model for a turn below the effort gate', async () => {
     const { service, extract } = makeService({}, 2);
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).not.toHaveBeenCalled();
@@ -121,7 +210,7 @@ describe('createSkillReviewService', () => {
   it('reviews exactly at the effort gate', async () => {
     const { service, extract } = makeService({}, 3);
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).toHaveBeenCalledTimes(1);
@@ -130,7 +219,7 @@ describe('createSkillReviewService', () => {
   it('does nothing when learning is off for the agent', async () => {
     const { service, extract } = makeService({ shouldReview: () => false });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).not.toHaveBeenCalled();
@@ -139,7 +228,7 @@ describe('createSkillReviewService', () => {
   it('does nothing when the agent has no managed skills directory', async () => {
     const { service, extract } = makeService({ managedSkillsDir: () => null });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).not.toHaveBeenCalled();
@@ -148,7 +237,7 @@ describe('createSkillReviewService', () => {
   it('does nothing for an unknown turn', async () => {
     const { service, extract } = makeService();
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 'no-such-turn' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 'no-such-turn' });
     await service.flush();
 
     expect(extract).not.toHaveBeenCalled();
@@ -164,7 +253,7 @@ describe('createSkillReviewService', () => {
       extract,
     });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract.mock.calls[0][0]).toMatchObject({ loadedSkills: ['dash-dev'] });
@@ -172,7 +261,7 @@ describe('createSkillReviewService', () => {
 
   it('passes the books the agent already holds so lessons can be marked', async () => {
     const { service } = makeService();
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     const extract = vi.fn(async () => []);
@@ -183,7 +272,7 @@ describe('createSkillReviewService', () => {
       minToolCalls: () => 3,
       extract,
     });
-    second.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    second.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await second.flush();
 
     const books = extract.mock.calls[0][0].books;
@@ -195,7 +284,7 @@ describe('createSkillReviewService', () => {
     const onLearned = vi.fn();
     const { service } = makeService({ onLearned });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(onLearned).toHaveBeenCalledWith(
@@ -207,7 +296,7 @@ describe('createSkillReviewService', () => {
     const onLearned = vi.fn();
     const { service } = makeService({ onLearned, extract: vi.fn(async () => []) });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(onLearned).not.toHaveBeenCalled();
@@ -221,7 +310,7 @@ describe('createSkillReviewService', () => {
     });
 
     expect(() =>
-      service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' }),
+      service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' }),
     ).not.toThrow();
     await expect(service.flush()).resolves.toBeUndefined();
   });
@@ -244,9 +333,9 @@ describe('createSkillReviewService', () => {
       extract,
     });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
     await waitFor(() => running === 0);
 
@@ -284,7 +373,7 @@ describe('the approval gate', () => {
   it('stages instead of writing when approval is required', async () => {
     const { service } = gatedService();
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(await listBooks(dir)).toEqual([]);
@@ -297,7 +386,7 @@ describe('the approval gate', () => {
 
   it('applying a staged proposal writes the lesson', async () => {
     const { service } = gatedService();
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     const [staged] = await listPending(dir);
@@ -310,7 +399,7 @@ describe('the approval gate', () => {
 
   it('applying re-merges against the library as it is at approval time', async () => {
     const { service } = gatedService();
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
     const [staged] = await listPending(dir);
 
@@ -327,7 +416,7 @@ describe('the approval gate', () => {
   it('does not stage when the review found nothing', async () => {
     const { service } = gatedService(vi.fn(async () => []));
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(await listPending(dir)).toEqual([]);
@@ -358,7 +447,7 @@ describe('existing skills are never overwritten', () => {
       logger: { info: vi.fn(), warn },
     });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(await listBooks(dir)).toEqual([]);
@@ -378,7 +467,7 @@ describe('existing skills are never overwritten', () => {
       existingSkillNames: async () => ['dash-dev'],
     });
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect((await listBooks(dir)).map((b) => b.skill)).toEqual(['build-lessons']);
@@ -416,7 +505,7 @@ describe('a correction is reviewed even below the effort gate', () => {
     // the tool-call gate alone would discard them.
     const { service, extract } = serviceFor('Stop using echo — always use printf here.', 1);
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).toHaveBeenCalledTimes(1);
@@ -425,7 +514,7 @@ describe('a correction is reviewed even below the effort gate', () => {
   it('still skips a low-effort turn that is not a correction', async () => {
     const { service, extract } = serviceFor('What does this function do?', 1);
 
-    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await service.flush();
 
     expect(extract).not.toHaveBeenCalled();

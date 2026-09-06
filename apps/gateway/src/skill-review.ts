@@ -13,7 +13,7 @@ import type { ConversationService } from './conversation-service.js';
 export interface SkillReviewInput {
   agentId: string;
   conversationId: string;
-  turnId: string;
+  runId: string;
 }
 
 export interface SkillLearnedReport {
@@ -26,19 +26,19 @@ export interface SkillLearnedReport {
 }
 
 export interface SkillReviewService {
-  /** Queue a review for a finished turn. Never throws; never blocks the turn. */
+  /** Queue a review for a finished run. Never throws; never blocks the run. */
   schedule(input: SkillReviewInput): void;
   /** Await every in-flight review (tests and shutdown). */
   flush(): Promise<void>;
 }
 
 export interface SkillReviewOptions {
-  conversations: Pick<ConversationService, 'listMessages'>;
+  conversations: Pick<ConversationService, 'listRunMessages'>;
   /** Null when the agent has no managed skills directory to write to. */
   managedSkillsDir(agentId: string): string | null;
   /** Per-agent policy gate (`skills.learning`). */
   shouldReview(agentId: string): boolean;
-  /** Minimum completed tool calls in the turn before a review is worth paying for. */
+  /** Minimum completed tool calls in the run before a review is worth paying for. */
   minToolCalls(agentId: string): number;
   /** When true, proposals are staged for human approval instead of applied. */
   requiresApproval?(agentId: string): boolean;
@@ -63,14 +63,7 @@ export interface SkillReviewOptions {
   logger?: Pick<StructuredLogger, 'info' | 'warn'>;
 }
 
-/**
- * How many trailing messages to scan for the turn. `listMessages` returns the
- * newest page ordered oldest-first and the review runs immediately after the
- * turn, so the turn's own messages are always inside it.
- */
-const TURN_LOOKBACK = 40;
-
-interface TurnFacts {
+interface RunFacts {
   userText: string;
   assistantText: string;
   /** Completed tool calls — the effort signal the gate reads. */
@@ -79,34 +72,37 @@ interface TurnFacts {
 }
 
 /**
- * Pull what the review needs from one finished turn.
+ * Pull what the review needs from one finished run.
  *
  * Tool-call count rather than message length is the effort signal: a long
- * conversational turn teaches nothing reusable, while a short turn that ran
+ * conversational run teaches nothing reusable, while a short run that ran
  * five tools usually does.
  */
-function readTurn(
-  conversations: Pick<ConversationService, 'listMessages'>,
+function readRun(
+  conversations: Pick<ConversationService, 'listRunMessages'>,
   conversationId: string,
-  turnId: string,
-): TurnFacts | null {
-  const page = conversations.listMessages({ conversationId, limit: TURN_LOOKBACK });
-  const mine = page.items.filter((m) => m.turnId === turnId);
-  if (mine.length === 0) return null;
+  runId: string,
+): RunFacts | null {
+  const messages = conversations.listRunMessages(conversationId, runId);
+  if (messages.length === 0) return null;
 
-  let userText = '';
-  let assistantText = '';
+  const userTexts: string[] = [];
+  const assistantTexts: string[] = [];
   let toolCalls = 0;
   const loadedSkills: string[] = [];
 
-  for (const message of mine) {
+  for (const message of messages) {
     const content = message.content;
-    if (content.type === 'user') userText = content.text ?? '';
+    if (content.type === 'user') {
+      if (content.text) userTexts.push(content.text);
+      continue;
+    }
     if (content.type !== 'assistant') continue;
 
+    let finalResponse = '';
     for (const event of content.events ?? []) {
       if (event.type === 'response' && typeof event.content === 'string') {
-        assistantText = event.content;
+        finalResponse = event.content;
       }
       if (event.type === 'tool_result') toolCalls++;
       if (event.type === 'tool_use_start' && event.name === 'load_skill') {
@@ -114,17 +110,23 @@ function readTurn(
         if (typeof name === 'string' && !loadedSkills.includes(name)) loadedSkills.push(name);
       }
     }
+    if (finalResponse) assistantTexts.push(finalResponse);
   }
 
-  return { userText, assistantText, toolCalls, loadedSkills };
+  return {
+    userText: userTexts.join('\n\n'),
+    assistantText: assistantTexts.join('\n\n'),
+    toolCalls,
+    loadedSkills,
+  };
 }
 
 /**
- * Post-turn skill review: after a turn that did real work, ask the agent's own
+ * Post-run skill review: after a run that did real work, ask the agent's own
  * model whether the session produced a durable lesson, then merge what comes
  * back into the agent's own lesson books.
  *
- * Every failure is logged and swallowed — a review must never affect the turn's
+ * Every failure is logged and swallowed — a review must never affect the run's
  * outcome. Reviews coalesce per conversation: a schedule arriving while one is
  * running triggers exactly one rerun afterwards.
  */
@@ -137,8 +139,8 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
     const managedDir = options.managedSkillsDir(input.agentId);
     if (!managedDir) return;
 
-    const turn = readTurn(options.conversations, input.conversationId, input.turnId);
-    if (!turn) return;
+    const run = readRun(options.conversations, input.conversationId, input.runId);
+    if (!run) return;
 
     // The effort gate, checked before anything is spent. A conversational turn
     // schedules nothing and costs nothing.
@@ -147,9 +149,9 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
     // most valuable thing a session can teach, and it typically runs one tool
     // call or none — so counting tool calls alone would discard precisely the
     // signal this feature exists to capture.
-    const enoughWork = turn.toolCalls >= options.minToolCalls(input.agentId);
-    if (!enoughWork && !looksLikeCorrection(turn.userText)) return;
-    if (!turn.userText && !turn.assistantText) return;
+    const enoughWork = run.toolCalls >= options.minToolCalls(input.agentId);
+    if (!enoughWork && !looksLikeCorrection(run.userText)) return;
+    if (!run.userText && !run.assistantText) return;
 
     const books = await listBooks(managedDir);
     // Resolved BEFORE the review so the names can go into the prompt: the merge
@@ -161,10 +163,10 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
 
     const deltas = await options.extract({
       agentId: input.agentId,
-      userText: turn.userText,
-      assistantText: turn.assistantText,
+      userText: run.userText,
+      assistantText: run.assistantText,
       books,
-      loadedSkills: turn.loadedSkills,
+      loadedSkills: run.loadedSkills,
       existingSkills: reservedNames,
     });
     // Logged rather than returning silently: a review that records nothing is
@@ -182,7 +184,7 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
     // later re-runs every merge rule against the library as it is at that
     // point rather than as it was when the review ran.
     if (options.requiresApproval?.(input.agentId)) {
-      const id = `${input.turnId}`.replace(/[^a-z0-9-]/gi, '').slice(0, 64) || randomUUID();
+      const id = `${input.runId}`.replace(/[^a-z0-9-]/gi, '').slice(0, 64) || randomUUID();
       await stagePending(managedDir, {
         id,
         conversationId: input.conversationId,

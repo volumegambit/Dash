@@ -6,18 +6,18 @@ import type { SweepCandidate } from './memory-sweep-extract.js';
 export interface MemorySweepInput {
   agentId: string;
   conversationId: string;
-  turnId: string;
+  runId: string;
 }
 
 export interface MemorySweepService {
-  /** Queue a sweep for a finished turn. Never throws; never blocks the turn. */
+  /** Queue a sweep for a finished run. Never throws; never blocks the run. */
   schedule(input: MemorySweepInput): void;
   /** Await every in-flight sweep (tests and shutdown). */
   flush(): Promise<void>;
 }
 
 export interface MemorySweepOptions {
-  conversations: Pick<ConversationService, 'listMessages'>;
+  conversations: Pick<ConversationService, 'listRunMessages'>;
   /** Null when memory is disabled for the agent. */
   memoryStore(agentId: string): MemoryStore | null;
   /** Per-agent sweep policy gate (model + `memory.sweep` config). */
@@ -33,32 +33,28 @@ export interface MemorySweepOptions {
 
 const SELF_SAVE_TOOLS = new Set(['save_memory', 'forget_memory']);
 
-/**
- * How many trailing messages to scan for the turn. `listMessages` returns the
- * newest page ordered oldest-first, and the sweep runs immediately after the
- * turn, so the turn's own messages are always inside it.
- */
-const TURN_LOOKBACK = 20;
-
-/** Pull the user text and the assistant's final text for one turn; null when the turn is not found. */
-function readTurn(
-  conversations: Pick<ConversationService, 'listMessages'>,
+/** Pull the text from every segment in one run; null when the run is not found. */
+function readRun(
+  conversations: Pick<ConversationService, 'listRunMessages'>,
   conversationId: string,
-  turnId: string,
+  runId: string,
 ): { userText: string; assistantText: string; selfSaved: boolean } | null {
-  const page = conversations.listMessages({ conversationId, limit: TURN_LOOKBACK });
-  const mine = page.items.filter((m) => m.turnId === turnId);
-  if (mine.length === 0) return null;
-  let userText = '';
-  let assistantText = '';
+  const messages = conversations.listRunMessages(conversationId, runId);
+  if (messages.length === 0) return null;
+  const userTexts: string[] = [];
+  const assistantTexts: string[] = [];
   let selfSaved = false;
-  for (const message of mine) {
+  for (const message of messages) {
     const content = message.content;
-    if (content.type === 'user') userText = content.text ?? '';
+    if (content.type === 'user') {
+      if (content.text) userTexts.push(content.text);
+      continue;
+    }
     if (content.type === 'assistant') {
+      let finalResponse = '';
       for (const event of content.events ?? []) {
         if (event.type === 'response' && typeof event.content === 'string') {
-          assistantText = event.content;
+          finalResponse = event.content;
         }
         if (
           event.type === 'tool_result' &&
@@ -68,17 +64,22 @@ function readTurn(
           selfSaved = true;
         }
       }
+      if (finalResponse) assistantTexts.push(finalResponse);
     }
   }
-  return { userText, assistantText, selfSaved };
+  return {
+    userText: userTexts.join('\n\n'),
+    assistantText: assistantTexts.join('\n\n'),
+    selfSaved,
+  };
 }
 
 /**
- * Post-turn memory sweep: for models that do not save memories themselves, ask
- * a model after each finished turn whether the exchange contained anything
+ * Post-run memory sweep: for models that do not save memories themselves, ask
+ * a model after each finished run whether the exchange contained anything
  * worth remembering, and write what it returns.
  *
- * Every failure is logged and swallowed — a sweep must never affect the turn's
+ * Every failure is logged and swallowed — a sweep must never affect the run's
  * outcome. Sweeps coalesce per conversation: a schedule that arrives while one
  * is running triggers exactly one rerun afterwards.
  */
@@ -89,15 +90,15 @@ export function createMemorySweepService(options: MemorySweepOptions): MemorySwe
   const runOnce = async (input: MemorySweepInput): Promise<void> => {
     const store = options.memoryStore(input.agentId);
     if (!store || !options.shouldSweep(input.agentId)) return;
-    const turn = readTurn(options.conversations, input.conversationId, input.turnId);
+    const run = readRun(options.conversations, input.conversationId, input.runId);
     // Nothing to work with, or the model already handled its own memory.
-    if (!turn || turn.selfSaved || (!turn.userText && !turn.assistantText)) return;
+    if (!run || run.selfSaved || (!run.userText && !run.assistantText)) return;
 
     const index = await store.list();
     const candidates = await options.extract({
       agentId: input.agentId,
-      userText: turn.userText,
-      assistantText: turn.assistantText,
+      userText: run.userText,
+      assistantText: run.assistantText,
       index,
     });
 

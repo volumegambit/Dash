@@ -3,45 +3,49 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryStore } from '@dash/agent';
 import type { MemoryInfo } from '@dash/agent';
-import type {
-  ConversationContent,
-  ConversationMessage,
-  ConversationRole,
-} from '@dash/mobile-contract';
+import type { ConversationContent, ConversationRole } from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StoredConversationMessage } from './conversation-domain.js';
 import type { ConversationService } from './conversation-service.js';
 import type { MemorySweepOptions } from './memory-sweep.js';
 import { createMemorySweepService } from './memory-sweep.js';
 
 interface MessageSpec {
   turnId: string;
+  runId?: string;
+  segmentIndex?: number;
   role: ConversationRole;
   content: ConversationContent;
 }
 
 /**
- * Minimal stand-in for {@link ConversationService.listMessages}. The real page
- * is `{ items, nextCursor, throughSeq }` ordered oldest-first within the page.
+ * Minimal stand-in for {@link ConversationService.listRunMessages}. The real
+ * method returns every run segment ordered by message ordinal.
  */
 function fakeConversations(
   specs: MessageSpec[],
   spy?: ReturnType<typeof vi.fn>,
-): Pick<ConversationService, 'listMessages'> {
-  const items: ConversationMessage[] = specs.map((spec, i) => ({
+): Pick<ConversationService, 'listRunMessages'> {
+  const items: StoredConversationMessage[] = specs.map((spec, i) => ({
     id: `m${i}`,
     conversationId: 'c',
     turnId: spec.turnId,
+    runId: spec.runId ?? spec.turnId,
+    segmentIndex: spec.segmentIndex ?? 0,
     ordinal: i,
     role: spec.role,
     status: 'completed',
+    deliveryKind: (spec.segmentIndex ?? 0) > 0 ? 'steer' : 'normal',
     content: spec.content,
     createdAt: '2026-09-05T00:00:00.000Z',
     updatedAt: '2026-09-05T00:00:00.000Z',
   }));
   return {
-    listMessages: (input) => {
-      spy?.(input);
-      return { items, nextCursor: null, throughSeq: items.length };
+    listRunMessages: (conversationId, runId) => {
+      spy?.(conversationId, runId);
+      return items.filter(
+        (message) => message.conversationId === conversationId && message.runId === runId,
+      );
     },
   };
 }
@@ -106,10 +110,10 @@ describe('createMemorySweepService', () => {
       extract,
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
-    expect(listSpy).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'c' }));
+    expect(listSpy).toHaveBeenCalledWith('c', 't1');
     expect(extract).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: 'a',
@@ -118,6 +122,119 @@ describe('createMemorySweepService', () => {
       }),
     );
     expect((await store.get('user-timezone'))?.source).toBe('sweep');
+  });
+
+  it('sweeps all user and assistant segments once in ordinal order', async () => {
+    const extract = vi.fn(async () => []);
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        {
+          turnId: 'run-1',
+          runId: 'run-1',
+          segmentIndex: 0,
+          role: 'user',
+          content: { type: 'user', text: 'initial' },
+        },
+        {
+          turnId: 'run-1',
+          runId: 'run-1',
+          segmentIndex: 0,
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              { type: 'text_delta', text: 'first' },
+              { type: 'response', content: 'first', usage: {} },
+            ],
+          },
+        },
+        {
+          turnId: 'segment-1',
+          runId: 'run-1',
+          segmentIndex: 1,
+          role: 'user',
+          content: { type: 'user', text: 'steer' },
+        },
+        {
+          turnId: 'segment-1',
+          runId: 'run-1',
+          segmentIndex: 1,
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              { type: 'text_delta', text: 'second' },
+              { type: 'response', content: 'second', usage: {} },
+            ],
+          },
+        },
+      ]),
+      memoryStore: () => new MemoryStore(dir),
+      shouldSweep: () => true,
+      extract,
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 'run-1' });
+    await svc.flush();
+
+    expect(extract).toHaveBeenCalledOnce();
+    expect(extract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userText: 'initial\n\nsteer',
+        assistantText: 'first\n\nsecond',
+      }),
+    );
+  });
+
+  it('skips a run when any segment successfully saved or forgot a memory', async () => {
+    const extract = vi.fn(async () => []);
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        { turnId: 'run-1', role: 'user', content: { type: 'user', text: 'initial' } },
+        {
+          turnId: 'run-1',
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [{ type: 'response', content: 'first', usage: {} }],
+          },
+        },
+        {
+          turnId: 'segment-1',
+          runId: 'run-1',
+          segmentIndex: 1,
+          role: 'user',
+          content: { type: 'user', text: 'forget that' },
+        },
+        {
+          turnId: 'segment-1',
+          runId: 'run-1',
+          segmentIndex: 1,
+          role: 'assistant',
+          content: {
+            type: 'assistant',
+            events: [
+              {
+                type: 'tool_result',
+                id: 'forget-1',
+                name: 'forget_memory',
+                content: 'Forgotten',
+                isError: false,
+              },
+              { type: 'response', content: 'done', usage: {} },
+            ],
+          },
+        },
+      ]),
+      memoryStore: () => new MemoryStore(dir),
+      shouldSweep: () => true,
+      extract,
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 'run-1' });
+    await svc.flush();
+
+    expect(extract).not.toHaveBeenCalled();
   });
 
   it('passes the current memory index to the extractor', async () => {
@@ -144,7 +261,7 @@ describe('createMemorySweepService', () => {
       extract,
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     const index = extract.mock.calls[0]?.[0]?.index ?? [];
@@ -173,7 +290,7 @@ describe('createMemorySweepService', () => {
       shouldSweep: () => true,
       extract,
     });
-    a.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    a.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await a.flush();
 
     const b = createMemorySweepService({
@@ -182,7 +299,7 @@ describe('createMemorySweepService', () => {
       shouldSweep: () => true,
       extract,
     });
-    b.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    b.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await b.flush();
 
     const c = createMemorySweepService({
@@ -191,7 +308,7 @@ describe('createMemorySweepService', () => {
       shouldSweep: () => false,
       extract,
     });
-    c.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    c.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await c.flush();
 
     expect(extract).not.toHaveBeenCalled();
@@ -225,7 +342,7 @@ describe('createMemorySweepService', () => {
       extract,
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     expect(extract).toHaveBeenCalledTimes(1);
@@ -241,7 +358,7 @@ describe('createMemorySweepService', () => {
       shouldSweep: () => true,
       extract,
     });
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 'missing' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 'missing' });
     await svc.flush();
     expect(extract).not.toHaveBeenCalled();
 
@@ -254,7 +371,7 @@ describe('createMemorySweepService', () => {
       shouldSweep: () => true,
       extract,
     });
-    empty.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    empty.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await empty.flush();
     expect(extract).not.toHaveBeenCalled();
   });
@@ -283,9 +400,9 @@ describe('createMemorySweepService', () => {
       extract,
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await waitFor(() => extract.mock.calls.length === 1);
     resolveFirst();
     await svc.flush();
@@ -312,7 +429,7 @@ describe('createMemorySweepService', () => {
       logger: { info: vi.fn(), warn },
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     expect(warn).toHaveBeenCalledWith(
@@ -342,7 +459,7 @@ describe('createMemorySweepService', () => {
       logger: { info: vi.fn(), warn },
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     expect(await store.get('good-one')).not.toBeNull();
@@ -385,7 +502,7 @@ describe('createMemorySweepService', () => {
       logger: { info: vi.fn(), warn },
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     const kept = await store.get('user-timezone');
@@ -433,7 +550,7 @@ describe('createMemorySweepService', () => {
       logger: { info: vi.fn(), warn },
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     const kept = await store.get('legacy-memory-md');
@@ -478,7 +595,7 @@ describe('createMemorySweepService', () => {
       ],
     });
 
-    svc.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
     await svc.flush();
 
     expect((await store.get('agent-fact'))?.content).toBe('new body');
