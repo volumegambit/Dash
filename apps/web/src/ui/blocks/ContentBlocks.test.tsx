@@ -519,3 +519,36 @@ describe('getMessageCopyText', () => {
   // Tool-use UX 2026-09-05: the collapsed row answers what the agent did, to
   // what, and what came back. The third was missing entirely.
 });
+
+describe('notice content', () => {
+  it('renders a learned-skill notice as a chip', () => {
+    const { container } = render(
+      <ContentBlocks
+        content={{ type: 'notice', kind: 'skill_learned', text: 'Learned: write-files' } as never}
+      />,
+    );
+    const chip = container.querySelector('[data-testid="notice-chip"]');
+    expect(chip?.textContent).toBe('Learned: write-files');
+    expect(chip?.getAttribute('data-notice-kind')).toBe('skill_learned');
+  });
+
+  it('renders a swept-memory notice as a chip', () => {
+    const { container } = render(
+      <ContentBlocks
+        content={
+          { type: 'notice', kind: 'memory_saved', text: 'Remembered: prefers printf' } as never
+        }
+      />,
+    );
+    expect(container.querySelector('[data-notice-kind="memory_saved"]')).not.toBeNull();
+  });
+
+  it('does not fall through to the unknown-content block', () => {
+    // Before the notice branch existed this degraded to UnknownBlock, which is
+    // what a client too old to know about notices still does.
+    const { container } = render(
+      <ContentBlocks content={{ type: 'notice', kind: 'skill_learned', text: 'x' } as never} />,
+    );
+    expect(container.querySelector('[data-testid="notice-chip"]')).not.toBeNull();
+  });
+});

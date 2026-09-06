@@ -7,6 +7,7 @@ import type {
   GatewayIdentity,
   MobileAgent,
   MobileHealth,
+  MobileSkill,
   WsTicketResponse,
 } from '@dash/mobile-contract';
 
@@ -105,6 +106,11 @@ export class MobileRestClient {
    * like the paginated conversation/message endpoints. */
   listAgents(): Promise<MobileAgent[]> {
     return this.request<MobileAgent[]>('GET', '/agents');
+  }
+
+  /** Read-only: the mobile namespace exposes no skill mutation. */
+  listAgentSkills(agentId: string): Promise<MobileSkill[]> {
+    return this.request<MobileSkill[]>('GET', `/agents/${encodeURIComponent(agentId)}/skills`);
   }
 
   listConversations(cursor?: string): Promise<ConversationPage> {
