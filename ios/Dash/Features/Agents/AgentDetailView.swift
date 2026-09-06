@@ -148,6 +148,25 @@ struct AgentDetailView: View {
     // Deliberately OUTSIDE the `.disabled(…)` above: presented content
     // inherits the presenter's environment, so wrapping it the other way round
     // would let `isWorking` grey out the dialog's own buttons.
+    //
+    // Review follow-up: moving the anchor here also coupled the dialog's
+    // lifecycle to `agent` — this menu only exists inside `body`'s
+    // `if let agent { ToolbarItem { agentActionsMenu(agent) } }`, and `agent`
+    // is a lookup (`feature.agents.first { $0.id == agentID }`) over a live
+    // array that `AgentsFeature.refresh()` replaces wholesale, so it can
+    // transiently go nil. If that happens while this dialog is open, the
+    // whole `ToolbarItem` — dialog included — is torn out of the hierarchy.
+    // `showDisableConfirmation` is `@State` on `AgentDetailView`, not on this
+    // menu, so the flag would otherwise outlive that teardown: if SwiftUI
+    // does not reset the binding itself, a later refresh that repopulates
+    // the same id would bring this menu back with the flag still `true` and
+    // the dialog reappearing unprompted, unconfirmed. The `.onDisappear`
+    // below makes that impossible regardless of what SwiftUI does with the
+    // binding. It only fires when this menu's `ToolbarItem` actually leaves
+    // the hierarchy (i.e. `agent` really went nil), not on an ordinary
+    // refresh that keeps `agent` non-nil, so it cannot cancel a dialog the
+    // user is actively looking at during a routine refresh.
+    .onDisappear { showDisableConfirmation = false }
     .confirmationDialog(
       "Disable \(agent.name)?",
       isPresented: $showDisableConfirmation,
