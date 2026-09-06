@@ -513,10 +513,11 @@
       "expectedLabel": "Send Message"
     },
     {
-      "name": "summarize: agent uses description as its primary key",
+      "name": "summarize: agent uses description as its primary key (the `aside` decoy sorts BEFORE `description`, so a platform falling back to first-string-by-key-order returns \"decoy\" and fails)",
       "kind": "summarize",
       "toolName": "agent",
       "input": {
+        "aside": "decoy",
         "subagent_type": "code-reviewer",
         "description": "Review the diff",
         "prompt": "Review the diff and report findings"

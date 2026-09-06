@@ -188,6 +188,59 @@ describe('groupSubagentEvents', () => {
     expect(group.detail).toBe('checking out');
   });
 
+  it('drops the pending question once the child is terminal', () => {
+    // Cancelling a turn while a child waits on input goes straight from
+    // waiting to `subagent_finished` with no intervening running progress
+    // (child-handle.ts finalize). §8.1 makes `question` the trigger for the
+    // inline reply affordance, so a terminal row must not carry one.
+    const events = [
+      started('a'),
+      progress('a', { status: 'waiting_input', question: 'Which branch?' }),
+      finished('a', { status: 'cancelled' }),
+    ];
+    const [group] = groupSubagentEvents(events, true);
+    expect(group.status).toBe('cancelled');
+    expect(group.question).toBeUndefined();
+    // Still the last thing the child said, so the collapsed line keeps it.
+    expect(group.detail).toBe('Which branch?');
+  });
+
+  it('drops the pending question when only the legacy mirror terminalizes', () => {
+    const events = [
+      workerSpawned('a'),
+      workerStatus('a', { status: 'waiting_input', question: 'Which branch?' }),
+      workerDone('a', { status: 'cancelled' }),
+    ];
+    const [group] = groupSubagentEvents(events, true);
+    expect(group.status).toBe('cancelled');
+    expect(group.question).toBeUndefined();
+  });
+
+  it('drops the pending question when end-of-stream terminalizes the row', () => {
+    const events = [started('a'), progress('a', { status: 'waiting_input', question: 'Which?' })];
+    const [group] = groupSubagentEvents(events, false);
+    expect(group.status).toBe('cancelled');
+    expect(group.question).toBeUndefined();
+  });
+
+  it('does not let a later subagent_started blank background and depth', () => {
+    const events = [
+      started('a', { background: true, depth: 2 }),
+      {
+        type: 'subagent_started',
+        subagentId: 'a',
+        subagentType: 'code-reviewer',
+        description: 'Review the diff',
+        prompt: 'Review the diff and report findings',
+        model: 'anthropic/claude-opus-4',
+        startedAt: START_ISO,
+      } as MobileAgentEvent,
+    ];
+    const [group] = groupSubagentEvents(events, true);
+    expect(group.background).toBe(true);
+    expect(group.depth).toBe(2);
+  });
+
   it('falls back to the description when no progress detail has arrived', () => {
     const [group] = groupSubagentEvents([started('a')], true);
     expect(group.detail).toBe('Review the diff');

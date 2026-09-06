@@ -79,7 +79,12 @@ export interface SubagentGroup {
   toolCallCount: number;
   /** The child's final report, once terminal. */
   report?: string;
-  /** The pending question while `status === 'waiting'`. */
+  /**
+   * The pending question, present only while the row is NOT terminal — §8.1
+   * hangs the inline reply affordance off this field, so a finished,
+   * cancelled or end-of-stream-terminalized child never carries one. The
+   * question text survives in `detail` as the last thing the child said.
+   */
   question?: string;
   /** One-line detail for the collapsed row (MC's `latestWorkerDetail`). */
   detail?: string;
@@ -331,7 +336,11 @@ export function groupSubagentEvents(
     if (endedAt !== undefined) group.endedAt = endedAt;
     const report = draft.modernReport ?? draft.legacyReport;
     if (report !== undefined) group.report = report;
-    if (question !== undefined) group.question = question;
+    // Gated on the RESOLVED status, not just on the presence of a terminal
+    // event: end-of-stream terminalization reaches `cancelled` with no
+    // terminal event at all, and a dead child must never carry a pending
+    // question — §8.1 hangs the inline reply affordance off this field.
+    if (question !== undefined && !isTerminalSubagentStatus(status)) group.question = question;
     // MC's `latestWorkerDetail`: newest question, else newest detail, else the
     // kickoff description.
     const detail = latestDetail ?? (description || undefined);
