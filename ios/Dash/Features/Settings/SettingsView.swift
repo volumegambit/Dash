@@ -66,6 +66,31 @@ struct SettingsView: View {
         .frame(minHeight: 44)
         .disabled(feature.isForgetting)
         .accessibilityIdentifier("settings.disconnect")
+        // Presentation audit (iPad goal Phase D, Task 11): a
+        // `confirmationDialog` is a POPOVER at iPad regular width, and UIKit
+        // takes its source rect from the view the modifier is attached to.
+        // Attached to the whole `settings.list` — where this used to live — it
+        // anchored to the top-middle of the Settings form sheet and spilled
+        // out over the sidebar; attached here it anchors to this row. Compact
+        // width is unaffected: still a bottom action sheet.
+        //
+        // Deliberately OUTSIDE the `.disabled(…)` above: presented content
+        // inherits the presenter's environment, so wrapping it the other way
+        // round would let `isForgetting` grey out the dialog's own buttons.
+        .confirmationDialog(
+          "Disconnect & Forget?",
+          isPresented: $showForgetConfirmation,
+          titleVisibility: .visible
+        ) {
+          Button("Disconnect & Forget", role: .destructive) {
+            Task { await feature.disconnectAndForget(confirmed: true) }
+          }
+          Button("Cancel", role: .cancel) {}
+        } message: {
+          Text(
+            "This removes this gateway's connection secrets, offline cache, drafts, and attachments from this device."
+          )
+        }
 
         if feature.isForgetting {
           HStack {
@@ -85,20 +110,6 @@ struct SettingsView: View {
     }
     .accessibilityIdentifier("settings.list")
     .navigationTitle("Settings")
-    .confirmationDialog(
-      "Disconnect & Forget?",
-      isPresented: $showForgetConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Disconnect & Forget", role: .destructive) {
-        Task { await feature.disconnectAndForget(confirmed: true) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(
-        "This removes this gateway's connection secrets, offline cache, drafts, and attachments from this device."
-      )
-    }
     .alert("Settings update failed", isPresented: errorPresented) {
       Button("OK") { feature.error = nil }
     } message: {

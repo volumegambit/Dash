@@ -184,6 +184,10 @@ struct ChatView: View {
           showModelChangeToast(change)
         }
         .presentationDetents([.medium, .large])
+        // Presentation audit (iPad goal Phase D, Task 11 / design §4): the
+        // detents above only apply at compact width, so without this the
+        // model picker is a full-height iPad card holding a short list.
+        .modifier(FormSheetSizing())
       }
     }
     .overlay(alignment: .top) {
@@ -279,27 +283,6 @@ struct ChatView: View {
     } message: {
       Text("Enter a title for this conversation.")
     }
-    // Final-review fix m6: verbatim copy per the plan (docs/plans/2026-09-01-
-    // chat-ux-phase3-plan.md, "delete confirm 'Delete this conversation?
-    // This can't be undone.' (both platforms verbatim)") — split across the
-    // dialog's title/message the same way this app's other confirmation
-    // dialogs do (a short question as the title, the consequence as the
-    // message), previously a per-conversation-title interpolation plus a
-    // different, non-verbatim sentence. `ConversationListView`'s own delete
-    // confirmation shares this exact copy — see its matching comment.
-    .confirmationDialog(
-      "Delete this conversation?",
-      isPresented: $isDeletePresented,
-      titleVisibility: .visible
-    ) {
-      Button("Delete", role: .destructive) {
-        let conversationID = feature.state.conversation.id
-        Task { await appModel.conversationListFeature?.delete(id: conversationID, confirmed: true) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This can't be undone.")
-    }
     .alert("Conversation update failed", isPresented: chatMutationErrorPresented) {
       Button("OK") { appModel.conversationListFeature?.mutationError = nil }
     } message: {
@@ -331,6 +314,8 @@ struct ChatView: View {
           Task { await switchAgent(to: agent.id) }
         }
       )
+      // Presentation audit (iPad goal Phase D, Task 11 / design §4).
+      .modifier(FormSheetSizing())
     }
   }
 
@@ -779,6 +764,35 @@ struct ChatView: View {
     }
     .accessibilityLabel("Conversation options")
     .accessibilityIdentifier("chat.options")
+    // Presentation audit (iPad goal Phase D, Task 11): a `confirmationDialog`
+    // is a POPOVER at iPad regular width, and UIKit takes its source rect
+    // from the view the modifier is attached to. Attached to `body`'s root —
+    // where this used to live — it anchored to the middle-left edge of the
+    // whole chat pane, diagonally opposite the toolbar button that opened it.
+    // Attached here it anchors to this menu's own ellipsis button. Compact
+    // width is unaffected: there it is still a bottom action sheet.
+    //
+    // Final-review fix m6: verbatim copy per the plan (docs/plans/2026-09-01-
+    // chat-ux-phase3-plan.md, "delete confirm 'Delete this conversation?
+    // This can't be undone.' (both platforms verbatim)") — split across the
+    // dialog's title/message the same way this app's other confirmation
+    // dialogs do (a short question as the title, the consequence as the
+    // message), previously a per-conversation-title interpolation plus a
+    // different, non-verbatim sentence. `ConversationListView`'s own delete
+    // confirmation shares this exact copy — see its matching comment.
+    .confirmationDialog(
+      "Delete this conversation?",
+      isPresented: $isDeletePresented,
+      titleVisibility: .visible
+    ) {
+      Button("Delete", role: .destructive) {
+        let conversationID = feature.state.conversation.id
+        Task { await appModel.conversationListFeature?.delete(id: conversationID, confirmed: true) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This can't be undone.")
+    }
   }
 
   /// Same "action failed" alert `ConversationListView` shows, reusing

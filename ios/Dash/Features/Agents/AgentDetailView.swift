@@ -87,49 +87,9 @@ struct AgentDetailView: View {
           .accessibilityIdentifier("agent.edit")
         }
         ToolbarItem(placement: .topBarTrailing) {
-          Menu {
-            if agent.status == .disabled {
-              Button {
-                Task { await setEnabled(true) }
-              } label: {
-                Label("Enable", systemImage: "play.circle")
-              }
-            } else {
-              Button {
-                showDisableConfirmation = true
-              } label: {
-                Label("Disable", systemImage: "pause.circle")
-              }
-            }
-            Button(role: .destructive) {
-              deleteName = ""
-              showDeleteConfirmation = true
-            } label: {
-              Label("Delete", systemImage: "trash")
-            }
-          } label: {
-            Label("Agent actions", systemImage: "ellipsis.circle")
-              .frame(minWidth: 44, minHeight: 44)
-          }
-          .disabled(feature.mutationsAllowed == false || isWorking)
-          .accessibilityHint(
-            feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
-          )
-          .accessibilityIdentifier("agent.actions")
+          agentActionsMenu(agent)
         }
       }
-    }
-    .confirmationDialog(
-      "Disable \(agent?.name ?? "agent")?",
-      isPresented: $showDisableConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Disable", role: .destructive) {
-        Task { await setEnabled(false) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Disabling this agent stops its active work. Existing conversations remain available.")
     }
     .alert("Delete \(agent?.name ?? "agent")?", isPresented: $showDeleteConfirmation) {
       TextField("Type the agent name", text: $deleteName)
@@ -141,6 +101,64 @@ struct AgentDetailView: View {
       .disabled(deleteName != agent?.name)
     } message: {
       Text("Type the exact agent name. Its conversations stay archived and read-only.")
+    }
+  }
+
+  /// The `agent.actions` toolbar menu, extracted from `body`'s `.toolbar`
+  /// because attaching its confirmation dialog inline pushed that expression
+  /// past the type-checker's budget.
+  private func agentActionsMenu(_ agent: RegisteredAgentDTO) -> some View {
+    Menu {
+      if agent.status == .disabled {
+        Button {
+          Task { await setEnabled(true) }
+        } label: {
+          Label("Enable", systemImage: "play.circle")
+        }
+      } else {
+        Button {
+          showDisableConfirmation = true
+        } label: {
+          Label("Disable", systemImage: "pause.circle")
+        }
+      }
+      Button(role: .destructive) {
+        deleteName = ""
+        showDeleteConfirmation = true
+      } label: {
+        Label("Delete", systemImage: "trash")
+      }
+    } label: {
+      Label("Agent actions", systemImage: "ellipsis.circle")
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .disabled(feature.mutationsAllowed == false || isWorking)
+    .accessibilityHint(
+      feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
+    )
+    .accessibilityIdentifier("agent.actions")
+    // Presentation audit (iPad goal Phase D, Task 11): a `confirmationDialog`
+    // is a POPOVER at iPad regular width, and UIKit takes its source rect from
+    // the view the modifier is attached to. Attached to `body`'s root — where
+    // this used to live — it anchored to the middle-left edge of the whole
+    // agent-detail pane, diagonally opposite this toolbar button. Attached
+    // here it anchors to the button. Compact width is unaffected: still a
+    // bottom action sheet.
+    //
+    // Deliberately OUTSIDE the `.disabled(…)` above: presented content
+    // inherits the presenter's environment, so wrapping it the other way round
+    // would let `isWorking` grey out the dialog's own buttons.
+    .confirmationDialog(
+      "Disable \(agent.name)?",
+      isPresented: $showDisableConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Disable", role: .destructive) {
+        Task { await setEnabled(false) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Disabling this agent stops its active work. Existing conversations remain available.")
     }
   }
 

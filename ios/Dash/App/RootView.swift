@@ -231,7 +231,11 @@ struct RootView: View {
     }
     .navigationSplitViewStyle(.balanced)
     .sheet(isPresented: isSettingsPresented) {
+      // Presentation audit (iPad goal Phase D, Task 11 / design §1.1):
+      // Settings at regular width is a form sheet, not the phone's
+      // full-height column blown up. `FormSheetSizing` is a no-op on iOS 17.
       NavigationStack { settingsRoot }
+        .modifier(FormSheetSizing())
     }
   }
 
