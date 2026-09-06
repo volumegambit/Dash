@@ -1134,6 +1134,7 @@ export class PiAgentBackend implements AgentBackend {
     // model. Once any output has been committed to the stream, errors
     // propagate normally — we can't safely retry mid-response.
     const modelChain = [state.model, ...(state.fallbackModels ?? [])];
+    let steeringReadinessEstablished = false;
 
     for (let attempt = 0; attempt < modelChain.length; attempt++) {
       const modelStr = modelChain[attempt];
@@ -1251,6 +1252,42 @@ export class PiAgentBackend implements AgentBackend {
             })
           : null;
       this.unsubscribeSteeringListener = unsubscribeCore;
+      const unsubscribeAttempt = () => {
+        unsubscribeCore?.();
+        if (unsubscribeCore && this.unsubscribeSteeringListener === unsubscribeCore) {
+          this.unsubscribeSteeringListener = null;
+        }
+        unsubscribe();
+      };
+
+      try {
+        if (!steeringReadinessEstablished) {
+          // The coordinator may have recorded a definitive seal while
+          // DashAgent was still resolving dynamic config/memory. Await its
+          // decision only after typed admission and the direct core listener
+          // exist, and always before session.prompt can start provider work.
+          const readiness = options.onRunReadyForSteering
+            ? await options.onRunReadyForSteering()
+            : 'continue';
+          steeringReadinessEstablished = true;
+          if (readiness === 'sealed') {
+            unsubscribeAttempt();
+            return;
+          }
+        }
+        // The callback can race a direct seal after returning `continue`.
+        // Re-read authoritative Pi state before starting the provider.
+        if (
+          options.runId &&
+          (this.steeringRunId !== options.runId || this.steeringPhase !== 'active')
+        ) {
+          unsubscribeAttempt();
+          return;
+        }
+      } catch (error) {
+        unsubscribeAttempt();
+        throw error;
+      }
 
       // Convert Dash ImageBlock[] to PiAgent ImageContent[]
       const images: ImageContent[] | undefined = state.images?.map((img) => ({
@@ -1348,11 +1385,7 @@ export class PiAgentBackend implements AgentBackend {
         }
       } finally {
         this.rejectPendingSteerBoundaries(new Error('Steering boundary disposed before delivery'));
-        unsubscribeCore?.();
-        if (unsubscribeCore && this.unsubscribeSteeringListener === unsubscribeCore) {
-          this.unsubscribeSteeringListener = null;
-        }
-        unsubscribe();
+        unsubscribeAttempt();
         await promptPromise;
       }
 

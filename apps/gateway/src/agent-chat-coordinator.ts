@@ -433,6 +433,12 @@ export function createAgentChatCoordinator(
     lease: PoolLease;
     started: boolean;
     preventStart: boolean;
+    backendReady: Promise<boolean>;
+    resolveBackendReady(ready: boolean): void;
+    sealRequested: boolean;
+    sealCompleted: Promise<void>;
+    resolveSealCompleted(): void;
+    definitiveSeal?: Promise<string[]>;
     iteratorSettled: boolean;
     sealed: boolean;
     released: boolean;
@@ -441,6 +447,8 @@ export function createAgentChatCoordinator(
   const runOwnerKey = (agentId: string, conversationId: string) => `${agentId}/${conversationId}`;
   const releaseRunOwner = (owner: ConversationRunOwner) => {
     if (owner.released) return;
+    owner.resolveBackendReady(false);
+    owner.resolveSealCompleted();
     owner.released = true;
     if (runOwners.get(owner.key) === owner) runOwners.delete(owner.key);
     owner.lease.release();
@@ -518,12 +526,37 @@ export function createAgentChatCoordinator(
             `Conversation '${request.conversationId}' already owns run '${existing.runId ?? 'legacy'}'`,
           );
         }
+        let readinessSettled = false;
+        let resolveReadiness!: (ready: boolean) => void;
+        const backendReady = new Promise<boolean>((resolve) => {
+          resolveReadiness = resolve;
+        });
+        const resolveBackendReady = (ready: boolean) => {
+          if (readinessSettled) return;
+          readinessSettled = true;
+          resolveReadiness(ready);
+        };
+        let sealCompletionSettled = false;
+        let resolveSealCompletion!: () => void;
+        const sealCompleted = new Promise<void>((resolve) => {
+          resolveSealCompletion = resolve;
+        });
+        const resolveSealCompleted = () => {
+          if (sealCompletionSettled) return;
+          sealCompletionSettled = true;
+          resolveSealCompletion();
+        };
         runOwner = {
           key,
           runId: request.runId,
           lease,
           started: false,
           preventStart: false,
+          backendReady,
+          resolveBackendReady,
+          sealRequested: false,
+          sealCompleted,
+          resolveSealCompleted,
           iteratorSettled: false,
           // Legacy callers have no typed seal phase: their ephemeral owner is
           // released as soon as the iterator settles. Typed owners retain the
@@ -538,8 +571,21 @@ export function createAgentChatCoordinator(
       };
       const settleRun = () => {
         if (!runOwner || runOwner.released) return;
+        // Backends predating the explicit readiness hook may ignore it. Full
+        // iterator settlement still proves backend.run was entered; use that
+        // terminal fact as a safe compatibility fallback, never the outer
+        // iterator's first next() result.
+        runOwner.resolveBackendReady(true);
         runOwner.iteratorSettled = true;
         maybeReleaseRunOwner(runOwner);
+      };
+      const markBackendReadyForSteering = async (): Promise<'continue' | 'sealed'> => {
+        const owner = runOwner;
+        if (!owner || owner.released || runOwners.get(owner.key) !== owner) return 'sealed';
+        owner.resolveBackendReady(true);
+        if (!owner.sealRequested) return 'continue';
+        await owner.sealCompleted;
+        return 'sealed';
       };
 
       try {
@@ -557,7 +603,9 @@ export function createAgentChatCoordinator(
         // seal marks this owner as cancelled and the chat exits without ever
         // starting the backend (or attaching a swarm turn).
         if (runOwner?.preventStart) {
-          settleRun();
+          runOwner.iteratorSettled = true;
+          runOwner.resolveBackendReady(false);
+          maybeReleaseRunOwner(runOwner);
           return;
         }
 
@@ -581,6 +629,7 @@ export function createAgentChatCoordinator(
               location: request.location,
               runId: request.runId,
               onSteerConsumed: request.onSteerConsumed,
+              ...(request.runId ? { onRunReadyForSteering: markBackendReadyForSteering } : {}),
             },
           );
           let runStarted = false;
@@ -671,6 +720,7 @@ export function createAgentChatCoordinator(
             location: request.location,
             runId: request.runId,
             onSteerConsumed: request.onSteerConsumed,
+            ...(request.runId ? { onRunReadyForSteering: markBackendReadyForSteering } : {}),
           },
         );
         let runStarted = false;
@@ -888,19 +938,45 @@ export function createAgentChatCoordinator(
     },
 
     async sealSteering(agentId, conversationId, runId) {
-      const entry = pool.get(agentId, conversationId);
-      const owner = runOwners.get(runOwnerKey(agentId, conversationId));
+      const ownerKey = runOwnerKey(agentId, conversationId);
+      const owner = runOwners.get(ownerKey);
       if (owner?.runId === runId && !owner.started) {
+        owner.sealRequested = true;
         owner.preventStart = true;
         owner.sealed = true;
+        owner.resolveSealCompleted();
         maybeReleaseRunOwner(owner);
         return [];
       }
-      const inputIds = entry?.backend.sealSteering ? await entry.backend.sealSteering(runId) : [];
       if (owner?.runId === runId) {
-        owner.sealed = true;
-        maybeReleaseRunOwner(owner);
+        owner.sealRequested = true;
+        if (!owner.definitiveSeal) {
+          const operation = (async () => {
+            try {
+              const ready = await owner.backendReady;
+              if (!ready || owner.released || runOwners.get(ownerKey) !== owner) return [];
+              const entry = pool.get(agentId, conversationId);
+              const inputIds = entry?.backend.sealSteering
+                ? await entry.backend.sealSteering(runId)
+                : [];
+              if (!owner.released && runOwners.get(ownerKey) === owner) {
+                owner.sealed = true;
+                maybeReleaseRunOwner(owner);
+              }
+              return inputIds;
+            } finally {
+              owner.resolveSealCompleted();
+            }
+          })();
+          owner.definitiveSeal = operation;
+          void operation.catch(() => {
+            if (owner.definitiveSeal === operation) owner.definitiveSeal = undefined;
+          });
+        }
+        return owner.definitiveSeal;
       }
+      const entry = pool.get(agentId, conversationId);
+      const inputIds = entry?.backend.sealSteering ? await entry.backend.sealSteering(runId) : [];
       return inputIds;
     },
 

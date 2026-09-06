@@ -1,4 +1,11 @@
-import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import {
+  type AgentBackend,
+  type AgentEvent,
+  type AgentState,
+  DashAgent,
+  type DashAgentConfig,
+  type RunOptions,
+} from '@dash/agent';
 import { SwarmCoordinator, type WorkerFactory } from '@dash/swarm';
 import { describe, expect, it, vi } from 'vitest';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -208,5 +215,141 @@ describe('AgentChatCoordinator run ownership lifecycle', () => {
     expect(observations.backendPhase).toBe('idle');
     expect(observations.sealCalls).toBe(0);
     expect(observations.pinned).toBe(0);
+  });
+
+  it('waits for explicit backend readiness before sealing across config resolution', async () => {
+    const configEntered = deferred<void>();
+    const allowConfig = deferred<void>();
+    const allowSealedUnwind = deferred<void>();
+    let runCalls = 0;
+    let providerCalls = 0;
+    let backendPhase: 'idle' | 'active' | 'ended-unsealed' | 'sealed' = 'idle';
+    const sealSteering = vi.fn(async () => {
+      if (backendPhase === 'idle') return [];
+      backendPhase = 'sealed';
+      return ['input-ready'];
+    });
+    const backend: AgentBackend = {
+      name: 'config-gap-backend',
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      abort: vi.fn(),
+      sealSteering,
+      async *run(_state: AgentState, runOptions: RunOptions): AsyncGenerator<AgentEvent> {
+        runCalls++;
+        backendPhase = 'active';
+        let readiness: 'continue' | 'sealed' = 'continue';
+        if (
+          'onRunReadyForSteering' in runOptions &&
+          typeof runOptions.onRunReadyForSteering === 'function'
+        ) {
+          readiness = await runOptions.onRunReadyForSteering();
+        }
+        if (readiness === 'sealed' || backendPhase !== 'active') {
+          await allowSealedUnwind.promise;
+          return;
+        }
+        providerCalls++;
+        try {
+          yield { type: 'text_delta', text: 'started' };
+        } finally {
+          if (backendPhase !== 'sealed') backendPhase = 'ended-unsealed';
+        }
+      },
+    };
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'config-gap',
+      model: 'anthropic/claude-sonnet-4-20250514',
+      systemPrompt: 'test',
+    });
+    const originalChat = DashAgent.prototype.chat;
+    const chatSpy = vi.spyOn(DashAgent.prototype, 'chat').mockImplementation(function (
+      this: DashAgent,
+      ...args: Parameters<typeof originalChat>
+    ) {
+      const internals = this as unknown as {
+        configResolver: () => Promise<DashAgentConfig>;
+      };
+      const originalResolver = internals.configResolver;
+      internals.configResolver = async () => {
+        configEntered.resolve(undefined);
+        await allowConfig.promise;
+        return originalResolver();
+      };
+      const gen = originalChat.apply(this, args);
+      return (async function* () {
+        try {
+          yield* gen;
+        } finally {
+          internals.configResolver = originalResolver;
+        }
+      })();
+    });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 1,
+      createBackend: async () => backend,
+    });
+    const stream = agents.chat({
+      agentId: id,
+      conversationId: 'shared',
+      runId: 'run-ready',
+      text: 'start',
+      onSteerConsumed: async () => {},
+    });
+    const firstPull = stream.next();
+    await configEntered.promise;
+
+    let sealSettled = false;
+    const sealPromise = agents.sealSteering(id, 'shared', 'run-ready').then((result) => {
+      sealSettled = true;
+      return result;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const beforeReady = {
+      sealSettled,
+      sealCalls: sealSteering.mock.calls.length,
+      pinned: agents.stats().pinned,
+    };
+
+    allowConfig.resolve(undefined);
+    const winner = await Promise.race([
+      sealPromise.then((sealed) => ({ source: 'seal' as const, sealed })),
+      firstPull.then((first) => ({ source: 'first' as const, first })),
+    ]);
+    let sealed: string[];
+    let first: IteratorResult<AgentEvent>;
+    let pinnedAfterSeal: number;
+    let providerCallsAfterSeal: number;
+    if (winner.source === 'seal') {
+      sealed = winner.sealed;
+      pinnedAfterSeal = agents.stats().pinned;
+      providerCallsAfterSeal = providerCalls;
+      allowSealedUnwind.resolve(undefined);
+      first = await firstPull;
+      if (!first.done) await stream.return(undefined as never);
+    } else {
+      first = winner.first;
+      if (!first.done) await stream.return(undefined as never);
+      sealed = await sealPromise;
+      pinnedAfterSeal = agents.stats().pinned;
+      providerCallsAfterSeal = providerCalls;
+      allowSealedUnwind.resolve(undefined);
+    }
+    const finalPinned = agents.stats().pinned;
+    await agents.stop();
+    chatSpy.mockRestore();
+
+    expect(beforeReady).toEqual({ sealSettled: false, sealCalls: 0, pinned: 1 });
+    expect(winner.source).toBe('seal');
+    expect(first.done).toBe(true);
+    expect(sealed).toEqual(['input-ready']);
+    expect(runCalls).toBe(1);
+    expect(providerCallsAfterSeal).toBe(0);
+    expect(backendPhase).toBe('sealed');
+    expect(pinnedAfterSeal).toBe(1);
+    expect(finalPinned).toBe(0);
   });
 });

@@ -197,6 +197,13 @@ export interface RunOptions {
   signal?: AbortSignal;
   runId?: string;
   onSteerConsumed?(inputId: string): Promise<void>;
+  /**
+   * Host readiness barrier. The backend awaits this only after it has claimed
+   * the run and installed typed steering admission/listeners, before provider
+   * work begins. A pending definitive seal returns `sealed` so the backend can
+   * unwind without starting the provider.
+   */
+  onRunReadyForSteering?(): Promise<'continue' | 'sealed'>;
 }
 
 /**

@@ -1339,6 +1339,7 @@ describe('AgentChatCoordinator typed run steering controls', () => {
       sealSteering,
       reconcileSteers,
       async *run(_state, runOptions) {
+        if ((await runOptions.onRunReadyForSteering?.()) === 'sealed') return;
         order.push('run');
         options.push(runOptions);
         for (const event of events) yield event;
@@ -1399,6 +1400,7 @@ describe('AgentChatCoordinator typed run steering controls', () => {
         location,
         runId: RUN_ID,
         onSteerConsumed: callback,
+        onRunReadyForSteering: expect.any(Function),
       },
     ]);
     await expect(
@@ -1469,6 +1471,7 @@ describe('AgentChatCoordinator typed run steering controls', () => {
     controls.backend.run = async function* (_state, options) {
       calls++;
       controls.options.push(options);
+      if ((await options.onRunReadyForSteering?.()) === 'sealed') return;
       yield { type: 'text_delta', text: `run-${calls}` };
       if (calls === 1) await finishFirst.promise;
     };

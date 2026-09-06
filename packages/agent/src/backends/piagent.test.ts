@@ -879,6 +879,33 @@ describe('PiAgentBackend ordered steering', () => {
     };
   }
 
+  it('signals backend readiness after typed admission and before provider work', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    let admission: Awaited<ReturnType<PiAgentBackend['steer']>> | undefined;
+    const onRunReadyForSteering = vi.fn(async () => {
+      admission = await backend.steer(RUN_ID, INPUT_ID, { text: 'admitted' });
+      return 'continue' as const;
+    });
+    const eventsPromise = collectEvents(
+      backend.run(state(), {
+        runId: RUN_ID,
+        onSteerConsumed: async () => {},
+        onRunReadyForSteering,
+      }),
+    );
+
+    await harness.providerStarted.promise;
+    const readyBeforeProviderWait = onRunReadyForSteering.mock.calls.length;
+    backend.abort();
+    harness.finishFirstTurn.resolve();
+    await eventsPromise;
+    await backend.sealSteering(RUN_ID);
+
+    expect(readyBeforeProviderWait).toBe(1);
+    expect(admission).toEqual({ accepted: true });
+  });
+
   it('holds the provider behind an ordered durable Steer boundary', async () => {
     const harness = makeSteeringHarness();
     const backend = await mountSteeringBackend(harness);
