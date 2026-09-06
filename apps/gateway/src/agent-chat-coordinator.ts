@@ -333,6 +333,17 @@ export function createAgentChatCoordinator(
       // PROMPT. `undefined` = no memory block. The memory TOOLS are captured at
       // backend start(), which is why that PATCH route also evicts the entry.
       memory: memoryConfigFor(agentId),
+      // Resolved LIVE per message like the fields above, so flipping the gate
+      // takes effect on the next chat without evicting the warm backend for
+      // the PROMPT. `undefined` = enabled (see GatewayAgentConfig.location).
+      //
+      // `tool` deliberately tracks `enabled`: the tool is registered at
+      // backend start() under exactly this condition, and the <environment>
+      // block must never name a tool the model was not given.
+      location: {
+        enabled: entry.config.location?.enabled !== false,
+        tool: entry.config.location?.enabled !== false,
+      },
     };
   }
 

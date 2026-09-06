@@ -355,3 +355,38 @@ describe('DashAgent location prompt', () => {
     expect(env).toBeLessThan(mem);
   });
 });
+
+describe('DashAgent location tool gating', () => {
+  const location = {
+    timezone: 'Asia/Singapore',
+    utcOffsetMinutes: 480,
+    locale: 'en-SG',
+  };
+
+  async function promptFor(locationConfig?: { enabled: boolean; tool?: boolean }) {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-sonnet-5',
+        systemPrompt: 'base',
+        ...(locationConfig ? { location: locationConfig } : {}),
+      }),
+    );
+    await collect(agent.chat('ch', 'conv', 'hi', { location }));
+    return seen[0];
+  }
+
+  it('names get_location by default, since the tool is registered by default', async () => {
+    expect(await promptFor()).toContain('call get_location');
+  });
+
+  it('does not name get_location when the tool is withheld', async () => {
+    // Swarm workers inherit the context without the tool; telling them to call
+    // it would only produce failed tool calls.
+    expect(await promptFor({ enabled: true, tool: false })).not.toContain('get_location');
+  });
+});

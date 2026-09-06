@@ -9,7 +9,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
 import type { AgentClient, ExtraTool } from '@dash/agent';
-import { PiAgentBackend, agentMemoryDir, createOAuthRefreshers } from '@dash/agent';
+import {
+  PiAgentBackend,
+  agentMemoryDir,
+  createGetLocationTool,
+  createOAuthRefreshers,
+} from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
@@ -645,6 +650,16 @@ async function main() {
                 conversationId: () => backend.getCurrentSessionId() ?? '',
               }) as unknown as ExtraTool[])
             : []),
+          // Reports the location the client attached to the current turn. Late-
+          // bound to the backend's in-flight run for the same reason as the
+          // session id above: the backend stays warm across turns, but the
+          // location changes every turn. Registered unless the agent has
+          // location disabled -- and `DashAgent.chat()` gates the prompt's
+          // "call get_location" sentence on the same condition, so the block
+          // never names a tool that is not here.
+          ...(agentConfig.location?.enabled === false
+            ? []
+            : [createGetLocationTool(() => backend.getCurrentLocation() ?? undefined)]),
         ],
         commandFiles,
         // Plugin hook engine — composes tool hooks onto pi's agent and fires

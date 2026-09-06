@@ -52,10 +52,12 @@ export class DashAgent {
     // Environment goes before memory. Both are per-turn dynamic context, but
     // memory's rules talk about the conversation and read best closest to it,
     // and the environment block is the smaller, more stable of the two.
-    // `tool: false` (the default) keeps the block from naming get_location,
-    // which is not registered yet.
+    // The `tool` flag must track whether get_location was actually registered:
+    // naming a tool the model does not have only produces failed tool calls.
     if (options.location && config.location?.enabled !== false) {
-      systemPrompt = `${systemPrompt}\n\n${composeLocationPrompt(options.location)}`;
+      systemPrompt = `${systemPrompt}\n\n${composeLocationPrompt(options.location, {
+        tool: config.location?.tool !== false,
+      })}`;
     }
 
     // Memory goes last (after environment) — it is dynamic context from past conversations and is

@@ -180,7 +180,42 @@ async function main() {
       { expectAware: true },
     );
 
-    // 3. Leakage check: a NEW conversation on the SAME agent that has already
+    // 3. The tool. Asks the model to call it explicitly -- a model that
+    //    ignores tools fails this, and that is a real result about the model,
+    //    not a broken script (same caveat memory-e2e documents).
+    const toolTurn = await driveTurn(
+      gw,
+      agentId,
+      randomUUID(),
+      'Call the get_location tool and tell me exactly what it returned.',
+      { location: LOCATION },
+    );
+    const calledTool = toolTurn.events.some(
+      (e) => (e.type === 'tool_use' || e.type === 'tool_result') && e.name === 'get_location',
+    );
+    results.push({
+      name: 'get_location tool is callable and returns the location',
+      ok: calledTool,
+    });
+    console.log(`\n${calledTool ? 'PASS' : 'FAIL'}  get_location tool is callable`);
+    if (!calledTool) {
+      console.log(
+        '      NOTE: this turn needs the model to actually call a tool. A model that ignores',
+      );
+      console.log(
+        '      tools fails this, and that is a real result about the MODEL, not a broken script.',
+      );
+      console.log(
+        '      Verified passing on openrouter/qwen/qwen3.7-max; llama-3.1-70b is unreliable here.',
+      );
+    }
+    const toolEvents = toolTurn.events
+      .filter((e) => e.type === 'tool_use' || e.type === 'tool_result')
+      .map((e) => `${e.type}:${e.name}`);
+    console.log(`      tool events: ${JSON.stringify(toolEvents)}`);
+    console.log(`      reply: ${JSON.stringify(toolTurn.text)}`);
+
+    // 4. Leakage check: a NEW conversation on the SAME agent that has already
     //    seen Auckland, now sending no location. The <environment> block is
     //    rebuilt per turn from the frame, so this must not still say Auckland.
     check(

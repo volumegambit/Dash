@@ -43,6 +43,17 @@ export interface GatewayAgentConfig {
    */
   memory?: { enabled?: boolean; sweep?: 'auto' | 'on' | 'off' };
   /**
+   * Per-agent client-location gating. `undefined` = enabled: the coarse tier
+   * comes from `Intl`/`Locale`, which every locale-aware client already reads,
+   * and the precise tier already required an in-app opt-in plus an OS grant
+   * before a client would send it at all. `enabled: false` drops the
+   * <environment> block AND unregisters `get_location`.
+   *
+   * Flows through `update()` exactly like `swarm` and `memory`: a partial
+   * patch replaces the object wholesale (it is NOT deep-merged).
+   */
+  location?: { enabled?: boolean };
+  /**
    * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
    * (backward compat — legacy agents persisted before P5 have no key and MUST
    * load as `undefined`, never `[]`/`null`). An explicit `[]` means "none".

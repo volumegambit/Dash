@@ -131,7 +131,17 @@ export interface DashAgentConfig {
    * grant before the client would send it at all. `{ enabled: false }` drops
    * both tiers for this agent.
    */
-  location?: { enabled: boolean };
+  location?: {
+    enabled: boolean;
+    /**
+     * Whether `get_location` is registered for this agent. Defaults to true
+     * when location is enabled. Set `false` for agents that inherit the
+     * context read-only (swarm workers) — the same reason `memory.tools`
+     * exists: the <environment> block must never name a tool the model was
+     * not given, or it produces failed tool calls.
+     */
+    tool?: boolean;
+  };
   skills?: {
     paths?: string[];
     urls?: string[];

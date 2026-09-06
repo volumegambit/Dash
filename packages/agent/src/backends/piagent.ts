@@ -44,6 +44,7 @@ import type {
   AgentBackend,
   AgentEvent,
   AgentState,
+  ClientLocation,
   DashAgentConfig,
   ExtraTool,
   HookRunner,
@@ -281,6 +282,14 @@ export class PiAgentBackend implements AgentBackend {
    */
   private currentSessionId: string | null = null;
 
+  /**
+   * Location the client reported for the in-flight run, exposed to injected
+   * tools via getCurrentLocation(). Set at the top of run(); null when idle —
+   * exactly like currentSessionId, and for the same reason: the backend is
+   * warm across turns but this value changes every turn.
+   */
+  private currentLocation: ClientLocation | null = null;
+
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
 
@@ -346,6 +355,11 @@ export class PiAgentBackend implements AgentBackend {
   /** Current conversation/session id for the in-flight run, or null when idle. */
   getCurrentSessionId(): string | null {
     return this.currentSessionId;
+  }
+
+  /** Location the client reported for the in-flight run, or null when idle. */
+  getCurrentLocation(): ClientLocation | null {
+    return this.currentLocation;
   }
 
   /** Test/host hook to set the current session id outside run(). */
@@ -852,6 +866,7 @@ export class PiAgentBackend implements AgentBackend {
     this.fullText = '';
     this.lastCompactionReason = 'threshold';
     this.currentSessionId = state.conversationId;
+    this.currentLocation = state.location ?? null;
 
     const hookCwd = state.workspace ?? this.workspace ?? undefined;
 
@@ -911,6 +926,7 @@ export class PiAgentBackend implements AgentBackend {
       // during async teardown after run() returns don't observe a stale id. Only
       // resets the field — does not affect the generator's return/throw semantics.
       this.currentSessionId = null;
+      this.currentLocation = null;
     }
   }
 
