@@ -186,6 +186,15 @@ describe('applyServerFrame', () => {
       expect(assistantMessages).toHaveLength(1);
       expect(assistantMessages[0].status).toBe('completed'); // not stuck at 'streaming'
       expect(assistantMessages[0].id).toBe('server-assistant-1');
+      // The REST row's `partial ` is the server's mid-turn snapshot; this
+      // client's live stream is the better copy and MUST win. This is the
+      // exemption `keepExistingContent`'s `existing.status !== 'streaming'`
+      // conjunct exists for — without it the row keeps `partial ` forever,
+      // marked `completed`.
+      expect(assistantMessages[0].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'Ready ' }],
+      });
       expect(t.messages[0]).toBe(userRow); // untouched
     });
 
@@ -252,6 +261,73 @@ describe('applyServerFrame', () => {
       expect(t.messages).toHaveLength(1);
       expect(t.messages[0].content).toEqual(restRow.content);
       expect(t.streaming).toBeNull();
+    });
+
+    /**
+     * The confinement half of that guard: arm 2 is gated on the FALLBACK path
+     * so it can never fire on a turn this client actually watched. Here the
+     * real `accepted` arrives, so `pending.fallback` is false and the stream
+     * is authoritative however the matched row got into `messages` — a REST
+     * read that landed a copy of the row mid-turn does not get to freeze it.
+     * Drop the `fallback` conjunct and this row keeps the REST copy instead.
+     */
+    it('replaces the matched row from a real accepted-driven turn, off the fallback path', () => {
+      const restRow: ConversationMessage = {
+        id: accepted.type === 'accepted' ? accepted.assistantMessageId : '',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId: accepted.type === 'accepted' ? accepted.id : '',
+        ordinal: 2,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'a stale copy' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      let t = applyServerFrame({ messages: [restRow], streaming: null }, accepted);
+      t = applyServerFrame(t, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].status).toBe('completed');
+      expect(t.messages[0].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'Ready ' }],
+      });
+    });
+
+    /**
+     * A GUARD AGAINST A FUTURE CALLER, not a live path: today an `interrupted`
+     * row's turn emits no further frames, so nothing reaches this shape. It is
+     * pinned because the two guards above are written to PRESERVE content, and
+     * the row here has none to preserve — an empty, non-`streaming` row on the
+     * fallback path satisfies arm 2 on its face. Without `keepExistingContent`'s
+     * `held.length === 0` early return the empty content wins over a real
+     * stream and the user gets a blank bubble: the exact harm the function
+     * exists to prevent, inflicted by the function itself.
+     */
+    it('replaces an EMPTY non-streaming row rather than keeping its blank content', () => {
+      const emptyRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId: accepted.type === 'accepted' ? accepted.id : '',
+        ordinal: 2,
+        role: 'assistant',
+        status: 'interrupted',
+        content: { type: 'assistant', events: [] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      // No `pending`: `event`/`done` take the fallback path and match by turnId.
+      let t = applyServerFrame({ messages: [emptyRow], streaming: null }, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'Ready ' }],
+      });
     });
   });
 

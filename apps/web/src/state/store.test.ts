@@ -2654,6 +2654,56 @@ describe('createWebAppStore', () => {
       expect(store.getState().transcripts[CONVERSATION_ID]?.messages).toHaveLength(1);
     });
 
+    /**
+     * The leak the clear above would otherwise still have.
+     * `childTranscriptIds` is the ONLY record of which `transcripts` entries
+     * belong to children, and `clearChildSubscriptions` empties it. A
+     * `fetchChildTranscript` still in flight at that moment writes its entry
+     * back AFTER the await — recreating the very entry the switch deleted, now
+     * with nothing left pointing at it. Unless the child re-registers
+     * post-await it is unreachable by every future clear and survives for the
+     * store's lifetime.
+     */
+    it('re-registers a child whose transcript fetch lands AFTER a conversation switch', async () => {
+      let releaseChild!: () => void;
+      const childRow = message({
+        id: 'child-msg-1',
+        conversationId: CHILD_ID,
+        turnId: 'child-turn-1',
+      });
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+        getMessagesImpl: async (conversationId: string) => {
+          if (conversationId !== CHILD_ID) return { items: [], nextCursor: null, throughSeq: 1 };
+          await new Promise<void>((resolve) => {
+            releaseChild = resolve;
+          });
+          return { items: [childRow], nextCursor: null, throughSeq: 1 };
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      // In flight when the user navigates away: the fetch is started, the
+      // switch clears the registry, and only then does the read land.
+      const loading = store.getState().loadSubagentTranscript(CHILD_ID);
+      await openAndConnect(store, sockets, 'conv-2');
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+
+      releaseChild();
+      await loading;
+      // Not vacuous: the write really does recreate the entry the switch removed.
+      await vi.waitFor(() => expect(store.getState().transcripts[CHILD_ID]).toBeDefined());
+
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+    });
+
     it("does not let a child subscription clobber the parent's own", async () => {
       const { rest } = fakeRest({
         conversationPage: {
@@ -3242,6 +3292,116 @@ describe('createWebAppStore', () => {
         id: requestId,
         turnId: 'server-turn-1',
         content: { type: 'user', text: 'also check the relay' },
+      });
+    });
+
+    /**
+     * Fix round 4, ruling 3. `requestId` is a value the CLIENT chose, and the
+     * `accepted` echoing it reaches every sink subscribed to the child — not
+     * just the sink that sent the resume. So a peer (or a replayed frame) can
+     * name any id it likes. `isLocalResumeRow` therefore requires
+     * `m.turnId === m.id` as well: the gateway mints `userMessageId`
+     * independently of the turn id, so a PERSISTED row can never satisfy it,
+     * while both client producers deliberately do.
+     *
+     * Without that clause a crafted `requestId` naming a server row already in
+     * the transcript makes `dropPreemptedLocalRow` DELETE it — the user's own
+     * sentence, gone from every watcher's transcript.
+     */
+    it('never drops a SERVER row named by a crafted requestId', async () => {
+      const victim = message({
+        id: 'server-user-1',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-0',
+        ordinal: 4,
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'the sentence a peer wants gone' },
+      });
+      const newTurnRow = message({
+        id: 'server-user-9',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-9',
+        ordinal: 5,
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'the turn actually being accepted' },
+      });
+      const { rest } = fakeRest({
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [victim, newTurnRow] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      // Both ids belong to the server. `requestId` names the victim; the
+      // `server !== local` guard is satisfied by the other row, so nothing but
+      // the `turnId === id` clause stands between the victim and deletion.
+      onFrames[0](
+        childAccepted({
+          id: 'server-turn-9',
+          userMessageId: 'server-user-9',
+          requestId: 'server-user-1',
+        }),
+      );
+
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(2);
+      expect(users.map((m) => m.id)).toEqual(['server-user-1', 'server-user-9']);
+    });
+
+    /**
+     * The other half of the same hardening: with no second row to satisfy the
+     * `server !== local` guard the drop cannot fire, but the `requestId`
+     * branch of `reconcileAccepted` uses the same predicate — so a crafted
+     * `requestId` would instead RELABEL the server row onto the new turn's
+     * ids, silently re-attributing one turn's message to another.
+     */
+    it('never relabels a SERVER row named by a crafted requestId', async () => {
+      const victim = message({
+        id: 'server-user-1',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-0',
+        ordinal: 4,
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'the sentence a peer wants moved' },
+      });
+      const { rest } = fakeRest({
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [victim] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      onFrames[0](
+        childAccepted({
+          id: 'server-turn-9',
+          userMessageId: 'server-user-9',
+          requestId: 'server-user-1',
+        }),
+      );
+
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      // The victim keeps BOTH its ids; the unpaired `parent` frame materialises
+      // its own row, which is the documented cost of never guessing.
+      expect(users.find((m) => m.id === 'server-user-1')).toMatchObject({
+        turnId: 'server-turn-0',
+        content: { type: 'user', text: 'the sentence a peer wants moved' },
       });
     });
 

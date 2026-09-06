@@ -367,8 +367,10 @@ export const SUBAGENT_SEND_FAILED_COPY = 'Could not reach this agent. Try again.
  * ends. Local state would lose a half-typed follow-up to a remount the user
  * did not cause — and worse, a refusal landing after the swap would call
  * `setError` on an unmounted instance while the fresh one rendered no error at
- * all. `sending` stays local on purpose: it guards THIS instance's in-flight
- * promise, and a remounted composer genuinely can be retyped and re-sent.
+ * all. `sending` is in the store for the same reason and not, as it once was,
+ * local: a remount mid-flight brought the fresh instance up with no in-flight
+ * indication, so a second Enter sent the follow-up twice. See the comment on
+ * the `sending` read below.
  */
 function InlineComposer({
   store,
