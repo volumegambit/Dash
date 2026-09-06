@@ -19,3 +19,4 @@ export { applyDeltasToBook, lessonId, mergeDeltas, normaliseLessonText } from '.
 export { flattenOneLine, renderSkillBody, renderSkillFile } from './render.js';
 export type { ReviewPromptInput } from './prompt.js';
 export { buildReviewPrompt, renderLessonIndex } from './prompt.js';
+export { appendAugments, collectAugments } from './augment.js';
