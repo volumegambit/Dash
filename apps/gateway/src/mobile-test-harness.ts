@@ -115,11 +115,12 @@ class ScriptedMobileBackend implements AgentBackend {
     this.activeAnswer.resolve(answers[0]?.[0] ?? '');
   }
 
-  async *run(_state: AgentState, _options: RunOptions): AsyncGenerator<AgentEvent> {
+  async *run(_state: AgentState, options: RunOptions): AsyncGenerator<AgentEvent> {
     if (this.stopped) return;
     const aborted = deferred<void>();
     this.activeAbort = aborted;
     try {
+      if ((await options.onRunReadyForSteering?.()) === 'sealed') return;
       if (this.scenario === 'slow') {
         yield { type: 'text_delta', text: 'Starting' };
         const released = await Promise.race([

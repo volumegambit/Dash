@@ -122,7 +122,10 @@ export interface ConversationService {
   ): PersistedRunFrames | null;
   deliverSteer(input: DeliverSteerInput): DeliveredInput;
   terminalizeSteersNotDelivered(input: TerminalizeSteersInput): PersistedInputTransition[];
-  enqueueInput(input: EnqueueInputCommand): CommandMutationResult;
+  enqueueInput(
+    input: EnqueueInputCommand,
+    options?: { steerAdmissionOpen?: boolean },
+  ): CommandMutationResult;
   editFollowUp(input: EditFollowUpCommand): CommandMutationResult;
   removeFollowUp(input: RemoveFollowUpCommand): CommandMutationResult;
   resumeFollowUps(input: ResumeFollowUpsCommand): CommandMutationResult;

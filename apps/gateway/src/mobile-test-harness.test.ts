@@ -422,6 +422,38 @@ describe('mobile test harness', () => {
     }
   });
 
+  it('seals an active typed slow run without releasing its provider gate', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'slow' });
+    let chat: FrameInbox | undefined;
+    try {
+      const conversation = await createConversation(harness);
+      chat = await openChat(harness);
+      const turnId = randomUUID();
+      chat.send({
+        type: 'message',
+        id: turnId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Cancel before release',
+        resumable: true,
+      });
+      await chat.waitFor(
+        (frame) =>
+          frame.type === 'event' && frame.id === turnId && frame.event.type === 'text_delta',
+      );
+
+      chat.send({ type: 'cancel', id: turnId });
+      const cancelled = await chat.waitFor((frame) => frame.type === 'done' && frame.id === turnId);
+
+      expect(cancelled).toMatchObject({ outcome: 'cancelled' });
+      expect(JSON.stringify(turnFrames(chat, turnId))).not.toContain('Working');
+    } finally {
+      await chat?.close();
+      await harness.stop();
+    }
+  });
+
   it('holds the second slow event until the harness release signal', async () => {
     const harness = await startMobileTestHarness({ scenario: 'slow' });
     let chat: FrameInbox | undefined;

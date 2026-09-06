@@ -1368,6 +1368,95 @@ describe('SqliteConversationService Follow Up queue commands', () => {
     ).toBe(1);
   });
 
+  it('journals a closed runtime Steer gate and replays it across retries and reopen', () => {
+    const conversationId = createConversation(true);
+    const command = enqueueSteer(conversationId);
+
+    const rejected = service.enqueueInput(command, { steerAdmissionOpen: false });
+
+    expect(rejected).toEqual({
+      replayed: false,
+      frames: [
+        {
+          type: 'command_rejected',
+          id: command.commandId,
+          conversationId,
+          code: 'conversation_busy',
+          error: 'The active run is not accepting Steers',
+          retryable: false,
+        },
+      ],
+    });
+    expect(
+      storage()
+        .db.prepare('SELECT COUNT(*) FROM conversation_pending_inputs WHERE conversation_id = ?')
+        .pluck()
+        .get(conversationId),
+    ).toBe(0);
+    expect(service.enqueueInput(command, { steerAdmissionOpen: true })).toEqual({
+      ...rejected,
+      replayed: true,
+    });
+    expect(
+      service.enqueueInput(
+        { ...command, text: 'Changed after the runtime rejection' },
+        { steerAdmissionOpen: true },
+      ),
+    ).toEqual({
+      replayed: false,
+      frames: [
+        {
+          type: 'command_rejected',
+          id: command.commandId,
+          conversationId,
+          code: 'validation_failed',
+          error: 'Command ID was already used for a different request',
+          retryable: false,
+        },
+      ],
+    });
+
+    service.close();
+    service = reopenService();
+    expect(service.enqueueInput(command, { steerAdmissionOpen: true })).toEqual({
+      ...rejected,
+      replayed: true,
+    });
+  });
+
+  it('keeps an idle Steer target conflict ahead of the closed runtime gate', () => {
+    const conversationId = createConversation(false);
+    const command = enqueueSteer(conversationId, { expectedActiveTurnId: 'run-no-longer-active' });
+
+    const rejected = service.enqueueInput(command, { steerAdmissionOpen: false });
+
+    expect(frameOf(rejected)).toEqual({
+      type: 'command_rejected',
+      id: command.commandId,
+      conversationId,
+      code: 'revision_conflict',
+      error: 'Steer target is no longer active',
+      retryable: false,
+      details: { activeTurnId: null, refreshRequired: true },
+    });
+    expect(
+      storage()
+        .db.prepare('SELECT COUNT(*) FROM conversation_pending_inputs WHERE conversation_id = ?')
+        .pluck()
+        .get(conversationId),
+    ).toBe(0);
+  });
+
+  it('ignores the Steer runtime gate for Follow Up admission', () => {
+    const conversationId = createConversation(true);
+
+    const accepted = service.enqueueInput(enqueueFollowUp(conversationId), {
+      steerAdmissionOpen: false,
+    });
+
+    expect(frameOf(accepted)).toMatchObject({ type: 'input_accepted' });
+  });
+
   it('journals a duplicate Follow Up input ID under another command', () => {
     const conversationId = createConversation();
     service.enqueueInput(enqueueFollowUp(conversationId));

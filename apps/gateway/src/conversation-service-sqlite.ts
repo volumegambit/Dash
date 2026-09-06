@@ -2188,7 +2188,10 @@ export class SqliteConversationService implements ConversationService {
     )(input);
   }
 
-  enqueueInput(input: EnqueueInputCommand): CommandMutationResult {
+  enqueueInput(
+    input: EnqueueInputCommand,
+    options?: { steerAdmissionOpen?: boolean },
+  ): CommandMutationResult {
     const operation = 'enqueue_input' as const;
     return this.db.transaction((value: EnqueueInputCommand): CommandMutationResult => {
       const current = this.requireConversationRow(value.conversationId);
@@ -2244,6 +2247,16 @@ export class SqliteConversationService implements ConversationService {
           'revision_conflict',
           'Steer target is no longer active',
           { activeTurnId: current.active_turn_id, refreshRequired: true },
+        );
+      }
+      if (kind === 'steer' && options?.steerAdmissionOpen === false) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'conversation_busy',
+          'The active run is not accepting Steers',
         );
       }
 
