@@ -608,6 +608,39 @@ struct AppModelTests {
     #expect(await engine.events == [.bootstrap, .background, .bootstrap, .foreground])
   }
 
+  @Test("engine backgrounds only when the last scene leaves")
+  func multiSceneBackgroundsOnce() async {
+    let engine = FakeAppSyncEngine()
+    let model = AppModel(dependencies: dependencies(profile: connectionProfile(), engine: engine))
+    await model.start()
+    let a = UUID(), b = UUID()
+    await model.sceneChanged(id: a, isActive: true)
+    await model.sceneChanged(id: b, isActive: true)
+
+    await model.sceneChanged(id: a, isActive: false)
+    #expect(await engine.backgroundCallCount == 0)
+
+    await model.sceneChanged(id: b, isActive: false)
+    #expect(await engine.backgroundCallCount == 1)
+  }
+
+  @Test("a scene re-activating after full background resumes exactly once")
+  func multiSceneForegroundsOnce() async {
+    let engine = FakeAppSyncEngine()
+    let model = AppModel(dependencies: dependencies(profile: connectionProfile(), engine: engine))
+    await model.start()
+    let a = UUID(), b = UUID()
+    await model.sceneChanged(id: a, isActive: true)
+    await model.sceneChanged(id: a, isActive: false)
+    let backgrounds = await engine.backgroundCallCount
+
+    await model.sceneChanged(id: a, isActive: true)
+    await model.sceneChanged(id: b, isActive: true)
+    #expect(await engine.backgroundCallCount == backgrounds)
+    #expect(model.isSceneForegrounded)
+    #expect(await engine.events == [.bootstrap, .background, .foreground])
+  }
+
   @Test("Keychain forget failure retains matching cache in a non-writable repair state")
   func keychainForgetFailureIsRetryableAndOrdered() async throws {
     let engine = FakeAppSyncEngine()

@@ -37,6 +37,10 @@ final class AppModel {
     return .paired(tab: selectedTab)
   }
 
+  /// Multi-window (design §3.2): whether any scene is currently active, from
+  /// the set `sceneChanged(id:isActive:)` tracks.
+  var isSceneForegrounded: Bool { activeSceneIDs.isEmpty == false }
+
   @ObservationIgnored private let dependencies: AppDependencies
   @ObservationIgnored private var syncEngine: (any AppSyncing)?
   @ObservationIgnored private var snapshotTask: Task<Void, Never>?
@@ -53,6 +57,8 @@ final class AppModel {
   @ObservationIgnored private var activeEngineSceneRevision: UInt64 = 0
   @ObservationIgnored private var isBackgrounded = false
   @ObservationIgnored private var isDisconnecting = false
+  @ObservationIgnored private var activeSceneIDs: Set<UUID> = []
+  @ObservationIgnored private var hasBackgroundedAllScenes = false
   /// The most recently minted, not-yet-installed account pairing grant (from
   /// `GatewayPickerView`'s connect attempts this session), tracked so
   /// `signOutOfAccount()` can best-effort revoke an abandoned mint. Cleared
@@ -581,6 +587,28 @@ final class AppModel {
     }
     chatFeatures[scope] = feature
     return feature
+  }
+
+  /// Multi-window (design §3.2): the sync engine is process-wide, so it
+  /// follows the SET of scenes, not any one of them. `sceneDidEnterBackground`/
+  /// `sceneWillEnterForeground` remain the single-scene primitives this
+  /// drives on the edges: background only when the LAST active scene leaves,
+  /// foreground only when the FIRST scene returns after a full background. A
+  /// `Set` makes a scene reporting the same state twice (e.g. `isActive:
+  /// true` while already active) or reporting inactive without ever having
+  /// been active harmless no-ops — the before/after emptiness comparison is
+  /// unaffected either way.
+  func sceneChanged(id: UUID, isActive: Bool) async {
+    let wasForegrounded = activeSceneIDs.isEmpty == false
+    if isActive { activeSceneIDs.insert(id) } else { activeSceneIDs.remove(id) }
+    let isForegrounded = activeSceneIDs.isEmpty == false
+    if wasForegrounded, isForegrounded == false {
+      hasBackgroundedAllScenes = true
+      await sceneDidEnterBackground()
+    } else if wasForegrounded == false, isForegrounded, hasBackgroundedAllScenes {
+      hasBackgroundedAllScenes = false
+      await sceneWillEnterForeground()
+    }
   }
 
   func sceneDidEnterBackground() async {
