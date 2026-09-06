@@ -9,6 +9,7 @@ import {
   childWorktreePath,
   cleanupChildWorktree,
   createChildWorktree,
+  reapOrphanWorktrees,
 } from './subagent-worktree.js';
 
 const run = promisify(execFile);
@@ -268,6 +269,156 @@ describe('subagent worktree isolation', { timeout: 30_000 }, () => {
         '*.log',
         '.DS_Store',
       ]);
+    });
+  });
+
+  /**
+   * Task B6's leak, carried to C6: a SIGKILL between spawn and finish leaves
+   * the directory AND a registration in the parent repo, and nothing sweeps
+   * either. The boot reaper is the only thing that does.
+   */
+  describe('reapOrphanWorktrees', () => {
+    it('removes an empty-handed orphan and prunes its registration', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_orphan',
+      });
+
+      const result = await reapOrphanWorktrees({ dataDir });
+
+      expect(result.removed).toEqual([path]);
+      expect(result.kept).toEqual([]);
+      expect(await exists(path)).toBe(false);
+      expect(await git(workspace, 'worktree', 'list')).not.toContain(path);
+    });
+
+    it('KEEPS a worktree holding uncommitted work, and says why', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_dirty',
+      });
+      await writeFile(join(path, 'report.md'), 'the deliverable\n');
+
+      const result = await reapOrphanWorktrees({ dataDir });
+
+      expect(result.removed).toEqual([]);
+      expect(result.kept).toEqual([{ path, reason: expect.stringContaining('report.md') }]);
+      expect(await exists(join(path, 'report.md'))).toBe(true);
+    });
+
+    it('KEEPS a worktree whose only content is a gitignored deliverable', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_plan',
+      });
+      await mkdir(join(path, 'docs', 'plans'), { recursive: true });
+      await writeFile(join(path, 'docs', 'plans', '2026-09-06-plan.md'), '# plan\n');
+
+      expect(await reapOrphanWorktrees({ dataDir })).toMatchObject({ removed: [] });
+      expect(await exists(join(path, 'docs', 'plans', '2026-09-06-plan.md'))).toBe(true);
+    });
+
+    it('removes an orphan whose only content is disposable build output', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_built',
+      });
+      await mkdir(join(path, 'dist'), { recursive: true });
+      await writeFile(join(path, 'dist', 'bundle.js'), 'x\n');
+
+      expect(await reapOrphanWorktrees({ dataDir })).toMatchObject({ removed: [path] });
+      expect(await exists(path)).toBe(false);
+    });
+
+    it('KEEPS the worktree of a live child and of a resumable max_turns child', async () => {
+      const live = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_live',
+      });
+      const partial = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_partial',
+      });
+
+      const result = await reapOrphanWorktrees({
+        dataDir,
+        isLive: (childId) => childId === 'sub_live',
+        statusOf: (childId) => (childId === 'sub_partial' ? 'max_turns' : undefined),
+      });
+
+      expect(result.removed).toEqual([]);
+      expect(result.kept.map((entry) => entry.path).sort()).toEqual(
+        [live.path, partial.path].sort(),
+      );
+      expect(await exists(live.path)).toBe(true);
+      expect(await exists(partial.path)).toBe(true);
+    });
+
+    it('prunes registrations whose directory has already been deleted', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_gone',
+      });
+      const survivor = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_here',
+      });
+      // The directory vanishes (a `rm -rf`, a wiped tmpfs) but the repo still
+      // lists it as `prunable` — the exact state B6 flagged as unswept.
+      await rm(path, { recursive: true, force: true });
+      expect(await git(workspace, 'worktree', 'list')).toContain(path);
+
+      const result = await reapOrphanWorktrees({ dataDir });
+
+      expect(result.removed).toEqual([survivor.path]);
+      expect(await git(workspace, 'worktree', 'list')).not.toContain(path);
+    });
+
+    it('is a no-op when the data dir has no worktrees at all', async () => {
+      expect(await reapOrphanWorktrees({ dataDir })).toEqual({
+        scanned: 0,
+        removed: [],
+        kept: [],
+        prunedRepos: [],
+      });
+    });
+
+    it('contains a per-directory failure and still sweeps the rest', async () => {
+      const good = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_good',
+      });
+      // A directory under worktrees/ that is not a checkout at all: no repo to
+      // resolve, so it is KEPT and logged rather than deleted blind.
+      const junk = join(dataDir, 'worktrees', 'researcher', 'sub_junk');
+      await mkdir(junk, { recursive: true });
+      await writeFile(join(junk, 'stray.txt'), 'x\n');
+
+      const logged: string[] = [];
+      const result = await reapOrphanWorktrees({ dataDir, log: (m) => logged.push(m) });
+
+      expect(result.removed).toEqual([good.path]);
+      expect(result.kept.map((entry) => entry.path)).toEqual([junk]);
+      expect(await exists(junk)).toBe(true);
+      expect(logged.some((message) => message.includes('sub_junk'))).toBe(true);
     });
   });
 });

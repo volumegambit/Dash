@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { mkdir, readdir } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 /**
@@ -215,4 +215,176 @@ export async function cleanupChildWorktree(o: {
   // loudly instead of deleting it. That last-moment refusal is a feature.
   await run('git', ['-C', o.workspace, 'worktree', 'remove', o.path]);
   return { removed: true, blocking, disposable };
+}
+
+/** What one boot sweep found, and what it did about it. */
+export interface OrphanWorktreeSweepResult {
+  /** Directories under `<dataDir>/worktrees/<agent>/` that were considered. */
+  scanned: number;
+  /** Worktrees taken down, absolute paths. */
+  removed: string[];
+  /** Worktrees left in place, with the reason each survived. */
+  kept: Array<{ path: string; reason: string }>;
+  /** Repositories a `git worktree prune` was run in. */
+  prunedRepos: string[];
+}
+
+/**
+ * The repository a linked worktree belongs to, or `undefined` when the path is
+ * not a linked worktree at all.
+ *
+ * `--git-common-dir` is the SHARED `.git` of the whole worktree set, so its
+ * parent is the main working tree — which is where `git worktree remove` and
+ * `git worktree prune` have to run. Resolving it from the worktree itself is
+ * what lets the sweep work with no state carried over from the spawn: the
+ * gateway that created these directories is dead.
+ */
+async function repoOf(path: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await run('git', [
+      '-C',
+      path,
+      'rev-parse',
+      '--path-format=absolute',
+      '--git-common-dir',
+    ]);
+    const commonDir = stdout.trim();
+    if (!commonDir) return undefined;
+    return dirname(commonDir);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Terminal child statuses whose worktree is still wanted. */
+const KEEP_STATUSES = new Set(['running', 'waiting_input', 'max_turns']);
+
+/**
+ * BOOT SWEEP for worktrees a previous gateway process leaked (Task B6's open
+ * leak, closed here in C6).
+ *
+ * The finish-time hook (`cleanupWorktreeForSpec`) only runs when a child
+ * reaches a terminal state IN THIS PROCESS. A SIGKILL between spawn and finish
+ * therefore leaves two things behind that nothing else ever sweeps: the
+ * directory itself, and a registration in the parent repo that `git worktree
+ * list` reports as `prunable` once the directory is gone. Both accumulate for
+ * ever.
+ *
+ * No child is live at boot, so every directory under `<dataDir>/worktrees` is
+ * by definition an orphan — but "orphan" is not "disposable". This applies
+ * exactly the B6 rule, via the same {@link cleanupChildWorktree}: a worktree
+ * with uncommitted work, untracked files, or ignored content that is not on
+ * {@link DISPOSABLE_WORKTREE_ARTEFACTS} is KEPT. So is a `max_turns` child's
+ * (its `[partial: …]` report points at the work inside it) and, when a caller
+ * passes `isLive`, so is a running child's.
+ *
+ * Every ambiguous case resolves to KEEP: a path that is not a git worktree at
+ * all has no repository to remove it from, and deleting it blind is the one
+ * unrecoverable thing this code could do.
+ *
+ * Fully contained per directory — a boot sweep may never break boot.
+ */
+export async function reapOrphanWorktrees(o: {
+  dataDir: string;
+  /** True while this process still holds a handle for the child. */
+  isLive?: (childId: string) => boolean;
+  /** The child's persisted sub-agent status, when its row still exists. */
+  statusOf?: (childId: string) => string | undefined;
+  log?: (message: string) => void;
+}): Promise<OrphanWorktreeSweepResult> {
+  const root = resolve(o.dataDir, 'worktrees');
+  const result: OrphanWorktreeSweepResult = {
+    scanned: 0,
+    removed: [],
+    kept: [],
+    prunedRepos: [],
+  };
+
+  let agentDirs: string[];
+  try {
+    agentDirs = (await readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch (err) {
+    // No worktrees dir is the normal case for a gateway that never isolated a
+    // child. Anything else is logged and the sweep ends — never thrown.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      o.log?.(`[worktree-reaper] could not read ${root}: ${message(err)}`);
+    }
+    return result;
+  }
+
+  /** Repos touched by the sweep; each gets one prune pass at the end. */
+  const repos = new Set<string>();
+
+  for (const agentName of agentDirs) {
+    const agentDir = join(root, agentName);
+    let childIds: string[];
+    try {
+      childIds = (await readdir(agentDir, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch (err) {
+      o.log?.(`[worktree-reaper] could not read ${agentDir}: ${message(err)}`);
+      continue;
+    }
+
+    for (const childId of childIds) {
+      const path = join(agentDir, childId);
+      result.scanned++;
+      try {
+        if (o.isLive?.(childId)) {
+          result.kept.push({ path, reason: 'the child is still running' });
+          continue;
+        }
+        const status = o.statusOf?.(childId);
+        if (status && KEEP_STATUSES.has(status)) {
+          result.kept.push({ path, reason: `the child is ${status} and resumable` });
+          continue;
+        }
+        const workspace = await repoOf(path);
+        if (!workspace) {
+          // Not a linked worktree: no repository to remove it from, and no way
+          // to tell a leaked checkout from a directory someone put here.
+          result.kept.push({ path, reason: 'not a git worktree' });
+          o.log?.(`[worktree-reaper] keeping ${path}: not a git worktree`);
+          continue;
+        }
+        repos.add(workspace);
+        const { removed, blocking, disposable } = await cleanupChildWorktree({ workspace, path });
+        if (!removed) {
+          const reason = `uncommitted work: ${blocking.slice(0, 5).join(', ')}`;
+          result.kept.push({ path, reason });
+          o.log?.(`[worktree-reaper] keeping the orphaned worktree ${path} — ${reason}`);
+          continue;
+        }
+        result.removed.push(path);
+        const discarded =
+          disposable.length > 0 ? `, discarding ${disposable.slice(0, 5).join(', ')}` : '';
+        o.log?.(`[worktree-reaper] removed the orphaned worktree ${path}${discarded}`);
+      } catch (err) {
+        result.kept.push({ path, reason: message(err) });
+        o.log?.(`[worktree-reaper] could not reap ${path}: ${message(err)}`);
+      }
+    }
+  }
+
+  // Registrations whose directory is ALREADY gone cannot be found by scanning
+  // the data dir, so they are swept from the repo side: one prune per repo the
+  // sweep touched clears every `prunable` entry it left behind.
+  for (const workspace of repos) {
+    try {
+      await run('git', ['-C', workspace, 'worktree', 'prune']);
+      result.prunedRepos.push(workspace);
+    } catch (err) {
+      o.log?.(`[worktree-reaper] could not prune ${workspace}: ${message(err)}`);
+    }
+  }
+
+  return result;
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
