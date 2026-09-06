@@ -285,6 +285,17 @@ export class ChildHandle {
   }
 
   /**
+   * True when the next {@link send} would ANSWER rather than steer. Mirrors
+   * `send`'s own condition exactly — `pendingQuestion` alone is not enough,
+   * since a timed-out or aborted question can leave it set with no waiter to
+   * resolve, and a caller that branched on the stale value would route a steer
+   * down the answer path.
+   */
+  get hasPendingQuestion(): boolean {
+    return this.pendingQuestion !== undefined && this.questionWaiter !== undefined;
+  }
+
+  /**
    * Answer a pending question or enqueue a steer. Synchronous check + effect:
    * a caller can never observe `{ok:true}` for a steer a concurrent finalize
    * then drops.

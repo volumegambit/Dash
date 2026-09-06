@@ -635,6 +635,10 @@ export class SwarmCoordinator {
    * refusals a model can act on: an unknown target, a one-shot type (Explore /
    * Plan are not resumable by construction), and the steer cap — which counts
    * across resumes, or resuming would be a way to buy more steers.
+   *
+   * The one-shot refusal has ONE exemption: a live one-shot child that is
+   * parked on an `ask_orchestrator` question can be answered (`mode: 'queued'`).
+   * See the comment on that branch below.
    */
   sendToChild(
     parentConversationId: string,
@@ -645,12 +649,22 @@ export class SwarmCoordinator {
     if (!target) {
       throw new Error(`No agent named or with id "${nameOrId}" in this conversation.`);
     }
-    if (target.oneShot) {
+    const handle = this.children.get(target.subagentId);
+    // ANSWERING comes before the one-shot refusal, and only answering does.
+    // `startChild` gives every child `ask_orchestrator`, so a one-shot
+    // Explore/Plan child can park itself in `waiting_input` — and
+    // `ChildHandle.send` is the only path to `answerQuestion`. Refusing here
+    // left nobody able to answer it: the child hung until
+    // `waitForQuestion`'s timeout. An answer completes the child's CURRENT
+    // turn, which is not the "resume" the refusal below is about, and it
+    // spends no steer (`send` returns before the cap).
+    const answering =
+      handle !== undefined && !TERMINAL_STATUSES.has(handle.status) && handle.hasPendingQuestion;
+    if (target.oneShot && !answering) {
       throw new Error(
         `Agent "${nameOrId}" is a one-shot ${target.subagentType} agent and cannot be resumed.`,
       );
     }
-    const handle = this.children.get(target.subagentId);
     if (handle && !TERMINAL_STATUSES.has(handle.status)) {
       const res = handle.send(message);
       if (!res.ok) {

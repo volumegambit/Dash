@@ -2317,6 +2317,56 @@ describe('SwarmCoordinator sendToChild', () => {
     expect(() => coordinator.sendToChild(CONVO_ID, 'mapper', 'again')).toThrow(/one-shot/);
   });
 
+  // Phase C escape surfaced by D2. `startChild` hands `ask_orchestrator` to
+  // EVERY child unconditionally (see `extraTools` above), so a one-shot
+  // Explore/Plan child really can park itself in `waiting_input` — and
+  // `ChildHandle.send` is the ONLY path that reaches `answerQuestion`. With
+  // the one-shot refusal in front of it, nobody could answer: the child hung
+  // until `waitForQuestion`'s timeout. Answering completes the child's CURRENT
+  // turn; it is not the resume the refusal's own text is about.
+  it('answers a one-shot child that is parked on a question', async () => {
+    const { coordinator } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      {
+        role: 'Explore',
+        brief: 'map',
+        description: 'd',
+        name: 'mapper',
+        subagentType: 'Explore',
+        oneShot: true,
+      },
+    );
+    const handle = coordinator.getLiveRun(AGENT_ID, CONVO_ID)?.getHandle(subagentId);
+    if (!handle) throw new Error('expected a live handle');
+    const answer = handle.waitForQuestion('which relay?', undefined, 60_000);
+    expect(handle.status).toBe('waiting_input');
+
+    const res = coordinator.sendToChild(CONVO_ID, 'mapper', 'the staging one');
+
+    expect(res).toEqual({ ok: true, status: 'running', mode: 'queued' });
+    await expect(answer).resolves.toBe('the staging one');
+    // Answering is not a steer, so it must not spend one.
+    expect(handle.steersUsed).toBe(0);
+  });
+
+  it('still refuses a STEER to a live one-shot child with no question pending', () => {
+    const { coordinator } = setupChildTurn();
+    coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      {
+        role: 'Explore',
+        brief: 'map',
+        description: 'd',
+        name: 'mapper',
+        subagentType: 'Explore',
+        oneShot: true,
+      },
+    );
+
+    expect(() => coordinator.sendToChild(CONVO_ID, 'mapper', 'also do this')).toThrow(/one-shot/);
+  });
+
   it('refuses a name it cannot resolve in this conversation', () => {
     const { coordinator } = setupChildTurn();
     expect(() => coordinator.sendToChild(CONVO_ID, 'nobody', 'hi')).toThrow(/No agent named/);
