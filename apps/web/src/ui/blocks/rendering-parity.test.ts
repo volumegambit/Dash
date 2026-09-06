@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { formatElapsed, formatToolCount } from './subagents.js';
 import { formatVisibleDetails, middleTruncate, summarize, toolLabel } from './tool-presentation.js';
 
 // Cross-platform rendering-parity fixtures (Task 5, output-rendering plan).
@@ -54,7 +55,27 @@ interface DetailsCase {
   expectedDetails: { key: string; value: string }[];
 }
 
-type FixtureCase = LabelCase | SummarizeCase | TruncateCase | DetailsCase;
+interface ElapsedCase {
+  name: string;
+  kind: 'elapsed';
+  inputMs: number;
+  expectedText: string;
+}
+
+interface ToolCountCase {
+  name: string;
+  kind: 'toolCount';
+  inputCount: number;
+  expectedText: string;
+}
+
+type FixtureCase =
+  | LabelCase
+  | SummarizeCase
+  | TruncateCase
+  | DetailsCase
+  | ElapsedCase
+  | ToolCountCase;
 
 interface Fixture {
   cases: FixtureCase[];
@@ -75,14 +96,18 @@ const labelCases = fixture.cases.filter((c): c is LabelCase => c.kind === 'label
 const summarizeCases = fixture.cases.filter((c): c is SummarizeCase => c.kind === 'summarize');
 const truncateCases = fixture.cases.filter((c): c is TruncateCase => c.kind === 'truncate');
 const detailsCases = fixture.cases.filter((c): c is DetailsCase => c.kind === 'details');
+const elapsedCases = fixture.cases.filter((c): c is ElapsedCase => c.kind === 'elapsed');
+const toolCountCases = fixture.cases.filter((c): c is ToolCountCase => c.kind === 'toolCount');
 
 describe('rendering parity fixtures', () => {
-  it('loads a non-empty fixture with all four case kinds', () => {
+  it('loads a non-empty fixture with all six case kinds', () => {
     expect(fixture.cases.length).toBeGreaterThan(0);
     expect(labelCases.length).toBeGreaterThan(0);
     expect(summarizeCases.length).toBeGreaterThan(0);
     expect(truncateCases.length).toBeGreaterThan(0);
     expect(detailsCases.length).toBeGreaterThan(0);
+    expect(elapsedCases.length).toBeGreaterThan(0);
+    expect(toolCountCases.length).toBeGreaterThan(0);
   });
 
   describe.each(labelCases)('label: $name', (c) => {
@@ -110,6 +135,20 @@ describe('rendering parity fixtures', () => {
       expect(sortedByKey(formatVisibleDetails(c.toolName, c.input))).toEqual(
         sortedByKey(c.expectedDetails),
       );
+    });
+  });
+
+  // Sub-agent row meta formatting (design §8.1). The iOS twin is
+  // `SubagentFormat.elapsed(_:)` / `.toolCount(_:)`; both read these cases.
+  describe.each(elapsedCases)('elapsed: $name', (c) => {
+    it('matches formatElapsed', () => {
+      expect(formatElapsed(c.inputMs)).toBe(c.expectedText);
+    });
+  });
+
+  describe.each(toolCountCases)('toolCount: $name', (c) => {
+    it('matches formatToolCount', () => {
+      expect(formatToolCount(c.inputCount)).toBe(c.expectedText);
     });
   });
 });

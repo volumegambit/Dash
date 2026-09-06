@@ -39,6 +39,12 @@ struct RenderingParityTests {
     let expectedSummary: String?
     let expectedTruncated: String?
     let expectedDetails: [DetailEntry]?
+    /// `elapsed` cases: milliseconds in.
+    let inputMs: Int?
+    /// `toolCount` cases: the raw count in.
+    let inputCount: Int?
+    /// `elapsed` / `toolCount` cases: the expected rendered string.
+    let expectedText: String?
   }
 
   struct DetailEntry: Decodable, Equatable, Sendable {
@@ -80,14 +86,18 @@ struct RenderingParityTests {
   static var summarizeCases: [FixtureCase] { fixture.cases.filter { $0.kind == "summarize" } }
   static var truncateCases: [FixtureCase] { fixture.cases.filter { $0.kind == "truncate" } }
   static var detailsCases: [FixtureCase] { fixture.cases.filter { $0.kind == "details" } }
+  static var elapsedCases: [FixtureCase] { fixture.cases.filter { $0.kind == "elapsed" } }
+  static var toolCountCases: [FixtureCase] { fixture.cases.filter { $0.kind == "toolCount" } }
 
-  @Test("Fixture loads a non-empty set covering all four case kinds")
+  @Test("Fixture loads a non-empty set covering all six case kinds")
   func fixtureLoadsAllKinds() {
     #expect(!Self.fixture.cases.isEmpty)
     #expect(!Self.labelCases.isEmpty)
     #expect(!Self.summarizeCases.isEmpty)
     #expect(!Self.truncateCases.isEmpty)
     #expect(!Self.detailsCases.isEmpty)
+    #expect(!Self.elapsedCases.isEmpty)
+    #expect(!Self.toolCountCases.isEmpty)
   }
 
   // MARK: - label
@@ -141,5 +151,21 @@ struct RenderingParityTests {
       ToolPresentation.ToolDetail(key: $0.key, value: $0.value)
     }
     #expect(Self.sortedByKey(result) == Self.sortedByKey(expected), "\(c.name)")
+  }
+
+  // MARK: - sub-agent row meta (design §8.1)
+
+  // The web twin is `formatElapsed` / `formatToolCount` in
+  // apps/web/src/ui/blocks/subagents.ts; both read these same fixture cases,
+  // so a padding or pluralization divergence fails on one platform only.
+
+  @Test("elapsed fixture case matches SubagentFormat.elapsed", arguments: Self.elapsedCases)
+  func elapsedMatches(_ c: FixtureCase) {
+    #expect(SubagentFormat.elapsed(c.inputMs!) == c.expectedText, "\(c.name)")
+  }
+
+  @Test("toolCount fixture case matches SubagentFormat.toolCount", arguments: Self.toolCountCases)
+  func toolCountMatches(_ c: FixtureCase) {
+    #expect(SubagentFormat.toolCount(c.inputCount!) == c.expectedText, "\(c.name)")
   }
 }
