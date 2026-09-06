@@ -271,13 +271,13 @@ function handlePhoneHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
-  if (!isCanonicalMobileHttpTarget(req.url ?? '/')) {
+  if (!isPhoneHttpTarget(req.url ?? '/')) {
     res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('Not Found');
     return;
   }
 
-  // Past this point the target is a validated canonical `/mobile/v1` path, so
+  // Past this point the target is a validated canonical mobile v1/v2 path, so
   // every response the relay generates itself is an error a browser client
   // needs to be able to READ (see errorCorsHeaders).
   const cors = errorCorsHeaders(req.headers.origin);
@@ -293,8 +293,8 @@ function handlePhoneHttp(
   // CORS preflights are exempt. A browser strips every author-set header from
   // the OPTIONS it sends before a cross-origin request, so a web client can
   // never satisfy the credential gate on a preflight — gating it would make the
-  // whole `/mobile/v1` surface unreachable from a browser. The exemption is
-  // narrow: it only applies to the canonical `/mobile/v1` targets validated
+  // whole mobile surface unreachable from a browser. The exemption is narrow:
+  // it only applies to the canonical `/mobile/v1` and `/mobile/v2` targets validated
   // above, and the request is forwarded unchanged so the GATEWAY's own
   // `mobileCors` middleware answers it from its origin allowlist. The relay
   // never becomes the CORS policy holder, and an OPTIONS reaches no data route
@@ -370,10 +370,10 @@ function handlePhoneHttp(
       if (!res.writableEnded) res.end();
       conn.streams.delete(streamId);
     },
-    onClose(_code, reason) {
+    onClose() {
       if (!res.writableEnded) {
-        if (!responded) res.writeHead(502, { 'content-type': 'text/plain' });
-        res.end(responded ? undefined : (reason ?? 'Upstream closed'));
+        if (!responded) res.writeHead(502, { 'content-type': 'text/plain', ...cors });
+        res.end(responded ? undefined : 'Upstream closed');
       }
       conn.streams.delete(streamId);
     },
@@ -523,7 +523,8 @@ function handlePhoneWsUpgrade(
  * URL parsing normalizes literal and percent-encoded dot segments, so comparing
  * the parsed pathname to the wire pathname rejects traversal before forwarding.
  * Repeated decoding also catches encoded separators and double-encoded traversal
- * that a downstream router could otherwise interpret differently.
+ * that a downstream router could otherwise interpret differently. Any decode
+ * that introduces a path separator is rejected before version matching.
  */
 function canonicalPathname(requestTarget: string): string | undefined {
   if (!requestTarget.startsWith('/') || requestTarget.includes('#')) return undefined;
@@ -546,7 +547,7 @@ function canonicalPathname(requestTarget: string): string | undefined {
       return undefined;
     }
     if (
-      next.includes('\\') ||
+      separatorTopology(next) !== separatorTopology(decoded) ||
       next.split('/').some((segment) => segment === '.' || segment === '..')
     ) {
       return undefined;
@@ -557,9 +558,18 @@ function canonicalPathname(requestTarget: string): string | undefined {
   return undefined;
 }
 
-function isCanonicalMobileHttpTarget(requestTarget: string): boolean {
+function separatorTopology(pathname: string): string {
+  return [...pathname].filter((character) => character === '/' || character === '\\').join('');
+}
+
+function isPhoneHttpTarget(requestTarget: string): boolean {
   const pathname = canonicalPathname(requestTarget);
-  return pathname === '/mobile/v1' || pathname?.startsWith('/mobile/v1/') === true;
+  return (
+    pathname === '/mobile/v1' ||
+    pathname?.startsWith('/mobile/v1/') === true ||
+    pathname === '/mobile/v2' ||
+    pathname?.startsWith('/mobile/v2/') === true
+  );
 }
 
 function isCanonicalChatWsTarget(requestTarget: string): boolean {
@@ -578,9 +588,9 @@ function truncateCloseReason(reason?: string): string | undefined {
   return buf.subarray(0, 123).toString('utf8').replace(/�+$/, '');
 }
 
-/** Forward normal + app-range (4001 etc.) close codes; coerce reserved/abnormal to 1000. */
+/** Forward normal, protocol-error, and app-range close codes; coerce reserved/abnormal to 1000. */
 function safeCloseCode(code?: number): number {
-  if (code === 1000) return 1000;
+  if (code === 1000 || code === 1002) return code;
   if (code !== undefined && code >= 3000 && code <= 4999) return code;
   return 1000;
 }
@@ -757,7 +767,7 @@ function gatewayIdFromHost(host: string | undefined): string | undefined {
 }
 
 /**
- * CORS headers for an error the RELAY generates on a canonical `/mobile/v1`
+ * CORS headers for an error the RELAY generates on a canonical mobile v1/v2
  * target (401 / 429 / 502). Without them a browser sees an opaque network
  * failure instead of the status, so a revoked credential surfaces as "offline,
  * retrying" rather than "your session was revoked, sign in again".
@@ -765,7 +775,7 @@ function gatewayIdFromHost(host: string | undefined): string | undefined {
  * The origin is echoed with no allowlist, and that is safe HERE specifically:
  *
  *  - These are relay-authored responses only. Anything the gateway produces is
- *    piped back with the gateway's own headers, so the real `/mobile/v1` data
+ *    piped back with the gateway's own headers, so the real mobile data
  *    surface keeps its exact-match allowlist (`mobile-cors.ts`) — the relay
  *    never becomes the policy holder for anything that carries data.
  *  - The bodies are fixed constants ("Unauthorized", "Too Many Requests", "No

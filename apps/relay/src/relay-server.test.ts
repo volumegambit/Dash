@@ -5,7 +5,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocket } from 'ws';
 import { credentialStoreAuth } from './auth.js';
 import { PairingCredentialStore } from './credential-store.js';
-import { type Frame, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
+import { type Frame, decodeChunk, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
 import {
   type RelayDeps,
   type RelayServer,
@@ -358,6 +358,55 @@ describe('relay-server', () => {
     expect(status).toBe(502);
   });
 
+  it.each([
+    '/mobile/v2/health',
+    '/mobile/v2/conversations',
+    '/mobile/v2/conversations/conversation-1/bootstrap',
+    '/mobile/v2/ws-ticket',
+  ])('forwards canonical mobile v2 target %s unchanged', async (path) => {
+    const gw = await connectGateway('g1', 'good');
+    let seenOpen: Extract<Frame, { t: 'open' }> | undefined;
+    gw.on('message', (raw: Buffer) => {
+      const frame = decodeFrame(raw.toString());
+      if (frame.t !== 'open') return;
+      seenOpen = frame;
+      gw.send(
+        encodeFrame({
+          t: 'head',
+          streamId: frame.streamId,
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      gw.send(
+        encodeFrame({
+          t: 'data',
+          streamId: frame.streamId,
+          chunk: encodeChunk(Buffer.from('{"ok":true}')),
+        }),
+      );
+      gw.send(encodeFrame({ t: 'end', streamId: frame.streamId }));
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const response = await httpGet(path, {
+      host: 'g1.relay.local',
+      authorization: 'Bearer mobile-chat-token',
+      'x-dash-relay-credential': 'pairing-credential',
+    });
+
+    expect(response).toEqual({ status: 200, body: '{"ok":true}' });
+    expect(seenOpen).toMatchObject({
+      target: 'mgmt',
+      kind: 'http',
+      method: 'GET',
+      path,
+    });
+    expect(seenOpen?.headers.authorization).toBe('Bearer mobile-chat-token');
+    expect(seenOpen?.headers.host).toBeUndefined();
+    gw.close();
+  });
+
   it('upgrades a phone WebSocket and bridges frames to the gateway', async () => {
     const gw = await connectGateway('g1', 'good');
     let openFrame: Extract<Frame, { t: 'open' }> | undefined;
@@ -398,6 +447,46 @@ describe('relay-server', () => {
     phone.close();
   });
 
+  it('forwards a mobile v2 hello frame byte-for-byte without inspecting or rewriting it', async () => {
+    const gw = await connectGateway('g1', 'good');
+    let openFrame: Extract<Frame, { t: 'open' }> | undefined;
+    const forwardedHello = new Promise<{ payload: string; binary: boolean }>((resolve) => {
+      gw.on('message', (raw: Buffer) => {
+        const frame = decodeFrame(raw.toString());
+        if (frame.t === 'open' && frame.kind === 'ws') {
+          openFrame = frame;
+          gw.send(encodeFrame({ t: 'head', streamId: frame.streamId, status: 101, headers: {} }));
+        } else if (frame.t === 'data') {
+          resolve({
+            payload: decodeChunk(frame.chunk).toString('utf8'),
+            binary: frame.binary ?? false,
+          });
+        }
+      });
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?ticket=opaque-ticket`, {
+      headers: { host: 'g1.relay.local' },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', resolve);
+      phone.on('error', reject);
+    });
+    const hello =
+      '{ "type": "hello", "contractVersion": 2, "capabilities": ["chat-input-queue-v1"] }';
+    phone.send(hello);
+
+    expect(await forwardedHello).toEqual({ payload: hello, binary: false });
+    expect(openFrame).toMatchObject({
+      target: 'chat',
+      kind: 'ws',
+      path: '/ws/chat?ticket=opaque-ticket',
+    });
+    phone.close();
+    gw.close();
+  });
+
   it('closes the phone WebSocket when the gateway sends a 4001 close', async () => {
     const gw = await connectGateway('g1', 'good');
     gw.on('message', (raw: Buffer) => {
@@ -419,6 +508,32 @@ describe('relay-server', () => {
     expect(code).toBe(4001);
   });
 
+  it.each(['unsupported_version', 'unexpected_hello', 'hello_required', 'invalid_frame'])(
+    'preserves gateway WebSocket close 1002 and reason %s',
+    async (reason) => {
+      const gw = await connectGateway('g1', 'good');
+      gw.on('message', (raw: Buffer) => {
+        const frame = decodeFrame(raw.toString());
+        if (frame.t === 'open' && frame.kind === 'ws') {
+          gw.send(encodeFrame({ t: 'close', streamId: frame.streamId, code: 1002, reason }));
+        }
+      });
+      await waitFor(() => server.hasGateway('g1'));
+
+      const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat`, {
+        headers: { host: 'g1.relay.local' },
+      });
+      const closed = await new Promise<{ code: number; reason: string }>((resolve) => {
+        phone.on('close', (code, rawReason) => {
+          resolve({ code, reason: rawReason.toString('utf8') });
+        });
+      });
+
+      expect(closed).toEqual({ code: 1002, reason });
+      gw.close();
+    },
+  );
+
   it.each([
     '/credentials',
     '/agents',
@@ -426,10 +541,28 @@ describe('relay-server', () => {
     '/projects',
     '/mobile/v10/agents',
     '/mobile/v1evil/agents',
+    '/mobile/v20/agents',
+    '/mobile/v2evil/agents',
     '/mobile/v1/../credentials',
+    '/mobile/v2/../credentials',
     '/mobile/v1/%2e%2e/credentials',
+    '/mobile/v2/%2e%2e/credentials',
     '/mobile/v1/%252e%252e/credentials',
+    '/mobile/v2/%252e%252e/credentials',
     '/mobile/v1%2f..%2fcredentials',
+    '/mobile/v2%2f..%2fcredentials',
+    '/mobile/v1/conversations\\secret',
+    '/mobile/v2/conversations\\secret',
+    '/mobile/v1/conversations%2Fsecret',
+    '/mobile/v2/conversations%2Fsecret',
+    '/mobile/v1/conversations%252Fsecret',
+    '/mobile/v2/conversations%252Fsecret',
+    '/mobile/v1/conversations%5Csecret',
+    '/mobile/v2/conversations%5Csecret',
+    '/mobile/v1/conversations%255Csecret',
+    '/mobile/v2/conversations%255Csecret',
+    '/mobile/v1/conversations%',
+    '/mobile/v2/conversations%ZZ',
   ])('rejects non-canonical phone HTTP path %s before forwarding', async (path) => {
     const gw = await connectGateway('g1', 'good');
     const forwarded: Frame[] = [];
@@ -443,13 +576,16 @@ describe('relay-server', () => {
     });
     await waitFor(() => server.hasGateway('g1'));
 
-    const response = await httpGet(path, {
+    const response = await httpRequest('GET', path, {
       host: 'g1.relay.local',
+      origin: 'https://malicious.example',
       authorization: 'Bearer leaked-legacy-management-token',
       'x-dash-relay-credential': 'valid-pairing-credential',
     });
 
     expect(response.status).toBe(404);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+    expect(response.headers.vary).toBeUndefined();
     expect(forwarded).toEqual([]);
     gw.close();
   });
@@ -462,6 +598,11 @@ describe('relay-server', () => {
     '/ws/chat/%2e%2e/projects/ws',
     '/ws/chat/%252e%252e/projects/ws',
     '/ws/chat%2f..%2fprojects%2fws',
+    '/ws/chat%2Fsecret',
+    '/ws/chat%252Fsecret',
+    '/ws/chat%5Csecret',
+    '/ws/chat%255Csecret',
+    '/ws/chat%',
   ])('rejects non-canonical phone WebSocket path %s before forwarding', async (path) => {
     const gw = await connectGateway('g1', 'good');
     const forwarded: Frame[] = [];
@@ -1601,6 +1742,190 @@ describe('relay-server', () => {
     expect(forwarded).toEqual([]);
     gw.close();
   });
+
+  it.each([
+    '/mobile/v2/health',
+    '/mobile/v2/conversations',
+    '/mobile/v2/conversations/conversation-1/bootstrap',
+    '/mobile/v2/ws-ticket',
+  ])('applies relay authentication and the OPTIONS exemption to %s', async (path) => {
+    await restartWith({
+      verifyDialIn: (_gatewayId, token) => token === 'good',
+      pairingCredentialValid: (_gatewayId, credential) => credential === 'valid',
+    });
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const frame = decodeFrame(raw.toString());
+      if (frame.t !== 'open') return;
+      gw.send(
+        encodeFrame({
+          t: 'head',
+          streamId: frame.streamId,
+          status: frame.method === 'OPTIONS' ? 204 : 200,
+          headers: { 'access-control-allow-origin': 'https://app.example.com' },
+        }),
+      );
+      gw.send(encodeFrame({ t: 'end', streamId: frame.streamId }));
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const unauthenticated = await httpRequest('GET', path, {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    const preflight = await httpRequest('OPTIONS', path, {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'authorization,x-dash-relay-credential',
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    const authenticated = await httpRequest('GET', path, {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'valid',
+    });
+    expect(authenticated.status).toBe(200);
+    gw.close();
+  });
+
+  it('checks mobile v2 credentials before spending the authenticated request budget', async () => {
+    await restartWith(
+      {
+        verifyDialIn: (_gatewayId, token) => token === 'good',
+        pairingCredentialValid: (_gatewayId, credential) => credential === 'valid',
+      },
+      { rateBurst: 1, ratePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    respondOk(gw);
+    await waitFor(() => server.hasGateway('g1'));
+
+    const unauthenticated = await httpRequest('GET', '/mobile/v2/ws-ticket', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    const authenticated = await httpGet('/mobile/v2/ws-ticket', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'valid',
+    });
+    expect(authenticated.status).toBe(200);
+    gw.close();
+  });
+
+  it('gives mobile v2 OPTIONS requests a separate bounded budget', async () => {
+    await restartWith(
+      {
+        verifyDialIn: (_gatewayId, token) => token === 'good',
+        pairingCredentialValid: (_gatewayId, credential) => credential === 'valid',
+      },
+      { rateBurst: 1, ratePerSec: 0, preflightBurst: 1, preflightRatePerSec: 0 },
+    );
+    const gw = await connectGateway('g1', 'good');
+    gw.on('message', (raw: Buffer) => {
+      const frame = decodeFrame(raw.toString());
+      if (frame.t !== 'open') return;
+      gw.send(
+        encodeFrame({
+          t: 'head',
+          streamId: frame.streamId,
+          status: frame.method === 'OPTIONS' ? 204 : 200,
+          headers: {},
+        }),
+      );
+      gw.send(encodeFrame({ t: 'end', streamId: frame.streamId }));
+    });
+    await waitFor(() => server.hasGateway('g1'));
+
+    const firstPreflight = await httpRequest('OPTIONS', '/mobile/v2/conversations', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(firstPreflight.status).toBe(204);
+    const secondPreflight = await httpRequest('OPTIONS', '/mobile/v2/conversations', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+    expect(secondPreflight.status).toBe(429);
+    expect(secondPreflight.headers['access-control-allow-origin']).toBe('https://app.example.com');
+
+    const authenticated = await httpGet('/mobile/v2/conversations', {
+      host: 'g1.relay.local',
+      'x-dash-relay-credential': 'valid',
+    });
+    expect(authenticated.status).toBe(200);
+    gw.close();
+  });
+
+  it('adds mobile CORS headers to a relay-generated v2 502 with no gateway', async () => {
+    const response = await httpRequest('GET', '/mobile/v2/health', {
+      host: 'missing.relay.local',
+      origin: 'https://app.example.com',
+    });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toBe('No gateway connected');
+    expect(response.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(response.headers.vary).toContain('Origin');
+  });
+
+  it('adds mobile CORS headers to a relay-generated v2 429', async () => {
+    await restartWithLimits({ maxStreamsPerGateway: 0 });
+    const gw = await connectGateway('g1', 'good');
+    await waitFor(() => server.hasGateway('g1'));
+
+    const response = await httpRequest('GET', '/mobile/v2/conversations', {
+      host: 'g1.relay.local',
+      origin: 'https://app.example.com',
+    });
+
+    expect(response.status).toBe(429);
+    expect(response.body).toBe('Too Many Requests');
+    expect(response.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(response.headers.vary).toContain('Origin');
+    gw.close();
+  });
+
+  it.each(['/mobile/v1/health', '/mobile/v2/health'])(
+    'uses a fixed public CORS-readable 502 when the upstream closes before headers on %s',
+    async (path) => {
+      const secretReason = 'provider-key=never-reflect-this';
+      const gw = await connectGateway('g1', 'good');
+      gw.on('message', (raw: Buffer) => {
+        const frame = decodeFrame(raw.toString());
+        if (frame.t === 'open') {
+          gw.send(
+            encodeFrame({
+              t: 'close',
+              streamId: frame.streamId,
+              code: 1011,
+              reason: secretReason,
+            }),
+          );
+        }
+      });
+      await waitFor(() => server.hasGateway('g1'));
+
+      const response = await httpRequest('GET', path, {
+        host: 'g1.relay.local',
+        origin: 'https://app.example.com',
+      });
+
+      expect(response.status).toBe(502);
+      expect(response.body).toBe('Upstream closed');
+      expect(response.body).not.toContain(secretReason);
+      expect(response.headers['access-control-allow-origin']).toBe('https://app.example.com');
+      expect(response.headers.vary).toContain('Origin');
+      gw.close();
+    },
+  );
 
   it('does not spend the rate-limit budget on unauthenticated requests', async () => {
     await restartWith(

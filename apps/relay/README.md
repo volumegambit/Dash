@@ -55,13 +55,18 @@ outbound connections pass through NAT and firewalls, inbound ones don't.
 The relay pipes **opaque bytes**. It never inspects, logs, or persists your message
 content or your gateway tokens.
 
+The public tunnel is deliberately narrow: it forwards only canonical `/mobile/v1`
+and `/mobile/v2` HTTP requests plus the exact `/ws/chat` WebSocket route. Unprefixed
+management routes are not exposed through gateway subdomains, and `/admin/*` requests
+are handled by the relay's separately authenticated control API rather than forwarded.
+
 ### Three independent auth layers (all end-to-end)
 
 | Layer | Secret | Checked by | On failure |
 |-------|--------|-----------|------------|
 | Gateway admission | relay token (Bearer on dial-in) — or, in [hosted mode](#hosted-multi-tenant-mode), a signed dial token + holder-of-key proof | relay | WS close `4401` |
-| Per-pairing credential | `x-dash-relay-credential` header | relay (against its store) | `401` / WS `4401` |
-| App ↔ gateway | management Bearer / chat `?token=` | **the gateway** (forwarded verbatim) | gateway's own `401`/`4001` |
+| Per-pairing credential | `x-dash-relay-credential` for HTTP/native WS; `dash.relay-credential.<credential>` subprotocol for browser WS | relay (against its store) | `401` / WS `4401` |
+| App ↔ gateway | mobile/chat Bearer for mobile HTTP; a chat token or one-time `?ticket=` for `/ws/chat` | **the gateway** (forwarded verbatim) | gateway's own `401`/`4001` |
 
 ---
 
@@ -93,17 +98,18 @@ CRED=$(curl -s -X POST -H "Authorization: Bearer devadmin" \
 
 # 4. Make a phone-style request through the relay.
 #    Host picks the gateway; the credential gets past the relay; the Bearer is the
-#    gateway's own token, forwarded untouched.
+#    gateway's mobile/chat token, forwarded untouched.
 curl -s -H "Host: demo.relay.local" \
      -H "x-dash-relay-credential: $CRED" \
-     -H "Authorization: Bearer devmgmt" \
-     http://127.0.0.1:8788/agents          # → [] (200)
+     -H "Authorization: Bearer devchat" \
+     http://127.0.0.1:8788/mobile/v2/agents          # → [] (200)
 ```
 
-Without the credential you get `401`; with a wrong gateway Bearer you get `401`
-*from the gateway* (the relay forwarded it). For a one-command, fully-automated check,
-run `npm run relay:e2e`, which spawns a real relay + real gateway and asserts the whole
-round-trip.
+Without the pairing credential you get `401`; with a wrong mobile/chat Bearer you get
+`401` *from the gateway* (the relay forwarded it). The administrative `devmgmt` bearer
+is intentionally not accepted by `/mobile/v1` or `/mobile/v2`. For a one-command,
+fully-automated check, run `npm run relay:e2e`, which spawns a real relay + real gateway
+and asserts the whole round-trip.
 
 > For a dev relay without credential enforcement, omit `--admin-secret`. Pairing
 > credentials are then accepted permissively (the gateway tokens remain the real auth).
@@ -234,7 +240,10 @@ curl -X POST -H "Authorization: Bearer $RELAY_ADMIN_SECRET" \
 ```
 
 - The phone presents the credential as the `x-dash-relay-credential` header on every
-  request and WebSocket upgrade.
+  mobile HTTP request. Native WebSocket clients may use the same header. Browser
+  WebSockets cannot set request headers, so they offer
+  `dash.relay-credential.<credential>` in `Sec-WebSocket-Protocol` alongside `dash.v1`;
+  the relay consumes the credential entry and forwards only the application subprotocol.
 - `/admin/*` is matched by path ahead of subdomain routing and is reachable at any
   subdomain that resolves to the relay (the admin secret is the gate). Calls without the
   secret get `401`.

@@ -6,7 +6,7 @@ import { signAssertion } from './assertion.js';
 import { hostedRelayAuth } from './auth.js';
 import { DurableCredentialStore } from './credential-store.js';
 import { signDialToken } from './dial-token.js';
-import { decodeFrame, encodeChunk, encodeFrame } from './mux.js';
+import { decodeChunk, decodeFrame, encodeChunk, encodeFrame } from './mux.js';
 import { type RelayServer, createRelayServer } from './relay-server.js';
 
 // `cp` signs dial tokens (control plane); `gw` is the gateway's own identity.
@@ -22,6 +22,7 @@ function rawCnf(publicKey: KeyObject): string {
 let server: RelayServer;
 let port: number;
 let store: DurableCredentialStore;
+let directGateway: http.Server | undefined;
 
 beforeEach(async () => {
   // In-memory SQLite store keeps each test isolated and disk-free.
@@ -34,6 +35,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (directGateway?.listening) {
+    await new Promise<void>((resolve, reject) => {
+      directGateway?.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+  directGateway = undefined;
   await server.close();
 });
 
@@ -148,16 +155,20 @@ describe('hosted relay e2e', () => {
     expect(credential).toBeTruthy();
 
     // 3. A phone presents the credential and its request round-trips to the gateway.
-    const ok = await httpGet('/mobile/v1/health', {
-      host: 'gw-1.relay.local',
-      'x-dash-relay-credential': credential,
-    });
-    expect(ok.status).toBe(200);
-    expect(ok.body).toBe('ok');
+    for (const path of ['/mobile/v1/health', '/mobile/v2/health']) {
+      const ok = await httpGet(path, {
+        host: 'gw-1.relay.local',
+        'x-dash-relay-credential': credential,
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.body).toBe('ok');
+    }
 
     // A phone without the credential is rejected at the relay edge.
-    const denied = await httpGet('/mobile/v1/health', { host: 'gw-1.relay.local' });
-    expect(denied.status).toBe(401);
+    for (const path of ['/mobile/v1/health', '/mobile/v2/health']) {
+      const denied = await httpGet(path, { host: 'gw-1.relay.local' });
+      expect(denied.status).toBe(401);
+    }
 
     // 4. Revoking the gateway force-closes its live socket with 4401…
     const gwClosed = new Promise<number>((resolve) => gwConn.on('close', (c) => resolve(c)));
@@ -172,11 +183,140 @@ describe('hosted relay e2e', () => {
     expect(server.hasGateway('gw-1')).toBe(false);
 
     // …and a subsequent phone request gets 502 (no gateway connected).
-    const after = await httpGet('/mobile/v1/health', {
-      host: 'gw-1.relay.local',
-      'x-dash-relay-credential': credential,
+    for (const path of ['/mobile/v1/health', '/mobile/v2/health']) {
+      const after = await httpGet(path, {
+        host: 'gw-1.relay.local',
+        'x-dash-relay-credential': credential,
+      });
+      expect(after.status).toBe(502);
+    }
+  });
+
+  it('enforces hosted pairing revocation on both mobile health versions', async () => {
+    directGateway = http.createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/mobile/v2/health') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not Found');
     });
-    expect(after.status).toBe(502);
+    await new Promise<void>((resolve) => directGateway.listen(0, '127.0.0.1', resolve));
+    const directPort = (directGateway.address() as AddressInfo).port;
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const dialToken = signDialToken(
+      { tenantId: 't1', gatewayId: 'gw-1', exp: nowSec + 3600, cnf: rawCnf(gw.publicKey) },
+      cp.privateKey,
+    );
+    const proof = signAssertion(
+      { gatewayId: 'gw-1', aud: 'relay-dial', iat: nowSec, exp: nowSec + 60 },
+      gw.privateKey,
+    );
+    const gwConn = await connectGateway('gw-1', dialToken, proof);
+    respondOk(gwConn);
+    await waitFor(() => server.hasGateway('gw-1'));
+
+    const provisioned = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'gw-1' },
+    );
+    const { credential } = JSON.parse(provisioned.body) as { credential: string };
+
+    const directBefore = await fetch(`http://127.0.0.1:${directPort}/mobile/v2/health`);
+    expect({ status: directBefore.status, body: await directBefore.text() }).toEqual({
+      status: 200,
+      body: 'ok',
+    });
+
+    for (const path of ['/mobile/v1/health', '/mobile/v2/health']) {
+      const before = await httpGet(path, {
+        host: 'gw-1.relay.local',
+        'x-dash-relay-credential': credential,
+      });
+      expect(before).toEqual({ status: 200, body: 'ok' });
+    }
+
+    const revoked = await httpPost(
+      '/admin/pairings/revoke',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'gw-1', credential },
+    );
+    expect(revoked.status).toBe(200);
+
+    for (const path of ['/mobile/v1/health', '/mobile/v2/health']) {
+      const after = await httpGet(path, {
+        host: 'gw-1.relay.local',
+        'x-dash-relay-credential': credential,
+      });
+      expect(after.status).toBe(401);
+    }
+
+    const directAfter = await fetch(`http://127.0.0.1:${directPort}/mobile/v2/health`);
+    expect({ status: directAfter.status, body: await directAfter.text() }).toEqual({
+      status: 200,
+      body: 'ok',
+    });
+    expect(server.hasGateway('gw-1')).toBe(true);
+    gwConn.close();
+  });
+
+  it('forwards a hosted mobile v2 hello frame byte-for-byte over the shared chat socket', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const dialToken = signDialToken(
+      { tenantId: 't1', gatewayId: 'gw-1', exp: nowSec + 3600, cnf: rawCnf(gw.publicKey) },
+      cp.privateKey,
+    );
+    const proof = signAssertion(
+      { gatewayId: 'gw-1', aud: 'relay-dial', iat: nowSec, exp: nowSec + 60 },
+      gw.privateKey,
+    );
+    const gwConn = await connectGateway('gw-1', dialToken, proof);
+    await waitFor(() => server.hasGateway('gw-1'));
+
+    const provisioned = await httpPost(
+      '/admin/pairings',
+      { authorization: 'Bearer admin-secret' },
+      { tenantId: 't1', gatewayId: 'gw-1' },
+    );
+    const { credential } = JSON.parse(provisioned.body) as { credential: string };
+    let openPath: string | undefined;
+    const forwardedHello = new Promise<{ payload: string; binary: boolean }>((resolve) => {
+      gwConn.on('message', (raw: Buffer) => {
+        const frame = decodeFrame(raw.toString());
+        if (frame.t === 'open' && frame.kind === 'ws') {
+          openPath = frame.path;
+          gwConn.send(
+            encodeFrame({ t: 'head', streamId: frame.streamId, status: 101, headers: {} }),
+          );
+        } else if (frame.t === 'data') {
+          resolve({
+            payload: decodeChunk(frame.chunk).toString('utf8'),
+            binary: frame.binary ?? false,
+          });
+        }
+      });
+    });
+
+    const phone = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?ticket=hosted-ticket`, {
+      headers: {
+        host: 'gw-1.relay.local',
+        'x-dash-relay-credential': credential,
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', resolve);
+      phone.on('error', reject);
+    });
+    const hello = '{"type":"hello","contractVersion":2,"capabilities":["chat-input-queue-v1"]}';
+    phone.send(hello);
+
+    expect(await forwardedHello).toEqual({ payload: hello, binary: false });
+    expect(openPath).toBe('/ws/chat?ticket=hosted-ticket');
+    phone.close();
+    gwConn.close();
   });
 
   it('rejects a stolen dial token presented without a holder-of-key proof', async () => {
