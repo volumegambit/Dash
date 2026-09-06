@@ -235,6 +235,36 @@ textarea:focus-visible {
   display: none;
 }
 
+/* Tasks panel (§8.4) base state, declared HERE — beside the sidebar
+ * backdrop and BEFORE the `@media (max-width: 768px)` block — rather than
+ * down with the rest of the panel's chrome. Fix I1: a media query adds no
+ * specificity, so between two rules with the same selector the LATER one
+ * wins at every width. With these three at the end of the file the mobile
+ * block's `display: block` for `.app-tasks-backdrop` never applied, and the
+ * phone-width panel opened as a fixed overlay with no scrim and no
+ * tap-outside-to-dismiss. The sidebar has always had it this way round
+ * (`.app-sidebar-backdrop` immediately above); the panel now matches.
+ *
+ * `.tasks-panel` is hidden outright rather than translated away, so a closed
+ * panel's stop and resume buttons leave the accessibility tree and the tab
+ * order with it. */
+.tasks-panel {
+  display: none;
+}
+
+.tasks-panel--open {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.app-tasks-backdrop {
+  display: none;
+}
+
 .app-main {
   display: grid;
   grid-template-rows: auto 1fr auto;
@@ -1968,6 +1998,12 @@ textarea:focus-visible {
  * Tasks panel (sub-agents design §8.4): a third column listing the open
  * conversation's children, with stop and resume. Built from the same
  * primitives as the sub-agent rows above so the two read as one surface.
+ *
+ * The panel's three OVERRIDABLE rules (`.tasks-panel`, `.tasks-panel--open`
+ * and `.app-tasks-backdrop`) are deliberately NOT here: the 768px block
+ * redeclares all three, and a rule declared after that block beats it at
+ * every width. They live beside `.app-sidebar-backdrop` near the top of the
+ * file — see fix I1's comment there. Everything below is declared once.
  * ------------------------------------------------------------------- */
 
 .app-tasks-toggle {
@@ -1995,25 +2031,6 @@ textarea:focus-visible {
   font-size: 11px;
   line-height: 16px;
   text-align: center;
-}
-
-/* Hidden outright rather than translated away, so a closed panel's stop and
- * resume buttons leave the accessibility tree and the tab order with it. */
-.tasks-panel {
-  display: none;
-}
-
-.tasks-panel--open {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-  border-left: 1px solid var(--border);
-  background: var(--surface-raised);
-}
-
-.app-tasks-backdrop {
-  display: none;
 }
 
 .tasks-panel-header {

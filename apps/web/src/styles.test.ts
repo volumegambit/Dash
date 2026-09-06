@@ -138,15 +138,35 @@ describe('styles.css design tokens (chat-ux Phase 2 Task 1)', () => {
   });
 });
 
-/** The panel's own chrome, declared after the mobile media block — scopes a
- * lookup to the DESKTOP rule for the three selectors (`.tasks-panel`,
- * `.tasks-panel--open`, `.app-tasks-backdrop`) that are declared twice, the
- * same disambiguation `mobileDrawerBlock` exists for. */
-function tasksPanelSection(): string {
-  const marker = 'Tasks panel (sub-agents design §8.4)';
-  const index = css.indexOf(marker);
-  if (index === -1) throw new Error('styles.css has no tasks-panel section');
-  return css.slice(index);
+/**
+ * Everything declared BEFORE the `@media (max-width: 768px)` block — the
+ * DESKTOP half of any selector that is declared twice (`.tasks-panel`,
+ * `.tasks-panel--open`, `.app-tasks-backdrop`), the same disambiguation
+ * `mobileDrawerBlock` exists for, from the other side.
+ *
+ * Scoping the desktop lookups to this slice does two jobs, and the second is
+ * the point. A `@media` query adds NO specificity, so two rules with the same
+ * selector are decided purely by SOURCE ORDER: a base rule declared *after*
+ * the media block beats the mobile override at every width. Fix I1 is exactly
+ * that mistake — `.app-tasks-backdrop { display: none }` sat at the end of the
+ * file, so the mobile `display: block` never applied and the phone-width panel
+ * had no scrim and no tap-outside-to-dismiss. Asserting each rule's text
+ * INDEPENDENTLY (which is what the previous `tasksPanelSection` helper did)
+ * cannot see that: both strings are present either way. Requiring the base
+ * rule to live in this slice makes the cascade the test's subject.
+ */
+function beforeMobileBlock(): string {
+  return css.slice(0, mobileBlockIndex());
+}
+
+/** Offset of the actual `@media (max-width: 768px) { … }` rule. Matched at a
+ * line start and with its opening brace, because styles.css also MENTIONS the
+ * query in prose (the comment fix I1 left on the moved rules) and a bare
+ * `indexOf` finds that first. */
+function mobileBlockIndex(): number {
+  const at = css.indexOf('\n@media (max-width: 768px) {');
+  if (at === -1) throw new Error('styles.css has no mobile drawer block');
+  return at;
 }
 
 describe('tasks panel (sub-agents D3, design §8.4)', () => {
@@ -161,7 +181,7 @@ describe('tasks panel (sub-agents D3, design §8.4)', () => {
     // Same reasoning as fix I2 for the sidebar drawer: a panel that is only
     // moved out of the viewport keeps its rows — and their stop and resume
     // buttons — in the accessibility tree and the tab order.
-    const desktop = tasksPanelSection();
+    const desktop = beforeMobileBlock();
     expect(ruleBlock('.tasks-panel', desktop)).toMatch(/display:\s*none/);
     expect(ruleBlock('.tasks-panel--open', desktop)).toMatch(/display:\s*flex/);
   });
@@ -172,7 +192,19 @@ describe('tasks panel (sub-agents D3, design §8.4)', () => {
     expect(ruleBlock('.app-tasks-backdrop', mobile)).toMatch(/display:\s*block/);
     // The backdrop is desktop-invisible: at full width the panel is a column,
     // and a full-screen scrim over the transcript would be nonsense.
-    expect(ruleBlock('.app-tasks-backdrop', tasksPanelSection())).toMatch(/display:\s*none/);
+    expect(ruleBlock('.app-tasks-backdrop', beforeMobileBlock())).toMatch(/display:\s*none/);
+    // Fix I1, and the whole reason the assertion above is scoped to
+    // `beforeMobileBlock()`: source order, not specificity, decides between
+    // those two `display` declarations. Stated separately as well so a future
+    // edit that moves the base rule back down the file fails with "source
+    // order" rather than with "styles.css has no rule for .app-tasks-backdrop".
+    // The same holds for the panel's own two rules, which the mobile block
+    // likewise overrides (`position: fixed` on `.tasks-panel--open`).
+    const mobileAt = mobileBlockIndex();
+    const declaredAt = ['.app-tasks-backdrop', '.tasks-panel', '.tasks-panel--open'].map(
+      (selector) => [selector, css.indexOf(`\n${selector} {`)] as const,
+    );
+    expect(declaredAt.filter(([, at]) => at === -1 || at > mobileAt)).toEqual([]);
     // And the body stays ONE column while it is open, stated rather than
     // left to source order — `.app-body--tasks` and the mobile `.app-body`
     // have the same specificity.
