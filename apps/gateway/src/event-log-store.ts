@@ -22,6 +22,7 @@ import type { MobileAgentEvent, MobileApiError } from '@dash/mobile-contract';
 export interface EventLogEntry {
   seq: number;
   msgId: string;
+  segmentTurnId: string;
   agentId: string;
   conversationId: string;
   timestamp: string;
@@ -72,7 +73,13 @@ export interface EventLogStore {
    * invariant (whether via single-thread JS semantics, SQL
    * transactions, or any future equivalent).
    */
-  append(agentId: string, conversationId: string, msgId: string, payload: EventLogPayload): number;
+  append(
+    agentId: string,
+    conversationId: string,
+    msgId: string,
+    payload: EventLogPayload,
+    segmentTurnId?: string,
+  ): number;
 
   /**
    * Return every entry with `seq > sinceSeq` for this conversation

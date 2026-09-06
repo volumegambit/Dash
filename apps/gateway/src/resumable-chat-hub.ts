@@ -89,6 +89,7 @@ function frameFromPersisted(live: LiveTurn, persisted: PersistedTurnFrame): Mobi
   return frameFromEntry({
     seq: persisted.seq,
     msgId: live.turnId,
+    segmentTurnId: live.turnId,
     agentId: live.agentId,
     conversationId: live.conversationId,
     timestamp: '',

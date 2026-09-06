@@ -35,6 +35,7 @@ import type {
   EnqueueInputCommand,
   FinishRunInput,
   FinishRunResult,
+  MobileV2SequencedPayload,
   PersistedInputTransition,
   PersistedQueueTransition,
   PersistedRunFrames,
@@ -45,6 +46,7 @@ import type {
   TerminalizeSteersInput,
   V2RecoveryResult,
 } from './conversation-domain.js';
+import { migrateConversationSchema } from './conversation-schema.js';
 import {
   type AcceptTurnInput,
   type AcceptedTurn,
@@ -100,6 +102,19 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS conversation_messages_page_idx
     ON conversation_messages(conversation_id, ordinal DESC, id DESC);
+
+  CREATE TABLE IF NOT EXISTS agent_stream_events (
+    agent_id        TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    seq             INTEGER NOT NULL,
+    msg_id          TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    timestamp       TEXT NOT NULL,
+    PRIMARY KEY (agent_id, conversation_id, seq)
+  );
+`;
+
+const POST_MIGRATION_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS stream_events_turn_idx
     ON agent_stream_events(agent_id, conversation_id, msg_id, seq);
 `;
@@ -122,6 +137,10 @@ interface ConversationRow {
   owning_issue_id: string | null;
   project_id: string | null;
   last_seq: number;
+  v2_last_seq: number;
+  queue_paused: number;
+  queue_revision: number;
+  next_message_ordinal: number;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -131,10 +150,14 @@ interface ConversationMessageRow {
   id: string;
   conversation_id: string;
   turn_id: string;
+  run_id: string | null;
+  segment_index: number;
   ordinal: number;
   role: ConversationMessage['role'];
   content: string;
   status: ConversationMessage['status'];
+  delivery_kind: StoredConversationMessage['deliveryKind'];
+  delivery_status: StoredConversationMessage['deliveryStatus'] | null;
   created_at: string;
   updated_at: string;
 }
@@ -180,8 +203,10 @@ export class SqliteConversationService implements ConversationService {
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
-    this.eventLog = new SqliteEventLogStore({ database: this.db });
     this.db.exec(SCHEMA_SQL);
+    migrateConversationSchema(this.db);
+    this.db.exec(POST_MIGRATION_SCHEMA_SQL);
+    this.eventLog = new SqliteEventLogStore({ database: this.db });
     this.now = options.now ?? (() => new Date().toISOString());
     this.uuid = options.uuid ?? randomUUID;
   }
@@ -213,15 +238,28 @@ export class SqliteConversationService implements ConversationService {
     return content.type === 'user' ? collapsePreview(content.text) : null;
   }
 
-  private nextMessageOrdinal(conversationId: string): number {
+  private reserveMessageOrdinals(conversationId: string, count: number): number {
     const row = this.db
       .prepare(`
-        SELECT COALESCE(MAX(ordinal), 0) + 1 AS next
-        FROM conversation_messages
-        WHERE conversation_id = ?
+        UPDATE conversations
+        SET next_message_ordinal = next_message_ordinal + @count
+        WHERE id = @conversationId
+        RETURNING next_message_ordinal - @count AS first_ordinal
       `)
-      .get(conversationId) as { next: number };
-    return row.next;
+      .get({ conversationId, count }) as { first_ordinal: number } | undefined;
+    if (!row) throw new Error(`Conversation ${conversationId} was not found`);
+    return row.first_ordinal;
+  }
+
+  private pendingFollowUpCount(conversationId: string): number {
+    const row = this.db
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM conversation_pending_inputs
+        WHERE conversation_id = ? AND kind = 'follow_up' AND state IN ('queued', 'delivering')
+      `)
+      .get(conversationId) as { count: number };
+    return row.count;
   }
 
   private mapStoredMessage(row: ConversationMessageRow): StoredConversationMessage {
@@ -229,12 +267,13 @@ export class SqliteConversationService implements ConversationService {
       id: row.id,
       conversationId: row.conversation_id,
       turnId: row.turn_id,
-      runId: row.turn_id,
-      segmentIndex: 0,
+      runId: row.run_id ?? row.turn_id,
+      segmentIndex: row.segment_index,
       ordinal: row.ordinal,
       role: row.role,
       status: row.status,
-      deliveryKind: 'normal',
+      deliveryKind: row.delivery_kind,
+      ...(row.delivery_status !== null ? { deliveryStatus: row.delivery_status } : {}),
       content: parseContent(row.content),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -285,11 +324,11 @@ export class SqliteConversationService implements ConversationService {
       owningIssueId: row.owning_issue_id,
       projectId: row.project_id,
       lastSeq: row.last_seq,
-      v2LastSeq: 0,
-      queuePaused: false,
-      queueRevision: 0,
-      nextMessageOrdinal: this.nextMessageOrdinal(row.id),
-      pendingFollowUpCount: 0,
+      v2LastSeq: row.v2_last_seq,
+      queuePaused: row.queue_paused === 1,
+      queueRevision: row.queue_revision,
+      nextMessageOrdinal: row.next_message_ordinal,
+      pendingFollowUpCount: this.pendingFollowUpCount(row.id),
       lastMessagePreview: this.lastMessagePreview(row.id),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -299,6 +338,58 @@ export class SqliteConversationService implements ConversationService {
 
   private mapConversation(row: ConversationRow): ConversationSummary {
     return mapConversationV1(this.mapStoredConversation(row));
+  }
+
+  private appendV2(
+    conversation: ConversationRow,
+    payload: MobileV2SequencedPayload,
+  ): MobileV2SequencedFrame {
+    const { v2Seq: _ignoredCursor, ...persistedPayload } = payload as MobileV2SequencedPayload & {
+      v2Seq?: unknown;
+    };
+    const advanced = this.db
+      .prepare(`
+        UPDATE conversations
+        SET v2_last_seq = v2_last_seq + 1
+        WHERE id = @conversationId
+        RETURNING v2_last_seq
+      `)
+      .get({ conversationId: conversation.id }) as { v2_last_seq: number } | undefined;
+    if (!advanced) {
+      throw new Error(`Failed to advance v2 journal for conversation ${conversation.id}`);
+    }
+
+    this.db
+      .prepare(`
+        INSERT INTO conversation_v2_events (
+          conversation_id, agent_id, v2_seq, payload, timestamp
+        ) VALUES (
+          @conversationId, @agentId, @v2Seq, @payload, @timestamp
+        )
+      `)
+      .run({
+        conversationId: conversation.id,
+        agentId: conversation.agent_id,
+        v2Seq: advanced.v2_last_seq,
+        payload: JSON.stringify(persistedPayload),
+        timestamp: this.now(),
+      });
+    return { ...persistedPayload, v2Seq: advanced.v2_last_seq } as MobileV2SequencedFrame;
+  }
+
+  private readV2Rows(conversationId: string, sinceV2Seq: number): MobileV2SequencedFrame[] {
+    const rows = this.db
+      .prepare(`
+        SELECT v2_seq, payload
+        FROM conversation_v2_events
+        WHERE conversation_id = ? AND v2_seq > ?
+        ORDER BY v2_seq ASC
+      `)
+      .all(conversationId, sinceV2Seq) as Array<{ v2_seq: number; payload: string }>;
+    return rows.map((row) => ({
+      ...(JSON.parse(row.payload) as MobileV2SequencedPayload),
+      v2Seq: row.v2_seq,
+    })) as MobileV2SequencedFrame[];
   }
 
   private requireConversationRow(id: string, includeDeleted = false): ConversationRow {
@@ -627,14 +718,7 @@ export class SqliteConversationService implements ConversationService {
         );
       }
 
-      const ordinalRow = this.db
-        .prepare(`
-          SELECT COALESCE(MAX(ordinal), 0) + 1 AS next
-          FROM conversation_messages
-          WHERE conversation_id = ?
-        `)
-        .get(value.conversationId) as { next: number };
-      const userOrdinal = ordinalRow.next;
+      const userOrdinal = this.reserveMessageOrdinals(value.conversationId, 2);
       const userMessageId = this.uuid();
       const assistantMessageId = this.uuid();
       const timestamp = this.now();
@@ -646,9 +730,11 @@ export class SqliteConversationService implements ConversationService {
       const assistantContent: ConversationContent = { type: 'assistant', events: [] };
       const insertMessage = this.db.prepare(`
         INSERT INTO conversation_messages (
-          id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at
+          id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+          delivery_kind, delivery_status, created_at, updated_at
         ) VALUES (
-          @id, @conversationId, @turnId, @ordinal, @role, @content, @status, @now, @now
+          @id, @conversationId, @turnId, @turnId, 0, @ordinal, @role, @content, @status,
+          'normal', NULL, @now, @now
         )
       `);
       insertMessage.run({
@@ -1024,11 +1110,13 @@ export class SqliteConversationService implements ConversationService {
   }
 
   readV2Since(
-    _agentId: string,
-    _conversationId: string,
-    _sinceV2Seq: number,
+    agentId: string,
+    conversationId: string,
+    sinceV2Seq: number,
   ): MobileV2SequencedFrame[] {
-    throw new Error('Conversation v2 journal reads are not implemented');
+    const conversation = this.selectConversationRow(conversationId);
+    if (!conversation || conversation.agent_id !== agentId) return [];
+    return this.readV2Rows(conversationId, sinceV2Seq);
   }
 
   listDeliveredSteers(_conversationId: string): DeliveredSteerContext[] {

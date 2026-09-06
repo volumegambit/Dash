@@ -6,7 +6,12 @@ import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
 import { mountProjectsRoutes } from '@dash/management';
-import type { GatewayIdentity, MobileApiError, MobileCapability } from '@dash/mobile-contract';
+import type {
+  GatewayIdentity,
+  MobileApiError,
+  MobileCapability,
+  ReplayEntry,
+} from '@dash/mobile-contract';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
 import type { ProjectsDb } from '@dash/projects';
@@ -1491,11 +1496,16 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!conversation && !agentRegistry.get(agentId)) {
       return c.json({ code: 'not_found', error: 'Agent not found', retryable: false }, 404);
     }
-    const entries = options.conversationService.eventLog.readSince(
-      agentId,
-      conversationId,
-      sinceSeq,
-    );
+    const entries: ReplayEntry[] = options.conversationService.eventLog
+      .readSince(agentId, conversationId, sinceSeq)
+      .map((entry) => ({
+        seq: entry.seq,
+        msgId: entry.msgId,
+        agentId: entry.agentId,
+        conversationId: entry.conversationId,
+        timestamp: entry.timestamp,
+        payload: entry.payload,
+      }));
     return c.json({ entries });
   };
   app.get(REPLAY_EVENTS_PATH, replayConversationEventsHandler);

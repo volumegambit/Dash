@@ -58,6 +58,7 @@ interface AgentStreamEventRow {
   conversation_id: string;
   seq: number;
   msg_id: string;
+  segment_turn_id: string;
   payload: string;
   timestamp: string;
 }
@@ -68,6 +69,7 @@ const SCHEMA_SQL = `
     conversation_id  TEXT    NOT NULL,
     seq              INTEGER NOT NULL,
     msg_id           TEXT    NOT NULL,
+    segment_turn_id  TEXT    NOT NULL,
     payload          TEXT    NOT NULL,
     timestamp        TEXT    NOT NULL,
     PRIMARY KEY (agent_id, conversation_id, seq)
@@ -120,12 +122,12 @@ export class SqliteEventLogStore implements EventLogStore {
 
     this.insertEventStmt = this.db.prepare(`
       INSERT INTO agent_stream_events
-        (agent_id, conversation_id, seq, msg_id, payload, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?)
+        (agent_id, conversation_id, seq, msg_id, segment_turn_id, payload, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.selectSinceStmt = this.db.prepare(`
-      SELECT agent_id, conversation_id, seq, msg_id, payload, timestamp
+      SELECT agent_id, conversation_id, seq, msg_id, segment_turn_id, payload, timestamp
       FROM agent_stream_events
       WHERE agent_id = ? AND conversation_id = ? AND seq > ?
       ORDER BY seq ASC
@@ -166,7 +168,13 @@ export class SqliteEventLogStore implements EventLogStore {
    * A multi-process gateway would need `BEGIN IMMEDIATE`/`COMMIT`
    * around these two statements to serialize across processes.
    */
-  append(agentId: string, conversationId: string, msgId: string, payload: EventLogPayload): number {
+  append(
+    agentId: string,
+    conversationId: string,
+    msgId: string,
+    payload: EventLogPayload,
+    segmentTurnId = msgId,
+  ): number {
     const row = this.nextSeqStmt.get(agentId, conversationId) as { next: number } | undefined;
     const seq = row?.next ?? 1;
     this.insertEventStmt.run(
@@ -174,6 +182,7 @@ export class SqliteEventLogStore implements EventLogStore {
       conversationId,
       seq,
       msgId,
+      segmentTurnId,
       JSON.stringify(payload),
       new Date().toISOString(),
     );
@@ -190,6 +199,7 @@ export class SqliteEventLogStore implements EventLogStore {
     return rows.map((row) => ({
       seq: row.seq,
       msgId: row.msg_id,
+      segmentTurnId: row.segment_turn_id,
       agentId: row.agent_id,
       conversationId: row.conversation_id,
       timestamp: row.timestamp,

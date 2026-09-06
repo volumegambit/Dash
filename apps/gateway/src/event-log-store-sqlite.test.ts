@@ -105,6 +105,16 @@ describe('SqliteEventLogStore', () => {
     expect(entries[1].payload).toEqual({ type: 'done' });
   });
 
+  it('defaults segmentTurnId to msgId and round-trips an explicit segment turn', () => {
+    store.append('agent-a', 'conv-1', 'run-1', evt('default'));
+    store.append('agent-a', 'conv-1', 'run-1', evt('explicit'), 'segment-2');
+
+    expect(store.readSince('agent-a', 'conv-1', 0)).toEqual([
+      expect.objectContaining({ seq: 1, msgId: 'run-1', segmentTurnId: 'run-1' }),
+      expect.objectContaining({ seq: 2, msgId: 'run-1', segmentTurnId: 'segment-2' }),
+    ]);
+  });
+
   // ------------------------------------------------------------------
   // Terminal markers
   // ------------------------------------------------------------------

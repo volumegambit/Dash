@@ -1,7 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { MobileV2SequencedFrame } from '@dash/mobile-contract-v2';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import type { MobileV2SequencedPayload } from './conversation-domain.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { ConversationServiceError, DEFAULT_CONVERSATION_TITLE } from './conversation-service.js';
 
@@ -77,6 +79,122 @@ describe('SqliteConversationService schema', () => {
     expect(close).toHaveBeenCalledTimes(1);
 
     close.mockRestore();
+  });
+
+  it('keeps v1 and v2 journal sequences independent', () => {
+    const service = new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => '2026-07-12T00:00:00.000Z',
+      uuid: () => '00000000-0000-4000-8000-000000000001',
+    });
+    const conversation = service.create({
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      requestId: 'request-01',
+    });
+    const storage = service as unknown as {
+      db: DatabaseType;
+      appendV2(conversation: unknown, payload: MobileV2SequencedPayload): MobileV2SequencedFrame;
+    };
+    const row = storage.db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversation.id);
+    const queuePayloadWithStaleCursor = {
+      type: 'queue_paused' as const,
+      conversationId: conversation.id,
+      queueRevision: 1,
+      queuePaused: true,
+      pendingFollowUpCount: 0,
+      v2Seq: 999,
+    };
+
+    const frames = storage.db.transaction(() => {
+      expect(
+        service.eventLog.append('agent-01', conversation.id, 'run-01', {
+          type: 'event',
+          event: { type: 'text_delta', text: 'one' },
+        }),
+      ).toBe(1);
+      const first = storage.appendV2(row, {
+        type: 'event',
+        id: 'event-01',
+        conversationId: conversation.id,
+        runId: 'run-01',
+        segmentTurnId: 'segment-01',
+        event: { type: 'text_delta', text: 'one' },
+      });
+      const queueOnly = storage.appendV2(row, queuePayloadWithStaleCursor);
+      expect(
+        service.eventLog.append('agent-01', conversation.id, 'run-01', {
+          type: 'done',
+          outcome: 'completed',
+        }),
+      ).toBe(2);
+      const terminal = storage.appendV2(row, {
+        type: 'done',
+        id: 'event-02',
+        conversationId: conversation.id,
+        runId: 'run-01',
+        segmentTurnId: 'segment-01',
+        outcome: 'completed',
+      });
+      return [first, queueOnly, terminal];
+    })();
+
+    expect(
+      service.eventLog.readSince('agent-01', conversation.id, 0).map(({ seq }) => seq),
+    ).toEqual([1, 2]);
+    expect(frames.map(({ v2Seq }) => v2Seq)).toEqual([1, 2, 3]);
+    expect(service.readV2Since('agent-01', conversation.id, 0)).toEqual(frames);
+    expect(
+      JSON.parse(
+        storage.db
+          .prepare('SELECT payload FROM conversation_v2_events WHERE v2_seq = 2')
+          .pluck()
+          .get() as string,
+      ),
+    ).not.toHaveProperty('v2Seq');
+    expect(service.eventLog.listInterrupted()).toEqual([]);
+    service.close();
+  });
+
+  it('rolls a v2 append back with the caller transaction', () => {
+    const service = new SqliteConversationService({
+      dataDir: tmpDir,
+      uuid: () => '00000000-0000-4000-8000-000000000001',
+    });
+    const conversation = service.create({
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      requestId: 'request-01',
+    });
+    const storage = service as unknown as {
+      db: DatabaseType;
+      appendV2(conversation: unknown, payload: MobileV2SequencedPayload): MobileV2SequencedFrame;
+    };
+
+    expect(() =>
+      storage.db.transaction(() => {
+        const row = storage.db
+          .prepare('SELECT * FROM conversations WHERE id = ?')
+          .get(conversation.id);
+        storage.appendV2(row, {
+          type: 'queue_paused',
+          conversationId: conversation.id,
+          queueRevision: 1,
+          queuePaused: true,
+          pendingFollowUpCount: 0,
+        });
+        throw new Error('roll back');
+      })(),
+    ).toThrow('roll back');
+
+    expect(service.readV2Since('agent-01', conversation.id, 0)).toEqual([]);
+    expect(
+      storage.db
+        .prepare('SELECT v2_last_seq FROM conversations WHERE id = ?')
+        .pluck()
+        .get(conversation.id),
+    ).toBe(0);
+    service.close();
   });
 
   it('creates an idempotent canonical conversation with snapshot metadata', () => {

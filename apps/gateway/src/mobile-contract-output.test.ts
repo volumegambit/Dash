@@ -564,6 +564,9 @@ describe('mobile harness emitted contract output', () => {
       );
       expect(replayResponse.status).toBe(200);
       const replay = await replayResponse.json();
+      for (const entry of (replay as { entries: unknown[] }).entries) {
+        expect(entry).not.toHaveProperty('segmentTurnId');
+      }
       expectSchema('openapi', 'ReplayPage', replay);
       expectFixtureKeys('replay.json', replay, ['entries']);
 
