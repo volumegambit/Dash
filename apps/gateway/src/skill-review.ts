@@ -94,6 +94,7 @@ function readRun(
   for (const message of messages) {
     const content = message.content;
     if (content.type === 'user') {
+      if (message.deliveryKind === 'steer' && message.deliveryStatus !== 'delivered') continue;
       if (content.text) userTexts.push(content.text);
       continue;
     }
@@ -248,18 +249,20 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
         return;
       }
       const job = (async () => {
+        let next: SkillReviewInput | undefined = input;
         try {
-          await runOnce(input);
-          const next = rerun.get(key);
-          if (next) {
+          while (next) {
+            try {
+              await runOnce(next);
+            } catch (error) {
+              options.logger?.warn('skill review failed', {
+                conversationId: key,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+            next = rerun.get(key);
             rerun.delete(key);
-            await runOnce(next);
           }
-        } catch (error) {
-          options.logger?.warn('skill review failed', {
-            conversationId: key,
-            error: error instanceof Error ? error.message : String(error),
-          });
         } finally {
           rerun.delete(key);
           pending.delete(key);

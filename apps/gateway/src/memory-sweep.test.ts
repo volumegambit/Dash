@@ -14,6 +14,8 @@ interface MessageSpec {
   turnId: string;
   runId?: string;
   segmentIndex?: number;
+  deliveryKind?: StoredConversationMessage['deliveryKind'];
+  deliveryStatus?: StoredConversationMessage['deliveryStatus'];
   role: ConversationRole;
   content: ConversationContent;
 }
@@ -35,7 +37,8 @@ function fakeConversations(
     ordinal: i,
     role: spec.role,
     status: 'completed',
-    deliveryKind: (spec.segmentIndex ?? 0) > 0 ? 'steer' : 'normal',
+    deliveryKind: spec.deliveryKind ?? ((spec.segmentIndex ?? 0) > 0 ? 'steer' : 'normal'),
+    deliveryStatus: spec.deliveryStatus,
     content: spec.content,
     createdAt: '2026-09-05T00:00:00.000Z',
     updatedAt: '2026-09-05T00:00:00.000Z',
@@ -152,6 +155,7 @@ describe('createMemorySweepService', () => {
           turnId: 'segment-1',
           runId: 'run-1',
           segmentIndex: 1,
+          deliveryStatus: 'delivered',
           role: 'user',
           content: { type: 'user', text: 'steer' },
         },
@@ -186,6 +190,55 @@ describe('createMemorySweepService', () => {
     );
   });
 
+  it.each([
+    { deliveryStatus: 'pending' as const, initialKind: 'normal' as const },
+    { deliveryStatus: 'not_delivered' as const, initialKind: 'follow_up' as const },
+  ])(
+    'excludes a $deliveryStatus Steer while retaining the $initialKind user message',
+    async ({ deliveryStatus, initialKind }) => {
+      const extract = vi.fn(async () => []);
+      const svc = createMemorySweepService({
+        conversations: fakeConversations([
+          {
+            turnId: 'run-1',
+            deliveryKind: initialKind,
+            role: 'user',
+            content: { type: 'user', text: 'eligible instruction' },
+          },
+          {
+            turnId: 'run-1',
+            role: 'assistant',
+            content: {
+              type: 'assistant',
+              events: [{ type: 'response', content: 'first', usage: {} }],
+            },
+          },
+          {
+            turnId: 'segment-1',
+            runId: 'run-1',
+            segmentIndex: 1,
+            deliveryStatus,
+            role: 'user',
+            content: { type: 'user', text: 'never delivered instruction' },
+          },
+        ]),
+        memoryStore: () => new MemoryStore(dir),
+        shouldSweep: () => true,
+        extract,
+      });
+
+      svc.schedule({ agentId: 'a', conversationId: 'c', runId: 'run-1' });
+      await svc.flush();
+
+      expect(extract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userText: 'eligible instruction',
+          assistantText: 'first',
+        }),
+      );
+    },
+  );
+
   it('skips a run when any segment successfully saved or forgot a memory', async () => {
     const extract = vi.fn(async () => []);
     const svc = createMemorySweepService({
@@ -203,6 +256,7 @@ describe('createMemorySweepService', () => {
           turnId: 'segment-1',
           runId: 'run-1',
           segmentIndex: 1,
+          deliveryStatus: 'delivered',
           role: 'user',
           content: { type: 'user', text: 'forget that' },
         },
@@ -408,6 +462,84 @@ describe('createMemorySweepService', () => {
     await svc.flush();
 
     expect(extract).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains a schedule that arrives during the second sweep pass', async () => {
+    let resolveFirst: () => void = () => {};
+    let resolveSecond: () => void = () => {};
+    const firstCall = new Promise<never[]>((resolve) => {
+      resolveFirst = () => resolve([]);
+    });
+    const secondCall = new Promise<never[]>((resolve) => {
+      resolveSecond = () => resolve([]);
+    });
+    const extract = vi
+      .fn()
+      .mockImplementationOnce(() => firstCall)
+      .mockImplementationOnce(() => secondCall)
+      .mockResolvedValue([]);
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        { turnId: 't1', role: 'user', content: { type: 'user', text: 'a' } },
+        {
+          turnId: 't1',
+          role: 'assistant',
+          content: { type: 'assistant', events: [{ type: 'response', content: 'b', usage: {} }] },
+        },
+      ]),
+      memoryStore: () => new MemoryStore(dir),
+      shouldSweep: () => true,
+      extract,
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    await waitFor(() => extract.mock.calls.length === 1);
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    resolveFirst();
+    await waitFor(() => extract.mock.calls.length === 2);
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    resolveSecond();
+    await svc.flush();
+
+    expect(extract).toHaveBeenCalledTimes(3);
+  });
+
+  it('runs a queued sweep rerun after the first pass fails', async () => {
+    let rejectFirst: (error: Error) => void = () => {};
+    const firstCall = new Promise<never[]>((_, reject) => {
+      rejectFirst = reject;
+    });
+    const warn = vi.fn();
+    const extract = vi
+      .fn()
+      .mockImplementationOnce(() => firstCall)
+      .mockResolvedValue([]);
+    const svc = createMemorySweepService({
+      conversations: fakeConversations([
+        { turnId: 't1', role: 'user', content: { type: 'user', text: 'a' } },
+        {
+          turnId: 't1',
+          role: 'assistant',
+          content: { type: 'assistant', events: [{ type: 'response', content: 'b', usage: {} }] },
+        },
+      ]),
+      memoryStore: () => new MemoryStore(dir),
+      shouldSweep: () => true,
+      extract,
+      logger: { info: vi.fn(), warn },
+    });
+
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    await waitFor(() => extract.mock.calls.length === 1);
+    svc.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    rejectFirst(new Error('first pass failed'));
+    await svc.flush();
+
+    expect(extract).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      'memory sweep failed',
+      expect.objectContaining({ error: 'first pass failed' }),
+    );
   });
 
   it('logs and swallows extraction failures', async () => {

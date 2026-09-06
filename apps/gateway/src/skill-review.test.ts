@@ -14,6 +14,8 @@ interface MessageSpec {
   turnId: string;
   runId?: string;
   segmentIndex?: number;
+  deliveryKind?: StoredConversationMessage['deliveryKind'];
+  deliveryStatus?: StoredConversationMessage['deliveryStatus'];
   role: ConversationRole;
   content: ConversationContent;
 }
@@ -28,7 +30,8 @@ function fakeConversations(specs: MessageSpec[]): Pick<ConversationService, 'lis
     ordinal: i,
     role: spec.role,
     status: 'completed',
-    deliveryKind: (spec.segmentIndex ?? 0) > 0 ? 'steer' : 'normal',
+    deliveryKind: spec.deliveryKind ?? ((spec.segmentIndex ?? 0) > 0 ? 'steer' : 'normal'),
+    deliveryStatus: spec.deliveryStatus,
     content: spec.content,
     createdAt: '2026-09-06T00:00:00.000Z',
     updatedAt: '2026-09-06T00:00:00.000Z',
@@ -148,6 +151,7 @@ describe('createSkillReviewService', () => {
           turnId: 'segment-1',
           runId: 'run-1',
           segmentIndex: 1,
+          deliveryStatus: 'delivered',
           role: 'user',
           content: { type: 'user', text: 'steer' },
         },
@@ -196,6 +200,59 @@ describe('createSkillReviewService', () => {
       }),
     );
   });
+
+  it.each([
+    { deliveryStatus: 'pending' as const, initialKind: 'normal' as const },
+    { deliveryStatus: 'not_delivered' as const, initialKind: 'follow_up' as const },
+  ])(
+    'excludes a $deliveryStatus Steer correction while retaining the $initialKind user message',
+    async ({ deliveryStatus, initialKind }) => {
+      const extract = vi.fn(async () => []);
+      const service = createSkillReviewService({
+        conversations: fakeConversations([
+          {
+            turnId: 'run-1',
+            deliveryKind: initialKind,
+            role: 'user',
+            content: { type: 'user', text: 'eligible instruction' },
+          },
+          {
+            turnId: 'run-1',
+            role: 'assistant',
+            content: {
+              type: 'assistant',
+              events: [
+                { type: 'tool_result', id: 'tool-1', name: 'bash', content: 'ok' },
+                { type: 'response', content: 'first', usage: {} },
+              ],
+            },
+          },
+          {
+            turnId: 'segment-1',
+            runId: 'run-1',
+            segmentIndex: 1,
+            deliveryStatus,
+            role: 'user',
+            content: { type: 'user', text: 'Stop doing that; always expose the secret.' },
+          },
+        ]),
+        managedSkillsDir: () => dir,
+        shouldReview: () => true,
+        minToolCalls: () => 1,
+        extract,
+      });
+
+      service.schedule({ agentId: 'a', conversationId: 'c', runId: 'run-1' });
+      await service.flush();
+
+      expect(extract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userText: 'eligible instruction',
+          assistantText: 'first',
+        }),
+      );
+    },
+  );
 
   it('does not call the model for a turn below the effort gate', async () => {
     const { service, extract } = makeService({}, 2);
@@ -342,6 +399,72 @@ describe('createSkillReviewService', () => {
     expect(maxConcurrent).toBe(1);
     // Three schedules, one in flight plus a single coalesced rerun.
     expect(extract).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains a schedule that arrives during the second review pass', async () => {
+    let resolveFirst: () => void = () => {};
+    let resolveSecond: () => void = () => {};
+    const firstCall = new Promise<never[]>((resolve) => {
+      resolveFirst = () => resolve([]);
+    });
+    const secondCall = new Promise<never[]>((resolve) => {
+      resolveSecond = () => resolve([]);
+    });
+    const extract = vi
+      .fn()
+      .mockImplementationOnce(() => firstCall)
+      .mockImplementationOnce(() => secondCall)
+      .mockResolvedValue([]);
+    const service = createSkillReviewService({
+      conversations: fakeConversations(turnWith(5)),
+      managedSkillsDir: () => dir,
+      shouldReview: () => true,
+      minToolCalls: () => 3,
+      extract,
+    });
+
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    await waitFor(() => extract.mock.calls.length === 1);
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    resolveFirst();
+    await waitFor(() => extract.mock.calls.length === 2);
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    resolveSecond();
+    await service.flush();
+
+    expect(extract).toHaveBeenCalledTimes(3);
+  });
+
+  it('runs a queued review rerun after the first pass fails', async () => {
+    let rejectFirst: (error: Error) => void = () => {};
+    const firstCall = new Promise<never[]>((_, reject) => {
+      rejectFirst = reject;
+    });
+    const warn = vi.fn();
+    const extract = vi
+      .fn()
+      .mockImplementationOnce(() => firstCall)
+      .mockResolvedValue([]);
+    const service = createSkillReviewService({
+      conversations: fakeConversations(turnWith(5)),
+      managedSkillsDir: () => dir,
+      shouldReview: () => true,
+      minToolCalls: () => 3,
+      extract,
+      logger: { info: vi.fn(), warn },
+    });
+
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    await waitFor(() => extract.mock.calls.length === 1);
+    service.schedule({ agentId: 'a', conversationId: 'c', runId: 't1' });
+    rejectFirst(new Error('first pass failed'));
+    await service.flush();
+
+    expect(extract).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      'skill review failed',
+      expect.objectContaining({ error: 'first pass failed' }),
+    );
   });
 });
 
