@@ -156,9 +156,9 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
   const { subagentId, status } = group;
   const store = useContext(WebAppStoreContext);
   const [open, setOpen] = useExpansion(store, subagentId, false);
-  const { transcript, facts, connection } = useChildSlice(store, subagentId);
+  const { transcript, oneShot: oneShotFact, connection } = useChildSlice(store, subagentId);
   const terminal = isTerminalSubagentStatus(status);
-  const oneShot = facts?.oneShot === true;
+  const oneShot = oneShotFact === true;
   // `terminal`, not just `endedAt`: an end-of-stream-terminalized child
   // (`cancelled`) and a legacy-only `worker_done` one both finish without an
   // end timestamp, and neither may keep counting behind a finished glyph.
@@ -550,8 +550,15 @@ function SubagentStatusGlyph({ status }: { status: SubagentStatus }): ReactNode 
 
 interface ChildSlice {
   transcript?: Transcript;
-  /** The gateway's facts about this child — `oneShot` is the one the row reads. */
-  facts?: SubagentEntry['facts'];
+  /**
+   * `facts.oneShot` — the ONE field of the gateway's facts this row reads,
+   * selected rather than carried whole (fix I3a). `fetchSubagentList`
+   * allocates a fresh `facts` object per child per read, so subscribing to
+   * the object re-rendered the row and its nested transcript on refreshes
+   * that changed nothing. Anything else the row needs about the child comes
+   * from the folded event group, not from here.
+   */
+  oneShot?: boolean;
   /** `undefined` with no store above (see `useChildSlice`). */
   connection?: WebAppState['connection'];
 }
@@ -594,15 +601,48 @@ function useSubagentUi(
   return [stored ?? NO_UI, (patch) => store.getState().patchSubagent(key, patch)];
 }
 
-/** Expansion alone, since most callers want only that. `fallback` is what an
- * untouched key means: rows default closed, groups default open. */
+/**
+ * Expansion alone, since most callers want only that. `fallback` is what an
+ * untouched key means: rows default closed, groups default open.
+ *
+ * Subscribed to the BOOLEAN rather than layered over `useSubagentUi` (fix
+ * I3a). The bare child-id key carries the gateway's `facts` as well as this
+ * flag, and `fetchSubagentList` writes a fresh entry object for that key on
+ * every list read — on open, on reconnect, on every
+ * `subagent_started`/`subagent_finished`, and on both ends of every turn on
+ * the open conversation. Comparing whole entries therefore re-rendered every
+ * mounted row, and every `Markdown` in its expanded nested transcript, for
+ * refreshes that changed nothing: measured at 3 renders per identical refresh
+ * on a 3-message child, against 0 for the composer keystroke the same
+ * property was pinned for in round 3. `expanded` is a boolean, so an equal
+ * refresh is now indistinguishable from no refresh.
+ *
+ * The composers keep `useSubagentUi` — they read `draft`/`error`/`sending`
+ * and they sit on `reply:`/`body:`/`tasks:` keys the list never touches.
+ */
 function useExpansion(
   store: WebAppStore | null,
   key: string,
   fallback: boolean,
 ): [boolean, (next: boolean) => void] {
-  const [ui, patch] = useSubagentUi(store, key);
-  return [ui.expanded ?? fallback, (next: boolean) => patch({ expanded: next })];
+  const [local, setLocal] = useState<boolean | undefined>(undefined);
+  const [stored, setStored] = useState<boolean | undefined>(() =>
+    store ? store.getState().subagents[key]?.expanded : undefined,
+  );
+
+  useEffect(() => {
+    if (!store) return;
+    setStored(store.getState().subagents[key]?.expanded);
+    return store.subscribe((state) => {
+      setStored(state.subagents[key]?.expanded);
+    });
+  }, [store, key]);
+
+  if (!store) return [local ?? fallback, setLocal];
+  return [
+    stored ?? fallback,
+    (next: boolean) => store.getState().patchSubagent(key, { expanded: next }),
+  ];
 }
 
 /** `subagents` key for a parallel-group container, namespaced so it cannot
@@ -659,16 +699,16 @@ function useChildSlice(store: WebAppStore | null, childId: string): ChildSlice {
     return store.subscribe((state) => {
       setSlice((previous) => {
         const transcript = state.transcripts[childId];
-        const facts = state.subagents?.[childId]?.facts;
+        const oneShot = state.subagents?.[childId]?.facts?.oneShot;
         const connection = state.connection;
         if (
           previous.transcript === transcript &&
-          previous.facts === facts &&
+          previous.oneShot === oneShot &&
           previous.connection === connection
         ) {
           return previous;
         }
-        return { transcript, facts, connection };
+        return { transcript, oneShot, connection };
       });
     });
   }, [store, childId]);
@@ -681,7 +721,7 @@ function readSlice(store: WebAppStore | null, childId: string): ChildSlice {
   const state = store.getState();
   return {
     transcript: state.transcripts[childId],
-    facts: state.subagents?.[childId]?.facts,
+    oneShot: state.subagents?.[childId]?.facts?.oneShot,
     connection: state.connection,
   };
 }

@@ -3855,6 +3855,72 @@ describe('createWebAppStore', () => {
     });
 
     /**
+     * Round-1 fix I3a, the store half. Every trigger allocates a fresh entry
+     * and a fresh `facts` object for every child in the list, whether or not
+     * the gateway said anything new — and a `done` on the open conversation
+     * is a trigger, so an ordinary chat with one finished child paid this on
+     * every assistant turn. Both of `SubagentBlock`'s subscriptions compare
+     * by reference, so that re-rendered every mounted row and its whole
+     * nested transcript.
+     *
+     * The component-side narrowing is pinned in `SubagentBlock.test.tsx`;
+     * this pins the cheaper half — an identical read is not written at all,
+     * so nothing downstream can see it. Reference equality is the assertion
+     * BECAUSE reference equality is what every subscriber uses.
+     */
+    it('writes nothing at all when a re-read returns identical rows', async () => {
+      const { rest } = fakeRest({
+        listSubagentsImpl: async () => ({
+          subagents: [
+            listEntry({ usage: { inputTokens: 10, outputTokens: 20 } }),
+            listEntry({ id: 'child-2', type: 'Plan', status: 'done' }),
+          ],
+        }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(store.getState().subagents[CHILD_ID]).toBeDefined());
+      const before = store.getState();
+
+      await store.getState().refreshSubagents(CONVERSATION_ID);
+
+      const after = store.getState();
+      // `usage` is a nested object the JSON parse re-allocates every read, so
+      // a shallow compare would call this changed. It is compared field-wise.
+      expect(after.subagents[CHILD_ID]).toBe(before.subagents[CHILD_ID]);
+      expect(after.subagents['child-2']).toBe(before.subagents['child-2']);
+      expect(after.subagentIds[CONVERSATION_ID]).toBe(before.subagentIds[CONVERSATION_ID]);
+    });
+
+    /** The skip is field-equality, not "already have an entry": a real change
+     * still lands, and only on the child that changed. */
+    it('writes only the child whose facts actually changed', async () => {
+      let status = 'running';
+      const { rest } = fakeRest({
+        listSubagentsImpl: async () => ({
+          subagents: [
+            listEntry({ status } as Partial<SubagentListEntry>),
+            listEntry({ id: 'child-2' }),
+          ],
+        }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(store.getState().subagents[CHILD_ID]).toBeDefined());
+      const before = store.getState();
+
+      status = 'done';
+      await store.getState().refreshSubagents(CONVERSATION_ID);
+
+      const after = store.getState();
+      expect(after.subagents[CHILD_ID]).not.toBe(before.subagents[CHILD_ID]);
+      expect(after.subagents[CHILD_ID].facts).toMatchObject({ status: 'done' });
+      expect(after.subagents['child-2']).toBe(before.subagents['child-2']);
+    });
+
+    /**
      * The same race `flushChildSubscriptions` guards: the read for the
      * conversation being left can land after the switch, and writing then
      * puts a dead conversation's children into a record the switch just

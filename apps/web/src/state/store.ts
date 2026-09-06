@@ -6,6 +6,7 @@ import type {
   MobileWsClientFrame,
   MobileWsServerFrame,
   SubagentListEntry,
+  SubagentUsage,
 } from '@dash/mobile-contract';
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
@@ -27,6 +28,37 @@ import { type Transcript, applyServerFrame } from './assemble';
  * reconcile.
  */
 export type SubagentFacts = Omit<SubagentListEntry, 'id'>;
+
+/**
+ * Field-equality for two {@link SubagentFacts} snapshots (fix I3a).
+ *
+ * Compared against the INCOMING row's keys, not a fixed list: the two routes
+ * that write this field disagree about shape — the child summary read by
+ * `loadSubagentTranscript` returns a `SubagentInfo`, a superset carrying
+ * `prompt`/`model`/`isolation`/`workspace` — and a list read whose own fields
+ * all match must count as "nothing new" rather than as a downgrade worth
+ * writing. Nothing reads those extra fields, so keeping the richer object is
+ * the better of the two outcomes anyway.
+ *
+ * `usage` is the one nested value (`{ inputTokens, outputTokens }`) and is
+ * re-allocated by every JSON parse, so it is compared field-wise; a reference
+ * compare would report every child that has run a turn as changed and defeat
+ * the whole thing.
+ */
+function sameFacts(previous: SubagentFacts | undefined, next: SubagentFacts): boolean {
+  if (!previous) return false;
+  const before = previous as Record<string, unknown>;
+  for (const [key, value] of Object.entries(next as Record<string, unknown>)) {
+    if (key === 'usage') {
+      const a = before.usage as SubagentUsage | undefined;
+      const b = value as SubagentUsage | undefined;
+      if (a?.inputTokens !== b?.inputTokens || a?.outputTokens !== b?.outputTokens) return false;
+      continue;
+    }
+    if (before[key] !== value) return false;
+  }
+  return true;
+}
 
 /** One key's worth of {@link WebAppState.subagents}. Every field is optional:
  * an untouched row has no entry at all, which is how "never toggled" is told
@@ -1191,18 +1223,41 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       if (currentConversationId !== conversationId) return;
       // Answered out of order behind a newer read — see `subagentReadSeq`.
       if (readSeq <= appliedSubagentReadSeq) return;
+      // BEFORE the field-equality skip below, not after: the cursor is what
+      // shields a later read from an earlier one that has not answered yet
+      // (see the guard above). Skipping the write without bumping it would
+      // let a stale response overwrite this one.
       appliedSubagentReadSeq = readSeq;
       set((state) => {
         const subagents = { ...state.subagents };
+        let changed = false;
         for (const entry of entries) {
           const { id, ...facts } = entry;
+          // Fix I3a: a read that says nothing new writes nothing at all.
+          // Every trigger allocates a fresh entry and a fresh `facts` object
+          // for every child, and one of the triggers is `done` on the open
+          // conversation — so an ordinary chat with one finished child paid a
+          // fresh object per assistant turn. `SubagentBlock` subscribes by
+          // reference, so that re-rendered the row and its whole nested
+          // transcript for no change.
+          if (sameFacts(subagents[id]?.facts, facts)) continue;
           // MERGED, never assigned over: the same key carries the row's
           // `expanded` and, mid-send, its composer's `sending`.
           subagents[id] = { ...subagents[id], facts };
+          changed = true;
         }
+        const ids = entries.map((e) => e.id);
+        const previousIds = state.subagentIds[conversationId];
+        const sameIds =
+          previousIds !== undefined &&
+          previousIds.length === ids.length &&
+          previousIds.every((id, index) => id === ids[index]);
+        if (!changed && sameIds) return {};
         return {
-          subagents,
-          subagentIds: { ...state.subagentIds, [conversationId]: entries.map((e) => e.id) },
+          subagents: changed ? subagents : state.subagents,
+          subagentIds: sameIds
+            ? state.subagentIds
+            : { ...state.subagentIds, [conversationId]: ids },
         };
       });
     }

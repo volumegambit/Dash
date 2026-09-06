@@ -503,6 +503,69 @@ describe('SubagentBlock', () => {
       expect((within(composer).getByRole('textbox') as HTMLInputElement).value).toBe('ab');
     });
 
+    /**
+     * Round-1 fix I3a, and the same property the keystroke test above pins,
+     * from the other side. `fetchSubagentList` allocates a fresh entry AND a
+     * fresh `facts` object for every child on every read — on open, on
+     * reconnect, on every `subagent_started`/`subagent_finished`, and now on
+     * both ends of every turn on the open conversation. Both of this
+     * component's store subscriptions compared by REFERENCE against the bare
+     * child-id key, so a refresh that changed nothing re-rendered the row and
+     * its whole nested transcript: measured at 3 Markdown renders per
+     * identical refresh on this 3-message child, against 0 for the keystroke.
+     * On a fan-out of N foreground children that is ~2N+1 full nested
+     * re-renders across one turn.
+     *
+     * The subscriptions now select what the row actually reads — a boolean
+     * (`expanded`) and a boolean (`facts.oneShot`) — so an equal refresh is
+     * indistinguishable from no refresh. The list-read side of the same fix
+     * (skipping a field-equal write outright) is pinned in store.test.ts.
+     */
+    it('does not re-render the nested transcript on an identical facts refresh', () => {
+      const facts = () => ({
+        type: 'Explore',
+        description: 'Map gateway internals',
+        status: 'running',
+        background: false,
+        depth: 1,
+        startedAt: STARTED_AT,
+        toolCallCount: 3,
+        oneShot: false,
+      });
+      const scripted = scriptStore({
+        subagents: { [CHILD]: { facts: facts() } },
+        transcripts: {
+          [CHILD]: {
+            messages: [
+              childMessage({ id: 'm1', ordinal: 1 }),
+              childMessage({ id: 'm2', ordinal: 2 }),
+              childMessage({ id: 'm3', ordinal: 3 }),
+            ],
+            streaming: null,
+            pending: null,
+          },
+        },
+      } as unknown as Partial<WebAppState>);
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(within(screen.getByTestId('subagent-block')).getByRole('button'));
+      expect(markdownRenders).toBeGreaterThan(0);
+      markdownRenders = 0;
+
+      // Exactly what `fetchSubagentList` writes for an unchanged child: a
+      // fresh entry object carrying a fresh, field-equal `facts`.
+      act(() => {
+        scripted.store.getState().patchSubagent(CHILD, { facts: facts() });
+      });
+      act(() => {
+        scripted.store.getState().patchSubagent(CHILD, { facts: facts() });
+      });
+
+      expect(markdownRenders).toBe(0);
+      // The transcript is still mounted and still the row's own — a zero that
+      // came from an unmounted subtree would prove nothing.
+      expect(screen.getAllByText('Found three of them.')).toHaveLength(3);
+    });
+
     it('disables the composer for a one-shot child and says why', () => {
       const scripted = scriptStore({
         subagents: {
