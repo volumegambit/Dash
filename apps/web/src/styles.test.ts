@@ -200,9 +200,19 @@ describe('tasks panel (sub-agents D3, design §8.4)', () => {
     // order" rather than with "styles.css has no rule for .app-tasks-backdrop".
     // The same holds for the panel's own two rules, which the mobile block
     // likewise overrides (`position: fixed` on `.tasks-panel--open`).
+    //
+    // `lastIndexOf`, not `indexOf`, and the difference is the whole point.
+    // Taking the FIRST declaration catches a rule that was MOVED below the
+    // media block but not one that was RE-DECLARED there with the original
+    // left in place — and re-declaration is the likelier regression, because
+    // §8.4 now carries a comment saying these rules live earlier in the file,
+    // which invites someone to "restore" them locally. Mutation-checked:
+    // moving the rule to the end of the file fails either way; DUPLICATING it
+    // at the end passes with `indexOf` (bug live, suite green) and fails with
+    // `lastIndexOf`.
     const mobileAt = mobileBlockIndex();
     const declaredAt = ['.app-tasks-backdrop', '.tasks-panel', '.tasks-panel--open'].map(
-      (selector) => [selector, css.indexOf(`\n${selector} {`)] as const,
+      (selector) => [selector, css.lastIndexOf(`\n${selector} {`)] as const,
     );
     expect(declaredAt.filter(([, at]) => at === -1 || at > mobileAt)).toEqual([]);
     // And the body stays ONE column while it is open, stated rather than
