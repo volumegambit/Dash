@@ -138,6 +138,7 @@ interface FakeRest {
   patchConversation: ReturnType<typeof vi.fn>;
   deleteConversation: ReturnType<typeof vi.fn>;
   getConversation: ReturnType<typeof vi.fn>;
+  resumeSubagent: ReturnType<typeof vi.fn>;
 }
 
 function fakeRest(opts: {
@@ -175,6 +176,8 @@ function fakeRest(opts: {
   ) => Promise<ConversationSummary>;
   /** Override for `rest.getConversation()` — used by the auto-title-refresh tests. */
   getConversationImpl?: (conversationId: string) => Promise<ConversationSummary>;
+  /** Override for `rest.resumeSubagent()` — used by the `sendToSubagent` tests. */
+  resumeSubagentImpl?: (childId: string, message: string) => Promise<unknown>;
 }): FakeRest {
   const messagePages = opts.messagePages ?? [{ items: [], nextCursor: null, throughSeq: 0 }];
   let getMessagesCall = 0;
@@ -210,6 +213,10 @@ function fakeRest(opts: {
   const getConversation = vi.fn(
     opts.getConversationImpl ?? (async (conversationId: string) => summary({ id: conversationId })),
   );
+  const resumeSubagent = vi.fn(
+    opts.resumeSubagentImpl ??
+      (async () => ({ ok: true, status: 'running', mode: 'queued' as const })),
+  );
   const rest = {
     listConversations,
     getMessages,
@@ -219,9 +226,11 @@ function fakeRest(opts: {
     patchConversation,
     deleteConversation,
     getConversation,
+    resumeSubagent,
   } as unknown as MobileRestClient;
   return {
     rest,
+    resumeSubagent,
     listConversations,
     getMessages,
     identity,
@@ -2409,7 +2418,6 @@ describe('createWebAppStore', () => {
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
 
       store.getState().subscribeSubagent(CHILD_ID);
-      store.getState().subscribeSubagent(CHILD_ID);
       await vi.waitFor(() =>
         expect(
           subscriptionFrames(socket).filter((f) => f.conversationId === CHILD_ID),
@@ -2425,6 +2433,107 @@ describe('createWebAppStore', () => {
         type: 'unsubscribe',
         conversationId: CHILD_ID,
       });
+    });
+
+    // Fix item 8: D1's fold explicitly supports one child split across two
+    // persisted messages by crash-reconcile, so TWO rows can carry the same
+    // `subagentId`. Without refcounting, the first row to collapse kills the
+    // other row's live stream.
+    it('refcounts child subscriptions so two rows sharing a child cannot cut each other off', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      store.getState().subscribeSubagent(CHILD_ID);
+      await vi.waitFor(() =>
+        expect(
+          subscriptionFrames(socket).filter((f) => f.conversationId === CHILD_ID),
+        ).toHaveLength(1),
+      );
+
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      expect(
+        subscriptionFrames(socket).filter(
+          (f) => f.type === 'unsubscribe' && f.conversationId === CHILD_ID,
+        ),
+      ).toHaveLength(0);
+
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      expect(
+        subscriptionFrames(socket).filter(
+          (f) => f.type === 'unsubscribe' && f.conversationId === CHILD_ID,
+        ),
+      ).toHaveLength(1);
+    });
+
+    // Fix item 1 (the redundant re-fetch half): the loaded set lives in the
+    // store, not in a component that a remount throws away.
+    it('replays a child transcript only once, however many rows ask for it', async () => {
+      const { rest, getMessages } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      const before = getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length;
+
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      expect(getMessages.mock.calls.filter((c) => c[0] === CHILD_ID)).toHaveLength(before + 1);
+    });
+
+    // Fix item 9: the seam between D2's two halves. A child's frames must land
+    // in the CHILD's transcript, which is what the expanded row renders.
+    it("routes a child-addressed event frame into the child's own transcript", async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      onFrames[0]({
+        type: 'accepted',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        userMessageId: 'child-user-1',
+        assistantMessageId: 'child-assistant-1',
+        revision: 2,
+        seq: 1,
+        origin: 'parent',
+      });
+      onFrames[0]({
+        type: 'event',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        seq: 2,
+        event: { type: 'text_delta', text: 'Reading the gateway.' },
+      });
+
+      await vi.waitFor(() =>
+        expect(store.getState().transcripts[CHILD_ID]?.streaming).toEqual({
+          type: 'assistant',
+          events: [{ type: 'text_delta', text: 'Reading the gateway.' }],
+        }),
+      );
+      expect(store.getState().transcripts[CHILD_ID].messages).toHaveLength(1);
+      expect(store.getState().transcripts[CHILD_ID].messages[0]).toMatchObject({
+        role: 'user',
+        origin: 'parent',
+      });
+      // The parent's transcript is untouched — no stray streaming slot on it.
+      expect(store.getState().transcripts[CONVERSATION_ID]?.streaming ?? null).toBeNull();
+    });
+
+    it('tracks which rows are expanded so a remount cannot collapse them', () => {
+      const { rest } = fakeRest({});
+      const { factory } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      expect(store.getState().subagentExpansion[CHILD_ID]).toBeUndefined();
+      store.getState().setSubagentExpanded(CHILD_ID, true);
+      expect(store.getState().subagentExpansion[CHILD_ID]).toBe(true);
+      store.getState().setSubagentExpanded(CHILD_ID, false);
+      expect(store.getState().subagentExpansion[CHILD_ID]).toBe(false);
     });
 
     it("does not let a child subscription clobber the parent's own", async () => {
@@ -2482,21 +2591,50 @@ describe('createWebAppStore', () => {
       );
     });
 
-    it("sends a user turn into the child's conversation with an optimistic row", async () => {
-      const { rest } = fakeRest({});
+    // Fix item 7: re-subscribing is not enough. Nothing replays what the child
+    // emitted while the socket was down — the parent resumes from `sinceSeq`,
+    // the child has no such cursor — so the transcript is re-walked instead.
+    it("re-reads an expanded child's transcript after a reconnect", async () => {
+      const { rest, getMessages } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      const childReplays = getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length;
+      expect(childReplays).toBe(1);
+
+      onCloses[0]('error');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(sockets.length).toBe(2));
+      sockets[1].open();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+      await vi.waitFor(() =>
+        expect(getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length).toBe(
+          childReplays + 1,
+        ),
+      );
+    });
+
+    // Fix items 2/6: a follow-up goes through `POST /subagents/:id/resume`,
+    // never a WS `message` frame. Only the resume route reaches
+    // `ChildHandle.answerQuestion` (the ONLY thing that unblocks a waiting
+    // `ask_orchestrator`), and only it enforces the one-shot refusal, the
+    // steer cap and the grant rebuild. A `message` frame goes to `hub.start`,
+    // which either 409s `conversation_busy` against the child's turn lease or
+    // opens a SECOND turn while the question stays blocked until timeout.
+    it("resumes the child over REST rather than opening a turn on the child's conversation", async () => {
+      const { rest, resumeSubagent } = fakeRest({});
       const { factory, sockets } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
 
       await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
 
-      const sent = socket.turnFrames.at(-1);
-      expect(sent).toMatchObject({
-        type: 'message',
-        agentId: 'agent-01',
-        conversationId: CHILD_ID,
-        text: 'also check the relay',
-      });
+      expect(resumeSubagent).toHaveBeenCalledWith(CHILD_ID, 'also check the relay');
+      expect(socket.turnFrames.filter((f) => f.type === 'message')).toHaveLength(0);
       const messages = store.getState().transcripts[CHILD_ID].messages;
       expect(messages).toHaveLength(1);
       expect(messages[0]).toMatchObject({
@@ -2507,17 +2645,23 @@ describe('createWebAppStore', () => {
       expect(store.getState().transcripts[CONVERSATION_ID].messages).toHaveLength(0);
     });
 
-    it('marks the optimistic child row failed when the send itself throws', async () => {
-      const { rest } = fakeRest({});
+    it('marks the optimistic child row failed and rethrows when the resume is refused', async () => {
+      const { rest } = fakeRest({
+        resumeSubagentImpl: async () => {
+          throw new MobileApiError(409, 'validation_failed');
+        },
+      });
       const { factory, sockets } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
-      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
-      socket.sendShouldThrow = true;
+      await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      await expect(store.getState().sendToSubagent(CHILD_ID, 'nope')).rejects.toThrow();
+      await expect(store.getState().sendToSubagent(CHILD_ID, 'nope')).rejects.toBeInstanceOf(
+        MobileApiError,
+      );
 
       expect(store.getState().transcripts[CHILD_ID].messages[0]).toMatchObject({
         status: 'failed',
+        content: { type: 'user', text: 'nope' },
       });
     });
   });

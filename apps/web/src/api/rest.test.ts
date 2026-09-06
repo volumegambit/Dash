@@ -470,6 +470,55 @@ describe('MobileRestClient', () => {
 });
 
 describe('relay-generated errors (no JSON envelope)', () => {
+  // Task D2 fix items 2/6: a follow-up typed into a child goes through the
+  // gateway's ONE narrowing path (`coordinator.sendToChild`), which is what
+  // enforces the one-shot refusal, the steer cap and the grant rebuild. A WS
+  // `message` frame reaches none of them.
+  describe('resumeSubagent', () => {
+    it('POSTs the message to /subagents/:id/resume with the id encoded', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ ok: true, status: 'running', mode: 'queued' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      const result = await client.resumeSubagent('child/1', 'also check the relay');
+
+      expect(fetchImpl.mock.calls[0][0]).toBe(
+        'https://sub.relay.example/mobile/v1/subagents/child%2F1/resume',
+      );
+      const init = fetchImpl.mock.calls[0][1];
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(init?.body as string)).toEqual({ message: 'also check the relay' });
+      expect(result).toEqual({ ok: true, status: 'running', mode: 'queued' });
+    });
+
+    it("keeps the gateway's actionable refusal text on the error", async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse(
+          {
+            code: 'validation_failed',
+            error: 'Sub-agent child-1 is one-shot and cannot be resumed',
+            retryable: false,
+          },
+          409,
+        ),
+      );
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.resumeSubagent('child-1', 'more please')).rejects.toMatchObject({
+        status: 409,
+        code: 'validation_failed',
+        detail: 'Sub-agent child-1 is one-shot and cannot be resumed',
+      });
+    });
+  });
+
   it("surfaces the relay's plain-text 401 as MobileApiError(401) with an undefined code", async () => {
     // The relay answers a revoked pairing credential itself, so there is no
     // gateway `{ code, error, retryable }` body to parse. The status is the

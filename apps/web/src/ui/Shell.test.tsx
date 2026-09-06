@@ -34,6 +34,7 @@ function fakeWebAppState() {
     conversations: [],
     transcripts: {},
     subagentInfo: {},
+    subagentExpansion: {},
     connection: 'connected',
     listAgents: vi.fn(async () => []),
     startConversation: vi.fn(async () => {
@@ -46,6 +47,7 @@ function fakeWebAppState() {
     renameConversation: vi.fn(async () => undefined),
     deleteConversation: vi.fn(async () => undefined),
     cancelTurn: vi.fn(),
+    setSubagentExpanded: vi.fn(),
     loadSubagentTranscript: vi.fn(async () => undefined),
     subscribeSubagent: vi.fn(),
     unsubscribeSubagent: vi.fn(),

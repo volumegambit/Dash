@@ -7,6 +7,7 @@ import type {
   GatewayIdentity,
   MobileAgent,
   MobileHealth,
+  SubagentResumeResponse,
   WsTicketResponse,
 } from '@dash/mobile-contract';
 
@@ -20,6 +21,16 @@ export class MobileApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string | undefined,
+    /**
+     * The gateway's own `error` string, when its structured
+     * `{ code, error, retryable }` envelope carried one. `code` alone is a
+     * machine label; `detail` is the sentence a human can act on — the
+     * sub-agent resume route in particular answers its three refusals
+     * (one-shot type, steer cap, unrebuildable grant) with text that names
+     * which one happened, and a UI that showed only `validation_failed`
+     * would be telling the user nothing.
+     */
+    readonly detail?: string,
   ) {
     super(code ? `Mobile API error ${status} (${code})` : `Mobile API error ${status}`);
     this.name = 'MobileApiError';
@@ -62,12 +73,17 @@ function buildUrl(baseUrl: string, path: string, query?: Record<string, string |
   return url;
 }
 
-async function readErrorCode(response: Response): Promise<string | undefined> {
+async function readError(
+  response: Response,
+): Promise<{ code: string | undefined; detail: string | undefined }> {
   try {
-    const data = (await response.json()) as { code?: unknown };
-    return typeof data.code === 'string' ? data.code : undefined;
+    const data = (await response.json()) as { code?: unknown; error?: unknown };
+    return {
+      code: typeof data.code === 'string' ? data.code : undefined,
+      detail: typeof data.error === 'string' ? data.error : undefined,
+    };
   } catch {
-    return undefined;
+    return { code: undefined, detail: undefined };
   }
 }
 
@@ -167,6 +183,30 @@ export class MobileRestClient {
     );
   }
 
+  /**
+   * `POST /subagents/:id/resume` — sends a user turn INTO a child (design
+   * §7.7, §8.3). Deliberately not a WS `message` frame addressed to the
+   * child's conversation: only this route reaches
+   * `coordinator.sendToChild` → `ChildHandle.send`, which is the one thing
+   * that resolves a child blocked on `ask_orchestrator`, and the one place
+   * the gateway enforces the one-shot refusal, the steer cap and the grant
+   * rebuild ("one narrowing path, so an HTTP resume can never widen a child
+   * past what the tool would have granted it" —
+   * `apps/gateway/src/subagent-management.ts`). A `message` frame reaches
+   * `hub.start` instead, which either rejects against the child's turn lease
+   * or opens a second, parallel turn while the question stays blocked.
+   *
+   * All three coordinator refusals come back as 409 `validation_failed` with
+   * the reason in `MobileApiError.detail`.
+   */
+  resumeSubagent(subagentId: string, message: string): Promise<SubagentResumeResponse> {
+    return this.request<SubagentResumeResponse>(
+      'POST',
+      `/subagents/${encodeURIComponent(subagentId)}/resume`,
+      { body: { message } },
+    );
+  }
+
   createWsTicket(): Promise<WsTicketResponse> {
     return this.request<WsTicketResponse>('POST', '/ws-ticket');
   }
@@ -190,7 +230,8 @@ export class MobileRestClient {
     });
 
     if (!response.ok) {
-      throw new MobileApiError(response.status, await readErrorCode(response));
+      const { code, detail } = await readError(response);
+      throw new MobileApiError(response.status, code, detail);
     }
 
     return (await response.json()) as T;

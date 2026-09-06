@@ -1794,6 +1794,22 @@ textarea:focus-visible {
   color: var(--accent);
 }
 
+/* A refusal from the resume route — the one-shot/steer-cap/grant text the
+ * gateway sends back, or generic copy. Sits under the composer, which keeps
+ * the text the user typed. */
+.subagent-composer-error {
+  margin: 4px 0 0;
+  color: var(--tool-red);
+}
+
+.subagent-waiting .subagent-composer-error {
+  padding: 0 12px 4px 32px;
+}
+
+.subagent-message[data-status="failed"] {
+  opacity: 0.75;
+}
+
 /* Status glyphs (§8.1). */
 
 .subagent-glyph {

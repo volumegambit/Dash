@@ -93,7 +93,10 @@ export function SubagentCluster({
   renderContent,
 }: SubagentClusterProps): ReactNode {
   const multi = groups.length > 1;
-  const [open, setOpen] = useState(true);
+  const store = useContext(WebAppStoreContext);
+  // Groups default to OPEN, so the stored value is read as "collapsed unless
+  // told otherwise" — an unvisited group has no entry at all.
+  const [open, setOpen] = useExpansion(store, groupExpansionKey(groups[0].subagentId), true);
   const showRows = open || !multi;
 
   return (
@@ -105,7 +108,7 @@ export function SubagentCluster({
         <button
           type="button"
           className="subagent-group-header"
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => setOpen(!open)}
           aria-expanded={open}
         >
           <span className="subagent-group-summary">{formatClusterSummary(groups)}</span>
@@ -145,36 +148,34 @@ export interface SubagentBlockProps {
 /** One child, collapsed to a single scannable line until it is opened (§8.1). */
 export function SubagentBlock({ group, nested, renderContent }: SubagentBlockProps): ReactNode {
   const { subagentId, status } = group;
-  const [open, setOpen] = useState(false);
   const store = useContext(WebAppStoreContext);
-  const { transcript, info } = useChildSlice(store, subagentId);
+  const [open, setOpen] = useExpansion(store, subagentId, false);
+  const { transcript, info, connection } = useChildSlice(store, subagentId);
   const terminal = isTerminalSubagentStatus(status);
+  const oneShot = info?.oneShot === true;
   // `terminal`, not just `endedAt`: an end-of-stream-terminalized child
   // (`cancelled`) and a legacy-only `worker_done` one both finish without an
   // end timestamp, and neither may keep counting behind a finished glyph.
   const elapsed = useElapsed(group.startedAt, group.endedAt, !terminal);
-  const loadedRef = useRef(false);
 
-  // Fetch on FIRST expansion (§8.3) and hold a subscription for as long as the
-  // body is open, so the child streams live into it. `loadedRef` survives
-  // collapse/expand cycles: the subscription replays everything since, so a
-  // second REST walk of the same history would be pure waste.
+  // Fetch on expansion (§8.3) and hold a subscription for as long as the body
+  // is open, so the child streams live into it. Both the once-only guard and
+  // the reconnect invalidation live in the STORE, not here: this component is
+  // remounted by things that have nothing to do with it (see
+  // `subagentExpansion`), so a per-instance flag would re-walk the child's
+  // whole history every time the parent turn ended.
   useEffect(() => {
     if (!open || !nested || !store) return;
     const actions = store.getState();
-    if (!loadedRef.current) {
-      loadedRef.current = true;
-      // Best-effort: the store reports its own failures (a 401 routes to
-      // `unauthorized`); an unopenable child must not take the transcript down.
-      void actions.loadSubagentTranscript(subagentId).catch(() => {});
-    }
+    // Best-effort: the store reports its own failures (a 401 routes to
+    // `unauthorized`); an unopenable child must not take the transcript down.
+    void actions.loadSubagentTranscript(subagentId).catch(() => {});
     actions.subscribeSubagent(subagentId);
     return () => {
       store.getState().unsubscribeSubagent(subagentId);
     };
   }, [open, nested, store, subagentId]);
 
-  const oneShot = info?.oneShot === true;
   const meta = [
     formatToolCount(group.toolCallCount),
     elapsed === null ? null : formatElapsed(elapsed),
@@ -183,13 +184,13 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
     .join(' · ');
   const collapsedReport = !open && terminal && group.report ? firstLine(group.report) : null;
 
-  const send = (text: string): void => {
-    const trimmed = text.trim();
-    if (!trimmed || !store) return;
-    void store
-      .getState()
-      .sendToSubagent(subagentId, trimmed)
-      .catch(() => {});
+  // A composer cannot send while the gateway is unreachable, and it must not
+  // pretend otherwise: `sendToSubagent` rejects and `InlineComposer` surfaces
+  // that, but disabling is the honest affordance.
+  const canSend = store !== null && connection === 'connected' && !oneShot;
+  const send = async (text: string): Promise<void> => {
+    if (!store) throw new Error('Cannot reach this agent from here');
+    await store.getState().sendToSubagent(subagentId, text);
   };
 
   return (
@@ -202,7 +203,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
       <button
         type="button"
         className="subagent-header"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
         <SubagentStatusGlyph status={status} />
@@ -220,6 +221,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
             testId="subagent-reply"
             label={`Reply to ${group.type || 'sub-agent'}`}
             placeholder="Reply…"
+            disabled={!canSend}
             onSend={send}
           />
         </div>
@@ -250,7 +252,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
               testId="subagent-composer"
               label={`Message ${group.type || 'sub-agent'}`}
               placeholder={oneShot ? ONE_SHOT_COMPOSER_TITLE : 'Type into this agent…'}
-              disabled={oneShot}
+              disabled={!canSend}
               title={oneShot ? ONE_SHOT_COMPOSER_TITLE : undefined}
               onSend={send}
             />
@@ -297,16 +299,38 @@ function ChildMessage({
   renderContent: (content: ConversationContent, streaming: boolean) => ReactNode;
 }): ReactNode {
   if (isNotificationRow(message)) return <NotificationRow message={message} />;
-  if (isOrchestratorRow(message)) return <OrchestratorRow message={message} />;
+  if (isOrchestratorRow(message) && message.status !== 'failed') {
+    return <OrchestratorRow message={message} />;
+  }
   return (
-    <div className="subagent-message" data-role={message.role}>
+    <div className="subagent-message" data-role={message.role} data-status={message.status}>
       {renderContent(message.content, false)}
+      {message.status === 'failed' ? (
+        // A follow-up the user typed that never reached the agent. Same copy
+        // and the same `role="alert"` treatment `ChatView` gives a failed send
+        // in the parent transcript — a row that just sits there looking sent
+        // is the failure mode fix item 5 is about.
+        <span role="alert" className="chat-message-failed">
+          Failed to send
+        </span>
+      ) : null}
     </div>
   );
 }
 
-/** The waiting-input reply affordance and the expanded body's composer are the
- * same control with different copy — one line, one submit, no attachments. */
+/** Shown when a send failed with nothing more specific to say. */
+export const SUBAGENT_SEND_FAILED_COPY = 'Could not reach this agent. Try again.';
+
+/**
+ * The waiting-input reply affordance and the expanded body's composer are the
+ * same control with different copy — one line, one submit, no attachments.
+ *
+ * The text is cleared only once the send has actually SUCCEEDED. Clearing on
+ * submit reads better for a millisecond and is wrong: the resume can be
+ * refused (a one-shot child, the steer cap, a dead connection), and a composer
+ * that empties itself on a refusal has silently thrown away what the user
+ * typed. On failure the text stays put and the reason is rendered under it.
+ */
 function InlineComposer({
   testId,
   label,
@@ -320,39 +344,75 @@ function InlineComposer({
   placeholder: string;
   disabled?: boolean;
   title?: string;
-  onSend: (text: string) => void;
+  onSend: (text: string) => Promise<void>;
 }): ReactNode {
   const [text, setText] = useState('');
-  return (
-    <form
-      className="subagent-composer"
-      data-testid={testId}
-      title={title}
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (disabled) return;
-        onSend(text);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const submit = (): void => {
+    if (disabled || sending) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setSending(true);
+    onSend(trimmed).then(
+      () => {
+        setSending(false);
+        setError(null);
         setText('');
-      }}
-    >
-      <input
-        type="text"
-        className="subagent-composer-input"
-        aria-label={label}
-        placeholder={placeholder}
-        disabled={disabled}
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-      />
-      <button
-        type="submit"
-        className="subagent-composer-send"
-        disabled={disabled || text.trim().length === 0}
+      },
+      (err: unknown) => {
+        setSending(false);
+        setError(sendFailureReason(err));
+      },
+    );
+  };
+
+  return (
+    <>
+      <form
+        className="subagent-composer"
+        data-testid={testId}
+        title={title}
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
       >
-        Send
-      </button>
-    </form>
+        <input
+          type="text"
+          className="subagent-composer-input"
+          aria-label={label}
+          placeholder={placeholder}
+          disabled={disabled}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button
+          type="submit"
+          className="subagent-composer-send"
+          disabled={disabled || sending || text.trim().length === 0}
+        >
+          Send
+        </button>
+      </form>
+      {error ? (
+        <p className="subagent-composer-error" data-testid={`${testId}-error`} role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
   );
+}
+
+/** The gateway answers each of its three resume refusals — one-shot type,
+ * steer cap, unrebuildable grant — with text naming which one happened, which
+ * `MobileRestClient` keeps on `MobileApiError.detail`. Anything else (a
+ * network failure, a bug) falls back to generic copy rather than showing a raw
+ * stack message. */
+function sendFailureReason(err: unknown): string {
+  const detail = (err as { detail?: unknown } | null)?.detail;
+  return typeof detail === 'string' && detail.length > 0 ? detail : SUBAGENT_SEND_FAILED_COPY;
 }
 
 /** §8.1's glyph set, drawn inline (apps/web has no icon-library dependency —
@@ -434,6 +494,47 @@ function SubagentStatusGlyph({ status }: { status: SubagentStatus }): ReactNode 
 interface ChildSlice {
   transcript?: Transcript;
   info?: WebAppState['subagentInfo'][string];
+  /** `undefined` with no store above (see `useChildSlice`). */
+  connection?: WebAppState['connection'];
+}
+
+/**
+ * Expansion, held in the store and keyed by id (see
+ * `WebAppState.subagentExpansion`), with a local fallback for the case where
+ * there is no store above this component at all — `ContentBlocks` renders in
+ * places `Shell` does not wrap, and a row there should still open.
+ *
+ * Both hooks are called unconditionally; which value wins is decided after.
+ */
+function useExpansion(
+  store: WebAppStore | null,
+  key: string,
+  fallback: boolean,
+): [boolean, (next: boolean) => void] {
+  const [local, setLocal] = useState(fallback);
+  const [stored, setStored] = useState<boolean | undefined>(() =>
+    store ? store.getState().subagentExpansion[key] : undefined,
+  );
+
+  useEffect(() => {
+    if (!store) return;
+    setStored(store.getState().subagentExpansion[key]);
+    return store.subscribe((state) => {
+      setStored((previous) => {
+        const next = state.subagentExpansion[key];
+        return previous === next ? previous : next;
+      });
+    });
+  }, [store, key]);
+
+  if (!store) return [local, setLocal];
+  return [stored ?? fallback, (next: boolean) => store.getState().setSubagentExpanded(key, next)];
+}
+
+/** `subagentExpansion` key for a parallel-group container, namespaced so it
+ * cannot collide with the row of the child it is named after. */
+function groupExpansionKey(firstChildId: string): string {
+  return `group:${firstChildId}`;
 }
 
 /**
@@ -459,8 +560,15 @@ function useChildSlice(store: WebAppStore | null, childId: string): ChildSlice {
       setSlice((previous) => {
         const transcript = state.transcripts[childId];
         const info = state.subagentInfo?.[childId];
-        if (previous.transcript === transcript && previous.info === info) return previous;
-        return { transcript, info };
+        const connection = state.connection;
+        if (
+          previous.transcript === transcript &&
+          previous.info === info &&
+          previous.connection === connection
+        ) {
+          return previous;
+        }
+        return { transcript, info, connection };
       });
     });
   }, [store, childId]);
@@ -471,7 +579,11 @@ function useChildSlice(store: WebAppStore | null, childId: string): ChildSlice {
 function readSlice(store: WebAppStore | null, childId: string): ChildSlice {
   if (!store) return {};
   const state = store.getState();
-  return { transcript: state.transcripts[childId], info: state.subagentInfo?.[childId] };
+  return {
+    transcript: state.transcripts[childId],
+    info: state.subagentInfo?.[childId],
+    connection: state.connection,
+  };
 }
 
 /** First non-empty line of a report, stripped of leading markdown heading

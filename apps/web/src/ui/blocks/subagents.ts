@@ -319,7 +319,16 @@ export function groupSubagentEvents(
     const live = draft.sawModernProgress ? draft.modernLive : draft.legacyLive;
     const question = draft.sawModernProgress ? draft.modernQuestion : draft.legacyQuestion;
     const latestDetail = draft.sawModernProgress ? draft.modernDetail : draft.legacyDetail;
-    const status: SubagentStatus = terminal ?? (isStreaming ? (live ?? 'running') : 'cancelled');
+    const background = draft.background ?? false;
+    // End-of-stream terminalization (MC's `deriveWorkerStatus`), with one
+    // exemption MC never needed: a `background: true` child is spawned
+    // precisely to OUTLIVE the turn that spawned it (design §6), so the
+    // parent's message ending says nothing about whether it is still working.
+    // Reporting `cancelled` there would draw a healthy agent as dead in every
+    // finished message that ever spawned one. Only a real terminal event ends
+    // a background child.
+    const status: SubagentStatus =
+      terminal ?? (isStreaming || background ? (live ?? 'running') : 'cancelled');
     const previous = ordered[index - 1];
 
     const group: SubagentGroup = {
@@ -327,7 +336,7 @@ export function groupSubagentEvents(
       type: draft.modernType ?? draft.legacyType ?? '',
       description,
       status,
-      background: draft.background ?? false,
+      background,
       depth: draft.depth ?? 1,
       startedAt: draft.startedAt ?? '',
       toolCallCount: draft.finishedToolCallCount ?? draft.progressToolCallCount ?? 0,

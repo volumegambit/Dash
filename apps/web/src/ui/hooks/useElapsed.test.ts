@@ -49,23 +49,27 @@ describe('useElapsed', () => {
     expect(result.current).toBe(30_000);
   });
 
+  // Task D2 fix item 3: a terminal child with no `endedAt` has NO known
+  // duration. Returning `Date.now() - start` would report the row's own age —
+  // reopen the conversation three hours later and a `cancelled` child claims
+  // `3h 0m`. Ruling 5's rule ("no usable timestamp shows nothing") is exactly
+  // this case.
+  it('reports no elapsed at all for a terminal row that never reported an endedAt', () => {
+    expect(renderHook(() => useElapsed(STARTED, undefined, false)).result.current).toBeNull();
+  });
+
+  it('reports no elapsed for a terminal row mounted long after it started', () => {
+    vi.setSystemTime(new Date('2026-09-04T13:00:00.000Z'));
+    expect(renderHook(() => useElapsed(STARTED, undefined, false)).result.current).toBeNull();
+  });
+
   // A terminal child does not always have an `endedAt`: only
   // `subagent_finished` carries one, so an end-of-stream-terminalized
   // (`cancelled`) child and a legacy-only `worker_done` one both arrive
   // finished with none. `running: false` is what stops the clock for those —
   // otherwise they count up forever behind a finished glyph, one live
   // interval per row.
-  it('stops counting once the row is terminal, even with no endedAt', () => {
-    const { result } = renderHook(() => useElapsed(STARTED, undefined, false));
-    expect(result.current).toBe(5_000);
-
-    act(() => {
-      vi.advanceTimersByTime(10_000);
-    });
-    expect(result.current).toBe(5_000);
-  });
-
-  it('stops the tick when a live row goes terminal without an endedAt', () => {
+  it('drops the elapsed reading when a live row goes terminal without an endedAt', () => {
     const { result, rerender } = renderHook(
       ({ running }: { running: boolean }) => useElapsed(STARTED, undefined, running),
       { initialProps: { running: true } },
@@ -76,10 +80,11 @@ describe('useElapsed', () => {
     expect(result.current).toBe(8_000);
 
     rerender({ running: false });
+    expect(result.current).toBeNull();
     act(() => {
       vi.advanceTimersByTime(30_000);
     });
-    expect(result.current).toBe(8_000);
+    expect(result.current).toBeNull();
   });
 
   // Ruling 5: a legacy-only child (`worker_*` carries no timestamp) has

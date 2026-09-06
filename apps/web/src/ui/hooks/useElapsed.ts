@@ -16,12 +16,16 @@ import { useEffect, useState } from 'react';
  * `running` is what actually decides that, NOT the presence of `endedAt`.
  * Plenty of finished children have no end timestamp: only
  * `subagent_finished` carries one, so an end-of-stream-terminalized child
- * (`cancelled`, which is every background child in a completed parent message)
- * and a legacy-only `worker_done` child both arrive terminal with
- * `endedAt: undefined`. Keying the clock off `endedAt` alone would leave those
- * rows counting up forever behind a "cancelled" glyph, one live interval each.
- * With no `endedAt` to subtract, such a row freezes at whatever it last read —
- * the closest honest answer available.
+ * (`cancelled`) and a legacy-only `worker_done` child both arrive terminal
+ * with `endedAt: undefined`. Keying the clock off `endedAt` alone would leave
+ * those rows counting up forever behind a finished glyph, one live interval
+ * each.
+ *
+ * A terminal run with no `endedAt` reports `null`, not its last reading: the
+ * run's duration is genuinely unknown, and `Date.now() - startedAt` would
+ * answer a different question — how long ago it STARTED. Reopen the
+ * conversation three hours later and that renders a child that ran for ten
+ * seconds as `3h 00m`.
  *
  * Returns `null` — not `0`, not `NaN` — when there is no usable `startedAt`.
  * That is the real pre-D8 case: `worker_*` carries no timestamp, so a
@@ -52,6 +56,7 @@ export function useElapsed(
 
   if (start === null) return null;
   if (end !== null) return Math.max(0, end - start);
+  if (!running) return null;
   return Math.max(0, now - start);
 }
 

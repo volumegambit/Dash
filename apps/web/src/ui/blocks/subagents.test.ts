@@ -258,6 +258,39 @@ describe('groupSubagentEvents', () => {
       expect(group.status).toBe('cancelled');
     });
 
+    // Task D2 fix item 4: a `background: true` child is spawned to OUTLIVE the
+    // turn (design §6), so the parent's message ending says nothing about it.
+    // Terminalizing it to `cancelled` renders a healthy agent as dead in every
+    // finished message that spawned one.
+    it('leaves a background child running when the stream ends without a terminal event', () => {
+      const [group] = groupSubagentEvents(
+        [started('a', { background: true }), progress('a')],
+        false,
+      );
+      expect(group.status).toBe('running');
+      expect(group.background).toBe(true);
+    });
+
+    it('still honours a real terminal status for a background child', () => {
+      const [group] = groupSubagentEvents(
+        [started('a', { background: true }), finished('a', { status: 'done' })],
+        false,
+      );
+      expect(group.status).toBe('done');
+    });
+
+    it('keeps a background child waiting when that is the last thing it reported', () => {
+      const [group] = groupSubagentEvents(
+        [
+          started('a', { background: true }),
+          progress('a', { status: 'waiting_input', question: 'Which branch?' }),
+        ],
+        false,
+      );
+      expect(group.status).toBe('waiting');
+      expect(group.question).toBe('Which branch?');
+    });
+
     it('never overrides a real terminal status when the stream ends', () => {
       const [group] = groupSubagentEvents(
         [started('a'), finished('a', { status: 'failed' })],

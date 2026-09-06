@@ -77,12 +77,19 @@ function scriptStore(initial: Partial<WebAppState> = {}) {
     sendToSubagent: vi.fn(async () => {}),
   };
   const store = create<WebAppState>(
-    () =>
+    (set) =>
       ({
         conversations: [],
         transcripts: {},
         subagentInfo: {},
+        subagentExpansion: {},
         connection: 'connected',
+        // The real reducer, not a spy: expansion living in the store is the
+        // whole point of fix item 1, so the tests drive the real thing.
+        setSubagentExpanded: (key: string, expanded: boolean) =>
+          set((state) => ({
+            subagentExpansion: { ...state.subagentExpansion, [key]: expanded },
+          })),
         ...spies,
         ...initial,
       }) as unknown as WebAppState,
@@ -158,22 +165,21 @@ describe('SubagentBlock', () => {
       expect(within(row).getByText('7 tool uses · 1m 12s')).toBeTruthy();
     });
 
-    // The other half of "frozen on finish" (§8.1): a child with no terminal
-    // event in a FINISHED message is terminalized to `cancelled` by the fold
-    // and has no `endedAt` to subtract — it must still stop counting.
-    it('freezes elapsed on a terminal row that never reported an endedAt', () => {
+    // Fix item 3: a child terminalized at end of stream has no `endedAt`, so
+    // its duration is simply unknown — showing `Date.now() - startedAt` would
+    // report how long ago it started, which after a page reload reads as
+    // hours. Ruling 5's "no usable timestamp shows nothing" covers this too.
+    it('shows no elapsed on a terminal row that never reported an endedAt', () => {
       renderEvents([started(), progress()], { streaming: false });
 
       const row = screen.getByTestId('subagent-block');
       expect(row.getAttribute('data-status')).toBe('cancelled');
-      expect(within(row).getByText('3 tool uses · 5s')).toBeTruthy();
+      expect(within(row).getByText('3 tool uses')).toBeTruthy();
 
       act(() => {
-        vi.advanceTimersByTime(10_000);
+        vi.advanceTimersByTime(3 * 60 * 60 * 1000);
       });
-      expect(
-        within(screen.getByTestId('subagent-block')).getByText('3 tool uses · 5s'),
-      ).toBeTruthy();
+      expect(within(screen.getByTestId('subagent-block')).getByText('3 tool uses')).toBeTruthy();
     });
 
     // Ruling 5: `worker_*` carries no timestamp, so a legacy-only child folds
@@ -269,23 +275,25 @@ describe('SubagentBlock', () => {
   });
 
   describe('expansion (§8.3)', () => {
-    it('loads the child transcript once and subscribes while expanded', () => {
+    // The once-only guard moved into the store as part of fix item 1 (a
+    // component-held flag is thrown away by the remounts described in the
+    // "expansion survives a remount" block below), so what this asserts is the
+    // ROW's half of the contract: ask on expand, hold a subscription while
+    // open, release it on collapse. `store.test.ts`'s "replays a child
+    // transcript only once, however many rows ask for it" covers the dedupe.
+    it('asks for the child transcript and subscribes while expanded', () => {
       const scripted = scriptStore();
       renderEvents([started(), progress()], { streaming: true, scripted });
-      const header = within(screen.getByTestId('subagent-block')).getByRole('button');
 
-      fireEvent.click(header);
-      expect(header.getAttribute('aria-expanded')).toBe('true');
-      expect(scripted.loadSubagentTranscript).toHaveBeenCalledTimes(1);
+      fireEvent.click(rowHeader());
+      expect(rowHeader().getAttribute('aria-expanded')).toBe('true');
       expect(scripted.loadSubagentTranscript).toHaveBeenCalledWith(CHILD);
       expect(scripted.subscribeSubagent).toHaveBeenCalledWith(CHILD);
 
-      fireEvent.click(header);
-      expect(header.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(rowHeader());
+      expect(rowHeader().getAttribute('aria-expanded')).toBe('false');
       expect(scripted.unsubscribeSubagent).toHaveBeenCalledWith(CHILD);
-
-      fireEvent.click(header);
-      expect(scripted.loadSubagentTranscript).toHaveBeenCalledTimes(1);
+      expect(scripted.subscribeSubagent).toHaveBeenCalledTimes(1);
     });
 
     // Ruling 1: the child's transcript goes through the SAME renderer the
@@ -555,6 +563,147 @@ describe('SubagentBlock', () => {
       expect(screen.getAllByTestId('subagent-block')).toHaveLength(2);
       expect(screen.getByTestId('subagent-group')).toBeTruthy();
       expect(rowHeader().getAttribute('aria-expanded')).toBe('true');
+    });
+  });
+
+  // Fix item 1. The expansion a user opened is state D2 invented, and two
+  // things throw it away if it lives in component state: ChatView swapping the
+  // in-flight message's subtree for the finalized `MessageRow` when the turn
+  // ends, and a parallel group unmounting its rows when collapsed. Both also
+  // drop the child's subscription and reset the fetched flag.
+  describe('expansion survives a remount (§8.3, ruling 2)', () => {
+    it('stays open when the whole subtree is replaced, as it is when the parent turn ends', () => {
+      const scripted = scriptStore();
+      const tree = (key: string) => (
+        <WebAppStoreContext.Provider value={scripted.store}>
+          <div key={key}>
+            <ContentBlocks
+              content={{ type: 'assistant', events: [started(), progress()] }}
+              streaming={key === 'streaming'}
+            />
+          </div>
+        </WebAppStoreContext.Provider>
+      );
+      const { rerender } = render(tree('streaming'));
+      fireEvent.click(rowHeader());
+      expect(rowHeader().getAttribute('aria-expanded')).toBe('true');
+      expect(scripted.loadSubagentTranscript).toHaveBeenCalledTimes(1);
+
+      // A different `key` forces React to unmount and remount the subtree —
+      // exactly what ChatView does when `done` finalizes the message.
+      rerender(tree('finalized'));
+
+      expect(rowHeader().getAttribute('aria-expanded')).toBe('true');
+      expect(screen.getByTestId('subagent-composer')).toBeTruthy();
+      expect(scripted.subscribeSubagent).toHaveBeenCalledWith(CHILD);
+    });
+
+    it('keeps every row open across a parallel group collapse and reopen', () => {
+      const scripted = scriptStore();
+      renderEvents(
+        [
+          started(),
+          started({ subagentId: 'child-2', subagentType: 'Plan', description: 'Draft it' }),
+          progress(),
+        ],
+        { streaming: true, scripted },
+      );
+      fireEvent.click(rowHeader());
+      fireEvent.click(rowHeader('child-2'));
+      expect(rowHeader().getAttribute('aria-expanded')).toBe('true');
+      expect(rowHeader('child-2').getAttribute('aria-expanded')).toBe('true');
+
+      const groupHeader = within(screen.getByTestId('subagent-group')).getAllByRole('button')[0];
+      fireEvent.click(groupHeader);
+      expect(screen.queryAllByTestId('subagent-block')).toHaveLength(0);
+      fireEvent.click(within(screen.getByTestId('subagent-group')).getAllByRole('button')[0]);
+
+      expect(rowHeader().getAttribute('aria-expanded')).toBe('true');
+      expect(rowHeader('child-2').getAttribute('aria-expanded')).toBe('true');
+    });
+  });
+
+  // Fix item 5. A follow-up typed into a child could vanish with no trace:
+  // the input cleared before the send could fail, the rejection was swallowed,
+  // and the optimistic row's `failed` status was never rendered.
+  describe('composer failure feedback (§8.3)', () => {
+    it('keeps the text and shows the refusal when the send is rejected', async () => {
+      const scripted = scriptStore();
+      scripted.sendToSubagent.mockRejectedValue(
+        Object.assign(new Error('Mobile API error 409'), {
+          detail: 'Sub-agent child-1 is one-shot and cannot be resumed',
+        }),
+      );
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(rowHeader());
+
+      const composer = screen.getByTestId('subagent-composer');
+      const input = within(composer).getByRole('textbox') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'more please' } });
+      await act(async () => {
+        fireEvent.submit(composer);
+      });
+
+      expect(input.value).toBe('more please');
+      expect(screen.getByText('Sub-agent child-1 is one-shot and cannot be resumed')).toBeTruthy();
+    });
+
+    it('clears the text and the error once a send succeeds', async () => {
+      const scripted = scriptStore();
+      scripted.sendToSubagent.mockRejectedValueOnce(new Error('nope'));
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(rowHeader());
+
+      const composer = screen.getByTestId('subagent-composer');
+      const input = within(composer).getByRole('textbox') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'first' } });
+      await act(async () => {
+        fireEvent.submit(composer);
+      });
+      expect(screen.getByTestId('subagent-composer-error')).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.submit(composer);
+      });
+      expect(input.value).toBe('');
+      expect(screen.queryByTestId('subagent-composer-error')).toBeNull();
+    });
+
+    it('disables the composer while the gateway connection is down', () => {
+      const scripted = scriptStore({ connection: 'reconnecting' });
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(rowHeader());
+
+      const composer = screen.getByTestId('subagent-composer');
+      expect((within(composer).getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
+      fireEvent.submit(composer);
+      expect(scripted.sendToSubagent).not.toHaveBeenCalled();
+    });
+
+    it("renders a failed optimistic row in the child's transcript", () => {
+      const scripted = scriptStore({
+        transcripts: {
+          [CHILD]: {
+            messages: [
+              // Exactly the shape `sendToSubagent` leaves behind when the
+              // resume is refused: an orchestrator-origin row marked failed.
+              childMessage({
+                id: 'child-msg-failed',
+                role: 'user',
+                origin: 'parent',
+                status: 'failed',
+                content: { type: 'user', text: 'never made it' },
+              }),
+            ],
+            streaming: null,
+          },
+        },
+      });
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(rowHeader());
+
+      expect(screen.getByText('never made it')).toBeTruthy();
+      expect(screen.getByText('Failed to send')).toBeTruthy();
     });
   });
 

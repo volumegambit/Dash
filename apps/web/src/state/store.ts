@@ -26,6 +26,22 @@ export interface WebAppState {
    */
   subagentInfo: Record<string, SubagentInfo>;
   /**
+   * Which sub-agent rows and parallel-group containers the user has opened,
+   * keyed by the child's conversation id for a row and by
+   * `group:<first child id>` for a group.
+   *
+   * Expansion lives HERE rather than in `SubagentBlock`'s own `useState`
+   * because the components are remounted out from under the user by things
+   * that have nothing to do with them: `ChatView` swaps the in-flight
+   * message's subtree for a finalized `MessageRow` the moment the turn ends,
+   * and a collapsed parallel group unmounts its rows outright. Component
+   * state would be discarded by both — the row a user opened to watch a child
+   * work would snap shut when the parent finished, dropping its subscription
+   * and re-fetching on the way back. Keying by id also makes the guarantee
+   * structural rather than dependent on React key stability.
+   */
+  subagentExpansion: Record<string, boolean>;
+  /**
    * `'idle'` is the store's INITIAL state — before any conversation has ever
    * been opened or reconnect has ever been attempted. It means "nothing has
    * gone wrong yet," not "the gateway is unreachable": a healthy account
@@ -211,26 +227,51 @@ export interface WebAppState {
    * transcript over), while a 401 on either still means this credential is
    * dead and routes to `enterUnauthorized()` like every other REST call here.
    * Never rejects — the caller is a render effect.
+   *
+   * Idempotent: a child whose transcript has already been replayed is a no-op,
+   * so re-expanding a row (or a row being remounted) costs nothing. The
+   * bookkeeping is here, not in the component, for the same reason
+   * `subagentExpansion` is. The reconnect path re-reads deliberately, bypassing
+   * this — see `refreshChildTranscripts`.
    */
+  /** Opens or closes one row/group — see {@link WebAppState.subagentExpansion}. */
+  setSubagentExpanded(key: string, expanded: boolean): void;
   loadSubagentTranscript(childId: string): Promise<void>;
   /**
    * Watches a child conversation over the live socket so its transcript
    * streams into an expanded row (design §7.6/§8.3). Independent of the
-   * PARENT's own single subscription: children are tracked in their own set,
-   * so opening one never disturbs the conversation the user has open, and they
+   * PARENT's own single subscription: children are tracked separately, so
+   * opening one never disturbs the conversation the user has open, and they
    * are re-sent after a reconnect (a dropped socket loses every server-side
    * watcher). A no-op without a live socket or an open conversation to borrow
    * the agent id from.
+   *
+   * REFCOUNTED, because two rows can legitimately name the same child: D1's
+   * fold supports a crash-reconciled child whose start landed in one persisted
+   * message and whose terminal landed in the next, so both messages render a
+   * row for it. Without a count the first row to collapse would cut off the
+   * other row's live stream.
    */
   subscribeSubagent(childId: string): void;
-  /** Drops one child's subscription. Safe to call for a child that never had one. */
+  /** Releases one hold on a child's subscription; the last one out unsubscribes. */
   unsubscribeSubagent(childId: string): void;
   /**
-   * Types a user turn INTO a child ("type into a child's transcript", §8.3):
-   * an ordinary `message` frame addressed to the child conversation, on the
-   * parent's agent, with an optimistic user row in `transcripts[childId]`.
-   * Throws on the same disconnected precondition `sendMessage` enforces, and
-   * marks the optimistic row failed if the send itself throws.
+   * Types a user turn INTO a child ("type into a child's transcript", §8.3)
+   * via `POST /subagents/:id/resume`, with an optimistic user row in
+   * `transcripts[childId]` that is marked `failed` if the resume is refused.
+   *
+   * REST, not a WS `message` frame addressed to the child. The route matters:
+   * only it reaches `coordinator.sendToChild` → `ChildHandle.send`, which is
+   * the sole path that resolves a child blocked on `ask_orchestrator`, and the
+   * sole place the gateway enforces the one-shot refusal, the steer cap and
+   * the grant rebuild. A `message` frame goes to `hub.start` instead: against
+   * a child holding its turn lease it is rejected `conversation_busy`, and
+   * against one that is not it opens a SECOND turn while the child's question
+   * stays blocked until it times out.
+   *
+   * Rethrows on failure — the caller must tell the user, since the text they
+   * typed did not reach the agent. `MobileApiError.detail` carries the
+   * gateway's own reason.
    */
   sendToSubagent(childId: string, text: string): Promise<void>;
   /**
@@ -464,8 +505,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
    * that slot for a child would make the next `openConversation` unsubscribe
    * the child and silently leave the parent watched.
    */
-  const desiredChildSubscriptions = new Set<string>();
+  const desiredChildSubscriptions = new Map<string, number>();
   const activeChildSubscriptions = new Map<string, string>();
+  /**
+   * Children whose transcript has been replayed on this store. Deliberately
+   * outside the components: a remounted row must not pay for the same history
+   * twice (see `subagentExpansion`), and the reconnect path needs one place to
+   * invalidate.
+   */
+  const loadedChildTranscripts = new Set<string>();
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -534,6 +582,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
   function clearChildSubscriptions(): void {
     desiredChildSubscriptions.clear();
     activeChildSubscriptions.clear();
+    loadedChildTranscripts.clear();
   }
 
   /** Backward-paginated replay: `getMessages` walks from newest to oldest via
@@ -720,7 +769,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         return;
       }
       if (!agentId || disposed || socket !== target || currentConversationId !== parentId) return;
-      for (const childId of desiredChildSubscriptions) {
+      for (const childId of desiredChildSubscriptions.keys()) {
         if (activeChildSubscriptions.has(childId)) continue;
         const frame: MobileWsClientFrame = {
           type: 'subscribe',
@@ -735,6 +784,57 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         } catch (err) {
           console.error('WebAppStore: failed to send child subscribe frame', err);
         }
+      }
+    }
+
+    /**
+     * The actual child replay: newest page of the child's messages, plus its
+     * conversation summary for `SubagentInfo` (that is where `oneShot` lives).
+     * Independent halves — a failed summary must not cost the transcript — but
+     * a 401 from either still means this credential is dead.
+     */
+    async function fetchChildTranscript(childId: string): Promise<void> {
+      const [messages, childSummary] = await Promise.allSettled([
+        rest.getMessages(childId),
+        rest.getConversation(childId),
+      ]);
+
+      if (messages.status === 'fulfilled') {
+        updateTranscript(childId, (t) => ({
+          ...t,
+          messages: mergeMessagesById(t.messages, messages.value.items),
+        }));
+      }
+      const info = childSummary.status === 'fulfilled' ? childSummary.value.subagent : undefined;
+      if (info) {
+        set((state) => ({ subagentInfo: { ...state.subagentInfo, [childId]: info } }));
+      }
+      if (messages.status === 'rejected') {
+        // Not loaded after all — let the next expansion try again.
+        loadedChildTranscripts.delete(childId);
+        if (isAuthError(messages.reason)) {
+          enterUnauthorized();
+          return;
+        }
+      }
+      if (childSummary.status === 'rejected' && isAuthError(childSummary.reason)) {
+        enterUnauthorized();
+      }
+    }
+
+    /**
+     * Re-walk every watched child's history after a reconnect.
+     *
+     * Re-subscribing alone is not enough and the gap is invisible: the PARENT
+     * resumes from `sinceSeq: lastSeq`, but a child has no such cursor on this
+     * client, so everything it emitted while the socket was down is simply
+     * missing from `transcripts[childId]` — permanently, since the row's
+     * replay is otherwise once per store.
+     */
+    function refreshChildTranscripts(): void {
+      for (const childId of desiredChildSubscriptions.keys()) {
+        if (!loadedChildTranscripts.has(childId)) continue;
+        void fetchChildTranscript(childId);
       }
     }
 
@@ -981,6 +1081,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         // goes permanently silent after one reconnect.
         activeChildSubscriptions.clear();
         void flushChildSubscriptions(attempted, conversationId);
+        refreshChildTranscripts();
         reconnectAttempt = 0;
         set({ connection: 'connected' });
       } catch (err) {
@@ -999,6 +1100,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       conversations: [],
       transcripts: {},
       subagentInfo: {},
+      subagentExpansion: {},
       connection: 'idle',
 
       async listAgents() {
@@ -1303,40 +1405,31 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         }
       },
 
-      async loadSubagentTranscript(childId) {
-        const [messages, childSummary] = await Promise.allSettled([
-          rest.getMessages(childId),
-          rest.getConversation(childId),
-        ]);
+      setSubagentExpanded(key, expanded) {
+        set((state) => ({ subagentExpansion: { ...state.subagentExpansion, [key]: expanded } }));
+      },
 
-        if (messages.status === 'fulfilled') {
-          updateTranscript(childId, (t) => ({
-            ...t,
-            messages: mergeMessagesById(t.messages, messages.value.items),
-          }));
-        }
-        const info = childSummary.status === 'fulfilled' ? childSummary.value.subagent : undefined;
-        if (info) {
-          set((state) => ({ subagentInfo: { ...state.subagentInfo, [childId]: info } }));
-        }
-        if (isAuthError(messages.status === 'rejected' ? messages.reason : undefined)) {
-          enterUnauthorized();
-          return;
-        }
-        if (isAuthError(childSummary.status === 'rejected' ? childSummary.reason : undefined)) {
-          enterUnauthorized();
-        }
+      async loadSubagentTranscript(childId) {
+        if (loadedChildTranscripts.has(childId)) return;
+        loadedChildTranscripts.add(childId);
+        await fetchChildTranscript(childId);
       },
 
       subscribeSubagent(childId) {
-        if (desiredChildSubscriptions.has(childId)) return;
-        desiredChildSubscriptions.add(childId);
+        const holds = desiredChildSubscriptions.get(childId) ?? 0;
+        desiredChildSubscriptions.set(childId, holds + 1);
+        if (holds > 0) return;
         const parentId = currentConversationId;
         if (!socket || !parentId) return;
         void flushChildSubscriptions(socket, parentId);
       },
 
       unsubscribeSubagent(childId) {
+        const holds = desiredChildSubscriptions.get(childId) ?? 0;
+        if (holds > 1) {
+          desiredChildSubscriptions.set(childId, holds - 1);
+          return;
+        }
         desiredChildSubscriptions.delete(childId);
         const agentId = activeChildSubscriptions.get(childId);
         activeChildSubscriptions.delete(childId);
@@ -1356,57 +1449,37 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       },
 
       async sendToSubagent(childId, text) {
-        if (!socket || get().connection !== 'connected') {
-          throw new Error(
-            'Cannot send to a sub-agent: no connected chat socket (open the parent conversation first)',
-          );
-        }
-        const parentId = currentConversationId;
-        // Deliberately NOT `conversations.find(childId)` the way `sendMessage`
-        // resolves its agent: a child is never in that list (the gateway's
-        // conversation list is `kind: 'user'` only), so the agent comes from
-        // the parent this child belongs to.
-        const agentId = parentId ? await resolveAgentId(parentId) : null;
-        if (!agentId) {
-          throw new Error(`Cannot send to sub-agent "${childId}": its agent is unknown`);
-        }
-        const live = socket;
-        if (!live) {
-          throw new Error('Cannot send to a sub-agent: the chat socket dropped');
-        }
-
-        const turnId = crypto.randomUUID();
+        // The optimistic row goes in FIRST so the text is visible in the
+        // child's transcript while the resume is in flight, and so there is
+        // something to mark `failed` if it is refused.
+        const localId = crypto.randomUUID();
         const optimistic: ConversationMessage = {
-          id: turnId,
+          id: localId,
           conversationId: childId,
-          turnId,
+          turnId: localId,
           ordinal: (get().transcripts[childId]?.messages.length ?? 0) + 1,
           role: 'user',
           status: 'accepted',
           content: { type: 'user', text },
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          origin: 'parent',
         };
         updateTranscript(childId, (t) => ({ ...t, messages: [...t.messages, optimistic] }));
 
-        const frame: MobileWsClientFrame = {
-          type: 'message',
-          id: turnId,
-          agentId,
-          channelId: CHANNEL_ID,
-          conversationId: childId,
-          text,
-          resumable: true,
-        };
         try {
-          live.send(frame);
+          await rest.resumeSubagent(childId, text);
         } catch (err) {
           updateTranscript(childId, (t) => ({
             ...t,
             messages: t.messages.map((m) =>
-              m.id === turnId ? { ...m, status: 'failed' as const } : m,
+              m.id === localId ? { ...m, status: 'failed' as const } : m,
             ),
           }));
+          if (isAuthError(err)) enterUnauthorized();
+          // Rethrown, unlike `cancelTurn`'s swallow: the user typed this and it
+          // did not reach the agent, so the row that owns the composer has to
+          // say so.
           throw err;
         }
       },
