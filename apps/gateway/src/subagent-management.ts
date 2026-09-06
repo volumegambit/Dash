@@ -442,11 +442,17 @@ export function mountSubagentRuntimeRoutes(app: Hono, deps: SubagentRuntimeRoute
       // `endedAt` is stamped with the status, exactly as every other terminal
       // write does (`ChildHandle.finalizeTerminal`, boot recovery): the list
       // route reads it, and recovery's idempotency key is its presence.
+      // `status` is REQUIRED by `SubagentStopResponse`, and an optional read
+      // here would serialise the key away entirely (JSON drops `undefined`),
+      // producing a body no strict decoder accepts. `requireChild` already
+      // proved the row is a sub-agent, so the fallback is the status just
+      // written rather than a guess.
       const terminal = conversations.updateSubagent(id, {
         status: 'cancelled',
         info: { endedAt: new Date().toISOString() },
       });
-      return c.json({ ok: true, status: terminal.subagent?.status });
+      const status: SubagentStatus = terminal.subagent?.status ?? 'cancelled';
+      return c.json({ ok: true, status });
     } catch (error) {
       const mapped = toMobileApiError(error);
       return c.json(mapped.body, mapped.status);

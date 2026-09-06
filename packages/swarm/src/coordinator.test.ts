@@ -905,6 +905,58 @@ describe('SwarmCoordinator', () => {
       second.finalize({ consumerAlive: true });
     });
 
+    it('does not let a child with an unknown startedAt drag the run to 1970', () => {
+      // A run's clock used to be owned by the run itself. It is derived from
+      // its children now, so one snapshot with no parseable `startedAt` must
+      // not become the whole run's start — the panel sorts and renders elapsed
+      // time off this number.
+      const { factory } = makeFactory();
+      const driver = createFakeChildDriver(factory);
+      driver.persisted.push(
+        {
+          subagentId: 'sub_known',
+          workerId: 'sub_known',
+          parentConversationId: CONVO_ID,
+          parentTurnId: 'turn-1',
+          role: 'r',
+          status: 'done',
+          brief: 'b',
+          model: 'm',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_060_000,
+          subagentType: 'general-purpose',
+          description: 'd',
+          toolCallCount: 0,
+          background: false,
+          oneShot: false,
+          depth: 1,
+        },
+        {
+          subagentId: 'sub_unknown',
+          workerId: 'sub_unknown',
+          parentConversationId: CONVO_ID,
+          parentTurnId: 'turn-1',
+          role: 'r',
+          status: 'done',
+          brief: 'b',
+          model: 'm',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          subagentType: 'general-purpose',
+          description: 'd',
+          toolCallCount: 0,
+          background: false,
+          oneShot: false,
+          depth: 1,
+        },
+      );
+      const coord = new SwarmCoordinator({ childDriver: driver });
+
+      const [run] = coord.runsForConversation(AGENT_ID, CONVO_ID);
+      expect(run.startedAt).toBe(1_700_000_000_000);
+      expect(run.endedAt).toBe(1_700_000_060_000);
+    });
+
     it('lists the conversations it holds children for, per agent', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
@@ -944,6 +996,32 @@ describe('SwarmCoordinator', () => {
       a.finalize({ consumerAlive: true });
       const res = coord.sendPanelMessage(AGENT_ID, runId, workerId, 'hi');
       expect(res).toEqual({ ok: false, reason: 'worker terminal' });
+    });
+
+    /**
+     * AGENT SCOPING. Resolving the handle from the process-global child map is
+     * what gives the panel reach across turns — and it is also what would let
+     * agent B address agent A's child, since the route only checks that the
+     * `:id` in the path names SOME registered agent. The handle's own
+     * `agentId` is the bound.
+     */
+    it('refuses to cancel or steer another agent-s child', () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      const a = coord.attach(baseAttach());
+      const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+
+      expect(coord.cancelWorker('some-other-agent', 'whatever', workerId)).toEqual({
+        ok: false,
+        reason: 'worker terminal',
+      });
+      expect(coord.sendPanelMessage('some-other-agent', 'whatever', workerId, 'hi')).toEqual({
+        ok: false,
+        reason: 'worker terminal',
+      });
+      // …and the child is untouched: its owner can still steer it.
+      expect(coord.sendPanelMessage(AGENT_ID, 'whatever', workerId, 'hi')).toEqual({ ok: true });
+      a.finalize({ consumerAlive: false });
     });
 
     /**

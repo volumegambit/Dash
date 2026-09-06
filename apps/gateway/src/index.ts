@@ -51,7 +51,7 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
-import { recoverGatewayTurns } from './gateway-recovery.js';
+import { type GatewayRecoveryResult, recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
@@ -607,16 +607,45 @@ async function main() {
   // conversation leases and mark every non-terminal child `interrupted`, then
   // queue each of those children's parent a notification. Runs before any
   // server accepts traffic, so no live turn can exist yet.
+  //
+  // WRAPPED, like the reaper below it. Each pass contains its own per-row
+  // failures, but the child sweep added in this task is a single unguarded
+  // UPDATE inside `recoverInterruptedTurns`' transaction — a throw there
+  // (a corrupt row, a locked database) would escape every inner catch and
+  // take boot down. A gateway that could not repair its history is still a
+  // gateway that should start.
+  let recovery: GatewayRecoveryResult = {
+    subagents: {
+      conversationsRepaired: 0,
+      childrenTerminalized: 0,
+      notificationsQueued: 0,
+      pendingDelivery: [],
+    },
+    conversations: {
+      conversationsInterrupted: 0,
+      terminalsAppended: 0,
+      subagentsInterrupted: 0,
+    },
+    notifiedChildren: { childrenNotified: 0, pendingDelivery: [] },
+    pendingDelivery: [],
+  };
+  try {
+    recovery = recoverGatewayTurns({
+      eventLog: eventLogStore,
+      conversations: conversationService,
+      log: (message) => logger.info(message),
+    });
+  } catch (err) {
+    logger.warn(
+      `[recovery] boot recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   const {
     conversations: conversationRecovery,
     subagents: subagentRecovery,
     notifiedChildren,
     pendingDelivery: recoveredNotificationTargets,
-  } = recoverGatewayTurns({
-    eventLog: eventLogStore,
-    conversations: conversationService,
-    log: (message) => logger.info(message),
-  });
+  } = recovery;
   if (conversationRecovery.conversationsInterrupted > 0) {
     logger.info(
       `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +

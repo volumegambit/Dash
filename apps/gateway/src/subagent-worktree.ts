@@ -179,6 +179,48 @@ export interface WorktreeCleanupResult {
 }
 
 /**
+ * The blocking reason `git status` structurally cannot see: COMMITS.
+ *
+ * A child that did what this repo's own conventions tell agents to do — commit
+ * its work — leaves a perfectly CLEAN tree on a detached HEAD. `git status
+ * --porcelain --ignored=matching` reports nothing, and `git worktree remove`
+ * does not refuse over unmerged commits: it deletes the directory and prunes
+ * the per-worktree ref and reflog, so the commits become unreachable and no
+ * ref in the repository points at them any more.
+ *
+ * That is not a corner case for this module. Boot recovery marks every child
+ * a restart killed `interrupted` BEFORE the reaper runs, so the population the
+ * reaper actually sweeps is the resumable one — and the same hole exists on the
+ * finish-time path for a `done` child.
+ *
+ * The test is reachability, not "did it commit": an empty
+ * `git for-each-ref --contains <HEAD>` means no branch, tag or remote-tracking
+ * ref would keep this commit alive. A worktree still sitting on the branch tip
+ * it was cut from is contained by that branch and removes normally.
+ *
+ * Returns the blocking description, or `undefined` when the HEAD is safely
+ * reachable. A git failure returns a description too: every ambiguous case in
+ * this module resolves to KEEP.
+ */
+async function unreachableHead(path: string): Promise<string | undefined> {
+  let head: string;
+  try {
+    const { stdout } = await run('git', ['-C', path, 'rev-parse', 'HEAD']);
+    head = stdout.trim();
+  } catch (err) {
+    return `HEAD is unreadable (${err instanceof Error ? err.message : String(err)})`;
+  }
+  if (!head) return 'HEAD is unreadable';
+  try {
+    const { stdout } = await run('git', ['-C', path, 'for-each-ref', '--contains', head]);
+    if (stdout.trim() !== '') return undefined;
+  } catch (err) {
+    return `HEAD reachability is unknown (${err instanceof Error ? err.message : String(err)})`;
+  }
+  return `HEAD ${head.slice(0, 12)} holds commits no branch or tag contains`;
+}
+
+/**
  * Take an isolated child's worktree down — but only if it is EMPTY-HANDED.
  *
  * `--ignored=matching` is load-bearing: without it `git status --porcelain`
@@ -209,6 +251,8 @@ export async function cleanupChildWorktree(o: {
     if (entry.code === '!!' && isDisposableArtefact(entry.path)) disposable.push(entry.path);
     else blocking.push(entry.path);
   }
+  const unmerged = await unreachableHead(o.path);
+  if (unmerged) blocking.push(unmerged);
   if (blocking.length > 0) return { removed: false, blocking, disposable };
   // Deliberately NOT `--force`: git re-checks the tree itself, so if the child
   // wrote something between our status call and this line the removal fails

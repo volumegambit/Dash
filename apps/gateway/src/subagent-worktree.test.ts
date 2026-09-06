@@ -258,6 +258,47 @@ describe('subagent worktree isolation', { timeout: 30_000 }, () => {
       expect(await exists(plan)).toBe(true);
     });
 
+    /**
+     * `git status` says nothing about COMMITS. A child that did the thing this
+     * repo's own conventions tell agents to do — commit its work — leaves a
+     * CLEAN tree on a detached HEAD, and `git worktree remove` does not refuse
+     * over unmerged commits. Removing it prunes the per-worktree ref and
+     * reflog and orphans the commits; nothing else in the repo points at them.
+     */
+    it('KEEPS a worktree whose HEAD commit is not reachable from any ref', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'w-committed',
+      });
+      await writeFile(join(path, 'result.txt'), 'the deliverable\n');
+      await git(path, 'add', '-A');
+      await git(path, 'commit', '-m', 'child work');
+      // The tree is clean — this is exactly what makes the case dangerous.
+      expect((await git(path, 'status', '--porcelain', '--ignored=matching')).trim()).toBe('');
+
+      const result = await cleanupChildWorktree({ workspace, path });
+
+      expect(result.removed).toBe(false);
+      expect(result.blocking.join(' ')).toMatch(/commit/i);
+      expect(await exists(join(path, 'result.txt'))).toBe(true);
+    });
+
+    it('still removes a worktree sitting on a commit the repo already has', async () => {
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'w-untouched',
+      });
+
+      const result = await cleanupChildWorktree({ workspace, path });
+
+      expect(result).toMatchObject({ removed: true, blocking: [] });
+      expect(await exists(path)).toBe(false);
+    });
+
     /** The disposable set is policy, so it is named, exported and pinned here. */
     it('exposes the disposable artefact set as a reviewable constant', () => {
       expect([...DISPOSABLE_WORKTREE_ARTEFACTS]).toEqual([
@@ -336,6 +377,30 @@ describe('subagent worktree isolation', { timeout: 30_000 }, () => {
 
       expect(await reapOrphanWorktrees({ dataDir })).toMatchObject({ removed: [path] });
       expect(await exists(path)).toBe(false);
+    });
+
+    it('KEEPS an interrupted child-s worktree when it committed its work', async () => {
+      // The population the reaper actually operates on: boot recovery has
+      // already flipped every running child to `interrupted`, so this is the
+      // resumable child whose commits must survive the sweep.
+      const { path } = await createChildWorktree({
+        workspace,
+        dataDir,
+        agentName: 'researcher',
+        childId: 'sub_committed',
+      });
+      await writeFile(join(path, 'result.txt'), 'the deliverable\n');
+      await git(path, 'add', '-A');
+      await git(path, 'commit', '-m', 'child work');
+
+      const result = await reapOrphanWorktrees({
+        dataDir,
+        statusOf: () => 'interrupted',
+      });
+
+      expect(result.removed).toEqual([]);
+      expect(result.kept.map((entry) => entry.path)).toEqual([path]);
+      expect(await exists(join(path, 'result.txt'))).toBe(true);
     });
 
     it('KEEPS the worktree of a live child and of a resumable max_turns child', async () => {

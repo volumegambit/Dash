@@ -67,6 +67,9 @@ describe('gateway conversation composition', () => {
     // §7.5: what recovery queued has to be DELIVERED once the hub exists.
     expect(source).toContain('recoveredNotificationTargets');
     expect(source).toContain('deliverPending(target.agentId, target.conversationId)');
+    // A throw inside recovery must not take boot down (the child sweep is one
+    // unguarded UPDATE inside its transaction).
+    expect(source).toContain('[recovery] boot recovery failed');
 
     const managementMount = source.slice(
       source.indexOf('createGatewayManagementApp({'),

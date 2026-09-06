@@ -84,6 +84,11 @@ const DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
 /** waitWorker waits on one named child for as long as the turn can live. */
 const WAIT_WORKER_TIMEOUT_SECONDS = 24 * 3600;
 
+/** A usable epoch-millisecond stamp — `undefined` and `NaN` are not. */
+function isTimestamp(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 const TERMINAL_STATUSES: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
   'done',
   'failed',
@@ -1194,8 +1199,16 @@ export class SwarmCoordinator {
     const snapshots: RunSnapshot[] = [];
     for (const [runId, children] of byTurn) {
       const active = children.filter((child) => !TERMINAL_STATUSES.has(child.status));
-      const startedAt = Math.min(...children.map((child) => child.startedAt ?? 0));
-      const endedAt = Math.max(...children.map((child) => child.endedAt ?? 0));
+      // UNKNOWN timestamps are skipped, not read as 0. A run's clock used to be
+      // owned by the run; it is derived from its children now, so a single
+      // snapshot with no parseable `startedAt` would otherwise date the whole
+      // run to 1970 and the panel would sort and render it that way.
+      const starts = children.map((child) => child.startedAt).filter(isTimestamp);
+      const ends = children.map((child) => child.endedAt).filter(isTimestamp);
+      // No child knows when it started: fall back to the earliest END time
+      // rather than the epoch, and only then to 0.
+      const startedAt = starts.length > 0 ? Math.min(...starts) : Math.min(...ends, 0) || 0;
+      const endedAt = ends.length > 0 ? Math.max(...ends) : 0;
       snapshots.push({
         runId,
         agentId,
@@ -1242,7 +1255,7 @@ export class SwarmCoordinator {
     ok: boolean;
     reason?: string;
   } {
-    const handle = this.children.get(workerId);
+    const handle = this.panelHandle(agentId, workerId);
     if (!handle) return { ok: false, reason: 'worker terminal' };
     // Shared synchronous check+effect discipline (no await between).
     if (this.isHandleTerminal(handle.status)) return { ok: false, reason: 'worker terminal' };
@@ -1252,17 +1265,37 @@ export class SwarmCoordinator {
   }
 
   sendPanelMessage(
-    _agentId: string,
+    agentId: string,
     _runId: string,
     workerId: string,
     message: string,
   ): { ok: boolean; reason?: string } {
-    const handle = this.children.get(workerId);
+    const handle = this.panelHandle(agentId, workerId);
     if (!handle) return { ok: false, reason: 'worker terminal' };
     if (this.isHandleTerminal(handle.status)) return { ok: false, reason: 'worker terminal' };
     const res = handle.send(message);
     if (!res.ok) return { ok: false, reason: res.reason };
     return { ok: true };
+  }
+
+  /**
+   * A panel-addressable child of THIS agent.
+   *
+   * `this.children` is process-global, and dropping the run-scoped lookup is
+   * what gave the panel its reach across turns — but the run also used to be
+   * what bounded a panel action to one agent, and the routes only check that
+   * the `:id` in the path names SOME registered agent. Without this check
+   * `POST /agents/<B>/swarm/runs/anything/workers/<A-child>/cancel` cancels
+   * agent A's child, and the `/send` variant writes arbitrary text into A's
+   * child conversation. The handle's own `agentId` is the bound.
+   *
+   * An id belonging to another agent is reported as `worker terminal`, the
+   * same answer an unknown id gets: the panel of agent B must not be able to
+   * tell the two apart.
+   */
+  private panelHandle(agentId: string, workerId: string): ChildHandle | undefined {
+    const handle = this.children.get(workerId);
+    return handle && handle.agentId === agentId ? handle : undefined;
   }
 
   /**
@@ -1416,15 +1449,6 @@ export class SwarmCoordinator {
       }
     }
     return [...requested];
-  }
-
-  private findLiveRun(agentId: string, runId: string): SwarmRun | undefined {
-    for (const turn of this.live.values()) {
-      if (turn.opts.agentId === agentId && !turn.finalized && turn.run?.runId === runId) {
-        return turn.run;
-      }
-    }
-    return undefined;
   }
 
   private isHandleTerminal(status: WorkerStatus): boolean {
