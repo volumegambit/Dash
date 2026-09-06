@@ -2,7 +2,6 @@ package app.dash.core.contracts
 
 import java.math.BigDecimal
 import java.time.LocalDate
-import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
@@ -72,13 +71,12 @@ internal object JsonIntegralIntSerializer : KSerializer<Int> {
 
 object WireRules {
   private val uuid = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-  private val modelIdentifier = Regex("^[^/]+/.+$")
   private val ecmaScriptWhitespace = Regex(
     "[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]",
   )
   private val rfc3339 = Regex(
-    "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$",
-    RegexOption.IGNORE_CASE,
+    "^([0-9]{4}-[0-9]{2}-[0-9]{2})[Tt]([0-9]{2}):([0-9]{2}):([0-9]{2})" +
+      "(?:\\.[0-9]+)?(?:[Zz]|[+-]([0-9]{2}):([0-9]{2}))$",
   )
   private val isoDate = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
   private val memoryTypes = setOf("user", "feedback", "project", "reference")
@@ -172,11 +170,23 @@ object WireRules {
   }
 
   fun requireRfc3339(value: String, field: String): String = value.also {
-    require(rfc3339.matches(it)) { "$field must be RFC 3339" }
+    val match = rfc3339.matchEntire(it)
+      ?: throw IllegalArgumentException("$field must be RFC 3339")
     try {
-      OffsetDateTime.parse(it)
+      LocalDate.parse(match.groupValues[1])
     } catch (_: DateTimeParseException) {
       throw IllegalArgumentException("$field must be RFC 3339")
+    }
+    val hour = match.groupValues[2].toInt()
+    val minute = match.groupValues[3].toInt()
+    val second = match.groupValues[4].toInt()
+    val offsetHour = match.groupValues[5].ifEmpty { "0" }.toInt()
+    val offsetMinute = match.groupValues[6].ifEmpty { "0" }.toInt()
+    require(hour in 0..23 && minute in 0..59 && second in 0..59) {
+      "$field must be RFC 3339"
+    }
+    require(offsetHour in 0..23 && offsetMinute in 0..59) {
+      "$field must be RFC 3339"
     }
   }
 
@@ -192,7 +202,8 @@ object WireRules {
   fun requireModelIdentifier(value: String, field: String): String = value.also {
     requireCodePointLength(it, 3, Int.MAX_VALUE, field)
     requireNoEcmaScriptWhitespace(it, field)
-    require(modelIdentifier.matches(it)) { "$field must be provider/model" }
+    val separator = it.indexOf('/')
+    require(separator > 0 && separator < it.lastIndex) { "$field must be provider/model" }
   }
 
   fun requireNoEcmaScriptWhitespace(value: String, field: String): String = value.also {

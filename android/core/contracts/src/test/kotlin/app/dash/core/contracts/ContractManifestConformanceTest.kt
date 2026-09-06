@@ -189,6 +189,95 @@ class ContractManifestConformanceTest {
   }
 
   @Test
+  fun modelIdentifiersUseFrozenEcmaScriptWhitespace() {
+    val models = FixtureLoader.value("models-list.json").jsonObject
+    val firstModel = models.getValue("models").jsonArray.first().jsonObject
+    fun response(value: String): JsonObject = JsonObject(
+      models + (
+        "models" to JsonArray(
+          listOf(JsonObject(firstModel + ("value" to JsonPrimitive(value)))),
+        )
+      ),
+    )
+
+    listOf(
+      "provider/\u0085model",
+      "pro\u0085vider/model",
+      "provider/family/model",
+    ).forEach { value ->
+      assertEquals(
+        value,
+        WireContractValidator.decodeRuntime(
+          WireContracts.MobileModelsResponse,
+          response(value),
+        ).models.single().value,
+      )
+    }
+
+    val ecmaScriptWhitespace = listOf(
+      '\u0009',
+      '\u000a',
+      '\u000b',
+      '\u000c',
+      '\u000d',
+      '\u0020',
+      '\u00a0',
+      '\u1680',
+      '\u2003',
+      '\u2028',
+      '\u2029',
+      '\u202f',
+      '\u205f',
+      '\u3000',
+      '\ufeff',
+    )
+    ecmaScriptWhitespace.forEach { whitespace ->
+      listOf("pro${whitespace}vider/model", "provider/${whitespace}model").forEach { value ->
+        assertContractRejected(WireContracts.MobileModelsResponse, response(value))
+      }
+    }
+    listOf("provider", "/model", "provider/").forEach { value ->
+      assertContractRejected(WireContracts.MobileModelsResponse, response(value))
+    }
+  }
+
+  @Test
+  fun rfc3339OffsetsUseTheFullWireRange() {
+    fun healthAt(timestamp: String): String =
+      """{"status":"healthy","startedAt":"$timestamp","pid":1,"agents":0,"channels":0,"apiVersion":1,"capabilities":[]}"""
+
+    listOf(
+      "2026-01-01T00:00:00+19:00",
+      "2026-01-01T23:59:59.123+23:59",
+      "2024-02-29T00:00:00-23:59",
+    ).forEach { timestamp ->
+      assertEquals(
+        timestamp,
+        decodeJson(WireContracts.MobileHealth, healthAt(timestamp)).startedAt,
+      )
+    }
+
+    ContractAssertions.assertValid(
+      WireDocument.ChatWs,
+      "ChatEvent",
+      parseJson(
+        """{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","seq":1,"event":{"type":"error","error":"bad","timestamp":"2026-01-01T00:00:00+19:00"}}""",
+      ),
+    )
+
+    listOf(
+      "2026-01-01T00:00:00+24:00",
+      "2026-01-01T00:00:00-24:00",
+      "2026-01-01T00:00:00+23:60",
+      "2026-01-01T00:00:00+19",
+      "2026-02-29T00:00:00+19:00",
+      "2026-01-01T24:00:00+19:00",
+    ).forEach { timestamp ->
+      assertContractRejected(WireContracts.MobileHealth, healthAt(timestamp))
+    }
+  }
+
+  @Test
   fun canonicalAgentEventScanningStopsAtSchemaOpenSubtrees() {
     val nestedMalformedEvent = parseJson(
       """{"type":"event","event":{"type":"text_delta"}}""",
