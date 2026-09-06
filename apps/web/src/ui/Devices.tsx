@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ControlPlaneClient, PairingInfo } from '../auth/control-plane.js';
 import type { CredentialStore } from '../auth/credential-store.js';
+import { PreciseLocationSetting } from './PreciseLocationSetting.js';
 
 export interface DevicesProps {
   gatewayId: string;
@@ -121,6 +122,7 @@ export function Devices({
           ))}
         </ul>
       )}
+      <PreciseLocationSetting />
     </div>
   );
 }

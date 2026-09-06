@@ -1,4 +1,11 @@
-import { readClientLocation, readCoarseLocation } from './location.js';
+import {
+  __resetPreciseLocationForTests,
+  isPreciseLocationAvailable,
+  isPreciseLocationEnabled,
+  readClientLocation,
+  readCoarseLocation,
+  setPreciseLocationEnabled,
+} from './location.js';
 
 describe('readCoarseLocation', () => {
   const realDTF = Intl.DateTimeFormat;
@@ -71,5 +78,116 @@ describe('readCoarseLocation', () => {
       locale: 'en-SG',
       region: 'SG',
     });
+  });
+});
+
+describe('precise location opt-in', () => {
+  const realDTF = Intl.DateTimeFormat;
+
+  beforeEach(() => {
+    __resetPreciseLocationForTests();
+    localStorage.clear();
+    Intl.DateTimeFormat = (() => ({
+      resolvedOptions: () => ({ timeZone: 'Asia/Singapore' }),
+    })) as unknown as typeof Intl.DateTimeFormat;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    Intl.DateTimeFormat = realDTF;
+    localStorage.clear();
+  });
+
+  function stubGeo(position?: { lat: number; lon: number; accuracy: number }, fail?: unknown) {
+    vi.stubGlobal('navigator', {
+      language: 'en-SG',
+      geolocation: {
+        // The real getCurrentPosition is ALWAYS asynchronous. Keeping the
+        // stub async is what makes the "a send never waits on a fix"
+        // assertion below meaningful.
+        getCurrentPosition: (ok: (p: unknown) => void, err?: (e: unknown) => void): void => {
+          queueMicrotask(() => {
+            if (fail !== undefined) {
+              err?.(fail);
+              return;
+            }
+            ok({
+              coords: {
+                latitude: position?.lat ?? 1.2966,
+                longitude: position?.lon ?? 103.7764,
+                accuracy: position?.accuracy ?? 12,
+              },
+              timestamp: Date.UTC(2026, 8, 6, 10, 11, 2),
+            });
+          });
+        },
+      },
+    });
+    vi.stubGlobal('isSecureContext', true);
+  }
+
+  it('is disabled by default', () => {
+    stubGeo();
+    expect(isPreciseLocationEnabled()).toBe(false);
+    expect(readClientLocation()?.precise).toBeUndefined();
+  });
+
+  it('persists the opt-in to localStorage', () => {
+    stubGeo();
+    setPreciseLocationEnabled(true);
+    expect(isPreciseLocationEnabled()).toBe(true);
+    expect(localStorage.getItem('dash.location.precise')).toBe('1');
+    setPreciseLocationEnabled(false);
+    expect(isPreciseLocationEnabled()).toBe(false);
+    expect(localStorage.getItem('dash.location.precise')).toBeNull();
+  });
+
+  it('reports unavailable outside a secure context', () => {
+    stubGeo();
+    vi.stubGlobal('isSecureContext', false);
+    expect(isPreciseLocationAvailable()).toBe(false);
+  });
+
+  it('reports unavailable when the browser has no geolocation', () => {
+    vi.stubGlobal('navigator', { language: 'en-SG' });
+    vi.stubGlobal('isSecureContext', true);
+    expect(isPreciseLocationAvailable()).toBe(false);
+  });
+
+  it('attaches a cached fix once one has been captured', async () => {
+    stubGeo();
+    setPreciseLocationEnabled(true);
+    // First read kicks off the async refresh and returns coarse only --
+    // sendMessage is synchronous and must never block on a geolocation fix.
+    expect(readClientLocation()?.precise).toBeUndefined();
+    await vi.waitFor(() => expect(readClientLocation()?.precise).toBeDefined());
+
+    const precise = readClientLocation()?.precise;
+    expect(precise).toMatchObject({
+      latitude: 1.2966,
+      longitude: 103.7764,
+      accuracyMeters: 12,
+    });
+    expect(precise?.capturedAt).toBe(new Date(Date.UTC(2026, 8, 6, 10, 11, 2)).toISOString());
+  });
+
+  it('degrades to coarse when the permission is denied and never throws', async () => {
+    stubGeo(undefined, { code: 1, message: 'User denied Geolocation' });
+    setPreciseLocationEnabled(true);
+    expect(() => readClientLocation()).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    const out = readClientLocation();
+    expect(out).toBeDefined();
+    expect(out?.precise).toBeUndefined();
+    expect(out?.timezone).toBe('Asia/Singapore');
+  });
+
+  it('drops the cached fix when the user opts back out', async () => {
+    stubGeo();
+    setPreciseLocationEnabled(true);
+    await vi.waitFor(() => expect(readClientLocation()?.precise).toBeDefined());
+    setPreciseLocationEnabled(false);
+    expect(readClientLocation()?.precise).toBeUndefined();
   });
 });

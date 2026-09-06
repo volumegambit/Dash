@@ -1,4 +1,4 @@
-import type { MobileClientLocation } from '@dash/mobile-contract';
+import type { MobileClientLocation, MobilePreciseLocation } from '@dash/mobile-contract';
 
 /**
  * Read the coarse location tier from platform APIs that need no permission:
@@ -43,10 +43,100 @@ export function readCoarseLocation(): MobileClientLocation | undefined {
   };
 }
 
+const PRECISE_KEY = 'dash.location.precise';
+/** A fix older than this is refreshed in the background on the next send. */
+const MAX_FIX_AGE_MS = 5 * 60 * 1000;
+
+let cachedFix: MobilePreciseLocation | undefined;
+let cachedAtMs = 0;
+let refreshInFlight = false;
+
+/** Test seam: clears the module-level fix cache between cases. */
+export function __resetPreciseLocationForTests(): void {
+  cachedFix = undefined;
+  cachedAtMs = 0;
+  refreshInFlight = false;
+}
+
 /**
- * The location to attach to an outgoing turn. Coarse today; Task 7 folds in
- * the opt-in precise fix here so the store keeps one call site.
+ * Whether precise location is even possible here.
+ *
+ * `navigator.geolocation` requires a SECURE CONTEXT, so a gateway reached over
+ * a plain `http://192.168.x.x` LAN URL can never use it. The UI must explain
+ * that rather than offering a toggle that silently does nothing.
+ */
+export function isPreciseLocationAvailable(): boolean {
+  try {
+    return Boolean(globalThis.isSecureContext) && 'geolocation' in navigator;
+  } catch {
+    return false;
+  }
+}
+
+export function isPreciseLocationEnabled(): boolean {
+  try {
+    return localStorage.getItem(PRECISE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setPreciseLocationEnabled(on: boolean): void {
+  try {
+    if (on) {
+      localStorage.setItem(PRECISE_KEY, '1');
+    } else {
+      localStorage.removeItem(PRECISE_KEY);
+      // Opting out must forget the position we already hold, not merely stop
+      // refreshing it.
+      cachedFix = undefined;
+      cachedAtMs = 0;
+    }
+  } catch {
+    // A blocked localStorage just means the choice does not persist.
+  }
+}
+
+/**
+ * Kick off a background position refresh. Deliberately fire-and-forget:
+ * `sendMessage` is synchronous at the frame literal, so a send must NEVER wait
+ * on a geolocation fix. A fresh fix rides the NEXT turn; this one uses the
+ * cache. Any denial, timeout or error simply leaves the cache alone, which
+ * degrades to the coarse tier.
+ */
+function refreshPreciseLocation(): void {
+  if (refreshInFlight || !isPreciseLocationAvailable()) return;
+  refreshInFlight = true;
+  try {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        refreshInFlight = false;
+        cachedFix = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracyMeters: position.coords.accuracy,
+          capturedAt: new Date(position.timestamp).toISOString(),
+        };
+        cachedAtMs = Date.now();
+      },
+      () => {
+        refreshInFlight = false;
+      },
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: MAX_FIX_AGE_MS },
+    );
+  } catch {
+    refreshInFlight = false;
+  }
+}
+
+/**
+ * The location to attach to an outgoing turn: the coarse tier always, plus a
+ * cached precise fix when the user opted in and the OS granted one.
  */
 export function readClientLocation(): MobileClientLocation | undefined {
-  return readCoarseLocation();
+  const coarse = readCoarseLocation();
+  if (!coarse || !isPreciseLocationEnabled()) return coarse;
+
+  if (!cachedFix || Date.now() - cachedAtMs > MAX_FIX_AGE_MS) refreshPreciseLocation();
+  return cachedFix ? { ...coarse, precise: cachedFix } : coarse;
 }
