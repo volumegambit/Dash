@@ -1245,25 +1245,6 @@ export class SqliteConversationService implements ConversationService {
     };
   }
 
-  drainNotifications(conversationId: string): PendingNotification[] {
-    return this.db.transaction(() => {
-      // rowid keeps insertion order stable when several notifications share a
-      // timestamp (they routinely do — a fan-out finishes in one tick).
-      const rows = this.db
-        .prepare(`
-          SELECT * FROM pending_notifications
-          WHERE conversation_id = ?
-          ORDER BY created_at ASC, rowid ASC
-        `)
-        .all(conversationId) as PendingNotificationRow[];
-      if (rows.length === 0) return [];
-      this.db
-        .prepare('DELETE FROM pending_notifications WHERE conversation_id = ?')
-        .run(conversationId);
-      return rows.map((row) => this.mapNotification(row));
-    })();
-  }
-
   trySetAutoTitle(id: string, title: string): ConversationSummary | null {
     const normalized = title.trim();
     if (normalized.length === 0) return null;
@@ -1329,6 +1310,7 @@ export class SqliteConversationService implements ConversationService {
   recoverInterruptedTurns(): {
     conversationsInterrupted: number;
     terminalsAppended: number;
+    subagentsInterrupted: number;
   } {
     return this.db.transaction(() => {
       const rows = this.db
@@ -1378,7 +1360,26 @@ export class SqliteConversationService implements ConversationService {
           .run({ id: row.id, turnId, lastSeq: terminalSeq, now: timestamp });
         if (changed.changes === 1) conversationsInterrupted++;
       }
-      return { conversationsInterrupted, terminalsAppended };
+      // Design §7.5: nothing is running after a restart, so every child left
+      // non-terminal by the dead process IS interrupted — whether or not it
+      // held a turn lease when the process died (a child can be created, or
+      // parked in `waiting_input`, with no active turn at all). This is what
+      // `listInterruptedSubagents` reads, and therefore what makes the parent
+      // get told; leaving these rows `running` strands the child forever with
+      // no live handle behind it.
+      const sweep = this.db
+        .prepare(`
+          UPDATE conversations
+          SET subagent_status = 'interrupted', revision = revision + 1, updated_at = @now
+          WHERE kind = 'subagent' AND deleted_at IS NULL
+            AND subagent_status IN ('running', 'waiting_input')
+        `)
+        .run({ now: this.now() });
+      return {
+        conversationsInterrupted,
+        terminalsAppended,
+        subagentsInterrupted: sweep.changes,
+      };
     })();
   }
 

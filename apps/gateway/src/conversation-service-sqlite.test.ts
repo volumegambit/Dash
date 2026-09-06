@@ -747,6 +747,7 @@ describe('SqliteConversationService durable turns', () => {
     expect(service.recoverInterruptedTurns()).toEqual({
       conversationsInterrupted: 1,
       terminalsAppended: 1,
+      subagentsInterrupted: 0,
     });
     expect(service.get(conversation.id)).toMatchObject({
       status: 'interrupted',
@@ -779,6 +780,7 @@ describe('SqliteConversationService durable turns', () => {
     expect(service.recoverInterruptedTurns()).toEqual({
       conversationsInterrupted: 0,
       terminalsAppended: 0,
+      subagentsInterrupted: 0,
     });
   });
 
@@ -1210,6 +1212,40 @@ describe('SqliteConversationService subagent persistence', () => {
     ]);
   });
 
+  it('recovery marks every non-terminal child interrupted so a restart cannot leave one running', () => {
+    // Design §7.5: after a restart nothing is running, so a child left
+    // `running` or `waiting_input` by the dead process is interrupted — which
+    // is what makes `listInterruptedSubagents` (and the notification sweep that
+    // reads it) see it at all.
+    const parent = createParent();
+    for (const [id, status] of [
+      ['sub_running', 'running'],
+      ['sub_waiting', 'waiting_input'],
+      ['sub_done', 'done'],
+      ['sub_cancelled', 'cancelled'],
+    ] as const) {
+      service.createSubagent({
+        id,
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        parentConversationId: parent.id,
+        parentTurnId: 'turn-parent-01',
+        title: id,
+        subagent: subagentInfo({ status }),
+      });
+    }
+
+    expect(service.recoverInterruptedTurns()).toMatchObject({ subagentsInterrupted: 2 });
+    expect(service.listInterruptedSubagents().map((item) => item.id)).toEqual([
+      'sub_running',
+      'sub_waiting',
+    ]);
+    expect(service.get('sub_done')?.subagent?.status).toBe('done');
+    expect(service.get('sub_cancelled')?.subagent?.status).toBe('cancelled');
+    // Idempotent: a second boot has nothing left to flip.
+    expect(service.recoverInterruptedTurns()).toMatchObject({ subagentsInterrupted: 0 });
+  });
+
   it('records the turn origin on the user message and defaults it to user', () => {
     // Ruling 4: `origin` is optional at the call site and defaults to 'user'.
     const parent = createParent();
@@ -1367,18 +1403,19 @@ describe('SqliteConversationService subagent persistence', () => {
       }),
     ).toThrow(/notification queue full/i);
 
-    const drained = service.drainNotifications(parent.id);
-    expect(drained).toHaveLength(100);
-    expect(drained.map((item) => item.payload.index)).toEqual(
+    const queued = service.peekNotifications(parent.id);
+    expect(queued).toHaveLength(100);
+    expect(queued.map((item) => item.payload.index)).toEqual(
       Array.from({ length: 100 }, (_unused, index) => index),
     );
-    expect(drained[0]).toMatchObject({
+    expect(queued[0]).toMatchObject({
       conversationId: parent.id,
       kind: 'subagent_finished',
       createdAt: timestamp,
     });
-    expect(service.drainNotifications(parent.id)).toEqual([]);
-    // Draining frees the queue again.
+    service.ackNotifications(queued.map((item) => item.id));
+    expect(service.peekNotifications(parent.id)).toEqual([]);
+    // Acking frees the queue again.
     expect(() =>
       service.enqueueNotification({
         conversationId: parent.id,
@@ -1386,7 +1423,7 @@ describe('SqliteConversationService subagent persistence', () => {
         payload: { text: 'hi' },
       }),
     ).not.toThrow();
-    expect(service.drainNotifications(parent.id)).toHaveLength(1);
+    expect(service.peekNotifications(parent.id)).toHaveLength(1);
   });
 
   it('peeks WITHOUT removing, and acks only the ids it is given', () => {
@@ -1443,7 +1480,7 @@ describe('SqliteConversationService subagent persistence', () => {
     });
     const tombstone = service.delete(parent.id, parent.revision);
     expect(tombstone.status).toBe('deleted');
-    expect(service.drainNotifications(parent.id)).toEqual([]);
+    expect(service.peekNotifications(parent.id)).toEqual([]);
     expect(() =>
       service.enqueueNotification({
         conversationId: parent.id,
@@ -1546,10 +1583,8 @@ describe('SqliteConversationService subagent persistence', () => {
       kind: 'subagent_message',
       payload: { from: 'second' },
     });
-    expect(service.drainNotifications(first.id).map((item) => item.payload.from)).toEqual([
-      'first',
-    ]);
-    expect(service.drainNotifications(second.id).map((item) => item.payload.from)).toEqual([
+    expect(service.peekNotifications(first.id).map((item) => item.payload.from)).toEqual(['first']);
+    expect(service.peekNotifications(second.id).map((item) => item.payload.from)).toEqual([
       'second',
     ]);
   });

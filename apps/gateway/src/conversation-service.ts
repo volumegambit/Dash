@@ -202,10 +202,18 @@ export interface ConversationService {
   peekNotifications(conversationId: string): PendingNotification[];
   /** Deletes exactly these rows. Unknown ids are ignored. */
   ackNotifications(ids: string[]): void;
-  drainNotifications(conversationId: string): PendingNotification[];
   trySetAutoTitle(id: string, title: string): ConversationSummary | null;
   archiveAgentConversations(agentId: string): ConversationSummary[];
-  recoverInterruptedTurns(): { conversationsInterrupted: number; terminalsAppended: number };
+  /**
+   * Boot recovery: terminalize every turn a dead process left mid-flight and —
+   * design §7.5 — mark every non-terminal CHILD `interrupted`, since after a
+   * restart no child is running.
+   */
+  recoverInterruptedTurns(): {
+    conversationsInterrupted: number;
+    terminalsAppended: number;
+    subagentsInterrupted: number;
+  };
   close(): void;
 }
 

@@ -95,7 +95,7 @@ import {
   createChildBackend,
   createWorktreeCleanupHook,
 } from './subagent-wiring.js';
-import { childWorktreePath } from './subagent-worktree.js';
+import { childWorktreePath, reapOrphanWorktrees } from './subagent-worktree.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 /**
@@ -600,21 +600,64 @@ async function main() {
     }),
   });
 
-  // Repair swarm turns a previous gateway process died in the middle of:
-  // synthesize worker_done{cancelled} + a terminal error marker into the
-  // event log (so MC's replay terminalizes instead of spinning forever) and
-  // restore the interrupted runs into the panel history. Runs before any
+  // Boot recovery (design §7.4, §7.5). Three passes in a fixed order: repair
+  // the parent tails a previous process died inside (a dangling
+  // `subagent_started` gets a synthesized `subagent_finished{interrupted}` so
+  // replay terminalizes instead of spinning forever), then terminalize the
+  // conversation leases and mark every non-terminal child `interrupted`, then
+  // queue each of those children's parent a notification. Runs before any
   // server accepts traffic, so no live turn can exist yet.
-  const { conversations: conversationRecovery } = recoverGatewayTurns({
+  const {
+    conversations: conversationRecovery,
+    subagents: subagentRecovery,
+    notifiedChildren,
+    pendingDelivery: recoveredNotificationTargets,
+  } = recoverGatewayTurns({
     eventLog: eventLogStore,
     conversations: conversationService,
-    restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
     log: (message) => logger.info(message),
   });
   if (conversationRecovery.conversationsInterrupted > 0) {
     logger.info(
       `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +
         `appended ${conversationRecovery.terminalsAppended} terminal(s)`,
+    );
+  }
+  if (
+    subagentRecovery.childrenTerminalized > 0 ||
+    conversationRecovery.subagentsInterrupted > 0 ||
+    notifiedChildren.childrenNotified > 0
+  ) {
+    logger.info(
+      `[subagent-recovery] terminalized ${subagentRecovery.childrenTerminalized} parent-side child(ren), ` +
+        `marked ${conversationRecovery.subagentsInterrupted} child conversation(s) interrupted, ` +
+        `queued ${subagentRecovery.notificationsQueued + notifiedChildren.childrenNotified} notification(s)`,
+    );
+  }
+
+  // Worktree orphan reaper (Task B6 carried into C6). A SIGKILL between spawn
+  // and finish leaks `<dataDir>/worktrees/<agent>/<child>` AND leaves a
+  // `prunable` registration in the parent repo that nothing else sweeps. No
+  // child is live at boot, so every directory here is an orphan — but the B6
+  // rule still holds: a worktree holding uncommitted work or non-disposable
+  // ignored content is KEPT, and so is a `max_turns` child's (its report points
+  // at the work inside it). Awaited so the sweep completes before traffic, and
+  // fully contained: a reaper failure must never stop the gateway.
+  try {
+    const sweep = await reapOrphanWorktrees({
+      dataDir,
+      statusOf: (childId) => conversationService.get(childId)?.subagent?.status,
+      log: (message) => logger.info(message),
+    });
+    if (sweep.removed.length > 0 || sweep.kept.length > 0) {
+      logger.info(
+        `[worktree-reaper] removed ${sweep.removed.length} orphaned worktree(s), ` +
+          `kept ${sweep.kept.length}`,
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      `[worktree-reaper] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -1014,6 +1057,24 @@ async function main() {
   // completions through the hub.
   hubRef.current = resumableChatHub;
   childTurnDriver.attachObserver();
+
+  // Design §7.5: boot recovery QUEUED an `interrupted` notification for every
+  // parent whose child the restart killed; it is delivered "once the hub is
+  // up", which is here. Without this an IDLE parent — the normal case for a
+  // detached background child — would hold its queue until the user happened
+  // to type again, because the only other trigger is that parent's own
+  // `finishTurn`. Fire-and-forget and individually caught: delivery is bounded
+  // (a busy parent simply leaves the rows queued) and must not stop boot.
+  for (const target of recoveredNotificationTargets) {
+    void swarmCoordinator
+      .deliverPending(target.agentId, target.conversationId)
+      .catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          `[subagent-recovery] could not deliver the queued notification for conversation ${target.conversationId}: ${reason}`,
+        );
+      });
+  }
 
   // Drain and deliver pending notifications when a parent turn finishes
   // (design §7.3, ruling 3). Register a hub observer to catch finishTurn.
