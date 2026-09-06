@@ -206,6 +206,16 @@ export interface CommandMutationResult {
   promotedRun?: AcceptedRun;
 }
 
+export type StoredCommandOutcome =
+  | { kind: 'sequenced'; v2Seqs: number[] }
+  | {
+      kind: 'rejected';
+      frame: Extract<
+        import('@dash/mobile-contract-v2').MobileV2ControlFrame,
+        { type: 'command_rejected' }
+      >;
+    };
+
 export type FinishRunInput = {
   conversationId: string;
   runId: string;

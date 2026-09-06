@@ -37,6 +37,8 @@ import type {
 import type { EventLogPayload, EventLogStore } from './event-log-store.js';
 
 export const DEFAULT_CONVERSATION_TITLE = 'New Conversation';
+export const MAX_PENDING_INPUTS_PER_KIND = 20;
+export const MAX_PENDING_INPUT_BYTES = 100 * 1024 * 1024;
 
 export interface CreateConversationInput extends ConversationCreateRequest {
   agentName: string;

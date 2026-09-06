@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
@@ -12,7 +12,9 @@ import type {
   MobileAgentEvent,
 } from '@dash/mobile-contract';
 import type {
+  MobileV2ControlFrame,
   MobileV2ConversationBootstrap,
+  MobileV2PendingInput,
   MobileV2SequencedFrame,
 } from '@dash/mobile-contract-v2';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
@@ -41,6 +43,7 @@ import type {
   PersistedRunFrames,
   RemoveFollowUpCommand,
   ResumeFollowUpsCommand,
+  StoredCommandOutcome,
   StoredConversation,
   StoredConversationMessage,
   TerminalizeSteersInput,
@@ -57,6 +60,8 @@ import {
   type FinishTurnInput,
   type ListConversationsInput,
   type ListMessagesInput,
+  MAX_PENDING_INPUTS_PER_KIND,
+  MAX_PENDING_INPUT_BYTES,
   type PersistedTurnFrame,
 } from './conversation-service.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
@@ -162,12 +167,71 @@ interface ConversationMessageRow {
   updated_at: string;
 }
 
+interface PendingInputRow {
+  input_id: string;
+  enqueue_command_id: string;
+  conversation_id: string;
+  agent_id: string;
+  channel_id: string;
+  kind: 'steer' | 'follow_up';
+  target_turn_id: string | null;
+  text: string;
+  images_json: string | null;
+  payload_bytes: number;
+  state: 'queued' | 'delivering' | 'delivered' | 'removed' | 'failed';
+  revision: number;
+  enqueue_order: number;
+  reserved_run_id: string;
+  reserved_segment_turn_id: string;
+  reserved_user_message_id: string;
+  reserved_assistant_message_id: string;
+  reserved_user_ordinal: number | null;
+  reserved_assistant_ordinal: number | null;
+  segment_index: number;
+  failure_code: import('@dash/mobile-contract').MobileApiErrorCode | null;
+  failure_message: string | null;
+  created_at: string;
+  updated_at: string;
+  delivered_at: string | null;
+}
+
+interface CommandResultRow {
+  operation: string;
+  request_fingerprint: string;
+  outcome_json: string;
+}
+
+type CommandRejectedFrame = Extract<MobileV2ControlFrame, { type: 'command_rejected' }>;
+
+type CommandOperation =
+  | 'enqueue_input'
+  | 'edit_follow_up'
+  | 'remove_follow_up'
+  | 'resume_follow_ups';
+
 function collapsePreview(text: string): string {
   return [...text.trim().replace(/\s+/gu, ' ')].slice(0, 120).join('');
 }
 
 function parseContent(raw: string): ConversationContent {
   return JSON.parse(raw) as ConversationContent;
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortJsonValue(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, item]) => [key, sortJsonValue(item)]),
+    );
+  }
+  return value;
+}
+
+function commandFingerprint(operation: CommandOperation, input: object): string {
+  const canonical = JSON.stringify(sortJsonValue({ operation, input }));
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 function sanitizeJsonValue(value: unknown): unknown {
@@ -390,6 +454,245 @@ export class SqliteConversationService implements ConversationService {
       ...(JSON.parse(row.payload) as MobileV2SequencedPayload),
       v2Seq: row.v2_seq,
     })) as MobileV2SequencedFrame[];
+  }
+
+  private readV2Sequences(
+    conversationId: string,
+    v2Seqs: readonly number[],
+  ): MobileV2SequencedFrame[] {
+    const select = this.db.prepare(`
+      SELECT payload
+      FROM conversation_v2_events
+      WHERE conversation_id = ? AND v2_seq = ?
+    `);
+    return v2Seqs.map((v2Seq) => {
+      const row = select.get(conversationId, v2Seq) as { payload: string } | undefined;
+      if (!row) {
+        throw new Error(
+          `Command result references missing v2 sequence ${v2Seq} for ${conversationId}`,
+        );
+      }
+      return {
+        ...(JSON.parse(row.payload) as MobileV2SequencedPayload),
+        v2Seq,
+      } as MobileV2SequencedFrame;
+    });
+  }
+
+  private selectPendingInput(inputId: string): PendingInputRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM conversation_pending_inputs WHERE input_id = ?')
+      .get(inputId) as PendingInputRow | undefined;
+  }
+
+  private mapPendingInput(row: PendingInputRow): MobileV2PendingInput {
+    return {
+      inputId: row.input_id,
+      kind: row.kind,
+      ...(row.target_turn_id !== null ? { targetTurnId: row.target_turn_id } : {}),
+      text: row.text,
+      ...(row.images_json !== null
+        ? { images: JSON.parse(row.images_json) as MobileV2PendingInput['images'] }
+        : {}),
+      state: row.state,
+      revision: row.revision,
+      enqueueOrder: row.enqueue_order,
+      runId: row.reserved_run_id,
+      segmentTurnId: row.reserved_segment_turn_id,
+      userMessageId: row.reserved_user_message_id,
+      assistantMessageId: row.reserved_assistant_message_id,
+      ...(row.failure_code !== null ? { failureCode: row.failure_code } : {}),
+      ...(row.failure_message !== null ? { failureMessage: row.failure_message } : {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(row.delivered_at !== null ? { deliveredAt: row.delivered_at } : {}),
+    };
+  }
+
+  private pendingInputStats(conversationId: string): {
+    steerCount: number;
+    followUpCount: number;
+    payloadBytes: number;
+  } {
+    const row = this.db
+      .prepare(`
+        SELECT
+          SUM(CASE WHEN kind = 'steer' THEN 1 ELSE 0 END) AS steer_count,
+          SUM(CASE WHEN kind = 'follow_up' THEN 1 ELSE 0 END) AS follow_up_count,
+          COALESCE(SUM(payload_bytes), 0) AS payload_bytes
+        FROM conversation_pending_inputs
+        WHERE conversation_id = ? AND state IN ('queued', 'delivering')
+      `)
+      .get(conversationId) as {
+      steer_count: number | null;
+      follow_up_count: number | null;
+      payload_bytes: number;
+    };
+    return {
+      steerCount: row.steer_count ?? 0,
+      followUpCount: row.follow_up_count ?? 0,
+      payloadBytes: row.payload_bytes,
+    };
+  }
+
+  private nextEnqueueOrder(conversationId: string): number {
+    return this.db
+      .prepare(
+        `SELECT COALESCE(MAX(enqueue_order), 0) + 1
+         FROM conversation_pending_inputs
+         WHERE conversation_id = ?`,
+      )
+      .pluck()
+      .get(conversationId) as number;
+  }
+
+  private nextSegmentIndex(conversationId: string, runId: string): number {
+    return this.db
+      .prepare(
+        `SELECT COALESCE(MAX(segment_index), 0) + 1
+         FROM conversation_messages
+         WHERE conversation_id = ? AND run_id = ?`,
+      )
+      .pluck()
+      .get(conversationId, runId) as number;
+  }
+
+  private advanceQueueMutation(
+    conversationId: string,
+    queuePaused: boolean | undefined = undefined,
+  ): ConversationRow {
+    const advanced = this.db
+      .prepare(`
+        UPDATE conversations
+        SET revision = revision + 1,
+            queue_revision = queue_revision + 1,
+            queue_paused = COALESCE(@queuePaused, queue_paused),
+            updated_at = @now
+        WHERE id = @conversationId
+        RETURNING *
+      `)
+      .get({
+        conversationId,
+        queuePaused: queuePaused === undefined ? null : queuePaused ? 1 : 0,
+        now: this.now(),
+      }) as ConversationRow | undefined;
+    if (!advanced) throw new Error(`Conversation ${conversationId} was not found`);
+    return advanced;
+  }
+
+  private replayCommandResult(
+    conversationId: string,
+    commandId: string,
+    fingerprint: string,
+  ): CommandMutationResult | null {
+    const row = this.db
+      .prepare(
+        `SELECT operation, request_fingerprint, outcome_json
+         FROM conversation_command_results
+         WHERE conversation_id = ? AND command_id = ?`,
+      )
+      .get(conversationId, commandId) as CommandResultRow | undefined;
+    if (!row) return null;
+    if (row.request_fingerprint !== fingerprint) {
+      return {
+        replayed: false,
+        frames: [
+          {
+            type: 'command_rejected',
+            id: commandId,
+            conversationId,
+            code: 'validation_failed',
+            error: 'Command ID was already used for a different request',
+            retryable: false,
+          },
+        ],
+      };
+    }
+    const outcome = JSON.parse(row.outcome_json) as StoredCommandOutcome;
+    return {
+      replayed: true,
+      frames:
+        outcome.kind === 'sequenced'
+          ? this.readV2Sequences(conversationId, outcome.v2Seqs)
+          : [outcome.frame],
+    };
+  }
+
+  private storeCommandOutcome(
+    conversationId: string,
+    commandId: string,
+    operation: CommandOperation,
+    fingerprint: string,
+    outcome: StoredCommandOutcome,
+  ): void {
+    this.db
+      .prepare(`
+        INSERT INTO conversation_command_results (
+          conversation_id, command_id, operation, request_fingerprint, outcome_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(conversationId, commandId, operation, fingerprint, JSON.stringify(outcome), this.now());
+  }
+
+  private acceptCommandResult(
+    conversationId: string,
+    commandId: string,
+    operation: CommandOperation,
+    fingerprint: string,
+    frames: readonly MobileV2SequencedFrame[],
+  ): CommandMutationResult {
+    this.storeCommandOutcome(conversationId, commandId, operation, fingerprint, {
+      kind: 'sequenced',
+      v2Seqs: frames.map((frame) => frame.v2Seq),
+    });
+    return { replayed: false, frames };
+  }
+
+  private rejectCommand(
+    conversationId: string,
+    commandId: string,
+    operation: CommandOperation,
+    fingerprint: string,
+    code: CommandRejectedFrame['code'],
+    error: string,
+    details?: Record<string, unknown>,
+  ): CommandMutationResult {
+    const frame: CommandRejectedFrame = {
+      type: 'command_rejected',
+      id: commandId,
+      conversationId,
+      code,
+      error,
+      retryable: false,
+      ...(details !== undefined ? { details } : {}),
+    };
+    this.storeCommandOutcome(conversationId, commandId, operation, fingerprint, {
+      kind: 'rejected',
+      frame,
+    });
+    return { replayed: false, frames: [frame] };
+  }
+
+  private itemRefreshDetails(
+    input: PendingInputRow,
+    queueRevision: number,
+  ): Record<string, unknown> {
+    return {
+      inputId: input.input_id,
+      state: input.state,
+      itemRevision: input.revision,
+      queueRevision,
+      refreshRequired: true,
+    };
+  }
+
+  private queueRefreshDetails(conversation: ConversationRow): Record<string, unknown> {
+    return {
+      queuePaused: conversation.queue_paused === 1,
+      queueRevision: conversation.queue_revision,
+      pendingFollowUpCount: this.pendingFollowUpCount(conversation.id),
+      refreshRequired: true,
+    };
   }
 
   private requireConversationRow(id: string, includeDeleted = false): ConversationRow {
@@ -1081,24 +1384,486 @@ export class SqliteConversationService implements ConversationService {
     throw new Error('Conversation v2 steer terminalization is not implemented');
   }
 
-  enqueueInput(_input: EnqueueInputCommand): CommandMutationResult {
-    throw new Error('Conversation v2 input enqueueing is not implemented');
+  enqueueInput(input: EnqueueInputCommand): CommandMutationResult {
+    const operation = 'enqueue_input' as const;
+    return this.db.transaction((value: EnqueueInputCommand): CommandMutationResult => {
+      const current = this.requireConversationRow(value.conversationId);
+      if (current.agent_id !== value.agentId) {
+        throw new ConversationServiceError(
+          'not_found',
+          `Conversation ${value.conversationId} does not belong to agent ${value.agentId}`,
+          404,
+          false,
+        );
+      }
+      const fingerprint = commandFingerprint(operation, value);
+      const replay = this.replayCommandResult(value.conversationId, value.commandId, fingerprint);
+      if (replay) return replay;
+      if (current.status === 'archived') {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Archived conversations cannot accept queued input',
+        );
+      }
+
+      const existing = this.selectPendingInput(value.inputId);
+      if (existing) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Input ID was already used',
+          existing.conversation_id === current.id
+            ? this.itemRefreshDetails(existing, current.queue_revision)
+            : { inputId: value.inputId, refreshRequired: true },
+        );
+      }
+
+      const kind = value.behavior === 'steer' ? 'steer' : 'follow_up';
+      if (
+        kind === 'steer' &&
+        (current.active_turn_id === null ||
+          value.expectedActiveTurnId === undefined ||
+          value.expectedActiveTurnId !== current.active_turn_id)
+      ) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'revision_conflict',
+          'Steer target is no longer active',
+          { activeTurnId: current.active_turn_id, refreshRequired: true },
+        );
+      }
+
+      const payloadBytes = Buffer.byteLength(
+        JSON.stringify({ text: value.text, images: value.images }),
+      );
+      const stats = this.pendingInputStats(current.id);
+      const kindCount = kind === 'steer' ? stats.steerCount : stats.followUpCount;
+      if (kindCount >= MAX_PENDING_INPUTS_PER_KIND) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          `Pending ${kind === 'steer' ? 'Steer' : 'Follow Up'} limit reached`,
+          {
+            kind,
+            count: kindCount,
+            limit: MAX_PENDING_INPUTS_PER_KIND,
+            queueRevision: current.queue_revision,
+            refreshRequired: true,
+          },
+        );
+      }
+      if (stats.payloadBytes + payloadBytes > MAX_PENDING_INPUT_BYTES) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Pending input byte limit reached',
+          {
+            payloadBytes,
+            pendingBytes: stats.payloadBytes,
+            limitBytes: MAX_PENDING_INPUT_BYTES,
+            queueRevision: current.queue_revision,
+            refreshRequired: true,
+          },
+        );
+      }
+
+      const reservedRunId = kind === 'steer' ? (current.active_turn_id as string) : this.uuid();
+      const reservedSegmentTurnId = this.uuid();
+      const reservedUserMessageId = this.uuid();
+      const reservedAssistantMessageId = this.uuid();
+      const segmentIndex = kind === 'steer' ? this.nextSegmentIndex(current.id, reservedRunId) : 0;
+      const reservedUserOrdinal =
+        kind === 'steer' ? this.reserveMessageOrdinals(current.id, 2) : null;
+      const timestamp = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO conversation_pending_inputs (
+            input_id, enqueue_command_id, conversation_id, agent_id, channel_id, kind,
+            target_turn_id, text, images_json, payload_bytes, state, revision, enqueue_order,
+            reserved_run_id, reserved_segment_turn_id, reserved_user_message_id,
+            reserved_assistant_message_id, reserved_user_ordinal, reserved_assistant_ordinal,
+            segment_index, created_at, updated_at
+          ) VALUES (
+            @inputId, @commandId, @conversationId, @agentId, @channelId, @kind,
+            @targetTurnId, @text, @imagesJson, @payloadBytes, 'queued', 1, @enqueueOrder,
+            @reservedRunId, @reservedSegmentTurnId, @reservedUserMessageId,
+            @reservedAssistantMessageId, @reservedUserOrdinal, @reservedAssistantOrdinal,
+            @segmentIndex, @now, @now
+          )
+        `)
+        .run({
+          inputId: value.inputId,
+          commandId: value.commandId,
+          conversationId: current.id,
+          agentId: value.agentId,
+          channelId: value.channelId,
+          kind,
+          targetTurnId: current.active_turn_id,
+          text: value.text,
+          imagesJson: value.images === undefined ? null : JSON.stringify(value.images),
+          payloadBytes,
+          enqueueOrder: this.nextEnqueueOrder(current.id),
+          reservedRunId,
+          reservedSegmentTurnId,
+          reservedUserMessageId,
+          reservedAssistantMessageId,
+          reservedUserOrdinal,
+          reservedAssistantOrdinal: reservedUserOrdinal === null ? null : reservedUserOrdinal + 1,
+          segmentIndex,
+          now: timestamp,
+        });
+
+      if (kind === 'steer') {
+        const content: ConversationContent = {
+          type: 'user',
+          text: value.text,
+          ...(value.images !== undefined ? { images: value.images } : {}),
+        };
+        this.db
+          .prepare(`
+            INSERT INTO conversation_messages (
+              id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content,
+              status, delivery_kind, delivery_status, created_at, updated_at
+            ) VALUES (
+              @id, @conversationId, @turnId, @runId, @segmentIndex, @ordinal, 'user', @content,
+              'accepted', 'steer', 'pending', @now, @now
+            )
+          `)
+          .run({
+            id: reservedUserMessageId,
+            conversationId: current.id,
+            turnId: reservedSegmentTurnId,
+            runId: reservedRunId,
+            segmentIndex,
+            ordinal: reservedUserOrdinal,
+            content: JSON.stringify(content),
+            now: timestamp,
+          });
+      }
+
+      const advanced = this.advanceQueueMutation(current.id);
+      const storedInput = this.selectPendingInput(value.inputId);
+      if (!storedInput) throw new Error(`Input ${value.inputId} was not found after enqueue`);
+      const frame = this.appendV2(advanced, {
+        type: 'input_accepted',
+        id: value.commandId,
+        conversationId: current.id,
+        queueRevision: advanced.queue_revision,
+        input: this.mapPendingInput(storedInput),
+      });
+      return this.acceptCommandResult(current.id, value.commandId, operation, fingerprint, [frame]);
+    })(input);
   }
 
-  editFollowUp(_input: EditFollowUpCommand): CommandMutationResult {
-    throw new Error('Conversation v2 follow-up editing is not implemented');
+  editFollowUp(input: EditFollowUpCommand): CommandMutationResult {
+    const operation = 'edit_follow_up' as const;
+    return this.db.transaction((value: EditFollowUpCommand): CommandMutationResult => {
+      const current = this.requireConversationRow(value.conversationId);
+      const fingerprint = commandFingerprint(operation, value);
+      const replay = this.replayCommandResult(value.conversationId, value.commandId, fingerprint);
+      if (replay) return replay;
+      const pending = this.selectPendingInput(value.inputId);
+      if (!pending || pending.conversation_id !== current.id) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'not_found',
+          `Follow Up ${value.inputId} was not found`,
+          { inputId: value.inputId, queueRevision: current.queue_revision, refreshRequired: true },
+        );
+      }
+      const refreshDetails = this.itemRefreshDetails(pending, current.queue_revision);
+      if (pending.revision !== value.expectedRevision) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'revision_conflict',
+          `Follow Up revision ${value.expectedRevision} is stale`,
+          refreshDetails,
+        );
+      }
+      if (pending.kind !== 'follow_up' || pending.state !== 'queued') {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Only queued Follow Ups can be edited',
+          refreshDetails,
+        );
+      }
+      if (current.status === 'archived') {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Archived conversations cannot edit queued input',
+          refreshDetails,
+        );
+      }
+
+      const payloadBytes = Buffer.byteLength(
+        JSON.stringify({ text: value.text, images: value.images }),
+      );
+      const stats = this.pendingInputStats(current.id);
+      if (stats.payloadBytes - pending.payload_bytes + payloadBytes > MAX_PENDING_INPUT_BYTES) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Pending input byte limit reached',
+          {
+            payloadBytes,
+            pendingBytes: stats.payloadBytes,
+            limitBytes: MAX_PENDING_INPUT_BYTES,
+            queueRevision: current.queue_revision,
+            refreshRequired: true,
+          },
+        );
+      }
+
+      const changed = this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET text = @text, images_json = @imagesJson, payload_bytes = @payloadBytes,
+              revision = revision + 1, updated_at = @now
+          WHERE input_id = @inputId AND conversation_id = @conversationId
+            AND kind = 'follow_up' AND state = 'queued' AND revision = @expectedRevision
+        `)
+        .run({
+          inputId: value.inputId,
+          conversationId: current.id,
+          expectedRevision: value.expectedRevision,
+          text: value.text,
+          imagesJson: value.images === undefined ? null : JSON.stringify(value.images),
+          payloadBytes,
+          now: this.now(),
+        });
+      if (changed.changes !== 1) throw new Error(`Failed to edit Follow Up ${value.inputId}`);
+      const advanced = this.advanceQueueMutation(current.id);
+      const freshInput = this.selectPendingInput(value.inputId);
+      if (!freshInput) throw new Error(`Follow Up ${value.inputId} was not found after edit`);
+      const frame = this.appendV2(advanced, {
+        type: 'input_updated',
+        id: value.commandId,
+        conversationId: current.id,
+        queueRevision: advanced.queue_revision,
+        input: this.mapPendingInput(freshInput),
+      });
+      return this.acceptCommandResult(current.id, value.commandId, operation, fingerprint, [frame]);
+    })(input);
   }
 
-  removeFollowUp(_input: RemoveFollowUpCommand): CommandMutationResult {
-    throw new Error('Conversation v2 follow-up removal is not implemented');
+  removeFollowUp(input: RemoveFollowUpCommand): CommandMutationResult {
+    const operation = 'remove_follow_up' as const;
+    return this.db.transaction((value: RemoveFollowUpCommand): CommandMutationResult => {
+      const current = this.requireConversationRow(value.conversationId);
+      const fingerprint = commandFingerprint(operation, value);
+      const replay = this.replayCommandResult(value.conversationId, value.commandId, fingerprint);
+      if (replay) return replay;
+      const pending = this.selectPendingInput(value.inputId);
+      if (!pending || pending.conversation_id !== current.id) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'not_found',
+          `Follow Up ${value.inputId} was not found`,
+          { inputId: value.inputId, queueRevision: current.queue_revision, refreshRequired: true },
+        );
+      }
+      const refreshDetails = this.itemRefreshDetails(pending, current.queue_revision);
+      if (pending.revision !== value.expectedRevision) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'revision_conflict',
+          `Follow Up revision ${value.expectedRevision} is stale`,
+          refreshDetails,
+        );
+      }
+      if (pending.kind !== 'follow_up' || pending.state !== 'queued') {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Only queued Follow Ups can be removed',
+          refreshDetails,
+        );
+      }
+      if (current.status === 'archived') {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Archived conversations cannot remove queued input',
+          refreshDetails,
+        );
+      }
+
+      const changed = this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET state = 'removed', revision = revision + 1, updated_at = @now
+          WHERE input_id = @inputId AND conversation_id = @conversationId
+            AND kind = 'follow_up' AND state = 'queued' AND revision = @expectedRevision
+        `)
+        .run({
+          inputId: value.inputId,
+          conversationId: current.id,
+          expectedRevision: value.expectedRevision,
+          now: this.now(),
+        });
+      if (changed.changes !== 1) throw new Error(`Failed to remove Follow Up ${value.inputId}`);
+      const pendingFollowUpCount = this.pendingFollowUpCount(current.id);
+      const clearedPause = current.queue_paused === 1 && pendingFollowUpCount === 0;
+      const advanced = this.advanceQueueMutation(current.id, clearedPause ? false : undefined);
+      const freshInput = this.selectPendingInput(value.inputId);
+      if (!freshInput) throw new Error(`Follow Up ${value.inputId} was not found after removal`);
+      const frames: MobileV2SequencedFrame[] = [
+        this.appendV2(advanced, {
+          type: 'input_removed',
+          id: value.commandId,
+          conversationId: current.id,
+          queueRevision: advanced.queue_revision,
+          input: this.mapPendingInput(freshInput),
+        }),
+      ];
+      if (clearedPause) {
+        frames.push(
+          this.appendV2(advanced, {
+            type: 'queue_resumed',
+            id: value.commandId,
+            conversationId: current.id,
+            queueRevision: advanced.queue_revision,
+            queuePaused: false,
+            pendingFollowUpCount,
+          }),
+        );
+      }
+      return this.acceptCommandResult(current.id, value.commandId, operation, fingerprint, frames);
+    })(input);
   }
 
-  resumeFollowUps(_input: ResumeFollowUpsCommand): CommandMutationResult {
-    throw new Error('Conversation v2 follow-up resumption is not implemented');
+  resumeFollowUps(input: ResumeFollowUpsCommand): CommandMutationResult {
+    const operation = 'resume_follow_ups' as const;
+    return this.db.transaction((value: ResumeFollowUpsCommand): CommandMutationResult => {
+      const current = this.requireConversationRow(value.conversationId);
+      const fingerprint = commandFingerprint(operation, value);
+      const replay = this.replayCommandResult(value.conversationId, value.commandId, fingerprint);
+      if (replay) return replay;
+      const refreshDetails = this.queueRefreshDetails(current);
+      if (current.queue_revision !== value.expectedQueueRevision) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'revision_conflict',
+          `Queue revision ${value.expectedQueueRevision} is stale`,
+          refreshDetails,
+        );
+      }
+      if (current.queue_paused !== 1) {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Follow Up queue is not paused',
+          refreshDetails,
+        );
+      }
+      if (current.status === 'archived') {
+        return this.rejectCommand(
+          current.id,
+          value.commandId,
+          operation,
+          fingerprint,
+          'validation_failed',
+          'Archived conversations cannot resume queued input',
+          refreshDetails,
+        );
+      }
+
+      const advanced = this.advanceQueueMutation(current.id, false);
+      const frame = this.appendV2(advanced, {
+        type: 'queue_resumed',
+        id: value.commandId,
+        conversationId: current.id,
+        queueRevision: advanced.queue_revision,
+        queuePaused: false,
+        pendingFollowUpCount: this.pendingFollowUpCount(current.id),
+      });
+      return this.acceptCommandResult(current.id, value.commandId, operation, fingerprint, [frame]);
+    })(input);
   }
 
-  pauseFollowUpsForAgentDisable(_agentId: string): PersistedQueueTransition[] {
-    throw new Error('Conversation v2 follow-up pausing is not implemented');
+  pauseFollowUpsForAgentDisable(agentId: string): PersistedQueueTransition[] {
+    return this.db.transaction(() => {
+      const conversations = this.db
+        .prepare(`
+          SELECT *
+          FROM conversations
+          WHERE agent_id = @agentId AND deleted_at IS NULL
+            AND status NOT IN ('archived', 'deleted') AND queue_paused = 0
+            AND EXISTS (
+              SELECT 1
+              FROM conversation_pending_inputs
+              WHERE conversation_id = conversations.id
+                AND kind = 'follow_up' AND state = 'queued'
+            )
+          ORDER BY id ASC
+        `)
+        .all({ agentId }) as ConversationRow[];
+      return conversations.map((conversation): PersistedQueueTransition => {
+        const advanced = this.advanceQueueMutation(conversation.id, true);
+        const frame = this.appendV2(advanced, {
+          type: 'queue_paused',
+          conversationId: conversation.id,
+          queueRevision: advanced.queue_revision,
+          queuePaused: true,
+          pendingFollowUpCount: this.pendingFollowUpCount(conversation.id),
+        });
+        return {
+          conversation: this.mapStoredConversation(this.requireConversationRow(conversation.id)),
+          frame: frame as PersistedQueueTransition['frame'],
+        };
+      });
+    })();
   }
 
   finishRunAndClaimNext(_input: FinishRunInput): FinishRunResult {

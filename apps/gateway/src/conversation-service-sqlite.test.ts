@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { MobileV2SequencedFrame } from '@dash/mobile-contract-v2';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
-import type { MobileV2SequencedPayload } from './conversation-domain.js';
+import type {
+  EditFollowUpCommand,
+  EnqueueInputCommand,
+  MobileV2SequencedPayload,
+  RemoveFollowUpCommand,
+  ResumeFollowUpsCommand,
+} from './conversation-domain.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { ConversationServiceError, DEFAULT_CONVERSATION_TITLE } from './conversation-service.js';
 
@@ -1005,5 +1011,684 @@ describe('SqliteConversationService durable turns', () => {
     const tombstone = service.delete(conversation.id, cancellation.conversation.revision);
     expect(tombstone).toMatchObject({ status: 'deleted', revision: 4 });
     expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toEqual([]);
+  });
+});
+
+describe('SqliteConversationService Follow Up queue commands', () => {
+  const NOW = '2026-07-12T02:00:00.000Z';
+  const AGENT_ID = 'agent-queue';
+  const CHANNEL_ID = 'channel-queue';
+  const ACTIVE_RUN_ID = 'run-active';
+  const MAX_PENDING_BYTES = 100 * 1024 * 1024;
+
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let uuidCounter: number;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-queue-'));
+    uuidCounter = 0;
+    service = reopenService();
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function nextUuid(): string {
+    return `20000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`;
+  }
+
+  function reopenService(): SqliteConversationService {
+    return new SqliteConversationService({
+      dataDir: tmpDir,
+      now: () => NOW,
+      uuid: nextUuid,
+    });
+  }
+
+  function storage(): { db: DatabaseType } {
+    return service as unknown as { db: DatabaseType };
+  }
+
+  function createConversation(active = false): string {
+    const conversation = service.create({
+      agentId: AGENT_ID,
+      agentName: 'Queue Helper',
+      requestId: nextUuid(),
+    });
+    if (active) {
+      storage()
+        .db.prepare("UPDATE conversations SET status = 'running', active_turn_id = ? WHERE id = ?")
+        .run(ACTIVE_RUN_ID, conversation.id);
+    }
+    return conversation.id;
+  }
+
+  function enqueueFollowUp(
+    conversationId: string,
+    overrides: Partial<EnqueueInputCommand> = {},
+  ): EnqueueInputCommand {
+    return {
+      commandId: 'command-enqueue',
+      inputId: 'input-follow-up',
+      agentId: AGENT_ID,
+      channelId: CHANNEL_ID,
+      conversationId,
+      text: 'Follow up',
+      behavior: 'followUp',
+      ...overrides,
+    };
+  }
+
+  function enqueueSteer(
+    conversationId: string,
+    overrides: Partial<EnqueueInputCommand> = {},
+  ): EnqueueInputCommand {
+    return {
+      commandId: 'command-steer',
+      inputId: 'input-steer',
+      agentId: AGENT_ID,
+      channelId: CHANNEL_ID,
+      conversationId,
+      text: 'Steer here',
+      behavior: 'steer',
+      expectedActiveTurnId: ACTIVE_RUN_ID,
+      ...overrides,
+    };
+  }
+
+  function editFollowUp(
+    conversationId: string,
+    overrides: Partial<EditFollowUpCommand> = {},
+  ): EditFollowUpCommand {
+    return {
+      commandId: 'command-edit',
+      conversationId,
+      inputId: 'input-follow-up',
+      expectedRevision: 1,
+      text: 'Edited follow up',
+      ...overrides,
+    };
+  }
+
+  function removeFollowUp(
+    conversationId: string,
+    overrides: Partial<RemoveFollowUpCommand> = {},
+  ): RemoveFollowUpCommand {
+    return {
+      commandId: 'command-remove',
+      conversationId,
+      inputId: 'input-follow-up',
+      expectedRevision: 1,
+      ...overrides,
+    };
+  }
+
+  function resumeFollowUps(
+    conversationId: string,
+    expectedQueueRevision: number,
+    overrides: Partial<ResumeFollowUpsCommand> = {},
+  ): ResumeFollowUpsCommand {
+    return {
+      commandId: 'command-resume',
+      conversationId,
+      expectedQueueRevision,
+      ...overrides,
+    };
+  }
+
+  function frameOf(result: ReturnType<SqliteConversationService['enqueueInput']>) {
+    expect(result.frames).toHaveLength(1);
+    return result.frames[0];
+  }
+
+  it.each(['enqueue', 'edit', 'remove', 'resume'] as const)(
+    'replays the exact durable Follow Up %s command result after reopen',
+    (name) => {
+      const conversationId = createConversation();
+      let operation: () => ReturnType<SqliteConversationService['enqueueInput']>;
+      if (name === 'enqueue') {
+        operation = () => service.enqueueInput(enqueueFollowUp(conversationId));
+      } else {
+        service.enqueueInput(enqueueFollowUp(conversationId));
+        if (name === 'edit') {
+          operation = () => service.editFollowUp(editFollowUp(conversationId));
+        } else if (name === 'remove') {
+          operation = () => service.removeFollowUp(removeFollowUp(conversationId));
+        } else {
+          service.pauseFollowUpsForAgentDisable(AGENT_ID);
+          operation = () => service.resumeFollowUps(resumeFollowUps(conversationId, 2));
+        }
+      }
+
+      const first = operation();
+      service.close();
+      service = reopenService();
+
+      expect(operation()).toEqual({ ...first, replayed: true });
+    },
+  );
+
+  it('keeps three Follow Up items in FIFO enqueue order', () => {
+    const conversationId = createConversation();
+    for (const suffix of ['a', 'b', 'c']) {
+      service.enqueueInput(
+        enqueueFollowUp(conversationId, {
+          commandId: `command-${suffix}`,
+          inputId: `input-${suffix}`,
+          text: `Follow up ${suffix}`,
+        }),
+      );
+    }
+
+    expect(
+      storage()
+        .db.prepare(
+          `SELECT input_id, enqueue_order, revision
+           FROM conversation_pending_inputs
+           WHERE conversation_id = ? AND state = 'queued'
+           ORDER BY enqueue_order`,
+        )
+        .all(conversationId),
+    ).toEqual([
+      { input_id: 'input-a', enqueue_order: 1, revision: 1 },
+      { input_id: 'input-b', enqueue_order: 2, revision: 1 },
+      { input_id: 'input-c', enqueue_order: 3, revision: 1 },
+    ]);
+  });
+
+  it('accepts identical Follow Up text under different input IDs', () => {
+    const conversationId = createConversation();
+    const first = service.enqueueInput(
+      enqueueFollowUp(conversationId, { commandId: 'command-a', inputId: 'input-a', text: 'same' }),
+    );
+    const second = service.enqueueInput(
+      enqueueFollowUp(conversationId, { commandId: 'command-b', inputId: 'input-b', text: 'same' }),
+    );
+
+    expect(first.frames[0]).toMatchObject({
+      type: 'input_accepted',
+      input: { inputId: 'input-a' },
+    });
+    expect(second.frames[0]).toMatchObject({
+      type: 'input_accepted',
+      input: { inputId: 'input-b' },
+    });
+  });
+
+  it('rejects a changed command fingerprint without replacing the durable command result', () => {
+    const conversationId = createConversation();
+    const command = enqueueFollowUp(conversationId);
+    const first = service.enqueueInput(command);
+    const changed = service.enqueueInput({ ...command, text: 'A different request' });
+
+    expect(changed).toEqual({
+      replayed: false,
+      frames: [
+        {
+          type: 'command_rejected',
+          id: command.commandId,
+          conversationId,
+          code: 'validation_failed',
+          error: 'Command ID was already used for a different request',
+          retryable: false,
+        },
+      ],
+    });
+    expect(service.enqueueInput(command)).toEqual({ ...first, replayed: true });
+    expect(
+      storage()
+        .db.prepare('SELECT COUNT(*) FROM conversation_command_results WHERE conversation_id = ?')
+        .pluck()
+        .get(conversationId),
+    ).toBe(1);
+  });
+
+  it('journals a duplicate Follow Up input ID under another command', () => {
+    const conversationId = createConversation();
+    service.enqueueInput(enqueueFollowUp(conversationId));
+    const duplicate = enqueueFollowUp(conversationId, {
+      commandId: 'command-duplicate',
+      text: 'Must not replace original',
+    });
+
+    const rejected = service.enqueueInput(duplicate);
+    expect(frameOf(rejected)).toMatchObject({
+      type: 'command_rejected',
+      id: duplicate.commandId,
+      code: 'validation_failed',
+      retryable: false,
+      details: {
+        inputId: duplicate.inputId,
+        state: 'queued',
+        itemRevision: 1,
+        queueRevision: 1,
+        refreshRequired: true,
+      },
+    });
+    service.close();
+    service = reopenService();
+    expect(service.enqueueInput(duplicate)).toEqual({ ...rejected, replayed: true });
+  });
+
+  it.each(['edit', 'remove'] as const)(
+    'journals a stale Follow Up item revision for %s with compact refresh details',
+    (operation) => {
+      const conversationId = createConversation();
+      service.enqueueInput(enqueueFollowUp(conversationId));
+      const command =
+        operation === 'edit'
+          ? editFollowUp(conversationId, { commandId: 'stale-edit', expectedRevision: 0 })
+          : removeFollowUp(conversationId, { commandId: 'stale-remove', expectedRevision: 0 });
+
+      const result =
+        operation === 'edit'
+          ? service.editFollowUp(command as EditFollowUpCommand)
+          : service.removeFollowUp(command as RemoveFollowUpCommand);
+      expect(frameOf(result)).toMatchObject({
+        type: 'command_rejected',
+        code: 'revision_conflict',
+        details: {
+          inputId: 'input-follow-up',
+          state: 'queued',
+          itemRevision: 1,
+          queueRevision: 1,
+          refreshRequired: true,
+        },
+      });
+      expect(Object.keys((result.frames[0] as { details: object }).details)).toEqual([
+        'inputId',
+        'state',
+        'itemRevision',
+        'queueRevision',
+        'refreshRequired',
+      ]);
+    },
+  );
+
+  it('edits a Follow Up while preserving enqueueOrder and advancing revisions', () => {
+    const conversationId = createConversation();
+    service.enqueueInput(enqueueFollowUp(conversationId));
+
+    const result = service.editFollowUp(editFollowUp(conversationId));
+
+    expect(frameOf(result)).toMatchObject({
+      type: 'input_updated',
+      queueRevision: 2,
+      input: {
+        inputId: 'input-follow-up',
+        text: 'Edited follow up',
+        revision: 2,
+        enqueueOrder: 1,
+      },
+    });
+    expect(service.get(conversationId)).toMatchObject({ revision: 3 });
+  });
+
+  it('removes a middle Follow Up and closes derived presentation positions', () => {
+    const conversationId = createConversation();
+    for (const suffix of ['a', 'b', 'c']) {
+      service.enqueueInput(
+        enqueueFollowUp(conversationId, {
+          commandId: `command-${suffix}`,
+          inputId: `input-${suffix}`,
+        }),
+      );
+    }
+
+    service.removeFollowUp(
+      removeFollowUp(conversationId, {
+        commandId: 'remove-b',
+        inputId: 'input-b',
+      }),
+    );
+    const queued = storage()
+      .db.prepare(
+        `SELECT input_id, enqueue_order
+         FROM conversation_pending_inputs
+         WHERE conversation_id = ? AND kind = 'follow_up' AND state = 'queued'
+         ORDER BY enqueue_order`,
+      )
+      .all(conversationId) as Array<{ input_id: string; enqueue_order: number }>;
+
+    expect(queued.map((item, index) => [item.input_id, index + 1])).toEqual([
+      ['input-a', 1],
+      ['input-c', 2],
+    ]);
+    expect(queued.map((item) => item.enqueue_order)).toEqual([1, 3]);
+  });
+
+  it('rejects removal after a Follow Up starts delivering', () => {
+    const conversationId = createConversation();
+    service.enqueueInput(enqueueFollowUp(conversationId));
+    storage()
+      .db.prepare("UPDATE conversation_pending_inputs SET state = 'delivering' WHERE input_id = ?")
+      .run('input-follow-up');
+
+    const result = service.removeFollowUp(removeFollowUp(conversationId));
+
+    expect(frameOf(result)).toMatchObject({
+      type: 'command_rejected',
+      code: 'validation_failed',
+      details: {
+        inputId: 'input-follow-up',
+        state: 'delivering',
+        itemRevision: 1,
+        queueRevision: 1,
+        refreshRequired: true,
+      },
+    });
+  });
+
+  it('enforces queue pause and resume revision CAS with compact refresh details', () => {
+    const conversationId = createConversation();
+    service.enqueueInput(enqueueFollowUp(conversationId));
+    const paused = service.pauseFollowUpsForAgentDisable(AGENT_ID);
+    expect(paused[0]).toMatchObject({
+      conversation: { queuePaused: true, queueRevision: 2, revision: 3 },
+      frame: { type: 'queue_paused', queueRevision: 2, pendingFollowUpCount: 1 },
+    });
+
+    const stale = service.resumeFollowUps(
+      resumeFollowUps(conversationId, 1, { commandId: 'resume-stale' }),
+    );
+    expect(frameOf(stale)).toEqual({
+      type: 'command_rejected',
+      id: 'resume-stale',
+      conversationId,
+      code: 'revision_conflict',
+      error: 'Queue revision 1 is stale',
+      retryable: false,
+      details: {
+        queuePaused: true,
+        queueRevision: 2,
+        pendingFollowUpCount: 1,
+        refreshRequired: true,
+      },
+    });
+    const resumed = service.resumeFollowUps(resumeFollowUps(conversationId, 2));
+    expect(resumed.promotedRun).toBeUndefined();
+    expect(frameOf(resumed)).toMatchObject({
+      type: 'queue_resumed',
+      queueRevision: 3,
+      queuePaused: false,
+      pendingFollowUpCount: 1,
+    });
+  });
+
+  it('removing the final queued Follow Up clears pause without promotion', () => {
+    const conversationId = createConversation();
+    service.enqueueInput(enqueueFollowUp(conversationId));
+    service.pauseFollowUpsForAgentDisable(AGENT_ID);
+
+    const removed = service.removeFollowUp(removeFollowUp(conversationId));
+
+    expect(removed.promotedRun).toBeUndefined();
+    expect(removed.frames.map((frame) => frame.type)).toEqual(['input_removed', 'queue_resumed']);
+    expect(removed.frames).toEqual([
+      expect.objectContaining({
+        type: 'input_removed',
+        queueRevision: 3,
+        input: expect.objectContaining({ state: 'removed', revision: 2 }),
+      }),
+      expect.objectContaining({
+        type: 'queue_resumed',
+        queueRevision: 3,
+        queuePaused: false,
+        pendingFollowUpCount: 0,
+      }),
+    ]);
+    expect(
+      storage()
+        .db.prepare('SELECT queue_paused, queue_revision FROM conversations WHERE id = ?')
+        .get(conversationId),
+    ).toEqual({ queue_paused: 0, queue_revision: 3 });
+  });
+
+  it('rejects the 21st Steer admission at the per-kind queue limit', () => {
+    const conversationId = createConversation(true);
+    for (let index = 1; index <= 20; index++) {
+      expect(
+        frameOf(
+          service.enqueueInput(
+            enqueueSteer(conversationId, {
+              commandId: `steer-command-${index}`,
+              inputId: `steer-input-${index}`,
+            }),
+          ),
+        ),
+      ).toMatchObject({ type: 'input_accepted' });
+    }
+
+    const rejected = service.enqueueInput(
+      enqueueSteer(conversationId, { commandId: 'steer-command-21', inputId: 'steer-input-21' }),
+    );
+    expect(frameOf(rejected)).toMatchObject({
+      type: 'command_rejected',
+      code: 'validation_failed',
+      retryable: false,
+      details: { kind: 'steer', count: 20, limit: 20, queueRevision: 20 },
+    });
+    expect(
+      storage()
+        .db.prepare("SELECT COUNT(*) FROM conversation_pending_inputs WHERE kind = 'steer'")
+        .pluck()
+        .get(),
+    ).toBe(20);
+  });
+
+  it('rejects the 21st Follow Up at the per-kind queue limit', () => {
+    const conversationId = createConversation();
+    for (let index = 1; index <= 20; index++) {
+      service.enqueueInput(
+        enqueueFollowUp(conversationId, {
+          commandId: `follow-up-command-${index}`,
+          inputId: `follow-up-input-${index}`,
+        }),
+      );
+    }
+
+    const rejected = service.enqueueInput(
+      enqueueFollowUp(conversationId, {
+        commandId: 'follow-up-command-21',
+        inputId: 'follow-up-input-21',
+      }),
+    );
+    expect(frameOf(rejected)).toMatchObject({
+      type: 'command_rejected',
+      code: 'validation_failed',
+      details: { kind: 'follow_up', count: 20, limit: 20, queueRevision: 20 },
+    });
+    expect(service.get(conversationId)).toMatchObject({ revision: 21 });
+  });
+
+  it('rejects aggregate queue bytes over 100 MiB and removal frees capacity', () => {
+    const conversationId = createConversation();
+    service.enqueueInput(enqueueFollowUp(conversationId));
+    storage()
+      .db.prepare('UPDATE conversation_pending_inputs SET payload_bytes = ? WHERE input_id = ?')
+      .run(MAX_PENDING_BYTES, 'input-follow-up');
+
+    const overflow = service.enqueueInput(
+      enqueueFollowUp(conversationId, {
+        commandId: 'command-overflow',
+        inputId: 'input-overflow',
+      }),
+    );
+    expect(frameOf(overflow)).toMatchObject({
+      type: 'command_rejected',
+      code: 'validation_failed',
+      details: {
+        payloadBytes: expect.any(Number),
+        pendingBytes: MAX_PENDING_BYTES,
+        limitBytes: MAX_PENDING_BYTES,
+        queueRevision: 1,
+      },
+    });
+
+    service.removeFollowUp(removeFollowUp(conversationId));
+    expect(
+      frameOf(
+        service.enqueueInput(
+          enqueueFollowUp(conversationId, {
+            commandId: 'command-after-remove',
+            inputId: 'input-after-remove',
+          }),
+        ),
+      ),
+    ).toMatchObject({ type: 'input_accepted' });
+  });
+
+  it('round-trips Follow Up images and measures the canonical serialized payload bytes', () => {
+    const conversationId = createConversation();
+    const images = [{ mediaType: 'image/png' as const, data: 'b3JpZ2luYWw=' }];
+    const accepted = service.enqueueInput(
+      enqueueFollowUp(conversationId, { text: 'With image', images }),
+    );
+
+    expect(frameOf(accepted)).toMatchObject({
+      type: 'input_accepted',
+      input: { text: 'With image', images },
+    });
+    expect(
+      storage()
+        .db.prepare('SELECT images_json, payload_bytes FROM conversation_pending_inputs')
+        .get(),
+    ).toEqual({
+      images_json: JSON.stringify(images),
+      payload_bytes: Buffer.byteLength(JSON.stringify({ text: 'With image', images })),
+    });
+  });
+
+  it('admits a Follow Up before a Steer without allocating Follow Up transcript ordinals', () => {
+    const conversationId = createConversation(true);
+    service.enqueueInput(
+      enqueueFollowUp(conversationId, { commandId: 'follow-up-first', inputId: 'follow-up-first' }),
+    );
+    service.enqueueInput(
+      enqueueSteer(conversationId, { commandId: 'steer-second', inputId: 'steer-second' }),
+    );
+
+    expect(
+      storage()
+        .db.prepare(
+          `SELECT input_id, kind, target_turn_id, reserved_user_ordinal,
+                  reserved_assistant_ordinal, enqueue_order
+           FROM conversation_pending_inputs
+           ORDER BY enqueue_order`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        input_id: 'follow-up-first',
+        kind: 'follow_up',
+        target_turn_id: ACTIVE_RUN_ID,
+        reserved_user_ordinal: null,
+        reserved_assistant_ordinal: null,
+        enqueue_order: 1,
+      },
+      {
+        input_id: 'steer-second',
+        kind: 'steer',
+        target_turn_id: ACTIVE_RUN_ID,
+        reserved_user_ordinal: 1,
+        reserved_assistant_ordinal: 2,
+        enqueue_order: 2,
+      },
+    ]);
+    expect(
+      storage()
+        .db.prepare(
+          'SELECT ordinal, role, delivery_kind, delivery_status FROM conversation_messages',
+        )
+        .all(),
+    ).toEqual([{ ordinal: 1, role: 'user', delivery_kind: 'steer', delivery_status: 'pending' }]);
+    expect(
+      storage().db.prepare('SELECT next_message_ordinal FROM conversations').pluck().get(),
+    ).toBe(3);
+  });
+
+  it('replays the original command result bytes after an edit without storing content in outcome_json', () => {
+    const conversationId = createConversation();
+    const original = enqueueFollowUp(conversationId, {
+      text: 'original private text',
+      images: [{ mediaType: 'image/png', data: 'b3JpZ2luYWwtYmFzZTY0' }],
+    });
+    const accepted = service.enqueueInput(original);
+    service.editFollowUp(
+      editFollowUp(conversationId, {
+        text: 'edited private text',
+        images: [{ mediaType: 'image/jpeg', data: 'ZWRpdGVkLWJhc2U2NA==' }],
+      }),
+    );
+    const outcomeJson = storage()
+      .db.prepare(
+        'SELECT outcome_json FROM conversation_command_results WHERE conversation_id = ? AND command_id = ?',
+      )
+      .pluck()
+      .get(conversationId, original.commandId) as string;
+
+    expect(JSON.parse(outcomeJson)).toEqual({ kind: 'sequenced', v2Seqs: [1] });
+    for (const privateValue of [
+      'original private text',
+      'edited private text',
+      'b3JpZ2luYWwtYmFzZTY0',
+      'ZWRpdGVkLWJhc2U2NA==',
+    ]) {
+      expect(outcomeJson).not.toContain(privateValue);
+    }
+    service.close();
+    service = reopenService();
+
+    const replayed = service.enqueueInput(original);
+    expect(JSON.stringify(replayed.frames[0])).toBe(JSON.stringify(accepted.frames[0]));
+    expect(replayed).toEqual({ ...accepted, replayed: true });
+    expect(replayed.frames[0]).toMatchObject({
+      type: 'input_accepted',
+      v2Seq: 1,
+      input: {
+        text: 'original private text',
+        images: [{ mediaType: 'image/png', data: 'b3JpZ2luYWwtYmFzZTY0' }],
+      },
+    });
+  });
+
+  it('keeps ownership and unknown-conversation failures outside the command journal', () => {
+    const conversationId = createConversation();
+    expect(() =>
+      service.enqueueInput(
+        enqueueFollowUp(conversationId, { commandId: 'wrong-owner', agentId: 'agent-other' }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'not_found' }));
+    expect(() =>
+      service.enqueueInput(enqueueFollowUp('missing-conversation', { commandId: 'missing' })),
+    ).toThrowError(expect.objectContaining({ code: 'not_found' }));
+    expect(
+      storage().db.prepare('SELECT COUNT(*) FROM conversation_command_results').pluck().get(),
+    ).toBe(0);
+  });
+
+  it('pauses each writable nonempty Follow Up queue once without command journaling', () => {
+    const first = createConversation();
+    const second = createConversation();
+    service.enqueueInput(enqueueFollowUp(first, { commandId: 'enqueue-first', inputId: 'first' }));
+    service.enqueueInput(
+      enqueueFollowUp(second, { commandId: 'enqueue-second', inputId: 'second' }),
+    );
+    const commandCount = storage()
+      .db.prepare('SELECT COUNT(*) FROM conversation_command_results')
+      .pluck()
+      .get();
+
+    const paused = service.pauseFollowUpsForAgentDisable(AGENT_ID);
+
+    expect(paused).toHaveLength(2);
+    expect(paused.map(({ frame }) => frame.type)).toEqual(['queue_paused', 'queue_paused']);
+    expect(service.pauseFollowUpsForAgentDisable(AGENT_ID)).toEqual([]);
+    expect(
+      storage().db.prepare('SELECT COUNT(*) FROM conversation_command_results').pluck().get(),
+    ).toBe(commandCount);
   });
 });
