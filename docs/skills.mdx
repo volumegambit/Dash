@@ -115,6 +115,70 @@ Agent-created skills:
 The `create_skill` tool lets the agent write persistent instructions that affect its own future behavior. Only enable it for agents you trust to self-modify responsibly.
 </Warning>
 
+## Learning from experience
+
+Agents also pick up skills on their own. After a turn where the agent did real work, Dash runs a short review that asks the agent's own model one question: did this session teach anything worth keeping? Anything it finds is written into a skill the agent owns, so the next conversation starts already knowing it.
+
+You don't have to do anything to switch this on — it is on by default.
+
+### What gets learned
+
+A lesson is one short, self-contained instruction: a technique that worked, a correction you made, a dead end worth avoiding next time. Lessons are grouped into skills named for a **kind of task** rather than for one job, so a handful of useful skills build up instead of a long list of near-duplicates.
+
+The review is told not to record a few things that look like lessons but age badly:
+
+- **Problems with your setup** — a missing program, an unset key, a path that only breaks on this machine. Those get fixed; they aren't lasting rules.
+- **"This tool is broken."** A claim like that would be repeated back to the agent for months after the real cause was fixed. If something failed because of setup, the lesson is the fix, not the failure.
+- **Errors that went away on their own.** If retrying worked, the lesson is to retry.
+- **One-off jobs.** Summarising a single document isn't a kind of work worth a skill.
+
+Nothing sensitive should ever be recorded. As with memory, that is an instruction the agent is given, not a filter Dash enforces — so don't paste passwords or keys into chat.
+
+### Where it lives
+
+Learned skills sit in the same managed directory as any other agent skill, are labelled **Agent** in Mission Control, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
+
+Learning only ever writes to skills the agent created itself. A skill you wrote, one installed from the ecosystem, and anything in the bundled library are never modified. When the agent learns something about one of those, it records it in a companion skill that is loaded alongside the original, so the lesson still arrives when it is relevant.
+
+### Correcting a lesson
+
+Each lesson carries a count of how often the review judged it right and how often it judged it wrong. A lesson that keeps proving wrong and never proves useful retires itself, and retired lessons are kept in the file rather than deleted, so you can see what happened and put one back by hand.
+
+To correct something immediately, open the skill in Mission Control and edit or delete the lesson. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
+
+### Settings
+
+From the agent's **Skills** tab, or via the API:
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `learning` | `auto` | `auto` and `on` both enable learning; `off` disables it. |
+| `minToolCalls` | `3` | How much work a turn must involve before it is reviewed. A turn that was just conversation is never reviewed and costs nothing. |
+| `approval` | `false` | When on, nothing is saved until you approve it. |
+
+Each review that runs costs one extra model call, on the agent's own model.
+
+<Note>
+Learning applies to turns that complete normally. A turn that fails or is cancelled is not reviewed — there is no finished outcome to learn from.
+</Note>
+
+### Approving lessons before they are saved
+
+Turn on `approval` when you'd rather see every lesson first. Proposals are then held instead of saved:
+
+```bash
+# List what is waiting
+GET    /agents/{id}/skills/pending
+
+# Save one
+POST   /agents/{id}/skills/pending/{pendingId}/approve
+
+# Discard one
+DELETE /agents/{id}/skills/pending/{pendingId}
+```
+
+A held proposal is applied against your skills as they are **at the moment you approve it**, not as they were when it was proposed — so approving something days later won't undo changes you made in between.
+
 ## Installing skills from the ecosystem
 
 Skills use the open `SKILL.md` standard, so an agent can install skills published by the wider ecosystem (for example `anthropics/skills`, `openai/skills`, or `NousResearch/hermes-agent`). Give an agent the `install_skill` tool, then ask it in chat:
