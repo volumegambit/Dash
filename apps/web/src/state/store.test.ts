@@ -2317,4 +2317,208 @@ describe('createWebAppStore', () => {
       expect(store.getState().transcripts[CONVERSATION_ID].messages).toHaveLength(1);
     });
   });
+  /**
+   * Task D2: the web sub-agent row expands into the child's own conversation
+   * (design §8.3) — a REST replay of the child transcript, a WS subscription
+   * so it streams live, and a composer that sends a user turn INTO the child.
+   */
+  describe('sub-agent child conversations (D2)', () => {
+    const CHILD_ID = 'child-1';
+
+    type SubscriptionFrame = Extract<MobileWsClientFrame, { type: 'subscribe' | 'unsubscribe' }>;
+
+    function subscriptionFrames(socket: ScriptedChatSocket): SubscriptionFrame[] {
+      return socket.sent.filter(
+        (f): f is SubscriptionFrame => f.type === 'subscribe' || f.type === 'unsubscribe',
+      );
+    }
+
+    function childSummary(): ConversationSummary {
+      return summary({
+        id: CHILD_ID,
+        kind: 'subagent',
+        parentConversationId: CONVERSATION_ID,
+        subagent: {
+          type: 'Explore',
+          status: 'running',
+          description: 'Map gateway internals',
+          prompt: 'Find every websocket entry point',
+          model: 'sonnet',
+          background: false,
+          depth: 1,
+          startedAt: '2026-09-04T10:00:00.000Z',
+          toolCallCount: 3,
+          oneShot: true,
+        },
+      });
+    }
+
+    it("replays the child's transcript and records its SubagentInfo", async () => {
+      const childMessage = message({
+        id: 'child-msg-1',
+        conversationId: CHILD_ID,
+        turnId: 'child-turn-1',
+        role: 'assistant',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'Found them.' }] },
+      });
+      const { rest, getMessages, getConversation } = fakeRest({
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [childMessage] : [],
+          nextCursor: null,
+          throughSeq: 3,
+        }),
+        getConversationImpl: async (conversationId: string) =>
+          conversationId === CHILD_ID ? childSummary() : summary(),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+
+      expect(getMessages).toHaveBeenCalledWith(CHILD_ID);
+      expect(getConversation).toHaveBeenCalledWith(CHILD_ID);
+      expect(store.getState().transcripts[CHILD_ID].messages).toEqual([childMessage]);
+      expect(store.getState().subagentInfo[CHILD_ID]).toMatchObject({ oneShot: true });
+      // The parent transcript is untouched by a child replay.
+      expect(store.getState().transcripts[CONVERSATION_ID].messages).toEqual([]);
+    });
+
+    it('still replays the transcript when the child summary fetch fails', async () => {
+      const childMessage = message({ id: 'child-msg-1', conversationId: CHILD_ID });
+      const { rest } = fakeRest({
+        getMessagesImpl: async () => ({ items: [childMessage], nextCursor: null, throughSeq: 1 }),
+        getConversationImpl: async () => {
+          throw new Error('boom');
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await expect(store.getState().loadSubagentTranscript(CHILD_ID)).resolves.toBeUndefined();
+
+      expect(store.getState().transcripts[CHILD_ID].messages).toEqual([childMessage]);
+      expect(store.getState().subagentInfo[CHILD_ID]).toBeUndefined();
+    });
+
+    it("subscribes to the child on the parent's agent, once, and unsubscribes on request", async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      store.getState().subscribeSubagent(CHILD_ID);
+      await vi.waitFor(() =>
+        expect(
+          subscriptionFrames(socket).filter((f) => f.conversationId === CHILD_ID),
+        ).toHaveLength(1),
+      );
+      expect(subscriptionFrames(socket).find((f) => f.conversationId === CHILD_ID)).toMatchObject({
+        type: 'subscribe',
+        agentId: 'agent-01',
+      });
+
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      expect(subscriptionFrames(socket).at(-1)).toMatchObject({
+        type: 'unsubscribe',
+        conversationId: CHILD_ID,
+      });
+    });
+
+    it("does not let a child subscription clobber the parent's own", async () => {
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await vi.waitFor(() =>
+        expect(
+          subscriptionFrames(socket).filter((f) => f.conversationId === CHILD_ID),
+        ).toHaveLength(1),
+      );
+      await openAndConnect(store, sockets, 'conv-2');
+
+      // Leaving the parent drops the PARENT's subscription, not the child's.
+      expect(
+        subscriptionFrames(socket).filter(
+          (f) => f.type === 'unsubscribe' && f.conversationId === CONVERSATION_ID,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('re-subscribes an expanded child after a reconnect', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await vi.waitFor(() =>
+        expect(
+          subscriptionFrames(sockets[0]).filter((f) => f.conversationId === CHILD_ID),
+        ).toHaveLength(1),
+      );
+
+      onCloses[0]('error');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(sockets.length).toBe(2));
+      sockets[1].open();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+      await vi.waitFor(() =>
+        expect(
+          subscriptionFrames(sockets[1]).filter(
+            (f) => f.type === 'subscribe' && f.conversationId === CHILD_ID,
+          ),
+        ).toHaveLength(1),
+      );
+    });
+
+    it("sends a user turn into the child's conversation with an optimistic row", async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+
+      const sent = socket.turnFrames.at(-1);
+      expect(sent).toMatchObject({
+        type: 'message',
+        agentId: 'agent-01',
+        conversationId: CHILD_ID,
+        text: 'also check the relay',
+      });
+      const messages = store.getState().transcripts[CHILD_ID].messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        role: 'user',
+        conversationId: CHILD_ID,
+        content: { type: 'user', text: 'also check the relay' },
+      });
+      expect(store.getState().transcripts[CONVERSATION_ID].messages).toHaveLength(0);
+    });
+
+    it('marks the optimistic child row failed when the send itself throws', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+      socket.sendShouldThrow = true;
+
+      await expect(store.getState().sendToSubagent(CHILD_ID, 'nope')).rejects.toThrow();
+
+      expect(store.getState().transcripts[CHILD_ID].messages[0]).toMatchObject({
+        status: 'failed',
+      });
+    });
+  });
 });

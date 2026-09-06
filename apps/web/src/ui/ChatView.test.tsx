@@ -1683,3 +1683,38 @@ describe('ChatView notification rows (C7)', () => {
     expect(screen.getByTestId('chat-message').getAttribute('data-role')).toBe('user');
   });
 });
+
+/**
+ * Task D2, ruling 6 (sub-agents design 8.5): `origin: 'parent'` is NOT a
+ * notification. C7 left `isNotificationRow` true for it, which would collapse
+ * an orchestrator message inside a child transcript to the generic bell label
+ * and lose its text. §8.5 wants a distinct muted "from orchestrator" row.
+ */
+describe('ChatView orchestrator rows (D2)', () => {
+  function orchestratorMessage(): ConversationMessage {
+    return message({
+      id: 'parent-user-1',
+      turnId: 'turn-parent-1',
+      role: 'user',
+      origin: 'parent',
+      content: { type: 'user', text: 'Also check the relay handshake.' },
+    });
+  }
+
+  it('renders an orchestrator message as its own muted row, keeping its text', async () => {
+    await renderConnected({ messages: [orchestratorMessage()] });
+
+    const row = screen.getByTestId('orchestrator-row');
+    expect(row.textContent).toContain('from orchestrator');
+    expect(row.textContent).toContain('Also check the relay handshake.');
+    expect(screen.queryByTestId('notification-row')).toBeNull();
+    expect(screen.queryByTestId('chat-message')).toBeNull();
+  });
+
+  it('offers no edit/retry affordance on an orchestrator row', async () => {
+    await renderConnected({ messages: [orchestratorMessage()] });
+
+    expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
+    expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+});

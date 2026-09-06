@@ -5,6 +5,7 @@ import type {
   MobileImage,
   MobileWsClientFrame,
   MobileWsServerFrame,
+  SubagentInfo,
 } from '@dash/mobile-contract';
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
@@ -15,6 +16,15 @@ import { type Transcript, applyServerFrame } from './assemble';
 export interface WebAppState {
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
+  /**
+   * Per-child `SubagentInfo`, keyed by the child's conversation id, as
+   * `loadSubagentTranscript` read it off the child conversation's own summary.
+   * Deliberately NOT merged into `conversations`: that list is the sidebar's
+   * model and the gateway only ever puts `kind: 'user'` rows in it, so a child
+   * landing there would show up as a top-level thread. The row reads `oneShot`
+   * from here to decide whether its composer can send at all (design §8.3).
+   */
+  subagentInfo: Record<string, SubagentInfo>;
   /**
    * `'idle'` is the store's INITIAL state — before any conversation has ever
    * been opened or reconnect has ever been attempted. It means "nothing has
@@ -189,6 +199,40 @@ export interface WebAppState {
    */
   deleteConversation(conversationId: string): Promise<void>;
   cancelTurn(conversationId: string): void;
+  /**
+   * Replays a CHILD conversation into `transcripts[childId]` and records its
+   * `SubagentInfo` (sub-agents design §8.3: "the client fetches the child
+   * conversation on first expansion"). A child is an ordinary conversation as
+   * far as REST is concerned — `GET /conversations/:id/messages` works on it
+   * unchanged; only the LIST route filters by `kind`.
+   *
+   * The two fetches are independent and neither can fail the other: the
+   * summary exists only to learn `oneShot` (and would be a shame to lose the
+   * transcript over), while a 401 on either still means this credential is
+   * dead and routes to `enterUnauthorized()` like every other REST call here.
+   * Never rejects — the caller is a render effect.
+   */
+  loadSubagentTranscript(childId: string): Promise<void>;
+  /**
+   * Watches a child conversation over the live socket so its transcript
+   * streams into an expanded row (design §7.6/§8.3). Independent of the
+   * PARENT's own single subscription: children are tracked in their own set,
+   * so opening one never disturbs the conversation the user has open, and they
+   * are re-sent after a reconnect (a dropped socket loses every server-side
+   * watcher). A no-op without a live socket or an open conversation to borrow
+   * the agent id from.
+   */
+  subscribeSubagent(childId: string): void;
+  /** Drops one child's subscription. Safe to call for a child that never had one. */
+  unsubscribeSubagent(childId: string): void;
+  /**
+   * Types a user turn INTO a child ("type into a child's transcript", §8.3):
+   * an ordinary `message` frame addressed to the child conversation, on the
+   * parent's agent, with an optimistic user row in `transcripts[childId]`.
+   * Throws on the same disconnected precondition `sendMessage` enforces, and
+   * marks the optimistic row failed if the send itself throws.
+   */
+  sendToSubagent(childId: string, text: string): Promise<void>;
   /**
    * Tears down this store's live connection: closes the current socket (if
    * any), cancels any pending reconnect timer, and stops any reconnect
@@ -409,6 +453,19 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
    * instead, by id, so a genuine error frame for a real turn is untouched.
    */
   const subscriptionFrameIds = new Set<string>();
+  /**
+   * Child conversations an expanded row wants watched (§8.3), and the ones a
+   * `subscribe` frame has actually gone out for on the CURRENT socket. Two
+   * collections rather than one because they diverge across a reconnect: the
+   * intent survives, the server-side watcher does not.
+   *
+   * Deliberately separate from `subscribedConversationId`/`subscribedAgentId`,
+   * which are a single slot for the conversation the user has open. Reusing
+   * that slot for a child would make the next `openConversation` unsubscribe
+   * the child and silently leave the parent watched.
+   */
+  const desiredChildSubscriptions = new Set<string>();
+  const activeChildSubscriptions = new Map<string, string>();
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -469,6 +526,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     } catch (err) {
       console.error('WebAppStore: failed to send unsubscribe frame', err);
     }
+  }
+
+  /** Forgets every child subscription. Called where the socket itself goes
+   * away: the gateway drops a closed sink's watchers on its own, so there is
+   * nothing to send — only local bookkeeping to reset. */
+  function clearChildSubscriptions(): void {
+    desiredChildSubscriptions.clear();
+    activeChildSubscriptions.clear();
   }
 
   /** Backward-paginated replay: `getMessages` walks from newest to oldest via
@@ -637,6 +702,42 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       sendSubscribe(target, agentId, conversationId);
     }
 
+    /**
+     * Sends `subscribe` for every wanted child that has none on this socket.
+     * Children ride the PARENT's agent id: a child conversation belongs to the
+     * same agent, and the hub keys its watcher registry on that pair.
+     *
+     * Best-effort throughout, exactly like the parent's own subscription: an
+     * older gateway answers `validation_failed` (swallowed by id) and a missing
+     * agent id just means no live stream until the next attempt.
+     */
+    async function flushChildSubscriptions(target: ChatSocket, parentId: string): Promise<void> {
+      if (desiredChildSubscriptions.size === 0) return;
+      let agentId: string | null = null;
+      try {
+        agentId = await resolveAgentId(parentId);
+      } catch {
+        return;
+      }
+      if (!agentId || disposed || socket !== target || currentConversationId !== parentId) return;
+      for (const childId of desiredChildSubscriptions) {
+        if (activeChildSubscriptions.has(childId)) continue;
+        const frame: MobileWsClientFrame = {
+          type: 'subscribe',
+          id: crypto.randomUUID(),
+          agentId,
+          conversationId: childId,
+        };
+        subscriptionFrameIds.add(frame.id);
+        try {
+          target.send(frame);
+          activeChildSubscriptions.set(childId, agentId);
+        } catch (err) {
+          console.error('WebAppStore: failed to send child subscribe frame', err);
+        }
+      }
+    }
+
     function handleFrame(frame: MobileWsServerFrame): void {
       // An older gateway rejecting our `subscribe`/`unsubscribe` (see
       // `subscriptionFrameIds`). Never a transcript or conversation event.
@@ -758,6 +859,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       // Drop the conversation subscription over the socket that still holds
       // it, before the close below takes that socket away.
       sendUnsubscribe();
+      clearChildSubscriptions();
       subscriptionFrameIds.clear();
       if (socket) {
         const closing = socket;
@@ -874,6 +976,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         // the hub ever registers this socket as a watcher, and the whole
         // point of the subscription is that it outlives any one turn.
         sendSubscribe(attempted, agentId, conversationId);
+        // Every watcher died with the old socket, including the children an
+        // expanded row is still showing — without this an open sub-agent row
+        // goes permanently silent after one reconnect.
+        activeChildSubscriptions.clear();
+        void flushChildSubscriptions(attempted, conversationId);
         reconnectAttempt = 0;
         set({ connection: 'connected' });
       } catch (err) {
@@ -891,6 +998,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     return {
       conversations: [],
       transcripts: {},
+      subagentInfo: {},
       connection: 'idle',
 
       async listAgents() {
@@ -930,7 +1038,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           socket.close();
           socket = null;
         }
-        // Nothing outstanding can be answered over a socket that is gone.
+        // Nothing outstanding can be answered over a socket that is gone, and
+        // the previous conversation's expanded children belong to it, not to
+        // the one being opened.
+        clearChildSubscriptions();
         subscriptionFrameIds.clear();
         clearReconnectTimer();
         reconnectAttempt = 0;
@@ -1189,6 +1300,114 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         if (conversationId === currentConversationId) {
           haltReconnectMachinery();
           set({ connection: 'idle' });
+        }
+      },
+
+      async loadSubagentTranscript(childId) {
+        const [messages, childSummary] = await Promise.allSettled([
+          rest.getMessages(childId),
+          rest.getConversation(childId),
+        ]);
+
+        if (messages.status === 'fulfilled') {
+          updateTranscript(childId, (t) => ({
+            ...t,
+            messages: mergeMessagesById(t.messages, messages.value.items),
+          }));
+        }
+        const info = childSummary.status === 'fulfilled' ? childSummary.value.subagent : undefined;
+        if (info) {
+          set((state) => ({ subagentInfo: { ...state.subagentInfo, [childId]: info } }));
+        }
+        if (isAuthError(messages.status === 'rejected' ? messages.reason : undefined)) {
+          enterUnauthorized();
+          return;
+        }
+        if (isAuthError(childSummary.status === 'rejected' ? childSummary.reason : undefined)) {
+          enterUnauthorized();
+        }
+      },
+
+      subscribeSubagent(childId) {
+        if (desiredChildSubscriptions.has(childId)) return;
+        desiredChildSubscriptions.add(childId);
+        const parentId = currentConversationId;
+        if (!socket || !parentId) return;
+        void flushChildSubscriptions(socket, parentId);
+      },
+
+      unsubscribeSubagent(childId) {
+        desiredChildSubscriptions.delete(childId);
+        const agentId = activeChildSubscriptions.get(childId);
+        activeChildSubscriptions.delete(childId);
+        if (!socket || !agentId) return;
+        const frame: MobileWsClientFrame = {
+          type: 'unsubscribe',
+          id: crypto.randomUUID(),
+          agentId,
+          conversationId: childId,
+        };
+        subscriptionFrameIds.add(frame.id);
+        try {
+          socket.send(frame);
+        } catch (err) {
+          console.error('WebAppStore: failed to send child unsubscribe frame', err);
+        }
+      },
+
+      async sendToSubagent(childId, text) {
+        if (!socket || get().connection !== 'connected') {
+          throw new Error(
+            'Cannot send to a sub-agent: no connected chat socket (open the parent conversation first)',
+          );
+        }
+        const parentId = currentConversationId;
+        // Deliberately NOT `conversations.find(childId)` the way `sendMessage`
+        // resolves its agent: a child is never in that list (the gateway's
+        // conversation list is `kind: 'user'` only), so the agent comes from
+        // the parent this child belongs to.
+        const agentId = parentId ? await resolveAgentId(parentId) : null;
+        if (!agentId) {
+          throw new Error(`Cannot send to sub-agent "${childId}": its agent is unknown`);
+        }
+        const live = socket;
+        if (!live) {
+          throw new Error('Cannot send to a sub-agent: the chat socket dropped');
+        }
+
+        const turnId = crypto.randomUUID();
+        const optimistic: ConversationMessage = {
+          id: turnId,
+          conversationId: childId,
+          turnId,
+          ordinal: (get().transcripts[childId]?.messages.length ?? 0) + 1,
+          role: 'user',
+          status: 'accepted',
+          content: { type: 'user', text },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        updateTranscript(childId, (t) => ({ ...t, messages: [...t.messages, optimistic] }));
+
+        const frame: MobileWsClientFrame = {
+          type: 'message',
+          id: turnId,
+          agentId,
+          channelId: CHANNEL_ID,
+          conversationId: childId,
+          text,
+          resumable: true,
+        };
+        try {
+          live.send(frame);
+        } catch (err) {
+          updateTranscript(childId, (t) => ({
+            ...t,
+            messages: t.messages.map((m) =>
+              m.id === turnId ? { ...m, status: 'failed' as const } : m,
+            ),
+          }));
+          throw err;
         }
       },
 

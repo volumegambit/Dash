@@ -60,6 +60,10 @@
   --tool-red: #dc2626;
   --tool-red-bg: rgb(220 38 38 / 10%);
   --tool-red-border: rgb(220 38 38 / 45%);
+  /* Sub-agent nesting rail (design §8.3): the vertical line an expanded
+   * child's transcript is indented behind. Aliased off `--border` so both
+   * colour schemes track it — the rail is structural, not a status colour. */
+  --subagent-rail: var(--border);
 
   /* Fixed-dark chips — see file header. Never overridden in the dark
    * media query below. */
@@ -1543,4 +1547,363 @@ textarea:focus-visible {
   50% {
     opacity: 1;
   }
+}
+
+/* ---------------------------------------------------------------------
+ * Sub-agent rows, parallel groups and nested transcripts (sub-agents
+ * design §8.1–§8.3). Deliberately the tool card's chrome — same border,
+ * same `--tool-card-bg` surface, same 12px mono label, same
+ * `aria-expanded` header button — because a child IS part of this
+ * transcript, not a second visual language beside it.
+ *
+ * Every animation here sits behind `prefers-reduced-motion: no-preference`
+ * (§8.6), including the running glyph's spin: `.tool-status-spinner`
+ * above predates that sweep and is intentionally left alone, so this
+ * cannot borrow it.
+ * ------------------------------------------------------------------- */
+
+.subagent-cluster {
+  margin: 12px 0;
+}
+
+.subagent-cluster-multi {
+  border: 1px solid var(--border);
+  background: var(--tool-card-bg);
+}
+
+.subagent-group-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-group-header:hover {
+  color: var(--text);
+}
+
+.subagent-group-summary {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-group-dots {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.subagent-group-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.subagent-group-dot[data-status="running"],
+.subagent-group-dot[data-status="waiting"] {
+  background: var(--accent);
+}
+
+.subagent-group-dot[data-status="done"] {
+  background: var(--tool-green);
+}
+
+.subagent-group-dot[data-status="failed"] {
+  background: var(--tool-red);
+}
+
+.subagent-cluster-multi .subagent-cluster-rows {
+  padding: 4px 8px 8px;
+}
+
+.subagent-cluster-multi .subagent-block {
+  background: none;
+}
+
+/* The row itself */
+
+.subagent-block {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  background: var(--tool-card-bg);
+  font-size: 12px;
+}
+
+.subagent-block[data-status="failed"] {
+  border-color: var(--tool-red-border);
+  background: var(--tool-red-bg);
+}
+
+.subagent-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  border: none;
+  background: none;
+  padding: 6px 12px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-header:hover {
+  color: var(--text);
+}
+
+.subagent-type {
+  flex-shrink: 0;
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+.subagent-name {
+  flex-shrink: 0;
+  color: var(--text-muted-strong);
+}
+
+.subagent-description {
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-detail,
+.subagent-question {
+  margin: 0;
+  padding: 0 12px 6px 32px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-question {
+  color: var(--text);
+  white-space: normal;
+}
+
+.subagent-waiting {
+  padding-bottom: 4px;
+}
+
+.subagent-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+/* Nested transcript: the child's own turns, behind an indent rail. */
+
+.subagent-transcript {
+  border-left: 2px solid var(--subagent-rail);
+  padding-left: 10px;
+}
+
+.subagent-transcript-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.subagent-message {
+  margin: 0 0 6px;
+}
+
+.subagent-message[data-role="user"] {
+  color: var(--text-muted-strong);
+}
+
+.subagent-report {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+/* Composer (expanded body) and the waiting-input reply form. */
+
+.subagent-composer {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.subagent-waiting .subagent-composer {
+  margin: 0;
+  padding: 0 12px 4px 32px;
+}
+
+.subagent-composer-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.subagent-composer-input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.subagent-composer-send {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: none;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted-strong);
+  cursor: pointer;
+}
+
+.subagent-composer-send:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.subagent-composer-send:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Status glyphs (§8.1). */
+
+.subagent-glyph {
+  flex-shrink: 0;
+}
+
+.subagent-glyph-running {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+}
+
+.subagent-glyph-waiting {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.subagent-glyph-done {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tool-green);
+}
+
+.subagent-glyph-failed {
+  color: var(--tool-red);
+}
+
+.subagent-glyph-muted {
+  color: var(--text-muted);
+}
+
+/* Motion (§8.6): the expand reveal, the running ring and the waiting pulse
+ * only ever run when the reader has not asked for less. */
+@media (prefers-reduced-motion: no-preference) {
+  .subagent-body {
+    animation: subagent-expand 0.18s ease-out;
+  }
+
+  .subagent-glyph-running {
+    animation: subagent-spin 0.8s linear infinite;
+  }
+
+  .subagent-glyph-waiting,
+  .subagent-group-dot[data-status="running"],
+  .subagent-group-dot[data-status="waiting"] {
+    animation: subagent-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes subagent-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes subagent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes subagent-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * Orchestrator row (§8.5): an `origin: 'parent'` message inside a CHILD's
+ * transcript — the instruction it is working from. Muted like the
+ * notification row above it, but it keeps its text, because that text is
+ * the point.
+ * ------------------------------------------------------------------- */
+
+.chat-orchestrator-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+}
+
+.chat-orchestrator-label {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.85em;
+}
+
+.chat-orchestrator-text {
+  color: var(--text);
+  white-space: pre-wrap;
 }

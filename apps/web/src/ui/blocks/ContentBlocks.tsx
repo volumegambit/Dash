@@ -1,11 +1,36 @@
 import type { ConversationContent, MobileAgentEvent } from '@dash/mobile-contract';
 import { type ReactNode, useState } from 'react';
 import { Markdown } from './Markdown.js';
+import { SubagentCluster } from './SubagentBlock.js';
+import {
+  type SubagentGroup,
+  clusterAdjacent,
+  groupSubagentEvents,
+  isSubagentEvent,
+} from './subagents.js';
 import { formatVisibleDetails, normalizeTool, summarize, toolLabel } from './tool-presentation.js';
 
 export interface ContentBlocksProps {
   content: ConversationContent;
+  /**
+   * True only for the message whose turn is still in flight. Feeds the
+   * sub-agent fold's end-of-stream terminalization (`blocks/subagents.ts`): a
+   * child with no terminal event in a FINISHED message never reported back and
+   * reads `cancelled`, whereas the same child mid-stream is still `running`.
+   */
+  streaming?: boolean;
+  /**
+   * Nesting level. `0` is the orchestrator's own transcript; `1` is a child's,
+   * rendered inside an expanded sub-agent row. Rows still render at
+   * `MAX_SUBAGENT_DEPTH` — a grandchild must never degrade to "Unsupported
+   * content" — but they stop opening transcripts of their own, so nesting
+   * cannot recurse without bound.
+   */
+  depth?: number;
 }
+
+/** Deepest transcript this renderer will nest. */
+const MAX_SUBAGENT_DEPTH = 1;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -223,10 +248,32 @@ function ThinkingBlock({ text }: { text: string }): ReactNode {
  * `QuestionBlock` doesn't run the question text through markdown either).
  * Anything else — an event type this renderer doesn't know, or a known type
  * with a malformed shape — degrades to `UnknownBlock` rather than throwing.
+ *
+ * A fifth block kind joins them in task D2: the sub-agent row (design §8.1).
+ * `subagent_*` and `worker_*` events do NOT stream through the loop below —
+ * they are folded up front by `blocks/subagents.ts` and emitted as one
+ * `SubagentCluster` per parallel group, at the index its first event sits at.
+ * `agent_spawned`, the coordinator's announcement between the two, is a no-op
+ * for the same reason `response` is.
  */
-function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
+function renderAssistantEvents(
+  events: MobileAgentEvent[],
+  options: { streaming: boolean; depth: number },
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   let key = 0;
+  // Pre-scan (design §8.1/§8.2): every `subagent_*`/`worker_*` event in this
+  // message folds into one group per child, and adjacent children into one
+  // parallel cluster. Each cluster renders ONCE, where its first event sits.
+  // The anchor is an INDEX, deliberately: pre-D8 it points at the legacy
+  // `worker_spawned` mirror rather than at `subagent_started`, so nothing here
+  // may assume which event type is under it.
+  const clusters = clusterAdjacent(groupSubagentEvents(events, options.streaming));
+  const clusterByAnchor = new Map<number, SubagentGroup[]>();
+  for (const cluster of clusters) clusterByAnchor.set(cluster[0].anchorIndex, cluster);
+  const renderChild = (content: ConversationContent, streaming: boolean): ReactNode => (
+    <ContentBlocks content={content} streaming={streaming} depth={options.depth + 1} />
+  );
   let textBuffer = '';
   let thinkingBuffer = '';
   let pendingTool: PendingTool | null = null;
@@ -255,9 +302,36 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
     nodes.push(<UnknownBlock key={`unknown-${key++}`} />);
   };
 
-  for (const event of events) {
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
     if (!isRecord(event) || typeof event.type !== 'string') {
       pushUnknown();
+      continue;
+    }
+
+    // Both sub-agent families are consumed by the pre-scan above; a folded
+    // event that is not a cluster anchor renders nothing of its own. Flushing
+    // text and thinking (but NOT a pending tool — the `agent` tool call that
+    // spawned this child is still waiting for its result, and flushing it here
+    // would leave a duplicate card behind once that result lands) mirrors what
+    // every other block-emitting branch does.
+    if (isSubagentEvent(event.type)) {
+      const cluster = clusterByAnchor.get(index);
+      if (cluster) {
+        flushText();
+        flushThinking();
+        nodes.push(
+          <SubagentCluster
+            // Keyed by the child's id, never by the render counter: a row keyed
+            // by position is remounted — and silently collapsed — the moment
+            // the number of nodes emitted before it changes.
+            key={`subagent-${cluster[0].subagentId}`}
+            groups={cluster}
+            nested={options.depth < MAX_SUBAGENT_DEPTH}
+            renderContent={renderChild}
+          />,
+        );
+      }
       continue;
     }
 
@@ -311,6 +385,16 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
         // `text_delta`, and `usage` has no visual representation here. A
         // deliberate no-op, same treatment as `tool_use_delta`, so an
         // ordinary reply doesn't end in a spurious unknown-content badge.
+        break;
+      }
+
+      case 'agent_spawned': {
+        // The coordinator's name-only spawn announcement, pushed between a
+        // child's `worker_spawned` and its `subagent_started`
+        // (`packages/swarm/src/coordinator.ts`). The sub-agent row right beside
+        // it is what renders the spawn, so this is a deliberate no-op — same
+        // treatment as `response` — rather than an "Unsupported content" badge
+        // on every single spawn.
         break;
       }
 
@@ -397,7 +481,11 @@ export function getMessageCopyText(content: ConversationContent): string {
  * (e.g. a corrupted payload) degrades to `UnknownBlock` rather than
  * throwing.
  */
-export function ContentBlocks({ content }: ContentBlocksProps): ReactNode {
+export function ContentBlocks({
+  content,
+  streaming = false,
+  depth = 0,
+}: ContentBlocksProps): ReactNode {
   if (!isRecord(content) || (content.type !== 'user' && content.type !== 'assistant')) {
     return <UnknownBlock />;
   }
@@ -429,7 +517,7 @@ export function ContentBlocks({ content }: ContentBlocksProps): ReactNode {
   }
 
   const events = Array.isArray(content.events) ? content.events : [];
-  return <>{renderAssistantEvents(events)}</>;
+  return <>{renderAssistantEvents(events, { streaming, depth })}</>;
 }
 
 export default ContentBlocks;

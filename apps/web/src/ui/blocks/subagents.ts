@@ -123,6 +123,16 @@ const FOLDED_EVENT_TYPES = new Set([
  */
 const CHROME_EVENT_TYPES = new Set([...FOLDED_EVENT_TYPES, 'agent_spawned']);
 
+/**
+ * True for an event type this module folds into a row. The transcript renderer
+ * uses it to skip those events in its own walk — both families anchor rows, so
+ * neither may fall through to its "unsupported content" fallback while task D8
+ * still leaves the legacy mirrors on the wire.
+ */
+export function isSubagentEvent(type: string): boolean {
+  return FOLDED_EVENT_TYPES.has(type);
+}
+
 const TERMINAL_STATUSES = new Set<SubagentStatus>([
   'done',
   'failed',
