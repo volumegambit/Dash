@@ -584,7 +584,22 @@ export class PiAgentBackend implements AgentBackend {
 
     const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
     if (hasSkillPaths || this.managedSkillsDir) {
-      customs.push(wrap(createLoadSkillTool(() => this.listSkills()))); // skill loading
+      // Learned lessons ride along with the skill they augment; without a
+      // managed directory there are none, so the collector is omitted.
+      const managedDir = this.managedSkillsDir;
+      customs.push(
+        wrap(
+          createLoadSkillTool(
+            () => this.listSkills(),
+            managedDir
+              ? async (skillName) => {
+                  const { collectAugments } = await import('../skills/learning/augment.js');
+                  return collectAugments(managedDir, skillName);
+                }
+              : undefined,
+          ),
+        ),
+      ); // skill loading
     }
 
     // ── User-configurable tools (gated by allowedNames) ──────────────

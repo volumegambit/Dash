@@ -172,7 +172,13 @@ export async function setMemoryConfig(gw, agentId, body) {
  * Resolves `{ text, events, error?, timedOut? }` — `text` is the final
  * assistant response. Never rejects; callers assert on the shape.
  */
-export function driveTurn(gw, agentId, conversationId, text, { timeoutMs = 180000 } = {}) {
+export function driveTurn(
+  gw,
+  agentId,
+  conversationId,
+  text,
+  { timeoutMs = 180000, resumable = false } = {},
+) {
   return new Promise((resolve) => {
     const ws = new WebSocket(gw.chatUrl);
     const events = [];
@@ -200,6 +206,10 @@ export function driveTurn(gw, agentId, conversationId, text, { timeoutMs = 18000
           channelId: 'direct',
           conversationId,
           text,
+          // Only a resumable turn runs through the resumable chat hub, which
+          // is what schedules the post-turn memory sweep and skill review.
+          // The non-resumable path streams directly and skips both.
+          ...(resumable ? { resumable: true } : {}),
         }),
       );
     ws.onmessage = (e) => {

@@ -13,6 +13,7 @@ import {
 } from './conversation-service.js';
 import type { EventLogEntry } from './event-log-store.js';
 import type { MemorySweepService } from './memory-sweep.js';
+import type { SkillReviewService } from './skill-review.js';
 
 export type ResumableSendFrame = Extract<MobileWsClientFrame, { type: 'message' }> & {
   resumable: true;
@@ -29,6 +30,7 @@ export interface ResumableChatHubOptions {
   autoTitle: ConversationAutoTitleService;
   /** Optional post-turn memory sweep; scheduled only for turns that complete. */
   memorySweep?: Pick<MemorySweepService, 'schedule'>;
+  skillReview?: Pick<SkillReviewService, 'schedule'>;
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
   onChanged?(summary: ConversationSummary): void;
 }
@@ -208,6 +210,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       if (!live.cancelled) {
         finish(live, 'completed');
         options.memorySweep?.schedule({
+          agentId: live.agentId,
+          conversationId: live.conversationId,
+          turnId: live.turnId,
+        });
+        // Only completed turns are reviewed: a failed or cancelled turn has no
+        // outcome to learn from, and half of one is worse than none.
+        options.skillReview?.schedule({
           agentId: live.agentId,
           conversationId: live.conversationId,
           turnId: live.turnId,
