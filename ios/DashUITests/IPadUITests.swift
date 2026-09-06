@@ -174,7 +174,7 @@ final class IPadUITests: DashUITestCase {
       // the exact poisoned session this teardown exists to prevent, just
       // disguised as an unrelated failure. The main window's sidebar
       // existing IS the evidence that the restored scene is already gone.
-      _ = element("conversation.list", in: app).waitForExistence(timeout: 10)
+      _ = self.element("conversation.list", in: app).waitForExistence(timeout: 10)
       app.terminate()
     }
 
