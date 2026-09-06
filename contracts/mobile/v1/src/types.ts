@@ -220,6 +220,13 @@ export interface SubagentResumeRequest {
    * accepts it and never echoes it. A client that sends one and gets an
    * `accepted` back without one must treat that turn as UNCORRELATED rather
    * than assuming it is its own.
+   *
+   * NOT the same thing as `ConversationCreateRequest`'s `requestId`, despite
+   * the shared name: that one is an IDEMPOTENCY key the gateway persists and
+   * de-duplicates conversation creation against, so re-sending it returns the
+   * existing conversation. This one is never stored, is echoed once on a
+   * single frame, and de-duplicates nothing — re-sending it starts a second
+   * turn.
    */
   requestId?: string;
 }

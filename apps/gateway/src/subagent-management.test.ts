@@ -631,6 +631,16 @@ describe('mountSubagentRuntimeRoutes', () => {
       ]);
     });
 
+    it('echoes a padded requestId verbatim rather than forwarding a trimmed copy', async () => {
+      child('sub_a', { status: 'running' });
+      const res = await resume('sub_a', { message: 'carry on', requestId: ' req-abc ' });
+      expect(res.status).toBe(200);
+      // The client matches its optimistic row by exact id, so the value the
+      // gateway carries onward has to be byte-identical to the one it was
+      // given — trimming is a validity test, not a transformation.
+      expect(sent[0].requestId).toBe(' req-abc ');
+    });
+
     it('400s a present-but-invalid requestId rather than dropping it silently', async () => {
       child('sub_a', { status: 'running' });
       expect((await resume('sub_a', { message: 'hi', requestId: 42 })).status).toBe(400);
@@ -638,6 +648,9 @@ describe('mountSubagentRuntimeRoutes', () => {
       expect((await resume('sub_a', { message: 'hi', requestId: 'x'.repeat(257) })).status).toBe(
         400,
       );
+      // Whitespace-only, for symmetry with `message`: it would be accepted,
+      // echoed and match nothing on the client.
+      expect((await resume('sub_a', { message: 'hi', requestId: '   ' })).status).toBe(400);
       // A client that sent a correlation id and got a 200 must be able to
       // trust the echo; silently ignoring a malformed one would leave it
       // waiting for an `accepted` that never carries it.

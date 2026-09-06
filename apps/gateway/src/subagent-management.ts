@@ -485,14 +485,25 @@ export function mountSubagentRuntimeRoutes(app: Hono, deps: SubagentRuntimeRoute
       // optimistic row with the echo on the `accepted` frame, and would
       // otherwise wait for an echo that is never coming. Absent is fine —
       // that is an older client, and its turn simply goes uncorrelated.
+      //
+      // Validated on the TRIMMED value for symmetry with `message` — a
+      // whitespace-only id would otherwise be accepted, echoed, and match
+      // nothing on the client — but forwarded VERBATIM: the client pairs its
+      // optimistic row by exact id, so trimming the value itself would break
+      // the very correlation this exists for.
+      //
+      // `length` counts UTF-16 units while the published schema's `maxLength`
+      // counts code points, so for astral characters this bound is STRICTER
+      // than the contract. Deliberately left: strictness in that direction
+      // cannot be exploited, and a correlation id is client-generated.
       const requestId = body.requestId;
       if (
         requestId !== undefined &&
-        (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 256)
+        (typeof requestId !== 'string' || requestId.trim() === '' || requestId.length > 256)
       ) {
         throw new ConversationServiceError(
           'validation_failed',
-          'requestId must be a string of 1-256 characters when present',
+          'requestId must be a nonblank string of at most 256 characters when present',
           400,
           false,
         );
