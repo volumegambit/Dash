@@ -470,12 +470,29 @@ export function mountSubagentRuntimeRoutes(app: Hono, deps: SubagentRuntimeRoute
           400,
           false,
         );
-      })) as { message?: unknown };
+      })) as { message?: unknown; requestId?: unknown };
       const message = body.message;
       if (typeof message !== 'string' || message.trim() === '') {
         throw new ConversationServiceError(
           'validation_failed',
           'message must be a nonblank string',
+          400,
+          false,
+        );
+      }
+      // Optional, but a MALFORMED one is a 400 rather than a silent drop: a
+      // client that supplied a correlation id and got a 200 pairs its
+      // optimistic row with the echo on the `accepted` frame, and would
+      // otherwise wait for an echo that is never coming. Absent is fine —
+      // that is an older client, and its turn simply goes uncorrelated.
+      const requestId = body.requestId;
+      if (
+        requestId !== undefined &&
+        (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 256)
+      ) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          'requestId must be a string of 1-256 characters when present',
           400,
           false,
         );
@@ -493,7 +510,7 @@ export function mountSubagentRuntimeRoutes(app: Hono, deps: SubagentRuntimeRoute
         // Deliberately the SAME call `send_message` makes, addressed from the
         // parent: one narrowing path, so an HTTP resume can never widen a
         // child past what the tool would have granted it.
-        const result = coordinator.sendToChild(parentConversationId, id, message);
+        const result = coordinator.sendToChild(parentConversationId, id, message, requestId);
         return c.json(result);
       } catch (err) {
         // The coordinator throws with actionable text for its three refusals —

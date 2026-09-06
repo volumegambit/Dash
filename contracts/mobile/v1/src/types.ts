@@ -208,6 +208,20 @@ export interface SubagentStopResponse {
 
 export interface SubagentResumeRequest {
   message: string;
+  /**
+   * Client-chosen correlation id, echoed verbatim on the `accepted` frame of
+   * the turn this message becomes (see `MobileWsServerFrame`'s `accepted`
+   * variant). The server picks the turn id for a resume, so without this the
+   * client has no way to tell WHICH later `accepted` belongs to WHICH of its
+   * own in-flight follow-ups, and a positional guess mis-pairs the moment one
+   * `accepted` is missed.
+   *
+   * Optional on BOTH sides: an older client omits it, and an older gateway
+   * accepts it and never echoes it. A client that sends one and gets an
+   * `accepted` back without one must treat that turn as UNCORRELATED rather
+   * than assuming it is its own.
+   */
+  requestId?: string;
 }
 
 export interface SubagentResumeResponse {
@@ -345,6 +359,19 @@ export type MobileWsServerFrame =
        * `ConversationSummary.kind`.
        */
       kind?: ConversationKind;
+      /**
+       * Echo of `SubagentResumeRequest.requestId` for the turn that request
+       * became — the client's only way to pair one of its own in-flight
+       * follow-ups with the `accepted` it produced.
+       *
+       * LIVE-ONLY, and unlike `origin`/`kind` it is deliberately NOT declared
+       * on `ReplayPayload`: the durable event log stores server state, and a
+       * client's correlation id is not that. It is also emitted only by a
+       * message that STARTS a turn — an answer to a parked `ask_orchestrator`
+       * question resolves inside the running turn, so no `accepted` carries
+       * its id, ever.
+       */
+      requestId?: string;
     }
   | {
       type: 'event';

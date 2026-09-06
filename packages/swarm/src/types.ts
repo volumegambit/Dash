@@ -199,6 +199,14 @@ export interface ChildTurnDriver {
     conversationId: string;
     text: string;
     origin: 'parent';
+    /**
+     * The client correlation id of the `send_message` / REST resume this turn
+     * came from, echoed on the turn's `accepted` frame so the client can pair
+     * it with its own optimistic row. Absent for a child's FIRST turn (nobody
+     * asked for it), and for the orchestrator's own `send_message` (no client
+     * row to pair with).
+     */
+    requestId?: string;
   }): { turnId: string };
   /** Cooperative abort of the child's live turn. Never awaited by a cancel. */
   cancelTurn(agentId: string, conversationId: string): Promise<void>;

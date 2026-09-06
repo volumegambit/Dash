@@ -432,7 +432,7 @@ describe('mountSubagentRuntimeRoutes', () => {
   let app: Hono;
   let parentId: string;
   let cancelled: string[];
-  let sent: Array<{ parent: string; target: string; message: string }>;
+  let sent: Array<{ parent: string; target: string; message: string; requestId?: string }>;
   let sendResult: () => { ok: boolean; status: string; mode: 'queued' | 'resumed' };
 
   function child(id: string, over: Partial<SubagentInfo> = {}): void {
@@ -478,8 +478,8 @@ describe('mountSubagentRuntimeRoutes', () => {
         cancelChild: async (subagentId: string) => {
           cancelled.push(subagentId);
         },
-        sendToChild: (parent: string, target: string, message: string) => {
-          sent.push({ parent, target, message });
+        sendToChild: (parent: string, target: string, message: string, requestId?: string) => {
+          sent.push({ parent, target, message, requestId });
           return sendResult();
         },
       } as unknown as Parameters<typeof mountSubagentRuntimeRoutes>[1]['coordinator'],
@@ -588,6 +588,8 @@ describe('mountSubagentRuntimeRoutes', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, status: 'running', mode: 'resumed' });
       expect(sent).toEqual([{ parent: parentId, target: 'sub_a', message: 'carry on' }]);
+      // Omitted by an older client: nothing is invented for it.
+      expect(sent[0].requestId).toBeUndefined();
     });
 
     // The route is `c.json(coordinator.sendToChild(...))` — the body IS the
@@ -615,6 +617,29 @@ describe('mountSubagentRuntimeRoutes', () => {
         error: expect.stringContaining('one-shot'),
         retryable: false,
       });
+    });
+
+    it('forwards the client requestId to send_message so the accepted frame can echo it', async () => {
+      child('sub_a', { status: 'running' });
+      sendResult = () => ({ ok: true, status: 'running', mode: 'queued' });
+      const res = await resume('sub_a', { message: 'carry on', requestId: 'req-abc' });
+      expect(res.status).toBe(200);
+      expect(sent).toEqual([
+        { parent: parentId, target: 'sub_a', message: 'carry on', requestId: 'req-abc' },
+      ]);
+    });
+
+    it('400s a present-but-invalid requestId rather than dropping it silently', async () => {
+      child('sub_a', { status: 'running' });
+      expect((await resume('sub_a', { message: 'hi', requestId: 42 })).status).toBe(400);
+      expect((await resume('sub_a', { message: 'hi', requestId: '' })).status).toBe(400);
+      expect((await resume('sub_a', { message: 'hi', requestId: 'x'.repeat(257) })).status).toBe(
+        400,
+      );
+      // A client that sent a correlation id and got a 200 must be able to
+      // trust the echo; silently ignoring a malformed one would leave it
+      // waiting for an `accepted` that never carries it.
+      expect(sent).toEqual([]);
     });
 
     it('400s a missing or blank message', async () => {

@@ -103,7 +103,7 @@
       }
     },
     "ChatAccepted": {
-      "$comment": "`origin` and `kind` are optional. On a live frame they are emitted only when the turn is not an ordinary user turn on a user conversation, so pre-subscription clients see unchanged bytes, and absent means 'user'. On the replay path they are never emitted (the durable event-log payload does not carry them yet), so absent there means unknown -- read ConversationMessage.origin and ConversationSummary.kind instead.",
+      "$comment": "`requestId` echoes SubagentResumeRequest.requestId on the turn that request became; it is LIVE-ONLY and never replayed, since the durable event log stores no client correlation id. `origin` and `kind` are optional. On a live frame they are emitted only when the turn is not an ordinary user turn on a user conversation, so pre-subscription clients see unchanged bytes, and absent means 'user'. On the replay path they are never emitted (the durable event-log payload does not carry them yet), so absent there means unknown -- read ConversationMessage.origin and ConversationSummary.kind instead.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -124,7 +124,8 @@
         "revision": { "type": "integer", "minimum": 1 },
         "seq": { "type": "integer", "minimum": 1 },
         "origin": { "enum": ["user", "notification", "parent"] },
-        "kind": { "enum": ["user", "subagent"] }
+        "kind": { "enum": ["user", "subagent"] },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 256 }
       }
     },
     "ChatEvent": {

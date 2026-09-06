@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
+import type { MobileWsServerFrame } from '@dash/mobile-contract';
 import type { ChildSpec, ChildTurnOutcome, ChildTurnRef } from '@dash/swarm';
 import { ChildTurnStartError, SwarmCoordinator, childConversationId } from '@dash/swarm';
 import type { AgentChatCoordinator, ChatRequest } from './agent-chat-coordinator.js';
@@ -291,6 +292,60 @@ describe('createChildTurnDriver', () => {
     // The child's turn is a REAL persisted turn on its own conversation.
     const messages = conversations.listMessages({ conversationId: childId, limit: 10 });
     expect(messages.items[0]).toMatchObject({ role: 'user', origin: 'parent', turnId });
+  });
+
+  it("carries a startTurn requestId onto the child turn's accepted frame", async () => {
+    const parent = parentConversation();
+    const driver = makeDriver();
+    const childId = childConversationId();
+    scripts.set(childId, [
+      { type: 'response', content: 'ok', usage: { inputTokens: 0, outputTokens: 0 } },
+    ]);
+    driver.prepareChild(specFor(childId, parent.id));
+    createRow(driver, childId, parent.id);
+
+    // A client watching the child conversation is the only audience for a
+    // child turn's frames — that is the sink the correlation id has to reach.
+    const frames: MobileWsServerFrame[] = [];
+    hub.subscribe('agent-01', childId, { send: (frame) => frames.push(frame) });
+
+    driver.startTurn({
+      agentId: 'agent-01',
+      conversationId: childId,
+      text: 'the follow-up',
+      origin: 'parent',
+      requestId: 'req-from-the-client',
+    });
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'done')).toBe(true));
+
+    expect(frames[0]).toMatchObject({
+      type: 'accepted',
+      origin: 'parent',
+      requestId: 'req-from-the-client',
+    });
+  });
+
+  it('starts a child turn with NO requestId when none was supplied', async () => {
+    const parent = parentConversation();
+    const driver = makeDriver();
+    const childId = childConversationId();
+    scripts.set(childId, [
+      { type: 'response', content: 'ok', usage: { inputTokens: 0, outputTokens: 0 } },
+    ]);
+    driver.prepareChild(specFor(childId, parent.id));
+    createRow(driver, childId, parent.id);
+    const frames: MobileWsServerFrame[] = [];
+    hub.subscribe('agent-01', childId, { send: (frame) => frames.push(frame) });
+
+    driver.startTurn({
+      agentId: 'agent-01',
+      conversationId: childId,
+      text: 'the brief',
+      origin: 'parent',
+    });
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'done')).toBe(true));
+
+    expect(Object.hasOwn(frames[0], 'requestId')).toBe(false);
   });
 
   it('does not report a PARENT conversation turn as a child turn', async () => {

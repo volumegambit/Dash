@@ -1581,6 +1581,8 @@ interface ScriptedChild {
   input: import('./types.js').ChildConversationInput;
   ref: import('./types.js').ChildTurnRef;
   texts: string[];
+  /** One entry per started turn, `undefined` where no correlation id rode along. */
+  requestIds: Array<string | undefined>;
 }
 
 function makeChildDriver() {
@@ -1619,14 +1621,16 @@ function makeChildDriver() {
         input,
         ref: { agentId: input.agentId, conversationId: input.id, turnId: '' },
         texts: [],
+        requestIds: [],
       });
     },
-    startTurn({ agentId, conversationId, text }) {
+    startTurn({ agentId, conversationId, text, requestId }) {
       const child = children.get(conversationId);
       if (!child) throw new Error(`no child ${conversationId}`);
       const turnId = `child-turn-${++seq}`;
       child.ref = { agentId, conversationId, turnId };
       child.texts.push(text);
+      child.requestIds.push(requestId);
       return { turnId };
     },
     cancelTurn: (_agentId, conversationId) => {
@@ -2297,6 +2301,53 @@ describe('SwarmCoordinator sendToChild', () => {
     expect(coordinator.childrenOf(CONVO_ID)).toHaveLength(1);
     expect(coordinator.getLiveRun(AGENT_ID, CONVO_ID)?.snapshot().workers).toHaveLength(1);
     expect(coordinator.checkWorkers(AGENT_ID, CONVO_ID)).toHaveLength(1);
+  });
+
+  it('carries the caller requestId to the QUEUED turn the steer becomes', () => {
+    const { d, coordinator } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'd', name: 'scout' },
+    );
+    const child = d.children.get(subagentId) as ScriptedChild;
+
+    coordinator.sendToChild(CONVO_ID, 'scout', 'also check the tests', 'req-queued');
+    d.finish(subagentId);
+
+    expect(child.texts).toEqual(['go', 'also check the tests']);
+    // The spawn turn carries none; the steer's turn carries the caller's.
+    expect(child.requestIds).toEqual([undefined, 'req-queued']);
+  });
+
+  it('carries the caller requestId to the RESUMED turn', async () => {
+    const { d, coordinator } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'd', name: 'scout' },
+    );
+    const child = d.children.get(subagentId) as ScriptedChild;
+    d.finish(subagentId);
+    await coordinator.waitChild(subagentId);
+
+    coordinator.sendToChild(CONVO_ID, 'scout', 'one more thing', 'req-resumed');
+
+    expect(child.requestIds).toEqual([undefined, 'req-resumed']);
+  });
+
+  it('omits the requestId when the caller supplies none', () => {
+    const { d, coordinator } = setupChildTurn();
+    const { subagentId } = coordinator.spawnChild(
+      { ...PARENT, turnId: 'parent-turn-1', depth: 0 },
+      { role: 'scout', brief: 'go', description: 'd', name: 'scout' },
+    );
+    const child = d.children.get(subagentId) as ScriptedChild;
+
+    // The orchestrator's own `send_message` (agent-tool.ts) passes none: there
+    // is no client row for its turn's `accepted` to be paired with.
+    coordinator.sendToChild(CONVO_ID, 'scout', 'also check the tests');
+    d.finish(subagentId);
+
+    expect(child.requestIds).toEqual([undefined, undefined]);
   });
 
   it('refuses a one-shot child', () => {

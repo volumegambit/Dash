@@ -577,7 +577,7 @@ export class SwarmCoordinator {
     spec: Omit<ChildSpec, 'extraTools'>,
     caps: SwarmCaps,
     run?: SwarmRun,
-    opts: { resumeWith?: string; steersUsed?: number } = {},
+    opts: { resumeWith?: string; resumeRequestId?: string; steersUsed?: number } = {},
   ): ChildHandle {
     const childId = spec.childConversationId;
     const parentConversationId = spec.parentConversationId;
@@ -594,6 +594,7 @@ export class SwarmCoordinator {
       maxRunSeconds: caps.maxRunSeconds,
       ...(opts.steersUsed !== undefined ? { steersUsed: opts.steersUsed } : {}),
       ...(opts.resumeWith !== undefined ? { resumeWith: opts.resumeWith } : {}),
+      ...(opts.resumeRequestId !== undefined ? { resumeRequestId: opts.resumeRequestId } : {}),
       ...(this.childHeartbeatMs !== undefined ? { heartbeatMs: this.childHeartbeatMs } : {}),
       hooks: this.hooks,
       onTerminal: (h) => this.onChildTerminal(h, run),
@@ -639,11 +640,19 @@ export class SwarmCoordinator {
    * The one-shot refusal has ONE exemption: a live one-shot child that is
    * parked on an `ask_orchestrator` question can be answered (`mode: 'queued'`).
    * See the comment on that branch below.
+   *
+   * `requestId` is the CALLER's correlation id, carried through to the
+   * `accepted` frame of whichever turn this message becomes (immediately for a
+   * resume, minutes later for a queued steer). A UI that started an optimistic
+   * row for the message pairs the two by it; the orchestrator's own
+   * `send_message` has no such row and passes none, which is exactly what keeps
+   * its turn from being mistaken for a user's.
    */
   sendToChild(
     parentConversationId: string,
     nameOrId: string,
     message: string,
+    requestId?: string,
   ): { ok: boolean; status: WorkerStatus; mode: 'queued' | 'resumed' } {
     const target = this.findChild(parentConversationId, nameOrId);
     if (!target) {
@@ -666,13 +675,17 @@ export class SwarmCoordinator {
       );
     }
     if (handle && !TERMINAL_STATUSES.has(handle.status)) {
-      const res = handle.send(message);
+      const res = handle.send(message, requestId);
       if (!res.ok) {
         throw new Error(`could not deliver to ${nameOrId}: ${res.reason ?? 'unknown'}`);
       }
       return { ok: true, status: handle.status, mode: 'queued' };
     }
-    return { ok: true, status: this.resumeChild(target, handle, message).status, mode: 'resumed' };
+    return {
+      ok: true,
+      status: this.resumeChild(target, handle, message, requestId).status,
+      mode: 'resumed',
+    };
   }
 
   /**
@@ -692,6 +705,7 @@ export class SwarmCoordinator {
     target: ChildSnapshot,
     prior: ChildHandle | undefined,
     message: string,
+    requestId?: string,
   ): ChildHandle {
     const id = target.subagentId;
     // Reconstruction FIRST, even when a spec is still in memory: it is the path
@@ -734,7 +748,11 @@ export class SwarmCoordinator {
       run,
       // The resume message IS a steer, and the count carries over from the
       // handle it replaces so the cap spans a child's whole life.
-      { resumeWith: message, steersUsed: steersUsed + 1 },
+      {
+        resumeWith: message,
+        ...(requestId !== undefined ? { resumeRequestId: requestId } : {}),
+        steersUsed: steersUsed + 1,
+      },
     );
     if (run) this.onRunChanged?.(spec.agentId, run.runId);
     return handle;

@@ -35,6 +35,12 @@ export interface ChildHandleOptions {
    */
   resumeWith?: string;
   /**
+   * The client correlation id of the resume request in {@link resumeWith},
+   * echoed on the `accepted` frame of the turn it starts. Meaningless without
+   * `resumeWith`.
+   */
+  resumeRequestId?: string;
+  /**
    * The child's OWN wall clock, in seconds. Per child rather than per run: a
    * background child outlives the turn that spawned it, so a run-scoped clock
    * would either kill it early or, once the run's timer is cleared by finalize,
@@ -146,7 +152,13 @@ export class ChildHandle {
   private readonly runId: string;
   private readonly heartbeatMs: number;
 
-  private readonly steerQueue: string[] = [];
+  /**
+   * Queued steers, each still paired with the correlation id of the request
+   * that produced it. A bare `string[]` here is what made the client guess:
+   * the turn a steer becomes is started minutes later, so its `accepted` has
+   * to carry the id back or the client can only pair by position.
+   */
+  private readonly steerQueue: Array<{ text: string; requestId?: string }> = [];
   private questionWaiter?: QuestionWaiter;
   private finalized = false;
   private started = false;
@@ -281,15 +293,22 @@ export class ChildHandle {
     this.emitStarted();
     this.startHeartbeat();
     this.startWallClock();
-    this.beginTurn(this.opts.resumeWith ?? this.brief);
+    this.beginTurn(
+      this.opts.resumeWith ?? this.brief,
+      this.opts.resumeWith !== undefined ? this.opts.resumeRequestId : undefined,
+    );
   }
 
   /**
    * True when the next {@link send} would ANSWER rather than steer. Mirrors
-   * `send`'s own condition exactly — `pendingQuestion` alone is not enough,
-   * since a timed-out or aborted question can leave it set with no waiter to
-   * resolve, and a caller that branched on the stale value would route a steer
-   * down the answer path.
+   * `send`'s own condition exactly, both halves of it.
+   *
+   * The second half is DEFENSIVE, not load-bearing: `clearQuestion()` clears
+   * `pendingQuestion` and `questionWaiter` together on the timeout path and on
+   * both abort paths, and `waitForQuestion` sets both synchronously inside one
+   * call, so the only window in which they differ is inside that function's own
+   * body — unreachable from any caller. It is written this way so the getter
+   * cannot drift from `send` if one of those clears is ever split.
    */
   get hasPendingQuestion(): boolean {
     return this.pendingQuestion !== undefined && this.questionWaiter !== undefined;
@@ -299,8 +318,14 @@ export class ChildHandle {
    * Answer a pending question or enqueue a steer. Synchronous check + effect:
    * a caller can never observe `{ok:true}` for a steer a concurrent finalize
    * then drops.
+   *
+   * `requestId` is the caller's correlation id: it rides with the steer and is
+   * echoed on the `accepted` frame of the turn the steer eventually becomes.
+   * The ANSWER branch drops it on purpose — an answer resolves inside the
+   * running turn, so there is no `accepted` for it to ride on, and a client
+   * that gets no echo learns exactly that.
    */
-  send(message: string): { ok: boolean; reason?: string } {
+  send(message: string, requestId?: string): { ok: boolean; reason?: string } {
     if (this.pendingQuestion !== undefined && this.questionWaiter) {
       this.answerQuestion(message);
       return { ok: true };
@@ -310,7 +335,7 @@ export class ChildHandle {
       return { ok: false, reason: 'steer cap reached' };
     }
     this.steersUsed++;
-    this.steerQueue.push(message);
+    this.steerQueue.push({ text: message, ...(requestId !== undefined ? { requestId } : {}) });
     return { ok: true };
   }
 
@@ -436,13 +461,14 @@ export class ChildHandle {
     return turn.conversationId === this.subagentId && turn.turnId === this.currentTurnId;
   }
 
-  private beginTurn(text: string): void {
+  private beginTurn(text: string, requestId?: string): void {
     try {
       const { turnId } = this.driver.startTurn({
         agentId: this.opts.spec.agentId,
         conversationId: this.subagentId,
         text,
         origin: 'parent',
+        ...(requestId !== undefined ? { requestId } : {}),
       });
       this.currentTurnId = turnId;
     } catch (err) {
@@ -470,8 +496,8 @@ export class ChildHandle {
     }
     // --- Atomic terminal transition (no awaits in this block) ---
     if (this.steerQueue.length > 0) {
-      const next = this.steerQueue.shift() as string;
-      this.beginTurn(next);
+      const next = this.steerQueue.shift() as { text: string; requestId?: string };
+      this.beginTurn(next.text, next.requestId);
       return;
     }
     if (this.status === 'waiting_input') return;

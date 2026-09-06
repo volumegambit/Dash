@@ -1215,6 +1215,48 @@ describe('ResumableChatHub', () => {
     ]);
   });
 
+  it('echoes a system turn requestId on its accepted frame, and omits it when there is none', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const sink = makeSink();
+    hub.start(sendFrame(conversation), sink);
+    first.finish();
+    await waitForFrames(sink, 2);
+
+    const second = register(conversation.id, makeScriptedStream());
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'the follow-up the user typed into this child',
+      origin: 'parent',
+      requestId: 'req-xyz',
+    });
+    await waitForFrames(sink, 3);
+    expect(sink.frames[2]).toMatchObject({
+      type: 'accepted',
+      origin: 'parent',
+      requestId: 'req-xyz',
+    });
+    second.finish();
+    await waitForFrames(sink, 4);
+
+    // No requestId supplied (the orchestrator's own send_message, a
+    // notification): the key is absent, not present-and-undefined, so a
+    // strict decoder against `additionalProperties: false` sees the old bytes.
+    const third = register(conversation.id, makeScriptedStream());
+    hub.startSystemTurn({
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      text: 'the orchestrator steering its own child',
+      origin: 'parent',
+    });
+    await waitForFrames(sink, 5);
+    expect(sink.frames[4]).toMatchObject({ type: 'accepted', origin: 'parent' });
+    expect(Object.hasOwn(sink.frames[4], 'requestId')).toBe(false);
+    third.finish();
+    await waitForFrames(sink, 6);
+  });
+
   it('auto-subscribes a resuming sink so a later system turn reaches it', async () => {
     const conversation = createConversation();
     const first = register(conversation.id);

@@ -433,6 +433,42 @@ describe('mobile v1 contract fixtures', () => {
     ]);
   });
 
+  it('correlates a sub-agent resume with the accepted frame it produces', async () => {
+    const doc = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            properties?: Record<string, unknown>;
+            additionalProperties?: boolean;
+          }
+        >;
+      };
+    };
+    const request = doc.components.schemas.SubagentResumeRequest;
+    // Optional on BOTH sides: an older client omits it and an older gateway
+    // never echoes it, so neither end breaks on the other.
+    expect(request.required).toEqual(['message']);
+    expect(request.properties?.requestId).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+    });
+    expect(request.additionalProperties).toBe(false);
+
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const accepted = ws.$defs?.ChatAccepted;
+    expect(accepted?.required).not.toContain('requestId');
+    expect(accepted?.properties?.requestId).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 256,
+    });
+  });
+
   it('has no duplicate or unlisted fixture files', async () => {
     const manifest = JSON.parse(
       await readFile(join(root, 'fixtures', 'manifest.json'), 'utf8'),

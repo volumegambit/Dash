@@ -71,6 +71,15 @@ export interface StartSystemTurnInput {
   origin: Exclude<ConversationMessageOrigin, 'user'>;
   /** Supply for an idempotent retry; otherwise one is generated. */
   turnId?: string;
+  /**
+   * The CLIENT's correlation id for the request that caused this turn, echoed
+   * verbatim on the turn's `accepted` frame (`ChatAccepted.requestId`). The
+   * server picks the turn id for a sub-agent resume, so this is the only thing
+   * that tells a client which of its own in-flight follow-ups a later
+   * `accepted` belongs to. Live-only: it is never written to the event log, so
+   * a replayed `accepted` never carries it.
+   */
+  requestId?: string;
 }
 
 export interface ResumableChatHub {
@@ -175,6 +184,7 @@ function frameFromAccepted(
   accepted: AcceptedTurn,
   origin: ConversationMessageOrigin,
   kind: ConversationKind,
+  requestId?: string,
 ): MobileWsServerFrame {
   const ordinary = origin === 'user' && kind === 'user';
   return {
@@ -186,6 +196,10 @@ function frameFromAccepted(
     revision: accepted.revision,
     seq: accepted.seq,
     ...(ordinary ? {} : { origin, kind }),
+    // Spread, never `requestId: undefined`: `ChatAccepted` is
+    // `additionalProperties: false` and a present-but-undefined key would
+    // serialise away over JSON but still show up to an in-process sink.
+    ...(requestId !== undefined ? { requestId } : {}),
   };
 }
 
@@ -437,6 +451,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     frame: ResumableSendFrame,
     sink: TurnFrameSink | undefined,
     origin: ConversationMessageOrigin,
+    requestId?: string,
   ): void => {
     assertAgentAccepting(frame.agentId);
     const accepted = conversations.acceptTurn({
@@ -447,7 +462,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       images: frame.images,
       origin,
     });
-    const acceptedFrame = frameFromAccepted(frame, accepted, origin, accepted.conversation.kind);
+    const acceptedFrame = frameFromAccepted(
+      frame,
+      accepted,
+      origin,
+      accepted.conversation.kind,
+      requestId,
+    );
 
     if (!accepted.created) {
       // Idempotent re-send of a turn we already accepted: catch this socket up
@@ -496,7 +517,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       acceptAndRun(frame, sink, 'user');
     },
 
-    startSystemTurn({ agentId, conversationId, text, origin, turnId }) {
+    startSystemTurn({ agentId, conversationId, text, origin, turnId, requestId }) {
       const frame: ResumableSendFrame = {
         type: 'message',
         id: turnId ?? randomUUID(),
@@ -508,7 +529,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       };
       // A `conversation_busy` from acceptTurn propagates on purpose: the
       // caller queues the notification and drains it on the next finishTurn.
-      acceptAndRun(frame, undefined, origin);
+      acceptAndRun(frame, undefined, origin, requestId);
       return { turnId: frame.id };
     },
 

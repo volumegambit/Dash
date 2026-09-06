@@ -70,13 +70,23 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
       if (spec) conversations.putSubagentGrant(input.id, grantFromSpec(spec));
     },
 
-    startTurn({ agentId, conversationId, text }): { turnId: string } {
+    startTurn({ agentId, conversationId, text, requestId }): { turnId: string } {
       const hub = options.hub();
       if (!hub) {
         throw new ChildTurnStartError('stopped', 'the gateway chat hub is not running');
       }
       try {
-        return hub.startSystemTurn({ agentId, conversationId, text, origin: 'parent' });
+        return hub.startSystemTurn({
+          agentId,
+          conversationId,
+          text,
+          origin: 'parent',
+          // Straight through: the client that typed this follow-up pairs its
+          // optimistic row with the `accepted` this turn is about to emit, and
+          // a turn nobody asked for (the child's brief, the orchestrator's own
+          // `send_message`) carries none so it can never adopt a user's row.
+          ...(requestId !== undefined ? { requestId } : {}),
+        });
       } catch (err) {
         // TWO shapes reach here and they mean different things. `acceptTurn`
         // throws a typed `conversation_busy` when the child already holds a

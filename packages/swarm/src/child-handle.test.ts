@@ -15,6 +15,7 @@ import type {
 interface RecordedTurn {
   turnId: string;
   text: string;
+  requestId?: string;
 }
 
 /**
@@ -47,10 +48,10 @@ function fakeDriver() {
     createChild(input) {
       created.push(input);
     },
-    startTurn({ agentId, conversationId, text }) {
+    startTurn({ agentId, conversationId, text, requestId }) {
       if (startFailure) throw startFailure;
       const turnId = `turn-${++seq}`;
-      turns.push({ turnId, text });
+      turns.push({ turnId, text, ...(requestId !== undefined ? { requestId } : {}) });
       ref = { agentId, conversationId, turnId };
       return { turnId };
     },
@@ -157,6 +158,8 @@ function makeHandle(
     maxSteers?: number;
     cancelStopGraceMs?: number;
     onFinished?: ChildHandleOptions['onFinished'];
+    resumeWith?: string;
+    resumeRequestId?: string;
   } = {},
 ) {
   const events: AgentEvent[] = [];
@@ -167,6 +170,8 @@ function makeHandle(
     emit: (event) => events.push(event),
     maxSteers: opts.maxSteers ?? 2,
     heartbeatMs: opts.heartbeatMs ?? 10_000,
+    ...(opts.resumeWith !== undefined ? { resumeWith: opts.resumeWith } : {}),
+    ...(opts.resumeRequestId !== undefined ? { resumeRequestId: opts.resumeRequestId } : {}),
     ...(opts.cancelStopGraceMs !== undefined ? { cancelStopGraceMs: opts.cancelStopGraceMs } : {}),
     ...(opts.onFinished ? { onFinished: opts.onFinished } : {}),
     onTerminal: (h) => terminals.push(h.status),
@@ -256,6 +261,58 @@ describe('ChildHandle', () => {
     d.finish('completed');
     await handle.terminalPromise;
     expect(handle.status).toBe('done');
+  });
+
+  it("carries a steer's requestId to the turn that steer becomes", async () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    expect(handle.send('also check the tests', 'req-a')).toEqual({ ok: true });
+    d.finish('completed');
+
+    // The FIRST turn is the brief, which no client asked for and so carries
+    // no correlation id; the second is the steer's.
+    expect(d.turns).toEqual([
+      { turnId: 'turn-1', text: 'find the thing' },
+      { turnId: 'turn-2', text: 'also check the tests', requestId: 'req-a' },
+    ]);
+    expect(d.turns[0].requestId).toBeUndefined();
+  });
+
+  it('keeps each queued steer with its own requestId, in order', () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver, {}, { maxSteers: 4 });
+    handle.start();
+    handle.send('first', 'req-1');
+    handle.send('second', 'req-2');
+    d.finish('completed');
+    expect(d.turns[1]).toEqual({ turnId: 'turn-2', text: 'first', requestId: 'req-1' });
+    d.finish('completed');
+    expect(d.turns[2]).toEqual({ turnId: 'turn-3', text: 'second', requestId: 'req-2' });
+  });
+
+  it('starts a resume turn with the resume requestId', () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(
+      d.driver,
+      {},
+      { resumeWith: 'pick this back up', resumeRequestId: 'req-resume' },
+    );
+    handle.start();
+    expect(d.turns).toEqual([
+      { turnId: 'turn-1', text: 'pick this back up', requestId: 'req-resume' },
+    ]);
+  });
+
+  it('spends no requestId on an ANSWER: no turn starts, so nothing echoes it', async () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    const answered = handle.waitForQuestion('which file?', undefined, 60_000);
+    expect(handle.send('the second one', 'req-answer')).toEqual({ ok: true });
+    await expect(answered).resolves.toBe('the second one');
+    // Still one turn: the answer resolved inside it.
+    expect(d.turns).toEqual([{ turnId: 'turn-1', text: 'find the thing' }]);
   });
 
   it('reports the failure text of a failed turn', async () => {
