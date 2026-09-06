@@ -13,7 +13,7 @@ import { ContentBlocks } from './ContentBlocks.js';
  * Real `Markdown`, counted. Every message in a child's transcript renders
  * one, so this is the cheapest honest measure of how far a keystroke in the
  * body composer fans out (round 3, ruling 3): the composer and the row it
- * sits in must not share a `subagentUi` key, or `patchSubagentUi`'s fresh
+ * sits in must not share a `subagents` key, or `patchSubagent`'s fresh
  * entry object re-renders the entire nested transcript per character.
  */
 let markdownRenders = 0;
@@ -85,7 +85,7 @@ interface StoreSpies {
 type ScriptedStore = ReturnType<typeof scriptStore>;
 
 /** A hand-scripted stand-in for the real store: `SubagentBlock` only ever
- * reads `transcripts`/`subagentInfo` and calls the four sub-agent actions, so
+ * reads `transcripts`/`subagents` and calls the four sub-agent actions, so
  * a plain zustand store carrying those is enough to drive every branch here
  * without booting a socket. */
 function scriptStore(initial: Partial<WebAppState> = {}) {
@@ -100,15 +100,14 @@ function scriptStore(initial: Partial<WebAppState> = {}) {
       ({
         conversations: [],
         transcripts: {},
-        subagentInfo: {},
-        subagentUi: {},
+        subagents: {},
         connection: 'connected',
         // The real reducer, not a spy: expansion, drafts and the composer's
         // error line living in the store is the whole point of fix item 1 and
         // of round 2's I-a, so the tests drive the real thing.
-        patchSubagentUi: (key: string, patch: Record<string, unknown>) =>
+        patchSubagent: (key: string, patch: Record<string, unknown>) =>
           set((state) => ({
-            subagentUi: { ...state.subagentUi, [key]: { ...state.subagentUi[key], ...patch } },
+            subagents: { ...state.subagents, [key]: { ...state.subagents[key], ...patch } },
           })),
         ...spies,
         ...initial,
@@ -468,7 +467,7 @@ describe('SubagentBlock', () => {
     /**
      * Round 3, ruling 3. The body composer used to pass the bare child id as
      * its `uiKey` — the same key `useExpansion` reads — so every keystroke
-     * replaced `subagentUi[childId]` with a fresh object and re-rendered the
+     * replaced `subagents[childId]` with a fresh object and re-rendered the
      * whole expanded row, nested transcript included. It scaled with the
      * transcript, so the composer for a long-running child got slower the
      * longer it ran. `body:<child id>` gives it its own namespace, symmetrical
@@ -506,18 +505,20 @@ describe('SubagentBlock', () => {
 
     it('disables the composer for a one-shot child and says why', () => {
       const scripted = scriptStore({
-        subagentInfo: {
+        subagents: {
           [CHILD]: {
-            type: 'Explore',
-            status: 'running',
-            description: 'Map gateway internals',
-            prompt: 'Find every websocket entry point',
-            model: 'sonnet',
-            background: false,
-            depth: 1,
-            startedAt: STARTED_AT,
-            toolCallCount: 3,
-            oneShot: true,
+            facts: {
+              type: 'Explore',
+              status: 'running',
+              description: 'Map gateway internals',
+              prompt: 'Find every websocket entry point',
+              model: 'sonnet',
+              background: false,
+              depth: 1,
+              startedAt: STARTED_AT,
+              toolCallCount: 3,
+              oneShot: true,
+            },
           },
         },
       } as unknown as Partial<WebAppState>);
@@ -892,18 +893,20 @@ describe('SubagentBlock', () => {
     // like any other, and nothing else can answer it.
     it('lets a one-shot child that is WAITING be answered, while its body composer stays disabled', async () => {
       const scripted = scriptStore({
-        subagentInfo: {
+        subagents: {
           [CHILD]: {
-            type: 'Explore',
-            status: 'waiting_input',
-            description: 'Map gateway internals',
-            prompt: 'Find every websocket entry point',
-            model: 'sonnet',
-            background: false,
-            depth: 1,
-            startedAt: STARTED_AT,
-            toolCallCount: 3,
-            oneShot: true,
+            facts: {
+              type: 'Explore',
+              status: 'waiting_input',
+              description: 'Map gateway internals',
+              prompt: 'Find every websocket entry point',
+              model: 'sonnet',
+              background: false,
+              depth: 1,
+              startedAt: STARTED_AT,
+              toolCallCount: 3,
+              oneShot: true,
+            },
           },
         },
       } as unknown as Partial<WebAppState>);

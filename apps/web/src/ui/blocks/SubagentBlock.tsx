@@ -2,7 +2,7 @@ import type { ConversationContent, ConversationMessage } from '@dash/mobile-cont
 import { type ReactNode, useContext, useEffect, useRef, useState } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { Transcript } from '../../state/assemble.js';
-import type { SubagentUiEntry, WebAppState } from '../../state/store.js';
+import type { SubagentEntry, WebAppState } from '../../state/store.js';
 import { WebAppStoreContext } from '../Shell.js';
 import { useElapsed } from '../hooks/useElapsed.js';
 import { Markdown } from './Markdown.js';
@@ -156,9 +156,9 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
   const { subagentId, status } = group;
   const store = useContext(WebAppStoreContext);
   const [open, setOpen] = useExpansion(store, subagentId, false);
-  const { transcript, info, connection } = useChildSlice(store, subagentId);
+  const { transcript, facts, connection } = useChildSlice(store, subagentId);
   const terminal = isTerminalSubagentStatus(status);
-  const oneShot = info?.oneShot === true;
+  const oneShot = facts?.oneShot === true;
   // `terminal`, not just `endedAt`: an end-of-stream-terminalized child
   // (`cancelled`) and a legacy-only `worker_done` one both finish without an
   // end timestamp, and neither may keep counting behind a finished glyph.
@@ -544,14 +544,15 @@ function SubagentStatusGlyph({ status }: { status: SubagentStatus }): ReactNode 
 
 interface ChildSlice {
   transcript?: Transcript;
-  info?: WebAppState['subagentInfo'][string];
+  /** The gateway's facts about this child — `oneShot` is the one the row reads. */
+  facts?: SubagentEntry['facts'];
   /** `undefined` with no store above (see `useChildSlice`). */
   connection?: WebAppState['connection'];
 }
 
 /** Stable identity for "this key has no entry yet", so a subscriber that
  * re-reads an absent record does not see a new object every time. */
-const NO_UI: SubagentUiEntry = Object.freeze({});
+const NO_UI: SubagentEntry = Object.freeze({});
 
 /**
  * One key's UI record — expansion, composer draft, last refusal — held in the
@@ -564,18 +565,18 @@ const NO_UI: SubagentUiEntry = Object.freeze({});
 function useSubagentUi(
   store: WebAppStore | null,
   key: string,
-): [SubagentUiEntry, (patch: Partial<SubagentUiEntry>) => void] {
-  const [local, setLocal] = useState<SubagentUiEntry>(NO_UI);
-  const [stored, setStored] = useState<SubagentUiEntry | undefined>(() =>
-    store ? store.getState().subagentUi[key] : undefined,
+): [SubagentEntry, (patch: Partial<SubagentEntry>) => void] {
+  const [local, setLocal] = useState<SubagentEntry>(NO_UI);
+  const [stored, setStored] = useState<SubagentEntry | undefined>(() =>
+    store ? store.getState().subagents[key] : undefined,
   );
 
   useEffect(() => {
     if (!store) return;
-    setStored(store.getState().subagentUi[key]);
+    setStored(store.getState().subagents[key]);
     return store.subscribe((state) => {
       setStored((previous) => {
-        const next = state.subagentUi[key];
+        const next = state.subagents[key];
         return previous === next ? previous : next;
       });
     });
@@ -584,7 +585,7 @@ function useSubagentUi(
   if (!store) {
     return [local, (patch) => setLocal((previous) => ({ ...previous, ...patch }))];
   }
-  return [stored ?? NO_UI, (patch) => store.getState().patchSubagentUi(key, patch)];
+  return [stored ?? NO_UI, (patch) => store.getState().patchSubagent(key, patch)];
 }
 
 /** Expansion alone, since most callers want only that. `fallback` is what an
@@ -649,16 +650,16 @@ function useChildSlice(store: WebAppStore | null, childId: string): ChildSlice {
     return store.subscribe((state) => {
       setSlice((previous) => {
         const transcript = state.transcripts[childId];
-        const info = state.subagentInfo?.[childId];
+        const facts = state.subagents?.[childId]?.facts;
         const connection = state.connection;
         if (
           previous.transcript === transcript &&
-          previous.info === info &&
+          previous.facts === facts &&
           previous.connection === connection
         ) {
           return previous;
         }
-        return { transcript, info, connection };
+        return { transcript, facts, connection };
       });
     });
   }, [store, childId]);
@@ -671,7 +672,7 @@ function readSlice(store: WebAppStore | null, childId: string): ChildSlice {
   const state = store.getState();
   return {
     transcript: state.transcripts[childId],
-    info: state.subagentInfo?.[childId],
+    facts: state.subagents?.[childId]?.facts,
     connection: state.connection,
   };
 }

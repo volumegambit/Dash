@@ -5,7 +5,7 @@ import type {
   MobileImage,
   MobileWsClientFrame,
   MobileWsServerFrame,
-  SubagentInfo,
+  SubagentListEntry,
 } from '@dash/mobile-contract';
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
@@ -13,11 +13,32 @@ import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
 import { type Transcript, applyServerFrame } from './assemble';
 
-/** One key's worth of {@link WebAppState.subagentUi}. Every field is optional:
+/**
+ * The per-child FACTS half of a {@link SubagentEntry}, as the gateway reports
+ * them.
+ *
+ * Typed as the LIST route's row (`GET /conversations/:id/subagents`) minus its
+ * `id`, because two different routes write this field and that shape is what
+ * they have in common: the child's own summary (`GET /conversations/:childId`,
+ * read by `loadSubagentTranscript`) returns a full `SubagentInfo`, which is a
+ * superset — it additionally carries `prompt`, `model`, `isolation` and
+ * `workspace`, none of which any reader wants. Whichever route wrote last
+ * wins, and both are snapshots of the same server row, so there is nothing to
+ * reconcile.
+ */
+export type SubagentFacts = Omit<SubagentListEntry, 'id'>;
+
+/** One key's worth of {@link WebAppState.subagents}. Every field is optional:
  * an untouched row has no entry at all, which is how "never toggled" is told
  * apart from "explicitly collapsed" (rows default closed, groups default
  * open). */
-export interface SubagentUiEntry {
+export interface SubagentEntry {
+  /**
+   * What the gateway says about this child. Present only on the BARE-child-id
+   * key — the `group:`/`reply:`/`body:` keys are UI-only and name no child of
+   * their own. Absent until something has read the child from REST.
+   */
+  facts?: SubagentFacts;
   expanded?: boolean;
   /** The composer's text. Kept until a send SUCCEEDS, so a refusal never
    * throws away what the user typed. */
@@ -39,17 +60,24 @@ export interface WebAppState {
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
   /**
-   * Per-child `SubagentInfo`, keyed by the child's conversation id, as
-   * `loadSubagentTranscript` read it off the child conversation's own summary.
+   * Everything this client knows about the sub-agent children of the
+   * conversation it has open: the gateway's own facts about each child
+   * (`facts`) and the UI state of the things that render them — whether the
+   * row/group is open, the half-typed follow-up in a composer, the last send
+   * refusal.
+   *
+   * ONE record, not one per concern (D3, controller ruling 1). D2 shipped
+   * `subagentInfo` and `subagentUi` side by side and D3's brief asked for a
+   * third keyed on overlapping identity; they are merged here instead. The
+   * merge is what fixes `subagentInfo` never being cleared, for free:
+   * `clearChildSubscriptions` already empties this record on a conversation
+   * switch, and the facts now go with the drafts they belong beside.
+   *
    * Deliberately NOT merged into `conversations`: that list is the sidebar's
    * model and the gateway only ever puts `kind: 'user'` rows in it, so a child
-   * landing there would show up as a top-level thread. The row reads `oneShot`
-   * from here to decide whether its composer can send at all (design §8.3).
-   */
-  subagentInfo: Record<string, SubagentInfo>;
-  /**
-   * Per-key UI state for the sub-agent rows: whether the row/group is open,
-   * the half-typed follow-up in its composer, and the last send refusal.
+   * landing there would show up as a top-level thread. The row reads
+   * `facts.oneShot` from here to decide whether its composer can send at all
+   * (design §8.3).
    *
    * Four key shapes, all namespaced so they cannot collide (a child's
    * conversation id is a uuid, so no id can start with any of the prefixes):
@@ -72,13 +100,21 @@ export interface WebAppState {
    * shown at all. Keying by id also makes the guarantee structural rather
    * than dependent on React key stability.
    *
-   * ONE record rather than one map per field: D3 is consolidating
-   * `subagentInfo` with this, and a third and fourth parallel map keyed the
-   * same way would only be more to reconcile. Cleared on conversation switch
-   * (see `clearChildSubscriptions`) — the previous conversation's open rows
-   * and drafts belong to it, not to the one being opened.
+   * The composers keep their OWN keys rather than folding into the child's
+   * entry, which is the one place this record is not a plain
+   * `Record<subagentId, …>`. That is deliberate and load-bearing: a composer
+   * writes a fresh entry object on every keystroke, so a shared entry would
+   * re-render the row — and therefore the whole nested transcript and every
+   * `Markdown` in it — on every character. D2 measured six Markdown
+   * re-renders per keystroke on a six-message child before splitting them,
+   * and pinned it with "does not re-render the nested transcript on a
+   * body-composer keystroke".
+   *
+   * Cleared on conversation switch (see `clearChildSubscriptions`) — the
+   * previous conversation's open rows, drafts and facts belong to it, not to
+   * the one being opened.
    */
-  subagentUi: Record<string, SubagentUiEntry>;
+  subagents: Record<string, SubagentEntry>;
   /**
    * `'idle'` is the store's INITIAL state — before any conversation has ever
    * been opened or reconnect has ever been attempted. It means "nothing has
@@ -269,11 +305,11 @@ export interface WebAppState {
    * Idempotent: a child whose transcript has already been replayed is a no-op,
    * so re-expanding a row (or a row being remounted) costs nothing. The
    * bookkeeping is here, not in the component, for the same reason
-   * `subagentUi` is. The reconnect path re-reads deliberately, bypassing
+   * `subagents` is. The reconnect path re-reads deliberately, bypassing
    * this — see `refreshChildTranscripts`.
    */
-  /** Merges a patch into one key's UI record — see {@link WebAppState.subagentUi}. */
-  patchSubagentUi(key: string, patch: Partial<SubagentUiEntry>): void;
+  /** Merges a patch into one key's record — see {@link WebAppState.subagents}. */
+  patchSubagent(key: string, patch: Partial<SubagentEntry>): void;
   loadSubagentTranscript(childId: string): Promise<void>;
   /**
    * Watches a child conversation over the live socket so its transcript
@@ -641,7 +677,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
   /**
    * Children whose transcript has been replayed on this store. Deliberately
    * outside the components: a remounted row must not pay for the same history
-   * twice (see `subagentUi`), and the reconnect path needs one place to
+   * twice (see `subagents`), and the reconnect path needs one place to
    * invalidate.
    */
   const loadedChildTranscripts = new Set<string>();
@@ -822,9 +858,25 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * which routes like every other REST call here.
      */
     function refreshMessages(conversationId: string): void {
+      // A CHILD transcript, not the open conversation's own — `done` fires
+      // this for a child every time the orchestrator drives one
+      // (`origin: 'parent'`). Two things follow, and D3 fixed both: this was
+      // the one writer of a child transcript that never REGISTERED what it
+      // wrote, and `childTranscriptIds` is the only record a conversation
+      // switch has of which `transcripts` entries belong to children.
+      const child = conversationId !== currentConversationId;
+      if (child) childTranscriptIds.add(conversationId);
       rest
         .getMessages(conversationId)
         .then((page) => {
+          // The switch happened while this read was in flight:
+          // `clearChildSubscriptions` deleted this entry and emptied the
+          // registry, so writing now would put back a transcript with no
+          // reader (the row that owned it is gone with its conversation) and
+          // no owner — invisible to every future clear, and therefore
+          // permanent. Registering above is not enough on its own; a late
+          // write has to be dropped as well.
+          if (child && !childTranscriptIds.has(conversationId)) return;
           updateTranscript(conversationId, (t) => ({
             ...t,
             messages: mergeMessagesById(t.messages, page.items),
@@ -997,7 +1049,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }
       const info = summary?.subagent;
       if (info) {
-        set((state) => ({ subagentInfo: { ...state.subagentInfo, [childId]: info } }));
+        // MERGED into the child's existing entry, never assigned over it:
+        // the same key carries `expanded` and, mid-send, `sending`, and a
+        // replacement would collapse an open row or disarm a live composer.
+        set((state) => ({
+          subagents: {
+            ...state.subagents,
+            [childId]: { ...state.subagents[childId], facts: info },
+          },
+        }));
       }
       if (messages.status === 'rejected') {
         // Not loaded after all — let the next expansion try again.
@@ -1033,9 +1093,9 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * subscriptions (intent AND server-side), the replay cache, the
      * unreconciled follow-ups, and the rows' own UI state. Inside the store
      * callback rather than beside the other subscription helpers because
-     * `subagentUi` is real state and needs `set`.
+     * `subagents` is real state and needs `set`.
      *
-     * Clearing `subagentUi` is what keeps re-opening a conversation from
+     * Clearing `subagents` is what keeps re-opening a conversation from
      * auto-expanding every row the user ever looked at — each of which would
      * fire two REST calls and a `subscribe` on open. Rows collapsed on reopen
      * is the intended behaviour.
@@ -1045,7 +1105,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * duplicated row, an orphaned local row, a stale streaming ghost — was
      * permanent for the life of the store instead of clearing on a navigation.
      * Nothing depends on them surviving: every reader is a `SubagentBlock` row,
-     * which is collapsed on reopen (`subagentUi` cleared just below) and
+     * which is collapsed on reopen (`subagents` cleared just below) and
      * re-reads from REST when expanded (`loadedChildTranscripts` cleared just
      * above). The PARENT conversation's transcript is not touched.
      */
@@ -1056,10 +1116,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       const children = [...childTranscriptIds];
       childTranscriptIds.clear();
       set((state) => {
-        if (children.length === 0) return { subagentUi: {} };
+        if (children.length === 0) return { subagents: {} };
         const transcripts = { ...state.transcripts };
         for (const childId of children) delete transcripts[childId];
-        return { subagentUi: {}, transcripts };
+        return { subagents: {}, transcripts };
       });
     }
 
@@ -1324,8 +1384,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     return {
       conversations: [],
       transcripts: {},
-      subagentInfo: {},
-      subagentUi: {},
+      subagents: {},
       connection: 'idle',
 
       async listAgents() {
@@ -1630,9 +1689,9 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         }
       },
 
-      patchSubagentUi(key, patch) {
+      patchSubagent(key, patch) {
         set((state) => ({
-          subagentUi: { ...state.subagentUi, [key]: { ...state.subagentUi[key], ...patch } },
+          subagents: { ...state.subagents, [key]: { ...state.subagents[key], ...patch } },
         }));
       },
 

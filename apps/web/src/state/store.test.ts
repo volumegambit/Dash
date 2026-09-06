@@ -2389,7 +2389,7 @@ describe('createWebAppStore', () => {
       expect(getMessages).toHaveBeenCalledWith(CHILD_ID);
       expect(getConversation).toHaveBeenCalledWith(CHILD_ID);
       expect(store.getState().transcripts[CHILD_ID].messages).toEqual([childMessage]);
-      expect(store.getState().subagentInfo[CHILD_ID]).toMatchObject({ oneShot: true });
+      expect(store.getState().subagents[CHILD_ID].facts).toMatchObject({ oneShot: true });
       // The parent transcript is untouched by a child replay.
       expect(store.getState().transcripts[CONVERSATION_ID].messages).toEqual([]);
     });
@@ -2409,7 +2409,7 @@ describe('createWebAppStore', () => {
       await expect(store.getState().loadSubagentTranscript(CHILD_ID)).resolves.toBeUndefined();
 
       expect(store.getState().transcripts[CHILD_ID].messages).toEqual([childMessage]);
-      expect(store.getState().subagentInfo[CHILD_ID]).toBeUndefined();
+      expect(store.getState().subagents[CHILD_ID]?.facts).toBeUndefined();
     });
 
     it("subscribes to the child on the parent's agent, once, and unsubscribes on request", async () => {
@@ -2576,11 +2576,11 @@ describe('createWebAppStore', () => {
       const { factory } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
 
-      expect(store.getState().subagentUi[CHILD_ID]).toBeUndefined();
-      store.getState().patchSubagentUi(CHILD_ID, { expanded: true });
-      expect(store.getState().subagentUi[CHILD_ID].expanded).toBe(true);
-      store.getState().patchSubagentUi(CHILD_ID, { expanded: false });
-      expect(store.getState().subagentUi[CHILD_ID].expanded).toBe(false);
+      expect(store.getState().subagents[CHILD_ID]).toBeUndefined();
+      store.getState().patchSubagent(CHILD_ID, { expanded: true });
+      expect(store.getState().subagents[CHILD_ID].expanded).toBe(true);
+      store.getState().patchSubagent(CHILD_ID, { expanded: false });
+      expect(store.getState().subagents[CHILD_ID].expanded).toBe(false);
     });
 
     // Round 2, I-b. Nothing cleared this before, so re-opening a conversation
@@ -2597,18 +2597,18 @@ describe('createWebAppStore', () => {
       const { factory, sockets } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
-      store.getState().patchSubagentUi(CHILD_ID, { expanded: true, draft: 'half a thought' });
-      store.getState().patchSubagentUi(`group:${CHILD_ID}`, { expanded: false });
+      store.getState().patchSubagent(CHILD_ID, { expanded: true, draft: 'half a thought' });
+      store.getState().patchSubagent(`group:${CHILD_ID}`, { expanded: false });
 
       await openAndConnect(store, sockets, 'conv-2');
 
-      expect(store.getState().subagentUi).toEqual({});
+      expect(store.getState().subagents).toEqual({});
     });
 
     /**
      * Fix round 4, ruling 4. `transcripts` is initialised once and was never
      * reset: `clearChildSubscriptions` dropped the subscriptions, the replay
-     * cache and `subagentUi`, but left every child transcript in place. Every
+     * cache and `subagents`, but left every child transcript in place. Every
      * residue that lives in one — a duplicated row, an orphaned local row, a
      * stale streaming ghost — therefore survived a conversation switch and
      * accumulated for the store's lifetime. Clearing them bounds the growth
@@ -2701,6 +2701,112 @@ describe('createWebAppStore', () => {
 
       await openAndConnect(store, sockets, CONVERSATION_ID);
 
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+    });
+
+    /**
+     * D3, folded into the slice merge. `subagentInfo` was the ONE piece of
+     * per-child state `clearChildSubscriptions` did not touch: the
+     * subscriptions, the replay cache, the child transcripts and `subagentUi`
+     * all went, and the recorded `SubagentInfo` for every child the user had
+     * ever expanded stayed for the life of the store, growing with every
+     * conversation they visited. It is per-conversation state by construction
+     * — it is read off a CHILD of the conversation being left — so it belongs
+     * with the rest of them.
+     */
+    it("drops every child's recorded facts when the conversation changes", async () => {
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+        getConversationImpl: async (conversationId: string) =>
+          conversationId === CHILD_ID ? childSummary() : summary({ id: conversationId }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      expect(store.getState().subagents[CHILD_ID]?.facts).toBeDefined();
+
+      await openAndConnect(store, sockets, 'conv-2');
+
+      expect(store.getState().subagents[CHILD_ID]?.facts).toBeUndefined();
+    });
+
+    /**
+     * D3, folded into the slice merge. `refreshMessages` is the one writer of
+     * a child transcript that never registered what it wrote. It is fired
+     * from the `done` branch of `handleFrame` for any turn the gateway
+     * started (`origin: 'parent'` on a child is exactly that), and its write
+     * lands one REST round trip later — long enough for a conversation switch
+     * to have run `clearChildSubscriptions` in between. The switch empties
+     * `childTranscriptIds`, so the recreated entry is invisible to every
+     * future clear: it has no reader (the row that owned it is gone) and no
+     * owner, and it survives for the life of the store.
+     */
+    it('does not recreate a child transcript after the conversation has moved on', async () => {
+      let releaseChildRefresh!: () => void;
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [
+            summary(),
+            summary({ id: 'conv-2', agentId: 'agent-01' }),
+            summary({ id: 'conv-3', agentId: 'agent-01' }),
+          ],
+          nextCursor: null,
+        },
+        getMessagesImpl: async (conversationId: string) => {
+          if (conversationId !== CHILD_ID) return { items: [], nextCursor: null, throughSeq: 1 };
+          await new Promise<void>((resolve) => {
+            releaseChildRefresh = resolve;
+          });
+          return {
+            items: [message({ id: 'child-msg-1', conversationId: CHILD_ID })],
+            nextCursor: null,
+            throughSeq: 1,
+          };
+        },
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      store.getState().subscribeSubagent(CHILD_ID);
+
+      // A turn the ORCHESTRATOR started on the child: `origin: 'parent'` is
+      // what makes `done` fire the post-turn message re-read.
+      onFrames[0]({
+        type: 'accepted',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        userMessageId: 'child-user-1',
+        assistantMessageId: 'child-asst-1',
+        seq: 1,
+        revision: 2,
+        origin: 'parent',
+      } as MobileWsServerFrame);
+      onFrames[0]({
+        type: 'done',
+        id: 'child-turn-1',
+        conversationId: CHILD_ID,
+        turnId: 'child-turn-1',
+        seq: 2,
+      } as MobileWsServerFrame);
+
+      // The re-read is in flight when the user navigates away.
+      await openAndConnect(store, sockets, 'conv-2');
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+
+      releaseChildRefresh();
+      // Flush the re-read's own promise chain rather than polling: a
+      // `waitFor` on an absence passes on its first tick whether or not the
+      // write ever landed, which would make this vacuous.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
+
+      // And the entry is not merely late: a further switch proves nothing was
+      // put back behind the registry's back either.
+      await openAndConnect(store, sockets, 'conv-3');
       expect(store.getState().transcripts[CHILD_ID]).toBeUndefined();
     });
 
