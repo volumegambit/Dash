@@ -344,7 +344,10 @@ struct RootView: View {
     switch route {
     case .transcript(let id):
       if let conversation = appModel.conversationSummary(id: id) {
-        ChatFeatureHostView(appModel: appModel, conversation: conversation)
+        ChatFeatureHostView(appModel: appModel, conversation: conversation) {
+          appModel.splitConversationSelection = nil
+          appModel.conversationPath = []
+        }
       } else {
         ContentUnavailableView(
           "Conversation unavailable",

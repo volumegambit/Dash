@@ -23,7 +23,11 @@ struct ConversationWindowView: View {
         if let value, appModel.selectedProfile?.gatewayID == value.gatewayID,
           let conversation = appModel.conversationSummary(id: value.conversationID)
         {
-          ChatFeatureHostView(appModel: appModel, conversation: conversation)
+          // ⌘W closes THIS window rather than reaching into the main
+          // window's selection (whole-branch final review, blocking 2).
+          ChatFeatureHostView(appModel: appModel, conversation: conversation) {
+            dismissWindow()
+          }
         } else {
           // Review fix round 1 (Important 1): the old copy told the user to
           // "Open it from the main Dash window" while affording no way to do

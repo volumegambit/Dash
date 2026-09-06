@@ -1,6 +1,14 @@
 import SwiftUI
 
 struct ChatView: View {
+  /// What ⌘W does for THIS host (whole-branch final review, blocking 2).
+  /// `UIMenuSystem` is process-wide while `@FocusedValue` is per-scene, so
+  /// the chat-only window publishes `chatCommands` and ⌘W is enabled there
+  /// too — with one hardcoded action it closed nothing and silently
+  /// deselected the conversation in the OTHER window. The main window passes
+  /// the deselect; `ConversationWindowView` passes `dismissWindow`.
+  let onClose: () -> Void
+
   @Environment(ChatFeature.self) private var feature
   @Environment(AppModel.self) private var appModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -156,10 +164,7 @@ struct ChatView: View {
         actions: ChatCommandActions(
           feature: feature,
           focusComposer: { composerFocusRequest += 1 },
-          close: {
-            appModel.splitConversationSelection = nil
-            appModel.conversationPath = []
-          }
+          close: onClose
         )
       )
       .equatable()

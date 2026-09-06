@@ -10,6 +10,11 @@ import SwiftUI
 struct ChatFeatureHostView: View {
   @Bindable var appModel: AppModel
   let conversation: ConversationSummaryDTO
+  /// Threaded down to `ChatView`'s ⌘W command — see its `onClose` doc
+  /// comment. Owned by the host because "close this conversation" means
+  /// something different in each scene: deselect in the main window, close
+  /// the window in `ConversationWindowView`.
+  let onClose: () -> Void
 
   @State private var feature: ChatFeature?
   @State private var didFailToLoad = false
@@ -17,7 +22,7 @@ struct ChatFeatureHostView: View {
   var body: some View {
     Group {
       if let feature {
-        ChatView()
+        ChatView(onClose: onClose)
           .environment(feature)
           .id(ObjectIdentifier(feature))
       } else if didFailToLoad {
