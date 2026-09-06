@@ -6,6 +6,8 @@ export type {
   ErrorResponse,
   LogsResponse,
   SkillInfo,
+  LessonInfo,
+  LessonBookInfo,
   SkillContent,
   SkillsConfig,
   MemoryType,

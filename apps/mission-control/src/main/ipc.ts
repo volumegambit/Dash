@@ -1941,6 +1941,21 @@ export async function registerIpcHandlers(
     (await getSkillsClient()).skills(agentId),
   );
 
+  ipcMain.handle('skills:lessons', async (_e, agentId: string, skillName: string) => {
+    try {
+      return await (await getSkillsClient()).lessons(agentId, skillName);
+    } catch {
+      // A skill with no lesson book is the common case, not an error.
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'skills:retireLesson',
+    async (_e, agentId: string, skillName: string, lessonId: string) =>
+      (await getSkillsClient()).retireLesson(agentId, skillName, lessonId),
+  );
+
   ipcMain.handle('skills:get', async (_e, agentId: string, skillName: string) => {
     try {
       return await (await getSkillsClient()).skill(agentId, skillName);

@@ -1,4 +1,5 @@
 import type {
+  LessonBookInfo,
   MemoryConfig,
   MemoryContent,
   MemoryInfo,
@@ -500,6 +501,9 @@ export interface MissionControlAPI {
 
   // Skills (gateway passthrough)
   skillsList(agentId: string): Promise<SkillInfo[]>;
+  /** Null when the skill is not a learned lesson book. */
+  skillsLessons(agentId: string, skillName: string): Promise<LessonBookInfo | null>;
+  skillsRetireLesson(agentId: string, skillName: string, lessonId: string): Promise<LessonBookInfo>;
   skillsGet(agentId: string, skillName: string): Promise<SkillContent | null>;
   skillsUpdateContent(agentId: string, skillName: string, content: string): Promise<void>;
   skillsCreate(

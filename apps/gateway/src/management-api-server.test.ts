@@ -2,9 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
-import { MemoryOpError } from '@dash/agent';
+import { MemoryOpError, persistBook, readBook } from '@dash/agent';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Hono } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import type { RegisteredAgent } from './agent-registry.js';
@@ -2853,5 +2854,90 @@ describe('mobile read-only skills', () => {
       const res = await app.request(path, { method, headers: MOBILE_JSON_HEADERS });
       expect(res.status).toBe(404);
     }
+  });
+});
+
+describe('lesson-level routes for learned skills', () => {
+  function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'x',
+      model: 'm',
+      systemPrompt: 'p',
+    });
+  }
+
+  async function withLearnedSkill(
+    fn: (ctx: { app: Hono; id: string; dir: string }) => Promise<void>,
+  ): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), 'mgmt-lessons-'));
+    try {
+      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
+      const { id } = registerAgent(agentRegistry);
+      await persistBook(dir, {
+        version: 1,
+        skill: 'write-files',
+        description: 'Use when writing files',
+        augments: [],
+        bullets: [
+          {
+            id: 'aaa111',
+            text: 'Use printf, not echo.',
+            helpful: 2,
+            harmful: 0,
+            createdAt: '2026-09-06',
+            lastTouchedAt: '2026-09-06',
+          },
+        ],
+        retired: [],
+      });
+      await fn({ app, id, dir });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('returns a learned skill’s lessons with their counters', async () => {
+    await withLearnedSkill(async ({ app, id }) => {
+      const res = await app.request(`/agents/${id}/skills/write-files/lessons`, { headers: AUTH });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        skill: 'write-files',
+        bullets: [{ id: 'aaa111', text: 'Use printf, not echo.', helpful: 2, harmful: 0 }],
+      });
+    });
+  });
+
+  it('404s for a skill that is not a lesson book', async () => {
+    await withLearnedSkill(async ({ app, id }) => {
+      const res = await app.request(`/agents/${id}/skills/not-a-book/lessons`, { headers: AUTH });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  it('retires a lesson rather than deleting it', async () => {
+    await withLearnedSkill(async ({ app, id, dir }) => {
+      const res = await app.request(`/agents/${id}/skills/write-files/lessons/aaa111`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+
+      expect(res.status).toBe(200);
+      const book = await readBook(join(dir, 'write-files'));
+      expect(book?.bullets).toEqual([]);
+      // Kept, so the decision stays auditable and the review cannot re-propose it.
+      expect(book?.retired).toHaveLength(1);
+      expect(book?.retired[0].id).toBe('aaa111');
+    });
+  });
+
+  it('404s when the lesson id is unknown', async () => {
+    await withLearnedSkill(async ({ app, id }) => {
+      const res = await app.request(`/agents/${id}/skills/write-files/lessons/nope00`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(404);
+    });
   });
 });

@@ -10,6 +10,7 @@ import type {
   IssueDetail,
   IssueEvent,
   IssueFilters,
+  LessonBookInfo,
   McpAddServerRequest,
   McpAddServerResponse,
   McpServerInfo,
@@ -125,6 +126,26 @@ export class ManagementClient {
 
   async skills(agentName: string): Promise<SkillInfo[]> {
     return this.request<SkillInfo[]>('GET', `/agents/${encodeURIComponent(agentName)}/skills`);
+  }
+
+  /** The lessons behind a learned skill; 404s for a skill that is not one. */
+  async lessons(agentName: string, skillName: string): Promise<LessonBookInfo> {
+    return this.request<LessonBookInfo>(
+      'GET',
+      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}/lessons`,
+    );
+  }
+
+  /** Retire one lesson. It is kept in `retired`, not deleted. */
+  async retireLesson(
+    agentName: string,
+    skillName: string,
+    lessonId: string,
+  ): Promise<LessonBookInfo> {
+    return this.request<LessonBookInfo>(
+      'DELETE',
+      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}/lessons/${encodeURIComponent(lessonId)}`,
+    );
   }
 
   async skill(agentName: string, skillName: string): Promise<SkillContent> {

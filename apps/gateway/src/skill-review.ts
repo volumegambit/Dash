@@ -1,5 +1,6 @@
+import { join } from 'node:path';
 import type { LessonBook, LessonDelta } from '@dash/agent';
-import { listBooks, looksLikeCorrection, mergeDeltas, persistBook } from '@dash/agent';
+import { listBooks, looksLikeCorrection, mergeDeltas, persistBook, readBook } from '@dash/agent';
 import type { StructuredLogger } from '@dash/logging';
 import type { ConversationService } from './conversation-service.js';
 
@@ -244,4 +245,38 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
       }
     },
   };
+}
+
+/**
+ * Remove one lesson from a book, by id.
+ *
+ * Retires rather than deletes, for the same reason the merge does: a lesson
+ * that is gone without trace cannot be understood later, and a retired lesson
+ * is also protected from being re-proposed by a future review.
+ *
+ * Returns the updated book, or null when the skill or the lesson is unknown.
+ */
+export async function retireLesson(
+  managedDir: string,
+  skill: string,
+  lessonId: string,
+): Promise<LessonBook | null> {
+  const skillDir = join(managedDir, skill);
+  const book = await readBook(skillDir);
+  if (!book) return null;
+
+  const lesson = book.bullets.find((bullet) => bullet.id === lessonId);
+  if (!lesson) return null;
+
+  const updated: LessonBook = {
+    ...book,
+    bullets: book.bullets.filter((bullet) => bullet.id !== lessonId),
+    retired: [
+      ...book.retired,
+      { ...lesson, retiredAt: new Date().toISOString().slice(0, 10), retiredReason: 'harmful' },
+    ],
+  };
+
+  await persistBook(managedDir, updated);
+  return updated;
 }

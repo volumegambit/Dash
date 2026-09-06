@@ -142,6 +142,9 @@ const api: MissionControlAPI = {
 
   // Skills
   skillsList: (agentId) => ipcRenderer.invoke('skills:list', agentId),
+  skillsLessons: (agentId, skillName) => ipcRenderer.invoke('skills:lessons', agentId, skillName),
+  skillsRetireLesson: (agentId, skillName, lessonId) =>
+    ipcRenderer.invoke('skills:retireLesson', agentId, skillName, lessonId),
   skillsGet: (agentId, skillName) => ipcRenderer.invoke('skills:get', agentId, skillName),
   skillsUpdateContent: (agentId, skillName, content) =>
     ipcRenderer.invoke('skills:updateContent', agentId, skillName, content),

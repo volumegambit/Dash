@@ -27,6 +27,26 @@ export interface LogsResponse {
   lines: string[];
 }
 
+/** One automatically learned lesson, with how often it has proved out. */
+export interface LessonInfo {
+  id: string;
+  text: string;
+  helpful: number;
+  harmful: number;
+  createdAt: string;
+  lastTouchedAt: string;
+}
+
+/** The lessons behind a learned skill. */
+export interface LessonBookInfo {
+  version: 1;
+  skill: string;
+  description: string;
+  augments: string[];
+  bullets: LessonInfo[];
+  retired: LessonInfo[];
+}
+
 export interface SkillInfo {
   name: string;
   description: string;

@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentClient, MemoryType } from '@dash/agent';
-import { MemoryOpError } from '@dash/agent';
+import { MemoryOpError, readBook } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
@@ -31,6 +31,7 @@ import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import { retireLesson } from './skill-review.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -62,6 +63,12 @@ export interface GatewayManagementOptions {
    * swarms still construct the app; the swarm routes simply aren't mounted.
    */
   swarmCoordinator?: SwarmCoordinator;
+  /**
+   * Resolves an agent's managed skills directory. Supplying it mounts the
+   * lesson-level routes for learned skills; without it they are absent, so
+   * tests and embedders that do not run learning still construct the app.
+   */
+  managedSkillsDir?: (agentId: string) => string | null;
   /** Capability bearer accepted only by the `/mobile/v1` namespace. */
   mobileToken?: string;
   /** Administrative bearer accepted by every non-mobile management route. */
@@ -1100,6 +1107,33 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!skill) return c.json({ error: 'not found' }, 404);
     return c.json(skill);
   });
+
+  // Lesson-level view of a learned skill. Registered before the mutation
+  // routes below purely for locality; the extra path segment means it cannot
+  // be shadowed by `/skills/:name`.
+  if (options.managedSkillsDir) {
+    const resolveManagedDir = options.managedSkillsDir;
+
+    app.get('/agents/:id/skills/:name/lessons', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+      const book = await readBook(join(dir, c.req.param('name')));
+      if (!book) return c.json({ error: 'not found' }, 404);
+      return c.json(book);
+    });
+
+    app.delete('/agents/:id/skills/:name/lessons/:lessonId', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+      const book = await retireLesson(dir, c.req.param('name'), c.req.param('lessonId'));
+      if (!book) return c.json({ error: 'not found' }, 404);
+      return c.json(book);
+    });
+  }
 
   app.post('/agents/:id/skills', async (c) => {
     const id = c.req.param('id');
