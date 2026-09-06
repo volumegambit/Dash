@@ -121,6 +121,12 @@ jobs:
           -resultBundlePath ios/iPadUnitContract.xcresult
           test CODE_SIGNING_ALLOWED=NO
 
+      # `-retry-tests-on-failure -test-iterations 2` on the two full-scheme
+      # DashUI runs: seven of these tests flake under host contention with a
+      # consistent signature — the failing run finishes 3-5x FASTER than a
+      # passing one (8.3s vs 46.4s), i.e. the app never came up. Retrying
+      # weakens no assertion, since a test that fails twice still fails the
+      # step.
       - name: iPhone UI tests
         run: |
           set -euo pipefail
@@ -134,6 +140,7 @@ jobs:
           xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
             -destination "$IOS_TEST_DESTINATION" \
             -resultBundlePath ios/iPhoneUI.xcresult \
+            -retry-tests-on-failure -test-iterations 2 \
             test CODE_SIGNING_ALLOWED=NO
 
       - name: Dark increased-contrast core-flow UI test
@@ -190,6 +197,7 @@ jobs:
           xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
             -destination "$IOS_IPAD_TEST_DESTINATION" \
             -resultBundlePath ios/iPadUI.xcresult \
+            -retry-tests-on-failure -test-iterations 2 \
             test CODE_SIGNING_ALLOWED=NO
 
       - name: Integration support tests

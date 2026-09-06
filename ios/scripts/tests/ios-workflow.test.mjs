@@ -298,6 +298,21 @@ assert.doesNotMatch(
   /-only-testing:/,
   'iPad adaptive UI tests must not filter out regular-width coverage',
 );
+// Seven UI tests flake under host contention with a consistent signature: the
+// failing run finishes 3-5x faster than a passing one, i.e. the app never came
+// up. Only the two FULL-scheme DashUI runs carry the retry — the -only-testing
+// appearance steps run a single test and are not the contention surface. This
+// weakens nothing: a test that fails twice still fails the step.
+for (const [label, step] of [
+  ['iPhone UI tests', phoneUIStep],
+  ['iPad adaptive UI tests', ipadUIStep],
+]) {
+  assert.match(
+    step?.run ?? '',
+    /-retry-tests-on-failure -test-iterations 2/,
+    `${label} must retry once against the known launch-timing flakes`,
+  );
+}
 assert.doesNotMatch(
   workflowSource,
   /-destination ['"]?platform=iOS Simulator,name=/,
