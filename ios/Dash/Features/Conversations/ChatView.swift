@@ -76,6 +76,10 @@ struct ChatView: View {
   /// A counter rather than a flag so a second ⌘L after tapping away still
   /// changes the value and therefore still fires `ComposerView`'s `onChange`.
   @State private var composerFocusRequest = 0
+  /// iPad goal Phase B, Task 7: whether a drag carrying `DroppedImage`s is
+  /// currently hovering the chat surface — drives the dashed drop-target
+  /// overlay below.
+  @State private var isDropTargeted = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -92,6 +96,21 @@ struct ChatView: View {
       }
 
       transcript
+    }
+    .dropDestination(for: DroppedImage.self) { items, _ in
+      let selections = DroppedImage.selections(from: items)
+      guard selections.isEmpty == false else { return false }
+      Task { await feature.addSelections(selections) }
+      return true
+    } isTargeted: { isDropTargeted = $0 }
+    .overlay {
+      if isDropTargeted {
+        RoundedRectangle(cornerRadius: DashTheme.Radius.large)
+          .strokeBorder(DashTheme.accent, style: StrokeStyle(lineWidth: 2, dash: [8]))
+          .padding(8)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("chat.dropTarget")
+      }
     }
     .safeAreaInset(edge: .bottom, spacing: 0) {
       ComposerView(focusRequest: composerFocusRequest)

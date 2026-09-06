@@ -102,4 +102,24 @@ final class IPadUITests: DashUITestCase {
       """
     )
   }
+
+  /// iPad goal Phase B, Task 7 (design §2.3): dragging a transcript image
+  /// onto the composer attaches it via the same `addSelections` path the
+  /// photo picker/camera/Files importer use. The drag SOURCE
+  /// (`chat.message.image.<index>` + `.draggable`) and the drop-target
+  /// identifier (`chat.attachment.<index>`) both land in Task 8 — until
+  /// then this skips for lack of a fixture image to drag, per the Task 7/8
+  /// ordering ruling. `DroppedImageTests` and the `.dropDestination`
+  /// wiring in `ChatView` are exercised (and green) independently of this
+  /// test.
+  func testDroppingAnImageAttachesIt() throws {
+    let app = launch(scenario: "paired-online")
+    try XCTSkipUnless(app.windows.firstMatch.frame.width >= 700, "iPad-only")
+    element("conversation.row.shared-plan", in: app).tap()
+    let image = app.images.matching(NSPredicate(format: "identifier BEGINSWITH 'chat.message.image.'")).firstMatch
+    try XCTSkipUnless(image.waitForExistence(timeout: 5), "fixture has no image to drag")
+    let composer = element("chat.composer", in: app)
+    image.press(forDuration: 1.0, thenDragTo: composer)
+    XCTAssertTrue(app.descendants(matching: .any)["chat.attachment.0"].waitForExistence(timeout: 5))
+  }
 }
