@@ -32,6 +32,7 @@ android {
 
 dependencies {
   api(project(":core:contracts"))
+  implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.tink.android)
   testImplementation(libs.junit)
