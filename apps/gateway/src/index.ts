@@ -786,6 +786,10 @@ async function main() {
     conversations: conversationService,
     agents,
     autoTitle: conversationAutoTitle,
+    isAgentEnabled: (agentId) => {
+      const entry = registry.get(agentId);
+      return entry !== undefined && entry.status !== 'disabled';
+    },
     memorySweep,
     skillReview,
     swarmCoordinator,

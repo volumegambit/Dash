@@ -143,6 +143,9 @@ function makeAgents(): AgentChatCoordinator {
   return {
     chat: vi.fn(),
     steer: vi.fn().mockResolvedValue(undefined),
+    steerRun: vi.fn().mockResolvedValue({ accepted: true }),
+    sealSteering: vi.fn().mockResolvedValue([]),
+    reconcileSteers: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     answerQuestion: vi.fn().mockResolvedValue(undefined),
     cancel: vi.fn().mockReturnValue(false),
@@ -953,6 +956,7 @@ describe('createGatewayManagementApp', () => {
           conversations: conversationService,
           agents,
           autoTitle,
+          isAgentEnabled: () => true,
         });
         const gateway = makeGateway();
         vi.mocked(gateway.deregisterAgent).mockImplementation(() => deregistered.promise);
@@ -982,7 +986,7 @@ describe('createGatewayManagementApp', () => {
           agentName: agent.name,
           requestId: 'create-during-cleanup',
         });
-        const acceptTurn = vi.spyOn(conversationService, 'acceptTurn');
+        const acceptRun = vi.spyOn(conversationService, 'acceptRun');
         const sink = { send: vi.fn() };
         resumableChatHub.start(
           {
@@ -996,7 +1000,7 @@ describe('createGatewayManagementApp', () => {
           },
           sink,
         );
-        expect(acceptTurn).toHaveBeenCalledOnce();
+        expect(acceptRun).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
 
@@ -1016,7 +1020,7 @@ describe('createGatewayManagementApp', () => {
             sink,
           ),
         ).toThrow('Agent a1 is not accepting new turns');
-        expect(acceptTurn).toHaveBeenCalledOnce();
+        expect(acceptRun).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
 
@@ -1048,7 +1052,7 @@ describe('createGatewayManagementApp', () => {
             sink,
           ),
         ).toThrow('Agent a1 is not accepting new turns');
-        expect(acceptTurn).toHaveBeenCalledOnce();
+        expect(acceptRun).toHaveBeenCalledOnce();
         expect(agents.chat).toHaveBeenCalledOnce();
         expect(autoTitle.schedule).toHaveBeenCalledOnce();
         expect(enableSettled).toBe(false);
