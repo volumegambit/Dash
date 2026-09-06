@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LessonDelta } from '@dash/agent';
-import { listBooks } from '@dash/agent';
+import { listBooks, listPending } from '@dash/agent';
 import type {
   ConversationContent,
   ConversationMessage,
@@ -11,7 +11,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationService } from './conversation-service.js';
 import type { SkillReviewOptions } from './skill-review.js';
-import { createSkillReviewService } from './skill-review.js';
+import { applyPendingLessons, createSkillReviewService } from './skill-review.js';
 
 interface MessageSpec {
   turnId: string;
@@ -253,5 +253,83 @@ describe('createSkillReviewService', () => {
     expect(maxConcurrent).toBe(1);
     // Three schedules, one in flight plus a single coalesced rerun.
     expect(extract).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the approval gate', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dash-skill-approval-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function gatedService(extract = vi.fn(async () => [ADD])) {
+    return {
+      extract,
+      service: createSkillReviewService({
+        conversations: fakeConversations(turnWith(5)),
+        managedSkillsDir: () => dir,
+        shouldReview: () => true,
+        minToolCalls: () => 3,
+        requiresApproval: () => true,
+        extract,
+      }),
+    };
+  }
+
+  it('stages instead of writing when approval is required', async () => {
+    const { service } = gatedService();
+
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    expect(await listBooks(dir)).toEqual([]);
+
+    const staged = await listPending(dir);
+    expect(staged).toHaveLength(1);
+    expect(staged[0].deltas).toEqual([ADD]);
+    expect(staged[0].conversationId).toBe('c');
+  });
+
+  it('applying a staged proposal writes the lesson', async () => {
+    const { service } = gatedService();
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    const [staged] = await listPending(dir);
+    const result = await applyPendingLessons(dir, staged.deltas);
+
+    expect(result.created).toEqual(['build-lessons']);
+    const books = await listBooks(dir);
+    expect(books[0].bullets[0].text).toBe('Re-run the generator first.');
+  });
+
+  it('applying re-merges against the library as it is at approval time', async () => {
+    const { service } = gatedService();
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+    const [staged] = await listPending(dir);
+
+    // The same lesson lands by another route before approval happens.
+    await applyPendingLessons(dir, staged.deltas);
+    // Approving now must not create a duplicate — it counts as agreement.
+    await applyPendingLessons(dir, staged.deltas);
+
+    const books = await listBooks(dir);
+    expect(books[0].bullets).toHaveLength(1);
+    expect(books[0].bullets[0].helpful).toBe(1);
+  });
+
+  it('does not stage when the review found nothing', async () => {
+    const { service } = gatedService(vi.fn(async () => []));
+
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    expect(await listPending(dir)).toEqual([]);
   });
 });

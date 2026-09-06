@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import type { LessonBook, LessonDelta } from '@dash/agent';
-import { listBooks, mergeDeltas, persistBook } from '@dash/agent';
+import { listBooks, mergeDeltas, persistBook, stagePending } from '@dash/agent';
 import type { StructuredLogger } from '@dash/logging';
 import type { ConversationService } from './conversation-service.js';
 
@@ -33,6 +34,8 @@ export interface SkillReviewOptions {
   shouldReview(agentId: string): boolean;
   /** Minimum completed tool calls in the turn before a review is worth paying for. */
   minToolCalls(agentId: string): number;
+  /** When true, proposals are staged for human approval instead of applied. */
+  requiresApproval?(agentId: string): boolean;
   extract(input: {
     agentId: string;
     userText: string;
@@ -136,6 +139,25 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
     });
     if (deltas.length === 0) return;
 
+    // The approval gate. Deltas are staged rather than merged, so approving
+    // later re-runs every merge rule against the library as it is at that
+    // point rather than as it was when the review ran.
+    if (options.requiresApproval?.(input.agentId)) {
+      const id = `${input.turnId}`.replace(/[^a-z0-9-]/gi, '').slice(0, 64) || randomUUID();
+      await stagePending(managedDir, {
+        id,
+        conversationId: input.conversationId,
+        deltas,
+      });
+      options.logger?.info('skill review staged lessons for approval', {
+        agentId: input.agentId,
+        conversationId: input.conversationId,
+        id,
+        lessons: deltas.length,
+      });
+      return;
+    }
+
     const merged = mergeDeltas(books, deltas);
 
     for (const dropped of merged.dropped) {
@@ -210,5 +232,30 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
         await Promise.all([...pending.values()]);
       }
     },
+  };
+}
+
+/**
+ * Apply a previously staged proposal.
+ *
+ * Shares the merge with the unattended path deliberately: approval decides
+ * *whether* lessons land, never *how*. Returns the books that changed.
+ */
+export async function applyPendingLessons(
+  managedDir: string,
+  deltas: LessonDelta[],
+): Promise<{ skills: string[]; created: string[] }> {
+  const books = await listBooks(managedDir);
+  const merged = mergeDeltas(books, deltas);
+
+  const written: string[] = [];
+  for (const book of merged.books) {
+    await persistBook(managedDir, book);
+    written.push(book.skill);
+  }
+
+  return {
+    skills: written,
+    created: merged.created.filter((name) => written.includes(name)),
   };
 }
