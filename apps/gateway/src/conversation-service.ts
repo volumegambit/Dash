@@ -191,6 +191,17 @@ export interface ConversationService {
   enqueueNotification(
     notification: Omit<PendingNotification, 'id' | 'createdAt'>,
   ): PendingNotification;
+  /**
+   * The conversation's queued notifications in creation order, LEFT IN PLACE.
+   *
+   * Delivery peeks, starts the parent turn, then {@link ackNotifications}s the
+   * rows it carried. A destructive drain that re-inserts on a busy parent would
+   * lose the queue if the process died in that window and would re-stamp
+   * `created_at`, reordering the queue against later arrivals.
+   */
+  peekNotifications(conversationId: string): PendingNotification[];
+  /** Deletes exactly these rows. Unknown ids are ignored. */
+  ackNotifications(ids: string[]): void;
   drainNotifications(conversationId: string): PendingNotification[];
   trySetAutoTitle(id: string, title: string): ConversationSummary | null;
   archiveAgentConversations(agentId: string): ConversationSummary[];

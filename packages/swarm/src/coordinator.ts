@@ -245,6 +245,13 @@ export interface SwarmCoordinatorOptions {
   onWorkerFinished?: SwarmRunOptions['onWorkerFinished'];
 }
 
+/**
+ * Cap on retained notification-turn initial-event sets. Each holds a full child
+ * report, and an entry is only taken when the merge wrapper attaches, so a
+ * swarm-disabled agent would otherwise grow this without bound.
+ */
+const MAX_PENDING_NOTIFICATION_EVENTS = 64;
+
 function key(agentId: string, conversationId: string): string {
   return `${agentId}/${conversationId}`;
 }
@@ -296,13 +303,16 @@ export class SwarmCoordinator {
   private readonly childrenByParent = new Map<string, ChildHandle[]>();
   /** The live spec of each child, for the runtime that builds its backend. */
   private readonly childSpecs = new Map<string, ChildSpec>();
-  /** Map from notification turn ID to initial events to inject. */
-  private readonly notificationEvents = new Map<string, AgentEvent[]>();
   /**
-   * Conversations with pending delivery attempts (to avoid duplicate drain calls).
-   * Key is ${agentId}/${conversationId}.
+   * Initial events for a notification turn, keyed by the turn id the coordinator
+   * minted for it. Written BEFORE the turn starts (the hub attaches
+   * synchronously) and taken by the gateway's merge wrapper on attach.
+   *
+   * BOUNDED: each entry retains a whole report string, and an entry is orphaned
+   * whenever a notification turn runs on an agent whose swarm wiring is off (no
+   * attach, so nothing takes it). Oldest-first eviction keeps that leak finite.
    */
-  private readonly deliveryInProgress = new Set<string>();
+  private readonly notificationEvents = new Map<string, AgentEvent[]>();
 
   constructor(opts: SwarmCoordinatorOptions) {
     this.driver = opts.childDriver;
@@ -381,11 +391,10 @@ export class SwarmCoordinator {
     if (current !== turn || turn.finalized) return;
     turn.finalized = true;
 
-    // Drain and deliver pending notifications (design §7.3, ruling 3).
-    // Fire-and-forget; delivery failures don't break the turn close.
-    if (this.notifications) {
-      void this.deliverPending(turn.opts.agentId, turn.opts.conversationId).catch(() => {});
-    }
+    // NOT the place to deliver pending notifications. This runs while the
+    // finishing turn still holds the conversation lease, so `acceptTurn` is
+    // reliably busy; the host drives delivery from its own finishTurn hook
+    // (design §7.3, ruling 3), by which point the lease is released.
 
     const run = turn.run;
     if (run) {
@@ -1632,55 +1641,66 @@ export class SwarmCoordinator {
    * Coalesces all pending notifications into one turn (ruling 4).
    */
   async deliverPending(agentId: string, conversationId: string): Promise<DeliveryOutcome> {
-    if (!this.notifications) return 'nothing';
+    const notifications = this.notifications;
+    if (!notifications) return 'nothing';
 
-    // Avoid duplicate drain calls when delivery is attempted multiple times
-    // (e.g., once after enqueueing and once on finalizeTurn).
-    const deliveryKey = key(agentId, conversationId);
-    if (this.deliveryInProgress.has(deliveryKey)) {
-      return 'nothing';
-    }
-    this.deliveryInProgress.add(deliveryKey);
+    // Deliberately NO in-flight guard. This body contains no `await` between
+    // the peek and the ack, so it cannot interleave with itself, and a guard
+    // that is only cleared on some return paths turns the FIRST successful
+    // delivery on a conversation into its last.
+    const items = notifications.peek(conversationId);
+    if (items.length === 0) return 'nothing';
 
-    const items = this.notifications.drain(conversationId);
-    if (items.length === 0) {
-      this.deliveryInProgress.delete(deliveryKey);
-      return 'nothing';
-    }
-
+    // Every pending row rides ONE turn, in creation order (ruling 4).
     const text = composeNotificationText(items);
     const events = notificationInitialEvents(items);
+    const turnId = randomUUID();
+    if (events.length > 0) this.rememberNotificationEvents(turnId, events);
 
     try {
-      const result = this.notifications.startNotificationTurn(agentId, conversationId, text);
-
-      // Store the events for takeInitialEvents to return.
-      if (events.length > 0) {
-        this.notificationEvents.set(result.turnId, events);
+      // Ruling 2: `acceptTurn` decides idle vs busy — there is no pre-check.
+      const result = notifications.startNotificationTurn(agentId, conversationId, text, turnId);
+      // A driver that mints its own id still has to find its events.
+      if (result.turnId !== turnId) {
+        const pending = this.notificationEvents.get(turnId);
+        this.notificationEvents.delete(turnId);
+        if (pending) this.rememberNotificationEvents(result.turnId, pending);
       }
-
+      // The turn is accepted and persisted, so the rows have been delivered.
+      // Acking AFTER the start means a crash in between redelivers rather than
+      // loses — the safe direction.
+      notifications.ack(items.map((item) => item.id));
       return 'started';
     } catch (err) {
+      this.notificationEvents.delete(turnId);
       if (err instanceof ChildTurnStartError) {
-        const reason = err.reason;
-        // Re-queue on busy or stopped (ruling 2).
-        if (reason === 'busy' || reason === 'stopped') {
-          for (const item of items) {
-            this.notifications?.enqueue(item);
+        // Busy or stopped: the rows were never removed, so there is nothing to
+        // restore — the next finishTurn picks them up unchanged (ruling 2).
+        if (err.reason === 'busy' || err.reason === 'stopped') return 'nothing';
+        // The parent is gone. Bounded failure: warn once and drop (ruling 8).
+        if (err.reason === 'error') {
+          notifications.warn(err.message);
+          try {
+            notifications.ack(items.map((item) => item.id));
+          } catch (ackErr) {
+            notifications.warn(`Failed to drop notifications: ${String(ackErr)}`);
           }
-          // Clean up the delivery key and allow retry on next turn.
-          this.deliveryInProgress.delete(deliveryKey);
-          return 'nothing';
-        }
-        // Drop queue on parent gone (ruling 8).
-        if (reason === 'error') {
-          this.notifications?.warn(err.message);
           return 'nothing';
         }
       }
-      // Other errors: try to re-queue and return error.
-      this.notifications?.warn(`Failed to deliver notifications: ${String(err)}`);
+      // Anything else is unclassified: leave the rows queued and report it.
+      notifications.warn(`Failed to deliver notifications: ${String(err)}`);
       return 'error';
+    }
+  }
+
+  /** Records a notification turn's initial events, evicting the oldest first. */
+  private rememberNotificationEvents(turnId: string, events: AgentEvent[]): void {
+    this.notificationEvents.set(turnId, events);
+    while (this.notificationEvents.size > MAX_PENDING_NOTIFICATION_EVENTS) {
+      const oldest = this.notificationEvents.keys().next();
+      if (oldest.done) break;
+      this.notificationEvents.delete(oldest.value);
     }
   }
 

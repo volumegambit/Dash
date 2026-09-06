@@ -1214,6 +1214,37 @@ export class SqliteConversationService implements ConversationService {
     })();
   }
 
+  peekNotifications(conversationId: string): PendingNotification[] {
+    // rowid keeps insertion order stable when several notifications share a
+    // timestamp (they routinely do — a fan-out finishes in one tick).
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM pending_notifications
+        WHERE conversation_id = ?
+        ORDER BY created_at ASC, rowid ASC
+      `)
+      .all(conversationId) as PendingNotificationRow[];
+    return rows.map((row) => this.mapNotification(row));
+  }
+
+  ackNotifications(ids: string[]): void {
+    if (ids.length === 0) return;
+    this.db.transaction(() => {
+      const statement = this.db.prepare('DELETE FROM pending_notifications WHERE id = ?');
+      for (const id of ids) statement.run(id);
+    })();
+  }
+
+  private mapNotification(row: PendingNotificationRow): PendingNotification {
+    return {
+      id: row.id,
+      conversationId: row.conversation_id,
+      kind: row.kind,
+      payload: JSON.parse(row.payload) as Record<string, unknown>,
+      createdAt: row.created_at,
+    };
+  }
+
   drainNotifications(conversationId: string): PendingNotification[] {
     return this.db.transaction(() => {
       // rowid keeps insertion order stable when several notifications share a
@@ -1229,13 +1260,7 @@ export class SqliteConversationService implements ConversationService {
       this.db
         .prepare('DELETE FROM pending_notifications WHERE conversation_id = ?')
         .run(conversationId);
-      return rows.map((row) => ({
-        id: row.id,
-        conversationId: row.conversation_id,
-        kind: row.kind,
-        payload: JSON.parse(row.payload) as Record<string, unknown>,
-        createdAt: row.created_at,
-      }));
+      return rows.map((row) => this.mapNotification(row));
     })();
   }
 

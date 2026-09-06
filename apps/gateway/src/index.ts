@@ -589,11 +589,14 @@ async function main() {
         });
       },
     },
-    // Notification driver for completion notifications (design §7.3).
+    // Completion notifications (design §7.3). The hub is constructed further
+    // down this file, so it is read through the SAME late-bound ref the child
+    // transport uses — there is no `hub` binding in this scope.
     notifications: createNotificationDriver({
       conversations: conversationService,
-      hub: () => hub,
+      hub: () => hubRef.current,
       agentRegistry: registry,
+      warn: (message) => logger.warn(message),
     }),
   });
 

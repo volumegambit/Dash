@@ -16,10 +16,51 @@ export interface PendingNotification {
 }
 
 export interface NotificationDriver {
+  /** Durable append (ruling 1). Throws at the queue cap rather than dropping. */
   enqueue(n: Omit<PendingNotification, 'id' | 'createdAt'>): PendingNotification;
-  drain(conversationId: string): PendingNotification[];
-  startNotificationTurn(agentId: string, conversationId: string, text: string): { turnId: string };
+  /**
+   * The conversation's queued rows in creation order, WITHOUT removing them.
+   *
+   * Peek-then-ack rather than drain-then-restore: a drain that deletes the rows
+   * and re-inserts them when the parent turns out to be busy loses the queue if
+   * the process dies in that window — the exact durability ruling 1 buys — and
+   * re-inserted rows get a fresh `createdAt`, so a notification enqueued during
+   * the failed attempt would sort BEFORE older ones on the next drain and break
+   * ruling 4's creation order.
+   */
+  peek(conversationId: string): PendingNotification[];
+  /** Removes exactly the rows that rode a turn that actually started. */
+  ack(ids: string[]): void;
+  /**
+   * Starts the server-initiated parent turn (ruling 2: `acceptTurn` decides,
+   * there is no pre-check). `turnId` is chosen by the caller so the queued
+   * `subagent_finished` events can be registered under it BEFORE the turn runs
+   * — the hub runs the turn synchronously far enough to attach, so registering
+   * them after this returns is already too late (ruling 5).
+   *
+   * Throws {@link ChildTurnStartError}: `busy`/`stopped` are retryable, `error`
+   * means the parent is gone.
+   */
+  startNotificationTurn(
+    agentId: string,
+    conversationId: string,
+    text: string,
+    turnId: string,
+  ): { turnId: string };
   warn(message: string): void;
+}
+
+/**
+ * A child's `name` is operator-supplied and lands inside an XML attribute, so a
+ * quote in it would otherwise let the child close the attribute and inject
+ * further markup into the parent's prompt.
+ */
+function escapeAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 /**
@@ -72,7 +113,7 @@ export function composeNotificationText(items: PendingNotification[]): string {
       const scanned = scanSubagentOutput(String(message));
       const messageText = scanned.text;
 
-      const block = `<subagent-message from="${String(from)}">\n${messageText}\n</subagent-message>`;
+      const block = `<subagent-message from="${escapeAttribute(String(from))}">\n${messageText}\n</subagent-message>`;
       blocks.push(block);
     }
   }
@@ -122,7 +163,5 @@ export function notificationInitialEvents(items: PendingNotification[]): AgentEv
   return events;
 }
 
-/**
- * Delivery outcome from tryDeliverNotification.
- */
+/** Outcome of one {@link SwarmCoordinator.deliverPending} attempt. */
 export type DeliveryOutcome = 'started' | 'nothing' | 'error';

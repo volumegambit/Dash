@@ -1389,6 +1389,51 @@ describe('SqliteConversationService subagent persistence', () => {
     expect(service.drainNotifications(parent.id)).toHaveLength(1);
   });
 
+  it('peeks WITHOUT removing, and acks only the ids it is given', () => {
+    const parent = createParent();
+    const first = service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { index: 0 },
+    });
+    const second = service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_finished',
+      payload: { index: 1 },
+    });
+
+    // Repeated peeks are idempotent: a failed delivery leaves the queue exactly
+    // as it found it, so nothing is lost if the process dies mid-attempt and
+    // no row's created_at is re-stamped (which would reorder the queue).
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+
+    service.ackNotifications([first.id]);
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([second.id]);
+
+    // A row enqueued after the ack still sorts AFTER the survivor.
+    const third = service.enqueueNotification({
+      conversationId: parent.id,
+      kind: 'subagent_message',
+      payload: { from: 'scout' },
+    });
+    expect(service.peekNotifications(parent.id).map((item) => item.id)).toEqual([
+      second.id,
+      third.id,
+    ]);
+
+    // Unknown ids are ignored, and an empty ack is a no-op.
+    service.ackNotifications([]);
+    service.ackNotifications(['not-a-row', second.id, third.id]);
+    expect(service.peekNotifications(parent.id)).toEqual([]);
+  });
+
   it('drops a deleted conversation-s queue and refuses to enqueue behind the tombstone', () => {
     const parent = createParent();
     service.enqueueNotification({

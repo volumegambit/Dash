@@ -22,6 +22,14 @@ export {
   SwarmCoordinator,
   type SwarmCoordinatorOptions,
 } from './coordinator.js';
+export {
+  NOTIFICATION_PREAMBLE,
+  type DeliveryOutcome,
+  type NotificationDriver,
+  type PendingNotification,
+  composeNotificationText,
+  notificationInitialEvents,
+} from './notifications.js';
 export { scanSubagentOutput, type ScannedOutput } from './output-scan.js';
 export {
   ALWAYS_AVAILABLE_TOOLS,

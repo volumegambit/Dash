@@ -572,6 +572,14 @@ export function createAgentChatCoordinator(
         agentName: entry.config.name,
         conversationId: request.conversationId,
         messageId: request.messageId,
+        // Ruling 5 of design §7.3: a `notification` turn carries the
+        // `subagent_finished` events for the children it reports, and they must
+        // reach the parent's log BEFORE the orchestrator's own output.
+        // `attach` pushes them onto the channel first. The hub's turn id IS
+        // `messageId`, which is the key the coordinator filed them under.
+        initialEvents: request.messageId
+          ? swarm.coordinator.takeInitialEvents(request.messageId)
+          : undefined,
         // Cooperative abort of the orchestrator (pool-entry backend.abort).
         orchestratorAbort: () => poolEntry.backend.abort(),
         // Live registry read of the agent's sub-agent + disabled gate so a

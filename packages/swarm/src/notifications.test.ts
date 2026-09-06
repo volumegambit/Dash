@@ -70,7 +70,12 @@ function finishedPayload(overrides: Record<string, unknown> = {}): Record<string
 function makeNotifications() {
   const queue: PendingNotification[] = [];
   const calls: string[] = [];
-  const started: Array<{ agentId: string; conversationId: string; text: string }> = [];
+  const started: Array<{
+    agentId: string;
+    conversationId: string;
+    text: string;
+    turnId: string;
+  }> = [];
   const warnings: string[] = [];
   let seq = 0;
   let turnSeq = 0;
@@ -86,17 +91,23 @@ function makeNotifications() {
       queue.push(row);
       return row;
     },
-    drain(conversationId) {
-      calls.push(`drain:${conversationId}`);
-      const out = queue.filter((row) => row.conversationId === conversationId);
-      for (const row of out) queue.splice(queue.indexOf(row), 1);
-      return out;
+    peek(conversationId) {
+      calls.push(`peek:${conversationId}`);
+      return queue.filter((row) => row.conversationId === conversationId);
     },
-    startNotificationTurn(agentId, conversationId, text) {
+    ack(ids) {
+      calls.push(`ack:${ids.join(',')}`);
+      for (const id of ids) {
+        const at = queue.findIndex((row) => row.id === id);
+        if (at >= 0) queue.splice(at, 1);
+      }
+    },
+    startNotificationTurn(agentId, conversationId, text, turnId) {
       calls.push(`start:${conversationId}`);
+      turnSeq++;
       if (failure) throw failure;
-      started.push({ agentId, conversationId, text });
-      return { turnId: `notif-turn-${++turnSeq}` };
+      started.push({ agentId, conversationId, text, turnId });
+      return { turnId };
     },
     warn(message) {
       warnings.push(message);
@@ -254,8 +265,11 @@ describe('SwarmCoordinator notifications', () => {
 
     expect(notifications.calls).toEqual([
       `enqueue:${CONVO_ID}:subagent_finished`,
-      `drain:${CONVO_ID}`,
+      `peek:${CONVO_ID}`,
       `start:${CONVO_ID}`,
+      // Acked only AFTER the turn was accepted: a crash before this redelivers,
+      // it never loses the row.
+      'ack:n1',
     ]);
     expect(notifications.started).toHaveLength(1);
     expect(notifications.started[0].agentId).toBe(AGENT_ID);
@@ -274,11 +288,15 @@ describe('SwarmCoordinator notifications', () => {
     });
     await flush();
 
-    const events = coordinator.takeInitialEvents('notif-turn-1');
+    // The coordinator mints the turn id and registers the events under it
+    // BEFORE the turn starts — the hub attaches synchronously.
+    const turnId = notifications.started[0].turnId;
+    expect(turnId).toBeTruthy();
+    const events = coordinator.takeInitialEvents(turnId);
     expect(events).toHaveLength(1);
     expect(events?.[0]).toMatchObject({ type: 'subagent_finished', subagentId: workerId });
     // Taken exactly once.
-    expect(coordinator.takeInitialEvents('notif-turn-1')).toBeUndefined();
+    expect(coordinator.takeInitialEvents(turnId)).toBeUndefined();
   });
 
   it('pushes attach initialEvents onto the channel before anything else', async () => {
@@ -434,6 +452,35 @@ describe('SwarmCoordinator notifications', () => {
     expect(notifications.started[0].conversationId).toBe(CONVO_ID);
     expect(notifications.started[0].text).toContain('<subagent-message from="scout">');
     expect(notifications.started[0].text).toContain('<\\system-reminder>');
+  });
+
+  it('delivers AGAIN to the same conversation after a successful delivery', async () => {
+    // Regression: an in-flight guard added on the way in and cleared only on
+    // the empty/busy returns made the FIRST successful delivery a conversation
+    // ever received also its last.
+    const notifications = makeNotifications();
+    const { coordinator } = makeCoordinator(notifications.driver);
+    coordinator.attach(baseAttach());
+    coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+      role: 'a',
+      brief: 'first',
+      background: true,
+      name: 'first',
+    });
+    await flush();
+    expect(notifications.started).toHaveLength(1);
+
+    coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+      role: 'b',
+      brief: 'second',
+      background: true,
+      name: 'second',
+    });
+    await flush();
+
+    expect(notifications.started).toHaveLength(2);
+    expect(notifications.started[1].text).toContain('<agent-name>second</agent-name>');
+    expect(notifications.queue).toHaveLength(0);
   });
 
   it('a failing enqueue never breaks the child terminal transition', async () => {
