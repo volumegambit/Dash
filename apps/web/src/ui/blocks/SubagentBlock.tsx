@@ -199,16 +199,24 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
   const canReply = store !== null && connection !== 'unauthorized';
   // A one-shot child can be ANSWERED but not steered: `coordinator.sendToChild`
   // exempts a live child with a pending question from the one-shot refusal and
-  // refuses everything else. The reply affordance only renders while the child
-  // is `waiting`, i.e. exactly the exempted case, so the two agree.
+  // refuses everything else. The reply affordance renders only while the child
+  // is `waiting`, which is NECESSARY for the exemption but not sufficient: the
+  // coordinator additionally requires an in-memory handle that is non-terminal
+  // and still holds a live waiter, so a child whose handle was LRU-evicted, or
+  // that finished between the last progress event and the submit, 409s with
+  // the one-shot text while this row still reads `waiting`. That refusal is
+  // honest at runtime — it lands on the composer's error line — so this gate
+  // is about not OFFERING a send that can never work, not about agreeing with
+  // the server.
   const canSteer = canReply && !oneShot;
   const send = async (text: string): Promise<void> => {
     if (!store) throw new Error('Cannot reach this agent from here');
-    // `answering` decides whether an `accepted` frame is ever coming for this
-    // message — see `sendToSubagent`. A `waiting` child is parked on a
-    // question, so the text resolves it inside the running turn rather than
-    // starting a new one.
-    await store.getState().sendToSubagent(subagentId, text, { answering: status === 'waiting' });
+    // No `answering` hint: whether this text answers a parked question or
+    // steers is the SERVER's to decide, and the client no longer needs to
+    // guess it. Pairing is keyed on a `requestId` the gateway echoes, so a
+    // message that never becomes a turn just never matches — see
+    // `sendToSubagent`.
+    await store.getState().sendToSubagent(subagentId, text);
   };
 
   return (
@@ -270,7 +278,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
           {nested ? (
             <InlineComposer
               store={store}
-              uiKey={subagentId}
+              uiKey={bodyComposerKey(subagentId)}
               testId="subagent-composer"
               label={`Message ${group.type || 'sub-agent'}`}
               placeholder={oneShot ? ONE_SHOT_COMPOSER_TITLE : 'Type into this agent…'}
@@ -381,22 +389,30 @@ function InlineComposer({
   onSend: (text: string) => Promise<void>;
 }): ReactNode {
   const [ui, patchUi] = useSubagentUi(store, uiKey);
-  const [sending, setSending] = useState(false);
   const text = ui.draft ?? '';
   const error = ui.error;
+  // In the STORE, not `useState`, for the same reason `draft` is: submitting
+  // often ENDS the parent turn, and `ChatView` swapping the streaming subtree
+  // for the finalized `MessageRow` remounts this composer mid-flight. With
+  // local state the fresh instance came up with the text still there and no
+  // in-flight indication at all, so a second Enter sent the follow-up twice.
+  const sending = ui.sending === true;
 
   const submit = async (): Promise<void> => {
     if (disabled || sending) return;
     const trimmed = text.trim();
     if (!trimmed) return;
-    setSending(true);
+    patchUi({ sending: true });
     try {
       await onSend(trimmed);
       patchUi({ draft: '', error: undefined });
     } catch (err) {
       patchUi({ error: sendFailureReason(err) });
     } finally {
-      setSending(false);
+      // Always cleared, including when the store dropped the whole record
+      // underneath us (a 401 routes through `enterUnauthorized`): writing
+      // `false` re-creates it with only this key, which is the disarmed state.
+      patchUi({ sending: false });
     }
   };
 
@@ -591,6 +607,21 @@ function groupExpansionKey(firstChildId: string): string {
  * mirror every keystroke into both. */
 function replyComposerKey(childId: string): string {
   return `reply:${childId}`;
+}
+
+/**
+ * `subagentUi` key for the expanded body composer, symmetrical with
+ * {@link replyComposerKey} and for a second reason on top of the shared-draft
+ * one: the BARE child id is the key `useExpansion` reads, and
+ * `patchSubagentUi` writes a fresh entry object per keystroke, so a composer
+ * sharing it re-rendered `SubagentBlock` — and therefore `ChildTranscript`
+ * and every `Markdown` in it — on every character. Measured at six Markdown
+ * re-renders per keystroke on a six-message child, growing with the
+ * transcript; pinned by "does not re-render the nested transcript on a
+ * body-composer keystroke".
+ */
+function bodyComposerKey(childId: string): string {
+  return `body:${childId}`;
 }
 
 /**

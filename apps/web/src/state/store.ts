@@ -24,6 +24,15 @@ export interface SubagentUiEntry {
   draft?: string;
   /** The last send refusal's user-facing text, cleared by the next success. */
   error?: string;
+  /**
+   * A send is in flight from this composer. In the store rather than in
+   * `useState` for the same reason `draft` is: the composer is remounted by
+   * things that have nothing to do with it, and a remount mid-flight used to
+   * re-arm it with the text intact and no in-flight indication — a user who
+   * read that as "it didn't send" and pressed Enter again sent the follow-up
+   * twice.
+   */
+  sending?: boolean;
 }
 
 export interface WebAppState {
@@ -42,12 +51,15 @@ export interface WebAppState {
    * Per-key UI state for the sub-agent rows: whether the row/group is open,
    * the half-typed follow-up in its composer, and the last send refusal.
    *
-   * Three key shapes, all namespaced so they cannot collide (a child's
-   * conversation id is a uuid, so no id can start with either prefix):
-   * `<child id>` for a row and its body composer, `group:<first child id>`
-   * for a parallel-group container, and `reply:<child id>` for the
-   * waiting-input reply composer — which can be on screen at the same time as
-   * the body composer, so it needs a draft of its own.
+   * Four key shapes, all namespaced so they cannot collide (a child's
+   * conversation id is a uuid, so no id can start with any of the prefixes):
+   * `<child id>` for the ROW's own expansion, `group:<first child id>` for a
+   * parallel-group container, `reply:<child id>` for the waiting-input reply
+   * composer, and `body:<child id>` for the expanded body composer. The two
+   * composers can be on screen at once (a `waiting` child with its row open),
+   * so they need separate drafts — and neither may share the row's key: a
+   * composer writes a fresh entry object on EVERY keystroke, and the row's
+   * subscriber re-renders the whole nested transcript when it sees one.
    *
    * All of it lives HERE rather than in `SubagentBlock`'s own `useState`
    * because the components are remounted out from under the user by things
@@ -299,12 +311,15 @@ export interface WebAppState {
    * typed did not reach the agent. `MobileApiError.detail` carries the
    * gateway's own reason.
    *
-   * `answering` says the child is parked on an `ask_orchestrator` question, so
-   * this message ANSWERS it rather than steering. That distinction is not in
-   * the response (both come back `mode: 'queued'`) and it decides whether an
-   * `accepted` frame is ever coming — see `sendToSubagent`'s body.
+   * Takes no `answering` hint any more. Whether the child is parked on an
+   * `ask_orchestrator` question decides whether an `accepted` frame is ever
+   * coming, and the client used to guess it in order to withdraw its FIFO
+   * entry. It no longer needs to: pairing is keyed on a `requestId` the
+   * gateway echoes, so a message that never becomes a turn simply never
+   * matches anything — and a guess that was WRONG in either direction used to
+   * duplicate or strand a row. See the implementation's docblock.
    */
-  sendToSubagent(childId: string, text: string, opts?: { answering?: boolean }): Promise<void>;
+  sendToSubagent(childId: string, text: string): Promise<void>;
   /**
    * Tears down this store's live connection: closes the current socket (if
    * any), cancels any pending reconnect timer, and stops any reconnect
@@ -441,8 +456,18 @@ type AcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
  *    user typed into a child (`sendToSubagent`). That goes out over REST and
  *    the SERVER picks the turn id, so neither id match below can hit — before
  *    fix round 2 it materialised a second row and the user saw their sentence
- *    twice. The store keeps that row's local id per child and passes it in as
- *    `pendingLocalId`; the row is adopted in place instead.
+ *    twice. The row is now found by `frame.requestId`, the correlation id the
+ *    client sent with the resume and the gateway echoes back; the optimistic
+ *    row's own id IS that value, so the lookup is a plain id match.
+ *
+ *    An `origin: 'parent'` frame with NO `requestId` is deliberately NOT
+ *    paired with anything. Two very different things produce one — the
+ *    orchestrator's own `send_message` (no client row exists) and a gateway
+ *    too old to echo — and they are byte-identical on the wire, so any guess
+ *    is wrong half the time. Guessing by POSITION is what fix round 3
+ *    removed: one missed `accepted` and every later follow-up adopted the
+ *    wrong row. Materialising instead costs, on the old gateway only, one
+ *    honest duplicate of the user's own sentence.
  *
  * An `accepted` with NO `origin` stays in case 1 even when its turn is
  * unknown: on the live wire the gateway omits `origin` exactly when the turn
@@ -453,7 +478,6 @@ function reconcileAccepted(
   t: Transcript,
   frame: AcceptedFrame,
   conversationId: string,
-  pendingLocalId?: string,
 ): Transcript {
   const origin = frame.origin;
   const optimistic = t.messages.findIndex((m) => m.role === 'user' && m.turnId === frame.id);
@@ -469,9 +493,12 @@ function reconcileAccepted(
   }
 
   // The REST-resume row. Both of its ids are client uuids the server has never
-  // seen, so the id the store kept is the only way to find it.
-  if (pendingLocalId !== undefined) {
-    const pending = t.messages.findIndex((m) => m.role === 'user' && m.id === pendingLocalId);
+  // seen; `requestId` is the one the client chose and the gateway echoed, so
+  // it names the row exactly. No status filter on purpose: a row already
+  // marked `failed` by a REST call that timed out on a request the gateway
+  // nonetheless acted on is repaired here rather than duplicated.
+  if (frame.requestId !== undefined) {
+    const pending = t.messages.findIndex((m) => m.role === 'user' && m.id === frame.requestId);
     if (pending !== -1) {
       const messages = [...t.messages];
       messages[pending] = {
@@ -570,13 +597,6 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
    * invalidate.
    */
   const loadedChildTranscripts = new Set<string>();
-  /**
-   * Per child, the local ids of follow-ups sent through `sendToSubagent` that
-   * are still waiting for the `accepted` frame naming the turn the server gave
-   * them. FIFO: turns are accepted in the order the gateway started them.
-   * See `reconcileAccepted`'s `pendingLocalId`.
-   */
-  const pendingChildResumes = new Map<string, string[]>();
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -911,25 +931,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       desiredChildSubscriptions.clear();
       activeChildSubscriptions.clear();
       loadedChildTranscripts.clear();
-      pendingChildResumes.clear();
       set({ subagentUi: {} });
-    }
-
-    /** Oldest unreconciled follow-up for this child, removed. */
-    function takePendingResume(childId: string): string | undefined {
-      const queue = pendingChildResumes.get(childId);
-      const localId = queue?.shift();
-      if (queue && queue.length === 0) pendingChildResumes.delete(childId);
-      return localId;
-    }
-
-    /** Withdraw a specific follow-up — it failed, or nothing will ever accept it. */
-    function dropPendingResume(childId: string, localId: string): void {
-      const queue = pendingChildResumes.get(childId);
-      if (!queue) return;
-      const at = queue.indexOf(localId);
-      if (at !== -1) queue.splice(at, 1);
-      if (queue.length === 0) pendingChildResumes.delete(childId);
     }
 
     function handleFrame(frame: MobileWsServerFrame): void {
@@ -972,17 +974,9 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       const finishingOrigin =
         frame.type === 'done' ? get().transcripts[conversationId]?.pending?.origin : undefined;
 
-      // Consumed OUTSIDE the updater: `set`'s callback must not have side
-      // effects, and the queue is closure state either way.
-      const pendingLocalId =
-        frame.type === 'accepted' && frame.origin === 'parent'
-          ? takePendingResume(conversationId)
-          : undefined;
       updateTranscript(conversationId, (t) => {
         const reconciled: Transcript =
-          frame.type === 'accepted'
-            ? reconcileAccepted(t, frame, conversationId, pendingLocalId)
-            : t;
+          frame.type === 'accepted' ? reconcileAccepted(t, frame, conversationId) : t;
         return applyServerFrame(reconciled, frame);
       });
 
@@ -1523,9 +1517,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         const holds = desiredChildSubscriptions.get(childId) ?? 0;
         desiredChildSubscriptions.set(childId, holds + 1);
         if (holds > 0) return;
-        // The watcher outlived the release (see `unsubscribeSubagent`): the
-        // socket already carries this child, so there is nothing to send and
-        // no `resolveAgentId` round trip to pay for.
+        // OPTIMISATION, not a correctness guard: the watcher outlived the
+        // release (see `unsubscribeSubagent`), so the socket already carries
+        // this child and there is no `resolveAgentId` round trip to pay for.
+        // Removing this line changes no outcome — `flushChildSubscriptions`
+        // skips any child already in `activeChildSubscriptions` on its own.
         if (activeChildSubscriptions.has(childId)) return;
         const parentId = currentConversationId;
         if (!socket || !parentId) return;
@@ -1551,8 +1547,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
        * Deferring to a microtask closes it: both effects of the same commit
        * have run by the time it fires, so a remount re-checks as `holds > 0`
        * and never touches the socket. A genuine collapse still releases, one
-       * microtask later. `activeChildSubscriptions` is only cleared inside
-       * the microtask, which is what makes the re-`subscribe` a no-op above.
+       * microtask later. The refcount is what makes the re-`subscribe` a
+       * no-op; `activeChildSubscriptions` being cleared only inside the
+       * microtask is what lets `subscribeSubagent` SKIP the `resolveAgentId`
+       * round trip on the way (see the note there — it is an optimisation,
+       * not the correctness guard).
        */
       unsubscribeSubagent(childId) {
         const holds = desiredChildSubscriptions.get(childId) ?? 0;
@@ -1565,6 +1564,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           // Re-taken by a remount, or already released by an earlier
           // microtask — either way this one has nothing to do.
           if ((desiredChildSubscriptions.get(childId) ?? 0) > 0) return;
+          // A genuine release makes the cached transcript stale: nothing
+          // replays what the child emits while nobody is watching (the
+          // gateway acknowledges a `subscribe` with no catch-up at all), so
+          // the next expansion has to re-read from REST or the child's whole
+          // reply to a queued steer is simply never fetched. Done HERE rather
+          // than beside the frame send below, so it also covers a child that
+          // was expanded while the socket was down and therefore never got an
+          // `activeChildSubscriptions` entry to release.
+          loadedChildTranscripts.delete(childId);
           const agentId = activeChildSubscriptions.get(childId);
           if (!agentId) return;
           activeChildSubscriptions.delete(childId);
@@ -1591,30 +1599,43 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       /**
        * A follow-up typed into a child, over `POST /subagents/:id/resume`.
        *
-       * Three server paths, not the two the response's `mode` names — the
-       * client has to get all three right or the row is duplicated or stuck:
+       * The optimistic row's own id is sent as the request's `requestId`, and
+       * the gateway echoes it on the `accepted` frame of whichever turn the
+       * message becomes. That echo is the ONLY correlation there is: the
+       * server picks the turn id for a resume, so nothing else in the frame
+       * names this row. Fix round 3 replaced a positional FIFO with it —
+       * three server paths reach this method and only one of them is
+       * guaranteed to produce an `accepted` at all, so pairing by position
+       * broke permanently the first time one went missing:
        *
        * 1. `mode: 'resumed'` — the child was finished, so a NEW turn starts on
-       *    its conversation and an `accepted` (origin `parent`) follows almost
-       *    at once. The gateway starts that turn INSIDE `sendToChild`, before
-       *    the route responds, so the frame can beat this promise: the local
-       *    id is queued BEFORE the await, never after it.
-       * 2. `mode: 'queued'` with `answering: false` — a live child, so the
-       *    message goes on `ChildHandle`'s steer queue and becomes a turn only
-       *    when the current one ends (`child-handle.ts`'s
-       *    `beginTurn(steerQueue.shift())`). An `accepted` DOES arrive, just
-       *    minutes later; the local id has to stay queued until it does.
-       * 3. `mode: 'queued'` with `answering: true` — the child was parked on
+       *    its conversation and an `accepted` follows almost at once. The
+       *    gateway starts that turn INSIDE `sendToChild`, before the route
+       *    responds, so the frame can beat this promise — which is why the row
+       *    exists before the await and the id travels in the request itself.
+       * 2. `mode: 'queued'`, steered — a live child, so the message goes on
+       *    `ChildHandle`'s steer queue and becomes a turn only when the
+       *    current one ends. An `accepted` DOES arrive, just minutes later,
+       *    and it carries the same id however many turns intervene.
+       * 3. `mode: 'queued'`, answered — the child was parked on
        *    `ask_orchestrator`, so `ChildHandle.send` resolves the waiter and
        *    the text becomes that tool's RESULT inside the running turn. No new
-       *    turn, no `accepted`, and no server-side user row will ever exist
-       *    for it: the local row is the only record, so the id is withdrawn to
-       *    keep a later unrelated turn from adopting it.
+       *    turn and no `accepted`, ever. Nothing has to be withdrawn: an id
+       *    that is never echoed simply never matches, and the local row is the
+       *    only record of the answer (it does not survive a reload — no server
+       *    row will ever exist for it).
+       *
+       * The id is sent on every path, including the one the caller believes is
+       * an answer. Getting that belief wrong used to duplicate a row (withdrawn
+       * early, then re-materialised) or strand one; now a misclassification in
+       * either direction is self-correcting, because the echo — not the
+       * client's guess — decides.
        */
-      async sendToSubagent(childId, text, opts) {
+      async sendToSubagent(childId, text) {
         // The optimistic row goes in FIRST so the text is visible in the
         // child's transcript while the resume is in flight, and so there is
-        // something to mark `failed` if it is refused.
+        // something to mark `failed` if it is refused. Its id doubles as the
+        // request's correlation id.
         const localId = crypto.randomUUID();
         const optimistic: ConversationMessage = {
           id: localId,
@@ -1629,15 +1650,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           origin: 'parent',
         };
         updateTranscript(childId, (t) => ({ ...t, messages: [...t.messages, optimistic] }));
-        const queue = pendingChildResumes.get(childId);
-        if (queue) queue.push(localId);
-        else pendingChildResumes.set(childId, [localId]);
 
-        let mode: 'queued' | 'resumed';
         try {
-          ({ mode } = await rest.resumeSubagent(childId, text));
+          await rest.resumeSubagent(childId, text, localId);
         } catch (err) {
-          dropPendingResume(childId, localId);
           updateTranscript(childId, (t) => ({
             ...t,
             messages: t.messages.map((m) =>
@@ -1651,7 +1667,6 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           throw err;
         }
 
-        if (mode === 'queued' && opts?.answering === true) dropPendingResume(childId, localId);
         // The send succeeded, so the row must not sit at `accepted` for the
         // life of the store waiting for a frame that may be minutes away or
         // may never come (path 3). A no-op if the `accepted` already beat us

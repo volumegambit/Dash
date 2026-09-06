@@ -494,6 +494,22 @@ describe('relay-generated errors (no JSON envelope)', () => {
       expect(result).toEqual({ ok: true, status: 'running', mode: 'queued' });
     });
 
+    it('carries the client requestId in the body when one is supplied', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ ok: true, status: 'running', mode: 'queued' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await client.resumeSubagent('child-1', 'also check the relay', 'req-7');
+
+      expect(JSON.parse(fetchImpl.mock.calls[0][1]?.body as string)).toEqual({
+        message: 'also check the relay',
+        requestId: 'req-7',
+      });
+    });
+
     it("keeps the gateway's actionable refusal text on the error", async () => {
       const fetchImpl = fakeFetch(
         jsonResponse(

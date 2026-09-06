@@ -198,12 +198,25 @@ export class MobileRestClient {
    *
    * All three coordinator refusals come back as 409 `validation_failed` with
    * the reason in `MobileApiError.detail`.
+   *
+   * `requestId` is the caller's correlation id: the SERVER picks the turn id
+   * for a resume, so this is the only thing that comes back on the resulting
+   * `accepted` frame to say which of the caller's in-flight follow-ups that
+   * turn is. Optional — an older gateway ignores it and echoes nothing, and a
+   * caller that gets no echo must not guess.
    */
-  resumeSubagent(subagentId: string, message: string): Promise<SubagentResumeResponse> {
+  resumeSubagent(
+    subagentId: string,
+    message: string,
+    requestId?: string,
+  ): Promise<SubagentResumeResponse> {
     return this.request<SubagentResumeResponse>(
       'POST',
       `/subagents/${encodeURIComponent(subagentId)}/resume`,
-      { body: { message } },
+      // Omitted rather than sent as `undefined`: the schema is
+      // `additionalProperties: false` and JSON drops the key either way, but
+      // a caller reading the body should see the two cases apart.
+      { body: requestId === undefined ? { message } : { message, requestId } },
     );
   }
 

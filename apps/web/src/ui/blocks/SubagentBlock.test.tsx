@@ -9,6 +9,25 @@ import type { WebAppState } from '../../state/store.js';
 import { WebAppStoreContext } from '../Shell.js';
 import { ContentBlocks } from './ContentBlocks.js';
 
+/**
+ * Real `Markdown`, counted. Every message in a child's transcript renders
+ * one, so this is the cheapest honest measure of how far a keystroke in the
+ * body composer fans out (round 3, ruling 3): the composer and the row it
+ * sits in must not share a `subagentUi` key, or `patchSubagentUi`'s fresh
+ * entry object re-renders the entire nested transcript per character.
+ */
+let markdownRenders = 0;
+vi.mock('./Markdown.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('./Markdown.js');
+  return {
+    ...actual,
+    Markdown: (props: Parameters<typeof actual.Markdown>[0]) => {
+      markdownRenders += 1;
+      return actual.Markdown(props);
+    },
+  };
+});
+
 const CHILD = 'child-1';
 const STARTED_AT = '2026-09-04T10:00:00.000Z';
 /** Every test runs with the clock pinned here, so a running row's elapsed is
@@ -137,6 +156,7 @@ function childMessage(overrides: Partial<ConversationMessage> = {}): Conversatio
 
 describe('SubagentBlock', () => {
   beforeEach(() => {
+    markdownRenders = 0;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(NOW));
   });
@@ -277,11 +297,10 @@ describe('SubagentBlock', () => {
         fireEvent.submit(reply);
       });
 
-      // `answering: true` — the child is parked on an `ask_orchestrator`
-      // question, so no `accepted` frame will follow (see `sendToSubagent`).
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'yes please', {
-        answering: true,
-      });
+      // No `answering` hint any more: whether this answers the parked
+      // `ask_orchestrator` question or steers is the server's to decide, and
+      // the store no longer needs the guess (see `sendToSubagent`).
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'yes please');
     });
   });
 
@@ -443,9 +462,46 @@ describe('SubagentBlock', () => {
         fireEvent.submit(composer);
       });
 
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay', {
-        answering: false,
-      });
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay');
+    });
+
+    /**
+     * Round 3, ruling 3. The body composer used to pass the bare child id as
+     * its `uiKey` — the same key `useExpansion` reads — so every keystroke
+     * replaced `subagentUi[childId]` with a fresh object and re-rendered the
+     * whole expanded row, nested transcript included. It scaled with the
+     * transcript, so the composer for a long-running child got slower the
+     * longer it ran. `body:<child id>` gives it its own namespace, symmetrical
+     * with the reply composer's `reply:<child id>`.
+     */
+    it('does not re-render the nested transcript on a body-composer keystroke', () => {
+      const scripted = scriptStore({
+        transcripts: {
+          [CHILD]: {
+            messages: [
+              childMessage({ id: 'm1', ordinal: 1 }),
+              childMessage({ id: 'm2', ordinal: 2 }),
+              childMessage({ id: 'm3', ordinal: 3 }),
+            ],
+            streaming: null,
+            pending: null,
+          },
+        },
+      } as unknown as Partial<WebAppState>);
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(within(screen.getByTestId('subagent-block')).getByRole('button'));
+      // Opening the row renders the transcript; only what happens AFTER that
+      // is the composer's fan-out.
+      expect(markdownRenders).toBeGreaterThan(0);
+      markdownRenders = 0;
+
+      const composer = screen.getByTestId('subagent-composer');
+      fireEvent.change(within(composer).getByRole('textbox'), { target: { value: 'a' } });
+      fireEvent.change(within(composer).getByRole('textbox'), { target: { value: 'ab' } });
+
+      expect(markdownRenders).toBe(0);
+      // Still a real composer writing to a real store.
+      expect((within(composer).getByRole('textbox') as HTMLInputElement).value).toBe('ab');
     });
 
     it('disables the composer for a one-shot child and says why', () => {
@@ -684,6 +740,60 @@ describe('SubagentBlock', () => {
       ).toBe('in flight');
     });
 
+    /**
+     * Round 3, minor 4. `sending` was the one piece of composer state still
+     * local, so the remount above re-armed a composer whose send was still in
+     * flight: text intact, button enabled, nothing saying anything was
+     * happening. A user reading that as "it didn't send" and pressing Enter
+     * again sent the follow-up twice.
+     */
+    it('stays disarmed across a remount while its send is still in flight', async () => {
+      const scripted = scriptStore();
+      let settle: (() => void) | null = null;
+      scripted.sendToSubagent.mockReturnValue(
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      const tree = (key: string) => (
+        <WebAppStoreContext.Provider value={scripted.store}>
+          <div key={key}>
+            <ContentBlocks
+              content={{ type: 'assistant', events: [started(), progress()] }}
+              streaming={key === 'streaming'}
+            />
+          </div>
+        </WebAppStoreContext.Provider>
+      );
+      const { rerender } = render(tree('streaming'));
+      fireEvent.click(rowHeader());
+      fireEvent.change(within(screen.getByTestId('subagent-composer')).getByRole('textbox'), {
+        target: { value: 'in flight' },
+      });
+      fireEvent.submit(screen.getByTestId('subagent-composer'));
+      expect(scripted.sendToSubagent).toHaveBeenCalledTimes(1);
+
+      rerender(tree('finalized'));
+
+      const composer = screen.getByTestId('subagent-composer');
+      expect((within(composer).getByRole('button') as HTMLButtonElement).disabled).toBe(true);
+      // And a user who presses Enter anyway does not send it twice.
+      fireEvent.submit(composer);
+      expect(scripted.sendToSubagent).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        (settle as unknown as () => void)();
+      });
+      expect(
+        (within(screen.getByTestId('subagent-composer')).getByRole('button') as HTMLButtonElement)
+          .disabled,
+      ).toBe(true); // draft cleared, so Send is disabled on empty text
+      expect(
+        (within(screen.getByTestId('subagent-composer')).getByRole('textbox') as HTMLInputElement)
+          .value,
+      ).toBe('');
+    });
+
     it('keeps every row open across a parallel group collapse and reopen', () => {
       const scripted = scriptStore();
       renderEvents(
@@ -772,9 +882,7 @@ describe('SubagentBlock', () => {
       await act(async () => {
         fireEvent.submit(composer);
       });
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'keep going', {
-        answering: false,
-      });
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'keep going');
     });
 
     // Round 2, ruling 8. Round 1 widened the one-shot disable to the
@@ -812,9 +920,7 @@ describe('SubagentBlock', () => {
       await act(async () => {
         fireEvent.submit(reply);
       });
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'the staging one', {
-        answering: true,
-      });
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'the staging one');
 
       // The body composer is still refused — a steer to a one-shot child is
       // what the coordinator rejects, and the web disable agrees with it.
