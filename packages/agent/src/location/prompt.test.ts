@@ -125,3 +125,29 @@ describe('composeLocationPrompt', () => {
     expect(out.endsWith('</environment>')).toBe(true);
   });
 });
+
+describe('coordinate honesty when no place name was resolved', () => {
+  const NOW2 = new Date('2026-09-06T10:21:00Z');
+  const base = { timezone: 'Asia/Singapore', utcOffsetMinutes: 480, locale: 'en-SG' };
+  const coords = {
+    latitude: 1.2834,
+    longitude: 103.8607,
+    accuracyMeters: 15,
+    capturedAt: '2026-09-06T10:11:02Z',
+  };
+
+  it('warns against naming a district from bare coordinates', () => {
+    const out = composeLocationPrompt({ ...base, precise: coords }, { now: NOW2 });
+    expect(out).toContain('no place name was resolved');
+    expect(out).toContain('Do not name a specific building, street or district');
+  });
+
+  it('drops the warning once a place name is available', () => {
+    const out = composeLocationPrompt(
+      { ...base, precise: { ...coords, place: 'Marina Bay Sands, Singapore' } },
+      { now: NOW2 },
+    );
+    expect(out).not.toContain('no place name was resolved');
+    expect(out).toContain('near Marina Bay Sands, Singapore');
+  });
+});

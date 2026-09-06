@@ -57,13 +57,22 @@ export function composeLocationPrompt(
     lines.push(
       `- Position: ${precise.latitude}, ${precise.longitude} (±${Math.round(precise.accuracyMeters)} m, captured ${esc(precise.capturedAt)})${near}`,
     );
+    if (!precise.place) {
+      // Coordinates alone are NOT a place name. Left to itself a model will
+      // name a specific district and be confidently wrong -- the measured case
+      // answered "Bras Basah / Fort Canning" for a point 1.5 km away at Marina
+      // Bay Sands. Same failure mode as naming a city from a time zone.
+      lines.push(
+        '- Note: no place name was resolved for those coordinates. Do not name a specific building, street or district unless you are certain it matches; give the broad area and the coordinates instead.',
+      );
+    }
   } else {
     // A time zone is a REGION, and its name is only the zone's label. Telling
     // the model to "treat it as the metropolitan area" made it answer
     // "New York City" for anyone in America/New_York — a zone spanning Maine
     // to Florida. Confidently wrong is worse than admittedly approximate.
     lines.push(
-      "- Position: NOT shared. Only the time zone and country above are known. A time zone is a region, not a city: the city in its name is just the zone label, and the user may be anywhere in that zone. Do not state that city as the user's location. If asked where they are, say what is actually known — the country, and the time zone — and that no precise position was shared.",
+      "- Position: NOT shared. Only the time zone and country above are known. A time zone is a region, not a city: the city in its name is just the zone label, and the user may be anywhere in that zone. Do not state that city as the user's location. If asked where they are, say what is actually known — the country, and the time zone — and add that they can share their precise location from their Dash client's settings if they want a more specific answer.",
     );
   }
 
