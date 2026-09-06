@@ -174,7 +174,15 @@ final class IPadUITests: DashUITestCase {
       // the exact poisoned session this teardown exists to prevent, just
       // disguised as an unrelated failure. The main window's sidebar
       // existing IS the evidence that the restored scene is already gone.
-      _ = self.element("conversation.list", in: app).waitForExistence(timeout: 10)
+      //
+      // Deliberately NOT the asserting `element(_:in:)` helper: that hard-
+      // fails THIS test's teardown (and so the test itself) if recovery
+      // happens to take a beat over its fixed 8s internal timeout under
+      // host contention. This wait is a best-effort synchronisation aid,
+      // not a correctness assertion — the test's real assertions all run
+      // before this block. If the sidebar never shows up in 10s, `launch()`
+      // moves on anyway and the following `terminate()` still runs.
+      _ = app.descendants(matching: .any)["conversation.list"].waitForExistence(timeout: 10)
       app.terminate()
     }
 
