@@ -23,7 +23,7 @@ describe('get_location tool', () => {
     const result = await run(coarse);
     expect(result.content[0].text).toContain('Asia/Singapore');
     expect(result.content[0].text).toContain('en-SG');
-    expect(result.content[0].text).toContain('SG');
+    expect(result.content[0].text).toContain('Country/region: SG');
     expect(result.details).toMatchObject({ location: coarse });
   });
 
@@ -44,9 +44,10 @@ describe('get_location tool', () => {
     expect(result.content[0].text).toContain('12 m');
   });
 
-  it('says the position is approximate when there is no precise fix', async () => {
+  it('refuses to let the zone name stand in for a city when there is no fix', async () => {
     const result = await run(coarse);
-    expect(result.content[0].text).toMatch(/approximate|time zone only/i);
+    expect(result.content[0].text).toContain('Position: NOT shared');
+    expect(result.content[0].text).toContain('a region, not a city');
     expect(result.content[0].text).not.toContain('accurate to');
   });
 

@@ -17,9 +17,13 @@ describe('composeLocationPrompt', () => {
     expect(out.endsWith('</environment>')).toBe(true);
     expect(out).toContain('- Time zone: Asia/Singapore');
     expect(out).toContain('- Locale: en-SG');
-    expect(out).toContain('- Region: SG');
+    expect(out).toContain('- Country/region: SG');
     expect(out).toContain('- Local time: 2026-09-06 18:21 (UTC+08:00)');
-    expect(out).toContain('inferred from the time zone alone');
+    expect(out).toContain('Position: NOT shared');
+    // The block must actively STOP the model naming the zone's namesake city:
+    // "America/New_York" spans Maine to Florida, and answering "New York City"
+    // for someone in Atlanta is confidently wrong.
+    expect(out).toContain('a region, not a city');
   });
 
   it('formats a negative offset with a leading minus', () => {
@@ -42,7 +46,7 @@ describe('composeLocationPrompt', () => {
 
   it('omits the region line when the client did not report one', () => {
     const { region: _region, ...noRegion } = coarse;
-    expect(composeLocationPrompt(noRegion, { now: NOW })).not.toContain('- Region:');
+    expect(composeLocationPrompt(noRegion, { now: NOW })).not.toContain('- Country/region:');
   });
 
   it('renders a precise position instead of the approximate line', () => {
@@ -62,7 +66,7 @@ describe('composeLocationPrompt', () => {
     expect(out).toContain(
       '- Position: 1.2966, 103.7764 (±12 m, captured 2026-09-06T10:11:02Z), near National University of Singapore',
     );
-    expect(out).not.toContain('inferred from the time zone alone');
+    expect(out).not.toContain('Position: NOT shared');
   });
 
   it('omits the "near" clause when no place was resolved', () => {

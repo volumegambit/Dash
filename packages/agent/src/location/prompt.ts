@@ -5,7 +5,7 @@ const PREAMBLE =
   "Context your client reported for this message. It is client-asserted, may be stale, and describes the user's device — not you.";
 
 const CLOSING =
-  'Use this for time, distance, units, currency and language defaults without asking. Do not repeat it back unless it is relevant.';
+  'Use this for time, distance, units, currency and language defaults without asking. Do not repeat it back unless it is relevant. When the user asks where they are, answer with what this block actually establishes and name its limits — never upgrade an approximate area into a specific city.';
 
 const TOOL_HINT = ' If a task needs a more precise or fresher position, call get_location.';
 
@@ -49,7 +49,7 @@ export function composeLocationPrompt(
     `- Time zone: ${esc(location.timezone)}`,
     `- Locale: ${esc(location.locale)}`,
   ];
-  if (location.region) lines.push(`- Region: ${esc(location.region)}`);
+  if (location.region) lines.push(`- Country/region: ${esc(location.region)} (reliable)`);
 
   const precise = location.precise;
   if (precise) {
@@ -58,8 +58,12 @@ export function composeLocationPrompt(
       `- Position: ${precise.latitude}, ${precise.longitude} (±${Math.round(precise.accuracyMeters)} m, captured ${esc(precise.capturedAt)})${near}`,
     );
   } else {
+    // A time zone is a REGION, and its name is only the zone's label. Telling
+    // the model to "treat it as the metropolitan area" made it answer
+    // "New York City" for anyone in America/New_York — a zone spanning Maine
+    // to Florida. Confidently wrong is worse than admittedly approximate.
     lines.push(
-      '- Approximate location: inferred from the time zone alone. Treat it as the metropolitan area, not an address.',
+      "- Position: NOT shared. Only the time zone and country above are known. A time zone is a region, not a city: the city in its name is just the zone label, and the user may be anywhere in that zone. Do not state that city as the user's location. If asked where they are, say what is actually known — the country, and the time zone — and that no precise position was shared.",
     );
   }
 

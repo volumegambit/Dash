@@ -25,7 +25,7 @@ function describe(location: ClientLocation): string {
     `Time zone: ${location.timezone} (UTC${location.utcOffsetMinutes < 0 ? '-' : '+'}${String(Math.floor(Math.abs(location.utcOffsetMinutes) / 60)).padStart(2, '0')}:${String(Math.abs(location.utcOffsetMinutes) % 60).padStart(2, '0')})`,
     `Locale: ${location.locale}`,
   ];
-  if (location.region) lines.push(`Region: ${location.region}`);
+  if (location.region) lines.push(`Country/region: ${location.region} (reliable)`);
 
   const precise = location.precise;
   if (precise) {
@@ -35,7 +35,7 @@ function describe(location: ClientLocation): string {
     if (precise.place) lines.push(`Nearby: ${precise.place}`);
   } else {
     lines.push(
-      'Position: not shared. Infer the approximate area from the time zone only — treat it as the metropolitan area, not an address.',
+      "Position: NOT shared. Only the time zone and country above are known. A time zone is a region, not a city — the city in its name is just the zone label, and the user may be anywhere in that zone. Do not state that city as the user's location; report the country and time zone, and that no precise position was shared.",
     );
   }
   return lines.join('\n');
