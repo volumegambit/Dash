@@ -98,12 +98,20 @@ actor ChatConnection {
   private var turnSubscriptionOrder: [String] = []
   private var state: ChatTransportState = .idle
   private var streamFinished = false
+  private let locationProvider: @Sendable () -> ClientLocation?
 
   init(
     endpoint: ConnectionEndpoint,
     session: (any WebSocketSessioning)? = nil,
-    clock: any AppClock = SystemAppClock()
+    clock: any AppClock = SystemAppClock(),
+    /// Location attached to outgoing turns. Injected so frame-shape tests are
+    /// deterministic: the real provider reads this device's time zone and
+    /// locale, which differ between a dev machine and a CI simulator, and a
+    /// frozen-frame assertion that depends on them fails wherever it did not
+    /// happen to be written.
+    locationProvider: @Sendable @escaping () -> ClientLocation? = { LocationProvider.current() }
   ) {
+    self.locationProvider = locationProvider
     self.endpoint = endpoint
     self.session =
       session
@@ -154,7 +162,7 @@ actor ChatConnection {
           images: images.isEmpty ? nil : images,
           // Read per turn, not cached: a phone that crosses a time zone
           // reports the new one on the very next message.
-          location: LocationProvider.current()
+          location: locationProvider()
         )
       )
     } catch {
