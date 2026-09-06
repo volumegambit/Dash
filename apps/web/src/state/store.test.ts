@@ -4050,7 +4050,7 @@ describe('createWebAppStore', () => {
      * back. One read per parent turn covers it, and is cheaper than the
      * per-child triggers it backstops.
      */
-    it('re-reads the list when a turn finishes on the open conversation', async () => {
+    it('re-reads the list when a notification turn starts, and again when it finishes', async () => {
       const { rest, listSubagents } = fakeRest({
         listSubagentsImpl: async () => ({ subagents: [listEntry({ background: true })] }),
       });
@@ -4071,6 +4071,15 @@ describe('createWebAppStore', () => {
         revision: 3,
         origin: 'notification',
       } as MobileWsServerFrame);
+
+      // Round-1 ruling 5. The child's terminal row is ALREADY persisted by
+      // the time the notification turn is accepted (`finalizeTerminal`
+      // persists before it enqueues), so waiting for `done` left the row
+      // reading `running` for the whole length of the turn its own finish
+      // triggered — which is exactly the case the panel exists for, and can
+      // be many seconds of model output.
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(2));
+
       onFrames[0]({
         type: 'done',
         id: 'turn-9',
@@ -4079,7 +4088,38 @@ describe('createWebAppStore', () => {
         seq: 10,
       } as MobileWsServerFrame);
 
-      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(2));
+      // And `done` still fires: it is the trigger that backstops every other
+      // one going missing, and a child spawned DURING the notification turn
+      // is only visible after it.
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(3));
+    });
+
+    /**
+     * Only `notification`. An ordinary user turn's `accepted` is the common
+     * case by a wide margin and says nothing about any child — the `done` at
+     * the end of it already re-reads. Triggering on every `accepted` would
+     * double the per-turn cost for nothing.
+     */
+    it("does not re-read on an ordinary turn's accepted", async () => {
+      const { rest, listSubagents } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(1));
+
+      onFrames[0]({
+        type: 'accepted',
+        id: 'turn-9',
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'user-9',
+        assistantMessageId: 'asst-9',
+        seq: 9,
+        revision: 3,
+        origin: 'user',
+      } as MobileWsServerFrame);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(listSubagents).toHaveBeenCalledTimes(1);
     });
 
     /** The gateway replays nothing on a re-`subscribe`, so everything that

@@ -26,8 +26,11 @@ import { useElapsed } from './hooks/useElapsed.js';
  * reads `running` forever once its spawning turn ends and nothing about its
  * real finish ever reaches the parent's event stream; and after a gateway
  * restart the recovered child ROWS are all there is. The store re-reads
- * `GET /conversations/:id/subagents` on open, on reconnect, and on every
- * `subagent_started`/`subagent_finished` — see `refreshSubagents`.
+ * `GET /conversations/:id/subagents` on open, on reconnect, on every
+ * `subagent_started`/`subagent_finished`, and on both ends of a turn on the
+ * open conversation — the `accepted` of a NOTIFICATION turn (which is how a
+ * background child's finish reaches the parent) and every `done` — see
+ * `refreshSubagents`.
  *
  * What it deliberately does NOT do:
  *

@@ -1322,6 +1322,20 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
             c.id === conversationId ? { ...c, revision: frame.revision } : c,
           ),
         }));
+        // Round-1 ruling 5, the earlier half of the `done` trigger below. A
+        // NOTIFICATION turn is the gateway telling the parent that something
+        // it was waiting on happened, and for this panel that something is
+        // usually a background child finishing (§7.3/§8.5). The child's
+        // terminal row is already persisted when the turn is enqueued
+        // (`finalizeTerminal` persists before `notifications.enqueue`), so
+        // there is nothing to wait for: reading here stops the row saying
+        // `running` for the whole length of the turn its own finish
+        // triggered. Restricted to `notification` — an ordinary user turn's
+        // `accepted` says nothing about any child, and its `done` already
+        // re-reads.
+        if (conversationId === currentConversationId && frame.origin === 'notification') {
+          void fetchSubagentList(conversationId);
+        }
       }
 
       // Summary refresh (chat-ux Phase 3 Task 1, audit #8; widened by
@@ -1338,7 +1352,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           refreshMessages(conversationId);
         }
         // The trigger a BACKGROUND child needs, and the one the two below
-        // cannot give it. A background child is spawned to OUTLIVE the turn
+        // cannot give it. Paired with the `accepted`/`notification` read
+        // above, which gets the same news sooner; this one stays because it
+        // backstops every other trigger going missing and because a child
+        // spawned DURING a turn is only visible once the turn ends. A background child is spawned to OUTLIVE the turn
         // that spawned it, so its finish never lands as a
         // `subagent_finished` in that turn's message — it arrives as a
         // notification turn on the parent (§7.3/§8.5). Without this the
