@@ -54,9 +54,12 @@ export class DashAgent {
     // and the environment block is the smaller, more stable of the two.
     // The `tool` flag must track whether get_location was actually registered:
     // naming a tool the model does not have only produces failed tool calls.
+    // `=== true` on purpose, so the UNSAFE direction needs an explicit opt-in:
+    // a caller that passes a location without registering the tool gets a
+    // truthful block rather than a false claim. The gateway sets it explicitly.
     if (options.location && config.location?.enabled !== false) {
       systemPrompt = `${systemPrompt}\n\n${composeLocationPrompt(options.location, {
-        tool: config.location?.tool !== false,
+        tool: config.location?.tool === true,
       })}`;
     }
 

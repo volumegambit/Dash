@@ -49,8 +49,11 @@ export interface GatewayAgentConfig {
    * before a client would send it at all. `enabled: false` drops the
    * <environment> block AND unregisters `get_location`.
    *
-   * Flows through `update()` exactly like `swarm` and `memory`: a partial
-   * patch replaces the object wholesale (it is NOT deep-merged).
+   * `update()` carries this field like any other (the patch spread has no
+   * allowlist), but NO HTTP route accepts it yet: it is absent from
+   * `AGENT_CREATE_KEYS` in management-api.ts, so today it can only be set
+   * programmatically. The write path and UI are deliberately deferred — see
+   * "Later" in docs/plans/specs/2026-09-06-client-location-awareness-design.md.
    */
   location?: { enabled?: boolean };
   /**

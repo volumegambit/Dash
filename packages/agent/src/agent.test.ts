@@ -380,13 +380,18 @@ describe('DashAgent location tool gating', () => {
     return seen[0];
   }
 
-  it('names get_location by default, since the tool is registered by default', async () => {
-    expect(await promptFor()).toContain('call get_location');
+  it('names get_location only when the caller says it was registered', async () => {
+    expect(await promptFor({ enabled: true, tool: true })).toContain('call get_location');
+  });
+
+  it('stays silent about the tool by default', async () => {
+    // The unsafe direction needs an explicit opt-in: a caller that passes a
+    // location without registering the tool must not get a false claim.
+    expect(await promptFor()).not.toContain('get_location');
+    expect(await promptFor({ enabled: true })).not.toContain('get_location');
   });
 
   it('does not name get_location when the tool is withheld', async () => {
-    // Swarm workers inherit the context without the tool; telling them to call
-    // it would only produce failed tool calls.
     expect(await promptFor({ enabled: true, tool: false })).not.toContain('get_location');
   });
 });

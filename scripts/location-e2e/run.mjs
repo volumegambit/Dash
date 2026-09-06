@@ -123,6 +123,11 @@ function check(name, reply, { expectAware }) {
 
 async function main() {
   await preflight();
+  // pickModel() reads MEMORY_E2E_MODEL (it is shared with the memory harness).
+  // Accept the name this script actually documents too.
+  if (process.env.LOCATION_E2E_MODEL && !process.env.MEMORY_E2E_MODEL) {
+    process.env.MEMORY_E2E_MODEL = process.env.LOCATION_E2E_MODEL;
+  }
   const model = await pickModel();
   console.log(`model: ${model}`);
 
