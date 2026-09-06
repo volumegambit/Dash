@@ -473,6 +473,15 @@ struct ChatView: View {
             // "two mechanisms on one ScrollView": this is how they are kept
             // in agreement rather than by adding a third).
             feature.scrollAnchorMessageID = nil
+            // Record the intent this branch just acted on (deferred Task 4
+            // fix). `decide` also returns `.bottom` when the anchor no
+            // longer exists in the loaded transcript — with
+            // `scrollWasPinnedToBottom == false` that left the feature
+            // claiming "scrolled away" while the transcript was in fact
+            // pinned to the bottom, and nothing corrected it until an
+            // `isNearBottom` transition that a user sitting at the bottom
+            // never makes.
+            feature.recordScrollPinnedToBottom(true)
             scrollToBottom(proxy, animated: false)
           case .message(let id):
             proxy.scrollTo(id, anchor: .top)
