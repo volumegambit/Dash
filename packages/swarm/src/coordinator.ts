@@ -3,6 +3,12 @@ import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import { ChildHandle } from './child-handle.js';
 import { childConversationId } from './child-id.js';
+import type { NotificationDriver } from './notifications.js';
+import {
+  type DeliveryOutcome,
+  composeNotificationText,
+  notificationInitialEvents,
+} from './notifications.js';
 import { ALWAYS_AVAILABLE_TOOLS, UNIVERSE, parentBuiltinTools } from './resolve-spawn.js';
 import {
   type RunSnapshot,
@@ -22,6 +28,7 @@ import type {
   SwarmHooks,
   WorkerStatus,
 } from './types.js';
+import { ChildTurnStartError } from './types.js';
 
 export type { RunSnapshot, RunSummary, RunWorkerSnapshot } from './run.js';
 
@@ -112,6 +119,12 @@ export interface AttachOptions {
   orchestratorMcpTools?: string[];
   /** Workspace path handed to spawned workers. */
   workspace?: string;
+  /**
+   * Events to inject into the attachment's channel before the first orchestrator
+   * event. Used for notification turns to inject subagent_finished events onto
+   * the parent log first (design §7.3, ruling 5).
+   */
+  initialEvents?: AgentEvent[];
 }
 
 /** Who is spawning, and how deep they already are. */
@@ -183,6 +196,11 @@ export interface SwarmCoordinatorOptions {
    * with, so there is exactly one child lifetime.
    */
   childDriver: ChildTurnDriver;
+  /**
+   * Notification driver for enqueueing and delivering completion notifications
+   * (design §7.3). Required for background child support.
+   */
+  notifications?: NotificationDriver;
   /**
    * Rebuild the resolved spec of a child this process holds no live one for,
    * from whatever the embedder persisted. Called on the RESUME path and by
@@ -262,6 +280,7 @@ export class SwarmCoordinator {
     subagentId: string,
   ) => Omit<ChildSpec, 'extraTools'> | undefined;
   private readonly resolveCaps?: (agentId: string) => Partial<SwarmCaps> | undefined;
+  private readonly notifications?: NotificationDriver;
 
   /** Live turns keyed by `${agentId}/${conversationId}`. */
   private readonly live = new Map<string, LiveTurn>();
@@ -277,6 +296,13 @@ export class SwarmCoordinator {
   private readonly childrenByParent = new Map<string, ChildHandle[]>();
   /** The live spec of each child, for the runtime that builds its backend. */
   private readonly childSpecs = new Map<string, ChildSpec>();
+  /** Map from notification turn ID to initial events to inject. */
+  private readonly notificationEvents = new Map<string, AgentEvent[]>();
+  /**
+   * Conversations with pending delivery attempts (to avoid duplicate drain calls).
+   * Key is ${agentId}/${conversationId}.
+   */
+  private readonly deliveryInProgress = new Set<string>();
 
   constructor(opts: SwarmCoordinatorOptions) {
     this.driver = opts.childDriver;
@@ -289,6 +315,7 @@ export class SwarmCoordinator {
     this.onWorkerFinished = opts.onWorkerFinished;
     this.reconstructChildSpec = opts.reconstructChildSpec;
     this.resolveCaps = opts.resolveCaps;
+    this.notifications = opts.notifications;
   }
 
   // --- attachment / ownership ---
@@ -323,6 +350,13 @@ export class SwarmCoordinator {
     };
     this.live.set(k, turn);
 
+    // Push initialEvents onto the preRunChannel before anything else.
+    if (opts.initialEvents && opts.initialEvents.length > 0) {
+      for (const event of opts.initialEvents) {
+        preRunChannel.push(event);
+      }
+    }
+
     // The attachment channel is the run's channel once a run exists; before the
     // first spawn there is no run, so we back it with the per-turn placeholder.
     return {
@@ -346,6 +380,12 @@ export class SwarmCoordinator {
     const current = this.live.get(k);
     if (current !== turn || turn.finalized) return;
     turn.finalized = true;
+
+    // Drain and deliver pending notifications (design §7.3, ruling 3).
+    // Fire-and-forget; delivery failures don't break the turn close.
+    if (this.notifications) {
+      void this.deliverPending(turn.opts.agentId, turn.opts.conversationId).catch(() => {});
+    }
 
     const run = turn.run;
     if (run) {
@@ -1536,7 +1576,152 @@ export class SwarmCoordinator {
       // A runtime that cannot release a finished child must not break its
       // terminal transition — the child is over either way.
     }
+
+    // Enqueue notifications for background and resumed children (design §7.3, ruling 1).
+    // Durable first: enqueue before attempting delivery.
+    if (handle.background || handle.resumed) {
+      this.enqueueChildNotification(handle);
+    }
+
     run?.noteTerminal();
+  }
+
+  /**
+   * Enqueue a notification for a terminal background or resumed child
+   * (design §7.3, ruling 1). Durable first: enqueue before attempting delivery,
+   * so a crash between the two loses nothing. Then try to deliver immediately.
+   */
+  private enqueueChildNotification(handle: ChildHandle): void {
+    if (!this.notifications) return;
+
+    try {
+      const payload: Record<string, unknown> = {
+        subagentId: handle.subagentId,
+        name: handle.name,
+        subagentType: handle.subagentType,
+        description: handle.description,
+        status: handle.status,
+        report: handle.report,
+        toolCallCount: handle.toolCallCount,
+        startedAt: handle.startedAtIso ?? new Date().toISOString(),
+        endedAt: handle.endedAtIso ?? new Date().toISOString(),
+      };
+      if (handle.usage) {
+        payload.usage = handle.usage;
+      }
+
+      this.notifications.enqueue({
+        conversationId: handle.parentConversationId,
+        kind: 'subagent_finished',
+        payload,
+      });
+    } catch (err) {
+      // Enqueue failure doesn't break the child's terminal transition.
+      this.notifications?.warn(`Failed to enqueue notification: ${String(err)}`);
+      return;
+    }
+
+    // Try to deliver immediately (ruling 2: decide via acceptTurn, not pre-check).
+    // Fire-and-forget; failures are bounded.
+    void this.deliverPending(handle.opts.spec.agentId, handle.parentConversationId).catch(() => {});
+  }
+
+  /**
+   * Deliver pending notifications for a parent conversation.
+   * Called on parent's finishTurn (design §7.3, ruling 3).
+   * Coalesces all pending notifications into one turn (ruling 4).
+   */
+  async deliverPending(agentId: string, conversationId: string): Promise<DeliveryOutcome> {
+    if (!this.notifications) return 'nothing';
+
+    // Avoid duplicate drain calls when delivery is attempted multiple times
+    // (e.g., once after enqueueing and once on finalizeTurn).
+    const deliveryKey = key(agentId, conversationId);
+    if (this.deliveryInProgress.has(deliveryKey)) {
+      return 'nothing';
+    }
+    this.deliveryInProgress.add(deliveryKey);
+
+    const items = this.notifications.drain(conversationId);
+    if (items.length === 0) {
+      this.deliveryInProgress.delete(deliveryKey);
+      return 'nothing';
+    }
+
+    const text = composeNotificationText(items);
+    const events = notificationInitialEvents(items);
+
+    try {
+      const result = this.notifications.startNotificationTurn(agentId, conversationId, text);
+
+      // Store the events for takeInitialEvents to return.
+      if (events.length > 0) {
+        this.notificationEvents.set(result.turnId, events);
+      }
+
+      return 'started';
+    } catch (err) {
+      if (err instanceof ChildTurnStartError) {
+        const reason = err.reason;
+        // Re-queue on busy or stopped (ruling 2).
+        if (reason === 'busy' || reason === 'stopped') {
+          for (const item of items) {
+            this.notifications?.enqueue(item);
+          }
+          // Clean up the delivery key and allow retry on next turn.
+          this.deliveryInProgress.delete(deliveryKey);
+          return 'nothing';
+        }
+        // Drop queue on parent gone (ruling 8).
+        if (reason === 'error') {
+          this.notifications?.warn(err.message);
+          return 'nothing';
+        }
+      }
+      // Other errors: try to re-queue and return error.
+      this.notifications?.warn(`Failed to deliver notifications: ${String(err)}`);
+      return 'error';
+    }
+  }
+
+  /**
+   * Retrieve and clear the initial events for a notification turn.
+   * Called by the gateway's merge wrapper to inject subagent_finished events
+   * onto the parent log before orchestrator output (design §7.3, ruling 5).
+   */
+  takeInitialEvents(turnId: string): AgentEvent[] | undefined {
+    const events = this.notificationEvents.get(turnId);
+    this.notificationEvents.delete(turnId);
+    return events;
+  }
+
+  /**
+   * Queue a message from a child to be delivered to the parent conversation.
+   * The message is scanned and enqueued as a subagent_message notification.
+   */
+  notifyMain(childId: string, message: string): void {
+    if (!this.notifications) return;
+
+    const handle = this.children.get(childId);
+    if (!handle) return;
+
+    try {
+      this.notifications.enqueue({
+        conversationId: handle.parentConversationId,
+        kind: 'subagent_message',
+        payload: {
+          from: handle.name ?? childId,
+          message,
+        },
+      });
+    } catch (err) {
+      this.notifications?.warn(`Failed to enqueue subagent_message: ${String(err)}`);
+      return;
+    }
+
+    // Try to deliver immediately (ruling 2).
+    // Fire-and-forget; failures are bounded.
+    void this.deliverPending(handle.opts.spec.agentId, handle.parentConversationId).catch(() => {});
   }
 
   private pushHistory(agentId: string, snap: RunSnapshot): void {

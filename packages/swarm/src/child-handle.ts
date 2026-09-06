@@ -121,6 +121,7 @@ export class ChildHandle {
   readonly background: boolean;
   readonly oneShot: boolean;
   readonly depth: number;
+  readonly resumed: boolean;
   private readonly isolation?: 'worktree';
   private readonly maxTurns?: number;
   /**
@@ -177,6 +178,7 @@ export class ChildHandle {
     this.background = opts.spec.background ?? false;
     this.oneShot = opts.spec.oneShot ?? false;
     this.depth = opts.spec.depth ?? 1;
+    this.resumed = opts.resumeWith !== undefined;
     this.isolation = opts.spec.isolation;
     this.maxTurns = opts.spec.maxTurns;
     this.specWorkspace = opts.spec.isolation === 'worktree' ? undefined : opts.spec.workspace;
@@ -193,6 +195,16 @@ export class ChildHandle {
 
   get terminalPromise(): Promise<void> {
     return this.terminal.promise;
+  }
+
+  /** ISO timestamp when the child started, or undefined if not yet started. */
+  get startedAtIso(): string | undefined {
+    return this.startedAt ? new Date(this.startedAt).toISOString() : undefined;
+  }
+
+  /** ISO timestamp when the child ended, or undefined if not yet ended. */
+  get endedAtIso(): string | undefined {
+    return this.endedAt ? new Date(this.endedAt).toISOString() : undefined;
   }
 
   /** The child's conversation id. Alias kept for call sites that read a run. */
@@ -248,7 +260,7 @@ export class ChildHandle {
           background: this.background,
           ...(this.isolation !== undefined ? { isolation: this.isolation } : {}),
           depth: this.depth,
-          startedAt: this.startedAtIso(),
+          startedAt: this.startedAtIsoPrivate(),
           toolCallCount: 0,
           oneShot: this.oneShot,
           ...(this.specWorkspace !== undefined ? { workspace: this.specWorkspace } : {}),
@@ -713,12 +725,12 @@ export class ChildHandle {
       model: this.model,
       background: this.background,
       depth: this.depth,
-      startedAt: this.startedAtIso(),
+      startedAt: this.startedAtIsoPrivate(),
       ...(this.isolation !== undefined ? { isolation: this.isolation } : {}),
     });
   }
 
-  private startedAtIso(): string {
+  private startedAtIsoPrivate(): string {
     return new Date(this.startedAt ?? Date.now()).toISOString();
   }
 
@@ -733,7 +745,7 @@ export class ChildHandle {
       report,
       usage: this.usage,
       toolCallCount: this.toolCallCount,
-      startedAt: this.startedAtIso(),
+      startedAt: this.startedAtIsoPrivate(),
       endedAt: new Date(this.endedAt ?? Date.now()).toISOString(),
     });
   }
