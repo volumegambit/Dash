@@ -111,6 +111,9 @@ const phoneUIStep = steps.find((step) => step.name === 'iPhone UI tests');
 const darkContrastUIStep = steps.find(
   (step) => step.name === 'Dark increased-contrast core-flow UI test',
 );
+const ipadDarkContrastUIStep = steps.find(
+  (step) => step.name === 'iPad dark increased-contrast core-flow UI test',
+);
 const ipadUIStep = steps.find((step) => step.name === 'iPad adaptive UI tests');
 
 assert.match(
@@ -190,6 +193,69 @@ assert.match(
   /-resultBundlePath ios\/iPhoneDarkContrastUI\.xcresult/,
   'dark increased-contrast failures must create a distinct artifact for upload',
 );
+// Dark + increased contrast is an APPEARANCE gate, and the iPad renders a
+// different layout (two columns, a Settings sheet, dialogs as popovers) from
+// the phone — so the same core-flow test has to run in dark/high-contrast on
+// the iPad too (iPad goal Phase D, design §4). Mirrors the phone assertions
+// above exactly, on the iPad UDID.
+assert.equal(
+  typeof ipadDarkContrastUIStep?.run,
+  'string',
+  'expected an isolated iPad dark increased-contrast UI-test step',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /simctl boot "\$IPAD_UDID"[\s\S]*simctl bootstatus "\$IPAD_UDID" -b[\s\S]*original_appearance="\$\(xcrun simctl ui "\$IPAD_UDID" appearance\)"/,
+  'iPad dark appearance coverage must boot the pinned simulator before querying its UI state',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /original_appearance="\$\(xcrun simctl ui "\$IPAD_UDID" appearance\)"/,
+  'iPad dark appearance coverage must query the simulator state before changing it',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /original_contrast="\$\(xcrun simctl ui "\$IPAD_UDID" increase_contrast\)"/,
+  'iPad increased-contrast coverage must query the simulator state before changing it',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /trap restore_simulator_ui_state EXIT/,
+  'iPad dark increased-contrast coverage must restore simulator state on every exit',
+);
+assert.match(ipadDarkContrastUIStep?.run ?? '', /appearance dark/);
+assert.match(ipadDarkContrastUIStep?.run ?? '', /increase_contrast enabled/);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /test "\$\(xcrun simctl ui "\$IPAD_UDID" appearance\)" = "dark"/,
+  'iPad dark appearance coverage must verify the selected appearance',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /test "\$\(xcrun simctl ui "\$IPAD_UDID" increase_contrast\)" = "enabled"/,
+  'iPad dark appearance coverage must verify the selected contrast state',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /\$IOS_IPAD_TEST_DESTINATION/,
+  'iPad dark increased-contrast coverage must use the exact iPad UDID',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /-only-testing:DashUITests\/AccessibilityUITests\/testCoreFlowsInCurrentAppearance/,
+  'iPad dark increased-contrast coverage must isolate the appearance-safe core-flow test',
+);
+assert.match(
+  ipadDarkContrastUIStep?.run ?? '',
+  /-resultBundlePath ios\/iPadDarkContrastUI\.xcresult/,
+  'iPad dark increased-contrast failures must create a distinct artifact for upload',
+);
+assert.notEqual(
+  ipadDarkContrastUIStep?.run,
+  darkContrastUIStep?.run,
+  'the iPad appearance gate must not be a copy of the phone one pointed at the same device',
+);
+
 assert.match(
   ipadUIStep?.run ?? '',
   /simctl boot "\$IPAD_UDID"[\s\S]*simctl bootstatus "\$IPAD_UDID" -b[\s\S]*simctl privacy "\$IPAD_UDID" reset camera app\.dash\.ios/,
@@ -365,18 +431,24 @@ assert.match(
   /func testCoreFlowsInCurrentAppearance\(\)/,
   'appearance CI must exercise an explicit core-flow UI test',
 );
+// `scrollSettingsToElement` moved out of `AccessibilityUITests` and into the
+// shared `DashUITestCase` when the iPad two-column layout turned Settings into
+// a sheet (design §1.1) and other suites needed the same scroll. These three
+// assertions kept naming the old file, so they had been passing vacuously ...
+// except `assert.match` on a source that no longer contains the helper fails
+// outright, which is what CI was hitting. Point them at the helper's real home.
 assert.match(
-  accessibilityUITestSource,
+  uiTestCaseSource,
   /func isExposed\(\) -> Bool \{[\s\S]*value\.exists[\s\S]*value\.isHittable[\s\S]*value\.frame\.intersects\(settingsList\.frame\)[\s\S]*value\.frame\.intersects\(window\.frame\)/,
   'settings scrolling must require the target to be hittable and inside both list and window',
 );
 assert.match(
-  accessibilityUITestSource,
+  uiTestCaseSource,
   /for _ in 0\.\.<maxSwipes where isExposed\(\) == false/,
   'settings scrolling must continue until the target is exposed',
 );
 assert.match(
-  accessibilityUITestSource,
+  uiTestCaseSource,
   /XCTAssertTrue\(\s*isExposed\(\)/,
   'settings scrolling must assert that the target was exposed',
 );
