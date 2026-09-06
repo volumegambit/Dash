@@ -801,3 +801,40 @@ describe('MessageBubble memory chips', () => {
     expect(screen.getByText('Remembered: Gerry prefers metric units')).toBeInTheDocument();
   });
 });
+
+describe('MessageBubble notice chips', () => {
+  function noticeMessage(kind: 'skill_learned' | 'memory_saved', text: string) {
+    return {
+      id: 'n1',
+      role: 'assistant' as const,
+      content: { type: 'notice' as const, kind, text },
+      timestamp: '2026-09-06T00:00:00Z',
+    };
+  }
+
+  it('renders a learned skill as a chip', () => {
+    render(<MessageBubble message={noticeMessage('skill_learned', 'Learned: write-files')} />);
+
+    const chip = screen.getByTestId('notice-chip');
+    expect(chip).toHaveTextContent('Learned: write-files');
+    expect(chip).toHaveAttribute('data-notice-kind', 'skill_learned');
+  });
+
+  it('renders a swept memory as a chip', () => {
+    render(<MessageBubble message={noticeMessage('memory_saved', 'Remembered: prefers printf')} />);
+
+    const chip = screen.getByTestId('notice-chip');
+    expect(chip).toHaveTextContent('Remembered: prefers printf');
+    expect(chip).toHaveAttribute('data-notice-kind', 'memory_saved');
+  });
+
+  it('does not render the assistant event pipeline for a notice', () => {
+    // A notice carries no events; rendering it through renderEvents would throw
+    // or produce an empty assistant bubble instead of a chip.
+    const { container } = render(
+      <MessageBubble message={noticeMessage('skill_learned', 'Learned: x')} />,
+    );
+    expect(container.querySelector('[data-testid="notice-chip"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('interrupted');
+  });
+});

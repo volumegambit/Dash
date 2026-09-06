@@ -760,7 +760,9 @@ function legacyWireMessages(page: ConversationMessagePage): McMessage[] {
             text: message.content.text,
             ...(message.content.images?.length ? { images: message.content.images } : {}),
           }
-        : { type: 'assistant', events: message.content.events },
+        : message.content.type === 'notice'
+          ? { type: 'notice', kind: message.content.kind, text: message.content.text }
+          : { type: 'assistant', events: message.content.events },
     timestamp: message.createdAt,
   }));
 }
