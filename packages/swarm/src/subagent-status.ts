@@ -9,6 +9,11 @@ export const DEFAULT_SUBAGENT_TYPE = 'general-purpose';
  * `done | failed | cancelled`. Until those clients migrate, the newer terminal
  * statuses (`interrupted`, `max_turns`) are reported to them as `failed`; the
  * true status rides `subagent_finished.status`.
+ *
+ * As of D4 (`40a9866c`) this flatten has NO remaining in-tree consumer that
+ * needs it: Mission Control has been five-case since `ipc.ts:102`, web reads
+ * all five, and iOS now models all five too. It is kept for genuinely old
+ * clients and is a D8 candidate for removal — see the ledger.
  */
 export function legacyWorkerDoneStatus(status: WorkerStatus): 'done' | 'failed' | 'cancelled' {
   if (status === 'done' || status === 'cancelled') return status;

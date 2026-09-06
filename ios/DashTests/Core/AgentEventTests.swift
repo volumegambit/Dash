@@ -150,10 +150,11 @@ struct AgentEventTests {
     #expect(status == expected)
   }
 
-  /// `packages/agent/src/types.ts:81` gives `worker_done.status` all FIVE
-  /// terminal values, but iOS only ever modelled three — so a real
-  /// `interrupted` or `max_turns` mirror threw a decoding error and took its
-  /// whole frame down. One enum now serves both families.
+  /// One enum serves both families, so `worker_done` accepts all five even
+  /// though no producer emits more than three — they flatten through
+  /// `legacyWorkerDoneStatus`. This pins the tolerance, not a live path: if
+  /// that flatten is ever removed (and D4 made iOS its last in-tree consumer),
+  /// the wider statuses arrive here and must already decode.
   @Test("worker_done accepts interrupted and max_turns", arguments: ["interrupted", "max_turns"])
   func legacyDoneAcceptsWiderStatuses(raw: String) throws {
     let json = """

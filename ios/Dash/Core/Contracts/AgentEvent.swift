@@ -18,11 +18,17 @@ enum SubagentLiveStatus: String, Codable, Hashable, Sendable {
 
 /// The terminal half, likewise shared by `subagent_finished` and `worker_done`.
 ///
-/// This has FIVE cases, not three. `packages/agent/src/types.ts:81` has given
-/// `worker_done.status` `interrupted` and `max_turns` since Phase A, and iOS
-/// modelled only `done`/`failed`/`cancelled` — so a real interrupted child
-/// threw `DecodingError` out of `AgentEvent.init(from:)` and took its whole
-/// frame down. §8.1 gives all five a finished glyph.
+/// This has FIVE cases, not three, and the reason is `subagent_finished`, NOT
+/// the legacy mirror. `worker_done` never carried more than three: every
+/// producer flattens through `legacyWorkerDoneStatus`
+/// (`packages/swarm/src/subagent-status.ts:13`), which maps `interrupted` and
+/// `max_turns` to `failed` — the A2 ruling that kept old clients working.
+/// `subagent_finished` carries the true status UNFLATTENED, so making it a
+/// known event (D4) is what requires all five here. Widening `worker_done` to
+/// match costs nothing and means one enum serves both families.
+///
+/// Modelling only three would therefore not have been a pre-existing bug — it
+/// would have been a bug D4 INTRODUCED. §8.1 gives all five a finished glyph.
 enum SubagentTerminalStatus: String, Codable, Hashable, Sendable {
   case done
   case failed
