@@ -1290,6 +1290,41 @@ describe('SqliteConversationService subagent persistence', () => {
     ]);
   });
 
+  it('keeps a notification turn out of the conversation-list preview', () => {
+    // The preview sits where the UI shows what the USER last said, and it
+    // feeds both clients' conversation search. A server-initiated turn's user
+    // row is the `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the
+    // orchestrator was fed (sub-agents design 7.3), so it must never land
+    // there — the last thing the user actually said stands instead.
+    const parent = createParent();
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-typed',
+      text: 'Spawn a reviewer in the background',
+    });
+    service.finishTurn({
+      conversationId: parent.id,
+      turnId: 'turn-typed',
+      outcome: 'completed',
+    });
+    expect(service.get(parent.id)?.lastMessagePreview).toBe('Spawn a reviewer in the background');
+
+    service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: parent.id,
+      turnId: 'turn-notified',
+      text: '[SYSTEM NOTIFICATION - NOT USER INPUT]\nAgent "Review the diff" finished',
+      origin: 'notification',
+    });
+
+    expect(service.get(parent.id)?.lastMessagePreview).toBe('Spawn a reviewer in the background');
+    expect(
+      service.list({ agentId: 'agent-01', limit: 10 }).items.find((c) => c.id === parent.id)
+        ?.lastMessagePreview,
+    ).toBe('Spawn a reviewer in the background');
+  });
+
   it('exposes children through the parentConversationId filter', () => {
     const parent = createParent();
     const other = createParent('parent-02');

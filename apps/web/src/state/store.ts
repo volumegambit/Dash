@@ -563,6 +563,31 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         });
     }
 
+    /**
+     * Re-reads the newest page of messages for `conversationId` and merges it
+     * into the transcript. Used for a turn the GATEWAY started (sub-agents
+     * design 7.3): its `accepted` carries ids but no text, so the user row
+     * this store materialised is empty and the §8.5 notification row would
+     * read the generic fallback for the rest of the session — two background
+     * children finishing would produce two identical, unattributable lines.
+     * The REST row carries the notification block, whose `<summary>` is what
+     * the row is specified to show. Best-effort and silent, except a 401,
+     * which routes like every other REST call here.
+     */
+    function refreshMessages(conversationId: string): void {
+      rest
+        .getMessages(conversationId)
+        .then((page) => {
+          updateTranscript(conversationId, (t) => ({
+            ...t,
+            messages: mergeMessagesById(t.messages, page.items),
+          }));
+        })
+        .catch((err: unknown) => {
+          if (isAuthError(err)) enterUnauthorized();
+        });
+    }
+
     /** Looks up `agentId` for a conversation, refreshing the conversation
      * list once from REST if it isn't already loaded (so `openConversation`
      * never *requires* a prior `loadConversations()` call — see
@@ -647,6 +672,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         return;
       }
 
+      // Read BEFORE `applyServerFrame` consumes `pending` on `done`: this is
+      // the only place the finishing turn's origin is still known.
+      const finishingOrigin =
+        frame.type === 'done' ? get().transcripts[conversationId]?.pending?.origin : undefined;
+
       updateTranscript(conversationId, (t) => {
         const reconciled: Transcript =
           frame.type === 'accepted' ? reconcileAccepted(t, frame, conversationId) : t;
@@ -680,6 +710,12 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       // had any time to run) is the trigger.
       if (frame.type === 'done') {
         maybeRefreshAutoTitle(conversationId);
+        // A turn the gateway started: pull the row's real text (see
+        // `refreshMessages`). An ordinary user turn already has its text
+        // locally and never pays for this.
+        if (finishingOrigin && finishingOrigin !== 'user') {
+          refreshMessages(conversationId);
+        }
       }
     }
 
@@ -691,6 +727,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * means no separate "was this intentional" flag is needed, and so a
      * real drop can never be swallowed by an unrelated close. */
     function createAttachedSocket(): ChatSocket {
+      // Ids only matter for the socket they were sent on: the new gateway
+      // never acks a `subscribe`, so without this the set would grow by one
+      // uuid per connect for the life of the store.
+      subscriptionFrameIds.clear();
       // `created` is referenced inside the `onClose` closure before its own
       // `const` initializer finishes — safe here because that closure only
       // ever runs asynchronously (after `connect()`'s network round-trip),
@@ -977,9 +1017,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           attached.close();
           return;
         }
-        await subscribeToOpenConversation(attached, conversationId);
-        if (disposed) return;
         set({ connection: 'connected' });
+        // Deliberately NOT awaited: on a deep link (conversation list not
+        // loaded yet) `resolveAgentId` does a REST round trip, and blocking
+        // the connected transition on it would keep the composer disabled —
+        // and `sendMessage` throwing — for a request that has nothing to do
+        // with the socket. The subscription only governs turns nobody has
+        // started yet; it can land a moment later.
+        void subscribeToOpenConversation(attached, conversationId);
       },
 
       async sendMessage(conversationId: string, text: string, images?: MobileImage[]) {

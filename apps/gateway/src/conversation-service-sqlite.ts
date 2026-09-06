@@ -299,12 +299,21 @@ export class SqliteConversationService implements ConversationService {
       .get(requestId) as ConversationRow | undefined;
   }
 
+  /**
+   * The preview sits where every client shows what the USER last said, and it
+   * feeds their conversation search. A server-initiated turn's user row is the
+   * `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator was fed
+   * (sub-agents design 7.3), so `origin = 'user'` filters those out and the
+   * last thing the user actually typed stands. Rows written before the column
+   * existed default to `'user'` (see the guarded ALTER), so nothing older
+   * loses its preview.
+   */
   private lastMessagePreview(conversationId: string): string | null {
     const row = this.db
       .prepare(`
         SELECT content
         FROM conversation_messages
-        WHERE conversation_id = ? AND role = 'user'
+        WHERE conversation_id = ? AND role = 'user' AND origin = 'user'
         ORDER BY ordinal DESC, id DESC
         LIMIT 1
       `)

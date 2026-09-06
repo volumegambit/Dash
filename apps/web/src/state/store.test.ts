@@ -1927,14 +1927,52 @@ describe('createWebAppStore', () => {
 
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
 
-      expect(subscriptionFrames(socket)).toEqual([
-        {
-          type: 'subscribe',
-          id: expect.any(String),
-          agentId: 'agent-01',
-          conversationId: CONVERSATION_ID,
+      await vi.waitFor(() =>
+        expect(subscriptionFrames(socket)).toEqual([
+          {
+            type: 'subscribe',
+            id: expect.any(String),
+            agentId: 'agent-01',
+            conversationId: CONVERSATION_ID,
+          },
+        ]),
+      );
+    });
+
+    it('reports connected without waiting for the subscription round trip', async () => {
+      // Deep-link path: the conversation list is not loaded, so
+      // `resolveAgentId` does a REST call. Blocking the connected transition
+      // on it would leave the composer disabled — and `sendMessage` throwing
+      // — for the length of a request that has nothing to do with the socket.
+      let releaseList: (() => void) | undefined;
+      const listGate = new Promise<void>((resolve) => {
+        releaseList = resolve;
+      });
+      const { rest } = fakeRest({
+        listConversationsImpl: async () => {
+          await listGate;
+          return { items: [summary()], nextCursor: null };
         },
-      ]);
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      expect(store.getState().connection).toBe('connected');
+      expect(subscriptionFrames(socket)).toEqual([]);
+
+      releaseList?.();
+      await vi.waitFor(() =>
+        expect(subscriptionFrames(socket)).toEqual([
+          {
+            type: 'subscribe',
+            id: expect.any(String),
+            agentId: 'agent-01',
+            conversationId: CONVERSATION_ID,
+          },
+        ]),
+      );
     });
 
     it('unsubscribes the conversation it is leaving when switching to another one', async () => {
@@ -1949,7 +1987,9 @@ describe('createWebAppStore', () => {
       await store.getState().loadConversations();
 
       const first = await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(subscriptionFrames(first)).toHaveLength(1));
       const second = await openAndConnect(store, sockets, 'conv-2');
+      await vi.waitFor(() => expect(subscriptionFrames(second)).toHaveLength(1));
 
       expect(subscriptionFrames(first)).toEqual([
         {
@@ -2002,6 +2042,7 @@ describe('createWebAppStore', () => {
       const { factory, sockets, onFrames } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(subscriptionFrames(socket)).toHaveLength(1));
       const subscribe = subscriptionFrames(socket)[0];
 
       // Exactly what a pre-`subscribe` gateway answers: `parseChatClientFrame`
@@ -2021,6 +2062,35 @@ describe('createWebAppStore', () => {
         'interrupted',
       );
       expect(store.getState().connection).toBe('connected');
+    });
+
+    it('scopes the ignored-error ids to the socket that sent them', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const first = await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(subscriptionFrames(first)).toHaveLength(1));
+      const staleId = subscriptionFrames(first)[0].id;
+
+      onCloses[0]('error');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(sockets.length).toBe(2));
+      sockets[1].open();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
+      await vi.waitFor(() => expect(subscriptionFrames(sockets[1])).toHaveLength(1));
+
+      // The dead socket's ids are gone, so a collision cannot silently
+      // swallow a real error frame on the new one.
+      onFrames[1]({
+        type: 'error',
+        id: staleId,
+        conversationId: CONVERSATION_ID,
+        error: 'Agent exploded',
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      expect(store.getState().transcripts[CONVERSATION_ID].error?.message).toBe('Agent exploded');
     });
 
     it('still surfaces a genuine error frame for a real turn', async () => {
@@ -2046,6 +2116,7 @@ describe('createWebAppStore', () => {
       const { factory, sockets } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
       const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(subscriptionFrames(socket)).toHaveLength(1));
 
       store.getState().dispose();
 
@@ -2127,6 +2198,76 @@ describe('createWebAppStore', () => {
         type: 'assistant',
         events: [{ type: 'text_delta', text: 'The child finished.' }],
       });
+    });
+
+    it("refreshes the transcript when a server-initiated turn finishes, so the row shows the notification's own summary", async () => {
+      const notificationText = [
+        '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+        '',
+        '<task-notification>',
+        '<summary>Agent "Map gateway internals" finished</summary>',
+        '</task-notification>',
+      ].join('\n');
+      const replayed = message({
+        id: 'notif-user-1',
+        turnId: NOTIFICATION_TURN,
+        ordinal: 1,
+        role: 'user',
+        origin: 'notification',
+        content: { type: 'user', text: notificationText },
+      });
+      let page: ConversationMessagePage = { items: [], nextCursor: null, throughSeq: 0 };
+      const { rest, getMessages } = fakeRest({ getMessagesImpl: async () => page });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      const replayCalls = getMessages.mock.calls.length;
+      // The gateway only has the row once the turn it belongs to has run.
+      page = { items: [replayed], nextCursor: null, throughSeq: 9 };
+
+      await deliverNotificationTurn(store, onFrames[0]);
+
+      await vi.waitFor(() =>
+        expect(
+          store
+            .getState()
+            .transcripts[CONVERSATION_ID].messages.find((m) => m.id === 'notif-user-1')?.content,
+        ).toEqual({ type: 'user', text: notificationText }),
+      );
+      expect(getMessages.mock.calls.length).toBeGreaterThan(replayCalls);
+    });
+
+    it('does not refetch the transcript when an ordinary user turn finishes', async () => {
+      const { rest, getMessages } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await store.getState().sendMessage(CONVERSATION_ID, 'Hello');
+      const turnId = sockets[0].turnFrames[0].id;
+      const replayCalls = getMessages.mock.calls.length;
+
+      onFrames[0]({
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'user-1',
+        assistantMessageId: 'assistant-1',
+        revision: 2,
+        seq: 1,
+      });
+      onFrames[0]({
+        type: 'done',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq: 2,
+        outcome: 'completed',
+      });
+
+      await vi.waitFor(() =>
+        expect(store.getState().transcripts[CONVERSATION_ID]?.streaming).toBeNull(),
+      );
+      expect(getMessages.mock.calls.length).toBe(replayCalls);
     });
 
     it('never fabricates a user row for an ordinary turn whose accepted carries no origin', async () => {
