@@ -408,6 +408,12 @@
       "valid": false
     },
     {
+      "file": "invalid/chat-send-latitude-out-of-range.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": false
+    },
+    {
       "file": "invalid/structured-error-missing-code.json",
       "document": "openapi",
       "schema": "MobileApiError",
