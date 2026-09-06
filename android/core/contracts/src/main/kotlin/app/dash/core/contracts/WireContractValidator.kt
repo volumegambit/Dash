@@ -13,7 +13,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.longOrNull
 
 @Serializable
 enum class WireDocument {
@@ -386,7 +385,12 @@ private fun validateGatewayIdentity(value: JsonElement) {
 private fun validateWsTicketResponse(value: JsonElement) {
   val raw = value.objectFor("WsTicketResponse")
   raw.shape(setOf("ticket", "expiresAt"))
-  require(raw.requiredString("ticket").length >= 32)
+  WireRules.requireCodePointLength(
+    raw.requiredString("ticket"),
+    32,
+    Int.MAX_VALUE,
+    "WsTicketResponse.ticket",
+  )
   WireRules.requireRfc3339(raw.requiredString("expiresAt"), "WsTicketResponse.expiresAt")
 }
 
@@ -803,11 +807,21 @@ private fun validateMobileClientLocation(value: JsonElement) {
     required = setOf("timezone", "utcOffsetMinutes", "locale"),
     optional = setOf("region", "precise"),
   )
-  require(raw.requiredString("timezone").length in 1..200)
+  WireRules.requireCodePointLength(
+    raw.requiredString("timezone"),
+    1,
+    200,
+    "MobileClientLocation.timezone",
+  )
   require(raw.requiredLong("utcOffsetMinutes") in -840..840)
-  require(raw.requiredString("locale").length in 1..200)
+  WireRules.requireCodePointLength(
+    raw.requiredString("locale"),
+    1,
+    200,
+    "MobileClientLocation.locale",
+  )
   raw.optionalNonNull("region")?.stringFor("MobileClientLocation.region")?.let {
-    require(it.length == 2)
+    WireRules.requireCodePointLength(it, 2, 2, "MobileClientLocation.region")
   }
   raw.optionalNonNull("precise")?.let(::validateMobilePreciseLocation)
 }
@@ -823,7 +837,7 @@ private fun validateMobilePreciseLocation(value: JsonElement) {
   require(raw.requiredDouble("accuracyMeters") >= 0.0)
   WireRules.requireRfc3339(raw.requiredString("capturedAt"), "MobilePreciseLocation.capturedAt")
   raw.optionalNonNull("place")?.stringFor("MobilePreciseLocation.place")?.let {
-    require(it.length <= 200)
+    WireRules.requireCodePointLength(it, 0, 200, "MobilePreciseLocation.place")
   }
 }
 
@@ -1039,7 +1053,7 @@ private fun JsonElement.stringFor(context: String): String =
     ?: throw IllegalArgumentException("$context must be a string")
 
 private fun JsonElement.longFor(context: String): Long =
-  (this as? JsonPrimitive)?.takeUnless(JsonPrimitive::isString)?.longOrNull
+  (this as? JsonPrimitive)?.integralLongOrNull()
     ?: throw IllegalArgumentException("$context must be an integer")
 
 private fun JsonElement.doubleFor(context: String): Double =

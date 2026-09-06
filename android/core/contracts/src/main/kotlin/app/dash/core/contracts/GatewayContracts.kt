@@ -1,7 +1,10 @@
+@file:UseSerializers(JsonIntegralIntSerializer::class, JsonIntegralLongSerializer::class)
+
 package app.dash.core.contracts
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.UseSerializers
 import kotlinx.serialization.json.JsonObject
 
 @Serializable

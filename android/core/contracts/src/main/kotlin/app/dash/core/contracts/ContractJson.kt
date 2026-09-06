@@ -1,17 +1,23 @@
 package app.dash.core.contracts
 
+import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.longOrNull
 
 object ContractJson {
   val strict = Json {
@@ -24,13 +30,57 @@ object ContractJson {
   }
 }
 
+internal fun JsonPrimitive.integralLongOrNull(): Long? {
+  if (isString) return null
+  return try {
+    BigDecimal(content).longValueExact()
+  } catch (_: NumberFormatException) {
+    null
+  } catch (_: ArithmeticException) {
+    null
+  }
+}
+
+internal object JsonIntegralLongSerializer : KSerializer<Long> {
+  override val descriptor = PrimitiveSerialDescriptor("JsonIntegralLong", PrimitiveKind.LONG)
+
+  override fun deserialize(decoder: Decoder): Long {
+    if (decoder !is JsonDecoder) return decoder.decodeLong()
+    val primitive = decoder.decodeJsonElement() as? JsonPrimitive
+    return primitive?.integralLongOrNull()
+      ?: throw SerializationException("expected an integral JSON number in Long range")
+  }
+
+  override fun serialize(encoder: Encoder, value: Long) = encoder.encodeLong(value)
+}
+
+internal object JsonIntegralIntSerializer : KSerializer<Int> {
+  override val descriptor = PrimitiveSerialDescriptor("JsonIntegralInt", PrimitiveKind.INT)
+
+  override fun deserialize(decoder: Decoder): Int {
+    if (decoder !is JsonDecoder) return decoder.decodeInt()
+    val primitive = decoder.decodeJsonElement() as? JsonPrimitive
+    val value = primitive?.integralLongOrNull()
+    if (value == null || value !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) {
+      throw SerializationException("expected an integral JSON number in Int range")
+    }
+    return value.toInt()
+  }
+
+  override fun serialize(encoder: Encoder, value: Int) = encoder.encodeInt(value)
+}
+
 object WireRules {
   private val uuid = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-  private val modelIdentifier = Regex("^[^/\\s]+/[^\\s]+$")
+  private val modelIdentifier = Regex("^[^/]+/.+$")
+  private val ecmaScriptWhitespace = Regex(
+    "[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]",
+  )
   private val rfc3339 = Regex(
     "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$",
     RegexOption.IGNORE_CASE,
   )
+  private val isoDate = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
   private val memoryTypes = setOf("user", "feedback", "project", "reference")
   private val memorySources = setOf("agent", "sweep", "user", "import")
   private val apiErrorCodes = setOf(
@@ -97,6 +147,18 @@ object WireRules {
     require(it.isNotBlank()) { "$field must be nonblank" }
   }
 
+  fun requireCodePointLength(
+    value: String,
+    minimum: Int,
+    maximum: Int,
+    field: String,
+  ): String = value.also {
+    val length = it.codePointCount(0, it.length)
+    require(length in minimum..maximum) {
+      "$field must contain between $minimum and $maximum Unicode code points"
+    }
+  }
+
   fun requireUuid(value: String, field: String): String = value.also {
     require(uuid.matches(it)) { "$field must be a UUID" }
   }
@@ -119,6 +181,7 @@ object WireRules {
   }
 
   fun requireIsoDate(value: String, field: String): String = value.also {
+    require(isoDate.matches(it)) { "$field must be an ISO date" }
     try {
       LocalDate.parse(it)
     } catch (_: DateTimeParseException) {
@@ -127,7 +190,13 @@ object WireRules {
   }
 
   fun requireModelIdentifier(value: String, field: String): String = value.also {
+    requireCodePointLength(it, 3, Int.MAX_VALUE, field)
+    requireNoEcmaScriptWhitespace(it, field)
     require(modelIdentifier.matches(it)) { "$field must be provider/model" }
+  }
+
+  fun requireNoEcmaScriptWhitespace(value: String, field: String): String = value.also {
+    require(!ecmaScriptWhitespace.containsMatchIn(it)) { "$field must not contain whitespace" }
   }
 
   fun requireMemoryType(value: String, field: String): String = value.also {
@@ -244,13 +313,13 @@ object WireRules {
 
   private fun JsonObject.requiredEventInteger(field: String): Long =
     get(field)?.takeUnless { it === JsonNull }?.let { value ->
-      (value as? JsonPrimitive)?.takeUnless(JsonPrimitive::isString)?.longOrNull
+      (value as? JsonPrimitive)?.integralLongOrNull()
     } ?: throw SerializationException("AgentEvent requires integer $field")
 
   private fun JsonObject.optionalEventInteger(field: String) {
     val value = get(field) ?: return
     if (value === JsonNull) return
-    if (value !is JsonPrimitive || value.isString || value.longOrNull == null) {
+    if (value !is JsonPrimitive || value.integralLongOrNull() == null) {
       throw SerializationException("AgentEvent $field must be an integer")
     }
   }

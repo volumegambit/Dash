@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -112,6 +113,509 @@ class ContractManifestConformanceTest {
     assertFalse(validatorMethods.any { method ->
       method.parameterTypes.any { it == String::class.java }
     })
+  }
+
+  @Test
+  fun integralJsonNumberLexemesMatchSchemaIntegers() {
+    val health = decodeJson(
+      WireContracts.MobileHealth,
+      """{"status":"healthy","startedAt":"2026-01-01T00:00:00Z","pid":1.0,"agents":0e0,"channels":0.000e3,"apiVersion":1e0,"capabilities":[]}""",
+    )
+    assertEquals(1L, health.pid)
+    assertEquals(0L, health.agents)
+    assertEquals(0L, health.channels)
+    assertEquals(1, health.apiVersion)
+
+    val resume = decodeJson(
+      WireContracts.ChatResume,
+      """{"type":"resume","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","agentId":"a","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","sinceSeq":1e0}""",
+    ) as MobileWsClientFrame.Resume
+    assertEquals(1L, resume.value.sinceSeq)
+
+    val canonicalEvent = parseJson(
+      """{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","seq":1.0,"event":{"type":"response","content":"ok","usage":{"inputTokens":1e0,"outputTokens":2.0}}}""",
+    )
+    ContractAssertions.assertValid(WireDocument.ChatWs, "ChatEvent", canonicalEvent)
+
+    ContractAssertions.assertValid(
+      WireDocument.OpenApi,
+      "PairingPayload",
+      parseJson(
+        """{"v":3e0,"host":"192.168.1.50","secure":true,"mgmtToken":"token","chatToken":"token","mgmtPort":9.4e3,"chatPort":9400.0,"tlsCertificateSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}""",
+      ),
+    )
+
+    listOf("1.5", "9223372036854775808", "-9223372036854775809").forEach { invalid ->
+      assertContractRejected(
+        WireContracts.ChatResume,
+        """{"type":"resume","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","agentId":"a","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","sinceSeq":$invalid}""",
+      )
+      assertThrows(invalid, IllegalArgumentException::class.java) {
+        ContractAssertions.assertValid(
+          WireDocument.ChatWs,
+          "ChatEvent",
+          parseJson(
+            """{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","seq":1,"event":{"type":"response","content":"ok","usage":{"inputTokens":$invalid,"outputTokens":2}}}""",
+          ),
+        )
+      }
+    }
+  }
+
+  @Test
+  fun ecmascriptWhitespaceMatchesAjvPatterns() {
+    val models = FixtureLoader.value("models-list.json").jsonObject
+    val firstModel = models.getValue("models").jsonArray.first().jsonObject
+    val pairing = FixtureLoader.value("pairing-lan-v3.json").jsonObject
+
+    listOf('\u00a0', '\u2003').forEach { whitespace ->
+      val invalidModels = JsonObject(
+        models + (
+          "models" to JsonArray(
+            listOf(JsonObject(firstModel + ("value" to JsonPrimitive("provider/${whitespace}model")))),
+          )
+        ),
+      )
+      assertContractRejected(WireContracts.MobileModelsResponse, invalidModels)
+
+      assertThrows(IllegalArgumentException::class.java) {
+        ContractAssertions.assertValid(
+          WireDocument.OpenApi,
+          "PairingPayload",
+          JsonObject(pairing + ("host" to JsonPrimitive("dash${whitespace}gateway"))),
+        )
+      }
+    }
+  }
+
+  @Test
+  fun canonicalAgentEventScanningStopsAtSchemaOpenSubtrees() {
+    val nestedMalformedEvent = parseJson(
+      """{"type":"event","event":{"type":"text_delta"}}""",
+    )
+    val pairing = FixtureLoader.value("pairing-lan-v3.json").jsonObject
+    ContractAssertions.assertValid(
+      WireDocument.OpenApi,
+      "PairingPayload",
+      JsonObject(pairing + ("futureMetadata" to nestedMalformedEvent)),
+    )
+    ContractAssertions.assertValid(
+      WireDocument.OpenApi,
+      "MobileApiError",
+      parseJson(
+        """{"code":"validation_failed","error":"bad","retryable":false,"details":{"nested":$nestedMalformedEvent}}""",
+      ),
+    )
+    ContractAssertions.assertValid(
+      WireDocument.ChatWs,
+      "ChatEvent",
+      parseJson(
+        """{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","seq":1,"event":{"type":"future_event","payload":$nestedMalformedEvent}}""",
+      ),
+    )
+
+    val futureContent = parseJson(
+      syntheticContentPage(
+        """{"type":"future_card","payload":$nestedMalformedEvent}""",
+      ),
+    )
+    val futureContentFailure = assertThrows(IllegalArgumentException::class.java) {
+      ContractAssertions.assertValid(
+        WireDocument.OpenApi,
+        "ConversationMessagePage",
+        futureContent,
+      )
+    }
+    assertEquals("unknown canonical conversation content", futureContentFailure.message)
+
+    val malformedKnownEvent = """{"type":"text_delta","text":"ok","extra":true}"""
+    val canonicalChat =
+      """{"type":"event","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","seq":1,"event":$malformedKnownEvent}"""
+    val canonicalReplay =
+      """{"entries":[{"seq":1,"msgId":"m","agentId":"a","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","timestamp":"2026-01-01T00:00:00Z","payload":{"type":"event","event":$malformedKnownEvent}}]}"""
+    val canonicalConversation = syntheticContentPage(
+      """{"type":"assistant","events":[$malformedKnownEvent]}""",
+    )
+    listOf(
+      Triple(WireDocument.ChatWs, "ChatEvent", parseJson(canonicalChat)),
+      Triple(WireDocument.OpenApi, "ReplayPage", parseJson(canonicalReplay)),
+      Triple(
+        WireDocument.OpenApi,
+        "ConversationMessagePage",
+        parseJson(canonicalConversation),
+      ),
+    ).forEach { (document, schema, raw) ->
+      assertThrows(schema, IllegalArgumentException::class.java) {
+        ContractAssertions.assertValid(document, schema, raw)
+      }
+    }
+  }
+
+  @Test
+  fun schemaStringLengthsUseUnicodeCodePoints() {
+    val supplementary = "\ud83d\ude80"
+    val thirtyOneCodePointTicket = "a".repeat(30) + supplementary
+    assertContractRejected(
+      WireContracts.WsTicketResponse,
+      """{"ticket":"$thirtyOneCodePointTicket","expiresAt":"2026-01-01T00:00:00Z"}""",
+    )
+    val thirtyTwoCodePointTicket = "a".repeat(31) + supplementary
+    assertEquals(
+      thirtyTwoCodePointTicket,
+      decodeJson(
+        WireContracts.WsTicketResponse,
+        """{"ticket":"$thirtyTwoCodePointTicket","expiresAt":"2026-01-01T00:00:00Z"}""",
+      ).ticket,
+    )
+
+    val twoCodePointRegion = supplementary.repeat(2)
+    val twoHundredCodePointText = "a".repeat(199) + supplementary
+    val validLocation =
+      """{"type":"message","id":"018f0f4a-5c42-7a8b-9c01-2234567890a1","agentId":"a","channelId":"android","conversationId":"018f0f4a-5c42-7a8b-9c01-2234567890a2","text":"x","resumable":true,"location":{"timezone":"$twoHundredCodePointText","utcOffsetMinutes":0,"locale":"$twoHundredCodePointText","region":"$twoCodePointRegion","precise":{"latitude":0,"longitude":0,"accuracyMeters":0,"capturedAt":"2026-01-01T00:00:00Z","place":"$twoHundredCodePointText"}}}"""
+    WireContractValidator.decodeRuntime(WireContracts.ChatSend, parseJson(validLocation))
+
+    val oneCodePointRegion = validLocation.replace(
+      "\"region\":\"$twoCodePointRegion\"",
+      "\"region\":\"$supplementary\"",
+    )
+    assertContractRejected(WireContracts.ChatSend, oneCodePointRegion)
+  }
+
+  @Test
+  fun isoDatesRequireExactBareYearMonthDayForm() {
+    val memory = FixtureLoader.value("memory-list.json").jsonArray.first().jsonObject
+    listOf("+10000-01-01", "2026-1-01", "2026-01-1", "2026-01-01Z").forEach { invalid ->
+      assertContractRejected(
+        WireContracts.MemoryInfoList,
+        JsonArray(listOf(JsonObject(memory + ("createdAt" to JsonPrimitive(invalid))))),
+      )
+    }
+
+    val models = FixtureLoader.value("models-list.json").jsonObject
+    assertContractRejected(
+      WireContracts.MobileModelsResponse,
+      JsonObject(models + ("supportedModelsReviewedAt" to JsonPrimitive("+10000-01-01"))),
+    )
+  }
+
+  @Test
+  fun wireContractDescriptorRegistryIsExactlyTyped() {
+    val expected = listOf(
+      descriptor<MobileHealth>("MobileHealth", WireDocument.OpenApi, WireContracts.MobileHealth),
+      descriptor<GatewayIdentity>(
+        "GatewayIdentity",
+        WireDocument.OpenApi,
+        WireContracts.GatewayIdentity,
+      ),
+      descriptor<WsTicketResponse>(
+        "WsTicketResponse",
+        WireDocument.OpenApi,
+        WireContracts.WsTicketResponse,
+      ),
+      descriptor<MobileAgent>("MobileAgent", WireDocument.OpenApi, WireContracts.MobileAgent),
+      descriptor<List<MobileAgent>>(
+        "MobileAgentList",
+        WireDocument.OpenApi,
+        WireContracts.MobileAgentList,
+      ),
+      descriptor<CreateMobileAgentRequest>(
+        "CreateMobileAgentRequest",
+        WireDocument.OpenApi,
+        WireContracts.CreateMobileAgentRequest,
+      ),
+      descriptor<UpdateMobileAgentRequest>(
+        "UpdateMobileAgentRequest",
+        WireDocument.OpenApi,
+        WireContracts.UpdateMobileAgentRequest,
+      ),
+      descriptor<MobileActionResponse>(
+        "MobileActionResponse",
+        WireDocument.OpenApi,
+        WireContracts.MobileActionResponse,
+      ),
+      descriptor<List<MobileSkill>>(
+        "MobileSkillList",
+        WireDocument.OpenApi,
+        WireContracts.MobileSkillList,
+      ),
+      descriptor<List<MobileMemoryInfo>>(
+        "MemoryInfoList",
+        WireDocument.OpenApi,
+        WireContracts.MemoryInfoList,
+      ),
+      descriptor<MobileMemoryRecord>(
+        "MemoryRecord",
+        WireDocument.OpenApi,
+        WireContracts.MemoryRecord,
+      ),
+      descriptor<MobileMemoryDeleteResponse>(
+        "MemoryDeleteResponse",
+        WireDocument.OpenApi,
+        WireContracts.MemoryDeleteResponse,
+      ),
+      descriptor<MemoryNotFoundError>(
+        "MemoryNotFoundError",
+        WireDocument.OpenApi,
+        WireContracts.MemoryNotFoundError,
+      ),
+      descriptor<MobileModelsResponse>(
+        "MobileModelsResponse",
+        WireDocument.OpenApi,
+        WireContracts.MobileModelsResponse,
+      ),
+      descriptor<MobileApiError>(
+        "MobileApiError",
+        WireDocument.OpenApi,
+        WireContracts.MobileApiError,
+      ),
+      descriptor<MobileApiError>(
+        "ConversationBusyError",
+        WireDocument.OpenApi,
+        WireContracts.ConversationBusyError,
+      ),
+      descriptor<ConversationDefaults>(
+        "ConversationDefaults",
+        WireDocument.OpenApi,
+        WireContracts.ConversationDefaults,
+      ),
+      descriptor<ConversationSummary>(
+        "ConversationSummary",
+        WireDocument.OpenApi,
+        WireContracts.ConversationSummary,
+      ),
+      descriptor<ConversationPage>(
+        "ConversationPage",
+        WireDocument.OpenApi,
+        WireContracts.ConversationPage,
+      ),
+      descriptor<ConversationMessagePage>(
+        "ConversationMessagePage",
+        WireDocument.OpenApi,
+        WireContracts.ConversationMessagePage,
+      ),
+      descriptor<ConversationCreateRequest>(
+        "ConversationCreateRequest",
+        WireDocument.OpenApi,
+        WireContracts.ConversationCreateRequest,
+      ),
+      descriptor<ConversationPatchRequest>(
+        "ConversationPatchRequest",
+        WireDocument.OpenApi,
+        WireContracts.ConversationPatchRequest,
+      ),
+      descriptor<MobileApiError>(
+        "RevisionConflictError",
+        WireDocument.OpenApi,
+        WireContracts.RevisionConflictError,
+      ),
+      descriptor<ConversationContent>(
+        "ConversationContent",
+        WireDocument.Internal,
+        WireContracts.ConversationContent,
+      ),
+      descriptor<MobileWsClientFrame>("ChatSend", WireDocument.ChatWs, WireContracts.ChatSend),
+      descriptor<MobileWsClientFrame>("ChatResume", WireDocument.ChatWs, WireContracts.ChatResume),
+      descriptor<MobileWsClientFrame>("ChatAnswer", WireDocument.ChatWs, WireContracts.ChatAnswer),
+      descriptor<MobileWsClientFrame>("ChatCancel", WireDocument.ChatWs, WireContracts.ChatCancel),
+      descriptor<MobileWsClientFrame>(
+        "MobileWsClientFrame",
+        WireDocument.ChatWs,
+        WireContracts.MobileWsClientFrame,
+      ),
+      descriptor<MobileWsServerFrame>(
+        "ChatAccepted",
+        WireDocument.ChatWs,
+        WireContracts.ChatAccepted,
+      ),
+      descriptor<MobileWsServerFrame>("ChatEvent", WireDocument.ChatWs, WireContracts.ChatEvent),
+      descriptor<MobileWsServerFrame>("ChatDone", WireDocument.ChatWs, WireContracts.ChatDone),
+      descriptor<MobileWsServerFrame>("ChatError", WireDocument.ChatWs, WireContracts.ChatError),
+      descriptor<MobileWsServerFrame>(
+        "MobileWsServerFrame",
+        WireDocument.ChatWs,
+        WireContracts.MobileWsServerFrame,
+      ),
+      descriptor<ReplayPage>("ReplayPage", WireDocument.OpenApi, WireContracts.ReplayPage),
+      descriptor<GatewayInvalidation>(
+        "ConversationChangedEvent",
+        WireDocument.OpenApi,
+        WireContracts.ConversationChangedEvent,
+      ),
+      descriptor<GatewayInvalidation>(
+        "ConversationDeletedEvent",
+        WireDocument.OpenApi,
+        WireContracts.ConversationDeletedEvent,
+      ),
+      descriptor<JsonObject>(
+        "StoredGatewayEventPayload",
+        WireDocument.Internal,
+        WireContracts.StoredGatewayEventPayload,
+      ),
+      descriptor<MobileAgentConfig>(
+        "MobileAgentConfig",
+        WireDocument.Internal,
+        WireContracts.MobileAgentConfig,
+      ),
+    )
+
+    val publicDescriptors = WireContracts::class.java.methods
+      .filter { method ->
+        method.declaringClass == WireContracts::class.java &&
+          method.parameterCount == 0 &&
+          WireContract::class.java.isAssignableFrom(method.returnType)
+      }
+      .associate { method -> method.name.removePrefix("get") to method.invoke(WireContracts) }
+    assertEquals(expected.mapTo(mutableSetOf(), DescriptorExpectation::property), publicDescriptors.keys)
+    expected.forEach { item ->
+      assertTrue(item.contract === publicDescriptors.getValue(item.property))
+      assertEquals(item.document, item.contract.document)
+      assertEquals(item.property, item.contract.schema)
+    }
+  }
+
+  @Test
+  fun everyOptionalNonNullFieldRejectsExplicitNull() {
+    val cases = mutableListOf<NullMutationCase>()
+    fun add(contract: WireContract<*>, base: JsonElement, vararg paths: String) {
+      paths.forEach { path ->
+        cases += NullMutationCase(contract, base, path.split('.'))
+      }
+    }
+
+    val agent = parseJson(
+      """{"id":"agent","name":"Agent","config":{"name":"Agent","model":"provider/model","systemPrompt":"","fallbackModels":["provider/model"],"tools":["tool"],"skills":{"paths":["path"],"urls":["https://example.test"]},"workspace":"workspace","maxTokens":1,"mcpServers":["server"],"plugins":["plugin"],"providers":["provider"],"swarm":{"enabled":true,"maxConcurrentWorkers":1,"maxWorkersPerRun":1,"maxSteersPerWorker":0,"maxRunSeconds":1,"allowedModels":["provider/model"]}},"status":"active","registeredAt":"2026-01-01T00:00:00Z"}""",
+    )
+    add(
+      WireContracts.MobileAgent,
+      agent,
+      "config.fallbackModels",
+      "config.tools",
+      "config.skills",
+      "config.workspace",
+      "config.maxTokens",
+      "config.mcpServers",
+      "config.plugins",
+      "config.providers",
+      "config.swarm",
+      "config.skills.paths",
+      "config.skills.urls",
+      "config.swarm.enabled",
+      "config.swarm.maxConcurrentWorkers",
+      "config.swarm.maxWorkersPerRun",
+      "config.swarm.maxSteersPerWorker",
+      "config.swarm.maxRunSeconds",
+      "config.swarm.allowedModels",
+    )
+    add(
+      WireContracts.MobileSkillList,
+      parseJson(
+        """[{"name":"skill","description":"description","trigger":"trigger","source":"managed","content":"content"}]""",
+      ),
+      "0.trigger",
+      "0.content",
+    )
+    add(
+      WireContracts.UpdateMobileAgentRequest,
+      parseJson("""{"model":"provider/model","systemPrompt":"prompt"}"""),
+      "model",
+      "systemPrompt",
+    )
+    add(
+      WireContracts.ConversationSummary,
+      JsonObject(
+        FixtureLoader.value("conversation-summary.json").jsonObject +
+          ("deletedAt" to JsonPrimitive("2026-01-02T00:00:00Z")),
+      ),
+      "deletedAt",
+    )
+    add(
+      WireContracts.ConversationCreateRequest,
+      FixtureLoader.value("conversation-create.json"),
+      "title",
+      "owningIssueId",
+      "projectId",
+    )
+    add(
+      WireContracts.ConversationPatchRequest,
+      parseJson("""{"title":"title"}"""),
+      "title",
+    )
+    add(
+      WireContracts.ConversationContent,
+      parseJson("""{"type":"user","text":"text","images":[]}"""),
+      "images",
+    )
+    add(
+      WireContracts.MobileApiError,
+      parseJson(
+        """{"code":"validation_failed","error":"bad","retryable":false,"details":{}}""",
+      ),
+      "details",
+    )
+    add(
+      WireContracts.StoredGatewayEventPayload,
+      parseJson("""{"type":"done","outcome":"completed"}"""),
+      "outcome",
+    )
+    add(
+      WireContracts.StoredGatewayEventPayload,
+      parseJson("""{"type":"error","error":"bad","code":"not_found","retryable":false}"""),
+      "code",
+      "retryable",
+    )
+
+    val message = FixtureLoader.value("chat-send-with-location.json")
+    add(
+      WireContracts.ChatSend,
+      message,
+      "location.precise.place",
+      "location.region",
+      "location.precise",
+      "location",
+      "images",
+      "streamingBehavior",
+    )
+    val error = FixtureLoader.value("chat-error.json")
+    add(WireContracts.ChatError, error, "code", "retryable", "activeTurnId")
+    add(
+      WireContracts.MobileWsClientFrame,
+      message,
+      "location",
+      "images",
+      "streamingBehavior",
+      "resumable",
+    )
+    add(
+      WireContracts.MobileWsServerFrame,
+      FixtureLoader.value("chat-event.json"),
+      "conversationId",
+      "seq",
+    )
+    add(
+      WireContracts.MobileWsServerFrame,
+      FixtureLoader.value("chat-done.json"),
+      "conversationId",
+      "seq",
+      "outcome",
+    )
+    add(
+      WireContracts.MobileWsServerFrame,
+      error,
+      "conversationId",
+      "seq",
+      "code",
+      "retryable",
+      "activeTurnId",
+    )
+
+    assertEquals(54, cases.size)
+    cases.forEach { case ->
+      assertContractRejectedErased(
+        case.contract,
+        replaceAtPath(case.base, case.path, JsonNull),
+        "${case.contract.schema}.${case.path.joinToString(".")}",
+      )
+    }
   }
 
   @Test
@@ -840,6 +1344,57 @@ class ContractManifestConformanceTest {
     assertThrows(IllegalArgumentException::class.java) {
       ContractAssertions.assertValid(WireDocument.OpenApi, "FutureSchema", JsonObject(emptyMap()))
     }
+  }
+}
+
+private data class DescriptorExpectation(
+  val property: String,
+  val document: WireDocument,
+  val contract: WireContract<*>,
+)
+
+private fun <T> descriptor(
+  property: String,
+  document: WireDocument,
+  contract: WireContract<T>,
+): DescriptorExpectation = DescriptorExpectation(property, document, contract)
+
+private data class NullMutationCase(
+  val contract: WireContract<*>,
+  val base: JsonElement,
+  val path: List<String>,
+)
+
+private fun replaceAtPath(
+  value: JsonElement,
+  path: List<String>,
+  replacement: JsonElement,
+): JsonElement {
+  if (path.isEmpty()) return replacement
+  val segment = path.first()
+  val remaining = path.drop(1)
+  return when (value) {
+    is JsonObject -> JsonObject(
+      value + (segment to replaceAtPath(value.getValue(segment), remaining, replacement)),
+    )
+    is JsonArray -> {
+      val index = segment.toInt()
+      JsonArray(value.mapIndexed { itemIndex, item ->
+        if (itemIndex == index) replaceAtPath(item, remaining, replacement) else item
+      })
+    }
+    else -> throw IllegalArgumentException("cannot descend through $segment")
+  }
+}
+
+@Suppress("UNCHECKED_CAST")
+private fun assertContractRejectedErased(
+  contract: WireContract<*>,
+  value: JsonElement,
+  message: String,
+) {
+  assertThrows(message, IllegalArgumentException::class.java) {
+    WireContractValidator.decodeRuntime(contract as WireContract<Any?>, value)
   }
 }
 

@@ -6,16 +6,15 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 object ContractAssertions {
-  private val pairingHost = Regex("""^(?![A-Za-z][A-Za-z0-9+.-]*:)[^\s/\\?#@%]+$""")
+  private val pairingHost = Regex("""^(?![A-Za-z][A-Za-z0-9+.-]*:)[^/\\?#@%]+$""")
   private val certificateSha256 = Regex("""^[A-Fa-f0-9]{64}$""")
 
   fun assertValid(document: WireDocument, schema: String, value: JsonElement) {
-    assertCanonicalAgentEvents(value)
+    assertCanonicalAgentEvents(document, schema, value)
     when (document to schema) {
       WireDocument.OpenApi to "PairingPayload" -> assertPairingFixture(value)
       WireDocument.OpenApi to "MobileHealth" -> decode(WireContracts.MobileHealth, value)
@@ -117,18 +116,19 @@ object ContractAssertions {
   private fun assertPairingFixture(value: JsonElement) {
     val raw = value as? JsonObject
       ?: throw IllegalArgumentException("PairingPayload must be an object")
-    val version = raw.requiredInt("v")
+    val version = raw.requiredLong("v")
     val host = raw.requiredString("host")
     val managementToken = raw.requiredString("mgmtToken").trim()
     val chatToken = raw.requiredString("chatToken").trim()
     require(raw.requiredBoolean("secure"))
+    WireRules.requireNoEcmaScriptWhitespace(host, "PairingPayload.host")
     require(pairingHost.matches(host))
     require(managementToken.isNotEmpty() && managementToken == chatToken)
     when (version) {
-      2 -> require(raw.requiredString("relayCredential").isNotBlank())
-      3 -> {
-        val managementPort = raw.requiredInt("mgmtPort")
-        val chatPort = raw.requiredInt("chatPort")
+      2L -> require(raw.requiredString("relayCredential").isNotBlank())
+      3L -> {
+        val managementPort = raw.requiredLong("mgmtPort")
+        val chatPort = raw.requiredLong("chatPort")
         require(managementPort in 1..65_535 && chatPort == managementPort)
         require(certificateSha256.matches(raw.requiredString("tlsCertificateSha256")))
       }
@@ -136,20 +136,45 @@ object ContractAssertions {
     }
   }
 
-  private fun assertCanonicalAgentEvents(value: JsonElement) {
-    when (value) {
-      is JsonArray -> value.forEach(::assertCanonicalAgentEvents)
-      is JsonObject -> {
-        val type = (value["type"] as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
-        if (type == "event") value["event"]?.let(::assertCanonicalAgentEvent)
-        if (type == "assistant") {
-          (value["events"] as? JsonArray)?.forEach(::assertCanonicalAgentEvent)
+  private fun assertCanonicalAgentEvents(
+    document: WireDocument,
+    schema: String,
+    value: JsonElement,
+  ) {
+    when (document to schema) {
+      WireDocument.OpenApi to "ConversationMessagePage" -> {
+        val items = (value as? JsonObject)?.get("items") as? JsonArray ?: return
+        items.forEach { item ->
+          val content = (item as? JsonObject)?.get("content") as? JsonObject ?: return@forEach
+          val type = content.stringDiscriminator() ?: return@forEach
+          if (type == "assistant") {
+            (content["events"] as? JsonArray)?.forEach(::assertCanonicalAgentEvent)
+          }
         }
-        value.values.forEach(::assertCanonicalAgentEvents)
       }
-      else -> Unit
+      WireDocument.OpenApi to "ReplayPage" -> {
+        val entries = (value as? JsonObject)?.get("entries") as? JsonArray ?: return
+        entries.forEach { entry ->
+          val payload = (entry as? JsonObject)?.get("payload") as? JsonObject ?: return@forEach
+          if (payload.stringDiscriminator() == "event") {
+            payload["event"]?.let(::assertCanonicalAgentEvent)
+          }
+        }
+      }
+      WireDocument.ChatWs to "ChatEvent",
+      WireDocument.ChatWs to "MobileWsServerFrame",
+      WireDocument.ChatWs to "MobileWsFrame",
+      -> {
+        val frame = value as? JsonObject ?: return
+        if (frame.stringDiscriminator() == "event") {
+          frame["event"]?.let(::assertCanonicalAgentEvent)
+        }
+      }
     }
   }
+
+  private fun JsonObject.stringDiscriminator(): String? =
+    (get("type") as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
 
   private fun assertCanonicalAgentEvent(value: JsonElement) {
     val event = value as? JsonObject ?: return
@@ -172,8 +197,8 @@ object ContractAssertions {
         val usage = event["usage"] as? JsonObject
           ?: throw IllegalArgumentException("response.usage must be an object")
         require(usage.keys == setOf("inputTokens", "outputTokens"))
-        usage.requiredInt("inputTokens")
-        usage.requiredInt("outputTokens")
+        usage.requiredLong("inputTokens")
+        usage.requiredLong("outputTokens")
       }
     }
   }
@@ -184,10 +209,9 @@ object ContractAssertions {
       ?.content
       ?: throw IllegalArgumentException("$field must be a string")
 
-  private fun JsonObject.requiredInt(field: String): Int =
+  private fun JsonObject.requiredLong(field: String): Long =
     (get(field) as? JsonPrimitive)
-      ?.takeUnless(JsonPrimitive::isString)
-      ?.intOrNull
+      ?.integralLongOrNull()
       ?: throw IllegalArgumentException("$field must be an integer")
 
   private fun JsonObject.requiredBoolean(field: String): Boolean =

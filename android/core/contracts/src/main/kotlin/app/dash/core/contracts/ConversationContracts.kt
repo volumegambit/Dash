@@ -1,9 +1,12 @@
+@file:UseSerializers(JsonIntegralLongSerializer::class)
+
 package app.dash.core.contracts
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.UseSerializers
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.buildClassSerialDescriptor
