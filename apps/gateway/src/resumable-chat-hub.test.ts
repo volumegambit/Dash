@@ -1667,6 +1667,74 @@ describe('ResumableChatHub', () => {
     expect(harness.chat).not.toHaveBeenCalled();
   });
 
+  it.each(['accepted', 'event'] as const)(
+    'does not duplicate a v1 %s frame when its sink cancels reentrantly',
+    async (trigger) => {
+      const conversation = createConversation();
+      const scripted = register(conversation.id);
+      let cancelling: Promise<void> | undefined;
+      let requested = false;
+      const sink = makeSink((frame) => {
+        if (frame.type !== trigger || requested) return;
+        requested = true;
+        cancelling = hub.cancel('turn-01', sink);
+      });
+
+      hub.start(sendFrame(conversation), sink);
+      if (trigger === 'event') {
+        scripted.emit({ type: 'text_delta', text: 'Cancel from this event' });
+      }
+      await vi.waitFor(() => expect(cancelling).toBeDefined());
+      await cancelling;
+
+      expect(sink.frames.filter((frame) => frame.type === trigger)).toHaveLength(1);
+      expect(sink.frames.filter((frame) => frame.type === 'done')).toEqual([
+        expect.objectContaining({ outcome: 'cancelled' }),
+      ]);
+      scripted.finish();
+    },
+  );
+
+  it('snapshots v1 subscribers before a reentrant retry attaches another sink', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const frame = sendFrame(conversation);
+    const retrying = makeSink();
+    let retried = false;
+    const original = makeSink((serverFrame) => {
+      if (serverFrame.type !== 'event' || retried) return;
+      retried = true;
+      hub.start(frame, retrying);
+    });
+    hub.start(frame, original);
+
+    scripted.emit({ type: 'text_delta', text: 'Attach during this broadcast' });
+    await waitForFrames(original, 2);
+
+    expect(retrying.frames.filter((serverFrame) => serverFrame.type === 'event')).toEqual([
+      expect.objectContaining({ seq: 2 }),
+    ]);
+    scripted.finish();
+  });
+
+  it('skips a snapshotted v1 sink detached by an earlier subscriber callback', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const frame = sendFrame(conversation);
+    const detached = makeSink();
+    const original = makeSink((serverFrame) => {
+      if (serverFrame.type === 'event') hub.detach(detached);
+    });
+    hub.start(frame, original);
+    hub.start(frame, detached);
+
+    scripted.emit({ type: 'text_delta', text: 'Detach before the second send' });
+    await waitForFrames(original, 2);
+
+    expect(detached.frames.filter((serverFrame) => serverFrame.type === 'event')).toEqual([]);
+    scripted.finish();
+  });
+
   it('contains onChanged observer failures after commit', async () => {
     const conversation = createConversation();
     const scripted = register(conversation.id);
@@ -1679,6 +1747,42 @@ describe('ResumableChatHub', () => {
     expect(sink.frames).toEqual([expect.objectContaining({ type: 'accepted', seq: 1 })]);
     scripted.finish();
     await waitForFrames(sink, 2);
+  });
+
+  it('serializes persisted frames before a reentrant onChanged mutation', async () => {
+    const conversation = createConversation();
+    const first = register(conversation.id);
+    const sink = makeV2Sink();
+    hub.subscribeConversation(subscriptionFrame(conversation), sink);
+    let startSecond = false;
+    let chatCallsWhenNestedStartReturned: number | undefined;
+    onChanged.mockImplementation((summary: ConversationSummary) => {
+      if (!startSecond || summary.activeTurnId !== null) return;
+      startSecond = false;
+      hub.startV2(v2SendFrame(conversation, 'turn-second', 'Second'), sink);
+      chatCallsWhenNestedStartReturned = harness.chat.mock.calls.length;
+    });
+
+    hub.startV2(v2SendFrame(conversation, 'turn-first', 'First'), sink);
+    const second = register(conversation.id);
+    startSecond = true;
+    first.finish();
+    await vi.waitFor(() =>
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'running',
+        activeTurnId: 'turn-second',
+      }),
+    );
+
+    expect(chatCallsWhenNestedStartReturned).toBe(1);
+    expect(
+      sink.frames
+        .filter((frame) => 'v2Seq' in frame)
+        .map((frame) => `${frame.v2Seq}:${frame.type}`),
+    ).toEqual(['1:accepted', '2:done', '3:accepted']);
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalledTimes(2));
+    expect(harness.chat.mock.calls[1]?.[0]).toMatchObject({ runId: 'turn-second' });
+    second.finish();
   });
 
   it('replies to a retried v2 start only at the requester and never starts a second run', async () => {
@@ -1702,6 +1806,31 @@ describe('ResumableChatHub', () => {
       expect.objectContaining({ type: 'accepted', id: 'turn-01', v2Seq: 1 }),
     );
     expect(harness.chat).toHaveBeenCalledOnce();
+  });
+
+  it('removes a v2 subscription whose direct retry reply fails', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const original = makeV2Sink();
+    let fail = false;
+    const retrying = makeV2Sink(() => {
+      if (fail) throw new Error('socket closed');
+    });
+    hub.subscribeConversation(subscriptionFrame(conversation), original);
+    hub.startV2(v2SendFrame(conversation), original);
+    hub.subscribeConversation(
+      subscriptionFrame(conversation, 1, '10000000-0000-4000-8000-000000000002'),
+      retrying,
+    );
+    fail = true;
+
+    hub.startV2(v2SendFrame(conversation), retrying);
+    const callsAfterFailedReply = retrying.send.mock.calls.length;
+    scripted.emit({ type: 'text_delta', text: 'Only the healthy sink receives this' });
+    await waitForV2Frames(original, 3);
+
+    expect(retrying.send).toHaveBeenCalledTimes(callsAfterFailedReply);
+    scripted.finish();
   });
 
   it('scopes duplicate inherited v1 run IDs by requesting sink and conversation', async () => {

@@ -162,7 +162,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   const v2Subscriptions = new Map<string, Set<V2Subscription>>();
   const v2SubscriptionBySink = new Map<V2ConversationFrameSink, V2Subscription>();
   const pendingV2SubscriptionBySink = new Map<V2ConversationFrameSink, V2Subscription>();
-  const v2SubscriptionVersions = new Map<V2ConversationFrameSink, number>();
+  const v2SubscriptionVersions = new WeakMap<V2ConversationFrameSink, number>();
   const outboundByConversation = new Map<string, OutboundState>();
   const quiescingAgents = new Set<string>();
   let stopped = false;
@@ -249,7 +249,8 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
 
   const broadcastV1Now = (live: LiveRun, frame: MobileWsServerFrame): void => {
     const key = liveRunKey(live.agentId, live.conversationId);
-    for (const sink of live.v1Subscribers) {
+    for (const sink of [...live.v1Subscribers]) {
+      if (v1RunBySink.get(sink) !== key) continue;
       if (!sendV1(sink, frame)) removeV1Sink(sink, key);
     }
   };
@@ -289,16 +290,32 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     }
   };
 
-  const broadcastRunFrames = (live: LiveRun, persisted: PersistedRunFrames): void => {
+  const broadcastRunFramesNow = (live: LiveRun, persisted: PersistedRunFrames): void => {
     const v1Frame = frameFromV1Payload(
       live.runId,
       live.conversationId,
       persisted.v1Seq,
       persisted.v1Payload,
     );
+    broadcastV1Now(live, v1Frame);
+    broadcastV2Now(persisted.v2Frame);
+  };
+
+  const broadcastRunFrames = (live: LiveRun, persisted: PersistedRunFrames): void => {
+    queueOutbound(live.conversationId, () => broadcastRunFramesNow(live, persisted));
+  };
+
+  const publishRunTransaction = (
+    live: LiveRun,
+    persisted: PersistedRunFrames,
+    additionalV2Frames: readonly MobileV2SequencedFrame[] = [],
+    afterPublish?: () => void,
+  ): void => {
     queueOutbound(live.conversationId, () => {
-      broadcastV1Now(live, v1Frame);
-      broadcastV2Now(persisted.v2Frame);
+      notifyChanged(persisted.conversation);
+      broadcastRunFramesNow(live, persisted);
+      for (const frame of additionalV2Frames) broadcastV2Now(frame);
+      afterPublish?.();
     });
   };
 
@@ -429,11 +446,11 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     });
     live.admissionOpen = false;
     live.terminal = true;
-    notifyChanged(result.terminal.conversation);
-    broadcastRunFrames(live, result.terminal);
-    for (const transition of result.transitions) {
-      queueOutbound(live.conversationId, () => broadcastV2Now(transition.frame));
-    }
+    publishRunTransaction(
+      live,
+      result.terminal,
+      result.transitions.map((transition) => transition.frame),
+    );
   };
 
   const runLive = async (
@@ -544,26 +561,25 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     const key = liveRunKey(live.agentId, live.conversationId);
     liveRuns.set(key, live);
     if (v1Sink) attachV1Sink(live, v1Sink);
-    notifyChanged(accepted.conversation);
-    if (accepted.firstUserMessage) {
-      try {
-        options.autoTitle.schedule({
-          conversationId: live.conversationId,
-          agentId: live.agentId,
-          text: accepted.text,
-        });
-      } catch {
-        // The accepted run is already durable. A title observer cannot strand it
-        // before its frames are broadcast and provider execution begins.
+    publishRunTransaction(live, acceptedFrames(accepted), [], () => {
+      if (accepted.firstUserMessage) {
+        try {
+          options.autoTitle.schedule({
+            conversationId: live.conversationId,
+            agentId: live.agentId,
+            text: accepted.text,
+          });
+        } catch {
+          // The accepted run is already durable. A title observer cannot strand it
+          // before provider execution begins.
+        }
       }
-    }
-    broadcastRunFrames(live, acceptedFrames(accepted));
-    beginLiveRun(live, accepted, location);
+      beginLiveRun(live, accepted, location);
+    });
     return live;
   };
 
-  const cancelLive = (live: LiveRun, sink?: V1TurnFrameSink): Promise<void> => {
-    if (sink) attachV1Sink(live, sink);
+  const cancelLive = (live: LiveRun): Promise<void> => {
     live.cancelRequested = true;
     return withLiveRunLock(live, () => {
       if (live.terminal) return;
@@ -586,9 +602,10 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     v2Sink?: V2ConversationFrameSink,
   ): void => {
     assertAgentAccepting(frame.agentId);
-    if (protocol === 'v2' && v2Sink) {
-      requireV2Subscription(v2Sink, frame.conversationId, frame.agentId);
-    }
+    const v2Subscription =
+      protocol === 'v2' && v2Sink
+        ? requireV2Subscription(v2Sink, frame.conversationId, frame.agentId)
+        : undefined;
     const accepted = conversations.acceptRun({
       protocol,
       agentId: frame.agentId,
@@ -621,7 +638,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
           );
         }
       } else if (protocol === 'v2' && v2Sink) {
-        sendV2(v2Sink, accepted.v2Frame);
+        if (
+          !sendV2(v2Sink, accepted.v2Frame) &&
+          v2SubscriptionBySink.get(v2Sink) === v2Subscription &&
+          v2Subscription
+        ) {
+          removeV2Subscription(v2Subscription);
+        }
       }
       return;
     }
@@ -781,7 +804,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         }
         throw error;
       }
-      await cancelLive(live, sink);
+      await cancelLive(live);
     },
 
     async cancelV2(frame, sink) {

@@ -329,8 +329,10 @@ export async function startMobileTestHarness(
     conversations,
     agents,
     autoTitle,
-    isAgentEnabled: (agentId) =>
-      agentId === registered.id && agentRegistry.get(agentId)?.status !== 'disabled',
+    isAgentEnabled: (agentId) => {
+      const entry = agentRegistry.get(agentId);
+      return agentId === registered.id && entry !== undefined && entry.status !== 'disabled';
+    },
     onChanged: (summary) =>
       eventBus.emit({
         type: 'conversation:changed',
