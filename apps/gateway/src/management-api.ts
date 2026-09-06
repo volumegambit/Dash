@@ -216,12 +216,28 @@ function requireAgentStringArray(value: unknown, field: string): void {
   }
 }
 
+const AGENT_SKILLS_KEYS = ['paths', 'urls', 'learning', 'minToolCalls', 'approval'];
+
 function validateAgentSkills(value: unknown): void {
-  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['paths', 'urls'].includes(key))) {
-    throw new Error('skills must contain only paths and urls');
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !AGENT_SKILLS_KEYS.includes(key))) {
+    throw new Error(`skills must contain only ${AGENT_SKILLS_KEYS.join(', ')}`);
   }
   if (value.paths !== undefined) requireAgentStringArray(value.paths, 'skills.paths');
   if (value.urls !== undefined) requireAgentStringArray(value.urls, 'skills.urls');
+  if (value.learning !== undefined && !['auto', 'on', 'off'].includes(value.learning as string)) {
+    throw new Error('skills.learning must be auto, on or off');
+  }
+  if (
+    value.minToolCalls !== undefined &&
+    (typeof value.minToolCalls !== 'number' ||
+      !Number.isInteger(value.minToolCalls) ||
+      value.minToolCalls < 0)
+  ) {
+    throw new Error('skills.minToolCalls must be a non-negative integer');
+  }
+  if (value.approval !== undefined && typeof value.approval !== 'boolean') {
+    throw new Error('skills.approval must be a boolean');
+  }
 }
 
 function validateAgentSwarm(value: unknown): void {
