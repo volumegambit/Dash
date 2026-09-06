@@ -13,6 +13,14 @@ struct ComposerView: View {
   /// user has since tapped elsewhere.
   var focusRequest: Int = 0
 
+  /// iPad goal Phase B, Task 8 review fix: shares `ChatView`'s own
+  /// `isDropTargeted` state rather than owning a second copy, so the ONE
+  /// dashed highlight overlay `ChatView` draws lights up whichever
+  /// `.dropDestination` below actually claims the drag. See this file's own
+  /// `.dropDestination` below for why the composer needs its own, separate
+  /// from `ChatView`'s.
+  var isDropTargeted: Binding<Bool> = .constant(false)
+
   @State private var selectedItems: [PhotosPickerItem] = []
   @State private var pickerError: String?
   // Input sources (Phase 4 Task 4, audit #19): the paperclip is now a menu
@@ -85,6 +93,26 @@ struct ComposerView: View {
     .padding(.horizontal)
     .padding(.vertical, 10)
     .background(.bar)
+    // iPad goal Phase B, Task 8 review fix: a drag released over the
+    // composer's own `TextField` never reaches `ChatView`'s outer
+    // `.dropDestination` (confirmed by `IPadUITests
+    // .testDroppingAnImageAttachesIt`, which failed consistently when
+    // dropping on `chat.composer` and passed consistently when dropping on
+    // `chat.transcript` with no other change) — a `TextField` claims the
+    // drag session for itself before it can bubble up. This is the SAME
+    // "attach the handler locally, everywhere it needs to work" call
+    // `ChatCommandActions`' keyboard shortcuts already made (see
+    // `ChatView`'s own comment on that), applied to drag and drop instead
+    // of ⌘-shortcuts: rather than fight the `TextField`'s built-in
+    // interaction, this destination handles the composer's own surface
+    // directly, through the exact same `addSelections` entry point
+    // `ChatView`'s destination uses.
+    .dropDestination(for: DroppedImage.self) { items, _ in
+      let selections = DroppedImage.selections(from: items)
+      guard selections.isEmpty == false else { return false }
+      Task { await feature.addSelections(selections) }
+      return true
+    } isTargeted: { isDropTargeted.wrappedValue = $0 }
     .onChange(of: selectedItems) { _, items in
       guard items.isEmpty == false else { return }
       Task { await load(items) }
@@ -156,6 +184,11 @@ struct ComposerView: View {
             Task { await feature.removeAttachment(id: attachment.id) }
           }
           .accessibilityLabel("Attached image \(index + 1)")
+          // iPad goal Phase B, Task 8 (forwarded from Task 7): lets a UI
+          // test assert a specific attachment landed in the composer after
+          // a drag-and-drop, the same way `MessageImageView`'s
+          // `chat.message.image.<n>` identifies a specific transcript image.
+          .accessibilityIdentifier("chat.attachment.\(index)")
         }
       }
       .padding(.vertical, 2)

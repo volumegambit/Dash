@@ -15,6 +15,9 @@ struct CodeBlockView: View {
         .font(.system(.caption, design: .monospaced))
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Drag out (iPad goal Phase B, Task 8): a fenced code block's own
+        // text, independent of any prose around it.
+        .draggable(code)
     }
     .scrollIndicators(.hidden)
     .padding(12)

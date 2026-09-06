@@ -474,7 +474,7 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    let thumbnail = element("chat.image.0", in: app)
+    let thumbnail = element("chat.message.image.0", in: app)
     XCTAssertTrue(waitUntilHittable(thumbnail, timeout: 5))
     thumbnail.tap()
 

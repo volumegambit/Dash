@@ -76,9 +76,12 @@ struct ChatView: View {
   /// A counter rather than a flag so a second ⌘L after tapping away still
   /// changes the value and therefore still fires `ComposerView`'s `onChange`.
   @State private var composerFocusRequest = 0
-  /// iPad goal Phase B, Task 7: whether a drag carrying `DroppedImage`s is
-  /// currently hovering the chat surface — drives the dashed drop-target
-  /// overlay below.
+  /// iPad goal Phase B, Task 7 (extended Task 8): whether a drag carrying
+  /// `DroppedImage`s is currently hovering the chat surface — drives the
+  /// dashed drop-target overlay below. Shared with `ComposerView` (passed
+  /// down as a binding) since Task 8 found the composer needs its OWN
+  /// `.dropDestination`, not just this one — see that modifier's comment
+  /// below for why.
   @State private var isDropTargeted = false
 
   var body: some View {
@@ -97,12 +100,31 @@ struct ChatView: View {
 
       transcript
     }
+    // Handles drops released over the TRANSCRIPT only, in practice — Task 8
+    // found (via `IPadUITests.testDroppingAnImageAttachesIt`, which failed
+    // consistently dropping on `chat.composer` and passed consistently
+    // dropping on `chat.transcript` with no other change) that a drag
+    // released over the composer's `TextField` never reaches this
+    // destination; the `TextField` claims it first. `ComposerView` below
+    // has its OWN `.dropDestination` for that surface, sharing
+    // `isDropTargeted` with this one so the single highlight overlay lights
+    // up for either.
     .dropDestination(for: DroppedImage.self) { items, _ in
       let selections = DroppedImage.selections(from: items)
       guard selections.isEmpty == false else { return false }
       Task { await feature.addSelections(selections) }
       return true
     } isTargeted: { isDropTargeted = $0 }
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      ComposerView(focusRequest: composerFocusRequest, isDropTargeted: $isDropTargeted)
+    }
+    // Applied AFTER `.safeAreaInset`, not before, so the dashed highlight's
+    // frame is the WHOLE chat surface — transcript AND composer — rather
+    // than just the transcript's bounds from before the composer's
+    // safe-area inset was added. It previously sat directly on the
+    // transcript `VStack` above, ahead of `.safeAreaInset`, which meant the
+    // highlight was sized to the transcript alone and never visibly covered
+    // the composer.
     .overlay {
       if isDropTargeted {
         RoundedRectangle(cornerRadius: DashTheme.Radius.large)
@@ -111,9 +133,6 @@ struct ChatView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("chat.dropTarget")
       }
-    }
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      ComposerView(focusRequest: composerFocusRequest)
     }
     // iPad goal Phase B: the chat surface's slice of `DashCommands`. The
     // `can*` flags are the same predicates the composer's own send/stop

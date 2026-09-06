@@ -103,21 +103,33 @@ final class IPadUITests: DashUITestCase {
     )
   }
 
-  /// iPad goal Phase B, Task 7 (design §2.3): dragging a transcript image
-  /// onto the composer attaches it via the same `addSelections` path the
-  /// photo picker/camera/Files importer use. The drag SOURCE
-  /// (`chat.message.image.<index>` + `.draggable`) and the drop-target
-  /// identifier (`chat.attachment.<index>`) both land in Task 8 — until
-  /// then this skips for lack of a fixture image to drag, per the Task 7/8
-  /// ordering ruling. `DroppedImageTests` and the `.dropDestination`
-  /// wiring in `ChatView` are exercised (and green) independently of this
-  /// test.
+  /// iPad goal Phase B, Task 7 (design §2.3) + Task 8: dragging a
+  /// transcript image onto the composer attaches it via the same
+  /// `addSelections` path the photo picker/camera/Files importer use. The
+  /// drag SOURCE (`chat.message.image.<index>` + `.draggable`) and the
+  /// drop-target identifier (`chat.attachment.<index>`) both landed in
+  /// Task 8, and the `paired-online`/`shared-plan` fixture's cached
+  /// `cached-user` message already carries a decodable 1x1 PNG (audit #19),
+  /// so this genuinely drags a real image rather than skipping.
+  ///
+  /// The source query is the type-agnostic `app.descendants(matching:
+  /// .any)` (Task 8 handoff concern #1 from the Task 7 report), not
+  /// `app.images`: `MessageImageView`'s identifier sits on the `Button`
+  /// (never moved onto the inner `Image`, since a SwiftUI `Button` always
+  /// vends ONE `.button`-trait accessibility element for its label, so
+  /// `app.images` would never match it regardless of where the identifier
+  /// modifier sits). This mirrors the target-side `chat.attachment.0`
+  /// assertion below, which already used `app.descendants(matching: .any)`.
   func testDroppingAnImageAttachesIt() throws {
     let app = launch(scenario: "paired-online")
     try XCTSkipUnless(app.windows.firstMatch.frame.width >= 700, "iPad-only")
     element("conversation.row.shared-plan", in: app).tap()
-    let image = app.images.matching(NSPredicate(format: "identifier BEGINSWITH 'chat.message.image.'")).firstMatch
-    try XCTSkipUnless(image.waitForExistence(timeout: 5), "fixture has no image to drag")
+    let image = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH 'chat.message.image.'")).firstMatch
+    XCTAssertTrue(
+      image.waitForExistence(timeout: 5),
+      "Expected the shared-plan fixture's cached image message to render a draggable thumbnail"
+    )
     let composer = element("chat.composer", in: app)
     image.press(forDuration: 1.0, thenDragTo: composer)
     XCTAssertTrue(app.descendants(matching: .any)["chat.attachment.0"].waitForExistence(timeout: 5))

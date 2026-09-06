@@ -1,5 +1,7 @@
+import CoreTransferable
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Turn ids whose assistant reply failed (chat-ux Phase 2, Task 4 / audit
 /// #5's message actions). "Failed" is only ever recorded on the
@@ -250,6 +252,11 @@ struct ChatMessageView: View {
           }
           .padding(.vertical, 12)
           .frame(maxWidth: .infinity, alignment: .leading)
+          // Drag out (iPad goal Phase B, Task 8): the same flattened plain
+          // text the Copy/Share context menu items below use
+          // (`markdownPlainTextAccessibilityLabel`), not the raw markdown —
+          // one flattener shared by both affordances, per the task brief.
+          .draggable(markdownPlainTextAccessibilityLabel(for: assistant.text))
           .contextMenu { assistantContextMenuItems(assistant) }
           .accessibilityElement(children: .contain)
           .accessibilityLabel(message.accessibilityStatusLabel)
@@ -388,6 +395,10 @@ private struct UserMessageView: View {
         .scrollIndicators(.hidden)
       }
     }
+    // Drag out (iPad goal Phase B, Task 8): lets the whole bubble's text be
+    // dragged into another app (Notes, Mail, another window) or dropped
+    // back into this app's own composer.
+    .draggable(message.text)
     .fullScreenCover(item: $viewerImage) { item in
       ImageViewerView(image: item.image) { viewerImage = nil }
     }
@@ -418,9 +429,23 @@ private struct MessageImageView: View {
         }
         .buttonStyle(.plain)
         .hoverEffect(.lift)
+        // Drag out (iPad goal Phase B, Task 8): drop targets like the
+        // composer, Files, or another app get the decoded image bytes for
+        // this message's own `mediaType`, not a re-derived guess.
+        .draggable(DraggableMessageImage(image))
         .accessibilityLabel("Attached image \(index + 1)")
         .accessibilityHint("Opens full screen")
-        .accessibilityIdentifier("chat.image.\(index)")
+        // Renamed from `chat.image.<n>` (Task 7 handoff): the identifier
+        // stays on this `Button`, not the inner `Image` — a SwiftUI `Button`
+        // always vends ONE accessibility element of trait `.button` for its
+        // label, so moving the identifier onto the `Image` would not make
+        // `XCUIApplication.images` (which matches by `XCUIElementType`, not
+        // by identifier prefix) start seeing it as an image. The UI test
+        // queries this identifier through the type-agnostic
+        // `app.descendants(matching: .any)`, the same pattern the test
+        // already uses for its target-side `chat.attachment.0` assertion —
+        // see `IPadUITests.testDroppingAnImageAttachesIt`.
+        .accessibilityIdentifier("chat.message.image.\(index)")
       } else {
         Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
           .labelStyle(.iconOnly)
@@ -431,5 +456,34 @@ private struct MessageImageView: View {
     }
     .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
     .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
+  }
+}
+
+/// A transcript image, offered as a drag payload out of the chat (iPad goal
+/// Phase B, Task 8) — the drag-source counterpart to `DroppedImage`
+/// (`DroppedImage.swift`), which is the drop-destination side. Base64-decodes
+/// `MessageImage.data` once at construction, mirroring
+/// `RecoveryAttachmentTransfer`'s `.exportingCondition`-per-type pattern
+/// (`ConversationListView.swift`) rather than re-deriving the type from raw
+/// bytes: `MessageImage.mediaType` is already the ground truth for this
+/// message, same four types as the rest of the image-attachment contract.
+struct DraggableMessageImage: Transferable, Sendable {
+  let data: Data
+  let mediaType: ImageMediaType
+
+  init(_ image: MessageImage) {
+    data = Data(base64Encoded: image.data) ?? Data()
+    mediaType = image.mediaType
+  }
+
+  static var transferRepresentation: some TransferRepresentation {
+    DataRepresentation(exportedContentType: .jpeg) { $0.data }
+      .exportingCondition { $0.mediaType == .jpeg }
+    DataRepresentation(exportedContentType: .png) { $0.data }
+      .exportingCondition { $0.mediaType == .png }
+    DataRepresentation(exportedContentType: .gif) { $0.data }
+      .exportingCondition { $0.mediaType == .gif }
+    DataRepresentation(exportedContentType: .webP) { $0.data }
+      .exportingCondition { $0.mediaType == .webp }
   }
 }
