@@ -8,6 +8,7 @@ import type {
   ConversationSummary,
   MobileWsClientFrame,
   MobileWsServerFrame,
+  SubagentListEntry,
 } from '@dash/mobile-contract';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
@@ -139,6 +140,8 @@ interface FakeRest {
   deleteConversation: ReturnType<typeof vi.fn>;
   getConversation: ReturnType<typeof vi.fn>;
   resumeSubagent: ReturnType<typeof vi.fn>;
+  listSubagents: ReturnType<typeof vi.fn>;
+  stopSubagent: ReturnType<typeof vi.fn>;
 }
 
 function fakeRest(opts: {
@@ -178,6 +181,10 @@ function fakeRest(opts: {
   getConversationImpl?: (conversationId: string) => Promise<ConversationSummary>;
   /** Override for `rest.resumeSubagent()` — used by the `sendToSubagent` tests. */
   resumeSubagentImpl?: (childId: string, message: string, requestId?: string) => Promise<unknown>;
+  /** Override for `rest.listSubagents()` — used by the tasks-panel (D3) tests. */
+  listSubagentsImpl?: (conversationId: string) => Promise<{ subagents: SubagentListEntry[] }>;
+  /** Override for `rest.stopSubagent()` — used by the tasks-panel (D3) tests. */
+  stopSubagentImpl?: (subagentId: string) => Promise<unknown>;
 }): FakeRest {
   const messagePages = opts.messagePages ?? [{ items: [], nextCursor: null, throughSeq: 0 }];
   let getMessagesCall = 0;
@@ -217,6 +224,10 @@ function fakeRest(opts: {
     opts.resumeSubagentImpl ??
       (async () => ({ ok: true, status: 'running', mode: 'queued' as const })),
   );
+  const listSubagents = vi.fn(opts.listSubagentsImpl ?? (async () => ({ subagents: [] })));
+  const stopSubagent = vi.fn(
+    opts.stopSubagentImpl ?? (async () => ({ ok: true, status: 'cancelled' as const })),
+  );
   const rest = {
     listConversations,
     getMessages,
@@ -227,10 +238,14 @@ function fakeRest(opts: {
     deleteConversation,
     getConversation,
     resumeSubagent,
+    listSubagents,
+    stopSubagent,
   } as unknown as MobileRestClient;
   return {
     rest,
     resumeSubagent,
+    listSubagents,
+    stopSubagent,
     listConversations,
     getMessages,
     identity,
@@ -3772,6 +3787,343 @@ describe('createWebAppStore', () => {
       expect(store.getState().transcripts[CHILD_ID].messages[0]).toMatchObject({
         status: 'failed',
         content: { type: 'user', text: 'nope' },
+      });
+    });
+  });
+
+  /**
+   * The tasks panel's model (D3, design §8.4). REST is the source of truth
+   * here, not the transcript fold: the fold can only see children whose
+   * events sit in a message this client has loaded, it never learns that a
+   * BACKGROUND child finished after its spawning turn ended, and it is blind
+   * across a gateway restart. The panel re-reads instead.
+   */
+  describe('sub-agent list (D3)', () => {
+    const CHILD_ID = 'child-1';
+    const ENDED_AT = '2026-09-04T10:01:00.000Z';
+
+    function listEntry(overrides: Partial<SubagentListEntry> = {}): SubagentListEntry {
+      return {
+        id: CHILD_ID,
+        type: 'Explore',
+        description: 'Map gateway internals',
+        status: 'running',
+        background: false,
+        depth: 1,
+        startedAt: '2026-09-04T10:00:00.000Z',
+        toolCallCount: 3,
+        oneShot: true,
+        ...overrides,
+      };
+    }
+
+    it("records the conversation's children in the gateway's order, with their facts", async () => {
+      const { rest, listSubagents } = fakeRest({
+        listSubagentsImpl: async () => ({
+          subagents: [listEntry(), listEntry({ id: 'child-2', type: 'Plan', status: 'done' })],
+        }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().refreshSubagents(CONVERSATION_ID);
+
+      expect(listSubagents).toHaveBeenCalledWith(CONVERSATION_ID);
+      expect(store.getState().subagentIds[CONVERSATION_ID]).toEqual([CHILD_ID, 'child-2']);
+      expect(store.getState().subagents[CHILD_ID].facts).toMatchObject({ status: 'running' });
+      expect(store.getState().subagents['child-2'].facts).toMatchObject({ status: 'done' });
+    });
+
+    /**
+     * The facts share a key with the row's expansion and its composer's
+     * in-flight flag. A refresh that ASSIGNED over the entry would snap an
+     * open row shut, or disarm a composer mid-send, every time any child in
+     * the conversation changed status.
+     */
+    it('merges into the row it already has, rather than replacing it', async () => {
+      const { rest } = fakeRest({ listSubagentsImpl: async () => ({ subagents: [listEntry()] }) });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      store.getState().patchSubagent(CHILD_ID, { expanded: true });
+
+      await store.getState().refreshSubagents(CONVERSATION_ID);
+
+      expect(store.getState().subagents[CHILD_ID].expanded).toBe(true);
+      expect(store.getState().subagents[CHILD_ID].facts).toBeDefined();
+    });
+
+    /**
+     * The same race `flushChildSubscriptions` guards: the read for the
+     * conversation being left can land after the switch, and writing then
+     * puts a dead conversation's children into a record the switch just
+     * emptied — where nothing but the NEXT switch would ever remove them.
+     */
+    it('drops a response that lands after the conversation changed', async () => {
+      let release!: () => void;
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+        listSubagentsImpl: async (conversationId: string) => {
+          if (conversationId !== CONVERSATION_ID) return { subagents: [] };
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return { subagents: [listEntry()] };
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(release).toBeDefined());
+
+      const refreshing = store.getState().refreshSubagents(CONVERSATION_ID);
+      await openAndConnect(store, sockets, 'conv-2');
+      release();
+      await refreshing;
+
+      expect(store.getState().subagentIds[CONVERSATION_ID]).toBeUndefined();
+      expect(store.getState().subagents[CHILD_ID]).toBeUndefined();
+    });
+
+    /**
+     * Every trigger fires in bursts — three children starting inside one turn
+     * is three reads — and nothing makes REST answer them in order. A read
+     * issued BEFORE a child finished can resolve after one issued after it,
+     * and last-write-wins would then park the panel on the older snapshot
+     * with nothing left to correct it.
+     */
+    it('applies only the newest read when two overlap out of order', async () => {
+      const releases: Array<() => void> = [];
+      let call = 0;
+      const { rest } = fakeRest({
+        listSubagentsImpl: async () => {
+          const index = call++;
+          await new Promise<void>((resolve) => {
+            releases[index] = resolve;
+          });
+          return { subagents: [listEntry({ status: index === 0 ? 'running' : 'done' })] };
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      // `openConversation`'s own read is the first; release it and settle.
+      await vi.waitFor(() => expect(releases).toHaveLength(1));
+      releases[0]();
+      await vi.advanceTimersByTimeAsync(0);
+
+      const stale = store.getState().refreshSubagents(CONVERSATION_ID);
+      await vi.waitFor(() => expect(releases).toHaveLength(2));
+      const fresh = store.getState().refreshSubagents(CONVERSATION_ID);
+      await vi.waitFor(() => expect(releases).toHaveLength(3));
+
+      // The NEWER read answers first, then the stale one.
+      releases[2]();
+      await fresh;
+      releases[1]();
+      await stale;
+
+      expect(store.getState().subagents[CHILD_ID].facts).toMatchObject({ status: 'done' });
+    });
+
+    it('reads the list when a conversation is opened, and clears it on the way out', async () => {
+      const { rest, listSubagents } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+        listSubagentsImpl: async (conversationId: string) => ({
+          subagents: conversationId === CONVERSATION_ID ? [listEntry()] : [],
+        }),
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await vi.waitFor(() =>
+        expect(store.getState().subagentIds[CONVERSATION_ID]).toEqual([CHILD_ID]),
+      );
+      expect(listSubagents).toHaveBeenCalledWith(CONVERSATION_ID);
+
+      await openAndConnect(store, sockets, 'conv-2');
+
+      expect(store.getState().subagentIds[CONVERSATION_ID]).toBeUndefined();
+    });
+
+    /**
+     * A failed read must not take the conversation down — it rides beside the
+     * subscription, which swallows everything for the same reason — but a
+     * dead credential still routes like every other REST call here.
+     */
+    it('swallows a failed read, and routes a 401', async () => {
+      const { rest } = fakeRest({
+        listSubagentsImpl: async () => {
+          throw new MobileApiError(401, 'unauthorized');
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await expect(store.getState().refreshSubagents(CONVERSATION_ID)).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('unauthorized'));
+    });
+
+    /**
+     * Without this the panel sits on whatever it read when the conversation
+     * opened: `subagent_progress` is transient and never persisted, so a
+     * child that started, or finished, mid-turn would not appear (or would
+     * not stop spinning) until the user navigated away and back.
+     */
+    it('re-reads the list when a child starts or finishes on the open conversation', async () => {
+      const { rest, listSubagents } = fakeRest({
+        listSubagentsImpl: async () => ({ subagents: [listEntry()] }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(1));
+
+      onFrames[0]({
+        type: 'event',
+        id: 'turn-1',
+        conversationId: CONVERSATION_ID,
+        seq: 5,
+        event: { type: 'subagent_started', subagentId: 'child-2' },
+      } as MobileWsServerFrame);
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(2));
+
+      onFrames[0]({
+        type: 'event',
+        id: 'turn-1',
+        conversationId: CONVERSATION_ID,
+        seq: 6,
+        event: { type: 'subagent_finished', subagentId: 'child-2', status: 'done' },
+      } as MobileWsServerFrame);
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(3));
+
+      // A text delta is not a list change and must not cost a round trip.
+      onFrames[0]({
+        type: 'event',
+        id: 'turn-1',
+        conversationId: CONVERSATION_ID,
+        seq: 7,
+        event: { type: 'text_delta', text: 'hello' },
+      } as MobileWsServerFrame);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(listSubagents).toHaveBeenCalledTimes(3);
+    });
+
+    /** The gateway replays nothing on a re-`subscribe`, so everything that
+     * happened to a child while the socket was down is gone from this client
+     * unless it re-reads — same reason `refreshChildTranscripts` exists. */
+    it('re-reads the list after a reconnect', async () => {
+      const { rest, listSubagents } = fakeRest({});
+      const { factory, sockets, onCloses } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(1));
+
+      onCloses[0]('error');
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+      await vi.waitFor(() => expect(sockets.length).toBe(2));
+      sockets[1].open();
+      await vi.waitFor(() => expect(store.getState().connection).toBe('connected'));
+
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(2));
+    });
+
+    describe('stopSubagent', () => {
+      it('cancels through the REST route and takes the status it answers with', async () => {
+        let releaseReread: (() => void) | null = null;
+        const { rest, stopSubagent, listSubagents } = fakeRest({
+          listSubagentsImpl: async () => {
+            // The FIRST read is `openConversation`'s and answers at once; the
+            // one the stop triggers is held open, so the assertion below can
+            // only pass on the optimistic write.
+            if (listSubagents.mock.calls.length > 1) {
+              await new Promise<void>((resolve) => {
+                releaseReread = resolve;
+              });
+              return { subagents: [listEntry({ status: 'cancelled', endedAt: ENDED_AT })] };
+            }
+            return { subagents: [listEntry()] };
+          },
+          stopSubagentImpl: async () => ({ ok: true, status: 'cancelled' as const }),
+        });
+        const { factory, sockets } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await openAndConnect(store, sockets, CONVERSATION_ID);
+        await vi.waitFor(() => expect(store.getState().subagents[CHILD_ID]?.facts).toBeDefined());
+        const callsBefore = listSubagents.mock.calls.length;
+
+        const stopping = store.getState().stopSubagent(CHILD_ID);
+
+        // Applied at once rather than waiting for the re-read: the response
+        // is authoritative and the button has to stop offering a stop.
+        await vi.waitFor(() =>
+          expect(store.getState().subagents[CHILD_ID].facts).toMatchObject({
+            status: 'cancelled',
+          }),
+        );
+        expect(stopSubagent).toHaveBeenCalledWith(CHILD_ID);
+        expect(store.getState().subagents[CHILD_ID].facts).not.toHaveProperty('endedAt');
+
+        await vi.waitFor(() => expect(releaseReread).not.toBeNull());
+        (releaseReread as unknown as () => void)();
+        await stopping;
+
+        // And the re-read still lands, for everything the stop response does
+        // not carry.
+        expect(listSubagents.mock.calls.length).toBeGreaterThan(callsBefore);
+        expect(store.getState().subagents[CHILD_ID].facts).toMatchObject({
+          status: 'cancelled',
+          endedAt: ENDED_AT,
+        });
+      });
+
+      /**
+       * A 409 is the gateway saying the child finished on its own first. The
+       * user's intent is satisfied, so it is not an error to report — but it
+       * is proof this client's picture is stale, which is exactly when the
+       * re-read matters most.
+       */
+      it('re-reads after a 409 and does not treat it as a failure', async () => {
+        const { rest, listSubagents } = fakeRest({
+          listSubagentsImpl: async () => ({ subagents: [listEntry({ status: 'done' })] }),
+          stopSubagentImpl: async () => {
+            throw new MobileApiError(409, 'validation_failed', 'Sub-agent child-1 is already done');
+          },
+        });
+        const { factory, sockets } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await openAndConnect(store, sockets, CONVERSATION_ID);
+        await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(1));
+
+        await expect(store.getState().stopSubagent(CHILD_ID)).resolves.toBeUndefined();
+
+        await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(2));
+        expect(store.getState().subagents[CHILD_ID].facts).toMatchObject({ status: 'done' });
+      });
+
+      it('rethrows anything that is not a raced finish, and routes a 401', async () => {
+        const { rest } = fakeRest({
+          stopSubagentImpl: async () => {
+            throw new MobileApiError(401, 'unauthorized');
+          },
+        });
+        const { factory, sockets } = scriptedSocketFactory();
+        const store = createWebAppStore({ rest, socketFactory: factory });
+        await openAndConnect(store, sockets, CONVERSATION_ID);
+
+        await expect(store.getState().stopSubagent(CHILD_ID)).rejects.toBeInstanceOf(
+          MobileApiError,
+        );
+        expect(store.getState().connection).toBe('unauthorized');
       });
     });
   });

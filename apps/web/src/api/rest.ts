@@ -7,7 +7,9 @@ import type {
   GatewayIdentity,
   MobileAgent,
   MobileHealth,
+  SubagentListResponse,
   SubagentResumeResponse,
+  SubagentStopResponse,
   WsTicketResponse,
 } from '@dash/mobile-contract';
 
@@ -195,6 +197,50 @@ export class MobileRestClient {
       'DELETE',
       `/conversations/${encodeURIComponent(conversationId)}`,
       { ifMatch: revision },
+    );
+  }
+
+  /**
+   * `GET /conversations/:id/subagents` — the conversation's sub-agent
+   * children, as the tasks panel (design §8.4) lists them.
+   *
+   * The gateway serves this from the child conversation ROWS rather than from
+   * the coordinator's in-memory registry, which is why it is the panel's
+   * model rather than a mere seed for the transcript fold: the rows are
+   * written on every status transition and they are the only source that
+   * survives a gateway restart. It is also the only place a BACKGROUND child
+   * that finished after its spawning turn ended can be seen at all — nothing
+   * about that lands in the parent's own event stream.
+   *
+   * A trimmed row per child (`SubagentListEntry`): no `prompt`, `model`,
+   * `isolation` or `workspace`. Anything that needs those reads the child
+   * conversation itself with `getConversation`.
+   */
+  listSubagents(conversationId: string): Promise<SubagentListResponse> {
+    return this.request<SubagentListResponse>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}/subagents`,
+    );
+  }
+
+  /**
+   * `POST /subagents/:id/stop` — cancels a child and, depth-first, every
+   * descendant it still holds a handle for.
+   *
+   * No body. A child that is ALREADY terminal is a 409 rather than a silent
+   * success, deliberately, so a client that raced the child's own finish
+   * learns which of the two won — the caller should re-read the list rather
+   * than treat it as a failure.
+   *
+   * The response's `status` is always terminal, and it is the authoritative
+   * one: the route falls back to writing `cancelled` itself when the cascade
+   * reached a child this gateway process no longer holds (after a restart),
+   * so it is not always the status the caller would have guessed.
+   */
+  stopSubagent(subagentId: string): Promise<SubagentStopResponse> {
+    return this.request<SubagentStopResponse>(
+      'POST',
+      `/subagents/${encodeURIComponent(subagentId)}/stop`,
     );
   }
 

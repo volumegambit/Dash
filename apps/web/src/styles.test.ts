@@ -138,6 +138,48 @@ describe('styles.css design tokens (chat-ux Phase 2 Task 1)', () => {
   });
 });
 
+/** The panel's own chrome, declared after the mobile media block — scopes a
+ * lookup to the DESKTOP rule for the three selectors (`.tasks-panel`,
+ * `.tasks-panel--open`, `.app-tasks-backdrop`) that are declared twice, the
+ * same disambiguation `mobileDrawerBlock` exists for. */
+function tasksPanelSection(): string {
+  const marker = 'Tasks panel (sub-agents design §8.4)';
+  const index = css.indexOf(marker);
+  if (index === -1) throw new Error('styles.css has no tasks-panel section');
+  return css.slice(index);
+}
+
+describe('tasks panel (sub-agents D3, design §8.4)', () => {
+  it('adds a third grid column only while the panel is open', () => {
+    // The base `.app-body` stays two columns: an always-declared third track
+    // would leave a 320px gutter on every conversation that has no children.
+    expect(ruleBlock('.app-body')).toMatch(/grid-template-columns:\s*280px 1fr;/);
+    expect(ruleBlock('.app-body--tasks')).toMatch(/grid-template-columns:\s*280px 1fr \d+px;/);
+  });
+
+  it('hides the closed panel outright rather than merely off-screen', () => {
+    // Same reasoning as fix I2 for the sidebar drawer: a panel that is only
+    // moved out of the viewport keeps its rows — and their stop and resume
+    // buttons — in the accessibility tree and the tab order.
+    const desktop = tasksPanelSection();
+    expect(ruleBlock('.tasks-panel', desktop)).toMatch(/display:\s*none/);
+    expect(ruleBlock('.tasks-panel--open', desktop)).toMatch(/display:\s*flex/);
+  });
+
+  it('overlays the panel with a backdrop under 768px, like the sidebar drawer', () => {
+    const mobile = mobileDrawerBlock();
+    expect(ruleBlock('.tasks-panel--open', mobile)).toMatch(/position:\s*fixed/);
+    expect(ruleBlock('.app-tasks-backdrop', mobile)).toMatch(/display:\s*block/);
+    // The backdrop is desktop-invisible: at full width the panel is a column,
+    // and a full-screen scrim over the transcript would be nonsense.
+    expect(ruleBlock('.app-tasks-backdrop', tasksPanelSection())).toMatch(/display:\s*none/);
+    // And the body stays ONE column while it is open, stated rather than
+    // left to source order — `.app-body--tasks` and the mobile `.app-body`
+    // have the same specificity.
+    expect(ruleBlock('.app-body--tasks', mobile)).toMatch(/grid-template-columns:\s*1fr;/);
+  });
+});
+
 describe('final-review fix wave', () => {
   it('fix I2: the CLOSED mobile drawer is visibility:hidden (not just translated off-screen), ' +
     'so it drops out of the accessibility tree/tab order rather than merely off the visible ' +

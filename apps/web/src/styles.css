@@ -217,6 +217,13 @@ textarea:focus-visible {
   min-height: 0;
 }
 
+/* The tasks panel's column exists only while the panel does (sub-agents
+ * design §8.4). Declaring the third track unconditionally would leave a
+ * 320px gutter beside every conversation that never spawned a child. */
+.app-body--tasks {
+  grid-template-columns: 280px 1fr 320px;
+}
+
 .app-sidebar {
   min-height: 0;
   overflow-y: auto;
@@ -512,6 +519,14 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  /* Explicit rather than relying on source order to beat `.app-body--tasks`
+   * (same specificity, declared earlier): under 768px the panel is a fixed
+   * overlay, so the body must stay a single column whether it is open or
+   * not. */
+  .app-body--tasks {
+    grid-template-columns: 1fr;
+  }
+
   .app-sidebar {
     position: fixed;
     z-index: 20;
@@ -536,6 +551,31 @@ textarea:focus-visible {
   }
 
   .app-sidebar-backdrop {
+    position: fixed;
+    z-index: 10;
+    display: block;
+    border: none;
+    background: rgb(0 0 0 / 40%);
+    cursor: default;
+    inset: 0;
+  }
+
+  /* The tasks panel takes the sidebar's overlay-and-backdrop treatment from
+   * the other edge (§8.4: "reusing the sidebar's overlay-and-backdrop
+   * pattern under 768px"). Unlike the sidebar it is never translated
+   * off-screen while closed — `.tasks-panel`'s `display: none` already keeps
+   * it out of the accessibility tree and the tab order, which is what fix I2
+   * had to add `visibility: hidden` for over there. */
+  .tasks-panel--open {
+    position: fixed;
+    z-index: 20;
+    inset: 0 0 0 20%;
+    max-width: 360px;
+    margin-left: auto;
+    border-left: 1px solid var(--border);
+  }
+
+  .app-tasks-backdrop {
     position: fixed;
     z-index: 10;
     display: block;
@@ -1922,4 +1962,167 @@ textarea:focus-visible {
 .chat-orchestrator-text {
   color: var(--text);
   white-space: pre-wrap;
+}
+
+/* ---------------------------------------------------------------------
+ * Tasks panel (sub-agents design §8.4): a third column listing the open
+ * conversation's children, with stop and resume. Built from the same
+ * primitives as the sub-agent rows above so the two read as one surface.
+ * ------------------------------------------------------------------- */
+
+.app-tasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.app-tasks-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.app-tasks-count {
+  min-width: 18px;
+  border: 1px solid var(--accent);
+  background: var(--surface-raised);
+  padding: 0 5px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* Hidden outright rather than translated away, so a closed panel's stop and
+ * resume buttons leave the accessibility tree and the tab order with it. */
+.tasks-panel {
+  display: none;
+}
+
+.tasks-panel--open {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.app-tasks-backdrop {
+  display: none;
+}
+
+.tasks-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+.tasks-panel-close {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tasks-panel-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tasks-panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tasks-row-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+.tasks-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tasks-row-type {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.tasks-row-name {
+  color: var(--text-muted-strong);
+  font-family: var(--font-mono);
+}
+
+.tasks-row-description {
+  flex: 1 1 100%;
+  color: var(--text-muted);
+}
+
+.tasks-row-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tasks-row-status[data-status="failed"] {
+  color: var(--tool-red);
+}
+
+.tasks-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tasks-row-stop,
+.tasks-row-resume {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 3px 8px;
+  color: var(--text-muted-strong);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tasks-row-stop:hover:not(:disabled) {
+  border-color: var(--tool-red-border);
+  color: var(--tool-red);
+}
+
+.tasks-row-stop:disabled,
+.tasks-row-resume:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tasks-row-error {
+  margin: 0;
+  color: var(--tool-red);
+  font-size: 11px;
 }

@@ -116,6 +116,22 @@ export interface WebAppState {
    */
   subagents: Record<string, SubagentEntry>;
   /**
+   * The tasks panel's ordering (design §8.4): the ids of a conversation's
+   * sub-agent children, in the order `GET /conversations/:id/subagents`
+   * reported them. Facts about each of those children live in
+   * {@link WebAppState.subagents} under the same id; this record holds only
+   * the ORDER, so a status change never has to rewrite a list and a list
+   * refresh never has to rewrite an open row.
+   *
+   * Keyed by the PARENT conversation, and cleared with everything else on a
+   * conversation switch (`clearChildSubscriptions`) — a `Record` rather than
+   * a bare array because that is what makes the key-mismatch case
+   * ("`subagentIds[theConversationIWasReading]` is undefined") readable at
+   * the consumer instead of silently rendering another conversation's
+   * children.
+   */
+  subagentIds: Record<string, string[]>;
+  /**
    * `'idle'` is the store's INITIAL state — before any conversation has ever
    * been opened or reconnect has ever been attempted. It means "nothing has
    * gone wrong yet," not "the gateway is unreachable": a healthy account
@@ -357,6 +373,43 @@ export interface WebAppState {
    */
   sendToSubagent(childId: string, text: string): Promise<void>;
   /**
+   * Re-reads `GET /conversations/:id/subagents` into `subagentIds` and the
+   * `facts` half of `subagents` — the tasks panel's whole model (§8.4).
+   *
+   * REST rather than the transcript fold, deliberately. The fold
+   * (`ui/blocks/subagents.ts`) is the right model for a ROW anchored in a
+   * message, and it is wrong for the panel in three ways that all point the
+   * same direction: it can only see children whose events are in a message
+   * this client has loaded; a BACKGROUND child is exempt from its
+   * end-of-stream terminalization precisely so it does not read as dead, so
+   * it stays `running` in the fold forever once its spawning turn ends and
+   * nothing about its real finish ever reaches the parent's event stream;
+   * and after a gateway restart the transcript is all this client has while
+   * the child ROWS are what the gateway recovered from. The gateway serves
+   * this route from those rows.
+   *
+   * Never rejects and never fails a conversation: a missing list costs the
+   * panel, not the chat. A 401 still routes to `enterUnauthorized()`.
+   */
+  refreshSubagents(conversationId: string): Promise<void>;
+  /**
+   * Cancels a child and every descendant, through `POST /subagents/:id/stop`
+   * — the same REST surface `sendToSubagent` uses, and for the same reason:
+   * it is the only path that reaches the coordinator's cascade, and a WS
+   * frame addressed at a child reaches none of it.
+   *
+   * The response's terminal status is applied at once so the row stops
+   * offering a stop, and the list is re-read afterwards for everything the
+   * response does not carry (`endedAt`, and any descendant the cascade also
+   * killed).
+   *
+   * A 409 — the child finished on its own between the render and the click —
+   * RESOLVES rather than throwing: the user's intent is satisfied, and the
+   * re-read that follows is what corrects the row. Everything else rethrows,
+   * so the panel can say what went wrong.
+   */
+  stopSubagent(childId: string): Promise<void>;
+  /**
    * Tears down this store's live connection: closes the current socket (if
    * any), cancels any pending reconnect timer, and stops any reconnect
    * attempt already in flight from resurrecting a connection afterwards.
@@ -430,6 +483,18 @@ function isAuthError(err: unknown): boolean {
  */
 function isRevisionConflict(err: unknown): boolean {
   return err instanceof MobileApiError && err.code === 'revision_conflict';
+}
+
+/**
+ * The gateway's answer to a stop against a child that already finished
+ * (`apps/gateway/src/subagent-management.ts`: "a `stop` against one is a 409
+ * rather than a silent success, so a client that raced the child's own finish
+ * learns which of the two won"). The user asked for the child to be over and
+ * it is over, so this is not a failure to report — only a signal that this
+ * client's picture was stale, which the re-read that follows corrects.
+ */
+function isAlreadyTerminal(err: unknown): boolean {
+  return err instanceof MobileApiError && err.status === 409;
 }
 
 /** Channel identifier this browser client identifies itself with on outgoing frames. */
@@ -689,6 +754,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
    * that transcript is exactly the one nothing else would ever clear.
    */
   const childTranscriptIds = new Set<string>();
+  /**
+   * Monotonic sequence for `refreshSubagents` reads, so only the NEWEST one
+   * ever writes. Every trigger fires in bursts — three children starting
+   * inside one turn is three reads — and nothing makes REST answer them in
+   * order, so a read issued before a child finished can resolve after one
+   * issued after it. Last-write-wins would park the panel on the older
+   * snapshot with nothing left to correct it.
+   */
+  let subagentReadSeq = 0;
+  let appliedSubagentReadSeq = 0;
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1089,6 +1164,58 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     }
 
     /**
+     * The list read behind `refreshSubagents`. Kept beside
+     * `refreshChildTranscripts` because it is the same kind of thing: a
+     * recovery read the panel cannot get from the socket, since the gateway
+     * replays nothing on a re-`subscribe`.
+     */
+    async function fetchSubagentList(conversationId: string): Promise<void> {
+      const readSeq = ++subagentReadSeq;
+      let entries: SubagentListEntry[];
+      try {
+        entries = (await rest.listSubagents(conversationId)).subagents;
+      } catch (err) {
+        if (isAuthError(err)) enterUnauthorized();
+        // Otherwise silent: the panel simply keeps the snapshot it had. Every
+        // trigger fires again on the next start, finish, reconnect or open.
+        return;
+      }
+      // Landed after the user navigated away: `clearChildSubscriptions` has
+      // emptied both records, and writing now would put a dead
+      // conversation's children back where only the NEXT switch could find
+      // them again.
+      if (currentConversationId !== conversationId) return;
+      // Answered out of order behind a newer read — see `subagentReadSeq`.
+      if (readSeq <= appliedSubagentReadSeq) return;
+      appliedSubagentReadSeq = readSeq;
+      set((state) => {
+        const subagents = { ...state.subagents };
+        for (const entry of entries) {
+          const { id, ...facts } = entry;
+          // MERGED, never assigned over: the same key carries the row's
+          // `expanded` and, mid-send, its composer's `sending`.
+          subagents[id] = { ...subagents[id], facts };
+        }
+        return {
+          subagents,
+          subagentIds: { ...state.subagentIds, [conversationId]: entries.map((e) => e.id) },
+        };
+      });
+    }
+
+    /**
+     * Re-read the OPEN conversation's children. Every trigger in this store
+     * is about the conversation the user is looking at — that is the only
+     * one the panel can show, and `fetchSubagentList` would drop a read for
+     * any other on arrival anyway.
+     */
+    function refreshCurrentSubagents(): Promise<void> {
+      const conversationId = currentConversationId;
+      if (!conversationId) return Promise.resolve();
+      return fetchSubagentList(conversationId);
+    }
+
+    /**
      * Everything that belongs to the conversation being left: the child
      * subscriptions (intent AND server-side), the replay cache, the
      * unreconciled follow-ups, and the rows' own UI state. Inside the store
@@ -1115,11 +1242,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       loadedChildTranscripts.clear();
       const children = [...childTranscriptIds];
       childTranscriptIds.clear();
+      // A read still in flight belongs to the conversation being left; bump
+      // the applied cursor so nothing of its can land in the new one even if
+      // the `currentConversationId` check above it were ever relaxed.
+      appliedSubagentReadSeq = subagentReadSeq;
       set((state) => {
-        if (children.length === 0) return { subagents: {} };
+        if (children.length === 0) return { subagents: {}, subagentIds: {} };
         const transcripts = { ...state.transcripts };
         for (const childId of children) delete transcripts[childId];
-        return { subagents: {}, transcripts };
+        return { subagents: {}, subagentIds: {}, transcripts };
       });
     }
 
@@ -1202,6 +1333,26 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         if (finishingOrigin && finishingOrigin !== 'user') {
           refreshMessages(conversationId);
         }
+      }
+
+      // The tasks panel's live half (§8.4). The panel's model is REST, and
+      // these two events are the cheap signal that the list moved: a start
+      // adds a row, a finish is the only thing that stops one spinning.
+      // Nothing else qualifies — `subagent_progress` is transient and never
+      // persisted, so refreshing on it would be a round trip per tool call
+      // for a row whose only live field (elapsed) ticks locally anyway.
+      //
+      // Matched by STRING rather than through `ui/blocks/subagents.ts`'s
+      // `isSubagentEvent`: that predicate also covers the legacy `worker_*`
+      // mirrors, which the gateway emits for the very same children, so
+      // sharing it would double every read until D8 removes them — and the
+      // store has no business importing from `ui/`.
+      if (
+        frame.type === 'event' &&
+        conversationId === currentConversationId &&
+        (frame.event.type === 'subagent_started' || frame.event.type === 'subagent_finished')
+      ) {
+        void fetchSubagentList(conversationId);
       }
     }
 
@@ -1367,6 +1518,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         activeChildSubscriptions.clear();
         void flushChildSubscriptions(attempted, conversationId);
         refreshChildTranscripts();
+        // Same gap, one level up: children that started or finished while the
+        // socket was down left no trace on this client, and the panel is the
+        // one surface whose whole job is to say which are still going.
+        void fetchSubagentList(conversationId);
         reconnectAttempt = 0;
         set({ connection: 'connected' });
       } catch (err) {
@@ -1385,6 +1540,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       conversations: [],
       transcripts: {},
       subagents: {},
+      subagentIds: {},
       connection: 'idle',
 
       async listAgents() {
@@ -1522,6 +1678,9 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         // with the socket. The subscription only governs turns nobody has
         // started yet; it can land a moment later.
         void subscribeToOpenConversation(attached, conversationId);
+        // The tasks panel's first read (§8.4), on the same terms as the
+        // subscription above: not awaited, and never able to fail the open.
+        void fetchSubagentList(conversationId);
       },
 
       async sendMessage(conversationId: string, text: string, images?: MobileImage[]) {
@@ -1870,6 +2029,41 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
               : m,
           ),
         }));
+      },
+
+      async refreshSubagents(conversationId) {
+        await fetchSubagentList(conversationId);
+      },
+
+      async stopSubagent(childId) {
+        try {
+          const { status } = await rest.stopSubagent(childId);
+          // Applied before the re-read so the button stops offering a stop
+          // on this frame rather than one round trip later. The response is
+          // authoritative: the route falls back to writing `cancelled`
+          // itself when the cascade reached a child this gateway process no
+          // longer holds a handle for, so it is not always guessable.
+          set((state) => {
+            const existing = state.subagents[childId];
+            if (!existing?.facts) return {};
+            return {
+              subagents: {
+                ...state.subagents,
+                [childId]: { ...existing, facts: { ...existing.facts, status } },
+              },
+            };
+          });
+        } catch (err) {
+          if (isAuthError(err)) enterUnauthorized();
+          // Not a raced finish — the caller has to be able to say what went
+          // wrong. Still re-read on the way out: a partial cascade may have
+          // killed descendants before the refusal.
+          if (!isAlreadyTerminal(err)) {
+            void refreshCurrentSubagents();
+            throw err;
+          }
+        }
+        await refreshCurrentSubagents();
       },
 
       cancelTurn(conversationId) {

@@ -467,6 +467,72 @@ describe('MobileRestClient', () => {
       });
     });
   });
+
+  describe('listSubagents', () => {
+    it("GETs the conversation's children with the id encoded", async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ subagents: [{ id: 'child-1' }] }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      const result = await client.listSubagents('conv/1');
+
+      expect(fetchImpl.mock.calls[0][0]).toBe(
+        'https://sub.relay.example/mobile/v1/conversations/conv%2F1/subagents',
+      );
+      expect(fetchImpl.mock.calls[0][1]?.method).toBe('GET');
+      expect(authHeader(fetchImpl.mock.calls[0][1])).toBe(`Bearer ${TOKEN}`);
+      expect(result).toEqual({ subagents: [{ id: 'child-1' }] });
+    });
+  });
+
+  describe('stopSubagent', () => {
+    it('POSTs to /subagents/:id/stop with no body and the id encoded', async () => {
+      const fetchImpl = fakeFetch(jsonResponse({ ok: true, status: 'cancelled' }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      const result = await client.stopSubagent('child/1');
+
+      expect(fetchImpl.mock.calls[0][0]).toBe(
+        'https://sub.relay.example/mobile/v1/subagents/child%2F1/stop',
+      );
+      const init = fetchImpl.mock.calls[0][1];
+      expect(init?.method).toBe('POST');
+      // No body at all: the route takes none, and sending `{}` would make a
+      // `Content-Type` header the gateway never asked for.
+      expect(init?.body).toBeUndefined();
+      expect(result).toEqual({ ok: true, status: 'cancelled' });
+    });
+
+    /** The gateway answers a stop against an already-finished child with a
+     * 409 naming the status that beat it — the caller has to be able to see
+     * which one, so it can refresh rather than surface a scary error. */
+    it('surfaces the 409 the gateway sends when the child already finished', async () => {
+      const fetchImpl = fakeFetch(
+        jsonResponse(
+          { code: 'validation_failed', error: 'Sub-agent child-1 is already done' },
+          409,
+        ),
+      );
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v1',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.stopSubagent('child-1')).rejects.toMatchObject({
+        status: 409,
+        code: 'validation_failed',
+        detail: 'Sub-agent child-1 is already done',
+      });
+    });
+  });
 });
 
 describe('relay-generated errors (no JSON envelope)', () => {

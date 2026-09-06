@@ -36,7 +36,7 @@
  * the emission order staying what it is today.
  */
 
-import type { MobileAgentEvent } from '@dash/mobile-contract';
+import type { MobileAgentEvent, SubagentStatus as WireSubagentStatus } from '@dash/mobile-contract';
 
 /** Coalesced lifecycle state for one child, as the collapsed row renders it. */
 export type SubagentStatus =
@@ -148,6 +148,22 @@ const TERMINAL_STATUSES = new Set<SubagentStatus>([
  */
 export function isTerminalSubagentStatus(status: SubagentStatus): boolean {
   return TERMINAL_STATUSES.has(status);
+}
+
+/**
+ * The wire's status (`SubagentInfo.status`, `SubagentListEntry.status`) as
+ * this module's row model names it.
+ *
+ * The two vocabularies are the same set with one rename — the wire's
+ * `waiting_input` is `waiting` here — so this is the whole translation, and
+ * it exists so that anything reading a child from REST (the tasks panel,
+ * §8.4) shares ONE terminal predicate and one status vocabulary with the rows
+ * folded out of the transcript. A second `status === 'done' || …` list
+ * somewhere else is how MC ended up with an `isTerminalStatus` that had never
+ * heard of `interrupted` or `max_turns`.
+ */
+export function rowStatusOf(status: WireSubagentStatus): SubagentStatus {
+  return status === 'waiting_input' ? 'waiting' : status;
 }
 
 function str(value: unknown): string | undefined {

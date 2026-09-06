@@ -226,6 +226,12 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
       data-testid="subagent-block"
       data-status={status}
       data-subagent-id={subagentId}
+      // Mirrors the header button's `aria-expanded`. Present for the tasks
+      // panel (§8.4), whose "clicking scrolls to and expands the row" is the
+      // one behaviour that has to be observable from OUTSIDE this component —
+      // the panel sets expansion in the store and then needs to know the row
+      // it scrolled to actually opened.
+      data-expanded={open}
     >
       <button
         type="button"
@@ -372,7 +378,7 @@ export const SUBAGENT_SEND_FAILED_COPY = 'Could not reach this agent. Try again.
  * indication, so a second Enter sent the follow-up twice. See the comment on
  * the `sending` read below.
  */
-function InlineComposer({
+export function InlineComposer({
   store,
   uiKey,
   testId,
@@ -599,13 +605,16 @@ function useExpansion(
   return [ui.expanded ?? fallback, (next: boolean) => patch({ expanded: next })];
 }
 
-/** `subagentUi` key for a parallel-group container, namespaced so it cannot
- * collide with the row of the child it is named after. */
-function groupExpansionKey(firstChildId: string): string {
+/** `subagents` key for a parallel-group container, namespaced so it cannot
+ * collide with the row of the child it is named after. Exported because the
+ * tasks panel has to open the cluster a row it is revealing sits inside — a
+ * collapsed cluster unmounts its rows outright, so setting the row's own
+ * expansion alone would reveal nothing. */
+export function groupExpansionKey(firstChildId: string): string {
   return `group:${firstChildId}`;
 }
 
-/** `subagentUi` key for the waiting-input reply composer. It gets its own
+/** `subagents` key for the waiting-input reply composer. It gets its own
  * entry because it and the body composer can be on screen simultaneously — a
  * child can be `waiting` with its row expanded — and one shared draft would
  * mirror every keystroke into both. */
@@ -614,7 +623,7 @@ function replyComposerKey(childId: string): string {
 }
 
 /**
- * `subagentUi` key for the expanded body composer, symmetrical with
+ * `subagents` key for the expanded body composer, symmetrical with
  * {@link replyComposerKey} and for a second reason on top of the shared-draft
  * one: the BARE child id is the key `useExpansion` reads, and
  * `patchSubagentUi` writes a fresh entry object per keystroke, so a composer
