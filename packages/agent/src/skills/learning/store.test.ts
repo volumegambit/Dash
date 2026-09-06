@@ -222,3 +222,44 @@ describe('persistBook', () => {
     );
   });
 });
+
+describe('persistBook refuses to clobber a skill that is not a lesson book', () => {
+  it('refuses when an agent-created skill exists but holds no lesson book', async () => {
+    // `create_skill` writes .source=agent too, so the marker alone does NOT mean
+    // "safe to overwrite". A skill the user asked the agent to write has real
+    // instructions in it; rendering a lesson book over the top destroys them.
+    const skillDir = await makeAgentSkill('deploy-staging');
+    await writeFile(
+      join(skillDir, 'SKILL.md'),
+      '---\nname: deploy-staging\ndescription: d\n---\nStep 1: run the deploy script\n',
+    );
+
+    await expect(persistBook(dir, emptyBook('deploy-staging', 'd'))).rejects.toThrow(
+      /already exists/i,
+    );
+
+    const md = await readFile(join(skillDir, 'SKILL.md'), 'utf-8');
+    expect(md).toContain('Step 1: run the deploy script');
+  });
+
+  it('still updates a skill that already has a lesson book', async () => {
+    const first = emptyBook('learned', 'd');
+    await persistBook(dir, first);
+
+    await expect(
+      persistBook(dir, {
+        ...first,
+        bullets: [
+          {
+            id: 'aaa111',
+            text: 'A lesson.',
+            helpful: 0,
+            harmful: 0,
+            createdAt: '2026-09-06',
+            lastTouchedAt: '2026-09-06',
+          },
+        ],
+      }),
+    ).resolves.toBeUndefined();
+  });
+});

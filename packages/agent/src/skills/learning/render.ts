@@ -40,6 +40,15 @@ export function flattenOneLine(text: string, max: number = LESSON_LIMITS.maxLess
   return collapsed.length > max ? `${collapsed.slice(0, max - 1).trimEnd()}…` : collapsed;
 }
 
+/**
+ * Footer stamped on every generated body. It is also the marker that makes a
+ * generated `SKILL.md` recognisable: `persistBook` will only overwrite a file
+ * that carries it, which is what stops a lesson book from being rendered over a
+ * skill somebody actually wrote.
+ */
+export const GENERATED_MARKER =
+  'This file is generated from `lessons.json`; edits here are replaced on the next update.';
+
 /** The markdown body of a learned skill: one list item per active lesson. */
 export function renderSkillBody(book: LessonBook): string {
   const lines: string[] = [];
@@ -66,9 +75,7 @@ export function renderSkillBody(book: LessonBook): string {
   }
 
   lines.push('');
-  lines.push(
-    'This file is generated from `lessons.json`; edits here are replaced on the next update.',
-  );
+  lines.push(GENERATED_MARKER);
 
   return `${lines.join('\n')}\n`;
 }

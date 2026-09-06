@@ -355,3 +355,42 @@ describe('delta ordering', () => {
     expect(result.book.bullets[0].helpful).toBe(1);
   });
 });
+
+describe('reserved skill names', () => {
+  it('drops an add that would shadow an existing skill with no lesson book', () => {
+    // `deploy-staging` is a real skill (user-authored, plugin, or installed).
+    // Writing a lesson book onto it would replace its instructions; creating a
+    // managed one of the same name would shadow it in discovery.
+    const result = mergeDeltas([], [{ op: 'add', skill: 'deploy-staging', text: 'x' }], {
+      today: TODAY,
+      reservedNames: ['deploy-staging'],
+    });
+
+    expect(result.created).toEqual([]);
+    expect(result.books).toEqual([]);
+    expect(result.dropped[0].reason).toMatch(/existing skill/i);
+  });
+
+  it('still accepts lessons for a learned skill that shares the name', () => {
+    // Once a book exists for that name it IS the learned skill, so reserving
+    // the name must not freeze it out of further lessons.
+    const existing = book('deploy-lessons', [lesson('first lesson')]);
+
+    const result = mergeDeltas(
+      [existing],
+      [{ op: 'add', skill: 'deploy-lessons', text: 'second' }],
+      {
+        today: TODAY,
+        reservedNames: ['deploy-lessons'],
+      },
+    );
+
+    expect(result.books).toHaveLength(1);
+    expect(result.books[0].bullets).toHaveLength(2);
+  });
+
+  it('is unaffected when no names are reserved', () => {
+    const result = mergeDeltas([], [{ op: 'add', skill: 'anything', text: 'x' }], { today: TODAY });
+    expect(result.created).toEqual(['anything']);
+  });
+});

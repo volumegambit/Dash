@@ -1111,7 +1111,12 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       const staged = await readPending(dir, c.req.param('pendingId'));
       if (!staged) return c.json({ error: 'not found' }, 404);
 
-      const result = await applyPendingLessons(dir, staged.deltas);
+      // Same guard as the unattended path: an approved lesson must not land on
+      // a skill that is not a lesson book either.
+      const reservedNames = (await agents.listSkills(id).catch(() => [])).map(
+        (skill) => skill.name,
+      );
+      const result = await applyPendingLessons(dir, staged.deltas, reservedNames);
       await removePending(dir, staged.id);
       return c.json(result);
     });

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { SkillOpError, createSkillInDir } from '../manage.js';
-import { renderSkillBody, renderSkillFile } from './render.js';
+import { GENERATED_MARKER, renderSkillBody, renderSkillFile } from './render.js';
 import {
   AGENT_SOURCE,
   LESSONS_FILENAME,
@@ -165,7 +165,39 @@ export async function writeBook(skillDir: string, book: LessonBook): Promise<voi
 export async function persistBook(managedDir: string, book: LessonBook): Promise<void> {
   const skillDir = join(managedDir, book.skill);
 
-  if (!existsSync(skillDir)) {
+  if (existsSync(skillDir)) {
+    // Ownership first, so a user-authored or plugin skill reports the real
+    // reason rather than the weaker "already exists".
+    if (!(await isAgentOwned(skillDir))) {
+      throw new SkillOpError(
+        'plugin',
+        `Skill "${book.skill}" is not agent-created; the agent does not own it and cannot record lessons against it.`,
+      );
+    }
+
+    // The `.source` = agent marker is NOT sufficient authority to overwrite:
+    // `create_skill` writes it too, so a skill the user asked the agent to
+    // author carries it while holding real instructions. Rendering a lesson
+    // book over that destroys them.
+    //
+    // A directory may be written only when it already holds a lesson book, or
+    // when its SKILL.md is one we generated. The second case matters because a
+    // corrupt book gets quarantined (and so disappears) — without it, one bad
+    // file would permanently block that skill from ever learning again.
+    const hasBook = (await readBook(skillDir)) !== null;
+    const generated = hasBook
+      ? true
+      : await readFile(join(skillDir, 'SKILL.md'), 'utf-8')
+          .then((raw) => raw.includes(GENERATED_MARKER))
+          .catch(() => false);
+
+    if (!generated) {
+      throw new SkillOpError(
+        'duplicate',
+        `Skill "${book.skill}" already exists and is not a lesson book; refusing to overwrite it. Record the lesson under a new skill that declares augments: [${book.skill}].`,
+      );
+    }
+  } else {
     await createSkillInDir({
       managedDir,
       name: book.skill,

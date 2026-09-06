@@ -115,6 +115,26 @@ describe('buildReviewPrompt', () => {
     expect(prompt).toContain('b7f2a1');
   });
 
+  it('lists the skill names a new book may not reuse', () => {
+    // Without these IN the prompt, the model is told a rule it cannot check and
+    // its safest move is to propose nothing — silently disabling learning.
+    const withTaken = buildReviewPrompt({
+      books: [book()],
+      loadedSkills: [],
+      existingSkills: ['dash-dev', 'deploy-staging'],
+    });
+
+    expect(withTaken).toContain('dash-dev');
+    expect(withTaken).toContain('deploy-staging');
+    expect(withTaken).toMatch(/already taken/i);
+  });
+
+  it('says none are taken when the catalogue is empty', () => {
+    expect(buildReviewPrompt({ books: [], loadedSkills: [], existingSkills: [] })).toMatch(
+      /already taken[^\n]*\(none\)/i,
+    );
+  });
+
   it('is usable with an empty library and no loaded skills', () => {
     const empty = buildReviewPrompt({ books: [], loadedSkills: [] });
     expect(empty.length).toBeGreaterThan(0);

@@ -20,6 +20,16 @@ import {
 export interface MergeOptions {
   today?: string;
   limits?: typeof LESSON_LIMITS;
+  /**
+   * Names of skills that already exist for this agent — plugin, installed, user
+   * -authored, or agent-authored via `create_skill`.
+   *
+   * An `add` naming one of these (that has no lesson book) is dropped. Writing a
+   * book onto such a skill would render lessons over instructions somebody
+   * meant to keep, and creating a managed skill of the same name would shadow a
+   * plugin skill in discovery. The review is told to use `augments` instead.
+   */
+  reservedNames?: string[];
 }
 
 export interface DroppedDelta {
@@ -234,8 +244,20 @@ export function mergeDeltas(
   let applied = 0;
   let skillCount = books.length;
 
+  const reserved = new Set(options.reservedNames ?? []);
+
   for (const [skill, skillDeltas] of grouped) {
     let book = bySkill.get(skill);
+
+    if (!book && reserved.has(skill)) {
+      for (const delta of skillDeltas) {
+        dropped.push({
+          delta,
+          reason: `"${skill}" names an existing skill that is not a lesson book; record this under a new skill declaring augments: [${skill}]`,
+        });
+      }
+      continue;
+    }
 
     if (!book) {
       const seed = skillDeltas.find((d) => d.op === 'add');

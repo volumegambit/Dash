@@ -28,6 +28,15 @@ export interface ReviewPromptInput {
   books: LessonBook[];
   /** Skills the agent loaded during the turn under review. */
   loadedSkills: string[];
+  /**
+   * Every skill name already in use — plugin, installed, user-authored, and
+   * agent-authored.
+   *
+   * A new book may not reuse one of these, and the merge drops any that does.
+   * The names have to be IN the prompt: told a rule it cannot check, the model's
+   * safest move is to propose nothing at all, which silently disables learning.
+   */
+  existingSkills?: string[];
 }
 
 /**
@@ -59,6 +68,10 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     input.loadedSkills.length > 0
       ? input.loadedSkills.map((s) => flattenOneLine(s, 64)).join(', ')
       : '(none)';
+  const taken =
+    input.existingSkills && input.existingSkills.length > 0
+      ? input.existingSkills.map((s) => flattenOneLine(s, 64)).join(', ')
+      : '(none)';
 
   return `You are reviewing a finished working session to decide what, if anything, should be
 remembered as a reusable lesson for next time.
@@ -68,6 +81,8 @@ remembered as a reusable lesson for next time.
 ${renderLessonIndex(input.books)}
 
 Skills loaded during this session: ${loaded}
+
+Skill names already taken (a NEW book may not reuse any of these): ${taken}
 
 ## What you are deciding
 
@@ -92,8 +107,11 @@ Return a list of deltas. There are exactly three operations:
 3. Only create a new book when nothing above fits.
 
 A new book is the expensive option: it costs a slot, and a library of many
-narrow books is worse than a few good ones. Name a book for the **class of
-task**, never for today's instance. A name that only makes sense for today —
+narrow books is worse than a few good ones. Pick a name that is not in the
+"already taken" list above. To attach a lesson to a skill that IS in that list,
+create a new book under a different name and put that skill in "augments" — the
+book is then loaded alongside it. Name a book for the **class of task**, never
+for today's instance. A name that only makes sense for today —
 containing a ticket number, an error string, a date, or a one-off feature name —
 is wrong. If that is the only name that fits, add the lesson to an existing book
 instead.
