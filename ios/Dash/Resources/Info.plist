@@ -43,6 +43,8 @@
   <string>Dash uses the camera to scan QR codes, such as approving a new device sign-in, and to take photos to attach to a conversation.</string>
   <key>NSPhotoLibraryAddUsageDescription</key>
   <string>Dash saves images from your conversations to your photo library when you ask it to.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Dash shares your approximate position with your agent so it can answer questions about where you are. It is stored with the conversation. Your time zone and region are shared without this permission.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Connect to your Dash gateway on this network.</string>
   <key>UILaunchScreen</key>

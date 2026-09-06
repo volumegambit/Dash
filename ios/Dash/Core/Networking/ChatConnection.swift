@@ -151,7 +151,10 @@ actor ChatConnection {
           agentId: agentID,
           conversationId: conversationID,
           text: text,
-          images: images.isEmpty ? nil : images
+          images: images.isEmpty ? nil : images,
+          // Read per turn, not cached: a phone that crosses a time zone
+          // reports the new one on the very next message.
+          location: LocationProvider.current()
         )
       )
     } catch {

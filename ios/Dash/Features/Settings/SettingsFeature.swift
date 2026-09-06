@@ -24,6 +24,21 @@ final class SettingsFeature {
   var isForgetting = false
   var error: String?
 
+  /// Opt-in for sharing a precise position with the agent. The coarse tier
+  /// (time zone, locale, region) is always sent and needs no consent; only this
+  /// is gated.
+  ///
+  /// A STORED property, seeded from the provider and writing through on change:
+  /// `@Observable` only tracks stored properties, so a computed passthrough to
+  /// `UserDefaults` would leave the toggle visually stuck. The provider still
+  /// owns the key itself.
+  var sharePreciseLocation: Bool = PreciseLocationProvider.shared.isEnabled {
+    didSet {
+      guard sharePreciseLocation != oldValue else { return }
+      PreciseLocationProvider.shared.setEnabled(sharePreciseLocation)
+    }
+  }
+
   var publicKeyFingerprint: String {
     let characters = Array(identity.publicKey)
     guard characters.count >= 12 else { return "Unavailable" }
