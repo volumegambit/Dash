@@ -1623,7 +1623,7 @@ export class SwarmCoordinator {
 
     // Try to deliver immediately (ruling 2: decide via acceptTurn, not pre-check).
     // Fire-and-forget; failures are bounded.
-    void this.deliverPending(handle.opts.spec.agentId, handle.parentConversationId).catch(() => {});
+    void this.deliverPending(handle.agentId, handle.parentConversationId).catch(() => {});
   }
 
   /**
@@ -1721,7 +1721,7 @@ export class SwarmCoordinator {
 
     // Try to deliver immediately (ruling 2).
     // Fire-and-forget; failures are bounded.
-    void this.deliverPending(handle.opts.spec.agentId, handle.parentConversationId).catch(() => {});
+    void this.deliverPending(handle.agentId, handle.parentConversationId).catch(() => {});
   }
 
   private pushHistory(agentId: string, snap: RunSnapshot): void {

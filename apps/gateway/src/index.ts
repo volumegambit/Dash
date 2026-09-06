@@ -59,6 +59,7 @@ import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { migrateIncludeBundled } from './migrate-include-bundled.js';
 import { ModelsStore } from './models-store.js';
+import { createNotificationDriver } from './notification-driver.js';
 import { OAuthRefreshCoordinator } from './oauth-refresh.js';
 import { filterPluginsByAgent } from './plugin-filtering.js';
 import { reconcilePluginMcpServers, registerPluginMcpServers } from './plugin-mcp.js';
@@ -588,6 +589,12 @@ async function main() {
         });
       },
     },
+    // Notification driver for completion notifications (design §7.3).
+    notifications: createNotificationDriver({
+      conversations: conversationService,
+      hub: () => hub,
+      agentRegistry: registry,
+    }),
   });
 
   // Repair swarm turns a previous gateway process died in the middle of:
@@ -1004,6 +1011,21 @@ async function main() {
   // completions through the hub.
   hubRef.current = resumableChatHub;
   childTurnDriver.attachObserver();
+
+  // Drain and deliver pending notifications when a parent turn finishes
+  // (design §7.3, ruling 3). Register a hub observer to catch finishTurn.
+  resumableChatHub.addObserver({
+    onEvent() {
+      // No-op; we only care about finishTurn.
+    },
+    onFinish(turn) {
+      // Drain any pending notifications for this conversation and deliver
+      // in one coalesced system turn (ruling 4).
+      void swarmCoordinator.deliverPending(turn.agentId, turn.conversationId).catch(() => {
+        // Delivery failures are bounded (ruling 8); ignore them.
+      });
+    },
+  });
 
   // A deleted conversation cascades to its descendants' rows, so the
   // coordinator's in-memory child registry for it is addressing nothing. Drop

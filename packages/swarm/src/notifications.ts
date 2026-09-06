@@ -95,7 +95,7 @@ export function notificationInitialEvents(items: PendingNotification[]): AgentEv
 
       if (!subagentId) continue;
 
-      const event: AgentEvent = {
+      const event: Record<string, unknown> = {
         type: 'subagent_finished',
         subagentId,
         subagentType: (payload.subagentType as string) ?? 'general-purpose',
@@ -115,7 +115,7 @@ export function notificationInitialEvents(items: PendingNotification[]): AgentEv
         event.name = payload.name as string;
       }
 
-      events.push(event);
+      events.push(event as AgentEvent);
     }
   }
 

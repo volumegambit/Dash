@@ -110,6 +110,7 @@ export class ChildHandle {
   /** The child's conversation id — its subagent id, and its legacy worker id. */
   readonly subagentId: string;
   readonly workerId: string;
+  readonly agentId: string;
   readonly parentConversationId: string;
   readonly parentTurnId: string;
   readonly role: string;
@@ -167,6 +168,7 @@ export class ChildHandle {
     this.driver = opts.driver;
     this.subagentId = opts.spec.childConversationId;
     this.workerId = opts.spec.childConversationId;
+    this.agentId = opts.spec.agentId;
     this.parentConversationId = opts.spec.parentConversationId;
     this.parentTurnId = opts.spec.parentTurnId;
     this.role = opts.spec.role;
