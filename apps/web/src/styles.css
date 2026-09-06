@@ -1742,3 +1742,16 @@ textarea:focus-visible {
   opacity: 0.6;
   text-align: right;
 }
+
+/* A note the gateway appended after a turn finished — a skill learned or a
+   memory saved. Deliberately quiet: it is bookkeeping, not conversation. */
+.notice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  opacity: 0.75;
+}

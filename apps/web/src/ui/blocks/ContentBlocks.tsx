@@ -615,6 +615,9 @@ export function getMessageCopyText(content: ConversationContent): string {
     }
     return text;
   }
+  if (content.type === 'notice') {
+    return typeof content.text === 'string' ? content.text : '';
+  }
   return '';
 }
 
@@ -627,6 +630,18 @@ export function getMessageCopyText(content: ConversationContent): string {
  * throwing.
  */
 export function ContentBlocks({ content }: ContentBlocksProps): ReactNode {
+  // A notice is what the post-turn review left behind — a skill learned or a
+  // memory saved. It is a message rather than a turn event because it is
+  // produced after the turn is finalised.
+  if (isRecord(content) && content.type === 'notice') {
+    const kind = content.kind === 'memory_saved' ? 'memory_saved' : 'skill_learned';
+    return (
+      <div className="notice-chip" data-testid="notice-chip" data-notice-kind={kind}>
+        {typeof content.text === 'string' ? content.text : ''}
+      </div>
+    );
+  }
+
   if (!isRecord(content) || (content.type !== 'user' && content.type !== 'assistant')) {
     return <UnknownBlock />;
   }

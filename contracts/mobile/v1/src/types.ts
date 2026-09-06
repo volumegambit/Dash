@@ -171,6 +171,19 @@ export type ConversationContent =
    */
   | { type: 'notice'; kind: ConversationNoticeKind; text: string };
 
+/**
+ * A skill as a mobile client sees it: read-only, and without the on-disk
+ * `location` (a remote client has no use for a gateway filesystem path) or the
+ * `editable` flag (nothing here is editable).
+ */
+export interface MobileSkill {
+  name: string;
+  description: string;
+  trigger?: string;
+  source: 'managed' | 'agent' | 'remote' | 'plugin';
+  content?: string;
+}
+
 export interface ConversationSummary {
   id: string;
   agentId: string;

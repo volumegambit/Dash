@@ -1004,6 +1004,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   mountAgentRoutes(app, AGENT_CREATE_KEYS, AGENT_UPDATE_KEYS);
+  // Read-only skills for mobile and web clients. Only the GET is exposed: the
+  // create/install/edit/remove routes stay on the loopback namespace, so a
+  // remote client can see what an agent knows but never change it. `location`
+  // and `editable` are dropped — a gateway filesystem path is of no use to a
+  // remote client, and nothing here is editable.
+  mobileV1.get('/agents/:id/skills', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const skills = await agents.listSkills(id);
+    return c.json(
+      skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        ...(skill.trigger !== undefined ? { trigger: skill.trigger } : {}),
+        source: skill.source,
+        ...(skill.content !== undefined ? { content: skill.content } : {}),
+      })),
+    );
+  });
+
   mountAgentRoutes(mobileV1, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);
 
   // --- Skill routes ---

@@ -2798,3 +2798,60 @@ describe('canonical and legacy conversation replay', () => {
     },
   );
 });
+
+describe('mobile read-only skills', () => {
+  function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'x',
+      model: 'm',
+      systemPrompt: 'p',
+    });
+  }
+
+  it('serves an agent’s skills without filesystem paths or the editable flag', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    (agents.listSkills as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        name: 'write-files',
+        description: 'Use when writing files',
+        location: '/Users/someone/.dash/gateway/skills/a/write-files/SKILL.md',
+        content: 'body',
+        editable: true,
+        source: 'agent',
+      },
+    ]);
+
+    const res = await app.request(`/mobile/v1/agents/${id}/skills`, { headers: MOBILE_AUTH });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      {
+        name: 'write-files',
+        description: 'Use when writing files',
+        source: 'agent',
+        content: 'body',
+      },
+    ]);
+  });
+
+  it('404s for an unknown agent', async () => {
+    const { app } = createApp();
+    const res = await app.request('/mobile/v1/agents/nope/skills', { headers: MOBILE_AUTH });
+    expect(res.status).toBe(404);
+  });
+
+  it('does not expose skill mutation to mobile clients', async () => {
+    const { app, agentRegistry } = createApp();
+    const { id } = registerAgent(agentRegistry);
+
+    for (const [method, path] of [
+      ['POST', `/mobile/v1/agents/${id}/skills`],
+      ['DELETE', `/mobile/v1/agents/${id}/skills/write-files`],
+      ['POST', `/mobile/v1/agents/${id}/skills/install`],
+    ] as const) {
+      const res = await app.request(path, { method, headers: MOBILE_JSON_HEADERS });
+      expect(res.status).toBe(404);
+    }
+  });
+});

@@ -62,6 +62,30 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /agents/{id}/skills:
+    get:
+      operationId: listMobileAgentSkills
+      description: >-
+        Read-only view of the skills an agent can load, including any it learned
+        for itself. Mobile clients cannot create, install, edit or remove
+        skills; those routes stay on the loopback management namespace.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Skills visible to this agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileSkillList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /agents/{id}:
     parameters:
       - $ref: '#/components/parameters/AgentId'
@@ -607,6 +631,20 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/MobileAgent'
+    MobileSkill:
+      type: object
+      additionalProperties: false
+      required: [name, description, source]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        trigger: { type: string }
+        source: { enum: [managed, agent, remote, plugin] }
+        content: { type: string }
+    MobileSkillList:
+      type: array
+      items:
+        $ref: '#/components/schemas/MobileSkill'
     CreateMobileAgentRequest:
       type: object
       additionalProperties: false

@@ -424,6 +424,18 @@
       "document": "openapi",
       "schema": "ConversationMessagePage",
       "valid": false
+    },
+    {
+      "file": "agent-skills.json",
+      "document": "openapi",
+      "schema": "MobileSkillList",
+      "valid": true
+    },
+    {
+      "file": "invalid/agent-skills-bad-source.json",
+      "document": "openapi",
+      "schema": "MobileSkillList",
+      "valid": false
     }
   ]
 }
