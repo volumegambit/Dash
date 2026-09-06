@@ -13,7 +13,7 @@ export {
   SOURCE_FILENAME,
   isLessonDelta,
 } from './types.js';
-export { emptyBook, isAgentOwned, listBooks, readBook, writeBook } from './store.js';
+export { emptyBook, isAgentOwned, listBooks, persistBook, readBook, writeBook } from './store.js';
 export type { BookMergeResult, DroppedDelta, MergeOptions, MergeResult } from './merge.js';
 export { applyDeltasToBook, lessonId, mergeDeltas, normaliseLessonText } from './merge.js';
 export { flattenOneLine, renderSkillBody, renderSkillFile } from './render.js';

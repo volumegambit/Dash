@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { emptyBook, listBooks, readBook, writeBook } from './store.js';
+import { emptyBook, listBooks, persistBook, readBook, writeBook } from './store.js';
 import { LESSONS_FILENAME, type LessonBook } from './types.js';
 
 let dir: string;
@@ -160,5 +160,65 @@ describe('listBooks', () => {
 
   it('returns an empty list when the managed directory does not exist', async () => {
     expect(await listBooks(join(dir, 'missing'))).toEqual([]);
+  });
+});
+
+describe('persistBook', () => {
+  it('creates the skill directory, the marker, the book and a rendered SKILL.md', async () => {
+    const b: LessonBook = {
+      ...emptyBook('learned-skill', 'Use when a build fails'),
+      bullets: [
+        {
+          id: 'aaa111',
+          text: 'Re-run the generator first.',
+          helpful: 0,
+          harmful: 0,
+          createdAt: '2026-09-06',
+          lastTouchedAt: '2026-09-06',
+        },
+      ],
+    };
+
+    await persistBook(dir, b);
+
+    const skillDir = join(dir, 'learned-skill');
+    expect((await readFile(join(skillDir, '.source'), 'utf-8')).trim()).toBe('agent');
+    expect(await readBook(skillDir)).toEqual(b);
+
+    const md = await readFile(join(skillDir, 'SKILL.md'), 'utf-8');
+    expect(md).toContain('name: learned-skill');
+    expect(md).toContain('Re-run the generator first.');
+  });
+
+  it('updates an existing learned skill in place', async () => {
+    const first = emptyBook('learned-skill', 'd');
+    await persistBook(dir, first);
+
+    const second: LessonBook = {
+      ...first,
+      bullets: [
+        {
+          id: 'bbb222',
+          text: 'A second lesson.',
+          helpful: 1,
+          harmful: 0,
+          createdAt: '2026-09-06',
+          lastTouchedAt: '2026-09-06',
+        },
+      ],
+    };
+    await persistBook(dir, second);
+
+    const skillDir = join(dir, 'learned-skill');
+    expect((await readBook(skillDir))?.bullets).toHaveLength(1);
+    expect(await readFile(join(skillDir, 'SKILL.md'), 'utf-8')).toContain('A second lesson.');
+  });
+
+  it('refuses to overwrite a skill the agent does not own', async () => {
+    await makeUserSkill('user-authored');
+
+    await expect(persistBook(dir, emptyBook('user-authored', 'd'))).rejects.toThrow(
+      /does not own/i,
+    );
   });
 });

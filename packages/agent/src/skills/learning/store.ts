@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { SkillOpError } from '../manage.js';
+import { SkillOpError, createSkillInDir } from '../manage.js';
+import { renderSkillBody, renderSkillFile } from './render.js';
 import {
   AGENT_SOURCE,
   LESSONS_FILENAME,
@@ -150,6 +151,31 @@ export async function writeBook(skillDir: string, book: LessonBook): Promise<voi
     await unlink(tempPath).catch(() => {});
     throw error;
   }
+}
+
+/**
+ * Write a lesson book and the `SKILL.md` rendered from it, creating the skill
+ * directory when it does not exist yet.
+ *
+ * Creation goes through `createSkillInDir` rather than writing the files
+ * directly, so a learned skill picks up the same `.source` marker and name
+ * validation as any other agent-created skill — and so there is exactly one
+ * place where a skill directory comes into being.
+ */
+export async function persistBook(managedDir: string, book: LessonBook): Promise<void> {
+  const skillDir = join(managedDir, book.skill);
+
+  if (!existsSync(skillDir)) {
+    await createSkillInDir({
+      managedDir,
+      name: book.skill,
+      description: book.description,
+      content: renderSkillBody(book),
+    });
+  }
+
+  await writeBook(skillDir, book);
+  await writeFile(join(skillDir, 'SKILL.md'), renderSkillFile(book), 'utf-8');
 }
 
 /** Every lesson book under a managed skills directory, skill-name ordered. */
