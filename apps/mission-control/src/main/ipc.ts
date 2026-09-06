@@ -69,6 +69,7 @@ import type {
 import { captureChatIpcResult } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
+import { readCoarseLocation } from './client-location.js';
 import { startCodexOAuth } from './codex-auth.js';
 import {
   createCompanionWindow,
@@ -880,6 +881,11 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
       conversationController,
       pendingConversationRuntime?.transport ?? undefined,
     );
+    // Coarse location only -- Mission Control is coarse-only by decision (see
+    // docs/plans/specs/2026-09-06-client-location-awareness-design.md). Read
+    // per turn rather than cached so a laptop that crosses a time zone reports
+    // the new one on the next message.
+    chatService.setLocationProvider(() => readCoarseLocation(app));
   }
   return chatService;
 }

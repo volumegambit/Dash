@@ -116,6 +116,12 @@
       "valid": true
     },
     {
+      "file": "chat-send-with-location.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": true
+    },
+    {
       "file": "chat-resume.json",
       "document": "chat-ws",
       "schema": "ChatResume",
@@ -405,6 +411,12 @@
       "file": "invalid/chat-error-missing-error.json",
       "document": "chat-ws",
       "schema": "ChatError",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-send-latitude-out-of-range.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
       "valid": false
     },
     {

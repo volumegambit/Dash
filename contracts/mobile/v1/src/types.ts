@@ -225,6 +225,43 @@ export interface MobileApiError {
   details?: Record<string, unknown>;
 }
 
+/**
+ * A precise position. Present ONLY when the user opted in in-app AND the OS
+ * granted a location permission.
+ */
+export interface MobilePreciseLocation {
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  /** RFC 3339. May predate the message — clients may send a cached fix. */
+  capturedAt: string;
+  /** Reverse-geocoded place, when the client resolved one. Best-effort. */
+  place?: string;
+}
+
+/**
+ * Location context a client reports with a chat turn.
+ *
+ * The coarse fields need no OS permission on any platform: they come from
+ * `Intl`/`Locale`, which every locale-aware UI already reads.
+ */
+export interface MobileClientLocation {
+  /** IANA time zone id, e.g. "Asia/Singapore". */
+  timezone: string;
+  /**
+   * Minutes EAST of UTC at send time (Singapore = 480). Disambiguates DST.
+   * NOTE the sign: JS `Date.getTimezoneOffset()` is west-positive and MUST be
+   * negated by web/Electron clients; Swift's `TimeZone.secondsFromGMT()` is
+   * already east-positive and only needs dividing by 60.
+   */
+  utcOffsetMinutes: number;
+  /** BCP-47 language tag, e.g. "en-SG". */
+  locale: string;
+  /** ISO 3166-1 alpha-2 region when the platform exposes one. */
+  region?: string;
+  precise?: MobilePreciseLocation;
+}
+
 export type MobileWsClientFrame =
   | {
       type: 'message';
@@ -233,6 +270,7 @@ export type MobileWsClientFrame =
       channelId: string;
       conversationId: string;
       text: string;
+      location?: MobileClientLocation;
       images?: MobileImage[];
       streamingBehavior?: 'steer' | 'followUp';
       resumable?: boolean;

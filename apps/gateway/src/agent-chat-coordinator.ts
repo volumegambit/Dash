@@ -17,6 +17,7 @@ import {
 import type {
   AgentBackend,
   AgentEvent,
+  ClientLocation,
   DashAgentConfig,
   FlatSkillFile,
   ImageBlock,
@@ -110,6 +111,12 @@ export interface ChatRequest {
   channelId?: string;
   text: string;
   images?: ImageBlock[];
+  /**
+   * Location the client reported for this message, already validated by
+   * `toClientLocation`. Undefined for channel adapters (Slack, iMessage),
+   * which have no client context to report.
+   */
+  location?: ClientLocation;
   /**
    * Abort signal for the in-flight chat. The merge wrapper listens on it: an
    * abort breaks the race loop promptly (without waiting for the next
@@ -326,6 +333,17 @@ export function createAgentChatCoordinator(
       // PROMPT. `undefined` = no memory block. The memory TOOLS are captured at
       // backend start(), which is why that PATCH route also evicts the entry.
       memory: memoryConfigFor(agentId),
+      // Resolved LIVE per message like the fields above, so flipping the gate
+      // takes effect on the next chat without evicting the warm backend for
+      // the PROMPT. `undefined` = enabled (see GatewayAgentConfig.location).
+      //
+      // `tool` deliberately tracks `enabled`: the tool is registered at
+      // backend start() under exactly this condition, and the <environment>
+      // block must never name a tool the model was not given.
+      location: {
+        enabled: entry.config.location?.enabled !== false,
+        tool: entry.config.location?.enabled !== false,
+      },
     };
   }
 
@@ -460,7 +478,7 @@ export function createAgentChatCoordinator(
             request.channelId ?? 'direct',
             request.conversationId,
             request.text,
-            { images: request.images },
+            { images: request.images, location: request.location },
           );
         } finally {
           pool.unpin(request.agentId, request.conversationId);
@@ -511,7 +529,7 @@ export function createAgentChatCoordinator(
         request.channelId ?? 'direct',
         request.conversationId,
         request.text,
-        { images: request.images },
+        { images: request.images, location: request.location },
       );
 
       // The two retained promises. `genNext === null` marks the orchestrator

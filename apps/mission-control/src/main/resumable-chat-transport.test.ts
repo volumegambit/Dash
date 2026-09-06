@@ -157,6 +157,45 @@ describe('ResumableChatTransport', () => {
     expect(delivered).toHaveBeenCalledWith(accepted);
   });
 
+  it('carries a client location on the frame when one is supplied', async () => {
+    const sendFrame =
+      await json<Extract<MobileWsClientFrame, { type: 'message' }>>('chat-send.json');
+    const socket = new FakeSocket();
+    const transport = makeTransport(() => socket, vi.fn());
+
+    void transport.send(conversation, sendFrame.id, sendFrame.text, sendFrame.images, {
+      timezone: 'Asia/Singapore',
+      utcOffsetMinutes: 480,
+      locale: 'en-SG',
+      region: 'SG',
+    });
+    socket.open();
+
+    expect(socket.sent[0]).toMatchObject({
+      type: 'message',
+      location: {
+        timezone: 'Asia/Singapore',
+        utcOffsetMinutes: 480,
+        locale: 'en-SG',
+        region: 'SG',
+      },
+    });
+  });
+
+  it('omits location entirely when none is supplied', async () => {
+    const sendFrame =
+      await json<Extract<MobileWsClientFrame, { type: 'message' }>>('chat-send.json');
+    const socket = new FakeSocket();
+    const transport = makeTransport(() => socket, vi.fn());
+
+    void transport.send(conversation, sendFrame.id, sendFrame.text, sendFrame.images);
+    socket.open();
+
+    // Spread-omitted, not `location: undefined` -- this is what keeps the
+    // byte-for-byte fixture equality above true.
+    expect('location' in (socket.sent[0] as object)).toBe(false);
+  });
+
   it('retries the same idempotent message ID before acceptance', async () => {
     const sendFrame =
       await json<Extract<MobileWsClientFrame, { type: 'message' }>>('chat-send.json');

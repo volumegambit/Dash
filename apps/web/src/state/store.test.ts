@@ -480,6 +480,30 @@ describe('createWebAppStore', () => {
       expect(typeof (sent as { channelId?: string }).channelId).toBe('string');
     });
 
+    it('attaches the coarse client location to the ChatSend frame', async () => {
+      const { rest } = fakeRest({ conversationPage: { items: [summary()], nextCursor: null } });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await store.getState().loadConversations();
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendMessage(CONVERSATION_ID, 'where am I?');
+
+      const sent = sockets[0].sent[0] as { location?: Record<string, unknown> };
+      expect(sent.location).toBeDefined();
+      // jsdom reports a real IANA zone and BCP-47 tag, so this asserts the
+      // shape the gateway validator requires rather than pinning a machine's
+      // own zone: an empty string there would make the gateway drop the whole
+      // coarse tier.
+      expect(typeof sent.location?.timezone).toBe('string');
+      expect(sent.location?.timezone).not.toBe('');
+      expect(typeof sent.location?.locale).toBe('string');
+      expect(sent.location?.locale).not.toBe('');
+      expect(Number.isInteger(sent.location?.utcOffsetMinutes)).toBe(true);
+      // Minutes EAST of UTC, so it must be the negation of the JS west-positive value.
+      expect(sent.location?.utcOffsetMinutes).toBe(-new Date().getTimezoneOffset());
+    });
+
     // Chat UX Phase 4 Task 5 (audit #14 remainder): web attachments. Images
     // ride on the same `message` frame iOS/MC send (`MobileWsClientFrame`
     // `images`), and the optimistic user message carries them too so the

@@ -9,7 +9,10 @@ struct SettingsView: View {
   @State private var didCopyPublicKey = false
 
   var body: some View {
-    Form {
+    // `@Environment` hands back a plain reference; `@Bindable` is what turns an
+    // @Observable into something `$`-bindable for the location Toggle.
+    @Bindable var feature = feature
+    return Form {
       Section("Gateway") {
         LabeledContent("Name") {
           // `LabeledContent(_:value:)` wraps a long value onto its own line
@@ -80,6 +83,22 @@ struct SettingsView: View {
         }
         .disabled(feature.canReconnect == false)
         .accessibilityLabel(feature.reconnectButtonTitle)
+      }
+
+      Section {
+        Toggle("Share precise location", isOn: $feature.sharePreciseLocation)
+          .frame(minHeight: 44)
+          .accessibilityIdentifier("settings.share-precise-location")
+      } header: {
+        Text("Location")
+      } footer: {
+        Text(
+          """
+          Your agent already knows your time zone and region. Turning this on \
+          also shares your approximate coordinates, which are stored with the \
+          conversation.
+          """
+        )
       }
 
       Section {
