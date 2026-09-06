@@ -78,6 +78,35 @@ sealed interface AgentEvent {
     data class AgentSpawned(val name: String) : AgentEvent
 
     @Serializable
+    data class WorkerSpawned(
+        val workerId: String,
+        val runId: String,
+        val role: String,
+        val brief: String,
+        val model: String,
+    ) : AgentEvent
+
+    @Serializable
+    data class WorkerStatus(
+        val workerId: String,
+        val runId: String,
+        val role: String,
+        val status: String,
+        val detail: String? = null,
+        val question: String? = null,
+    ) : AgentEvent
+
+    @Serializable
+    data class WorkerDone(
+        val workerId: String,
+        val runId: String,
+        val role: String,
+        val status: String,
+        val report: String,
+        val usage: Usage? = null,
+    ) : AgentEvent
+
+    @Serializable
     data class AgentRetry(val attempt: Int, val reason: String) : AgentEvent
 
     @Serializable
@@ -128,6 +157,9 @@ object AgentEventSerializer : JsonContentPolymorphicSerializer<AgentEvent>(Agent
             "error" -> AgentEvent.ErrorEvent.serializer()
             "file_changed" -> AgentEvent.FileChanged.serializer()
             "agent_spawned" -> AgentEvent.AgentSpawned.serializer()
+            "worker_spawned" -> AgentEvent.WorkerSpawned.serializer()
+            "worker_status" -> AgentEvent.WorkerStatus.serializer()
+            "worker_done" -> AgentEvent.WorkerDone.serializer()
             "agent_retry" -> AgentEvent.AgentRetry.serializer()
             "context_compacted" -> AgentEvent.ContextCompacted.serializer()
             "question" -> AgentEvent.Question.serializer()

@@ -359,6 +359,8 @@ private func assistantMessage(
   var assistant = AssistantMessageProjection()
   assistant.text = text
   assistant.toolCards = toolCards
+  if text.isEmpty == false { assistant.timeline.append(.text(text)) }
+  assistant.timeline.append(contentsOf: toolCards.map(AssistantTimelineBlock.tool))
   return ChatMessageState(
     id: id,
     turnID: "turn-1",

@@ -1,8 +1,70 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ConversationContent } from '@dash/mobile-contract';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ContentBlocks, getMessageCopyText } from './ContentBlocks.js';
 
+type ChatOrderExpected = {
+  kind: 'text' | 'thinking' | 'tool' | 'question';
+  id?: string;
+  label?: string;
+  status?: 'running' | 'succeeded' | 'failed';
+  text?: string;
+};
+
+type ChatOrderFixture = {
+  version: number;
+  cases: Array<{
+    name: string;
+    events: Extract<ConversationContent, { type: 'assistant' }>['events'];
+    expected: ChatOrderExpected[];
+  }>;
+};
+
+const chatOrderFixture = JSON.parse(
+  readFileSync(
+    join(import.meta.dirname, '../../../../../scripts/fixtures/chat-event-order.json'),
+    'utf8',
+  ),
+) as ChatOrderFixture;
+
+function orderedFixtureElements(expected: ChatOrderExpected[]): HTMLElement[] {
+  const tools = screen.queryAllByTestId('tool-use-block');
+  const thinking = screen.queryAllByTestId('thinking-block');
+  let toolIndex = 0;
+  let thinkingIndex = 0;
+  return expected.map((entry) => {
+    if (entry.kind === 'tool') {
+      const element = tools[toolIndex++];
+      expect(element).toBeTruthy();
+      expect(element.textContent).toContain(entry.label);
+      expect(element.getAttribute('data-status')).toBe(entry.status);
+      return element;
+    }
+    if (entry.kind === 'thinking') {
+      const element = thinking[thinkingIndex++];
+      expect(element).toBeTruthy();
+      return element;
+    }
+    return screen.getByText(entry.text ?? '');
+  });
+}
+
 describe('ContentBlocks', () => {
+  it.each(chatOrderFixture.cases)(
+    'matches shared assistant event order: $name',
+    ({ events, expected }) => {
+      render(<ContentBlocks content={{ type: 'assistant', events }} />);
+      const elements = orderedFixtureElements(expected);
+      for (let index = 1; index < elements.length; index++) {
+        expect(
+          elements[index - 1].compareDocumentPosition(elements[index]) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    },
+  );
+
   it('renders user content as text', () => {
     const content: ConversationContent = { type: 'user', text: 'Is the mobile connection ready?' };
     render(<ContentBlocks content={content} />);

@@ -129,7 +129,17 @@ struct NoticeProjection: Equatable, Sendable {
   var text: String
 }
 
+enum AssistantTimelineBlock: Equatable, Sendable {
+  case text(String)
+  case thinking(String)
+  case tool(ToolCardState)
+  case worker(WorkerCardState)
+  case status(StatusRowState)
+  case question(QuestionState)
+}
+
 struct AssistantMessageProjection: Equatable, Sendable {
+  var timeline: [AssistantTimelineBlock] = []
   var text = ""
   var thinking = ""
   // MC parity (design doc appendix §4): thinking is collapsed by default,
@@ -326,6 +336,14 @@ enum ChatReducer {
         guard var assistant = state.messages[index].assistant else { continue }
         guard assistant.pendingQuestion?.id == questionID else { continue }
         assistant.pendingQuestion?.answer = answer
+        if let question = assistant.pendingQuestion,
+          let timelineIndex = assistant.timeline.firstIndex(where: {
+            if case let .question(existing) = $0 { return existing.id == questionID }
+            return false
+          })
+        {
+          assistant.timeline[timelineIndex] = .question(question)
+        }
         state.messages[index].assistant = assistant
         break
       }
@@ -573,15 +591,26 @@ enum ChatReducer {
     switch event {
     case let .textDelta(text):
       assistant.text += text
+      if case let .text(existing) = assistant.timeline.last {
+        assistant.timeline[assistant.timeline.count - 1] = .text(existing + text)
+      } else {
+        assistant.timeline.append(.text(text))
+      }
 
     case let .thinkingDelta(text):
       assistant.thinking += text
+      if case let .thinking(existing) = assistant.timeline.last {
+        assistant.timeline[assistant.timeline.count - 1] = .thinking(existing + text)
+      } else {
+        assistant.timeline.append(.thinking(text))
+      }
 
     case let .toolUseStart(id, name, input):
       if let index = assistant.toolCards.firstIndex(where: { $0.id == id }) {
         assistant.toolCards[index].name = name
         assistant.toolCards[index].input = input
         assistant.toolCards[index].status = .running
+        replaceTool(assistant.toolCards[index], in: &assistant)
       } else {
         assistant.toolCards.append(
           ToolCardState(
@@ -594,11 +623,13 @@ enum ChatReducer {
             details: nil
           )
         )
+        assistant.timeline.append(.tool(assistant.toolCards.last!))
       }
 
     case let .toolUseDelta(partialJSON):
       if let index = assistant.toolCards.lastIndex(where: { $0.status == .running }) {
         assistant.toolCards[index].partialJSON += partialJSON
+        replaceTool(assistant.toolCards[index], in: &assistant)
       } else {
         assistant.toolCards.append(
           ToolCardState(
@@ -611,6 +642,7 @@ enum ChatReducer {
             details: nil
           )
         )
+        assistant.timeline.append(.tool(assistant.toolCards.last!))
       }
 
     case let .toolResult(id, name, content, isError, details):
@@ -619,6 +651,7 @@ enum ChatReducer {
         assistant.toolCards[index].content = content
         assistant.toolCards[index].details = details
         assistant.toolCards[index].status = isError ? .failed : .succeeded
+        replaceTool(assistant.toolCards[index], in: &assistant)
       } else {
         assistant.toolCards.append(
           ToolCardState(
@@ -631,11 +664,13 @@ enum ChatReducer {
             details: details
           )
         )
+        assistant.timeline.append(.tool(assistant.toolCards.last!))
       }
 
     case let .response(content, usage):
       if assistant.text.isEmpty {
         assistant.text = content
+        assistant.timeline.append(.text(content))
       }
       assistant.usage = usage
       assistant.isThinkingCollapsed = true
@@ -721,6 +756,7 @@ enum ChatReducer {
         options: options,
         answer: nil
       )
+      assistant.timeline.append(.question(assistant.pendingQuestion!))
 
     case let .skillLoaded(name):
       appendStatus(kind: .skillLoaded, title: "Skill loaded", detail: name, onto: &assistant)
@@ -779,6 +815,18 @@ enum ChatReducer {
         unknownType: unknownType
       )
     )
+    assistant.timeline.append(.status(assistant.statusRows.last!))
+  }
+
+  private static func replaceTool(
+    _ tool: ToolCardState,
+    in assistant: inout AssistantMessageProjection
+  ) {
+    guard let index = assistant.timeline.firstIndex(where: {
+      if case let .tool(existing) = $0 { return existing.id == tool.id }
+      return false
+    }) else { return }
+    assistant.timeline[index] = .tool(tool)
   }
 
   private static func upsertWorker(
@@ -804,8 +852,15 @@ enum ChatReducer {
         )
       )
       index = assistant.workerCards.index(before: assistant.workerCards.endIndex)
+      assistant.timeline.append(.worker(assistant.workerCards[index]))
     }
     update(&assistant.workerCards[index])
+    if let timelineIndex = assistant.timeline.firstIndex(where: {
+      if case let .worker(existing) = $0 { return existing.key == key }
+      return false
+    }) {
+      assistant.timeline[timelineIndex] = .worker(assistant.workerCards[index])
+    }
   }
 
   /// `[message id: rowID]` for the rows currently on screen, so a canonical

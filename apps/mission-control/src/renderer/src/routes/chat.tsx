@@ -106,6 +106,10 @@ function renderEvents(
   let toolName = '';
   let toolInput: Record<string, unknown> | undefined;
   let toolOutputBuffer = '';
+  const pendingTools = new Map<
+    string,
+    { name: string; input?: Record<string, unknown>; index: number; key: string }
+  >();
   // Index of the most recently pushed error element, so an agent_retry event
   // can fold the transient error it supersedes into the retry notice.
   let lastErrorElementIndex: number | null = null;
@@ -182,20 +186,47 @@ function renderEvents(
       toolName = event.name;
       toolInput = event.input;
       toolOutputBuffer = '';
+      const toolElementKey = `tool-${blockCount++}`;
+      const toolElementIndex = elements.length;
+      elements.push(
+        <ToolBlock
+          key={toolElementKey}
+          name={toolName}
+          input={toolInput ? JSON.stringify(toolInput) : ''}
+          result=""
+          isRunning
+        />,
+      );
+      pendingTools.set(event.id, {
+        name: toolName,
+        input: toolInput,
+        index: toolElementIndex,
+        key: toolElementKey,
+      });
     } else if (event.type === 'tool_use_delta') {
       toolOutputBuffer += event.partial_json;
     } else if (event.type === 'tool_result') {
-      const inputJson = toolInput ? JSON.stringify(toolInput) : '';
-      elements.push(
+      // An orphan result has no preceding tool_use_start to flush prose. Keep
+      // its card at the event's actual position in the transcript.
+      flushProse();
+      const pending = pendingTools.get(event.id);
+      const inputJson = pending?.input ? JSON.stringify(pending.input) : '';
+      const toolElement = (
         <ToolBlock
-          key={`tool-${blockCount++}`}
-          name={toolName || event.name}
+          key={pending?.key || `tool-${blockCount++}`}
+          name={pending?.name || event.name}
           input={inputJson}
           result={event.content}
           isError={event.isError}
           toolDetails={event.details}
-        />,
+        />
       );
+      if (pending == null) {
+        elements.push(toolElement);
+      } else {
+        elements[pending.index] = toolElement;
+      }
+      pendingTools.delete(event.id);
       toolName = '';
       toolInput = undefined;
       toolOutputBuffer = '';
@@ -338,9 +369,11 @@ function renderEvents(
       </div>,
     );
   // Flush in-progress tool call (tool_use_start seen but no tool_result yet)
-  if (toolName) {
-    const inProgressSummary = toolInput ? summarize(toolName, JSON.stringify(toolInput)) : '';
-    const isBashInProgress = toolName === 'bash' || toolName === 'execute_command';
+  for (const pending of pendingTools.values()) {
+    const inProgressSummary = pending.input
+      ? summarize(pending.name, JSON.stringify(pending.input))
+      : '';
+    const isBashInProgress = pending.name === 'bash' || pending.name === 'execute_command';
     let inProgressHtml: string | null = null;
     if (isBashInProgress && inProgressSummary) {
       try {
@@ -364,9 +397,9 @@ function renderEvents(
     // after a cancel/crash), a tool_use with no tool_result means the turn
     // ended before the tool reported back — render it interrupted, not
     // forever-spinning (e.g. wait_workers after a swarm cancel).
-    elements.push(
+    const progressElement = (
       <div
-        key="tool-progress"
+        key={pending.key}
         className="mb-2 flex items-center gap-2 border border-border bg-sidebar-hover px-3 py-1.5 text-xs text-muted"
       >
         {isStreaming ? (
@@ -374,11 +407,12 @@ function renderEvents(
         ) : (
           <Ban size={12} className="shrink-0" />
         )}
-        <span className="font-mono">{toolLabel(toolName)}</span>
+        <span className="font-mono">{toolLabel(pending.name)}</span>
         {inProgressNode}
         {!isStreaming && <span className="ml-1 italic">interrupted</span>}
-      </div>,
+      </div>
     );
+    elements[pending.index] = progressElement;
   }
 
   return elements;
@@ -522,12 +556,14 @@ export function ToolBlock({
   result,
   isError,
   toolDetails,
+  isRunning = false,
 }: {
   name: string;
   input: string;
   result: string;
   isError?: boolean;
   toolDetails?: unknown;
+  isRunning?: boolean;
 }): JSX.Element {
   const hasDiff =
     name === 'edit' &&
@@ -645,7 +681,9 @@ export function ToolBlock({
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
       >
-        {isError ? (
+        {isRunning ? (
+          <Loader size={10} className="shrink-0 animate-spin text-accent mr-1.5" />
+        ) : isError ? (
           <XCircle size={10} className="shrink-0 text-red mr-1.5" />
         ) : (
           <Circle size={8} className="shrink-0 text-green fill-green mr-1.5" />

@@ -50,67 +50,8 @@ struct AssistantEventViews: View {
         TypingIndicatorView()
       }
 
-      if !projection.thinking.isEmpty {
-        ThinkingView(
-          thinking: projection.thinking,
-          isCollapsed: projection.isThinkingCollapsed
-        )
-      }
-
-      if !projection.text.isEmpty {
-        HStack(alignment: .bottom, spacing: 2) {
-          if exposesResponseToAccessibility {
-            MarkdownTextView(text: projection.text)
-              .accessibilityElement(children: .combine)
-              .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: projection.text))
-              .accessibilityIdentifier("chat.final.response")
-          } else {
-            MarkdownTextView(text: projection.text)
-              .accessibilityHidden(true)
-          }
-
-          // Trailing caret (audit #6): a render-time-only adornment, never
-          // written into `projection.text` — that string also backs the
-          // a11y label above, `assistantContextMenuItems`' Copy/Share text
-          // in `MessageViews.swift`, and markdown re-parsing on every
-          // render, so mutating it would corrupt all three.
-          if status == .streaming {
-            StreamingCaretView()
-          }
-        }
-      }
-
-      // Consecutive tool calls are one action, not several messages (chat UI
-      // polish 2026-09-05). They used to inherit this stack's 12pt
-      // inter-block spacing, so three `gog` calls from a single turn read as
-      // three separate events and consumed half the screen. 4pt groups them
-      // as a run while still separating them from the prose above and below.
-      if projection.toolCards.isEmpty == false {
-        VStack(alignment: .leading, spacing: 4) {
-          ForEach(projection.toolCards) { tool in
-            ToolCardView(tool: tool)
-          }
-        }
-      }
-
-      ForEach(projection.workerCards) { worker in
-        WorkerCardView(worker: worker)
-      }
-
-      ForEach(projection.statusRows) { row in
-        if row.kind == .unknown {
-          UnknownEventView(type: row.unknownType ?? "unknown")
-        } else {
-          StatusRowView(row: row)
-        }
-      }
-
-      if let question = projection.pendingQuestion {
-        QuestionView(
-          question: question,
-          isAnsweringEnabled: isAnsweringEnabled,
-          onAnswer: onAnswer
-        )
+      ForEach(Array(projection.timeline.enumerated()), id: \.offset) { index, block in
+        timelineView(block, isLastText: index == lastTextIndex)
       }
 
       // Chrome trim (audit #17): usage is no longer rendered per-turn.
@@ -120,6 +61,51 @@ struct AssistantEventViews: View {
       if let terminal = projection.terminal, terminal.isChromeWorthy {
         TerminalView(terminal: terminal)
       }
+    }
+  }
+
+  private var lastTextIndex: Int? {
+    projection.timeline.lastIndex {
+      if case .text = $0 { return true }
+      return false
+    }
+  }
+
+  @ViewBuilder
+  private func timelineView(_ block: AssistantTimelineBlock, isLastText: Bool) -> some View {
+    switch block {
+    case let .thinking(thinking):
+      ThinkingView(thinking: thinking, isCollapsed: projection.isThinkingCollapsed)
+    case let .text(text):
+      HStack(alignment: .bottom, spacing: 2) {
+        if exposesResponseToAccessibility {
+          MarkdownTextView(text: text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: text))
+            .accessibilityIdentifier(isLastText ? "chat.final.response" : "chat.response.segment")
+        } else {
+          MarkdownTextView(text: text).accessibilityHidden(true)
+        }
+        if status == .streaming && isLastText { StreamingCaretView() }
+      }
+    case let .tool(tool):
+      ToolCardView(tool: tool)
+    case let .worker(worker):
+      WorkerCardView(worker: worker)
+    case let .status(row):
+      if row.kind == .unknown {
+        UnknownEventView(type: row.unknownType ?? "unknown")
+      } else {
+        StatusRowView(row: row)
+      }
+    case let .question(question):
+      let current = projection.pendingQuestion?.id == question.id
+        ? projection.pendingQuestion ?? question : question
+      QuestionView(
+        question: current,
+        isAnsweringEnabled: isAnsweringEnabled && projection.pendingQuestion?.id == question.id,
+        onAnswer: onAnswer
+      )
     }
   }
 }

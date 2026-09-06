@@ -66,6 +66,24 @@ class AgentEventSerializationTest {
         assertEquals(AgentEvent.AgentSpawned("sub"), decode("""{"type":"agent_spawned","name":"sub"}"""))
     }
 
+    @Test fun decodesWorkerLifecycle() {
+        assertTrue(
+            decode(
+                """{"type":"worker_spawned","workerId":"w1","runId":"r1","role":"reviewer","brief":"Review","model":"test"}""",
+            ) is AgentEvent.WorkerSpawned,
+        )
+        assertTrue(
+            decode(
+                """{"type":"worker_status","workerId":"w1","runId":"r1","role":"reviewer","status":"waiting_input","question":"Continue?"}""",
+            ) is AgentEvent.WorkerStatus,
+        )
+        assertTrue(
+            decode(
+                """{"type":"worker_done","workerId":"w1","runId":"r1","role":"reviewer","status":"done","report":"Complete"}""",
+            ) is AgentEvent.WorkerDone,
+        )
+    }
+
     @Test fun decodesAgentRetry() {
         assertEquals(
             AgentEvent.AgentRetry(2, "rate"),
