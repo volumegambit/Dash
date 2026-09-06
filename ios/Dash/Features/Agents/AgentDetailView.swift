@@ -64,6 +64,7 @@ struct AgentDetailView: View {
           configurationSection(agent)
           integrationsSection(agent)
           memorySection(agent)
+          skillsSection(agent)
           swarmSection(agent)
         }
         .accessibilityIdentifier("agent.detail.\(agentID)")
@@ -80,6 +81,9 @@ struct AgentDetailView: View {
     // to a `Section` restarts every time the section is rebuilt, and the load
     // itself writes `feature.memories`, so it re-triggers itself forever.
     .task(id: agentID) { await feature.loadMemories(agentID: agentID) }
+    // Same reasoning as the memory load: attached to the view root, not the
+    // section, so writing `feature.skills` cannot re-trigger it.
+    .task(id: agentID) { await feature.loadSkills(agentID: agentID) }
     .toolbar {
       if let agent {
         ToolbarItem(placement: .topBarTrailing) {
@@ -203,6 +207,43 @@ struct AgentDetailView: View {
   /// container) makes XCUITest collapse it into one element and erases the
   /// per-row identifiers underneath it.
   @ViewBuilder
+  /// Read-only. The mobile API exposes no skill mutation, so there is nothing
+  /// to edit here — the value is seeing what the agent taught itself.
+  private func skillsSection(_ agent: RegisteredAgentDTO) -> some View {
+    Section {
+      let rows = feature.skills[agent.id] ?? []
+      if rows.isEmpty {
+        Text("No skills yet.")
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("agent.skills.empty")
+      } else {
+        ForEach(rows) { skill in
+          NavigationLink {
+            SkillDetailView(skill: skill)
+          } label: {
+            VStack(alignment: .leading, spacing: 2) {
+              HStack {
+                Text(skill.name)
+                Spacer(minLength: 8)
+                Text(skill.source.label)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+              Text(skill.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            }
+          }
+          .accessibilityIdentifier("agent.skill.\(skill.name)")
+        }
+      }
+    } header: {
+      Text("Skills")
+        .accessibilityIdentifier("agent.skills.list")
+    }
+  }
+
   private func memorySection(_ agent: RegisteredAgentDTO) -> some View {
     Section {
       let rows = feature.memories[agent.id] ?? []
@@ -319,5 +360,38 @@ struct AgentDetailView: View {
         horizontalSizeClass: horizontalSizeClass
       )
     )
+  }
+}
+
+/// Read-only view of one skill's instructions.
+///
+/// For a skill the agent wrote for itself (`source == .agent`) the body is the
+/// list of lessons it has accumulated. Showing it matters: without it "Learned"
+/// is a claim the user has no way to check.
+struct SkillDetailView: View {
+  let skill: SkillDTO
+
+  var body: some View {
+    List {
+      Section {
+        Text(skill.description)
+        if let trigger = skill.trigger, trigger.isEmpty == false {
+          LabeledContent("Trigger", value: trigger)
+        }
+        LabeledContent("Source", value: skill.source.label)
+      }
+
+      if let content = skill.content, content.isEmpty == false {
+        Section("Instructions") {
+          Text(content)
+            .font(.callout.monospaced())
+            .textSelection(.enabled)
+            .accessibilityIdentifier("skill.detail.content")
+        }
+      }
+    }
+    .navigationTitle(skill.name)
+    .navigationBarTitleDisplayMode(.inline)
+    .accessibilityIdentifier("skill.detail.\(skill.name)")
   }
 }

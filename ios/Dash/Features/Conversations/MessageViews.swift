@@ -205,6 +205,25 @@ struct ChatMessageView: View {
   }
 
   var body: some View {
+    // A notice is bookkeeping, not conversation: it renders as a single quiet
+    // chip regardless of the role it was stored under (the gateway's message
+    // table allows only 'user' and 'assistant', so notices arrive as
+    // 'assistant').
+    if let notice = message.notice {
+      return AnyView(
+        HStack {
+          NoticeChipView(notice: notice)
+          Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.notice.\(message.id)")
+      )
+    }
+
+    return AnyView(bubble)
+  }
+
+  private var bubble: some View {
     HStack(alignment: .top, spacing: 0) {
       switch message.role {
       case .user:
@@ -428,5 +447,32 @@ private struct MessageImageView: View {
     }
     .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
     .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
+  }
+}
+
+
+/// The chip a `notice` message renders as — a skill the agent learned, or a
+/// memory it saved, after the turn had already finished.
+struct NoticeChipView: View {
+  let notice: NoticeProjection
+
+  private var systemImage: String {
+    switch notice.kind {
+    case .skillLearned: return "graduationcap"
+    case .memorySaved: return "brain"
+    case .unknown: return "sparkles"
+    }
+  }
+
+  var body: some View {
+    Label(notice.text, systemImage: systemImage)
+      .font(.footnote)
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .overlay(
+        Capsule().stroke(Color.secondary.opacity(DashTheme.Opacity.fillEmphasis))
+      )
+      .accessibilityIdentifier("chat.notice.chip")
   }
 }

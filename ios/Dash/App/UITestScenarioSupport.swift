@@ -314,6 +314,25 @@ extension AppDependenciesFactory {
 
     /// Agent memory (Task 19): seeded per agent so the detail screen's
     /// Memory section has both a `user` and a `project` bucket to group.
+    static let skills: [String: [SkillDTO]] = [
+      "research-agent": [
+        SkillDTO(
+          name: "write-files",
+          description: "Use when writing files in this project",
+          trigger: nil,
+          source: .agent,
+          content: "- Always use printf instead of echo when writing files."
+        ),
+        SkillDTO(
+          name: "deep-research",
+          description: "Use for multi-source research tasks",
+          trigger: "research",
+          source: .plugin,
+          content: nil
+        ),
+      ]
+    ]
+
     static let memories: [String: [MemoryInfoDTO]] = [
       "research-agent": [
         memory(
@@ -1323,6 +1342,7 @@ extension AppDependenciesFactory {
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
     private var memoryValues: [String: [MemoryInfoDTO]] = UITestScenarioFixtures.memories
+    private var skillValues: [String: [SkillDTO]] = UITestScenarioFixtures.skills
     private var didFailSleepingAgentEnable = false
 
     init(scenario: UITestScenario, dataIdentifier: String) {
@@ -1369,6 +1389,7 @@ extension AppDependenciesFactory {
       cursors.removeAll()
       retainedRequests.removeAll()
       memoryValues.removeAll()
+      skillValues.removeAll()
       _ = dataIdentifier
     }
 
@@ -1662,6 +1683,10 @@ extension AppDependenciesFactory {
 
     func memories(for agentID: String) -> [MemoryInfoDTO] {
       memoryValues[agentID] ?? []
+    }
+
+    func skills(for agentID: String) -> [SkillDTO] {
+      skillValues[agentID] ?? []
     }
 
     func deleteMemory(agentID: String, name: String) throws {

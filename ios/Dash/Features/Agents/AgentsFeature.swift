@@ -28,6 +28,7 @@ protocol AgentsServicing: Actor {
   func setEnabled(id: String, enabled: Bool) async throws -> RegisteredAgentDTO
   func delete(id: String) async throws
   func memories(for agentID: String) async throws -> [MemoryInfoDTO]
+  func skills(for agentID: String) async throws -> [SkillDTO]
   func deleteMemory(agentID: String, name: String) async throws
   func startConversation(agentID: String) async throws -> ConversationSummaryDTO
   func shutdown() async
@@ -45,6 +46,7 @@ protocol AgentsGatewayServicing: Actor {
   func deleteAgent(id: String) async throws
   func models() async throws -> ModelsResponseDTO
   func listMemories(agentID: String) async throws -> [MemoryInfoDTO]
+  func listSkills(agentId: String) async throws -> [SkillDTO]
   func deleteMemory(agentID: String, name: String) async throws
   func shutdown() async
 }
@@ -145,6 +147,16 @@ actor LiveAgentsService: AgentsServicing {
     let lifecycle = try beginOperation()
     defer { finishOperation() }
     let values = try await resolvedAPI().listMemories(agentID: agentID)
+    try validate(lifecycle)
+    return values
+  }
+
+  /// Read live, like memories, and for the same reason: the list is small and
+  /// a stale cache would misreport what the agent currently knows.
+  func skills(for agentID: String) async throws -> [SkillDTO] {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let values = try await resolvedAPI().listSkills(agentId: agentID)
     try validate(lifecycle)
     return values
   }
@@ -288,6 +300,7 @@ final class AgentsFeature {
   /// Memory rows keyed by agent id — the agent detail screen's Memory
   /// section. Read-only plus delete; the phone never writes memories.
   var memories: [String: [MemoryInfoDTO]] = [:]
+  var skills: [String: [SkillDTO]] = [:]
   /// The last successful `changeModel` (goal 2026-09-04) — what the chat
   /// toolbar's toast and VoiceOver announcement read. Cleared by the view
   /// once shown; `nil` when nothing changed (same model, offline, failure).
@@ -539,6 +552,17 @@ final class AgentsFeature {
       return
     } catch {
       memories[agentID] = memories[agentID] ?? []
+      await report(error)
+    }
+  }
+
+  func loadSkills(agentID: String) async {
+    do {
+      skills[agentID] = try await service.skills(for: agentID)
+    } catch is CancellationError {
+      return
+    } catch {
+      skills[agentID] = skills[agentID] ?? []
       await report(error)
     }
   }

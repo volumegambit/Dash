@@ -568,3 +568,86 @@ private func gatewayError<Value: Sendable>(
     return nil
   }
 }
+
+@Suite("Notice content decoding")
+struct MessageContentNoticeTests {
+  private func decode(_ json: String) throws -> MessageContent {
+    try JSONDecoder().decode(MessageContent.self, from: Data(json.utf8))
+  }
+
+  @Test("decodes a learned-skill notice")
+  func decodesSkillNotice() throws {
+    let content = try decode(
+      #"{"type":"notice","kind":"skill_learned","text":"Learned: write-files"}"#
+    )
+
+    guard case let .notice(kind, text) = content else {
+      Issue.record("expected a notice, got \(content)")
+      return
+    }
+    #expect(kind == .skillLearned)
+    #expect(text == "Learned: write-files")
+  }
+
+  @Test("decodes a swept-memory notice")
+  func decodesMemoryNotice() throws {
+    let content = try decode(
+      #"{"type":"notice","kind":"memory_saved","text":"Remembered: prefers printf"}"#
+    )
+
+    guard case let .notice(kind, _) = content else {
+      Issue.record("expected a notice")
+      return
+    }
+    #expect(kind == .memorySaved)
+  }
+
+  @Test("an unknown notice kind degrades instead of throwing")
+  func unknownKindDegrades() throws {
+    // A gateway that adds a notice kind must not break decoding on this build.
+    let content = try decode(#"{"type":"notice","kind":"quantum_insight","text":"hi"}"#)
+
+    guard case let .notice(kind, _) = content else {
+      Issue.record("expected a notice")
+      return
+    }
+    #expect(kind == .unknown)
+  }
+
+  @Test("an unknown content type degrades instead of failing the page")
+  func unknownContentDegrades() throws {
+    // Messages decode as a page; one unrecognised message must not blank the
+    // whole transcript. Same rule as AgentEvent.unknown.
+    let content = try decode(#"{"type":"hologram","payload":{}}"#)
+
+    guard case let .unknown(type) = content else {
+      Issue.record("expected unknown, got \(content)")
+      return
+    }
+    #expect(type == "hologram")
+  }
+
+  @Test("a notice round-trips through encode and decode")
+  func roundTrips() throws {
+    let original = MessageContent.notice(kind: .skillLearned, text: "Learned: x")
+    let data = try JSONEncoder().encode(original)
+    let decoded = try JSONDecoder().decode(MessageContent.self, from: data)
+
+    #expect(decoded == original)
+  }
+
+  @Test("user and assistant content still decode")
+  func existingShapesUnaffected() throws {
+    guard case let .user(text, _) = try decode(#"{"type":"user","text":"hi"}"#) else {
+      Issue.record("expected user content")
+      return
+    }
+    #expect(text == "hi")
+
+    guard case let .assistant(events) = try decode(#"{"type":"assistant","events":[]}"#) else {
+      Issue.record("expected assistant content")
+      return
+    }
+    #expect(events.isEmpty)
+  }
+}
