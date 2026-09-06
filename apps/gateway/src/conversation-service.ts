@@ -3,6 +3,7 @@ import type {
   ConversationCreateRequest,
   ConversationMessage,
   ConversationMessagePage,
+  ConversationNoticeKind,
   ConversationPage,
   ConversationPatchRequest,
   ConversationSummary,
@@ -21,6 +22,13 @@ export interface ListConversationsInput {
   agentId?: string;
   limit: number;
   cursor?: string;
+}
+
+export interface AppendNoticeInput {
+  conversationId: string;
+  kind: ConversationNoticeKind;
+  /** Display-ready text; clients render it verbatim inside a chip. */
+  text: string;
 }
 
 export interface ListMessagesInput {
@@ -77,6 +85,8 @@ export interface ConversationService {
   delete(id: string, expectedRevision: number): ConversationSummary;
   listMessages(input: ListMessagesInput): ConversationMessagePage;
   acceptTurn(input: AcceptTurnInput): AcceptedTurn;
+  /** Append a standalone notice message (see the sqlite implementation). */
+  appendNotice(input: AppendNoticeInput): ConversationMessage | null;
   appendTurnEvent(
     conversationId: string,
     turnId: string,

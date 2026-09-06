@@ -692,6 +692,32 @@ async function main() {
     onChanged: emitConversationChanged,
     logger,
   });
+  /**
+   * Append a notice to a conversation and tell subscribers to refetch.
+   *
+   * Post-turn work (the memory sweep, the skill review) finishes after the turn
+   * is terminal, and a finished turn refuses further events — so its result is
+   * carried as a message instead. Best-effort: a notice must never be able to
+   * break the work it is reporting on.
+   */
+  const publishNotice = (
+    conversationId: string,
+    kind: 'skill_learned' | 'memory_saved',
+    text: string,
+  ): void => {
+    try {
+      const appended = conversationService.appendNotice({ conversationId, kind, text });
+      if (!appended) return;
+      const summary = conversationService.get(conversationId);
+      if (summary) emitConversationChanged(summary);
+    } catch (error) {
+      logger.warn('could not append conversation notice', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   // Post-turn memory sweep. Extraction runs on the agent's OWN model (same
   // resolution, provider allow-list and credentials as the chat loop), so turn
   // text never leaves the provider the agent is already talking to.
@@ -717,6 +743,11 @@ async function main() {
         assistantText,
         index,
       });
+    },
+    // The sweep runs after the turn is finalised, so a notice message is the
+    // only way its work becomes visible in the conversation.
+    onSaved: ({ conversationId, descriptions }) => {
+      publishNotice(conversationId, 'memory_saved', `Remembered: ${descriptions.join('; ')}`);
     },
     logger,
   });
@@ -746,6 +777,10 @@ async function main() {
     // a skill that is not one (or shadow a plugin skill by reusing its name).
     existingSkillNames: async (agentId) =>
       (await agents.listSkills(agentId)).map((skill) => skill.name),
+    onLearned: ({ conversationId, skills, created }) => {
+      const label = created.length > 0 ? 'Learned' : 'Updated skill';
+      publishNotice(conversationId, 'skill_learned', `${label}: ${skills.join(', ')}`);
+    },
     async extract({ agentId, userText, assistantText, books, loadedSkills, existingSkills }) {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);

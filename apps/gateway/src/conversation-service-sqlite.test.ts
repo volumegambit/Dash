@@ -889,3 +889,112 @@ describe('SqliteConversationService durable turns', () => {
     expect(service.eventLog.readSince('agent-01', conversation.id, 0)).toEqual([]);
   });
 });
+
+describe('appendNotice', () => {
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let conversationId: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-notice-'));
+    service = new SqliteConversationService({ dataDir: tmpDir });
+    conversationId = service.create({
+      agentId: 'agent-1',
+      agentName: 'Agent One',
+      requestId: 'req-1',
+    }).id;
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function runOneTurn(turnId: string): void {
+    service.acceptTurn({ agentId: 'agent-1', conversationId, turnId, text: 'do the thing' });
+    service.appendTurnEvent(conversationId, turnId, {
+      type: 'response',
+      content: 'done',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    service.finishTurn({ conversationId, turnId, outcome: 'completed' });
+  }
+
+  it('appends a notice that survives a read of the page', () => {
+    runOneTurn('turn-1');
+
+    const appended = service.appendNotice({
+      conversationId,
+      kind: 'skill_learned',
+      text: 'Learned: write-files',
+    });
+
+    expect(appended).toMatchObject({
+      role: 'assistant',
+      status: 'completed',
+      content: { type: 'notice', kind: 'skill_learned', text: 'Learned: write-files' },
+    });
+
+    // The regression this guards: assistant-role rows normally have their
+    // content rebuilt from the event log, which would blank the notice.
+    const page = service.listMessages({ conversationId, limit: 20 });
+    const notice = page.items.find((m) => m.content.type === 'notice');
+    expect(notice?.content).toEqual({
+      type: 'notice',
+      kind: 'skill_learned',
+      text: 'Learned: write-files',
+    });
+  });
+
+  it('leaves the reviewed turn intact', () => {
+    runOneTurn('turn-1');
+    service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' });
+
+    const page = service.listMessages({ conversationId, limit: 20 });
+    const assistant = page.items.find(
+      (m) => m.turnId === 'turn-1' && m.content.type === 'assistant',
+    );
+    expect(assistant?.content).toMatchObject({ type: 'assistant' });
+    expect((assistant?.content as { events: unknown[] }).events.length).toBeGreaterThan(0);
+  });
+
+  it('takes its own turn id so it cannot collide with the turn it reports on', () => {
+    runOneTurn('turn-1');
+    const notice = service.appendNotice({
+      conversationId,
+      kind: 'memory_saved',
+      text: 'Remembered: y',
+    });
+
+    expect(notice?.turnId).not.toBe('turn-1');
+    // UNIQUE(turn_id, role) means a second notice must also get its own id.
+    const second = service.appendNotice({
+      conversationId,
+      kind: 'memory_saved',
+      text: 'Remembered: z',
+    });
+    expect(second?.turnId).not.toBe(notice?.turnId);
+  });
+
+  it('orders after the turn it reports on', () => {
+    runOneTurn('turn-1');
+    service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' });
+
+    const items = service.listMessages({ conversationId, limit: 20 }).items;
+    expect(items[items.length - 1].content.type).toBe('notice');
+  });
+
+  it('bumps the conversation revision so clients refetch', () => {
+    runOneTurn('turn-1');
+    const before = service.get(conversationId)?.revision ?? 0;
+    service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' });
+    expect(service.get(conversationId)?.revision).toBeGreaterThan(before);
+  });
+
+  it('returns null for a deleted conversation instead of throwing', () => {
+    runOneTurn('turn-1');
+    service.delete(conversationId, service.get(conversationId)?.revision);
+    expect(
+      service.appendNotice({ conversationId, kind: 'skill_learned', text: 'Learned: x' }),
+    ).toBeNull();
+  });
+});

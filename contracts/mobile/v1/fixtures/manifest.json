@@ -412,6 +412,18 @@
       "document": "openapi",
       "schema": "MobileApiError",
       "valid": false
+    },
+    {
+      "file": "conversation-messages-notice.json",
+      "document": "openapi",
+      "schema": "ConversationMessagePage",
+      "valid": true
+    },
+    {
+      "file": "invalid/conversation-messages-notice-bad-kind.json",
+      "document": "openapi",
+      "schema": "ConversationMessagePage",
+      "valid": false
     }
   ]
 }

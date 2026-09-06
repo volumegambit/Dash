@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "018f0f4a-5c42-7a8b-9c01-6234567890ab",
+      "conversationId": "018f0f4a-5c42-7a8b-9c01-1234567890ab",
+      "turnId": "018f0f4a-5c42-7a8b-9c01-7234567890ab",
+      "ordinal": 3,
+      "role": "assistant",
+      "status": "completed",
+      "content": {
+        "type": "notice",
+        "kind": "skill_learned",
+        "text": "Learned: write-files"
+      },
+      "createdAt": "2026-09-06T00:00:03.000Z",
+      "updatedAt": "2026-09-06T00:00:03.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "throughSeq": 12
+}

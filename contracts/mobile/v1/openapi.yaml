@@ -738,6 +738,13 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/MobileAgentEvent'
+        - type: object
+          additionalProperties: false
+          required: [type, kind, text]
+          properties:
+            type: { const: notice }
+            kind: { enum: [skill_learned, memory_saved] }
+            text: { type: string }
     ConversationSummary:
       type: object
       additionalProperties: false
