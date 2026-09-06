@@ -7,6 +7,7 @@ import type { GatewayInfo } from '../auth/control-plane.js';
 import type { StoredCredential } from '../auth/credential-store.js';
 import type { WebAppState, WebAppStoreDeps } from '../state/store.js';
 import {
+  CONVERSATION_SKELETON_TESTID,
   DELETE_ACTION_LABEL,
   DELETE_CONFIRM_COPY,
   NEW_CONVERSATION_LABEL,
@@ -157,6 +158,17 @@ async function renderChatWorkspace(): Promise<void> {
   );
 
   await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+  // And then until the conversation list has actually loaded. `chat-workspace`
+  // appears while `ConversationList` is still rendering its skeleton, so
+  // returning here left every caller free to `act(setState({ conversations }))`
+  // and immediately `getByText('Chat about the roadmap')` against a DOM that
+  // still held only skeleton rows — a load-sensitive race that failed ~1 full
+  // `apps/web` run in 5 on this machine (2 of 10) and ~1 in 7 for the reviewer
+  // (3 of 22), always inside `tasks panel (D3)`, which is the only describe in
+  // this file whose clicks on that title are not individually wrapped in
+  // `waitFor`. Waiting once, here, fixes all ten of them at the source rather
+  // than ten times over.
+  await waitFor(() => expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull());
 }
 
 describe('Shell', () => {
