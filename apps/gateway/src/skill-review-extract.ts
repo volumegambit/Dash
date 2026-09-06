@@ -112,6 +112,8 @@ export async function extractLessonDeltas(options: {
   books: LessonBook[];
   /** Skills loaded during the turn under review. */
   loadedSkills: string[];
+  /** Every skill name already in use, so a new book does not collide with one. */
+  existingSkills?: string[];
   completeFn?: CompleteFn;
 }): Promise<LessonDelta[]> {
   const completeFn = options.completeFn ?? complete;
@@ -131,6 +133,7 @@ export async function extractLessonDeltas(options: {
       systemPrompt: buildReviewPrompt({
         books: options.books,
         loadedSkills: options.loadedSkills,
+        existingSkills: options.existingSkills,
       }),
       messages: [{ role: 'user', content: exchange, timestamp: Date.now() }],
     },

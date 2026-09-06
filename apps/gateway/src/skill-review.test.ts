@@ -333,3 +333,101 @@ describe('the approval gate', () => {
     expect(await listPending(dir)).toEqual([]);
   });
 });
+
+describe('existing skills are never overwritten', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dash-skill-reserved-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('drops a lesson that names an existing skill with no lesson book', async () => {
+    const warn = vi.fn();
+    const service = createSkillReviewService({
+      conversations: fakeConversations(turnWith(5)),
+      managedSkillsDir: () => dir,
+      shouldReview: () => true,
+      minToolCalls: () => 3,
+      // The review proposes writing onto a plugin skill.
+      extract: vi.fn(async () => [{ ...ADD, skill: 'dash-dev' }]),
+      existingSkillNames: async () => ['dash-dev'],
+      logger: { info: vi.fn(), warn },
+    });
+
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    expect(await listBooks(dir)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      'skill review dropped a lesson',
+      expect.objectContaining({ reason: expect.stringMatching(/existing skill/i) }),
+    );
+  });
+
+  it('still learns when the proposed name is free', async () => {
+    const service = createSkillReviewService({
+      conversations: fakeConversations(turnWith(5)),
+      managedSkillsDir: () => dir,
+      shouldReview: () => true,
+      minToolCalls: () => 3,
+      extract: vi.fn(async () => [ADD]),
+      existingSkillNames: async () => ['dash-dev'],
+    });
+
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    expect((await listBooks(dir)).map((b) => b.skill)).toEqual(['build-lessons']);
+  });
+});
+
+describe('a correction is reviewed even below the effort gate', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dash-skill-correction-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function serviceFor(userText: string, toolCalls: number, extract = vi.fn(async () => [ADD])) {
+    const specs = turnWith(toolCalls);
+    specs[0] = { turnId: 't1', role: 'user', content: { type: 'user', text: userText } };
+    return {
+      extract,
+      service: createSkillReviewService({
+        conversations: fakeConversations(specs),
+        managedSkillsDir: () => dir,
+        shouldReview: () => true,
+        minToolCalls: () => 3,
+        extract,
+      }),
+    };
+  }
+
+  it('reviews a one-tool-call turn when the user corrected the agent', async () => {
+    // The signal the feature exists for: corrections rarely run many tools, so
+    // the tool-call gate alone would discard them.
+    const { service, extract } = serviceFor('Stop using echo — always use printf here.', 1);
+
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    expect(extract).toHaveBeenCalledTimes(1);
+  });
+
+  it('still skips a low-effort turn that is not a correction', async () => {
+    const { service, extract } = serviceFor('What does this function do?', 1);
+
+    service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
+    await service.flush();
+
+    expect(extract).not.toHaveBeenCalled();
+  });
+});

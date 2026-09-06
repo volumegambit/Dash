@@ -145,37 +145,75 @@ try {
   const conversation = await convRes.json();
   console.log(`created conversation id=${conversation.id}`);
 
-  // --- 1. A turn that does real work ---------------------------------------
-  console.log('1. work — drive a turn with several tool calls');
-  const work = await driveTurn(
-    gw,
-    agent.id,
-    conversation.id,
-    'Using bash, one command at a time: create a directory called notes, ' +
-      'write "alpha" into notes/a.txt, write "beta" into notes/b.txt, then ' +
-      'list the directory. Report what you did in one sentence.',
-    // The review is scheduled by the resumable chat hub; a non-resumable turn
-    // streams directly and is never reviewed.
-    { resumable: true },
-  );
-  console.log(`   ${describeTurn(work)}`);
+  // --- 1 + 2. Work, then wait for the review -------------------------------
+  //
+  // Retried, because "this session taught nothing" is a legitimate answer the
+  // review is allowed to give — the prompt argues against it as a default but
+  // does not forbid it. One empty pass is a model choice, not a broken loop;
+  // ATTEMPTS empty passes in a row is a real finding either way, so the smoke
+  // still fails rather than going quietly green.
+  const ATTEMPTS = Number(process.env.SKILLS_E2E_ATTEMPTS || 2);
+  let books = [];
+  let toolCalls = 0;
 
-  const toolCalls = work.events.filter((e) => e.type === 'tool_result').length;
+  for (let attempt = 1; attempt <= ATTEMPTS && books.length === 0; attempt++) {
+    console.log(`1. work — drive a turn with several tool calls (attempt ${attempt}/${ATTEMPTS})`);
+    const work = await driveTurn(
+      gw,
+      agent.id,
+      conversation.id,
+      'Using bash, one command at a time: create a directory called notes, ' +
+        'write "alpha" into notes/a.txt, write "beta" into notes/b.txt, then ' +
+        'list the directory. Report what you did in one sentence.',
+      // The review is scheduled by the resumable chat hub; a non-resumable turn
+      // streams directly and is never reviewed.
+      { resumable: true },
+    );
+    console.log(`   ${describeTurn(work)}`);
+    toolCalls = Math.max(toolCalls, work.events.filter((e) => e.type === 'tool_result').length);
+
+    // Then correct it, stating a DURABLE project rule.
+    //
+    // Doing a piece of work is not, on its own, something the review should
+    // record — the prompt explicitly rejects "one-off task narratives", and a
+    // model that obeys it will (correctly) return nothing for a bare task. A
+    // user correction that states a standing rule is the signal the feature
+    // exists to capture, so that is what the smoke drives.
+    console.log('1b. correct — state a durable project rule');
+    const correction = await driveTurn(
+      gw,
+      agent.id,
+      conversation.id,
+      'Stop using echo to write files. In this project you must always use ' +
+        'printf instead, because echo appends a trailing newline that breaks ' +
+        'our fixtures. That rule applies to every file you ever write here. ' +
+        'Rewrite notes/a.txt correctly now.',
+      { resumable: true },
+    );
+    console.log(`   ${describeTurn(correction)}`);
+    toolCalls = Math.max(
+      toolCalls,
+      correction.events.filter((e) => e.type === 'tool_result').length,
+    );
+
+    console.log('2. learn — wait for the post-turn review');
+    books = await waitForReview(skillsDir);
+    if (books.length === 0 && attempt < ATTEMPTS) {
+      console.log('   (the review recorded nothing this pass — retrying)');
+    }
+  }
+
   require_(
     toolCalls >= 2,
     `the turn made at least 2 tool calls (made ${toolCalls})`,
     '>= 2 tool_result events',
     `${toolCalls} — the model may not be calling tools; pin SKILLS_E2E_MODEL`,
   );
-
-  // --- 2. The review records a lesson --------------------------------------
-  console.log('\n2. learn — wait for the post-turn review');
-  const books = await waitForReview(skillsDir);
   require_(
     books.length > 0,
     'the review created a learned skill',
     `>= 1 lesson book under ${skillsDir}`,
-    `none after ${REVIEW_TIMEOUT_MS / 1000}s — review may have returned no deltas`,
+    `none after ${ATTEMPTS} attempts — the review kept returning no deltas; check the gateway log for "skill review found nothing to record"`,
   );
 
   const learned = books.find((b) => b.book?.bullets?.length > 0) ?? books[0];

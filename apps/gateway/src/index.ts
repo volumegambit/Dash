@@ -743,7 +743,11 @@ async function main() {
         : DEFAULT_MIN_TOOL_CALLS;
     },
     requiresApproval: (agentId) => registry.get(agentId)?.config.skills?.approval === true,
-    async extract({ agentId, userText, assistantText, books, loadedSkills }) {
+    // The agent's whole catalogue, so a review cannot write a lesson book over
+    // a skill that is not one (or shadow a plugin skill by reusing its name).
+    existingSkillNames: async (agentId) =>
+      (await agents.listSkills(agentId)).map((skill) => skill.name),
+    async extract({ agentId, userText, assistantText, books, loadedSkills, existingSkills }) {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);
       await oauthRefreshCoordinator.refreshExpiring();
@@ -757,6 +761,7 @@ async function main() {
         assistantText,
         books,
         loadedSkills,
+        existingSkills,
       });
     },
     logger,

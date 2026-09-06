@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { LessonBook, LessonDelta } from '@dash/agent';
-import { listBooks, mergeDeltas, persistBook, stagePending } from '@dash/agent';
+import {
+  listBooks,
+  looksLikeCorrection,
+  mergeDeltas,
+  persistBook,
+  stagePending,
+} from '@dash/agent';
 import type { StructuredLogger } from '@dash/logging';
 import type { ConversationService } from './conversation-service.js';
 
@@ -36,12 +42,22 @@ export interface SkillReviewOptions {
   minToolCalls(agentId: string): number;
   /** When true, proposals are staged for human approval instead of applied. */
   requiresApproval?(agentId: string): boolean;
+  /**
+   * Every skill name already visible to the agent — plugin, installed,
+   * user-authored, and agent-authored via `create_skill`.
+   *
+   * Supplied so the merge can refuse to write a lesson book onto a skill that
+   * is not one, which would either replace instructions somebody meant to keep
+   * or shadow a plugin skill of the same name in discovery.
+   */
+  existingSkillNames?(agentId: string): Promise<string[]>;
   extract(input: {
     agentId: string;
     userText: string;
     assistantText: string;
     books: LessonBook[];
     loadedSkills: string[];
+    existingSkills?: string[];
   }): Promise<LessonDelta[]>;
   onLearned?(report: SkillLearnedReport): void;
   logger?: Pick<StructuredLogger, 'info' | 'warn'>;
@@ -126,18 +142,41 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
 
     // The effort gate, checked before anything is spent. A conversational turn
     // schedules nothing and costs nothing.
-    if (turn.toolCalls < options.minToolCalls(input.agentId)) return;
+    //
+    // A correction is exempt. "Stop doing that, always do this instead" is the
+    // most valuable thing a session can teach, and it typically runs one tool
+    // call or none — so counting tool calls alone would discard precisely the
+    // signal this feature exists to capture.
+    const enoughWork = turn.toolCalls >= options.minToolCalls(input.agentId);
+    if (!enoughWork && !looksLikeCorrection(turn.userText)) return;
     if (!turn.userText && !turn.assistantText) return;
 
     const books = await listBooks(managedDir);
+    // Resolved BEFORE the review so the names can go into the prompt: the merge
+    // drops a colliding name, but a model told a rule it cannot check plays
+    // safe and proposes nothing, which silently disables learning.
+    const reservedNames = (await options
+      .existingSkillNames?.(input.agentId)
+      .catch(() => [] as string[])) as string[] | undefined;
+
     const deltas = await options.extract({
       agentId: input.agentId,
       userText: turn.userText,
       assistantText: turn.assistantText,
       books,
       loadedSkills: turn.loadedSkills,
+      existingSkills: reservedNames,
     });
-    if (deltas.length === 0) return;
+    // Logged rather than returning silently: a review that records nothing is
+    // indistinguishable from a review that never ran, which makes a broken loop
+    // invisible. One line per reviewed turn is worth that.
+    if (deltas.length === 0) {
+      options.logger?.info('skill review found nothing to record', {
+        agentId: input.agentId,
+        conversationId: input.conversationId,
+      });
+      return;
+    }
 
     // The approval gate. Deltas are staged rather than merged, so approving
     // later re-runs every merge rule against the library as it is at that
@@ -158,7 +197,7 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
       return;
     }
 
-    const merged = mergeDeltas(books, deltas);
+    const merged = mergeDeltas(books, deltas, { reservedNames });
 
     for (const dropped of merged.dropped) {
       options.logger?.warn('skill review dropped a lesson', {
@@ -244,9 +283,10 @@ export function createSkillReviewService(options: SkillReviewOptions): SkillRevi
 export async function applyPendingLessons(
   managedDir: string,
   deltas: LessonDelta[],
+  reservedNames?: string[],
 ): Promise<{ skills: string[]; created: string[] }> {
   const books = await listBooks(managedDir);
-  const merged = mergeDeltas(books, deltas);
+  const merged = mergeDeltas(books, deltas, { reservedNames });
 
   const written: string[] = [];
   for (const book of merged.books) {

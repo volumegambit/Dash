@@ -123,7 +123,7 @@ You don't have to do anything to switch this on — it is on by default.
 
 ### What gets learned
 
-A lesson is one short, self-contained instruction: a technique that worked, a correction you made, a dead end worth avoiding next time. Lessons are grouped into skills named for a **kind of task** rather than for one job, so a handful of useful skills build up instead of a long list of near-duplicates.
+A lesson is one short, self-contained instruction: a technique that worked, a correction you made, a dead end worth avoiding next time. Corrections are the richest source — telling the agent "always use X here, never Y" is what turns into a lasting rule. Lessons are grouped into skills named for a **kind of task** rather than for one job, so a handful of useful skills build up instead of a long list of near-duplicates.
 
 The review is told not to record a few things that look like lessons but age badly:
 
@@ -154,6 +154,8 @@ From the agent's **Skills** tab, or via the API:
 |---------|---------|--------------|
 | `learning` | `auto` | `auto` and `on` both enable learning; `off` disables it. |
 | `minToolCalls` | `3` | How much work a turn must involve before it is reviewed. A turn that was just conversation is never reviewed and costs nothing. |
+
+A turn where you **correct** the agent is always reviewed, however little work it involved — "stop doing that", "use X instead", "always do it this way" is the most useful thing a session can teach, and those turns are usually short.
 | `approval` | `false` | When on, nothing is saved until you approve it. |
 
 Each review that runs costs one extra model call, on the agent's own model.
