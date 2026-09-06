@@ -238,6 +238,9 @@ struct ContractFixtureTests {
     try expectRoundTrip(CreateConversationRequest.self, "conversation-create.json")
     try expectRoundTrip(PatchConversationRequest.self, "conversation-patch.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-send.json")
+    // Proves the hand-written Codable actually carries `location` rather than
+    // silently dropping it on re-encode, which is what an unknown key does.
+    try expectRoundTrip(MobileWSClientFrame.self, "chat-send-with-location.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-resume.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-answer.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-cancel.json")
@@ -280,7 +283,8 @@ struct ContractFixtureTests {
       text: "Hello",
       images: nil
     )
-    guard case let .message(_, _, channelId, _, _, _, resumable, streamingBehavior) = frame else {
+    guard case let .message(_, _, channelId, _, _, _, _, resumable, streamingBehavior) = frame
+else {
       Issue.record("expected message frame")
       return
     }

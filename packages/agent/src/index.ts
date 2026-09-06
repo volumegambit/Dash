@@ -49,6 +49,7 @@ export type {
   SkillOpCode,
 } from './skills/index.js';
 export * from './memory/index.js';
+export * from './location/index.js';
 export * from './skills/learning/index.js';
 
 /**

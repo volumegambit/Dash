@@ -13,6 +13,11 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AVAILABLE_TOOLS,
+  TOOL_DESCRIPTIONS,
+  TOOL_GROUPS,
+} from '../../components/deploy-options.js';
 import { useAgentsStore } from '../../stores/agents.js';
 import { useChannelsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
@@ -293,6 +298,93 @@ export function AgentDetail(): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
+// Tools card (Overview tab, left column)
+// ---------------------------------------------------------------------------
+
+const TOOL_LABELS: Record<string, string> = Object.fromEntries(
+  AVAILABLE_TOOLS.map((t) => [t.value, t.label]),
+);
+
+/** Pretty label for a tool id, falling back to a humanized form for ids the
+ * curated list does not know (e.g. a future or MCP-provided tool). */
+function toolLabel(id: string): string {
+  return (
+    TOOL_LABELS[id] ??
+    id
+      .split('_')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ')
+  );
+}
+
+/** The enabled tools, bucketed into the same groups the deploy wizard uses.
+ * Any enabled id that belongs to no known group is collected under "Other" so
+ * it is still shown rather than silently dropped. */
+function groupEnabledTools(
+  enabled: string[],
+): { name: string; description?: string; tools: string[] }[] {
+  const enabledSet = new Set(enabled);
+  const grouped: { name: string; description?: string; tools: string[] }[] = [];
+  const claimed = new Set<string>();
+
+  for (const group of TOOL_GROUPS) {
+    const tools = group.tools.filter((t) => enabledSet.has(t));
+    for (const t of tools) claimed.add(t);
+    if (tools.length > 0) {
+      grouped.push({ name: group.name, description: group.description, tools });
+    }
+  }
+
+  const other = enabled.filter((t) => !claimed.has(t));
+  if (other.length > 0) grouped.push({ name: 'Other', tools: other });
+
+  return grouped;
+}
+
+function ToolsCard({ tools }: { tools: string[] }): JSX.Element {
+  const groups = groupEnabledTools(tools);
+
+  return (
+    <div className="bg-card-bg border border-border overflow-hidden">
+      <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+          Tools
+        </span>
+        <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
+          {tools.length}
+        </span>
+      </div>
+      <div className="p-5 flex flex-col gap-4">
+        {groups.length === 0 ? (
+          <p className="text-sm text-muted">No tools enabled</p>
+        ) : (
+          groups.map((group) => (
+            <div key={group.name} className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-foreground">{group.name}</span>
+              {group.description && (
+                <span className="text-[11px] text-muted -mt-1">{group.description}</span>
+              )}
+              <div className="flex flex-wrap gap-1.5 mt-0.5">
+                {group.tools.map((id) => (
+                  <span
+                    key={id}
+                    title={TOOL_DESCRIPTIONS[id]}
+                    className="inline-flex items-center rounded bg-sidebar-hover border border-border px-2 py-0.5 text-xs text-foreground"
+                  >
+                    {toolLabel(id)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Overview tab
 // ---------------------------------------------------------------------------
 
@@ -337,14 +429,11 @@ function OverviewTab({
                 {agent.status}
               </span>
             </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Tools</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agent.config.tools?.length ?? 0}
-              </span>
-            </div>
           </div>
         </div>
+
+        {/* Tools card */}
+        <ToolsCard tools={agent.config.tools ?? []} />
 
         {/* Connected Channels card */}
         <div className="bg-card-bg border border-border overflow-hidden">

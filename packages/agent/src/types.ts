@@ -1,3 +1,8 @@
+import type { ClientLocation } from './location/types.js';
+
+// Re-exported so consumers of `AgentState.location` / `DashAgent.chat()` can name
+// the type from the same module they get the state from.
+export type { ClientLocation, PreciseLocation } from './location/types.js';
 import type { MemoryType } from './memory/types.js';
 
 // --- LLM provider types (formerly from @dash/llm) ---
@@ -119,6 +124,24 @@ export interface DashAgentConfig {
    * `tools === false` (swarm workers: read-only inheritance).
    */
   memory?: { dir: string; tools?: boolean };
+  /**
+   * Per-agent gate for client-reported location. Absent → enabled: the coarse
+   * tier is derived from `Intl`/`Locale`, which every locale-aware UI already
+   * reads, and the precise tier already required an in-app opt-in plus an OS
+   * grant before the client would send it at all. `{ enabled: false }` drops
+   * both tiers for this agent.
+   */
+  location?: {
+    enabled: boolean;
+    /**
+     * Whether `get_location` is registered for this agent. Defaults to true
+     * when location is enabled. Set `false` for agents that inherit the
+     * context read-only (swarm workers) — the same reason `memory.tools`
+     * exists: the <environment> block must never name a tool the model was
+     * not given, or it produces failed tool calls.
+     */
+    tool?: boolean;
+  };
   skills?: {
     paths?: string[];
     urls?: string[];
@@ -148,6 +171,12 @@ export interface AgentState {
   tools?: string[];
   workspace?: string;
   images?: ImageBlock[];
+  /**
+   * Location the client reported for THIS message. Carried per-message, like
+   * `model` and `allowedProviders`, so a warm pooled backend picks up a user
+   * who has moved on the next turn without a pool eviction.
+   */
+  location?: ClientLocation;
 }
 
 export interface RunOptions {

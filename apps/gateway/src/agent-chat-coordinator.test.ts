@@ -1205,3 +1205,46 @@ describe('AgentChatCoordinator memory wiring', () => {
     }
   });
 });
+
+describe('AgentChatCoordinator location gating', () => {
+  const location = {
+    timezone: 'Asia/Singapore',
+    utcOffsetMinutes: 480,
+    locale: 'en-SG',
+    region: 'SG',
+  };
+
+  async function promptFor(agentLocation?: { enabled?: boolean }): Promise<string> {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: `loc-${Math.random().toString(36).slice(2)}`,
+      model: 'anthropic/claude-sonnet-5',
+      systemPrompt: 'base',
+      ...(agentLocation ? { location: agentLocation } : {}),
+    });
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-loc', text: 'hi', location }));
+    await agents.stop();
+    return states[0].systemPrompt;
+  }
+
+  it('renders the environment block and names get_location by default', async () => {
+    const prompt = await promptFor();
+    expect(prompt).toContain('<environment>');
+    expect(prompt).toContain('Asia/Singapore');
+    expect(prompt).toContain('call get_location');
+  });
+
+  it('drops the block entirely when the agent opts out', async () => {
+    const prompt = await promptFor({ enabled: false });
+    expect(prompt).not.toContain('<environment>');
+    // The tool is unregistered under the same condition, so the prompt must
+    // not name it either.
+    expect(prompt).not.toContain('get_location');
+  });
+});

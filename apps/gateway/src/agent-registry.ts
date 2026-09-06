@@ -62,6 +62,20 @@ export interface GatewayAgentConfig {
    */
   memory?: { enabled?: boolean; sweep?: 'auto' | 'on' | 'off' };
   /**
+   * Per-agent client-location gating. `undefined` = enabled: the coarse tier
+   * comes from `Intl`/`Locale`, which every locale-aware client already reads,
+   * and the precise tier already required an in-app opt-in plus an OS grant
+   * before a client would send it at all. `enabled: false` drops the
+   * <environment> block AND unregisters `get_location`.
+   *
+   * `update()` carries this field like any other (the patch spread has no
+   * allowlist), but NO HTTP route accepts it yet: it is absent from
+   * `AGENT_CREATE_KEYS` in management-api.ts, so today it can only be set
+   * programmatically. The write path and UI are deliberately deferred — see
+   * "Later" in docs/plans/specs/2026-09-06-client-location-awareness-design.md.
+   */
+  location?: { enabled?: boolean };
+  /**
    * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
    * (backward compat — legacy agents persisted before P5 have no key and MUST
    * load as `undefined`, never `[]`/`null`). An explicit `[]` means "none".
