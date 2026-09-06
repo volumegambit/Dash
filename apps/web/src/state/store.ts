@@ -11,6 +11,7 @@ import type { StoreApi, UseBoundStore } from 'zustand';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
 import { type Transcript, applyServerFrame } from './assemble';
+import { readClientLocation } from './location.js';
 
 export interface WebAppState {
   conversations: ConversationSummary[];
@@ -843,6 +844,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           messages: [...t.messages, optimistic],
         }));
 
+        // Spread-omitted (never `location: undefined`) so a send from a
+        // platform that reports nothing stays byte-identical to today's frame.
+        const location = readClientLocation();
+
         const frame: MobileWsClientFrame = {
           type: 'message',
           id: turnId,
@@ -850,6 +855,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           channelId: CHANNEL_ID,
           conversationId,
           text,
+          ...(location ? { location } : {}),
           ...(images && images.length > 0 ? { images } : {}),
           resumable: true,
         };
