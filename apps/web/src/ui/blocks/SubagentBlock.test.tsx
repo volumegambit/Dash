@@ -82,13 +82,14 @@ function scriptStore(initial: Partial<WebAppState> = {}) {
         conversations: [],
         transcripts: {},
         subagentInfo: {},
-        subagentExpansion: {},
+        subagentUi: {},
         connection: 'connected',
-        // The real reducer, not a spy: expansion living in the store is the
-        // whole point of fix item 1, so the tests drive the real thing.
-        setSubagentExpanded: (key: string, expanded: boolean) =>
+        // The real reducer, not a spy: expansion, drafts and the composer's
+        // error line living in the store is the whole point of fix item 1 and
+        // of round 2's I-a, so the tests drive the real thing.
+        patchSubagentUi: (key: string, patch: Record<string, unknown>) =>
           set((state) => ({
-            subagentExpansion: { ...state.subagentExpansion, [key]: expanded },
+            subagentUi: { ...state.subagentUi, [key]: { ...state.subagentUi[key], ...patch } },
           })),
         ...spies,
         ...initial,
@@ -252,7 +253,7 @@ describe('SubagentBlock', () => {
       expect(order[2]).toBe('Waiting on it now.');
     });
 
-    it('offers an inline reply form while the child is waiting on input', () => {
+    it('offers an inline reply form while the child is waiting on input', async () => {
       const scripted = scriptStore();
       renderEvents(
         [
@@ -268,9 +269,19 @@ describe('SubagentBlock', () => {
 
       const reply = screen.getByTestId('subagent-reply');
       fireEvent.change(within(reply).getByRole('textbox'), { target: { value: 'yes please' } });
-      fireEvent.submit(reply);
+      // `submit` is async (fix item 5's failure feedback), so without `act`
+      // its `setSending`/`patchUi` land after the test body — three React
+      // "not wrapped in act(...)" warnings, and an assertion against state
+      // that has not settled.
+      await act(async () => {
+        fireEvent.submit(reply);
+      });
 
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'yes please');
+      // `answering: true` — the child is parked on an `ask_orchestrator`
+      // question, so no `accepted` frame will follow (see `sendToSubagent`).
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'yes please', {
+        answering: true,
+      });
     });
   });
 
@@ -419,7 +430,7 @@ describe('SubagentBlock', () => {
       expect(within(report).getByText('Every entry point is in chat-ws.ts.')).toBeTruthy();
     });
 
-    it('sends a follow-up turn to the child from the expanded composer', () => {
+    it('sends a follow-up turn to the child from the expanded composer', async () => {
       const scripted = scriptStore();
       renderEvents([started(), progress()], { streaming: true, scripted });
       fireEvent.click(within(screen.getByTestId('subagent-block')).getByRole('button'));
@@ -428,9 +439,13 @@ describe('SubagentBlock', () => {
       fireEvent.change(within(composer).getByRole('textbox'), {
         target: { value: 'also check the relay' },
       });
-      fireEvent.submit(composer);
+      await act(async () => {
+        fireEvent.submit(composer);
+      });
 
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay');
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay', {
+        answering: false,
+      });
     });
 
     it('disables the composer for a one-shot child and says why', () => {
@@ -598,6 +613,77 @@ describe('SubagentBlock', () => {
       expect(scripted.subscribeSubagent).toHaveBeenCalledWith(CHILD);
     });
 
+    // Round 2, I-a. Expansion was hoisted for exactly this reason; the
+    // composer sits INSIDE the same subtree and was left behind.
+    it('keeps a half-typed follow-up across the same subtree replacement', () => {
+      const scripted = scriptStore();
+      const tree = (key: string) => (
+        <WebAppStoreContext.Provider value={scripted.store}>
+          <div key={key}>
+            <ContentBlocks
+              content={{ type: 'assistant', events: [started(), progress()] }}
+              streaming={key === 'streaming'}
+            />
+          </div>
+        </WebAppStoreContext.Provider>
+      );
+      const { rerender } = render(tree('streaming'));
+      fireEvent.click(rowHeader());
+      fireEvent.change(within(screen.getByTestId('subagent-composer')).getByRole('textbox'), {
+        target: { value: 'half a thought' },
+      });
+
+      rerender(tree('finalized'));
+
+      const input = within(screen.getByTestId('subagent-composer')).getByRole(
+        'textbox',
+      ) as HTMLInputElement;
+      expect(input.value).toBe('half a thought');
+    });
+
+    // The narrower half of I-a: the refusal lands AFTER the swap. With the
+    // error in component state the old instance's handler wrote to an
+    // unmounted tree and the fresh one rendered nothing — "lost with zero
+    // feedback" again, which is the failure fix item 5 exists to close.
+    it('shows a refusal that arrives after the subtree was replaced', async () => {
+      const scripted = scriptStore();
+      let refuse: ((err: unknown) => void) | null = null;
+      scripted.sendToSubagent.mockReturnValue(
+        new Promise((_resolve, reject) => {
+          refuse = reject;
+        }),
+      );
+      const tree = (key: string) => (
+        <WebAppStoreContext.Provider value={scripted.store}>
+          <div key={key}>
+            <ContentBlocks
+              content={{ type: 'assistant', events: [started(), progress()] }}
+              streaming={key === 'streaming'}
+            />
+          </div>
+        </WebAppStoreContext.Provider>
+      );
+      const { rerender } = render(tree('streaming'));
+      fireEvent.click(rowHeader());
+      fireEvent.change(within(screen.getByTestId('subagent-composer')).getByRole('textbox'), {
+        target: { value: 'in flight' },
+      });
+      fireEvent.submit(screen.getByTestId('subagent-composer'));
+
+      rerender(tree('finalized'));
+      await act(async () => {
+        (refuse as unknown as (err: unknown) => void)(
+          Object.assign(new Error('Mobile API error 409'), { detail: 'steer cap reached' }),
+        );
+      });
+
+      expect(screen.getByText('steer cap reached')).toBeTruthy();
+      expect(
+        (within(screen.getByTestId('subagent-composer')).getByRole('textbox') as HTMLInputElement)
+          .value,
+      ).toBe('in flight');
+    });
+
     it('keeps every row open across a parallel group collapse and reopen', () => {
       const scripted = scriptStore();
       renderEvents(
@@ -669,8 +755,75 @@ describe('SubagentBlock', () => {
       expect(screen.queryByTestId('subagent-composer-error')).toBeNull();
     });
 
-    it('disables the composer while the gateway connection is down', () => {
+    // Round 2, I-c. `sendToSubagent` is pure REST and never touches the
+    // socket, so gating it on the WebSocket only stopped the user answering a
+    // child parked on `ask_orchestrator` during a reconnect — and
+    // `waitForQuestion` fails that child's tool call after ten minutes. A
+    // request that really cannot land surfaces through the error line instead.
+    it('stays usable while the socket is reconnecting, since the send is REST', async () => {
       const scripted = scriptStore({ connection: 'reconnecting' });
+      renderEvents([started(), progress()], { streaming: true, scripted });
+      fireEvent.click(rowHeader());
+
+      const composer = screen.getByTestId('subagent-composer');
+      const input = within(composer).getByRole('textbox') as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      fireEvent.change(input, { target: { value: 'keep going' } });
+      await act(async () => {
+        fireEvent.submit(composer);
+      });
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'keep going', {
+        answering: false,
+      });
+    });
+
+    // Round 2, ruling 8. Round 1 widened the one-shot disable to the
+    // waiting-input reply. With `coordinator.sendToChild` now exempting a live
+    // child with a pending question from the one-shot refusal, that
+    // affordance has to come back: an `Explore` child holds `ask_orchestrator`
+    // like any other, and nothing else can answer it.
+    it('lets a one-shot child that is WAITING be answered, while its body composer stays disabled', async () => {
+      const scripted = scriptStore({
+        subagentInfo: {
+          [CHILD]: {
+            type: 'Explore',
+            status: 'waiting_input',
+            description: 'Map gateway internals',
+            prompt: 'Find every websocket entry point',
+            model: 'sonnet',
+            background: false,
+            depth: 1,
+            startedAt: STARTED_AT,
+            toolCallCount: 3,
+            oneShot: true,
+          },
+        },
+      } as unknown as Partial<WebAppState>);
+      renderEvents([started(), progress({ status: 'waiting_input', question: 'Which relay?' })], {
+        streaming: true,
+        scripted,
+      });
+      fireEvent.click(rowHeader());
+
+      const reply = screen.getByTestId('subagent-reply');
+      const input = within(reply).getByRole('textbox') as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      fireEvent.change(input, { target: { value: 'the staging one' } });
+      await act(async () => {
+        fireEvent.submit(reply);
+      });
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'the staging one', {
+        answering: true,
+      });
+
+      // The body composer is still refused — a steer to a one-shot child is
+      // what the coordinator rejects, and the web disable agrees with it.
+      const composer = screen.getByTestId('subagent-composer');
+      expect((within(composer).getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('disables the composer once the credential is dead', () => {
+      const scripted = scriptStore({ connection: 'unauthorized' });
       renderEvents([started(), progress()], { streaming: true, scripted });
       fireEvent.click(rowHeader());
 

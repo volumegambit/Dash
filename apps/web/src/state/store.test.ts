@@ -2429,6 +2429,9 @@ describe('createWebAppStore', () => {
       });
 
       store.getState().unsubscribeSubagent(CHILD_ID);
+      // The wire frame is deferred by one microtask so a remount never drops
+      // the watcher — see "sends no unsubscribe frame ..." below.
+      await Promise.resolve();
       expect(subscriptionFrames(socket).at(-1)).toMatchObject({
         type: 'unsubscribe',
         conversationId: CHILD_ID,
@@ -2454,6 +2457,7 @@ describe('createWebAppStore', () => {
       );
 
       store.getState().unsubscribeSubagent(CHILD_ID);
+      await Promise.resolve();
       expect(
         subscriptionFrames(socket).filter(
           (f) => f.type === 'unsubscribe' && f.conversationId === CHILD_ID,
@@ -2461,11 +2465,53 @@ describe('createWebAppStore', () => {
       ).toHaveLength(0);
 
       store.getState().unsubscribeSubagent(CHILD_ID);
+      await Promise.resolve();
       expect(
         subscriptionFrames(socket).filter(
           (f) => f.type === 'unsubscribe' && f.conversationId === CHILD_ID,
         ),
       ).toHaveLength(1);
+    });
+
+    // Fix round 2, C1. The refcount really does go 1 -> 0 -> 1 across the
+    // ChatView subtree swap: `done` clears `streaming` and materialises the
+    // finalized message in ONE `set()` (store.ts's frame handler +
+    // assemble.ts's `done` case), so React removes the streaming subtree and
+    // adds the `MessageRow` one in a single commit, running the removed
+    // subtree's cleanup before the added subtree's setup. A synchronous
+    // release therefore put a real `unsubscribe` on the wire — and the
+    // gateway replays NOTHING on `subscribe` (chat-ws.ts:426-427), so
+    // whatever the child emitted in the gap was gone for good. The wire frame
+    // is deferred to a microtask that re-checks the refcount; the bookkeeping
+    // is not.
+    it('sends no unsubscribe frame when a row is released and re-taken in the same tick', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      const socket = await openAndConnect(store, sockets, CONVERSATION_ID);
+      const childFrames = () =>
+        subscriptionFrames(socket).filter((f) => f.conversationId === CHILD_ID);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      await vi.waitFor(() => expect(childFrames()).toHaveLength(1));
+
+      // Exactly React's order inside one commit: the old instance's cleanup,
+      // then the new instance's setup.
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      store.getState().subscribeSubagent(CHILD_ID);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Nothing on the wire at all: no `unsubscribe`, and no redundant
+      // re-`subscribe` either — the server-side watcher was never dropped.
+      expect(childFrames()).toHaveLength(1);
+      expect(childFrames()[0].type).toBe('subscribe');
+
+      // A genuine collapse still releases it — one microtask later.
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      expect(childFrames().filter((f) => f.type === 'unsubscribe')).toHaveLength(0);
+      await Promise.resolve();
+      expect(childFrames().filter((f) => f.type === 'unsubscribe')).toHaveLength(1);
     });
 
     // Fix item 1 (the redundant re-fetch half): the loaded set lives in the
@@ -2529,11 +2575,33 @@ describe('createWebAppStore', () => {
       const { factory } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
 
-      expect(store.getState().subagentExpansion[CHILD_ID]).toBeUndefined();
-      store.getState().setSubagentExpanded(CHILD_ID, true);
-      expect(store.getState().subagentExpansion[CHILD_ID]).toBe(true);
-      store.getState().setSubagentExpanded(CHILD_ID, false);
-      expect(store.getState().subagentExpansion[CHILD_ID]).toBe(false);
+      expect(store.getState().subagentUi[CHILD_ID]).toBeUndefined();
+      store.getState().patchSubagentUi(CHILD_ID, { expanded: true });
+      expect(store.getState().subagentUi[CHILD_ID].expanded).toBe(true);
+      store.getState().patchSubagentUi(CHILD_ID, { expanded: false });
+      expect(store.getState().subagentUi[CHILD_ID].expanded).toBe(false);
+    });
+
+    // Round 2, I-b. Nothing cleared this before, so re-opening a conversation
+    // rendered every row the user had EVER opened already-expanded — two REST
+    // calls and a `subscribe` frame each, on an open nobody asked for. The
+    // previous conversation's open rows and half-typed drafts belong to it.
+    it("drops every row's expansion and draft when the conversation changes", async () => {
+      const { rest } = fakeRest({
+        conversationPage: {
+          items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
+          nextCursor: null,
+        },
+      });
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      store.getState().patchSubagentUi(CHILD_ID, { expanded: true, draft: 'half a thought' });
+      store.getState().patchSubagentUi(`group:${CHILD_ID}`, { expanded: false });
+
+      await openAndConnect(store, sockets, 'conv-2');
+
+      expect(store.getState().subagentUi).toEqual({});
     });
 
     it("does not let a child subscription clobber the parent's own", async () => {
@@ -2643,6 +2711,172 @@ describe('createWebAppStore', () => {
         content: { type: 'user', text: 'also check the relay' },
       });
       expect(store.getState().transcripts[CONVERSATION_ID].messages).toHaveLength(0);
+    });
+
+    /**
+     * Fix round 2, C2. On the REST resume path the SERVER chooses the turn id,
+     * so the optimistic row's client uuid matches neither `frame.id` nor
+     * `frame.userMessageId` and `reconcileAccepted` materialised a SECOND row
+     * for every follow-up. The store now records the local id per child and
+     * hands it to `reconcileAccepted` when a `parent`-origin `accepted` lands.
+     *
+     * Three server paths, not the two the response's `mode` names:
+     *  - `resumed` (finished child)          -> `accepted` almost immediately;
+     *  - `queued` + steer (live child)       -> `accepted` when the current
+     *    turn ends (`child-handle.ts` `beginTurn(steerQueue.shift())`);
+     *  - `queued` + answer (waiting child)   -> NO `accepted`, ever: the text
+     *    is the `ask_orchestrator` tool result inside the running turn.
+     */
+    function childAccepted(overrides: Partial<Record<string, unknown>> = {}): MobileWsServerFrame {
+      return {
+        type: 'accepted',
+        id: 'server-turn-1',
+        conversationId: CHILD_ID,
+        userMessageId: 'server-user-1',
+        assistantMessageId: 'server-assistant-1',
+        revision: 3,
+        seq: 7,
+        origin: 'parent',
+        ...overrides,
+      } as MobileWsServerFrame;
+    }
+
+    it('reconciles a resumed follow-up into ONE row carrying the server ids', async () => {
+      const serverRow = message({
+        id: 'server-user-1',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-1',
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+      const { rest, getMessages } = fakeRest({
+        resumeSubagentImpl: async () => ({ ok: true, status: 'running', mode: 'resumed' }),
+        // The child's REST replay, once the turn finishes.
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID ? [serverRow] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay');
+      onFrames[0](childAccepted());
+
+      const messages = store.getState().transcripts[CHILD_ID].messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        id: 'server-user-1',
+        turnId: 'server-turn-1',
+        role: 'user',
+        origin: 'parent',
+        status: 'completed',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+
+      // Deliberately NOT stopping at `accepted` — the review's probe showed the
+      // duplicate only becomes visible to the user once the turn's `done`
+      // triggers `refreshMessages` and the blank second row is filled with the
+      // same sentence. `origin: 'parent'` on the pending turn is what makes
+      // that refetch fire.
+      onFrames[0]({
+        type: 'done',
+        id: 'server-turn-1',
+        conversationId: CHILD_ID,
+        seq: 8,
+        outcome: 'completed',
+      } as MobileWsServerFrame);
+      await vi.waitFor(() =>
+        expect(
+          getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length,
+        ).toBeGreaterThanOrEqual(1),
+      );
+
+      const afterReplay = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(afterReplay).toHaveLength(1);
+      expect(afterReplay[0].id).toBe('server-user-1');
+    });
+
+    it('reconciles even when the accepted frame beats the REST response', async () => {
+      // The gateway starts the turn INSIDE `sendToChild`, before the route
+      // answers, so this ordering is the realistic one — the local id has to
+      // be recorded before the `await`, not after it.
+      let release: (() => void) | null = null;
+      const { rest } = fakeRest({
+        resumeSubagentImpl: () =>
+          new Promise((resolve) => {
+            release = () => resolve({ ok: true, status: 'running', mode: 'resumed' });
+          }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      // `sendToSubagent` runs synchronously up to its `await`, so the resume
+      // promise's executor — and therefore `release` — is already set here.
+      const sent = store.getState().sendToSubagent(CHILD_ID, 'early');
+      expect(release).not.toBeNull();
+      onFrames[0](childAccepted());
+      (release as unknown as () => void)();
+      await sent;
+
+      const messages = store.getState().transcripts[CHILD_ID].messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ id: 'server-user-1', status: 'completed' });
+    });
+
+    it("reconciles a queued STEER's accepted, which only lands when the current turn ends", async () => {
+      const { rest } = fakeRest({
+        resumeSubagentImpl: async () => ({ ok: true, status: 'running', mode: 'queued' }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'and the gateway too');
+
+      // Nothing has come back yet, but the send DID succeed: the row must not
+      // sit at `accepted` for the life of the store.
+      const queued = store.getState().transcripts[CHILD_ID].messages;
+      expect(queued).toHaveLength(1);
+      expect(queued[0].status).toBe('completed');
+
+      // Minutes later, the child finishes its turn and starts the steer.
+      onFrames[0](childAccepted());
+
+      const messages = store.getState().transcripts[CHILD_ID].messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        id: 'server-user-1',
+        content: { type: 'user', text: 'and the gateway too' },
+      });
+    });
+
+    it('does not let a later turn steal the row of an ANSWER, which gets no accepted', async () => {
+      const { rest } = fakeRest({
+        resumeSubagentImpl: async () => ({ ok: true, status: 'running', mode: 'queued' }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'the staging one', { answering: true });
+      expect(store.getState().transcripts[CHILD_ID].messages[0].status).toBe('completed');
+
+      // An unrelated later turn on the child (the orchestrator's own
+      // `send_message`, say). It must materialise its OWN row rather than
+      // relabelling the answer.
+      onFrames[0](childAccepted());
+
+      const messages = store.getState().transcripts[CHILD_ID].messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({ content: { type: 'user', text: 'the staging one' } });
+      expect(messages[1]).toMatchObject({ id: 'server-user-1', turnId: 'server-turn-1' });
     });
 
     it('marks the optimistic child row failed and rethrows when the resume is refused', async () => {

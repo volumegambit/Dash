@@ -13,6 +13,19 @@ import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
 import { type Transcript, applyServerFrame } from './assemble';
 
+/** One key's worth of {@link WebAppState.subagentUi}. Every field is optional:
+ * an untouched row has no entry at all, which is how "never toggled" is told
+ * apart from "explicitly collapsed" (rows default closed, groups default
+ * open). */
+export interface SubagentUiEntry {
+  expanded?: boolean;
+  /** The composer's text. Kept until a send SUCCEEDS, so a refusal never
+   * throws away what the user typed. */
+  draft?: string;
+  /** The last send refusal's user-facing text, cleared by the next success. */
+  error?: string;
+}
+
 export interface WebAppState {
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
@@ -26,21 +39,34 @@ export interface WebAppState {
    */
   subagentInfo: Record<string, SubagentInfo>;
   /**
-   * Which sub-agent rows and parallel-group containers the user has opened,
-   * keyed by the child's conversation id for a row and by
-   * `group:<first child id>` for a group.
+   * Per-key UI state for the sub-agent rows: whether the row/group is open,
+   * the half-typed follow-up in its composer, and the last send refusal.
    *
-   * Expansion lives HERE rather than in `SubagentBlock`'s own `useState`
+   * Three key shapes, all namespaced so they cannot collide (a child's
+   * conversation id is a uuid, so no id can start with either prefix):
+   * `<child id>` for a row and its body composer, `group:<first child id>`
+   * for a parallel-group container, and `reply:<child id>` for the
+   * waiting-input reply composer — which can be on screen at the same time as
+   * the body composer, so it needs a draft of its own.
+   *
+   * All of it lives HERE rather than in `SubagentBlock`'s own `useState`
    * because the components are remounted out from under the user by things
    * that have nothing to do with them: `ChatView` swaps the in-flight
    * message's subtree for a finalized `MessageRow` the moment the turn ends,
    * and a collapsed parallel group unmounts its rows outright. Component
-   * state would be discarded by both — the row a user opened to watch a child
-   * work would snap shut when the parent finished, dropping its subscription
-   * and re-fetching on the way back. Keying by id also makes the guarantee
-   * structural rather than dependent on React key stability.
+   * state is discarded by both — the row a user opened would snap shut when
+   * the parent finished, a half-typed follow-up would vanish, and a refusal
+   * arriving after the swap would land on an unmounted tree and never be
+   * shown at all. Keying by id also makes the guarantee structural rather
+   * than dependent on React key stability.
+   *
+   * ONE record rather than one map per field: D3 is consolidating
+   * `subagentInfo` with this, and a third and fourth parallel map keyed the
+   * same way would only be more to reconcile. Cleared on conversation switch
+   * (see `clearChildSubscriptions`) — the previous conversation's open rows
+   * and drafts belong to it, not to the one being opened.
    */
-  subagentExpansion: Record<string, boolean>;
+  subagentUi: Record<string, SubagentUiEntry>;
   /**
    * `'idle'` is the store's INITIAL state — before any conversation has ever
    * been opened or reconnect has ever been attempted. It means "nothing has
@@ -231,11 +257,11 @@ export interface WebAppState {
    * Idempotent: a child whose transcript has already been replayed is a no-op,
    * so re-expanding a row (or a row being remounted) costs nothing. The
    * bookkeeping is here, not in the component, for the same reason
-   * `subagentExpansion` is. The reconnect path re-reads deliberately, bypassing
+   * `subagentUi` is. The reconnect path re-reads deliberately, bypassing
    * this — see `refreshChildTranscripts`.
    */
-  /** Opens or closes one row/group — see {@link WebAppState.subagentExpansion}. */
-  setSubagentExpanded(key: string, expanded: boolean): void;
+  /** Merges a patch into one key's UI record — see {@link WebAppState.subagentUi}. */
+  patchSubagentUi(key: string, patch: Partial<SubagentUiEntry>): void;
   loadSubagentTranscript(childId: string): Promise<void>;
   /**
    * Watches a child conversation over the live socket so its transcript
@@ -272,8 +298,13 @@ export interface WebAppState {
    * Rethrows on failure — the caller must tell the user, since the text they
    * typed did not reach the agent. `MobileApiError.detail` carries the
    * gateway's own reason.
+   *
+   * `answering` says the child is parked on an `ask_orchestrator` question, so
+   * this message ANSWERS it rather than steering. That distinction is not in
+   * the response (both come back `mode: 'queued'`) and it decides whether an
+   * `accepted` frame is ever coming — see `sendToSubagent`'s body.
    */
-  sendToSubagent(childId: string, text: string): Promise<void>;
+  sendToSubagent(childId: string, text: string, opts?: { answering?: boolean }): Promise<void>;
   /**
    * Tears down this store's live connection: closes the current socket (if
    * any), cancels any pending reconnect timer, and stops any reconnect
@@ -399,12 +430,19 @@ type AcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
  *    `userMessageId` now that the turn is accepted.
  * 2. **A turn the GATEWAY started** — `origin: 'notification'` (a background
  *    sub-agent finished and woke this conversation) or `origin: 'parent'`
- *    (inside a child transcript). There is no optimistic row to reconcile, so
- *    one is materialised here; without it `applyServerFrame` would open a
- *    pending assistant slot whose reply lands in the transcript with nothing
- *    above it. The row renders as a compact system row, not a user bubble
+ *    (inside a child transcript). USUALLY there is no optimistic row, so one
+ *    is materialised here; without it `applyServerFrame` would open a pending
+ *    assistant slot whose reply lands in the transcript with nothing above
+ *    it. The row renders as a compact system row, not a user bubble
  *    (design 8.5) — its text only arrives with the next REST replay, since
  *    `accepted` carries ids, not content.
+ *
+ *    One `origin: 'parent'` case DOES have an optimistic row: a follow-up the
+ *    user typed into a child (`sendToSubagent`). That goes out over REST and
+ *    the SERVER picks the turn id, so neither id match below can hit — before
+ *    fix round 2 it materialised a second row and the user saw their sentence
+ *    twice. The store keeps that row's local id per child and passes it in as
+ *    `pendingLocalId`; the row is adopted in place instead.
  *
  * An `accepted` with NO `origin` stays in case 1 even when its turn is
  * unknown: on the live wire the gateway omits `origin` exactly when the turn
@@ -415,6 +453,7 @@ function reconcileAccepted(
   t: Transcript,
   frame: AcceptedFrame,
   conversationId: string,
+  pendingLocalId?: string,
 ): Transcript {
   const origin = frame.origin;
   const optimistic = t.messages.findIndex((m) => m.role === 'user' && m.turnId === frame.id);
@@ -427,6 +466,23 @@ function reconcileAccepted(
       ...(origin ? { origin } : {}),
     };
     return { ...t, messages };
+  }
+
+  // The REST-resume row. Both of its ids are client uuids the server has never
+  // seen, so the id the store kept is the only way to find it.
+  if (pendingLocalId !== undefined) {
+    const pending = t.messages.findIndex((m) => m.role === 'user' && m.id === pendingLocalId);
+    if (pending !== -1) {
+      const messages = [...t.messages];
+      messages[pending] = {
+        ...messages[pending],
+        id: frame.userMessageId,
+        turnId: frame.id,
+        status: 'completed',
+        ...(origin ? { origin } : {}),
+      };
+      return { ...t, messages };
+    }
   }
 
   const known = t.messages.findIndex((m) => m.id === frame.userMessageId);
@@ -510,10 +566,17 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
   /**
    * Children whose transcript has been replayed on this store. Deliberately
    * outside the components: a remounted row must not pay for the same history
-   * twice (see `subagentExpansion`), and the reconnect path needs one place to
+   * twice (see `subagentUi`), and the reconnect path needs one place to
    * invalidate.
    */
   const loadedChildTranscripts = new Set<string>();
+  /**
+   * Per child, the local ids of follow-ups sent through `sendToSubagent` that
+   * are still waiting for the `accepted` frame naming the turn the server gave
+   * them. FIFO: turns are accepted in the order the gateway started them.
+   * See `reconcileAccepted`'s `pendingLocalId`.
+   */
+  const pendingChildResumes = new Map<string, string[]>();
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -579,12 +642,6 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
   /** Forgets every child subscription. Called where the socket itself goes
    * away: the gateway drops a closed sink's watchers on its own, so there is
    * nothing to send — only local bookkeeping to reset. */
-  function clearChildSubscriptions(): void {
-    desiredChildSubscriptions.clear();
-    activeChildSubscriptions.clear();
-    loadedChildTranscripts.clear();
-  }
-
   /** Backward-paginated replay: `getMessages` walks from newest to oldest via
    * `before` cursors (see rest.ts), so pages are accumulated oldest-first
    * before flattening to produce a chronological list. The newest (first)
@@ -838,6 +895,43 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }
     }
 
+    /**
+     * Everything that belongs to the conversation being left: the child
+     * subscriptions (intent AND server-side), the replay cache, the
+     * unreconciled follow-ups, and the rows' own UI state. Inside the store
+     * callback rather than beside the other subscription helpers because
+     * `subagentUi` is real state and needs `set`.
+     *
+     * Clearing `subagentUi` is what keeps re-opening a conversation from
+     * auto-expanding every row the user ever looked at — each of which would
+     * fire two REST calls and a `subscribe` on open. Rows collapsed on reopen
+     * is the intended behaviour.
+     */
+    function clearChildSubscriptions(): void {
+      desiredChildSubscriptions.clear();
+      activeChildSubscriptions.clear();
+      loadedChildTranscripts.clear();
+      pendingChildResumes.clear();
+      set({ subagentUi: {} });
+    }
+
+    /** Oldest unreconciled follow-up for this child, removed. */
+    function takePendingResume(childId: string): string | undefined {
+      const queue = pendingChildResumes.get(childId);
+      const localId = queue?.shift();
+      if (queue && queue.length === 0) pendingChildResumes.delete(childId);
+      return localId;
+    }
+
+    /** Withdraw a specific follow-up — it failed, or nothing will ever accept it. */
+    function dropPendingResume(childId: string, localId: string): void {
+      const queue = pendingChildResumes.get(childId);
+      if (!queue) return;
+      const at = queue.indexOf(localId);
+      if (at !== -1) queue.splice(at, 1);
+      if (queue.length === 0) pendingChildResumes.delete(childId);
+    }
+
     function handleFrame(frame: MobileWsServerFrame): void {
       // An older gateway rejecting our `subscribe`/`unsubscribe` (see
       // `subscriptionFrameIds`). Never a transcript or conversation event.
@@ -878,9 +972,17 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       const finishingOrigin =
         frame.type === 'done' ? get().transcripts[conversationId]?.pending?.origin : undefined;
 
+      // Consumed OUTSIDE the updater: `set`'s callback must not have side
+      // effects, and the queue is closure state either way.
+      const pendingLocalId =
+        frame.type === 'accepted' && frame.origin === 'parent'
+          ? takePendingResume(conversationId)
+          : undefined;
       updateTranscript(conversationId, (t) => {
         const reconciled: Transcript =
-          frame.type === 'accepted' ? reconcileAccepted(t, frame, conversationId) : t;
+          frame.type === 'accepted'
+            ? reconcileAccepted(t, frame, conversationId, pendingLocalId)
+            : t;
         return applyServerFrame(reconciled, frame);
       });
 
@@ -1100,7 +1202,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       conversations: [],
       transcripts: {},
       subagentInfo: {},
-      subagentExpansion: {},
+      subagentUi: {},
       connection: 'idle',
 
       async listAgents() {
@@ -1405,8 +1507,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         }
       },
 
-      setSubagentExpanded(key, expanded) {
-        set((state) => ({ subagentExpansion: { ...state.subagentExpansion, [key]: expanded } }));
+      patchSubagentUi(key, patch) {
+        set((state) => ({
+          subagentUi: { ...state.subagentUi, [key]: { ...state.subagentUi[key], ...patch } },
+        }));
       },
 
       async loadSubagentTranscript(childId) {
@@ -1419,11 +1523,37 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         const holds = desiredChildSubscriptions.get(childId) ?? 0;
         desiredChildSubscriptions.set(childId, holds + 1);
         if (holds > 0) return;
+        // The watcher outlived the release (see `unsubscribeSubagent`): the
+        // socket already carries this child, so there is nothing to send and
+        // no `resolveAgentId` round trip to pay for.
+        if (activeChildSubscriptions.has(childId)) return;
         const parentId = currentConversationId;
         if (!socket || !parentId) return;
         void flushChildSubscriptions(socket, parentId);
       },
 
+      /**
+       * Release one hold. The BOOKKEEPING is immediate; the wire frame is not.
+       *
+       * A row is remounted by things that have nothing to do with it — most
+       * often `ChatView` swapping the streaming subtree for the finalized
+       * `MessageRow` when the parent turn ends, which `applyServerFrame`'s
+       * `done` case does in a single `set()` and therefore a single React
+       * commit. React runs the removed subtree's passive cleanup before the
+       * added subtree's passive setup in that one commit, so the refcount
+       * genuinely goes 1 -> 0 -> 1 and a synchronous release put a real
+       * `unsubscribe` on the wire. The gateway replays nothing on the
+       * following `subscribe` (`chat-ws.ts`: "Bookkeeping only: no
+       * acknowledgement frame"), so anything the child emitted in that gap
+       * was lost permanently — including a `done`, which is unrecoverable
+       * because `refreshMessages` is keyed off it.
+       *
+       * Deferring to a microtask closes it: both effects of the same commit
+       * have run by the time it fires, so a remount re-checks as `holds > 0`
+       * and never touches the socket. A genuine collapse still releases, one
+       * microtask later. `activeChildSubscriptions` is only cleared inside
+       * the microtask, which is what makes the re-`subscribe` a no-op above.
+       */
       unsubscribeSubagent(childId) {
         const holds = desiredChildSubscriptions.get(childId) ?? 0;
         if (holds > 1) {
@@ -1431,24 +1561,57 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           return;
         }
         desiredChildSubscriptions.delete(childId);
-        const agentId = activeChildSubscriptions.get(childId);
-        activeChildSubscriptions.delete(childId);
-        if (!socket || !agentId) return;
-        const frame: MobileWsClientFrame = {
-          type: 'unsubscribe',
-          id: crypto.randomUUID(),
-          agentId,
-          conversationId: childId,
-        };
-        subscriptionFrameIds.add(frame.id);
-        try {
-          socket.send(frame);
-        } catch (err) {
-          console.error('WebAppStore: failed to send child unsubscribe frame', err);
-        }
+        queueMicrotask(() => {
+          // Re-taken by a remount, or already released by an earlier
+          // microtask — either way this one has nothing to do.
+          if ((desiredChildSubscriptions.get(childId) ?? 0) > 0) return;
+          const agentId = activeChildSubscriptions.get(childId);
+          if (!agentId) return;
+          activeChildSubscriptions.delete(childId);
+          // Re-read at FIRE time, not at call time: `clearChildSubscriptions`
+          // (a conversation switch, dispose, unauthorized) may have run in
+          // between, and a frame for a conversation the user has left must
+          // not go out.
+          if (!socket) return;
+          const frame: MobileWsClientFrame = {
+            type: 'unsubscribe',
+            id: crypto.randomUUID(),
+            agentId,
+            conversationId: childId,
+          };
+          subscriptionFrameIds.add(frame.id);
+          try {
+            socket.send(frame);
+          } catch (err) {
+            console.error('WebAppStore: failed to send child unsubscribe frame', err);
+          }
+        });
       },
 
-      async sendToSubagent(childId, text) {
+      /**
+       * A follow-up typed into a child, over `POST /subagents/:id/resume`.
+       *
+       * Three server paths, not the two the response's `mode` names — the
+       * client has to get all three right or the row is duplicated or stuck:
+       *
+       * 1. `mode: 'resumed'` — the child was finished, so a NEW turn starts on
+       *    its conversation and an `accepted` (origin `parent`) follows almost
+       *    at once. The gateway starts that turn INSIDE `sendToChild`, before
+       *    the route responds, so the frame can beat this promise: the local
+       *    id is queued BEFORE the await, never after it.
+       * 2. `mode: 'queued'` with `answering: false` — a live child, so the
+       *    message goes on `ChildHandle`'s steer queue and becomes a turn only
+       *    when the current one ends (`child-handle.ts`'s
+       *    `beginTurn(steerQueue.shift())`). An `accepted` DOES arrive, just
+       *    minutes later; the local id has to stay queued until it does.
+       * 3. `mode: 'queued'` with `answering: true` — the child was parked on
+       *    `ask_orchestrator`, so `ChildHandle.send` resolves the waiter and
+       *    the text becomes that tool's RESULT inside the running turn. No new
+       *    turn, no `accepted`, and no server-side user row will ever exist
+       *    for it: the local row is the only record, so the id is withdrawn to
+       *    keep a later unrelated turn from adopting it.
+       */
+      async sendToSubagent(childId, text, opts) {
         // The optimistic row goes in FIRST so the text is visible in the
         // child's transcript while the resume is in flight, and so there is
         // something to mark `failed` if it is refused.
@@ -1466,10 +1629,15 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           origin: 'parent',
         };
         updateTranscript(childId, (t) => ({ ...t, messages: [...t.messages, optimistic] }));
+        const queue = pendingChildResumes.get(childId);
+        if (queue) queue.push(localId);
+        else pendingChildResumes.set(childId, [localId]);
 
+        let mode: 'queued' | 'resumed';
         try {
-          await rest.resumeSubagent(childId, text);
+          ({ mode } = await rest.resumeSubagent(childId, text));
         } catch (err) {
+          dropPendingResume(childId, localId);
           updateTranscript(childId, (t) => ({
             ...t,
             messages: t.messages.map((m) =>
@@ -1482,6 +1650,20 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           // say so.
           throw err;
         }
+
+        if (mode === 'queued' && opts?.answering === true) dropPendingResume(childId, localId);
+        // The send succeeded, so the row must not sit at `accepted` for the
+        // life of the store waiting for a frame that may be minutes away or
+        // may never come (path 3). A no-op if the `accepted` already beat us
+        // here: reconciliation renamed the row to the server's id.
+        updateTranscript(childId, (t) => ({
+          ...t,
+          messages: t.messages.map((m) =>
+            m.id === localId && m.status === 'accepted'
+              ? { ...m, status: 'completed' as const }
+              : m,
+          ),
+        }));
       },
 
       cancelTurn(conversationId) {

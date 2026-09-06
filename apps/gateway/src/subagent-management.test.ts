@@ -590,6 +590,19 @@ describe('mountSubagentRuntimeRoutes', () => {
       expect(sent).toEqual([{ parent: parentId, target: 'sub_a', message: 'carry on' }]);
     });
 
+    // The route is `c.json(coordinator.sendToChild(...))` — the body IS the
+    // coordinator's return value, so `mode` really does reach the client
+    // verbatim in both of its shapes. The web store branches on it (a
+    // `queued` message may never produce an `accepted` frame), so the runtime
+    // shape is pinned here rather than trusted from `SubagentResumeResponse`.
+    it('returns mode: queued verbatim for a live child', async () => {
+      child('sub_a', { status: 'running' });
+      sendResult = () => ({ ok: true, status: 'running', mode: 'queued' });
+      const res = await resume('sub_a', { message: 'also check the relay' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, status: 'running', mode: 'queued' });
+    });
+
     it('409s a one-shot child, which the coordinator refuses by throwing', async () => {
       child('sub_a', { status: 'done', oneShot: true });
       sendResult = () => {

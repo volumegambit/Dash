@@ -2,7 +2,7 @@ import type { ConversationContent, ConversationMessage } from '@dash/mobile-cont
 import { type ReactNode, useContext, useEffect, useRef, useState } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { Transcript } from '../../state/assemble.js';
-import type { WebAppState } from '../../state/store.js';
+import type { SubagentUiEntry, WebAppState } from '../../state/store.js';
 import { WebAppStoreContext } from '../Shell.js';
 import { useElapsed } from '../hooks/useElapsed.js';
 import { Markdown } from './Markdown.js';
@@ -38,10 +38,15 @@ import {
  *    `ContentBlocks -> SubagentBlock -> ContentBlocks` never becomes a module
  *    cycle. `ContentBlocks` supplies a closure that re-enters itself one
  *    nesting level deeper.
- * 2. **Rows are keyed by `subagentId` by their caller**, and this component
- *    holds its own expansion state. A row keyed by the renderer's monotonic
- *    counter would be remounted — and silently collapsed — whenever the number
- *    of nodes emitted before it changed as the parent streams.
+ * 2. **Rows are keyed by `subagentId` by their caller**, and every scrap of
+ *    per-row UI state — expansion, composer draft, last refusal — lives in the
+ *    STORE under `subagentUi`, not in this component. Both matter and neither
+ *    subsumes the other: a row keyed by the renderer's monotonic counter would
+ *    be remounted whenever the number of nodes emitted before it changed as
+ *    the parent streams, and even a stably-keyed row is remounted outright
+ *    when `ChatView` swaps the in-flight message's subtree for the finalized
+ *    `MessageRow`. Component state does not survive that swap; store state
+ *    does.
  */
 
 type WebAppStore = UseBoundStore<StoreApi<WebAppState>>;
@@ -184,13 +189,26 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
     .join(' · ');
   const collapsedReport = !open && terminal && group.report ? firstLine(group.report) : null;
 
-  // A composer cannot send while the gateway is unreachable, and it must not
-  // pretend otherwise: `sendToSubagent` rejects and `InlineComposer` surfaces
-  // that, but disabling is the honest affordance.
-  const canSend = store !== null && connection === 'connected' && !oneShot;
+  // NOT gated on the socket. `sendToSubagent` is pure REST — it never touches
+  // the WebSocket — so disabling during a reconnect would only stop the user
+  // answering a child parked on `ask_orchestrator`, whose `waitForQuestion`
+  // times out after ten minutes and fails the child's tool call. A genuinely
+  // unreachable gateway surfaces as the composer's own error line. The one
+  // state worth disabling for is a dead credential, where every request is a
+  // guaranteed 401.
+  const canReply = store !== null && connection !== 'unauthorized';
+  // A one-shot child can be ANSWERED but not steered: `coordinator.sendToChild`
+  // exempts a live child with a pending question from the one-shot refusal and
+  // refuses everything else. The reply affordance only renders while the child
+  // is `waiting`, i.e. exactly the exempted case, so the two agree.
+  const canSteer = canReply && !oneShot;
   const send = async (text: string): Promise<void> => {
     if (!store) throw new Error('Cannot reach this agent from here');
-    await store.getState().sendToSubagent(subagentId, text);
+    // `answering` decides whether an `accepted` frame is ever coming for this
+    // message — see `sendToSubagent`. A `waiting` child is parked on a
+    // question, so the text resolves it inside the running turn rather than
+    // starting a new one.
+    await store.getState().sendToSubagent(subagentId, text, { answering: status === 'waiting' });
   };
 
   return (
@@ -218,10 +236,12 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
         <div className="subagent-waiting">
           <p className="subagent-question">{group.question}</p>
           <InlineComposer
+            store={store}
+            uiKey={replyComposerKey(subagentId)}
             testId="subagent-reply"
             label={`Reply to ${group.type || 'sub-agent'}`}
             placeholder="Reply…"
-            disabled={!canSend}
+            disabled={!canReply}
             onSend={send}
           />
         </div>
@@ -249,10 +269,12 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
           ) : null}
           {nested ? (
             <InlineComposer
+              store={store}
+              uiKey={subagentId}
               testId="subagent-composer"
               label={`Message ${group.type || 'sub-agent'}`}
               placeholder={oneShot ? ONE_SHOT_COMPOSER_TITLE : 'Type into this agent…'}
-              disabled={!canSend}
+              disabled={!canSteer}
               title={oneShot ? ONE_SHOT_COMPOSER_TITLE : undefined}
               onSend={send}
             />
@@ -330,8 +352,18 @@ export const SUBAGENT_SEND_FAILED_COPY = 'Could not reach this agent. Try again.
  * refused (a one-shot child, the steer cap, a dead connection), and a composer
  * that empties itself on a refusal has silently thrown away what the user
  * typed. On failure the text stays put and the reason is rendered under it.
+ *
+ * The draft and that reason live in the STORE, under `uiKey`, because this
+ * component sits inside the subtree `ChatView` replaces when the parent turn
+ * ends. Local state would lose a half-typed follow-up to a remount the user
+ * did not cause — and worse, a refusal landing after the swap would call
+ * `setError` on an unmounted instance while the fresh one rendered no error at
+ * all. `sending` stays local on purpose: it guards THIS instance's in-flight
+ * promise, and a remounted composer genuinely can be retyped and re-sent.
  */
 function InlineComposer({
+  store,
+  uiKey,
   testId,
   label,
   placeholder,
@@ -339,6 +371,8 @@ function InlineComposer({
   title,
   onSend,
 }: {
+  store: WebAppStore | null;
+  uiKey: string;
   testId: string;
   label: string;
   placeholder: string;
@@ -346,26 +380,24 @@ function InlineComposer({
   title?: string;
   onSend: (text: string) => Promise<void>;
 }): ReactNode {
-  const [text, setText] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [ui, patchUi] = useSubagentUi(store, uiKey);
   const [sending, setSending] = useState(false);
+  const text = ui.draft ?? '';
+  const error = ui.error;
 
-  const submit = (): void => {
+  const submit = async (): Promise<void> => {
     if (disabled || sending) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     setSending(true);
-    onSend(trimmed).then(
-      () => {
-        setSending(false);
-        setError(null);
-        setText('');
-      },
-      (err: unknown) => {
-        setSending(false);
-        setError(sendFailureReason(err));
-      },
-    );
+    try {
+      await onSend(trimmed);
+      patchUi({ draft: '', error: undefined });
+    } catch (err) {
+      patchUi({ error: sendFailureReason(err) });
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -376,7 +408,7 @@ function InlineComposer({
         title={title}
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          void submit();
         }}
       >
         <input
@@ -386,7 +418,7 @@ function InlineComposer({
           placeholder={placeholder}
           disabled={disabled}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => patchUi({ draft: event.target.value })}
         />
         <button
           type="submit"
@@ -498,43 +530,67 @@ interface ChildSlice {
   connection?: WebAppState['connection'];
 }
 
+/** Stable identity for "this key has no entry yet", so a subscriber that
+ * re-reads an absent record does not see a new object every time. */
+const NO_UI: SubagentUiEntry = Object.freeze({});
+
 /**
- * Expansion, held in the store and keyed by id (see
- * `WebAppState.subagentExpansion`), with a local fallback for the case where
- * there is no store above this component at all — `ContentBlocks` renders in
- * places `Shell` does not wrap, and a row there should still open.
+ * One key's UI record — expansion, composer draft, last refusal — held in the
+ * store (see `WebAppState.subagentUi`), with a local fallback for the case
+ * where there is no store above this component at all: `ContentBlocks` renders
+ * in places `Shell` does not wrap, and a row there should still open and type.
  *
- * Both hooks are called unconditionally; which value wins is decided after.
+ * Every hook is called unconditionally; which value wins is decided after.
  */
-function useExpansion(
+function useSubagentUi(
   store: WebAppStore | null,
   key: string,
-  fallback: boolean,
-): [boolean, (next: boolean) => void] {
-  const [local, setLocal] = useState(fallback);
-  const [stored, setStored] = useState<boolean | undefined>(() =>
-    store ? store.getState().subagentExpansion[key] : undefined,
+): [SubagentUiEntry, (patch: Partial<SubagentUiEntry>) => void] {
+  const [local, setLocal] = useState<SubagentUiEntry>(NO_UI);
+  const [stored, setStored] = useState<SubagentUiEntry | undefined>(() =>
+    store ? store.getState().subagentUi[key] : undefined,
   );
 
   useEffect(() => {
     if (!store) return;
-    setStored(store.getState().subagentExpansion[key]);
+    setStored(store.getState().subagentUi[key]);
     return store.subscribe((state) => {
       setStored((previous) => {
-        const next = state.subagentExpansion[key];
+        const next = state.subagentUi[key];
         return previous === next ? previous : next;
       });
     });
   }, [store, key]);
 
-  if (!store) return [local, setLocal];
-  return [stored ?? fallback, (next: boolean) => store.getState().setSubagentExpanded(key, next)];
+  if (!store) {
+    return [local, (patch) => setLocal((previous) => ({ ...previous, ...patch }))];
+  }
+  return [stored ?? NO_UI, (patch) => store.getState().patchSubagentUi(key, patch)];
 }
 
-/** `subagentExpansion` key for a parallel-group container, namespaced so it
- * cannot collide with the row of the child it is named after. */
+/** Expansion alone, since most callers want only that. `fallback` is what an
+ * untouched key means: rows default closed, groups default open. */
+function useExpansion(
+  store: WebAppStore | null,
+  key: string,
+  fallback: boolean,
+): [boolean, (next: boolean) => void] {
+  const [ui, patch] = useSubagentUi(store, key);
+  return [ui.expanded ?? fallback, (next: boolean) => patch({ expanded: next })];
+}
+
+/** `subagentUi` key for a parallel-group container, namespaced so it cannot
+ * collide with the row of the child it is named after. */
 function groupExpansionKey(firstChildId: string): string {
   return `group:${firstChildId}`;
+}
+
+/** `subagentUi` key for the waiting-input reply composer. It gets its own
+ * entry because it and the body composer can be on screen simultaneously — a
+ * child can be `waiting` with its row expanded — and one shared draft would
+ * mirror every keystroke into both. */
+function replyComposerKey(childId: string): string {
+  return `reply:${childId}`;
 }
 
 /**
