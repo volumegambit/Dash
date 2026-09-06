@@ -12,6 +12,7 @@ import {
   Circle,
   Copy,
   FolderOpen,
+  GraduationCap,
   List,
   Loader,
   Paperclip,
@@ -958,6 +959,29 @@ export const MessageBubble = memo(function MessageBubble({
               ))}
             </div>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // A notice is what the post-turn review left behind — a skill learned or a
+  // memory saved. It arrives after the turn is finalised, so it is its own
+  // message rather than an event inside the turn.
+  if (message?.content.type === 'notice') {
+    const notice = message.content;
+    return (
+      <div className="mb-6 flex items-start">
+        <div
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-sidebar-hover px-2.5 py-1 text-xs text-muted"
+          data-testid="notice-chip"
+          data-notice-kind={notice.kind}
+        >
+          {notice.kind === 'skill_learned' ? (
+            <GraduationCap size={12} aria-hidden="true" />
+          ) : (
+            <Brain size={12} aria-hidden="true" />
+          )}
+          <span>{notice.text}</span>
         </div>
       </div>
     );

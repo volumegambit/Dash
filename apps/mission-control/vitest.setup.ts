@@ -126,6 +126,8 @@ function createMockApi(): MockApi {
 
     // Skills (gateway passthrough)
     skillsList: vi.fn().mockResolvedValue([]),
+    skillsLessons: vi.fn().mockResolvedValue(null),
+    skillsRetireLesson: vi.fn().mockResolvedValue(null),
     skillsGet: vi.fn().mockResolvedValue(null),
     skillsUpdateContent: vi.fn().mockResolvedValue(undefined),
     skillsInstall: vi.fn().mockResolvedValue(null),

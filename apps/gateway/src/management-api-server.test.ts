@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
-import { MemoryOpError, listBooks, listPending, stagePending } from '@dash/agent';
+import { MemoryOpError, persistBook, readBook } from '@dash/agent';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Hono } from 'hono';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import type { RegisteredAgent } from './agent-registry.js';
@@ -2191,90 +2191,6 @@ describe('memory routes', () => {
     expect(agents.getMemory).not.toHaveBeenCalled();
   });
 
-  it('serves GET /agents/:id/skills/pending as the queue, not as a skill named "pending"', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-pending-'));
-    try {
-      const { app, agentRegistry, agents } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-
-      const res = await app.request(`/agents/${id}/skills/pending`, { headers: AUTH });
-
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual([]);
-      // Route-order proof: if `pending` were registered after `:name`, Hono
-      // would run the skill handler and this would 404.
-      expect(agents.getSkill).not.toHaveBeenCalled();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('approves a staged proposal and writes the lesson', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-approve-'));
-    try {
-      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-      await stagePending(dir, {
-        id: 'prop1',
-        conversationId: 'c',
-        deltas: [{ op: 'add', skill: 'build-lessons', text: 'Drain the queue first.' }],
-      });
-
-      const res = await app.request(`/agents/${id}/skills/pending/prop1/approve`, {
-        method: 'POST',
-        headers: AUTH,
-      });
-
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ skills: ['build-lessons'], created: ['build-lessons'] });
-      expect((await listBooks(dir))[0].bullets[0].text).toBe('Drain the queue first.');
-      expect(await listPending(dir)).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects a staged proposal without writing anything', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-reject-'));
-    try {
-      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-      await stagePending(dir, {
-        id: 'prop1',
-        conversationId: 'c',
-        deltas: [{ op: 'add', skill: 'build-lessons', text: 'Drain the queue first.' }],
-      });
-
-      const res = await app.request(`/agents/${id}/skills/pending/prop1`, {
-        method: 'DELETE',
-        headers: AUTH,
-      });
-
-      expect(res.status).toBe(200);
-      expect(await listPending(dir)).toEqual([]);
-      expect(await listBooks(dir)).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('404s when approving an unknown proposal', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-unknown-'));
-    try {
-      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-
-      const res = await app.request(`/agents/${id}/skills/pending/nope/approve`, {
-        method: 'POST',
-        headers: AUTH,
-      });
-
-      expect(res.status).toBe(404);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it('rejects an invalid skill-learning config', async () => {
     const { app, agentRegistry } = createApp();
     const { id } = registerAgent(agentRegistry);
@@ -2295,11 +2211,11 @@ describe('memory routes', () => {
     const res = await app.request(`/agents/${id}/skills/config`, {
       method: 'PATCH',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ learning: 'off', minToolCalls: 7, approval: true }),
+      body: JSON.stringify({ learning: 'off', minToolCalls: 7 }),
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ learning: 'off', minToolCalls: 7, approval: true });
+    expect(await res.json()).toMatchObject({ learning: 'off', minToolCalls: 7 });
   });
 
   it('patches the memory config, merging over the stored block and persisting', async () => {
@@ -2882,4 +2798,146 @@ describe('canonical and legacy conversation replay', () => {
       await reader?.cancel();
     },
   );
+});
+
+describe('mobile read-only skills', () => {
+  function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'x',
+      model: 'm',
+      systemPrompt: 'p',
+    });
+  }
+
+  it('serves an agent’s skills without filesystem paths or the editable flag', async () => {
+    const { app, agentRegistry, agents } = createApp();
+    const { id } = registerAgent(agentRegistry);
+    (agents.listSkills as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        name: 'write-files',
+        description: 'Use when writing files',
+        location: '/Users/someone/.dash/gateway/skills/a/write-files/SKILL.md',
+        content: 'body',
+        editable: true,
+        source: 'agent',
+      },
+    ]);
+
+    const res = await app.request(`/mobile/v1/agents/${id}/skills`, { headers: MOBILE_AUTH });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      {
+        name: 'write-files',
+        description: 'Use when writing files',
+        source: 'agent',
+        content: 'body',
+      },
+    ]);
+  });
+
+  it('404s for an unknown agent', async () => {
+    const { app } = createApp();
+    const res = await app.request('/mobile/v1/agents/nope/skills', { headers: MOBILE_AUTH });
+    expect(res.status).toBe(404);
+  });
+
+  it('does not expose skill mutation to mobile clients', async () => {
+    const { app, agentRegistry } = createApp();
+    const { id } = registerAgent(agentRegistry);
+
+    for (const [method, path] of [
+      ['POST', `/mobile/v1/agents/${id}/skills`],
+      ['DELETE', `/mobile/v1/agents/${id}/skills/write-files`],
+      ['POST', `/mobile/v1/agents/${id}/skills/install`],
+    ] as const) {
+      const res = await app.request(path, { method, headers: MOBILE_JSON_HEADERS });
+      expect(res.status).toBe(404);
+    }
+  });
+});
+
+describe('lesson-level routes for learned skills', () => {
+  function registerAgent(agentRegistry: AgentRegistry): RegisteredAgent {
+    return (agentRegistry.register as ReturnType<typeof vi.fn>)({
+      name: 'x',
+      model: 'm',
+      systemPrompt: 'p',
+    });
+  }
+
+  async function withLearnedSkill(
+    fn: (ctx: { app: Hono; id: string; dir: string }) => Promise<void>,
+  ): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), 'mgmt-lessons-'));
+    try {
+      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
+      const { id } = registerAgent(agentRegistry);
+      await persistBook(dir, {
+        version: 1,
+        skill: 'write-files',
+        description: 'Use when writing files',
+        augments: [],
+        bullets: [
+          {
+            id: 'aaa111',
+            text: 'Use printf, not echo.',
+            helpful: 2,
+            harmful: 0,
+            createdAt: '2026-09-06',
+            lastTouchedAt: '2026-09-06',
+          },
+        ],
+        retired: [],
+      });
+      await fn({ app, id, dir });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('returns a learned skill’s lessons with their counters', async () => {
+    await withLearnedSkill(async ({ app, id }) => {
+      const res = await app.request(`/agents/${id}/skills/write-files/lessons`, { headers: AUTH });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        skill: 'write-files',
+        bullets: [{ id: 'aaa111', text: 'Use printf, not echo.', helpful: 2, harmful: 0 }],
+      });
+    });
+  });
+
+  it('404s for a skill that is not a lesson book', async () => {
+    await withLearnedSkill(async ({ app, id }) => {
+      const res = await app.request(`/agents/${id}/skills/not-a-book/lessons`, { headers: AUTH });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  it('retires a lesson rather than deleting it', async () => {
+    await withLearnedSkill(async ({ app, id, dir }) => {
+      const res = await app.request(`/agents/${id}/skills/write-files/lessons/aaa111`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+
+      expect(res.status).toBe(200);
+      const book = await readBook(join(dir, 'write-files'));
+      expect(book?.bullets).toEqual([]);
+      // Kept, so the decision stays auditable and the review cannot re-propose it.
+      expect(book?.retired).toHaveLength(1);
+      expect(book?.retired[0].id).toBe('aaa111');
+    });
+  });
+
+  it('404s when the lesson id is unknown', async () => {
+    await withLearnedSkill(async ({ app, id }) => {
+      const res = await app.request(`/agents/${id}/skills/write-files/lessons/nope00`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(404);
+    });
+  });
 });

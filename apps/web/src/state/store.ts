@@ -14,6 +14,12 @@ import { type Transcript, applyServerFrame } from './assemble';
 import { readClientLocation } from './location.js';
 
 export interface WebAppState {
+  /**
+   * The REST client this store was built with, exposed so read-only screens
+   * (the skills browser) can call the mobile API without a second client and
+   * a second set of credentials.
+   */
+  rest: MobileRestClient;
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
   /**
@@ -686,6 +692,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     }
 
     return {
+      rest,
       conversations: [],
       transcripts: {},
       connection: 'idle',

@@ -150,9 +150,39 @@ export interface MobileAgentEvent {
   [key: string]: unknown;
 }
 
+/**
+ * What a notice is telling the user about. Clients pick an icon and a test id
+ * from this; `text` is already display-ready.
+ */
+export type ConversationNoticeKind = 'skill_learned' | 'memory_saved';
+
 export type ConversationContent =
   | { type: 'user'; text: string; images?: MobileImage[] }
-  | { type: 'assistant'; events: MobileAgentEvent[] };
+  | { type: 'assistant'; events: MobileAgentEvent[] }
+  /**
+   * A short, persistent note the gateway appends to the conversation for
+   * something that happened AFTER a turn was finalised — today, a skill learned
+   * or a memory saved by the post-turn review.
+   *
+   * It is a message rather than an event because a finished turn cannot accept
+   * further events (`appendTurnEvent` refuses once `activeTurnId` has cleared),
+   * and because a live-only signal would vanish on reload. Carrying it as a
+   * message means it replays with the rest of the conversation.
+   */
+  | { type: 'notice'; kind: ConversationNoticeKind; text: string };
+
+/**
+ * A skill as a mobile client sees it: read-only, and without the on-disk
+ * `location` (a remote client has no use for a gateway filesystem path) or the
+ * `editable` flag (nothing here is editable).
+ */
+export interface MobileSkill {
+  name: string;
+  description: string;
+  trigger?: string;
+  source: 'managed' | 'agent' | 'remote' | 'plugin';
+  content?: string;
+}
 
 export interface ConversationSummary {
   id: string;

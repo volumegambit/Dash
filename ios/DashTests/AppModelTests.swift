@@ -1521,6 +1521,11 @@ private actor AppModelAgentsService: AgentsServicing {
     return []
   }
 
+  func skills(for agentID: String) -> [SkillDTO] {
+    _ = agentID
+    return []
+  }
+
   func deleteMemory(agentID: String, name: String) throws {
     _ = agentID
     _ = name

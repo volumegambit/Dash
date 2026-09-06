@@ -1,4 +1,4 @@
-import type { SkillInfo, SkillsConfig } from '@dash/management';
+import type { LessonBookInfo, SkillInfo, SkillsConfig } from '@dash/management';
 import { useEffect, useMemo, useState } from 'react';
 import { useAgentSkillsStore } from '../../../stores/agent-skills.js';
 
@@ -89,6 +89,7 @@ export function SkillsTab({ agentId }: { agentId: string }): JSX.Element {
           {sorted.map((s) => (
             <SkillCard
               key={`${s.source}:${s.name}`}
+              agentId={agentId}
               skill={s}
               onEdit={(content) => edit(agentId, s.name, content)}
               onRemove={() => remove(agentId, s.name)}
@@ -101,10 +102,12 @@ export function SkillsTab({ agentId }: { agentId: string }): JSX.Element {
 }
 
 function SkillCard({
+  agentId,
   skill,
   onEdit,
   onRemove,
 }: {
+  agentId: string;
   skill: SkillInfo;
   onEdit: (content: string) => Promise<void>;
   onRemove: () => Promise<void>;
@@ -112,7 +115,22 @@ function SkillCard({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(skill.content ?? '');
+  const [lessons, setLessons] = useState<LessonBookInfo | null>(null);
   const editable = skill.editable && skill.source !== 'plugin';
+
+  // Only an agent-created skill can be a lesson book, and the lessons are only
+  // worth fetching once the row is open. `skillsLessons` resolves null for a
+  // skill that is not one, which is the common case rather than an error.
+  useEffect(() => {
+    if (!open || skill.source !== 'agent') return;
+    let cancelled = false;
+    void window.api.skillsLessons(agentId, skill.name).then((book) => {
+      if (!cancelled) setLessons(book);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, agentId, skill.name, skill.source]);
 
   return (
     <div className="border border-border bg-card-bg p-4">
@@ -151,7 +169,32 @@ function SkillCard({
         )}
       </div>
       <p className="mt-1 text-sm text-muted">{skill.description}</p>
-      {open && !editing && skill.content && (
+      {open && !editing && lessons && lessons.bullets.length > 0 && (
+        <ul className="mt-2 space-y-1" data-testid="skill-lessons">
+          {lessons.bullets.map((lesson) => (
+            <li key={lesson.id} className="flex items-start gap-2 bg-sidebar-hover p-2 text-xs">
+              <span className="flex-1">{lesson.text}</span>
+              {/* The counters are the second judge: a lesson that keeps
+                  proving wrong retires itself. Showing them is what makes
+                  that legible rather than mysterious. */}
+              <span className="whitespace-nowrap text-muted" title="Times judged helpful / harmful">
+                {lesson.helpful}↑ {lesson.harmful}↓
+              </span>
+              <button
+                type="button"
+                className="text-red-400 hover:text-red-300"
+                title="Retire this lesson"
+                onClick={async () => {
+                  setLessons(await window.api.skillsRetireLesson(agentId, skill.name, lesson.id));
+                }}
+              >
+                Retire
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && !editing && !lessons && skill.content && (
         <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap bg-sidebar-hover p-2 text-xs">
           {skill.content}
         </pre>

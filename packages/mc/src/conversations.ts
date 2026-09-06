@@ -48,7 +48,13 @@ export interface McMessage {
          * delta because the replay endpoint is idempotent.
          */
         lastSeq?: number;
-      };
+      }
+    /**
+     * A note the gateway appended after a turn finished — a skill learned or a
+     * memory saved by the post-turn review. Rendered as a chip; it carries no
+     * events because it is not a turn.
+     */
+    | { type: 'notice'; kind: 'skill_learned' | 'memory_saved'; text: string };
   timestamp: string;
 }
 

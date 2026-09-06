@@ -733,6 +733,11 @@ private actor FakeAgentsService: AgentsServicing {
     return memoryValues[agentID] ?? []
   }
 
+  func skills(for agentID: String) throws -> [SkillDTO] {
+    _ = agentID
+    return []
+  }
+
   func deleteMemory(agentID: String, name: String) async throws {
     deletedMemories.append(MemoryDeleteCall(agentID: agentID, name: name))
     await memoryGate?.wait()
@@ -1013,6 +1018,11 @@ private actor AgentServiceGatewayStub: AgentsGatewayServicing {
 
   func listMemories(agentID: String) throws -> [MemoryInfoDTO] {
     _ = agentID
+    throw GatewayError.updateRequired
+  }
+
+  func listSkills(agentId: String) throws -> [SkillDTO] {
+    _ = agentId
     throw GatewayError.updateRequired
   }
 

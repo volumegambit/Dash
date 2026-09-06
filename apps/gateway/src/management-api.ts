@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentClient, MemoryType } from '@dash/agent';
-import { MemoryOpError, listPending, readPending, removePending } from '@dash/agent';
+import { MemoryOpError, readBook } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
@@ -31,7 +31,7 @@ import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
-import { applyPendingLessons } from './skill-review.js';
+import { retireLesson } from './skill-review.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -65,9 +65,8 @@ export interface GatewayManagementOptions {
   swarmCoordinator?: SwarmCoordinator;
   /**
    * Resolves an agent's managed skills directory. Supplying it mounts the
-   * automatic-skill-learning approval routes; without it those routes are
-   * simply absent, so tests and embedders that do not run learning still
-   * construct the app.
+   * lesson-level routes for learned skills; without it they are absent, so
+   * tests and embedders that do not run learning still construct the app.
    */
   managedSkillsDir?: (agentId: string) => string | null;
   /** Capability bearer accepted only by the `/mobile/v1` namespace. */
@@ -216,7 +215,7 @@ function requireAgentStringArray(value: unknown, field: string): void {
   }
 }
 
-const AGENT_SKILLS_KEYS = ['paths', 'urls', 'learning', 'minToolCalls', 'approval'];
+const AGENT_SKILLS_KEYS = ['paths', 'urls', 'learning', 'minToolCalls'];
 
 function validateAgentSkills(value: unknown): void {
   if (!isPlainRecord(value) || Object.keys(value).some((key) => !AGENT_SKILLS_KEYS.includes(key))) {
@@ -234,9 +233,6 @@ function validateAgentSkills(value: unknown): void {
       value.minToolCalls < 0)
   ) {
     throw new Error('skills.minToolCalls must be a non-negative integer');
-  }
-  if (value.approval !== undefined && typeof value.approval !== 'boolean') {
-    throw new Error('skills.approval must be a boolean');
   }
 }
 
@@ -1015,6 +1011,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   });
 
   mountAgentRoutes(app, AGENT_CREATE_KEYS, AGENT_UPDATE_KEYS);
+  // Read-only skills for mobile and web clients. Only the GET is exposed: the
+  // create/install/edit/remove routes stay on the loopback namespace, so a
+  // remote client can see what an agent knows but never change it. `location`
+  // and `editable` are dropped — a gateway filesystem path is of no use to a
+  // remote client, and nothing here is editable.
+  mobileV1.get('/agents/:id/skills', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const skills = await agents.listSkills(id);
+    return c.json(
+      skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        ...(skill.trigger !== undefined ? { trigger: skill.trigger } : {}),
+        source: skill.source,
+        ...(skill.content !== undefined ? { content: skill.content } : {}),
+      })),
+    );
+  });
+
   mountAgentRoutes(mobileV1, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);
 
   // --- Skill routes ---
@@ -1059,7 +1075,6 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       urls?: string[];
       learning?: 'auto' | 'on' | 'off';
       minToolCalls?: number;
-      approval?: boolean;
     }>(c);
     if (!parsed.ok) return parsed.response;
     if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
@@ -1079,59 +1094,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     ) {
       return c.json({ error: 'minToolCalls must be a non-negative integer' }, 400);
     }
-    if (parsed.body.approval !== undefined && typeof parsed.body.approval !== 'boolean') {
-      return c.json({ error: 'approval must be a boolean' }, 400);
-    }
     const skills = { ...entry.config.skills, ...parsed.body };
     agentRegistry.update(id, { skills });
     await agentRegistry.save();
     return c.json(skills);
   });
-
-  // Automatic-skill-learning approval queue. Registered BEFORE
-  // `/agents/:id/skills/:name` — otherwise `:name` matches "pending" and these
-  // 404 as "no skill named pending". Same ordering hazard as memory/config.
-  if (options.managedSkillsDir) {
-    const resolveManagedDir = options.managedSkillsDir;
-
-    app.get('/agents/:id/skills/pending', async (c) => {
-      const id = c.req.param('id');
-      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-      const dir = resolveManagedDir(id);
-      if (!dir) return c.json([]);
-      return c.json(await listPending(dir));
-    });
-
-    app.post('/agents/:id/skills/pending/:pendingId/approve', async (c) => {
-      const id = c.req.param('id');
-      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-      const dir = resolveManagedDir(id);
-      if (!dir) return c.json({ error: 'not found' }, 404);
-
-      const staged = await readPending(dir, c.req.param('pendingId'));
-      if (!staged) return c.json({ error: 'not found' }, 404);
-
-      // Same guard as the unattended path: an approved lesson must not land on
-      // a skill that is not a lesson book either.
-      const reservedNames = (await agents.listSkills(id).catch(() => [])).map(
-        (skill) => skill.name,
-      );
-      const result = await applyPendingLessons(dir, staged.deltas, reservedNames);
-      await removePending(dir, staged.id);
-      return c.json(result);
-    });
-
-    app.delete('/agents/:id/skills/pending/:pendingId', async (c) => {
-      const id = c.req.param('id');
-      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-      const dir = resolveManagedDir(id);
-      if (!dir) return c.json({ error: 'not found' }, 404);
-
-      const removed = await removePending(dir, c.req.param('pendingId'));
-      if (!removed) return c.json({ error: 'not found' }, 404);
-      return c.json({ removed: true });
-    });
-  }
 
   app.get('/agents/:id/skills/:name', async (c) => {
     const id = c.req.param('id');
@@ -1140,6 +1107,33 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!skill) return c.json({ error: 'not found' }, 404);
     return c.json(skill);
   });
+
+  // Lesson-level view of a learned skill. Registered before the mutation
+  // routes below purely for locality; the extra path segment means it cannot
+  // be shadowed by `/skills/:name`.
+  if (options.managedSkillsDir) {
+    const resolveManagedDir = options.managedSkillsDir;
+
+    app.get('/agents/:id/skills/:name/lessons', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+      const book = await readBook(join(dir, c.req.param('name')));
+      if (!book) return c.json({ error: 'not found' }, 404);
+      return c.json(book);
+    });
+
+    app.delete('/agents/:id/skills/:name/lessons/:lessonId', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+      const book = await retireLesson(dir, c.req.param('name'), c.req.param('lessonId'));
+      if (!book) return c.json({ error: 'not found' }, 404);
+      return c.json(book);
+    });
+  }
 
   app.post('/agents/:id/skills', async (c) => {
     const id = c.req.param('id');

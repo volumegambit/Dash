@@ -761,7 +761,9 @@ function legacyWireMessages(page: ConversationMessagePage): McMessage[] {
             text: message.content.text,
             ...(message.content.images?.length ? { images: message.content.images } : {}),
           }
-        : { type: 'assistant', events: message.content.events },
+        : message.content.type === 'notice'
+          ? { type: 'notice', kind: message.content.kind, text: message.content.text }
+          : { type: 'assistant', events: message.content.events },
     timestamp: message.createdAt,
   }));
 }
@@ -1943,6 +1945,21 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('skills:list', async (_e, agentId: string) =>
     (await getSkillsClient()).skills(agentId),
+  );
+
+  ipcMain.handle('skills:lessons', async (_e, agentId: string, skillName: string) => {
+    try {
+      return await (await getSkillsClient()).lessons(agentId, skillName);
+    } catch {
+      // A skill with no lesson book is the common case, not an error.
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'skills:retireLesson',
+    async (_e, agentId: string, skillName: string, lessonId: string) =>
+      (await getSkillsClient()).retireLesson(agentId, skillName, lessonId),
   );
 
   ipcMain.handle('skills:get', async (_e, agentId: string, skillName: string) => {

@@ -29,6 +29,13 @@ actor GatewayAPI {
     )
   }
 
+  /// Read-only: the mobile namespace exposes no skill mutation.
+  func listSkills(agentId: String) async throws -> [SkillDTO] {
+    try await transport.send(
+      GatewayRequest(method: .get, path: mobilePath("agents", agentId, "skills"))
+    )
+  }
+
   func agent(id: String) async throws -> RegisteredAgentDTO {
     try await transport.send(
       GatewayRequest(method: .get, path: mobilePath("agents", id))

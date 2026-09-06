@@ -460,6 +460,15 @@ else {
       } else {
         _ = try FixtureLoader.data(fixture.file)
       }
+    case ("json", "openapi", "MobileSkillList"):
+      if fixture.valid {
+        _ = try FixtureLoader.decode([SkillDTO].self, fixture.file)
+      } else {
+        // The invalid case carries an unknown `source`, which SkillSource
+        // decodes to `.unknown` on purpose rather than throwing — so assert the
+        // bytes load, not that decoding fails.
+        _ = try FixtureLoader.data(fixture.file)
+      }
     case ("json", "openapi", "MemoryInfoList"):
       if fixture.valid {
         _ = try FixtureLoader.decode([MemoryInfoDTO].self, fixture.file)

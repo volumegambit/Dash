@@ -90,6 +90,9 @@ struct ChatMessageState: Equatable, Identifiable, Sendable {
   var status: MessageStatus
   var user: UserMessageProjection?
   var assistant: AssistantMessageProjection?
+  /// Set only for a `notice` message — what the post-turn review recorded.
+  /// Rendered as a chip; `user` and `assistant` are both nil for these.
+  var notice: NoticeProjection? = nil
 
   init(
     id: String,
@@ -99,6 +102,7 @@ struct ChatMessageState: Equatable, Identifiable, Sendable {
     status: MessageStatus,
     user: UserMessageProjection?,
     assistant: AssistantMessageProjection?,
+    notice: NoticeProjection? = nil,
     rowID: String? = nil
   ) {
     self.id = id
@@ -109,12 +113,20 @@ struct ChatMessageState: Equatable, Identifiable, Sendable {
     self.status = status
     self.user = user
     self.assistant = assistant
+    self.notice = notice
   }
 }
 
 struct UserMessageProjection: Equatable, Sendable {
   var text: String
   var images: [MessageImage]
+}
+
+/// A note the gateway appended after a turn finished. Carries no events — it is
+/// not a turn — so it renders as a single chip rather than a bubble.
+struct NoticeProjection: Equatable, Sendable {
+  var kind: NoticeKind
+  var text: String
 }
 
 struct AssistantMessageProjection: Equatable, Sendable {
@@ -820,6 +832,36 @@ enum ChatReducer {
         status: message.status,
         user: UserMessageProjection(text: text, images: images ?? []),
         assistant: nil,
+        rowID: rowID
+      )
+
+    case let .notice(kind, text):
+      return ChatMessageState(
+        id: message.id,
+        turnID: message.turnId,
+        ordinal: message.ordinal,
+        role: message.role,
+        status: message.status,
+        user: nil,
+        assistant: nil,
+        notice: NoticeProjection(kind: kind, text: text),
+        rowID: rowID
+      )
+
+    case let .unknown(type):
+      // A content type this build predates. Render nothing rather than drop the
+      // row: keeping it preserves ordinals and paging, and an empty row is a
+      // smaller lie than a missing message.
+      _ = type
+      return ChatMessageState(
+        id: message.id,
+        turnID: message.turnId,
+        ordinal: message.ordinal,
+        role: message.role,
+        status: message.status,
+        user: nil,
+        assistant: nil,
+        notice: nil,
         rowID: rowID
       )
 
