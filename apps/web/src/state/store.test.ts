@@ -4018,6 +4018,48 @@ describe('createWebAppStore', () => {
       expect(listSubagents).toHaveBeenCalledTimes(3);
     });
 
+    /**
+     * The trigger a BACKGROUND child needs, and the reason the panel is
+     * called what it is. A background child outlives the turn that spawned
+     * it: its finish is delivered to the parent as a NOTIFICATION TURN
+     * (design §7.3/§8.5), not as a `subagent_finished` inside the message
+     * that started it, so the two per-child triggers above never fire for it
+     * and the row would read `running` until the user navigated away and
+     * back. One read per parent turn covers it, and is cheaper than the
+     * per-child triggers it backstops.
+     */
+    it('re-reads the list when a turn finishes on the open conversation', async () => {
+      const { rest, listSubagents } = fakeRest({
+        listSubagentsImpl: async () => ({ subagents: [listEntry({ background: true })] }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(1));
+
+      // A notification turn: the gateway started it, and the background
+      // child's finish is the only thing it is about.
+      onFrames[0]({
+        type: 'accepted',
+        id: 'turn-9',
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'user-9',
+        assistantMessageId: 'asst-9',
+        seq: 9,
+        revision: 3,
+        origin: 'notification',
+      } as MobileWsServerFrame);
+      onFrames[0]({
+        type: 'done',
+        id: 'turn-9',
+        conversationId: CONVERSATION_ID,
+        turnId: 'turn-9',
+        seq: 10,
+      } as MobileWsServerFrame);
+
+      await vi.waitFor(() => expect(listSubagents).toHaveBeenCalledTimes(2));
+    });
+
     /** The gateway replays nothing on a re-`subscribe`, so everything that
      * happened to a child while the socket was down is gone from this client
      * unless it re-reads — same reason `refreshChildTranscripts` exists. */

@@ -358,6 +358,14 @@ function ChatWorkspace({
   // the entry map would re-render this whole shell on every draft keystroke
   // in a sub-agent composer.
   const liveTaskCount = useAppStore((s) => countLiveSubagents(s, selectedConversationId));
+  /**
+   * DERIVED, not just `tasksOpen`: the panel belongs to one conversation on
+   * one screen, and `tasksOpen` outlives both. Deleting the open
+   * conversation (which nulls `selectedConversationId`) or tabbing to
+   * Devices unmounts the panel while leaving the flag set — and the third
+   * grid column with it, 320px reserved beside an empty state.
+   */
+  const tasksVisible = tasksOpen && screen === 'conversations' && selectedConversationId !== null;
 
   // Imperative handles into `ConversationList`, which owns both the search
   // input and the "New conversation" flow — Cmd/Ctrl+K and
@@ -432,6 +440,15 @@ function ChatWorkspace({
           cancelTurn(selectedConversationId);
           return;
         }
+        // Parity with the sidebar drawer below: under 768px the tasks panel
+        // is the same kind of overlay, and an overlay Escape cannot dismiss
+        // is a trap. Ranked below "stop generation" for the same reason the
+        // sidebar is — a user watching a turn run means the stop.
+        if (tasksOpen) {
+          event.preventDefault();
+          setTasksOpen(false);
+          return;
+        }
         if (sidebarOpen) {
           event.preventDefault();
           setSidebarOpen(false);
@@ -440,7 +457,7 @@ function ChatWorkspace({
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [screen, sidebarOpen, isStreaming, selectedConversationId, cancelTurn]);
+  }, [screen, sidebarOpen, tasksOpen, isStreaming, selectedConversationId, cancelTurn]);
 
   // Runs a shortcut action deferred above, once the render it asked for has
   // actually committed (`screen`/`sidebarOpen` reaching the state the
@@ -529,7 +546,7 @@ function ChatWorkspace({
           </button>
         </nav>
       </div>
-      <div className={tasksOpen ? 'app-body app-body--tasks' : 'app-body'}>
+      <div className={tasksVisible ? 'app-body app-body--tasks' : 'app-body'}>
         {screen === 'devices' ? (
           <Devices
             gatewayId={gateway.gatewayId}
@@ -561,7 +578,7 @@ function ChatWorkspace({
             {selectedConversationId ? (
               <TasksPanel
                 conversationId={selectedConversationId}
-                open={tasksOpen}
+                open={tasksVisible}
                 onClose={() => setTasksOpen(false)}
               />
             ) : null}

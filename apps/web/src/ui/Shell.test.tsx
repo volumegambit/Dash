@@ -597,6 +597,55 @@ describe('Shell', () => {
       expect(document.querySelector('.app-body')?.className).not.toContain('app-body--tasks');
     });
 
+    /**
+     * The panel unmounts with the conversation it belongs to, but
+     * `tasksOpen` is `ChatWorkspace`'s own state and outlives it. Left
+     * alone, deleting the open conversation — or tabbing to Devices — keeps
+     * the third grid column reserved beside an empty state, 320px of
+     * nothing.
+     */
+    it('gives the column back when the open conversation is deleted underneath it', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      expect(document.querySelector('.app-body')?.className).toContain('app-body--tasks');
+
+      // What `ConversationList` does on a successful delete of the open row.
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() =>
+        expect(document.querySelector('.app-body')?.className).not.toContain('app-body--tasks'),
+      );
+      expect(screen.queryByTestId('subagent-tasks-panel')).toBeNull();
+    });
+
+    it('gives the column back on the Devices tab', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Devices' }));
+
+      expect(document.querySelector('.app-body')?.className).not.toContain('app-body--tasks');
+    });
+
+    /** Parity with the sidebar drawer, whose overlay Escape already closes
+     * (see `ChatWorkspace`'s doc comment on the precedence). */
+    it('closes on Escape, without disturbing a streaming turn', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(screen.getByTestId('tasks-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+      expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+    });
+
     /** Switching conversations must not leave the previous one's panel open
      * over a list that now belongs to a different conversation. */
     it('closes the panel when the conversation changes', async () => {

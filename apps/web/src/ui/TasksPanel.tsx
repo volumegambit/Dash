@@ -1,7 +1,7 @@
 import type { ConversationContent } from '@dash/mobile-contract';
 import { type ReactNode, useContext, useEffect, useRef, useState } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
-import type { SubagentFacts, WebAppState } from '../state/store.js';
+import type { WebAppState } from '../state/store.js';
 import { WebAppStoreContext } from './Shell.js';
 import { InlineComposer, groupExpansionKey } from './blocks/SubagentBlock.js';
 import {
@@ -396,7 +396,3 @@ function failureReason(err: unknown, fallback: string): string {
   const detail = (err as { detail?: unknown } | null)?.detail;
   return typeof detail === 'string' && detail.length > 0 ? detail : fallback;
 }
-
-/** Re-exported so a consumer typing a row does not have to reach into the
- * store module for the shape the panel renders. */
-export type { SubagentFacts };

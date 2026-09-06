@@ -939,7 +939,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       // the one writer of a child transcript that never REGISTERED what it
       // wrote, and `childTranscriptIds` is the only record a conversation
       // switch has of which `transcripts` entries belong to children.
-      const child = conversationId !== currentConversationId;
+      // `currentConversationId !== null` matters: after `dispose()` or an
+      // auth failure it is nulled, and without this a late frame for the
+      // PARENT would be classified as a child, registered, and then have its
+      // transcript deleted by the next conversation switch.
+      const child = currentConversationId !== null && conversationId !== currentConversationId;
       if (child) childTranscriptIds.add(conversationId);
       rest
         .getMessages(conversationId)
@@ -1333,14 +1337,32 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         if (finishingOrigin && finishingOrigin !== 'user') {
           refreshMessages(conversationId);
         }
+        // The trigger a BACKGROUND child needs, and the one the two below
+        // cannot give it. A background child is spawned to OUTLIVE the turn
+        // that spawned it, so its finish never lands as a
+        // `subagent_finished` in that turn's message — it arrives as a
+        // notification turn on the parent (§7.3/§8.5). Without this the
+        // panel would show it `running` until the user navigated away and
+        // back, which is the panel's headline case. One read per parent
+        // turn, and it backstops every other trigger going missing.
+        if (conversationId === currentConversationId) {
+          void fetchSubagentList(conversationId);
+        }
       }
 
-      // The tasks panel's live half (§8.4). The panel's model is REST, and
-      // these two events are the cheap signal that the list moved: a start
-      // adds a row, a finish is the only thing that stops one spinning.
-      // Nothing else qualifies — `subagent_progress` is transient and never
-      // persisted, so refreshing on it would be a round trip per tool call
-      // for a row whose only live field (elapsed) ticks locally anyway.
+      // The tasks panel's live half (§8.4), alongside the per-turn read
+      // above. The panel's model is REST, and these two events are what make
+      // a FOREGROUND child's row move before its turn ends: a start adds a
+      // row, a finish stops one spinning. `subagent_progress` deliberately
+      // does not qualify — it is transient and never persisted, so
+      // refreshing on it would be a round trip per tool call for a row whose
+      // only live field (elapsed) ticks locally anyway.
+      //
+      // Both reads see a row that already agrees with the event they came
+      // from: `ChildHandle.start` writes the child row (`createChild`)
+      // BEFORE `emitStarted`, and `finalizeTerminal` persists the terminal
+      // row before emitting `subagent_finished`. Neither can race ahead of
+      // its own write.
       //
       // Matched by STRING rather than through `ui/blocks/subagents.ts`'s
       // `isSubagentEvent`: that predicate also covers the legacy `worker_*`
