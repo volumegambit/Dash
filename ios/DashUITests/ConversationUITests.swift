@@ -467,6 +467,45 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
+  /// Review fix round 1 (Task 8, Important 1): `.draggable` and
+  /// `.contextMenu` on a user bubble used to be applied to DIFFERENT views —
+  /// `.draggable` inside `UserMessageView`'s own body, `.contextMenu` on the
+  /// ancestor `ChatMessageView.body`'s `.user` case wraps it in. A real
+  /// long-press is the only way `UIContextMenuInteraction` ever fires, and
+  /// nothing in this suite exercised that gesture on a message bubble
+  /// before this test — the only other `press(forDuration:)` coverage is
+  /// `testCachedOfflineHistoryAllowsDraftButBlocksRemoteMutations`'s
+  /// conversation-ROW long-press above, which is a different view entirely.
+  /// This would have FAILED had the inner drag interaction claimed the
+  /// touch before the outer context menu got it.
+  func testLongPressingAUserBubbleShowsItsContextMenu() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `cached-user` (text "Saved from your Mac") is the fixture's first
+    // user bubble — non-empty text, non-failed turn, so Copy/Share/Edit &
+    // Resend should all be offered and Retry should not. It also carries an
+    // attached image below the text (needed for the unrelated image-drag
+    // test above), so the press is aimed at a normalized offset over the
+    // TEXT row near the top of the bubble, not the element's raw center —
+    // the center of this particular bubble's frame falls over the image
+    // thumbnail, which has its own `.draggable`/tap handling and would
+    // confound this test with a second, unrelated interaction.
+    let bubble = element("chat.message.cached-user", in: app)
+    bubble.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(forDuration: 1)
+
+    XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.buttons["Share"].exists)
+    XCTAssertTrue(app.buttons["Edit & Resend"].exists)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+
+    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+    XCTAssertTrue(
+      waitUntilHittable(bubble, timeout: 3),
+      "Expected the user bubble to become actionable again after dismissing its context menu"
+    )
+  }
+
   /// Phase 4 Task 4 (audit #19): an attached image is no longer a dead
   /// 88pt thumbnail — tapping it opens the full-screen viewer with Share
   /// and Save, and Close returns to the transcript.

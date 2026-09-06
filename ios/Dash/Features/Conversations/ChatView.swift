@@ -79,9 +79,11 @@ struct ChatView: View {
   /// iPad goal Phase B, Task 7 (extended Task 8): whether a drag carrying
   /// `DroppedImage`s is currently hovering the chat surface — drives the
   /// dashed drop-target overlay below. Shared with `ComposerView` (passed
-  /// down as a binding) since Task 8 found the composer needs its OWN
-  /// `.dropDestination`, not just this one — see that modifier's comment
-  /// below for why.
+  /// down as a binding) since Task 8 found this destination alone doesn't
+  /// cover a drop released over the composer and gave `ComposerView` its
+  /// OWN `.dropDestination` for that surface — see that modifier's comment
+  /// below for what was actually observed (review fix round 1, Minor 2: the
+  /// original comment here over-claimed the mechanism).
   @State private var isDropTargeted = false
 
   var body: some View {
@@ -101,14 +103,23 @@ struct ChatView: View {
       transcript
     }
     // Handles drops released over the TRANSCRIPT only, in practice — Task 8
-    // found (via `IPadUITests.testDroppingAnImageAttachesIt`, which failed
-    // consistently dropping on `chat.composer` and passed consistently
-    // dropping on `chat.transcript` with no other change) that a drag
-    // released over the composer's `TextField` never reaches this
-    // destination; the `TextField` claims it first. `ComposerView` below
-    // has its OWN `.dropDestination` for that surface, sharing
-    // `isDropTargeted` with this one so the single highlight overlay lights
-    // up for either.
+    // found (via `IPadUITests.testDroppingAnImageAttachesIt`, retargeted to
+    // each drop location with everything else held constant) that a drag
+    // released over `chat.transcript` reaches this destination 3/3 isolated
+    // reruns, while one released over `chat.composer` (the `TextField`)
+    // does not, 3/3 isolated reruns. That differential is real and
+    // reproduced, but WHY is not fully isolated: this destination is
+    // applied to the transcript `VStack` before `.safeAreaInset` below adds
+    // the composer, so it may simply never have had a hit-testable region
+    // over the composer's screen area at all (regardless of what view sits
+    // there) — as plausible a cause as the `TextField`'s own built-in drop
+    // interaction claiming the session first. Both explanations point to
+    // the same fix and neither was isolated further (review fix round 1,
+    // Minor 2 — the previous version of this comment asserted the
+    // `TextField`-claims-it mechanism as fact, which was not established).
+    // `ComposerView` below has its OWN `.dropDestination` for that surface,
+    // correct under either explanation, sharing `isDropTargeted` with this
+    // one so the single highlight overlay lights up for either.
     .dropDestination(for: DroppedImage.self) { items, _ in
       let selections = DroppedImage.selections(from: items)
       guard selections.isEmpty == false else { return false }

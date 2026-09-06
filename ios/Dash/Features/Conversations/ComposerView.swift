@@ -96,17 +96,23 @@ struct ComposerView: View {
     // iPad goal Phase B, Task 8 review fix: a drag released over the
     // composer's own `TextField` never reaches `ChatView`'s outer
     // `.dropDestination` (confirmed by `IPadUITests
-    // .testDroppingAnImageAttachesIt`, which failed consistently when
-    // dropping on `chat.composer` and passed consistently when dropping on
-    // `chat.transcript` with no other change) — a `TextField` claims the
-    // drag session for itself before it can bubble up. This is the SAME
-    // "attach the handler locally, everywhere it needs to work" call
-    // `ChatCommandActions`' keyboard shortcuts already made (see
-    // `ChatView`'s own comment on that), applied to drag and drop instead
-    // of ⌘-shortcuts: rather than fight the `TextField`'s built-in
-    // interaction, this destination handles the composer's own surface
-    // directly, through the exact same `addSelections` entry point
-    // `ChatView`'s destination uses.
+    // .testDroppingAnImageAttachesIt`, retargeted to each drop location with
+    // everything else held constant: failed 3/3 isolated reruns dropping on
+    // `chat.composer`, passed 3/3 dropping on `chat.transcript`). What isn't
+    // isolated is WHY: it's equally consistent with the `TextField`'s own
+    // built-in drop interaction claiming the session first, or with
+    // `ChatView`'s destination simply never having had a hit-testable
+    // region over the composer's screen area at all — that destination is
+    // applied before `ChatView` appends the composer via `.safeAreaInset`,
+    // regardless of what view ends up sitting there (review fix round 1,
+    // Minor 2 — an earlier version of this comment asserted the
+    // `TextField`-claims-it mechanism as fact, which was never actually
+    // tested). Either way the fix is the same: this is the SAME "attach the
+    // handler locally, everywhere it needs to work" call `ChatCommandActions`
+    // 's keyboard shortcuts already made (see `ChatView`'s own comment on
+    // that), applied to drag and drop instead of ⌘-shortcuts — this
+    // destination handles the composer's own surface directly, through the
+    // exact same `addSelections` entry point `ChatView`'s destination uses.
     .dropDestination(for: DroppedImage.self) { items, _ in
       let selections = DroppedImage.selections(from: items)
       guard selections.isEmpty == false else { return false }

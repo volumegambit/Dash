@@ -175,6 +175,23 @@ func messageEntranceSignature(for messages: [ChatMessageState]) -> String? {
   messages.last?.id
 }
 
+extension View {
+  /// Applies `.draggable` only `when` the payload is worth offering — used
+  /// so an image-only user message (empty `text`) doesn't advertise an
+  /// empty-string drag payload, matching `userContextMenuItems`'s existing
+  /// `if !user.text.isEmpty` gate on Copy/Share (review fix round 1, Minor
+  /// 1). Plain `if`/`else` rather than a ternary since `.draggable` isn't
+  /// itself optional-payload-aware.
+  @ViewBuilder
+  func draggable(_ payload: String, when condition: Bool) -> some View {
+    if condition {
+      draggable(payload)
+    } else {
+      self
+    }
+  }
+}
+
 struct ChatMessageView: View {
   let message: ChatMessageState
   let isAnsweringEnabled: Bool
@@ -218,6 +235,17 @@ struct ChatMessageView: View {
           UserMessageView(message: user)
             .padding(12)
             .background(DashTheme.accent.opacity(DashTheme.Opacity.fillEmphasis), in: RoundedRectangle(cornerRadius: DashTheme.Radius.large))
+            // Drag out (iPad goal Phase B, Task 8; review fix round 1,
+            // Important 1): co-located with `.contextMenu` on this SAME
+            // view, matching the assistant case below. This used to live
+            // inside `UserMessageView`'s own body, on an inner `VStack` one
+            // level removed from the `.contextMenu` applied here — see
+            // `task-8-report.md`'s "Fix round 1" section for why that was a
+            // risk and how it was verified. Gated on non-empty text (Minor
+            // 1), mirroring `userContextMenuItems`'s own Copy/Share gate two
+            // lines below, so an image-only message doesn't offer an
+            // empty-string drag payload.
+            .draggable(user.text, when: !user.text.isEmpty)
             .contextMenu { userContextMenuItems(user) }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(message.accessibilityStatusLabel)
@@ -397,8 +425,9 @@ private struct UserMessageView: View {
     }
     // Drag out (iPad goal Phase B, Task 8): lets the whole bubble's text be
     // dragged into another app (Notes, Mail, another window) or dropped
-    // back into this app's own composer.
-    .draggable(message.text)
+    // back into this app's own composer. Applied by the CALLER
+    // (`ChatMessageView.body`'s `.user` case), co-located with
+    // `.contextMenu`, not here — review fix round 1, Important 1.
     .fullScreenCover(item: $viewerImage) { item in
       ImageViewerView(image: item.image) { viewerImage = nil }
     }
