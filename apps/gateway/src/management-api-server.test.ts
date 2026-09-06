@@ -1,9 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
-import { MemoryOpError, listBooks, listPending, stagePending } from '@dash/agent';
+import { MemoryOpError } from '@dash/agent';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -2191,90 +2190,6 @@ describe('memory routes', () => {
     expect(agents.getMemory).not.toHaveBeenCalled();
   });
 
-  it('serves GET /agents/:id/skills/pending as the queue, not as a skill named "pending"', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-pending-'));
-    try {
-      const { app, agentRegistry, agents } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-
-      const res = await app.request(`/agents/${id}/skills/pending`, { headers: AUTH });
-
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual([]);
-      // Route-order proof: if `pending` were registered after `:name`, Hono
-      // would run the skill handler and this would 404.
-      expect(agents.getSkill).not.toHaveBeenCalled();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('approves a staged proposal and writes the lesson', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-approve-'));
-    try {
-      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-      await stagePending(dir, {
-        id: 'prop1',
-        conversationId: 'c',
-        deltas: [{ op: 'add', skill: 'build-lessons', text: 'Drain the queue first.' }],
-      });
-
-      const res = await app.request(`/agents/${id}/skills/pending/prop1/approve`, {
-        method: 'POST',
-        headers: AUTH,
-      });
-
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ skills: ['build-lessons'], created: ['build-lessons'] });
-      expect((await listBooks(dir))[0].bullets[0].text).toBe('Drain the queue first.');
-      expect(await listPending(dir)).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects a staged proposal without writing anything', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-reject-'));
-    try {
-      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-      await stagePending(dir, {
-        id: 'prop1',
-        conversationId: 'c',
-        deltas: [{ op: 'add', skill: 'build-lessons', text: 'Drain the queue first.' }],
-      });
-
-      const res = await app.request(`/agents/${id}/skills/pending/prop1`, {
-        method: 'DELETE',
-        headers: AUTH,
-      });
-
-      expect(res.status).toBe(200);
-      expect(await listPending(dir)).toEqual([]);
-      expect(await listBooks(dir)).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('404s when approving an unknown proposal', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mgmt-unknown-'));
-    try {
-      const { app, agentRegistry } = createApp({ managedSkillsDir: () => dir });
-      const { id } = registerAgent(agentRegistry);
-
-      const res = await app.request(`/agents/${id}/skills/pending/nope/approve`, {
-        method: 'POST',
-        headers: AUTH,
-      });
-
-      expect(res.status).toBe(404);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it('rejects an invalid skill-learning config', async () => {
     const { app, agentRegistry } = createApp();
     const { id } = registerAgent(agentRegistry);
@@ -2295,11 +2210,11 @@ describe('memory routes', () => {
     const res = await app.request(`/agents/${id}/skills/config`, {
       method: 'PATCH',
       headers: JSON_HEADERS,
-      body: JSON.stringify({ learning: 'off', minToolCalls: 7, approval: true }),
+      body: JSON.stringify({ learning: 'off', minToolCalls: 7 }),
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ learning: 'off', minToolCalls: 7, approval: true });
+    expect(await res.json()).toMatchObject({ learning: 'off', minToolCalls: 7 });
   });
 
   it('patches the memory config, merging over the stored block and persisting', async () => {

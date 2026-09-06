@@ -156,7 +156,6 @@ From the agent's **Skills** tab, or via the API:
 | `minToolCalls` | `3` | How much work a turn must involve before it is reviewed. A turn that was just conversation is never reviewed and costs nothing. |
 
 A turn where you **correct** the agent is always reviewed, however little work it involved — "stop doing that", "use X instead", "always do it this way" is the most useful thing a session can teach, and those turns are usually short.
-| `approval` | `false` | When on, nothing is saved until you approve it. |
 
 Each review that runs costs one extra model call, on the agent's own model.
 
@@ -164,22 +163,6 @@ Each review that runs costs one extra model call, on the agent's own model.
 Learning applies to turns that complete normally. A turn that fails or is cancelled is not reviewed — there is no finished outcome to learn from.
 </Note>
 
-### Approving lessons before they are saved
-
-Turn on `approval` when you'd rather see every lesson first. Proposals are then held instead of saved:
-
-```bash
-# List what is waiting
-GET    /agents/{id}/skills/pending
-
-# Save one
-POST   /agents/{id}/skills/pending/{pendingId}/approve
-
-# Discard one
-DELETE /agents/{id}/skills/pending/{pendingId}
-```
-
-A held proposal is applied against your skills as they are **at the moment you approve it**, not as they were when it was proposed — so approving something days later won't undo changes you made in between.
 
 ## Installing skills from the ecosystem
 

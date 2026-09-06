@@ -43,8 +43,6 @@ export interface GatewayAgentConfig {
     urls?: string[];
     learning?: 'auto' | 'on' | 'off';
     minToolCalls?: number;
-    /** When true, every proposed lesson is staged for human approval. */
-    approval?: boolean;
   };
   providerApiKeys?: Record<string, string>;
   workspace?: string;

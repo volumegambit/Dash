@@ -742,7 +742,6 @@ async function main() {
         ? configured
         : DEFAULT_MIN_TOOL_CALLS;
     },
-    requiresApproval: (agentId) => registry.get(agentId)?.config.skills?.approval === true,
     // The agent's whole catalogue, so a review cannot write a lesson book over
     // a skill that is not one (or shadow a plugin skill by reusing its name).
     existingSkillNames: async (agentId) =>
@@ -922,12 +921,6 @@ async function main() {
     credentialStore,
     modelsStore,
     identity: mobileIdentity,
-    // Same resolver the chat coordinator and the review service use, so the
-    // approval routes act on exactly the directory learning writes to.
-    managedSkillsDir: (agentId) => {
-      const entry = registry.get(agentId);
-      return entry ? resolve(dataDir, 'skills', entry.config.name) : null;
-    },
     // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload

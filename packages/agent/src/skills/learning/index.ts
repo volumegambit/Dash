@@ -21,11 +21,3 @@ export type { ReviewPromptInput } from './prompt.js';
 export { buildReviewPrompt, renderLessonIndex } from './prompt.js';
 export { appendAugments, collectAugments } from './augment.js';
 export { looksLikeCorrection } from './correction.js';
-export type { PendingLessons } from './pending.js';
-export {
-  PENDING_DIRNAME,
-  listPending,
-  readPending,
-  removePending,
-  stagePending,
-} from './pending.js';
