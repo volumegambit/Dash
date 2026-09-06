@@ -11,7 +11,6 @@ import {
   ChevronUp,
   Circle,
   Copy,
-  FolderOpen,
   GraduationCap,
   List,
   Loader,
@@ -76,6 +75,7 @@ import {
   latestWorkerDetail,
   summarizeSwarmStrip,
 } from './chat.swarm.js';
+import { ChatWorkspacePicker } from './chat.workspace-picker.js';
 
 type RenderableMessage = McMessage | ConversationMessage;
 
@@ -2428,17 +2428,19 @@ export function Chat(): JSX.Element {
                   pct={contextStatus.pct}
                 />
               )}
-              {activeWorkspace && (
-                <button
-                  type="button"
-                  onClick={() => window.api.openPath(activeWorkspace)}
-                  className="flex min-w-0 items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
-                  title={`Working Directory: ${activeWorkspace}`}
-                  aria-label="Open working directory"
-                >
-                  <FolderOpen size={12} className="shrink-0" />
-                  <span className="max-w-[260px] truncate">{activeWorkspace}</span>
-                </button>
+              {selectedAgent && (
+                <ChatWorkspacePicker
+                  value={activeWorkspace}
+                  onBrowse={() => window.api.dialogOpenDirectory()}
+                  onOpen={(dir) => window.api.openPath(dir)}
+                  onChange={async (dir) => {
+                    try {
+                      await updateAgent(selectedAgent.id, { workspace: dir || undefined });
+                    } catch (err) {
+                      console.error('[Chat] Failed to update agent workspace:', err);
+                    }
+                  }}
+                />
               )}
               <div className="ml-auto flex items-center gap-2">
                 {showSwarmAffordance && (

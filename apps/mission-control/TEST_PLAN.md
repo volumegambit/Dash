@@ -371,6 +371,17 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 5. Start another slow turn, click Stop in Mission Control, and watch iOS.
 6. **Verify:** both clients show the durable cancelled outcome and no swarm worker remains active.
 
+### 6.12 Working Directory Picker (chat header)
+**Precondition:** An agent selected in Chat with any conversation open (the header strip with the agent name and model picker is visible).
+1. **Verify:** The chat header strip shows a folder chip with a chevron. If the agent has a custom workspace it reads that path (truncated); if not, it reads **"Set directory…"**.
+2. Click the folder chip. **Verify:** A dropdown menu opens with **Change directory…** at the top.
+3. **Verify:** When the agent has a workspace set, the menu also shows **Open in Finder** and **Reset to auto-generated**. When no workspace is set, only **Change directory…** appears.
+4. Click **Change directory…**. **Verify:** A native folder picker opens. Choose a directory.
+5. **Verify:** The chip updates to the chosen path, and the change persists (open the agent's Configuration tab → Workspace card shows the same path). Cancelling the picker leaves the workspace unchanged.
+6. Re-open the menu and click **Open in Finder**. **Verify:** The OS file browser reveals the current workspace directory.
+7. Re-open the menu and click **Reset to auto-generated**. **Verify:** The override clears — the chip returns to **"Set directory…"** and the Configuration tab shows the workspace as auto-generated.
+8. Open the menu, then press **Escape** (or click outside). **Verify:** The menu closes without changing anything.
+
 ---
 
 ## Section 7: Chat — Text & Markdown Rendering
