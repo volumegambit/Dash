@@ -1,0 +1,17 @@
+{
+  "type": "input_updated",
+  "id": "00000000-0000-4000-8000-000000000025",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "v2Seq": 9,
+  "queueRevision": 2,
+  "input": {
+    "inputId": "00000000-0000-4000-8000-000000000024",
+    "kind": "follow_up",
+    "text": "Then summarize the result.",
+    "state": "queued",
+    "revision": 1,
+    "enqueueOrder": 2,
+    "createdAt": "2026-09-06T09:07:00.000Z",
+    "updatedAt": "2026-09-06T09:08:00.000Z"
+  }
+}

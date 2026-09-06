@@ -2,6 +2,27 @@ import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 
 describe('mobile CI wiring', () => {
+  it('builds, tests, and version-syncs both mobile contract packages', async () => {
+    const rootPackage = JSON.parse(await readFile('package.json', 'utf8')) as {
+      workspaces: string[];
+      scripts: Record<string, string>;
+    };
+
+    expect(rootPackage.workspaces).toEqual(
+      expect.arrayContaining(['contracts/mobile/v1', 'contracts/mobile/v2']),
+    );
+    for (const contract of ['contracts/mobile/v1', 'contracts/mobile/v2']) {
+      expect(rootPackage.scripts.build).toContain(`-w ${contract}`);
+      expect(rootPackage.scripts['version:sync']).toContain(`${contract}/package.json`);
+    }
+    expect(rootPackage.scripts['mobile:contract-check']).toContain(
+      '--workspace=@dash/mobile-contract',
+    );
+    expect(rootPackage.scripts['mobile:contract-check']).toContain(
+      '--workspace=@dash/mobile-contract-v2',
+    );
+  });
+
   it('runs iOS CI for contract and gateway protocol changes', async () => {
     const source = await readFile('.github/workflows/ios.yml', 'utf8');
     const workflow = parse(source);

@@ -1,0 +1,198 @@
+{
+  "version": 2,
+  "cases": [
+    {
+      "file": "health-capabilities.json",
+      "document": "openapi",
+      "schema": "MobileV2HealthResponse",
+      "valid": true
+    },
+    {
+      "file": "conversation-summary.json",
+      "document": "openapi",
+      "schema": "MobileV2ConversationSummary",
+      "valid": true
+    },
+    {
+      "file": "conversation-bootstrap.json",
+      "document": "openapi",
+      "schema": "MobileV2ConversationBootstrap",
+      "valid": true
+    },
+    {
+      "file": "chat-hello.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-hello-ack.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-subscribe.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-conversation-subscribed.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-send.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-enqueue-steer.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-enqueue-follow-up.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-edit-follow-up.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-remove-follow-up.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-resume-follow-ups.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-accepted.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-event.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-done.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-error.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "input-accepted.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "input-updated.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "input-removed.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "input-delivered.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "input-failed.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "queue-paused.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "queue-resumed.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "command-rejected.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true
+    },
+    {
+      "file": "chat-stream.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "invalid/control-with-v2-seq.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/transition-without-v2-seq.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/steer-without-target.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/negative-revision.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/non-uuid-command-id.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    },
+    {
+      "file": "invalid/unknown-command-field.json",
+      "document": "chat-ws",
+      "schema": "MobileV2WsFrame",
+      "valid": false
+    }
+  ]
+}

@@ -1,0 +1,1208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mobile-v2-chat-ws",
+  "$defs": {
+    "MobileImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mediaType",
+        "data"
+      ],
+      "properties": {
+        "mediaType": {
+          "enum": [
+            "image/jpeg",
+            "image/png",
+            "image/gif",
+            "image/webp"
+          ]
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "MobilePreciseLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latitude",
+        "longitude",
+        "accuracyMeters",
+        "capturedAt"
+      ],
+      "properties": {
+        "latitude": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "longitude": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "accuracyMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "place": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "MobileClientLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timezone",
+        "utcOffsetMinutes",
+        "locale"
+      ],
+      "properties": {
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "utcOffsetMinutes": {
+          "type": "integer",
+          "minimum": -840,
+          "maximum": 840
+        },
+        "locale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "region": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2
+        },
+        "precise": {
+          "$ref": "#/$defs/MobilePreciseLocation"
+        }
+      }
+    },
+    "MobileApiErrorCode": {
+      "enum": [
+        "unauthorized",
+        "not_found",
+        "validation_failed",
+        "revision_conflict",
+        "conversation_busy",
+        "rate_limited",
+        "gateway_offline",
+        "capability_required"
+      ]
+    },
+    "MobileAgentEvent": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "MobileV2PendingInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputId",
+        "kind",
+        "text",
+        "state",
+        "revision",
+        "enqueueOrder",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "inputId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "enum": [
+            "steer",
+            "follow_up"
+          ]
+        },
+        "targetTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "delivering",
+            "delivered",
+            "removed",
+            "failed"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "enqueueOrder": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segmentTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "userMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "assistantMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "failureCode": {
+          "$ref": "#/$defs/MobileApiErrorCode"
+        },
+        "failureMessage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deliveredAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ChatHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "contractVersion",
+        "capabilities"
+      ],
+      "properties": {
+        "type": {
+          "const": "hello"
+        },
+        "contractVersion": {
+          "const": 2
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "ChatSubscribe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "agentId",
+        "conversationId",
+        "sinceV2Seq"
+      ],
+      "properties": {
+        "type": {
+          "const": "subscribe_conversation"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sinceV2Seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ChatSend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "agentId",
+        "channelId",
+        "conversationId",
+        "text",
+        "resumable"
+      ],
+      "properties": {
+        "type": {
+          "const": "message"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/MobileClientLocation"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
+        },
+        "resumable": {
+          "const": true
+        }
+      }
+    },
+    "ChatEnqueueInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "inputId",
+        "agentId",
+        "channelId",
+        "conversationId",
+        "text",
+        "behavior"
+      ],
+      "properties": {
+        "type": {
+          "const": "enqueue_input"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "inputId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
+        },
+        "behavior": {
+          "enum": [
+            "steer",
+            "followUp"
+          ]
+        },
+        "expectedActiveTurnId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "if": {
+        "properties": {
+          "behavior": {
+            "const": "steer"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "expectedActiveTurnId"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "expectedActiveTurnId"
+          ]
+        }
+      }
+    },
+    "ChatEditFollowUp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "inputId",
+        "expectedRevision",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "const": "edit_follow_up"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "inputId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
+        }
+      }
+    },
+    "ChatRemoveFollowUp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "inputId",
+        "expectedRevision"
+      ],
+      "properties": {
+        "type": {
+          "const": "remove_follow_up"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "inputId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ChatResumeFollowUps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "expectedQueueRevision"
+      ],
+      "properties": {
+        "type": {
+          "const": "resume_follow_ups"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expectedQueueRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ChatAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "questionId",
+        "answer"
+      ],
+      "properties": {
+        "type": {
+          "const": "answer"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "questionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer": {
+          "type": "string"
+        }
+      }
+    },
+    "ChatCancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "const": "cancel"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "ChatHelloAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "contractVersion",
+        "capabilities"
+      ],
+      "properties": {
+        "type": {
+          "const": "hello_ack"
+        },
+        "contractVersion": {
+          "const": 2
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "ChatConversationSubscribed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "v2ThroughSeq"
+      ],
+      "properties": {
+        "type": {
+          "const": "conversation_subscribed"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2ThroughSeq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CommandRejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "code",
+        "error",
+        "retryable"
+      ],
+      "properties": {
+        "type": {
+          "const": "command_rejected"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "code": {
+          "$ref": "#/$defs/MobileApiErrorCode"
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "ChatAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "runId",
+        "segmentTurnId",
+        "v2Seq",
+        "userMessageId",
+        "assistantMessageId",
+        "revision"
+      ],
+      "properties": {
+        "type": {
+          "const": "accepted"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Run identity. On sequenced model frames, id is identical to runId."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segmentTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "userMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "assistantMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ChatEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "runId",
+        "segmentTurnId",
+        "v2Seq",
+        "event"
+      ],
+      "properties": {
+        "type": {
+          "const": "event"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Run identity. On sequenced model frames, id is identical to runId."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segmentTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event": {
+          "$ref": "#/$defs/MobileAgentEvent"
+        }
+      }
+    },
+    "ChatDone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "runId",
+        "segmentTurnId",
+        "v2Seq",
+        "outcome"
+      ],
+      "properties": {
+        "type": {
+          "const": "done"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Run identity. On sequenced model frames, id is identical to runId."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segmentTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "cancelled",
+            "interrupted"
+          ]
+        }
+      }
+    },
+    "ChatError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "runId",
+        "segmentTurnId",
+        "v2Seq",
+        "error"
+      ],
+      "properties": {
+        "type": {
+          "const": "error"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Run identity. On sequenced model frames, id is identical to runId."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segmentTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "$ref": "#/$defs/MobileApiErrorCode"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "InputAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "input"
+      ],
+      "properties": {
+        "type": {
+          "const": "input_accepted"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input": {
+          "$ref": "#/$defs/MobileV2PendingInput"
+        }
+      }
+    },
+    "InputUpdated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "input"
+      ],
+      "properties": {
+        "type": {
+          "const": "input_updated"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input": {
+          "$ref": "#/$defs/MobileV2PendingInput"
+        }
+      }
+    },
+    "InputRemoved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "input"
+      ],
+      "properties": {
+        "type": {
+          "const": "input_removed"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input": {
+          "$ref": "#/$defs/MobileV2PendingInput"
+        }
+      }
+    },
+    "InputDelivered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "input",
+        "runId",
+        "segmentTurnId",
+        "userMessageId",
+        "assistantMessageId"
+      ],
+      "properties": {
+        "type": {
+          "const": "input_delivered"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input": {
+          "$ref": "#/$defs/MobileV2PendingInput"
+        },
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "segmentTurnId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "userMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "assistantMessageId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "InputFailed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "input"
+      ],
+      "properties": {
+        "type": {
+          "const": "input_failed"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity, or a server-generated transition identity for recovery and automatic terminalization."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input": {
+          "$ref": "#/$defs/MobileV2PendingInput"
+        }
+      }
+    },
+    "QueuePaused": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "queuePaused",
+        "pendingFollowUpCount"
+      ],
+      "properties": {
+        "type": {
+          "const": "queue_paused"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity when present, otherwise a server-generated transition identity."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queuePaused": {
+          "type": "boolean"
+        },
+        "pendingFollowUpCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "QueueResumed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "conversationId",
+        "v2Seq",
+        "queueRevision",
+        "queuePaused",
+        "pendingFollowUpCount"
+      ],
+      "properties": {
+        "type": {
+          "const": "queue_resumed"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Originating command identity when present, otherwise a server-generated transition identity."
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "v2Seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queueRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queuePaused": {
+          "type": "boolean"
+        },
+        "pendingFollowUpCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "MobileV2WsClientFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChatHello"
+        },
+        {
+          "$ref": "#/$defs/ChatSubscribe"
+        },
+        {
+          "$ref": "#/$defs/ChatSend"
+        },
+        {
+          "$ref": "#/$defs/ChatEnqueueInput"
+        },
+        {
+          "$ref": "#/$defs/ChatEditFollowUp"
+        },
+        {
+          "$ref": "#/$defs/ChatRemoveFollowUp"
+        },
+        {
+          "$ref": "#/$defs/ChatResumeFollowUps"
+        },
+        {
+          "$ref": "#/$defs/ChatAnswer"
+        },
+        {
+          "$ref": "#/$defs/ChatCancel"
+        }
+      ]
+    },
+    "MobileV2ControlFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChatHelloAck"
+        },
+        {
+          "$ref": "#/$defs/ChatConversationSubscribed"
+        },
+        {
+          "$ref": "#/$defs/CommandRejected"
+        }
+      ]
+    },
+    "MobileV2SequencedFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ChatAccepted"
+        },
+        {
+          "$ref": "#/$defs/ChatEvent"
+        },
+        {
+          "$ref": "#/$defs/ChatDone"
+        },
+        {
+          "$ref": "#/$defs/ChatError"
+        },
+        {
+          "$ref": "#/$defs/InputAccepted"
+        },
+        {
+          "$ref": "#/$defs/InputUpdated"
+        },
+        {
+          "$ref": "#/$defs/InputRemoved"
+        },
+        {
+          "$ref": "#/$defs/InputDelivered"
+        },
+        {
+          "$ref": "#/$defs/InputFailed"
+        },
+        {
+          "$ref": "#/$defs/QueuePaused"
+        },
+        {
+          "$ref": "#/$defs/QueueResumed"
+        }
+      ]
+    },
+    "MobileV2WsServerFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MobileV2ControlFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileV2SequencedFrame"
+        }
+      ]
+    },
+    "MobileV2WsFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MobileV2WsClientFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileV2WsServerFrame"
+        }
+      ]
+    }
+  },
+  "$ref": "#/$defs/MobileV2WsFrame"
+}

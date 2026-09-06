@@ -1,0 +1,10 @@
+{
+  "type": "enqueue_input",
+  "id": "00000000-0000-4000-8000-000000000021",
+  "inputId": "00000000-0000-4000-8000-000000000022",
+  "agentId": "agent-01",
+  "channelId": "mobile",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "text": "Use the updated constraint.",
+  "behavior": "steer"
+}

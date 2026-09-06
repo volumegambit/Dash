@@ -1,0 +1,17 @@
+{
+  "type": "input_accepted",
+  "id": "00000000-0000-4000-8000-000000000021",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "queueRevision": 1,
+  "input": {
+    "inputId": "00000000-0000-4000-8000-000000000022",
+    "kind": "steer",
+    "targetTurnId": "00000000-0000-4000-8000-000000000012",
+    "text": "Use the updated constraint.",
+    "state": "queued",
+    "revision": 0,
+    "enqueueOrder": 1,
+    "createdAt": "2026-09-06T09:06:00.000Z",
+    "updatedAt": "2026-09-06T09:06:00.000Z"
+  }
+}

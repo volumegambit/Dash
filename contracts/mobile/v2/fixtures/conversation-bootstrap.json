@@ -1,0 +1,100 @@
+{
+  "conversation": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "agentId": "agent-01",
+    "agentName": "Mobile Helper",
+    "title": "Queue contract check",
+    "revision": 4,
+    "status": "running",
+    "activeTurnId": "00000000-0000-4000-8000-000000000012",
+    "owningIssueId": null,
+    "projectId": null,
+    "lastSeq": 7,
+    "lastMessagePreview": "Working on the first segment.",
+    "createdAt": "2026-09-06T09:00:00.000Z",
+    "updatedAt": "2026-09-06T09:12:00.000Z",
+    "queuePaused": false,
+    "queueRevision": 3,
+    "pendingFollowUpCount": 2,
+    "v2LastSeq": 12
+  },
+  "messages": [
+    {
+      "id": "00000000-0000-4000-8000-000000000013",
+      "conversationId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "00000000-0000-4000-8000-000000000012",
+      "ordinal": 1,
+      "role": "user",
+      "status": "completed",
+      "content": {
+        "type": "user",
+        "text": "Publish the v2 contract."
+      },
+      "createdAt": "2026-09-06T09:01:00.000Z",
+      "updatedAt": "2026-09-06T09:01:00.000Z",
+      "runId": "00000000-0000-4000-8000-000000000011",
+      "segmentIndex": 0,
+      "deliveryKind": "normal",
+      "deliveryStatus": "delivered"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000014",
+      "conversationId": "00000000-0000-4000-8000-000000000001",
+      "turnId": "00000000-0000-4000-8000-000000000012",
+      "ordinal": 2,
+      "role": "assistant",
+      "status": "streaming",
+      "content": {
+        "type": "assistant",
+        "events": [
+          {
+            "type": "text_delta",
+            "text": "Working on it."
+          }
+        ]
+      },
+      "createdAt": "2026-09-06T09:02:00.000Z",
+      "updatedAt": "2026-09-06T09:03:00.000Z",
+      "runId": "00000000-0000-4000-8000-000000000011",
+      "segmentIndex": 0,
+      "deliveryKind": "normal"
+    }
+  ],
+  "nextCursor": null,
+  "pendingInputs": [
+    {
+      "inputId": "00000000-0000-4000-8000-000000000022",
+      "kind": "steer",
+      "targetTurnId": "00000000-0000-4000-8000-000000000012",
+      "text": "Use the updated constraint.",
+      "state": "queued",
+      "revision": 0,
+      "enqueueOrder": 1,
+      "createdAt": "2026-09-06T09:06:00.000Z",
+      "updatedAt": "2026-09-06T09:06:00.000Z"
+    },
+    {
+      "inputId": "00000000-0000-4000-8000-000000000024",
+      "kind": "follow_up",
+      "text": "Then summarize the result.",
+      "state": "queued",
+      "revision": 1,
+      "enqueueOrder": 2,
+      "createdAt": "2026-09-06T09:07:00.000Z",
+      "updatedAt": "2026-09-06T09:08:00.000Z"
+    },
+    {
+      "inputId": "00000000-0000-4000-8000-000000000028",
+      "kind": "follow_up",
+      "text": "Finally list the next steps.",
+      "state": "queued",
+      "revision": 0,
+      "enqueueOrder": 3,
+      "createdAt": "2026-09-06T09:09:00.000Z",
+      "updatedAt": "2026-09-06T09:09:00.000Z"
+    }
+  ],
+  "queuePaused": false,
+  "queueRevision": 3,
+  "v2ThroughSeq": 12
+}

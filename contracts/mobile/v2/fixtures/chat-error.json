@@ -1,0 +1,11 @@
+{
+  "type": "error",
+  "id": "00000000-0000-4000-8000-000000000041",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "runId": "00000000-0000-4000-8000-000000000041",
+  "segmentTurnId": "00000000-0000-4000-8000-000000000042",
+  "v2Seq": 4,
+  "error": "Provider unavailable.",
+  "code": "gateway_offline",
+  "retryable": true
+}

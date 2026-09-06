@@ -1,0 +1,8 @@
+{
+  "type": "edit_follow_up",
+  "id": "00000000-0000-4000-8000-000000000025",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "inputId": "00000000-0000-4000-8000-000000000024",
+  "expectedRevision": -1,
+  "text": "Invalid revision."
+}

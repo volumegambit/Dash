@@ -1,0 +1,17 @@
+{
+  "type": "input_removed",
+  "id": "00000000-0000-4000-8000-000000000026",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "v2Seq": 10,
+  "queueRevision": 3,
+  "input": {
+    "inputId": "00000000-0000-4000-8000-000000000028",
+    "kind": "follow_up",
+    "text": "Finally list the next steps.",
+    "state": "removed",
+    "revision": 1,
+    "enqueueOrder": 3,
+    "createdAt": "2026-09-06T09:09:00.000Z",
+    "updatedAt": "2026-09-06T09:10:00.000Z"
+  }
+}

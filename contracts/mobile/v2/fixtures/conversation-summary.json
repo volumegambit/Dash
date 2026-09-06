@@ -1,0 +1,19 @@
+{
+  "id": "00000000-0000-4000-8000-000000000001",
+  "agentId": "agent-01",
+  "agentName": "Mobile Helper",
+  "title": "Queue contract check",
+  "revision": 4,
+  "status": "running",
+  "activeTurnId": "00000000-0000-4000-8000-000000000012",
+  "owningIssueId": null,
+  "projectId": null,
+  "lastSeq": 7,
+  "lastMessagePreview": "Working on the first segment.",
+  "createdAt": "2026-09-06T09:00:00.000Z",
+  "updatedAt": "2026-09-06T09:12:00.000Z",
+  "queuePaused": false,
+  "queueRevision": 3,
+  "pendingFollowUpCount": 2,
+  "v2LastSeq": 12
+}

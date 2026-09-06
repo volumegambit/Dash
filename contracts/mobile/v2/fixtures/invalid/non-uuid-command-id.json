@@ -1,0 +1,7 @@
+{
+  "type": "remove_follow_up",
+  "id": "not-a-uuid",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "inputId": "00000000-0000-4000-8000-000000000024",
+  "expectedRevision": 0
+}

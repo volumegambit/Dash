@@ -1,0 +1,11 @@
+{
+  "type": "command_rejected",
+  "id": "00000000-0000-4000-8000-000000000026",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "code": "revision_conflict",
+  "error": "The pending input revision changed.",
+  "retryable": true,
+  "details": {
+    "currentRevision": 1
+  }
+}

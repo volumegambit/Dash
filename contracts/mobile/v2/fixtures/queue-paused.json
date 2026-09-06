@@ -1,0 +1,9 @@
+{
+  "type": "queue_paused",
+  "id": "00000000-0000-4000-8000-000000000033",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "v2Seq": 13,
+  "queueRevision": 6,
+  "queuePaused": true,
+  "pendingFollowUpCount": 2
+}

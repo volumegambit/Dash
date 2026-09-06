@@ -5,6 +5,7 @@
   "type": "module",
   "workspaces": [
     "contracts/mobile/v1",
+    "contracts/mobile/v2",
     "packages/agent",
     "packages/channels",
     "packages/chat",
@@ -21,7 +22,7 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w contracts/mobile/v1 -w packages/paths -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/swarm -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
+    "build": "npm run build -w contracts/mobile/v1 -w contracts/mobile/v2 -w packages/paths -w packages/plugin-sdk -w packages/skills -w packages/projects -w packages/mcp -w packages/plugins -w packages/agent -w packages/swarm -w packages/channels -w packages/logging -w packages/management -w packages/chat -w packages/mc -w apps/relay -w apps/relay-control-plane -w apps/gateway",
     "gateway": "node --import tsx apps/gateway/src/index.ts",
     "relay": "node --env-file-if-exists=.env --import tsx apps/relay/src/main.ts",
     "relay:e2e": "node scripts/relay-e2e.mjs",
@@ -40,7 +41,7 @@
     "models:audit": "tsx scripts/audit-models.ts",
     "models:audit:apply": "tsx scripts/audit-models.ts --apply",
     "models:check": "tsx scripts/check-models-freshness.ts",
-    "mobile:contract-check": "npm test --workspace=@dash/mobile-contract",
+    "mobile:contract-check": "npm test --workspace=@dash/mobile-contract && npm test --workspace=@dash/mobile-contract-v2",
     "mobile:e2e": "node --import tsx scripts/mobile-v1-e2e.mjs",
     "mobile:test-harness": "node --import tsx apps/gateway/src/mobile-test-harness-cli.ts",
     "preflight": "npm run lint && npm run build && npm test && npm run models:check",
@@ -52,7 +53,7 @@
     "lint": "biome check . && npm run typecheck --workspace=apps/mission-control && npm run typecheck --workspace=apps/web && npm run typecheck --workspace=packages/plugin-sdk && npm run typecheck --workspace=packages/plugins",
     "lint:fix": "biome check --write .",
     "clean": "rm -rf contracts/*/*/dist packages/*/dist apps/*/dist apps/*/out",
-    "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in contracts/mobile/v1/package.json packages/*/package.json apps/*/package.json packages/skills/plugins/*/.claude-plugin/plugin.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done && tsx scripts/sync-ios-version.ts"
+    "version:sync": "V=$(node -p \"require('./package.json').version\") && for f in contracts/mobile/v1/package.json contracts/mobile/v2/package.json packages/*/package.json apps/*/package.json packages/skills/plugins/*/.claude-plugin/plugin.json; do node -e \"const fs=require('fs');const p=JSON.parse(fs.readFileSync('$f'));p.version='$V';fs.writeFileSync('$f',JSON.stringify(p,null,2)+'\\n')\"; done && tsx scripts/sync-ios-version.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

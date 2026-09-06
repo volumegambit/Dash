@@ -1,0 +1,9 @@
+{
+  "type": "queue_resumed",
+  "id": "00000000-0000-4000-8000-000000000027",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "v2Seq": 14,
+  "queueRevision": 7,
+  "queuePaused": false,
+  "pendingFollowUpCount": 2
+}
