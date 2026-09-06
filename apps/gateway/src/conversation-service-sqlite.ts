@@ -109,8 +109,7 @@ const SCHEMA_SQL = `
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE(conversation_id, ordinal),
-    UNIQUE(conversation_id, turn_id, role),
-    UNIQUE(turn_id, role)
+    UNIQUE(conversation_id, turn_id, role)
   );
 
   CREATE INDEX IF NOT EXISTS conversation_messages_page_idx
@@ -352,10 +351,14 @@ export class SqliteConversationService implements ConversationService {
     };
   }
 
-  private selectTurnMessageRows(turnId: string): ConversationMessageRow[] {
+  private selectTurnMessageRows(conversationId: string, turnId: string): ConversationMessageRow[] {
     return this.db
-      .prepare('SELECT * FROM conversation_messages WHERE turn_id = ? ORDER BY ordinal ASC')
-      .all(turnId) as ConversationMessageRow[];
+      .prepare(
+        `SELECT * FROM conversation_messages
+         WHERE conversation_id = ? AND turn_id = ?
+         ORDER BY ordinal ASC`,
+      )
+      .all(conversationId, turnId) as ConversationMessageRow[];
   }
 
   private findJournalEntry(
@@ -1353,7 +1356,7 @@ export class SqliteConversationService implements ConversationService {
         );
       }
 
-      const existingRows = this.selectTurnMessageRows(value.turnId);
+      const existingRows = this.selectTurnMessageRows(value.conversationId, value.turnId);
       if (existingRows.length > 0) {
         const user = existingRows.find((row) => row.role === 'user');
         const assistant = existingRows.find((row) => row.role === 'assistant');
@@ -1482,7 +1485,7 @@ export class SqliteConversationService implements ConversationService {
         throw new Error(`Failed to acquire conversation lease for ${value.conversationId}`);
       }
 
-      const rows = this.selectTurnMessageRows(value.turnId);
+      const rows = this.selectTurnMessageRows(value.conversationId, value.turnId);
       const user = rows.find((row) => row.role === 'user') as ConversationMessageRow;
       const assistant = rows.find((row) => row.role === 'assistant') as ConversationMessageRow;
       return {
@@ -1833,8 +1836,12 @@ export class SqliteConversationService implements ConversationService {
       }
 
       const existingRows = this.db
-        .prepare('SELECT * FROM conversation_messages WHERE run_id = ? ORDER BY ordinal ASC')
-        .all(value.runId) as ConversationMessageRow[];
+        .prepare(
+          `SELECT * FROM conversation_messages
+           WHERE conversation_id = ? AND run_id = ?
+           ORDER BY ordinal ASC`,
+        )
+        .all(value.conversationId, value.runId) as ConversationMessageRow[];
       if (existingRows.length > 0) {
         const user = existingRows.find((row) => row.segment_index === 0 && row.role === 'user');
         const assistant = existingRows.find(

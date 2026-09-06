@@ -2,15 +2,27 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import { migrateConversationSchema } from './conversation-schema.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 
 const CONVERSATION_ID = 'conversation-legacy';
+const OTHER_CONVERSATION_ID = 'conversation-other';
 
 function columns(db: DatabaseType, table: string): string[] {
   return (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map((row) => row.name);
 }
 
-function createLegacyDatabase(path: string): void {
+function legacyMessages(db: DatabaseType): unknown[] {
+  return db
+    .prepare(`
+      SELECT id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at
+      FROM conversation_messages
+      ORDER BY conversation_id, ordinal
+    `)
+    .all();
+}
+
+function createLegacyDatabase(path: string): unknown[] {
   const db = new Database(path);
   db.exec(`
     CREATE TABLE conversations (
@@ -42,8 +54,11 @@ function createLegacyDatabase(path: string): void {
       updated_at      TEXT NOT NULL,
       UNIQUE(conversation_id, ordinal),
       UNIQUE(conversation_id, turn_id, role),
-      UNIQUE(turn_id, role)
+      uNiQuE ( turn_id , role )
     );
+
+    CREATE INDEX conversation_messages_page_idx
+      ON conversation_messages(conversation_id, ordinal DESC, id DESC);
 
     CREATE TABLE agent_stream_events (
       agent_id        TEXT NOT NULL,
@@ -55,11 +70,17 @@ function createLegacyDatabase(path: string): void {
       PRIMARY KEY (agent_id, conversation_id, seq)
     );
 
-    INSERT INTO conversations VALUES (
-      '${CONVERSATION_ID}', 'request-legacy', 'agent-legacy', 'Legacy Agent',
-      'Legacy conversation', 2, 'idle', NULL, NULL, NULL, 2,
-      '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:01.000Z', NULL
-    );
+    INSERT INTO conversations VALUES
+      (
+        '${CONVERSATION_ID}', 'request-legacy', 'agent-legacy', 'Legacy Agent',
+        'Legacy conversation', 2, 'idle', NULL, NULL, NULL, 2,
+        '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:01.000Z', NULL
+      ),
+      (
+        '${OTHER_CONVERSATION_ID}', 'request-other', 'agent-legacy', 'Legacy Agent',
+        'Other conversation', 1, 'idle', NULL, NULL, NULL, 0,
+        '2026-07-01T00:00:02.000Z', '2026-07-01T00:00:02.000Z', NULL
+      );
 
     INSERT INTO conversation_messages VALUES
       ('message-user', '${CONVERSATION_ID}', 'turn-legacy', 1, 'user',
@@ -76,7 +97,9 @@ function createLegacyDatabase(path: string): void {
       ('agent-legacy', '${CONVERSATION_ID}', 2, 'turn-legacy',
        '{"type":"done","outcome":"completed"}', '2026-07-01T00:00:01.000Z');
   `);
+  const snapshot = legacyMessages(db);
   db.close();
+  return snapshot;
 }
 
 describe('conversation schema migration', () => {
@@ -90,12 +113,12 @@ describe('conversation schema migration', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('hydrates a real legacy database and remains idempotent on reopen', () => {
+  it('losslessly rebuilds a legacy global turn constraint with scoped uniqueness', () => {
     const databasePath = join(tmpDir, 'agent-stream-events.db');
-    createLegacyDatabase(databasePath);
+    const legacySnapshot = createLegacyDatabase(databasePath);
 
-    let service = new SqliteConversationService({ dataDir: tmpDir });
-    let db = (service as unknown as { db: DatabaseType }).db;
+    const service = new SqliteConversationService({ dataDir: tmpDir });
+    const db = (service as unknown as { db: DatabaseType }).db;
 
     expect(columns(db, 'conversations')).toEqual(
       expect.arrayContaining([
@@ -126,24 +149,138 @@ describe('conversation schema migration', () => {
     expect(service.listMessages({ conversationId: CONVERSATION_ID, limit: 10 }).items).toHaveLength(
       2,
     );
+    expect(legacyMessages(db)).toEqual(legacySnapshot);
+
+    const tableSql = db
+      .prepare(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_messages'",
+      )
+      .pluck()
+      .get() as string;
+    const normalizedSql = tableSql.toLowerCase().replace(/\s+/gu, '');
+    expect(normalizedSql).toContain('unique(conversation_id,turn_id,role)');
+    expect(normalizedSql).not.toContain('unique(turn_id,role)');
+    expect(
+      db
+        .prepare(
+          "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'conversation_messages_page_idx'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(
+      'CREATE INDEX conversation_messages_page_idx\n      ON conversation_messages(conversation_id, ordinal DESC, id DESC)',
+    );
+    expect(db.pragma('foreign_key_list(conversation_messages)')).toEqual([
+      expect.objectContaining({
+        table: 'conversations',
+        from: 'conversation_id',
+        to: 'id',
+        on_delete: 'CASCADE',
+      }),
+    ]);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    service.close();
+  });
+
+  it('allows the same opaque turn ID in two migrated conversations without rebuilding on reopen', () => {
+    const databasePath = join(tmpDir, 'agent-stream-events.db');
+    createLegacyDatabase(databasePath);
+
+    let service = new SqliteConversationService({ dataDir: tmpDir });
+    let db = (service as unknown as { db: DatabaseType }).db;
+    const first = service.acceptTurn({
+      agentId: 'agent-legacy',
+      conversationId: CONVERSATION_ID,
+      turnId: 'turn-01',
+      text: 'First conversation',
+    });
+    const second = service.acceptTurn({
+      agentId: 'agent-legacy',
+      conversationId: OTHER_CONVERSATION_ID,
+      turnId: 'turn-01',
+      text: 'Second conversation',
+    });
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(true);
+    expect(
+      db
+        .prepare(
+          'SELECT ordinal FROM conversation_messages WHERE conversation_id = ? ORDER BY ordinal',
+        )
+        .pluck()
+        .all(CONVERSATION_ID),
+    ).toEqual([1, 2, 3, 4]);
+    expect(
+      db
+        .prepare(
+          'SELECT ordinal FROM conversation_messages WHERE conversation_id = ? ORDER BY ordinal',
+        )
+        .pluck()
+        .all(OTHER_CONVERSATION_ID),
+    ).toEqual([1, 2]);
+    const rootPage = db
+      .prepare(
+        "SELECT rootpage FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_messages'",
+      )
+      .pluck()
+      .get();
+    const schemaVersion = db.pragma('schema_version', { simple: true });
 
     service.close();
     service = new SqliteConversationService({ dataDir: tmpDir });
     db = (service as unknown as { db: DatabaseType }).db;
-    expect(db.prepare('SELECT next_message_ordinal FROM conversations').pluck().get()).toBe(3);
-    expect(service.listMessages({ conversationId: CONVERSATION_ID, limit: 10 }).items).toHaveLength(
-      2,
-    );
-    service.acceptTurn({
-      agentId: 'agent-legacy',
-      conversationId: CONVERSATION_ID,
-      turnId: 'turn-after-migration',
-      text: 'Allocate after the legacy tail',
-    });
     expect(
-      db.prepare('SELECT ordinal FROM conversation_messages ORDER BY ordinal').pluck().all(),
-    ).toEqual([1, 2, 3, 4]);
-    expect(db.prepare('SELECT next_message_ordinal FROM conversations').pluck().get()).toBe(5);
+      db
+        .prepare(
+          "SELECT rootpage FROM sqlite_schema WHERE type = 'table' AND name = 'conversation_messages'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(rootPage);
+    expect(db.pragma('schema_version', { simple: true })).toBe(schemaVersion);
+    expect(
+      service.acceptTurn({
+        agentId: 'agent-legacy',
+        conversationId: CONVERSATION_ID,
+        turnId: 'turn-01',
+        text: 'Ignored retry',
+      }),
+    ).toMatchObject({ created: false, userMessage: { id: first.userMessage.id } });
+    expect(
+      service.acceptTurn({
+        agentId: 'agent-legacy',
+        conversationId: OTHER_CONVERSATION_ID,
+        turnId: 'turn-01',
+        text: 'Ignored retry',
+      }),
+    ).toMatchObject({ created: false, userMessage: { id: second.userMessage.id } });
+    expect(
+      db
+        .prepare('SELECT next_message_ordinal FROM conversations WHERE id = ?')
+        .pluck()
+        .all(OTHER_CONVERSATION_ID),
+    ).toEqual([3]);
     service.close();
+  });
+
+  it('checks only rebuilt message foreign keys instead of unrelated legacy violations', () => {
+    const databasePath = join(tmpDir, 'agent-stream-events.db');
+    createLegacyDatabase(databasePath);
+    const db = new Database(databasePath);
+    db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE unrelated_parents (id TEXT PRIMARY KEY);
+      CREATE TABLE unrelated_children (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT NOT NULL REFERENCES unrelated_parents(id)
+      );
+      INSERT INTO unrelated_children VALUES ('child-orphan', 'parent-missing');
+    `);
+    db.pragma('foreign_keys = ON');
+
+    expect(() => migrateConversationSchema(db)).not.toThrow();
+    expect(db.pragma('foreign_key_check(conversation_messages)')).toEqual([]);
+    expect(db.pragma('foreign_key_check(unrelated_children)')).toHaveLength(1);
+    db.close();
   });
 });

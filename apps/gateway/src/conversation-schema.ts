@@ -4,6 +4,14 @@ interface TableInfoRow {
   name: string;
 }
 
+interface SqliteSchemaRow {
+  sql: string | null;
+}
+
+interface CountRow {
+  count: number;
+}
+
 function tableColumns(db: DatabaseType, table: string): Set<string> {
   return new Set((db.pragma(`table_info(${table})`) as TableInfoRow[]).map((row) => row.name));
 }
@@ -19,6 +27,79 @@ function addMissingColumns(
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${sql}`);
     columns.add(name);
   }
+}
+
+function hasLegacyGlobalTurnConstraint(db: DatabaseType): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?")
+    .get('conversation_messages') as SqliteSchemaRow | undefined;
+  const normalizedSql = row?.sql
+    ?.toLowerCase()
+    .replace(/\s+/gu, '')
+    .replace(/["`\[\]]/gu, '');
+  return normalizedSql?.includes('unique(turn_id,role)') ?? false;
+}
+
+function rebuildConversationMessages(db: DatabaseType): void {
+  const duplicate = db
+    .prepare(`
+      SELECT conversation_id, turn_id, role
+      FROM conversation_messages
+      GROUP BY conversation_id, turn_id, role
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `)
+    .get();
+  if (duplicate) {
+    throw new Error('Cannot migrate duplicate conversation-scoped turn messages');
+  }
+
+  const sourceCount = (
+    db.prepare('SELECT COUNT(*) AS count FROM conversation_messages').get() as CountRow
+  ).count;
+  db.exec(`
+    CREATE TABLE conversation_messages_v2_migration (
+      id              TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      turn_id         TEXT NOT NULL,
+      run_id          TEXT,
+      segment_index   INTEGER NOT NULL DEFAULT 0,
+      ordinal         INTEGER NOT NULL CHECK (ordinal > 0),
+      role            TEXT NOT NULL CHECK (role IN ('user','assistant')),
+      content         TEXT NOT NULL,
+      status          TEXT NOT NULL CHECK (status IN ('accepted','streaming','completed','cancelled','failed','interrupted')),
+      delivery_kind   TEXT NOT NULL DEFAULT 'normal',
+      delivery_status TEXT,
+      created_at      TEXT NOT NULL,
+      updated_at      TEXT NOT NULL,
+      UNIQUE(conversation_id, ordinal),
+      UNIQUE(conversation_id, turn_id, role)
+    );
+
+    INSERT INTO conversation_messages_v2_migration (
+      id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+      delivery_kind, delivery_status, created_at, updated_at
+    )
+    SELECT
+      id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+      delivery_kind, delivery_status, created_at, updated_at
+    FROM conversation_messages;
+  `);
+  const replacementCount = (
+    db.prepare('SELECT COUNT(*) AS count FROM conversation_messages_v2_migration').get() as CountRow
+  ).count;
+  if (replacementCount !== sourceCount) {
+    throw new Error(
+      `Conversation message migration copied ${replacementCount} of ${sourceCount} rows`,
+    );
+  }
+
+  db.exec(`
+    DROP TABLE conversation_messages;
+    ALTER TABLE conversation_messages_v2_migration RENAME TO conversation_messages;
+    CREATE INDEX conversation_messages_page_idx
+      ON conversation_messages(conversation_id, ordinal DESC, id DESC);
+  `);
 }
 
 const V2_SCHEMA_SQL = `
@@ -114,6 +195,12 @@ export function migrateConversationSchema(db: DatabaseType): void {
       );
     `);
 
+    if (hasLegacyGlobalTurnConstraint(db)) rebuildConversationMessages(db);
+
     db.exec(V2_SCHEMA_SQL);
+    const foreignKeyViolations = db.pragma('foreign_key_check(conversation_messages)') as unknown[];
+    if (foreignKeyViolations.length > 0) {
+      throw new Error('Conversation message migration left foreign-key violations');
+    }
   })();
 }

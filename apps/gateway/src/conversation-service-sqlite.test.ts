@@ -755,6 +755,107 @@ describe('SqliteConversationService durable turns', () => {
     expect(first.conversation).toMatchObject({ status: 'running', activeTurnId: 'turn-01' });
   });
 
+  it('isolates duplicate opaque turn IDs through retry, events, finish, hydration, and deletion', () => {
+    const firstConversation = createConversation('create-shared-turn-a');
+    const secondConversation = createConversation('create-shared-turn-b');
+    const first = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: firstConversation.id,
+      turnId: 'turn-01',
+      text: 'First prompt',
+    });
+    const second = service.acceptTurn({
+      agentId: 'agent-01',
+      conversationId: secondConversation.id,
+      turnId: 'turn-01',
+      text: 'Second prompt',
+    });
+
+    expect(
+      service.acceptTurn({
+        agentId: 'agent-01',
+        conversationId: firstConversation.id,
+        turnId: 'turn-01',
+        text: 'Ignored first retry',
+      }),
+    ).toMatchObject({ created: false, userMessage: { id: first.userMessage.id } });
+    expect(
+      service.acceptTurn({
+        agentId: 'agent-01',
+        conversationId: secondConversation.id,
+        turnId: 'turn-01',
+        text: 'Ignored second retry',
+      }),
+    ).toMatchObject({ created: false, userMessage: { id: second.userMessage.id } });
+
+    service.appendTurnEvent(firstConversation.id, 'turn-01', {
+      type: 'text_delta',
+      text: 'First answer',
+    });
+    service.appendTurnEvent(secondConversation.id, 'turn-01', {
+      type: 'text_delta',
+      text: 'Second answer',
+    });
+    service.finishTurn({
+      conversationId: firstConversation.id,
+      turnId: 'turn-01',
+      outcome: 'cancelled',
+    });
+    expect(service.get(secondConversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-01',
+    });
+    service.appendTurnEvent(secondConversation.id, 'turn-01', {
+      type: 'text_delta',
+      text: ' still running',
+    });
+    service.finishTurn({
+      conversationId: secondConversation.id,
+      turnId: 'turn-01',
+      outcome: 'completed',
+    });
+
+    expect(service.listMessages({ conversationId: firstConversation.id, limit: 10 }).items).toEqual(
+      [
+        expect.objectContaining({
+          id: first.userMessage.id,
+          content: { type: 'user', text: 'First prompt' },
+        }),
+        expect.objectContaining({
+          id: first.assistantMessage.id,
+          status: 'cancelled',
+          content: { type: 'assistant', events: [{ type: 'text_delta', text: 'First answer' }] },
+        }),
+      ],
+    );
+    expect(
+      service.listMessages({ conversationId: secondConversation.id, limit: 10 }).items,
+    ).toEqual([
+      expect.objectContaining({
+        id: second.userMessage.id,
+        content: { type: 'user', text: 'Second prompt' },
+      }),
+      expect.objectContaining({
+        id: second.assistantMessage.id,
+        status: 'completed',
+        content: {
+          type: 'assistant',
+          events: [
+            { type: 'text_delta', text: 'Second answer' },
+            { type: 'text_delta', text: ' still running' },
+          ],
+        },
+      }),
+    ]);
+
+    service.delete(firstConversation.id, service.get(firstConversation.id)?.revision as number);
+    expect(service.get(firstConversation.id)).toBeNull();
+    expect(
+      service.listMessages({ conversationId: secondConversation.id, limit: 10 }).items,
+    ).toHaveLength(2);
+    expect(service.eventLog.readSince('agent-01', secondConversation.id, 0)).toHaveLength(4);
+  });
+
   it('persists JSON-safe live events and refuses late events after terminal', () => {
     const conversation = createConversation();
     service.acceptTurn({
@@ -1958,6 +2059,91 @@ describe('SqliteConversationService segmented run lifecycle', () => {
       run.v2Frame,
       persisted?.v2Frame,
     ]);
+  });
+
+  it('isolates duplicate opaque run IDs across the canonical v2 lifecycle', () => {
+    const firstConversationId = createConversation();
+    const secondConversationId = createConversation();
+    const first = acceptRun(firstConversationId, 'turn-01');
+    const second = acceptRun(secondConversationId, 'turn-01');
+
+    expect(acceptRun(firstConversationId, 'turn-01')).toMatchObject({
+      created: false,
+      userMessage: { id: first.userMessage.id },
+    });
+    expect(acceptRun(secondConversationId, 'turn-01')).toMatchObject({
+      created: false,
+      userMessage: { id: second.userMessage.id },
+    });
+    service.appendRunEvent({
+      conversationId: firstConversationId,
+      runId: 'turn-01',
+      segmentTurnId: 'turn-01',
+      event: { type: 'text_delta', text: 'first v2 answer' },
+    });
+    service.appendRunEvent({
+      conversationId: secondConversationId,
+      runId: 'turn-01',
+      segmentTurnId: 'turn-01',
+      event: { type: 'text_delta', text: 'second v2 answer' },
+    });
+    service.finishRunAndClaimNext({
+      conversationId: firstConversationId,
+      runId: 'turn-01',
+      segmentTurnId: 'turn-01',
+      outcome: 'cancelled',
+    });
+    expect(service.get(secondConversationId)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-01',
+    });
+    service.appendCurrentRunEvent(AGENT_ID, secondConversationId, 'turn-01', {
+      type: 'text_delta',
+      text: ' still isolated',
+    });
+    service.finishRunAndClaimNext({
+      conversationId: secondConversationId,
+      runId: 'turn-01',
+      segmentTurnId: 'turn-01',
+      outcome: 'completed',
+    });
+
+    expect(service.listRunMessages(firstConversationId, 'turn-01')).toEqual([
+      expect.objectContaining({
+        id: first.userMessage.id,
+        content: { type: 'user', text: 'Prompt for turn-01' },
+      }),
+      expect.objectContaining({
+        id: first.assistantMessage.id,
+        status: 'cancelled',
+        content: {
+          type: 'assistant',
+          events: [{ type: 'text_delta', text: 'first v2 answer' }],
+        },
+      }),
+    ]);
+    expect(service.listRunMessages(secondConversationId, 'turn-01')).toEqual([
+      expect.objectContaining({
+        id: second.userMessage.id,
+        content: { type: 'user', text: 'Prompt for turn-01' },
+      }),
+      expect.objectContaining({
+        id: second.assistantMessage.id,
+        status: 'completed',
+        content: {
+          type: 'assistant',
+          events: [
+            { type: 'text_delta', text: 'second v2 answer' },
+            { type: 'text_delta', text: ' still isolated' },
+          ],
+        },
+      }),
+    ]);
+
+    service.delete(firstConversationId, service.get(firstConversationId)?.revision as number);
+    expect(service.get(firstConversationId)).toBeNull();
+    expect(service.listRunMessages(secondConversationId, 'turn-01')).toHaveLength(2);
+    expect(service.readV2Since(AGENT_ID, secondConversationId, 0).frames).toHaveLength(4);
   });
 
   it('rolls back v1 acceptance when its v2 mirror cannot append', () => {
