@@ -159,7 +159,7 @@ struct ConversationListView: View {
   /// Focus of the `.searchable` field, driven by ⌘F
   /// (`KeyboardCommand.focusSearch`). Bound through `dashSearchFocused(_:)`,
   /// which is the identity modifier below iOS 18 — see its doc comment for
-  /// why ⌘F is a documented no-op there rather than a hidden command.
+  /// why ⌘F is listed but DISABLED there rather than hidden.
   @FocusState private var isSearchFocused: Bool
 
   var body: some View {

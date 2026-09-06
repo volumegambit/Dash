@@ -48,10 +48,13 @@ struct ConversationWindowView: View {
         }
       }
       .environment(appModel)
-      // Idempotent: `AppModel.start()` returns immediately once a profile
-      // and sync engine are published, so the second scene arriving after
-      // the main window has already started re-enters and no-ops rather
-      // than tearing down and re-publishing a live session.
+      // Safe for the second scene to call. Once the main window has
+      // published a profile and sync engine, `AppModel.start()` re-enters
+      // and no-ops. During a COLD start it does not return immediately —
+      // both scenes' calls are in flight at once — but `start()` bumps its
+      // epoch synchronously at entry, so the later caller wins, the earlier
+      // one shuts down the engine it had been preparing, and exactly one
+      // live session is published either way.
       .task { await appModel.start() }
       // UI-test harness hygiene only — see
       // `ConversationWindowSceneGuard`. A no-op in every shipping build and

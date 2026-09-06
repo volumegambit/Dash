@@ -201,11 +201,12 @@ struct DashCommands: Commands {
       button(.newConversation, enabled: list?.canCompose == true) { list?.newConversation() }
     }
     CommandMenu("Conversation") {
-      // Greyed out rather than removed on iOS 17: `dashSearchFocused(_:)` is
-      // the identity modifier there (`View.searchFocused(_:)` is iOS 18+),
-      // so ⌘F would be listed, enabled, and do nothing when pressed. See
-      // `dashSearchFocused(_:)`'s doc comment for why the command stays in
-      // the table on every OS regardless.
+      // Greyed out rather than removed below iOS 18: `dashSearchFocused(_:)`
+      // is the identity modifier there (`View.searchFocused(_:)` is iOS 18+),
+      // so a ⌘F that stayed enabled would do nothing when pressed.
+      // `searchFocusIsAvailable` is what disables it — see that property, and
+      // `dashSearchFocused(_:)`'s doc comment for why the item is still
+      // LISTED on every OS rather than hidden.
       button(.focusSearch, enabled: list != nil && searchFocusIsAvailable) {
         list?.focusSearch()
       }
@@ -290,11 +291,12 @@ extension View {
   ///
   /// `View.searchFocused(_:)` is iOS 18+ and has no iOS 17 equivalent —
   /// SwiftUI gave no way to focus a `.searchable` field programmatically
-  /// before then. On iOS 17 this is the identity modifier and ⌘F therefore
-  /// does nothing: the menu item stays listed and enabled (the list surface
-  /// is present), it just can't move focus. That is deliberate rather than
-  /// hiding the command on older systems, so the shortcut table is the same
-  /// everywhere and the only difference is one no-op on a two-year-old OS.
+  /// before then. On iOS 17 this is the identity modifier, so ⌘F could not
+  /// move focus; `DashCommands.searchFocusIsAvailable` therefore DISABLES
+  /// the menu item there rather than leaving an enabled shortcut that does
+  /// nothing. The item is still listed on every OS, so the shortcut table
+  /// reads the same everywhere and the only difference on a two-year-old OS
+  /// is that one entry is greyed out.
   @ViewBuilder
   func dashSearchFocused(_ binding: FocusState<Bool>.Binding) -> some View {
     if #available(iOS 18.0, *) {
