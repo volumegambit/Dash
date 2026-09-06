@@ -3397,6 +3397,90 @@ describe('createWebAppStore', () => {
     });
 
     /**
+     * Fix round 2 (F3), and the property the whole ruling is about: with the
+     * subscription held and the caller opting in, the user's sentence is in
+     * the transcript BEFORE anything comes back — not after the `accepted`,
+     * and not after the replay `done` triggers.
+     *
+     * Driven with the tasks panel's exact precondition (transcript loaded,
+     * child subscribed, opt-in from a caller that renders no transcript of
+     * its own), because that is the path the panel now takes and the previous
+     * two tests do not cover it: the uncorrelated one above declines, and
+     * `reconciles a resumed follow-up into ONE row carrying the server ids`
+     * opts in without loading or subscribing and only asserts after the echo.
+     * The blank `from orchestrator` row F3 reported is exactly this assertion
+     * failing.
+     */
+    it('shows the text immediately when a subscribed caller opts in, then reconciles it', async () => {
+      const serverRow = message({
+        id: 'server-user-1',
+        conversationId: CHILD_ID,
+        turnId: 'server-turn-1',
+        role: 'user',
+        origin: 'parent',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+      // The child's row for THIS resume does not exist server-side until the
+      // resume is made, so the first read (the block's own expansion) must
+      // not already carry it.
+      let resumed = false;
+      const { rest, getMessages, resumeSubagent } = fakeRest({
+        resumeSubagentImpl: async () => {
+          resumed = true;
+          return { ok: true, status: 'running', mode: 'resumed' };
+        },
+        getMessagesImpl: async (conversationId: string) => ({
+          items: conversationId === CHILD_ID && resumed ? [serverRow] : [],
+          nextCursor: null,
+          throughSeq: 9,
+        }),
+      });
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      // The block is open: transcript loaded and child subscribed. The PANEL
+      // is what sends, so it holds no subscription of its own — it asked the
+      // store whether one was held and was told yes.
+      await store.getState().loadSubagentTranscript(CHILD_ID);
+      store.getState().subscribeSubagent(CHILD_ID);
+
+      await store.getState().sendToSubagent(CHILD_ID, 'also check the relay', { optimistic: true });
+
+      // Before the `accepted`. This is the window F3 measured as the whole
+      // child turn — minutes, for a queued steer.
+      const pending = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(pending).toHaveLength(1);
+      expect(pending[0].content).toEqual({ type: 'user', text: 'also check the relay' });
+
+      onFrames[0](childAccepted({ requestId: resumeSubagent.mock.calls[0][2] as string }));
+      onFrames[0]({
+        type: 'done',
+        id: 'server-turn-1',
+        conversationId: CHILD_ID,
+        seq: 8,
+        outcome: 'completed',
+      } as MobileWsServerFrame);
+      await vi.waitFor(() =>
+        expect(
+          getMessages.mock.calls.filter((c) => c[0] === CHILD_ID).length,
+        ).toBeGreaterThanOrEqual(2),
+      );
+
+      // And still exactly one row once the server's own copy has been read.
+      const users = store
+        .getState()
+        .transcripts[CHILD_ID].messages.filter((m) => m.role === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id: 'server-user-1',
+        turnId: 'server-turn-1',
+        content: { type: 'user', text: 'also check the relay' },
+      });
+    });
+
+    /**
      * Fix round 2, C2. On the REST resume path the SERVER chooses the turn id,
      * so the optimistic row's client uuid matches neither `frame.id` nor
      * `frame.userMessageId` and `reconcileAccepted` materialised a SECOND row
