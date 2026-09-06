@@ -9,6 +9,13 @@ const MAX_SIDE_CHARS = 4000;
 export type LearningPolicy = 'auto' | 'on' | 'off';
 
 /**
+ * Completed tool calls a turn must have made before a review is worth paying
+ * for. Three is low enough to catch a short debugging exchange and high enough
+ * that pure conversation never triggers a call.
+ */
+export const DEFAULT_MIN_TOOL_CALLS = 3;
+
+/**
  * Whether skill learning runs for this agent.
  *
  * Unlike the memory sweep — where `'auto'` *disables* the sweep for frontier

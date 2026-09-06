@@ -24,7 +24,26 @@ export interface GatewayAgentConfig {
   systemPrompt: string;
   fallbackModels?: string[];
   tools?: string[];
-  skills?: { paths?: string[]; urls?: string[] };
+  /**
+   * `paths`/`urls`: extra skill sources for this agent.
+   *
+   * `learning`: automatic skill learning — after a turn that did real work, a
+   * review pass decides whether the session produced a durable lesson and
+   * records it in a skill the agent owns. 'auto' (the default — on) | 'on' |
+   * 'off'. Unlike memory's sweep, where 'auto' switches OFF for frontier
+   * providers because those models save memories themselves, there is no
+   * self-save path here for 'auto' to defer to: no model spontaneously stops
+   * mid-task to revise its skill library.
+   *
+   * `minToolCalls`: completed tool calls the turn must have made before a
+   * review is worth paying for. A purely conversational turn costs nothing.
+   */
+  skills?: {
+    paths?: string[];
+    urls?: string[];
+    learning?: 'auto' | 'on' | 'off';
+    minToolCalls?: number;
+  };
   providerApiKeys?: Record<string, string>;
   workspace?: string;
   maxTokens?: number;

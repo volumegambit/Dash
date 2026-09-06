@@ -66,6 +66,12 @@ import {
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
 import { safeFlush, safeStep } from './shutdown.js';
+import {
+  DEFAULT_MIN_TOOL_CALLS,
+  extractLessonDeltas,
+  shouldReviewSkills,
+} from './skill-review-extract.js';
+import { createSkillReviewService } from './skill-review.js';
 import { createGatewayWorkerFactory } from './swarm-wiring.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
@@ -714,11 +720,53 @@ async function main() {
     },
     logger,
   });
+  // Post-turn skill review. Like the memory sweep, extraction runs on the
+  // agent's OWN model with the agent's own credentials, so turn text never
+  // leaves the provider the agent is already talking to.
+  const skillReview = createSkillReviewService({
+    conversations: conversationService,
+    // Same resolver the chat coordinator uses, so a review writes into exactly
+    // the directory the agent already reads its managed skills from.
+    managedSkillsDir: (agentId) => {
+      const entry = registry.get(agentId);
+      return entry ? resolve(dataDir, 'skills', entry.config.name) : null;
+    },
+    shouldReview: (agentId) => {
+      const entry = registry.get(agentId);
+      if (!entry) return false;
+      return shouldReviewSkills(entry.config.skills?.learning);
+    },
+    minToolCalls: (agentId) => {
+      const configured = registry.get(agentId)?.config.skills?.minToolCalls;
+      return typeof configured === 'number' && configured >= 0
+        ? configured
+        : DEFAULT_MIN_TOOL_CALLS;
+    },
+    async extract({ agentId, userText, assistantText, books, loadedSkills }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      return extractLessonDeltas({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        userText,
+        assistantText,
+        books,
+        loadedSkills,
+      });
+    },
+    logger,
+  });
+
   const resumableChatHub = createResumableChatHub({
     conversations: conversationService,
     agents,
     autoTitle: conversationAutoTitle,
     memorySweep,
+    skillReview,
     swarmCoordinator,
     onChanged: emitConversationChanged,
   });
@@ -1096,6 +1144,7 @@ async function main() {
     // process alive until SIGKILL with its databases still open.
     await safeFlush('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
     await safeFlush('memorySweep.flush', () => memorySweep.flush());
+    await safeFlush('skillReview.flush', () => skillReview.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.

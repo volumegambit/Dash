@@ -157,6 +157,7 @@ describe('ResumableChatHub', () => {
   let harness: ReturnType<typeof makeAgentHarness>;
   let autoTitle: ConversationAutoTitleService;
   let memorySweep: { schedule: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
+  let skillReview: { schedule: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
   let onChanged: ReturnType<typeof vi.fn>;
   let swarmCancel: ReturnType<typeof vi.fn>;
   let hub: ReturnType<typeof createResumableChatHub>;
@@ -182,6 +183,10 @@ describe('ResumableChatHub', () => {
       schedule: vi.fn(),
       flush: vi.fn().mockResolvedValue(undefined),
     };
+    skillReview = {
+      schedule: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
     onChanged = vi.fn();
     swarmCancel = vi.fn().mockReturnValue(true);
     scripts = [];
@@ -190,6 +195,7 @@ describe('ResumableChatHub', () => {
       agents: harness.agents,
       autoTitle,
       memorySweep,
+      skillReview,
       swarmCoordinator: { cancelTurn: swarmCancel },
       onChanged,
     });
@@ -962,7 +968,15 @@ describe('ResumableChatHub', () => {
       }),
     );
     expect(memorySweep.schedule).toHaveBeenCalledOnce();
+    // A review is scheduled on exactly the same signal: turn completed.
+    expect(skillReview.schedule).toHaveBeenCalledWith({
+      agentId: completed.agentId,
+      conversationId: completed.id,
+      turnId: 'turn-completed',
+    });
+    expect(skillReview.schedule).toHaveBeenCalledOnce();
     memorySweep.schedule.mockClear();
+    skillReview.schedule.mockClear();
 
     const failed = createConversation();
     const failedStream = register(failed.id);
@@ -972,6 +986,7 @@ describe('ResumableChatHub', () => {
     await waitForFrames(failedSink, 2);
     await vi.waitFor(() => expect(failedStream.return).toHaveBeenCalledOnce());
     expect(memorySweep.schedule).not.toHaveBeenCalled();
+    expect(skillReview.schedule).not.toHaveBeenCalled();
 
     const cancelled = createConversation();
     const cancelledStream = register(cancelled.id);
@@ -981,6 +996,7 @@ describe('ResumableChatHub', () => {
     cancelledStream.finish();
     await vi.waitFor(() => expect(cancelledStream.return).toHaveBeenCalledOnce());
     expect(memorySweep.schedule).not.toHaveBeenCalled();
+    expect(skillReview.schedule).not.toHaveBeenCalled();
   });
 
   it.each([
