@@ -8,7 +8,7 @@ import type {
   DeliveredSteerRecord,
   RunOptions,
 } from '@dash/agent';
-import { MemoryStore, PiAgentBackend } from '@dash/agent';
+import { MemoryStore } from '@dash/agent';
 import {
   AsyncChannel,
   SwarmCoordinator,
@@ -1450,26 +1450,6 @@ describe('AgentChatCoordinator typed run steering controls', () => {
     await expect(second.agents.sealSteering(second.id, 'unsupported', RUN_ID)).resolves.toEqual([]);
     expect(second.agents.stats().pinned).toBe(0);
     await second.agents.stop();
-  });
-
-  it('routes frozen legacy steering through the separate hook on dual-capability Pi', async () => {
-    const backend = new PiAgentBackend({
-      model: 'anthropic/claude-sonnet-4-20250514',
-      systemPrompt: 'test',
-    });
-    vi.spyOn(backend, 'start').mockResolvedValue();
-    vi.spyOn(backend, 'stop').mockResolvedValue();
-    vi.spyOn(backend, 'run').mockImplementation(async function* () {});
-    const typedSteer = vi.spyOn(backend, 'steer').mockResolvedValue({ accepted: true });
-    const steerLegacy = vi.spyOn(backend, 'steerLegacy').mockResolvedValue();
-    const { id, agents } = setupCoordinator(async () => backend);
-    await drain(agents.chat({ agentId: id, conversationId: 'legacy', text: 'warm' }));
-    const images = [{ type: 'image' as const, mediaType: 'image/png' as const, data: 'abc' }];
-
-    await agents.steer(id, 'legacy', 'old text', images);
-    expect(steerLegacy).toHaveBeenCalledWith('old text', images);
-    expect(typedSteer).not.toHaveBeenCalled();
-    await agents.stop();
   });
 
   it('does not reconcile a legacy plain request when deliveredSteers is absent', async () => {

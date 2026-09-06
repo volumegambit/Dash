@@ -32,19 +32,29 @@ interface PendingCreation {
   agentName: string;
   conversationId: string;
   epoch: number;
+  processEpoch: number;
+  agentEpoch: number;
   retired: boolean;
   promise: Promise<PoolEntry>;
 }
 
 interface RetiredEntry {
   key: string;
+  agentName: string;
   entry: PoolEntry;
 }
 
 interface RetiringGeneration {
   key: string;
+  agentName: string;
+  error?: unknown;
   settled: Promise<void>;
   resolve(): void;
+}
+
+interface AdmissionEpoch {
+  process: number;
+  agent: number;
 }
 
 class PoolCreationRetiredError extends Error {
@@ -60,7 +70,10 @@ export class ConversationPool {
   private retiring = new Map<string, RetiringGeneration>();
   private leaseRefs = new Map<string, LeaseRefState>();
   private legacyPins = new Set<string>();
+  private entryAgents = new Map<string, string>();
   private slotEpochs = new Map<string, number>();
+  private agentEpochs = new Map<string, number>();
+  private processEpoch = 0;
   private nextSlotEpoch = 0;
   private readonly maxSize: number;
   private readonly backendFactory: PoolBackendFactory;
@@ -79,6 +92,23 @@ export class ConversationPool {
   }
 
   getOrCreate(agentName: string, conversationId: string): Promise<PoolEntry> {
+    return this.getOrCreateAtEpoch(
+      agentName,
+      conversationId,
+      this.captureAdmissionEpoch(agentName),
+    );
+  }
+
+  private getOrCreateAtEpoch(
+    agentName: string,
+    conversationId: string,
+    admission: AdmissionEpoch,
+  ): Promise<PoolEntry> {
+    try {
+      this.assertAdmissionCurrent(agentName, conversationId, admission);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const k = this.key(agentName, conversationId);
     const existing = this.pool.get(k);
     if (existing) {
@@ -91,7 +121,9 @@ export class ConversationPool {
     // generation instead of receiving the doomed entry or racing its teardown.
     const retiring = this.retiring.get(k);
     if (retiring) {
-      return retiring.settled.then(() => this.getOrCreate(agentName, conversationId));
+      return retiring.settled.then(() =>
+        this.getOrCreateAtEpoch(agentName, conversationId, admission),
+      );
     }
 
     // Deduplicate concurrent creates for the same key
@@ -116,6 +148,8 @@ export class ConversationPool {
       agentName,
       conversationId,
       epoch: ++this.nextSlotEpoch,
+      processEpoch: admission.process,
+      agentEpoch: admission.agent,
       retired: false,
       promise,
     };
@@ -125,13 +159,39 @@ export class ConversationPool {
     return promise;
   }
 
+  private captureAdmissionEpoch(agentName: string): AdmissionEpoch {
+    return {
+      process: this.processEpoch,
+      agent: this.agentEpochs.get(agentName) ?? 0,
+    };
+  }
+
+  private isAdmissionCurrent(agentName: string, admission: AdmissionEpoch): boolean {
+    return (
+      admission.process === this.processEpoch &&
+      admission.agent === (this.agentEpochs.get(agentName) ?? 0)
+    );
+  }
+
+  private assertAdmissionCurrent(
+    agentName: string,
+    conversationId: string,
+    admission: AdmissionEpoch,
+  ): void {
+    if (!this.isAdmissionCurrent(agentName, admission)) {
+      throw new PoolCreationRetiredError(agentName, conversationId);
+    }
+  }
+
   private reserveSlot(): RetiredEntry | undefined {
     if (this.pool.size + this.pending.size < this.maxSize) return undefined;
 
-    let oldest: { key: string; entry: PoolEntry } | undefined;
+    let oldest: RetiredEntry | undefined;
     for (const [key, entry] of this.pool) {
       if (entry.pinned) continue;
-      if (!oldest || entry.lastActive < oldest.entry.lastActive) oldest = { key, entry };
+      if (!oldest || entry.lastActive < oldest.entry.lastActive) {
+        oldest = { key, agentName: this.entryAgents.get(key) ?? key.split('/')[0], entry };
+      }
     }
     if (!oldest) {
       throw new Error(
@@ -141,8 +201,7 @@ export class ConversationPool {
 
     // Retire the victim atomically before stop() can yield. No same-key caller
     // can rediscover or pin an entry whose capacity slot is being transferred.
-    this.retireEntry(oldest.key);
-    return oldest;
+    return this.retireEntry(oldest.key);
   }
 
   private async finishCreation(
@@ -154,7 +213,12 @@ export class ConversationPool {
     try {
       if (victim) {
         retiring = this.beginRetirement(victim);
-        await victim.entry.backend.stop();
+        try {
+          await victim.entry.backend.stop();
+        } catch (error) {
+          retiring.error = error;
+          throw error;
+        }
       }
       this.assertCurrentCreation(creation);
 
@@ -175,6 +239,7 @@ export class ConversationPool {
           (this.leaseRefs.get(creation.key)?.count ?? 0) > 0 || this.legacyPins.has(creation.key),
       };
       this.pool.set(creation.key, entry);
+      this.entryAgents.set(creation.key, creation.agentName);
       installed = true;
       return entry;
     } finally {
@@ -196,7 +261,7 @@ export class ConversationPool {
     const settled = new Promise<void>((done) => {
       resolve = done;
     });
-    const retiring = { key: victim.key, settled, resolve };
+    const retiring = { key: victim.key, agentName: victim.agentName, settled, resolve };
     this.retiring.set(victim.key, retiring);
     return retiring;
   }
@@ -205,7 +270,9 @@ export class ConversationPool {
     return (
       !creation.retired &&
       this.pending.get(creation.key) === creation &&
-      this.slotEpochs.get(creation.key) === creation.epoch
+      this.slotEpochs.get(creation.key) === creation.epoch &&
+      creation.processEpoch === this.processEpoch &&
+      creation.agentEpoch === (this.agentEpochs.get(creation.agentName) ?? 0)
     );
   }
 
@@ -216,6 +283,7 @@ export class ConversationPool {
   }
 
   async acquire(agentName: string, conversationId: string): Promise<PoolLease> {
+    const admission = this.captureAdmissionEpoch(agentName);
     const k = this.key(agentName, conversationId);
     const refs = this.leaseRefs.get(k) ?? { count: 0 };
     refs.count++;
@@ -225,7 +293,7 @@ export class ConversationPool {
 
     let entry: PoolEntry;
     try {
-      entry = await this.getOrCreate(agentName, conversationId);
+      entry = await this.getOrCreateAtEpoch(agentName, conversationId, admission);
       entry.pinned = true;
     } catch (error) {
       this.releaseLeaseRef(k, refs);
@@ -255,14 +323,16 @@ export class ConversationPool {
     if (entry) entry.pinned = next > 0 || this.legacyPins.has(k);
   }
 
-  private retireEntry(key: string): PoolEntry | undefined {
+  private retireEntry(key: string): RetiredEntry | undefined {
     const entry = this.pool.get(key);
     if (!entry) return undefined;
+    const agentName = this.entryAgents.get(key) ?? key.split('/')[0];
     this.pool.delete(key);
+    this.entryAgents.delete(key);
     this.leaseRefs.delete(key);
     this.legacyPins.delete(key);
     this.slotEpochs.delete(key);
-    return entry;
+    return { key, agentName, entry };
   }
 
   private retirePending(matches: (creation: PendingCreation) => boolean): PendingCreation[] {
@@ -306,6 +376,13 @@ export class ConversationPool {
     });
   }
 
+  private async awaitRetirements(retirements: RetiringGeneration[]): Promise<unknown[]> {
+    await Promise.all(retirements.map((retirement) => retirement.settled));
+    return retirements.flatMap((retirement) =>
+      retirement.error === undefined ? [] : [retirement.error],
+    );
+  }
+
   pin(agentName: string, conversationId: string): void {
     const k = this.key(agentName, conversationId);
     this.legacyPins.add(k);
@@ -329,19 +406,24 @@ export class ConversationPool {
   }
 
   async evictAgent(agentName: string): Promise<void> {
+    this.agentEpochs.set(agentName, (this.agentEpochs.get(agentName) ?? 0) + 1);
     const prefix = `${agentName}/`;
     const toEvict: PoolEntry[] = [];
-    for (const [key, entry] of this.pool) {
+    for (const [key] of this.pool) {
       if (!key.startsWith(prefix)) continue;
-      this.retireEntry(key);
-      toEvict.push(entry);
+      const retired = this.retireEntry(key);
+      if (retired) toEvict.push(retired.entry);
     }
     const pending = this.retirePending((creation) => creation.agentName === agentName);
-    const [entryErrors, pendingErrors] = await Promise.all([
+    const retirements = [...this.retiring.values()].filter(
+      (retirement) => retirement.agentName === agentName,
+    );
+    const [entryErrors, pendingErrors, retirementErrors] = await Promise.all([
       Promise.all(toEvict.map((entry) => this.stopEntry(entry, true))),
       this.awaitRetiredCreations(pending),
+      this.awaitRetirements(retirements),
     ]);
-    const errors = [...entryErrors.flat(), ...pendingErrors];
+    const errors = [...entryErrors.flat(), ...pendingErrors, ...retirementErrors];
     if (errors.length > 0) throw errors[0];
   }
 
@@ -360,8 +442,8 @@ export class ConversationPool {
     const toEvict: PoolEntry[] = [];
     for (const [key, entry] of this.pool) {
       if (entry.pinned) continue;
-      this.retireEntry(key);
-      toEvict.push(entry);
+      const retired = this.retireEntry(key);
+      if (retired) toEvict.push(retired.entry);
     }
     const errors = (await Promise.all(toEvict.map((entry) => this.stopEntry(entry, false)))).flat();
     if (errors.length > 0) throw errors[0];
@@ -377,17 +459,20 @@ export class ConversationPool {
   }
 
   async clear(): Promise<void> {
+    this.processEpoch++;
     const entries: PoolEntry[] = [];
-    for (const [key, entry] of this.pool) {
-      this.retireEntry(key);
-      entries.push(entry);
+    for (const [key] of this.pool) {
+      const retired = this.retireEntry(key);
+      if (retired) entries.push(retired.entry);
     }
     const pending = this.retirePending(() => true);
-    const [entryErrors, pendingErrors] = await Promise.all([
+    const retirements = [...this.retiring.values()];
+    const [entryErrors, pendingErrors, retirementErrors] = await Promise.all([
       Promise.all(entries.map((entry) => this.stopEntry(entry, false))),
       this.awaitRetiredCreations(pending),
+      this.awaitRetirements(retirements),
     ]);
-    const errors = [...entryErrors.flat(), ...pendingErrors];
+    const errors = [...entryErrors.flat(), ...pendingErrors, ...retirementErrors];
     if (errors.length > 0) throw errors[0];
   }
 

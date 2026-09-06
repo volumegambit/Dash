@@ -514,6 +514,93 @@ describe('ConversationPool', () => {
     retry.release();
   });
 
+  it('clear invalidates an acquire already waiting on a held LRU retirement', async () => {
+    const stopGate = deferred<void>();
+    const retiredBackend = mockBackend('retired');
+    retiredBackend.stop = vi.fn(() => stopGate.promise);
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: retiredBackend, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: mockBackend('resurrected'), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+    await pool.getOrCreate('a', 'old');
+
+    const creatorOutcome = pool.getOrCreate('b', 'new').then(
+      (entry) => ({ status: 'fulfilled' as const, entry }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+    const waiterOutcome = pool.acquire('a', 'old').then(
+      (lease) => ({ status: 'fulfilled' as const, lease }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+
+    let clearSettled = false;
+    const clearPromise = pool.clear().then(() => {
+      clearSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const settledWhileStopWasHeld = clearSettled;
+
+    stopGate.resolve();
+    await clearPromise;
+    const [creator, waiter] = await Promise.all([creatorOutcome, waiterOutcome]);
+    if (waiter.status === 'fulfilled') waiter.lease.release();
+
+    expect(settledWhileStopWasHeld).toBe(false);
+    expect(creator).toMatchObject({
+      status: 'rejected',
+      error: { message: expect.stringMatching(/retired/) },
+    });
+    expect(waiter).toMatchObject({
+      status: 'rejected',
+      error: { message: expect.stringMatching(/retired/) },
+    });
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(pool.size).toBe(0);
+  });
+
+  it('evictAgent invalidates and awaits its acquire waiting on a held LRU retirement', async () => {
+    const stopGate = deferred<void>();
+    const retiredBackend = mockBackend('retired');
+    retiredBackend.stop = vi.fn(() => stopGate.promise);
+    const replacementBackend = mockBackend('replacement');
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: retiredBackend, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: replacementBackend, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: mockBackend('resurrected'), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 1, backendFactory: factory });
+    await pool.getOrCreate('a', 'old');
+
+    const replacementPromise = pool.getOrCreate('b', 'new');
+    const waiterOutcome = pool.acquire('a', 'old').then(
+      (lease) => ({ status: 'fulfilled' as const, lease }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+    let evictionSettled = false;
+    const evictionPromise = pool.evictAgent('a').then(() => {
+      evictionSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const settledWhileStopWasHeld = evictionSettled;
+
+    stopGate.resolve();
+    await Promise.all([replacementPromise, evictionPromise]);
+    const waiter = await waiterOutcome;
+    if (waiter.status === 'fulfilled') waiter.lease.release();
+
+    expect(settledWhileStopWasHeld).toBe(false);
+    expect(waiter).toMatchObject({
+      status: 'rejected',
+      error: { message: expect.stringMatching(/retired/) },
+    });
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(pool.get('b', 'new')?.backend).toBe(replacementBackend);
+    expect(pool.has('a', 'old')).toBe(false);
+  });
+
   it('clear retires and awaits a pending factory, then disposes its late backend', async () => {
     const pending = deferredFactory();
     const pool = new ConversationPool({ maxSize: 1, backendFactory: vi.fn(() => pending.promise) });

@@ -429,8 +429,10 @@ export function createAgentChatCoordinator(
   });
   interface ConversationRunOwner {
     key: string;
-    runId: string;
+    runId?: string;
     lease: PoolLease;
+    started: boolean;
+    preventStart: boolean;
     iteratorSettled: boolean;
     sealed: boolean;
     released: boolean;
@@ -509,20 +511,24 @@ export function createAgentChatCoordinator(
       const poolEntry = lease.entry;
       let runOwner: ConversationRunOwner | undefined;
       const claimRunOwner = () => {
-        if (!request.runId) return;
         const key = runOwnerKey(request.agentId, request.conversationId);
         const existing = runOwners.get(key);
         if (existing) {
           throw new Error(
-            `Conversation '${request.conversationId}' already owns run '${existing.runId}'`,
+            `Conversation '${request.conversationId}' already owns run '${existing.runId ?? 'legacy'}'`,
           );
         }
         runOwner = {
           key,
           runId: request.runId,
           lease,
+          started: false,
+          preventStart: false,
           iteratorSettled: false,
-          sealed: false,
+          // Legacy callers have no typed seal phase: their ephemeral owner is
+          // released as soon as the iterator settles. Typed owners retain the
+          // lease through their first seal.
+          sealed: request.runId === undefined,
           released: false,
         };
         runOwners.set(key, runOwner);
@@ -538,11 +544,25 @@ export function createAgentChatCoordinator(
 
       try {
         claimRunOwner();
-        let swarmEnabled: boolean;
         try {
           if (request.deliveredSteers !== undefined) {
             await poolEntry.backend.reconcileSteers?.(request.deliveredSteers);
           }
+        } catch (error) {
+          failRunStart();
+          throw error;
+        }
+        // A typed seal can race the awaited reconciliation above. In that
+        // pre-run phase there is nothing valid for the backend to seal, so the
+        // seal marks this owner as cancelled and the chat exits without ever
+        // starting the backend (or attaching a swarm turn).
+        if (runOwner?.preventStart) {
+          settleRun();
+          return;
+        }
+
+        let swarmEnabled: boolean;
+        try {
           swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;
         } catch (error) {
           failRunStart();
@@ -566,6 +586,7 @@ export function createAgentChatCoordinator(
           let runStarted = false;
           let completed = false;
           try {
+            if (runOwner) runOwner.started = true;
             const first = await gen.next();
             runStarted = true;
             if (first.done) {
@@ -701,6 +722,7 @@ export function createAgentChatCoordinator(
           // call throws, the same finally below finalizes the attachment and
           // releases the pre-run owner.
           chanNext = attachment.channel.take();
+          if (runOwner) runOwner.started = true;
           genNext = nextGen();
 
           // A SINGLE abort promise for the whole turn (one `once` listener,
@@ -867,8 +889,14 @@ export function createAgentChatCoordinator(
 
     async sealSteering(agentId, conversationId, runId) {
       const entry = pool.get(agentId, conversationId);
-      const inputIds = entry?.backend.sealSteering ? await entry.backend.sealSteering(runId) : [];
       const owner = runOwners.get(runOwnerKey(agentId, conversationId));
+      if (owner?.runId === runId && !owner.started) {
+        owner.preventStart = true;
+        owner.sealed = true;
+        maybeReleaseRunOwner(owner);
+        return [];
+      }
+      const inputIds = entry?.backend.sealSteering ? await entry.backend.sealSteering(runId) : [];
       if (owner?.runId === runId) {
         owner.sealed = true;
         maybeReleaseRunOwner(owner);
