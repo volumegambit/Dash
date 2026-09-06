@@ -117,6 +117,36 @@ struct ConversationMessagePageDTO: Codable, Hashable, Sendable {
   let throughSeq: Int
 }
 
+/// One child of a conversation, as `GET /conversations/{id}/subagents` reports
+/// it (sub-agents design 7.7). `status` is a plain `String` rather than an enum
+/// because the sub-agent UX (phase D) has not landed on iOS yet and a new
+/// status shipped by a newer gateway must not fail the decode of the whole
+/// page — the tasks list is read-only here.
+struct SubagentListEntryDTO: Codable, Hashable, Identifiable, Sendable {
+  let id: String
+  let name: String?
+  let type: String
+  let description: String
+  let status: String
+  let background: Bool
+  let depth: Int
+  let startedAt: Date
+  let endedAt: Date?
+  let usage: SubagentUsageDTO?
+  let toolCallCount: Int
+  let report: String?
+  let oneShot: Bool
+}
+
+struct SubagentUsageDTO: Codable, Hashable, Sendable {
+  let inputTokens: Int
+  let outputTokens: Int
+}
+
+struct SubagentListResponseDTO: Codable, Hashable, Sendable {
+  let subagents: [SubagentListEntryDTO]
+}
+
 struct CreateConversationRequest: Codable, Hashable, Sendable {
   let agentId: String
   let requestId: String

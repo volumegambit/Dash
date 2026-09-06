@@ -396,6 +396,8 @@ struct ContractFixtureTests {
       try decodeIfValid(ConversationPageDTO.self, fixture)
     case ("json", "openapi", "ConversationMessagePage"):
       try decodeIfValid(ConversationMessagePageDTO.self, fixture)
+    case ("json", "openapi", "SubagentListResponse"):
+      try decodeIfValid(SubagentListResponseDTO.self, fixture)
     case ("json", "openapi", "ReplayPage"):
       try decodeIfValid(ReplayPageDTO.self, fixture)
     case ("json", "openapi", "MobileApiError"),

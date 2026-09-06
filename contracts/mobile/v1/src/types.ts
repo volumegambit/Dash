@@ -173,6 +173,50 @@ export interface SubagentInfo {
   workspace?: string;
 }
 
+/**
+ * One child as `GET /conversations/:id/subagents` reports it (design §7.7) — a
+ * trimmed {@link SubagentInfo} for the tasks panel. `prompt`, `model`,
+ * `isolation` and `workspace` are deliberately absent: fetch the child
+ * conversation for those.
+ */
+export interface SubagentListEntry {
+  id: string;
+  name?: string;
+  type: string;
+  description: string;
+  status: SubagentStatus;
+  background: boolean;
+  depth: number;
+  startedAt: string;
+  endedAt?: string;
+  usage?: SubagentUsage;
+  toolCallCount: number;
+  /** Scanned sub-agent output; absent until the child is terminal. */
+  report?: string;
+  /** Explore / Plan: `POST /subagents/:id/resume` 409s. */
+  oneShot: boolean;
+}
+
+export interface SubagentListResponse {
+  subagents: SubagentListEntry[];
+}
+
+export interface SubagentStopResponse {
+  ok: true;
+  status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
+}
+
+export interface SubagentResumeRequest {
+  message: string;
+}
+
+export interface SubagentResumeResponse {
+  ok: boolean;
+  status: SubagentStatus | 'spawning';
+  /** `queued` — the child was running; `resumed` — a new turn was started on it. */
+  mode: 'queued' | 'resumed';
+}
+
 export interface ConversationSummary {
   id: string;
   agentId: string;

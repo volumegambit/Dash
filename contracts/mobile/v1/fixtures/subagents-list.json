@@ -1,0 +1,44 @@
+{
+  "subagents": [
+    {
+      "id": "sub_01JQ8Z3K7M2N4P6R8T0V2W4X6Y",
+      "name": "scout",
+      "type": "Explore",
+      "description": "Survey the repo",
+      "status": "done",
+      "background": false,
+      "depth": 1,
+      "startedAt": "2026-09-06T09:00:00.000Z",
+      "endedAt": "2026-09-06T09:02:31.000Z",
+      "usage": { "inputTokens": 4821, "outputTokens": 903 },
+      "toolCallCount": 12,
+      "report": "The auth flow lives in apps/gateway/src/auth.ts.",
+      "oneShot": true
+    },
+    {
+      "id": "sub_01JQ8Z3K7M2N4P6R8T0V2W4X70",
+      "type": "general-purpose",
+      "description": "Port the migration",
+      "status": "interrupted",
+      "background": true,
+      "depth": 1,
+      "startedAt": "2026-09-06T09:01:10.000Z",
+      "endedAt": "2026-09-06T09:04:00.000Z",
+      "toolCallCount": 3,
+      "report": "The gateway restarted while this agent was running. Its transcript is intact and it can be resumed with send_message.",
+      "oneShot": false
+    },
+    {
+      "id": "sub_01JQ8Z3K7M2N4P6R8T0V2W4X71",
+      "name": "reviewer",
+      "type": "general-purpose",
+      "description": "Review the diff",
+      "status": "running",
+      "background": true,
+      "depth": 2,
+      "startedAt": "2026-09-06T09:05:00.000Z",
+      "toolCallCount": 0,
+      "oneShot": false
+    }
+  ]
+}

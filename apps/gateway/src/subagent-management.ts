@@ -1,9 +1,14 @@
 import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { parseAgentDefinition } from '@dash/agent';
+import type { ConversationSummary, SubagentInfo, SubagentStatus } from '@dash/mobile-contract';
+import { type SwarmCoordinator, scanSubagentOutput } from '@dash/swarm';
 import type { Hono } from 'hono';
 
 import type { AgentRegistry } from './agent-registry.js';
+import { toMobileApiError } from './conversation-routes.js';
+import { ConversationServiceError } from './conversation-service.js';
+import type { ConversationService } from './conversation-service.js';
 import type { ListedSubagentType, SubagentDefinitionRegistry } from './subagent-definitions.js';
 
 /** The two error kinds these routes can produce, before shaping. */
@@ -284,5 +289,220 @@ export function mountSubagentDefinitionRoutes(app: Hono, deps: SubagentDefinitio
     }
     definitions.invalidate(id);
     return c.json({ ok: true, name });
+  });
+}
+
+/**
+ * A sub-agent status nothing can change any more. A `stop` against one is a
+ * 409 rather than a silent success, so a client that raced the child's own
+ * finish learns which of the two won.
+ */
+const TERMINAL_SUBAGENT_STATUSES: ReadonlySet<SubagentStatus> = new Set<SubagentStatus>([
+  'done',
+  'failed',
+  'cancelled',
+  'interrupted',
+  'max_turns',
+]);
+
+/** One child as `GET /conversations/:id/subagents` reports it (design §7.7). */
+export interface SubagentListEntry {
+  id: string;
+  name?: string;
+  type: string;
+  description: string;
+  status: SubagentStatus;
+  background: boolean;
+  depth: number;
+  startedAt: string;
+  endedAt?: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  toolCallCount: number;
+  /** SCANNED — see {@link toListEntry}. */
+  report?: string;
+  /** Explore / Plan: `resume` will refuse. */
+  oneShot: boolean;
+}
+
+export interface SubagentRuntimeRoutesDeps {
+  conversations: ConversationService;
+  /**
+   * The live coordinator. `stop` and `resume` are the only two things these
+   * routes cannot do from the store alone: a cascade has to reach descendants
+   * this process holds handles for, and a resume has to rebuild the child's
+   * grant.
+   */
+  coordinator: Pick<SwarmCoordinator, 'cancelChild' | 'sendToChild'>;
+}
+
+/**
+ * Project a child row for the wire.
+ *
+ * The report is SCANNED. It is model output produced by a sub-agent, this is
+ * the one route that hands it to a client to render raw, and the same scan
+ * already guards the copy that reaches the parent's prompt
+ * (`composeNotificationText`) — leaving the HTTP copy unscanned would just move
+ * the injection one hop.
+ *
+ * `prompt`, `model`, `isolation` and `workspace` are deliberately dropped: the
+ * first two are already in the child's own transcript and the last two name
+ * filesystem paths a list view has no use for. `GET /conversations/:childId`
+ * returns the full `SubagentInfo` for anything that needs them.
+ */
+function toListEntry(summary: ConversationSummary, info: SubagentInfo): SubagentListEntry {
+  return {
+    id: summary.id,
+    ...(info.name !== undefined ? { name: info.name } : {}),
+    type: info.type,
+    description: info.description,
+    status: info.status,
+    background: info.background,
+    depth: info.depth,
+    startedAt: info.startedAt,
+    ...(info.endedAt !== undefined ? { endedAt: info.endedAt } : {}),
+    ...(info.usage !== undefined ? { usage: info.usage } : {}),
+    toolCallCount: info.toolCallCount,
+    ...(info.report !== undefined ? { report: scanSubagentOutput(info.report).text } : {}),
+    oneShot: info.oneShot,
+  };
+}
+
+/**
+ * Mounts the sub-agent RUNTIME routes (design §7.7) onto an already-authed Hono
+ * app. Mounted on BOTH the loopback app and `/mobile/v1`, like
+ * `mountConversationRoutes`:
+ *
+ *   GET  /conversations/:id/subagents  the conversation's children
+ *   POST /subagents/:id/stop           cancel cascade; 409 when terminal
+ *   POST /subagents/:id/resume         `send_message` from the parent
+ *
+ * Every error path returns the typed `MobileApiError` envelope on BOTH mounts —
+ * the same choice `mountConversationRoutes` makes, and the one `/mobile/v1`
+ * requires (it declares `MobileApiError` `additionalProperties: false`, so a
+ * second untyped shape in that namespace makes a strict client decoder throw).
+ * These routes are new, so no loopback client depends on the older `{ error }`
+ * shape the definition routes above still emit.
+ *
+ * The LIST reads the child conversation ROWS rather than the coordinator's
+ * in-memory registry: the rows are written on every status transition AND they
+ * are the only source that survives a restart, which is exactly the state a
+ * client opening the tasks panel after a gateway restart is looking at.
+ */
+export function mountSubagentRuntimeRoutes(app: Hono, deps: SubagentRuntimeRoutesDeps): void {
+  const { conversations, coordinator } = deps;
+
+  /** The child row, or the typed 404 — `:id` must name a sub-agent conversation. */
+  function requireChild(id: string): { summary: ConversationSummary; info: SubagentInfo } {
+    const summary = conversations.get(id);
+    // A parent conversation id here is a 404, not a 409: `/subagents/:id`
+    // addresses children, and a user conversation is simply not in it.
+    if (!summary || summary.kind !== 'subagent' || !summary.subagent) {
+      throw new ConversationServiceError('not_found', `Sub-agent ${id} was not found`, 404, false);
+    }
+    return { summary, info: summary.subagent };
+  }
+
+  app.get('/conversations/:id/subagents', (c) => {
+    try {
+      const id = c.req.param('id');
+      if (!conversations.get(id, { includeDeleted: true })) {
+        throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+      }
+      const subagents = conversations
+        .listSubagents(id)
+        .flatMap((summary) => (summary.subagent ? [toListEntry(summary, summary.subagent)] : []));
+      return c.json({ subagents });
+    } catch (error) {
+      const mapped = toMobileApiError(error);
+      return c.json(mapped.body, mapped.status);
+    }
+  });
+
+  app.post('/subagents/:id/stop', async (c) => {
+    try {
+      const id = c.req.param('id');
+      const { info } = requireChild(id);
+      if (TERMINAL_SUBAGENT_STATUSES.has(info.status)) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Sub-agent ${id} is already ${info.status}`,
+          409,
+          false,
+        );
+      }
+      // Depth-first through every descendant. A child this process no longer
+      // holds a handle for is a no-op there, so the row is terminalized here
+      // too — otherwise a stop after a restart would report success and leave
+      // the row running forever.
+      await coordinator.cancelChild(id, 'stopped by the client');
+      const after = conversations.get(id)?.subagent?.status;
+      if (after && TERMINAL_SUBAGENT_STATUSES.has(after)) {
+        return c.json({ ok: true, status: after });
+      }
+      // `endedAt` is stamped with the status, exactly as every other terminal
+      // write does (`ChildHandle.finalizeTerminal`, boot recovery): the list
+      // route reads it, and recovery's idempotency key is its presence.
+      const terminal = conversations.updateSubagent(id, {
+        status: 'cancelled',
+        info: { endedAt: new Date().toISOString() },
+      });
+      return c.json({ ok: true, status: terminal.subagent?.status });
+    } catch (error) {
+      const mapped = toMobileApiError(error);
+      return c.json(mapped.body, mapped.status);
+    }
+  });
+
+  app.post('/subagents/:id/resume', async (c) => {
+    try {
+      const id = c.req.param('id');
+      const { summary } = requireChild(id);
+      const body = (await c.req.json().catch(() => {
+        throw new ConversationServiceError(
+          'validation_failed',
+          'Request body must be valid JSON',
+          400,
+          false,
+        );
+      })) as { message?: unknown };
+      const message = body.message;
+      if (typeof message !== 'string' || message.trim() === '') {
+        throw new ConversationServiceError(
+          'validation_failed',
+          'message must be a nonblank string',
+          400,
+          false,
+        );
+      }
+      const parentConversationId = summary.parentConversationId;
+      if (!parentConversationId) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Sub-agent ${id} has no parent conversation`,
+          409,
+          false,
+        );
+      }
+      try {
+        // Deliberately the SAME call `send_message` makes, addressed from the
+        // parent: one narrowing path, so an HTTP resume can never widen a
+        // child past what the tool would have granted it.
+        const result = coordinator.sendToChild(parentConversationId, id, message);
+        return c.json(result);
+      } catch (err) {
+        // The coordinator throws with actionable text for its three refusals —
+        // one-shot type, steer cap, unrebuildable grant. All are 409: the
+        // request was well-formed and the child simply cannot take it.
+        throw new ConversationServiceError(
+          'validation_failed',
+          err instanceof Error ? err.message : String(err),
+          409,
+          false,
+        );
+      }
+    } catch (error) {
+      const mapped = toMobileApiError(error);
+      return c.json(mapped.body, mapped.status);
+    }
   });
 }

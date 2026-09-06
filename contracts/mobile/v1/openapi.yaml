@@ -385,6 +385,82 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /conversations/{id}/subagents:
+    parameters:
+      - $ref: '#/components/parameters/ConversationId'
+    get:
+      operationId: listConversationSubagents
+      description: >-
+        The conversation's sub-agents, oldest first. Enough to render a tasks panel
+        without fetching a child transcript. `report` is SCANNED before it leaves the
+        gateway (control tags neutralized, role prefixes escaped) because it is
+        sub-agent output a client renders directly.
+      responses:
+        '200':
+          description: The conversation's children.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /subagents/{id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/SubagentId'
+    post:
+      operationId: stopSubagent
+      description: >-
+        Cancel the sub-agent and every descendant beneath it, leaves first. 409 when it
+        has already reached a terminal status — a client that raced the child's own
+        finish learns which of the two won rather than getting a silent success.
+      responses:
+        '200':
+          description: The sub-agent (and its descendants) were cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentStopResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ValidationFailed'
+  /subagents/{id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/SubagentId'
+    post:
+      operationId: resumeSubagent
+      description: >-
+        Send a message to the sub-agent from its parent — the same call the `send_message`
+        tool makes, so the child can never be widened past what the tool would have
+        granted it. A RUNNING child queues the message as its next turn; a FINISHED one
+        (including one interrupted by a gateway restart) is resumed on its own
+        conversation. 409 for a one-shot type, a child at its steer cap, and a child
+        whose grant can no longer be rebuilt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubagentResumeRequest'
+      responses:
+        '200':
+          description: The message was queued or the sub-agent was resumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubagentResumeResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ValidationFailed'
   /agents/{agentId}/conversations/{conversationId}/events:
     parameters:
       - name: agentId
@@ -488,6 +564,12 @@ components:
       in: header
       required: true
       schema: { type: string, pattern: '^"(0|[1-9][0-9]*)"$' }
+    SubagentId:
+      name: id
+      in: path
+      required: true
+      description: A child conversation id (`sub_<ulid>`); it is also the sub-agent's id.
+      schema: { $ref: '#/components/schemas/ConversationIdentifier' }
     SubagentDefinitionName:
       name: name
       in: path
@@ -844,6 +926,67 @@ components:
         report: { type: string }
         oneShot: { type: boolean }
         workspace: { type: string, minLength: 1 }
+    SubagentListEntry:
+      type: object
+      additionalProperties: false
+      required: [id, type, description, status, background, depth, startedAt, toolCallCount, oneShot]
+      properties:
+        id: { $ref: '#/components/schemas/ConversationIdentifier' }
+        name: { type: string, minLength: 1 }
+        type: { type: string, minLength: 1 }
+        description: { type: string }
+        status: { enum: [running, waiting_input, done, failed, cancelled, interrupted, max_turns] }
+        background: { type: boolean }
+        depth: { type: integer, minimum: 0 }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        usage:
+          type: object
+          additionalProperties: false
+          required: [inputTokens, outputTokens]
+          properties:
+            inputTokens: { type: integer, minimum: 0 }
+            outputTokens: { type: integer, minimum: 0 }
+        toolCallCount: { type: integer, minimum: 0 }
+        report:
+          type: string
+          description: Scanned sub-agent output; absent until the child reaches a terminal status.
+        oneShot:
+          type: boolean
+          description: Explore / Plan children are not resumable — `POST /subagents/{id}/resume` 409s.
+    SubagentListResponse:
+      type: object
+      additionalProperties: false
+      required: [subagents]
+      properties:
+        subagents:
+          type: array
+          items: { $ref: '#/components/schemas/SubagentListEntry' }
+    SubagentStopResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, status]
+      properties:
+        ok: { const: true }
+        status: { enum: [done, failed, cancelled, interrupted, max_turns] }
+    SubagentResumeRequest:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
+    SubagentResumeResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, status, mode]
+      properties:
+        ok: { type: boolean }
+        status: { enum: [spawning, running, waiting_input, done, failed, cancelled, interrupted, max_turns] }
+        mode:
+          enum: [queued, resumed]
+          description: >-
+            `queued` — the child was running and takes the message as its next turn.
+            `resumed` — the child was finished and a new turn was started on it.
     ConversationSummary:
       type: object
       additionalProperties: false

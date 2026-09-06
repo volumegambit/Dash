@@ -461,6 +461,12 @@
       "document": "openapi",
       "schema": "MobileApiError",
       "valid": false
+    },
+    {
+      "file": "subagents-list.json",
+      "document": "openapi",
+      "schema": "SubagentListResponse",
+      "valid": true
     }
   ]
 }
