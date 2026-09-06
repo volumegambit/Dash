@@ -3861,28 +3861,44 @@ describe('createWebAppStore', () => {
      * emptied — where nothing but the NEXT switch would ever remove them.
      */
     it('drops a response that lands after the conversation changed', async () => {
-      let release!: () => void;
+      // EVERY read hangs until this test releases it by hand, `conv-2`'s
+      // included. Fix I3c: the previous fixture answered `conv-2` instantly,
+      // which moved `appliedSubagentReadSeq` past the stale read before it
+      // ever landed — so the THIRD guard (`readSeq <= appliedSubagentReadSeq`)
+      // dropped it and the two guards this test is named for were never
+      // reached. It passed with the conversation-switch guard removed, with
+      // `clearChildSubscriptions`'s seq bump removed, and with BOTH removed.
+      // Leaving `conv-2`'s read in flight is the realistic ordering — a
+      // switch is exactly when the old conversation's read is still out — and
+      // it is what makes the stale response genuinely arrive first.
+      const pending: Array<{ conversationId: string; release: () => void }> = [];
       const { rest } = fakeRest({
         conversationPage: {
           items: [summary(), summary({ id: 'conv-2', agentId: 'agent-01' })],
           nextCursor: null,
         },
         listSubagentsImpl: async (conversationId: string) => {
-          if (conversationId !== CONVERSATION_ID) return { subagents: [] };
           await new Promise<void>((resolve) => {
-            release = resolve;
+            pending.push({ conversationId, release: resolve });
           });
-          return { subagents: [listEntry()] };
+          return { subagents: conversationId === CONVERSATION_ID ? [listEntry()] : [] };
         },
       });
       const { factory, sockets } = scriptedSocketFactory();
       const store = createWebAppStore({ rest, socketFactory: factory });
       await openAndConnect(store, sockets, CONVERSATION_ID);
-      await vi.waitFor(() => expect(release).toBeDefined());
+      // `openConversation`'s own read, left hanging with the rest.
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
 
       const refreshing = store.getState().refreshSubagents(CONVERSATION_ID);
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+
       await openAndConnect(store, sockets, 'conv-2');
-      release();
+      await vi.waitFor(() => expect(pending).toHaveLength(3));
+      expect(pending[2].conversationId).toBe('conv-2');
+
+      // The stale read answers while `conv-2`'s is still out.
+      pending[1].release();
       await refreshing;
 
       expect(store.getState().subagentIds[CONVERSATION_ID]).toBeUndefined();
@@ -3905,7 +3921,13 @@ describe('createWebAppStore', () => {
           await new Promise<void>((resolve) => {
             releases[index] = resolve;
           });
-          return { subagents: [listEntry({ status: index === 0 ? 'running' : 'done' })] };
+          // `index` is the CALL counter, and call 0 is `openConversation`'s
+          // own read — released and settled below, before the interesting
+          // part. The STALE read is call 1 and the FRESH read is call 2, so
+          // it is call 1 that has to differ. Fix I3b: this fixture said
+          // `index === 0`, which gave both of the overlapping reads `'done'`
+          // and made the final assertion true whichever of them won.
+          return { subagents: [listEntry({ status: index === 1 ? 'running' : 'done' })] };
         },
       });
       const { factory, sockets } = scriptedSocketFactory();
