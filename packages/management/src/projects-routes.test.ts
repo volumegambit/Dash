@@ -8,6 +8,8 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mountProjectsRoutes } from './projects-routes.js';
 
+import type { JsonBody } from './json-body.test-helpers.js';
+
 const TOKEN = 'test-token';
 let dir: string;
 let db: ProjectsDb;
@@ -17,8 +19,20 @@ let port: number;
 function url(path: string): string {
   return `http://localhost:${port}${path}`;
 }
-function auth(): HeadersInit {
+function auth(): Record<string, string> {
   return { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' };
+}
+
+/**
+ * `Response.json()` is typed `Promise<unknown>`, so every body read here is an
+ * error under `tsc --noEmit`. `request` is `fetch` with that one method
+ * retyped to {@link JsonBody} — loose enough for property reads, strict enough
+ * that arithmetic or iteration on a body still has to be spelled out.
+ */
+type JsonResponse = Omit<Response, 'json'> & { json(): Promise<JsonBody> };
+
+function request(input: string, init?: RequestInit): Promise<JsonResponse> {
+  return fetch(input, init) as unknown as Promise<JsonResponse>;
 }
 
 beforeEach(async () => {
@@ -49,12 +63,12 @@ afterEach(async () => {
 
 describe('projects HTTP routes', () => {
   it('rejects missing bearer token with 401', async () => {
-    const res = await fetch(url('/projects'));
+    const res = await request(url('/projects'));
     expect(res.status).toBe(401);
   });
 
   it('creates and lists projects', async () => {
-    const createRes = await fetch(url('/projects'), {
+    const createRes = await request(url('/projects'), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
@@ -63,35 +77,35 @@ describe('projects HTTP routes', () => {
     const created = await createRes.json();
     expect(created.key).toBe('GATEWAY');
 
-    const listRes = await fetch(url('/projects'), { headers: auth() });
+    const listRes = await request(url('/projects'), { headers: auth() });
     expect(listRes.status).toBe(200);
     const list = await listRes.json();
     expect(list).toHaveLength(1);
   });
 
   it('reads a project with counts and 404s unknown ids', async () => {
-    await fetch(url('/projects'), {
+    await request(url('/projects'), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
     });
-    const ok = await fetch(url('/projects/GATEWAY'), { headers: auth() });
+    const ok = await request(url('/projects/GATEWAY'), { headers: auth() });
     expect(ok.status).toBe(200);
     expect((await ok.json()).issue_counts_by_status).toBeDefined();
 
-    const miss = await fetch(url('/projects/NOPE'), { headers: auth() });
+    const miss = await request(url('/projects/NOPE'), { headers: auth() });
     expect(miss.status).toBe(404);
   });
 
   it('patches a project', async () => {
     const created = await (
-      await fetch(url('/projects'), {
+      await request(url('/projects'), {
         method: 'POST',
         headers: auth(),
         body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
       })
     ).json();
-    const res = await fetch(url(`/projects/${created.id}`), {
+    const res = await request(url(`/projects/${created.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ status: 'paused' }),
@@ -102,21 +116,21 @@ describe('projects HTTP routes', () => {
 
   it('drops unknown patch fields and rejects an invalid status on project PATCH', async () => {
     const created = await (
-      await fetch(url('/projects'), {
+      await request(url('/projects'), {
         method: 'POST',
         headers: auth(),
         body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
       })
     ).json();
 
-    const bad = await fetch(url(`/projects/${created.id}`), {
+    const bad = await request(url(`/projects/${created.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ status: 'not_a_status' }),
     });
     expect(bad.status).toBe(400);
 
-    const ok = await fetch(url(`/projects/${created.id}`), {
+    const ok = await request(url(`/projects/${created.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ name: 'Renamed', key: 'HACKED', id: 'project_hacked' }),
@@ -131,18 +145,19 @@ describe('projects HTTP routes', () => {
 });
 
 async function createProject(): Promise<{ id: string; key: string }> {
-  return (
-    await fetch(url('/projects'), {
+  const created = await (
+    await request(url('/projects'), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ name: 'Gateway', key: 'GATEWAY' }),
     })
   ).json();
+  return created as unknown as { id: string; key: string };
 }
 
 async function createIssue(extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   return (
-    await fetch(url('/issues'), {
+    await request(url('/issues'), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ title: 'Task', ...extra }),
@@ -156,11 +171,11 @@ describe('issues HTTP routes', () => {
     expect(String(issue.id)).toMatch(/^issue_/);
 
     // GET /issues returns a BARE ARRAY.
-    const list = await (await fetch(url('/issues'), { headers: auth() })).json();
+    const list = await (await request(url('/issues'), { headers: auth() })).json();
     expect(Array.isArray(list)).toBe(true);
     expect(list.length).toBe(1);
 
-    const detailRes = await fetch(url(`/issues/${issue.id}`), { headers: auth() });
+    const detailRes = await request(url(`/issues/${issue.id}`), { headers: auth() });
     expect(detailRes.status).toBe(200);
     const detail = await detailRes.json();
     // No server-side `timeline` — the MC layer merges. Detail carries the raw
@@ -175,7 +190,7 @@ describe('issues HTTP routes', () => {
   it('lists issues within a project (bare array)', async () => {
     const proj = await createProject();
     await createIssue({ project_id: proj.id });
-    const res = await fetch(url(`/projects/${proj.id}/issues`), { headers: auth() });
+    const res = await request(url(`/projects/${proj.id}/issues`), { headers: auth() });
     expect(res.status).toBe(200);
     const out = await res.json();
     expect(Array.isArray(out)).toBe(true);
@@ -184,7 +199,7 @@ describe('issues HTTP routes', () => {
 
   it('patches an issue status', async () => {
     const issue = await createIssue();
-    const res = await fetch(url(`/issues/${issue.id}`), {
+    const res = await request(url(`/issues/${issue.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ status: 'todo' }),
@@ -195,7 +210,7 @@ describe('issues HTTP routes', () => {
 
   it('adds, edits, and soft-deletes comments', async () => {
     const issue = await createIssue();
-    const addRes = await fetch(url(`/issues/${issue.id}/comments`), {
+    const addRes = await request(url(`/issues/${issue.id}/comments`), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ body: 'hello' }),
@@ -203,7 +218,7 @@ describe('issues HTTP routes', () => {
     expect(addRes.status).toBe(201);
     const comment = await addRes.json();
 
-    const editRes = await fetch(url(`/issues/${issue.id}/comments/${comment.id}`), {
+    const editRes = await request(url(`/issues/${issue.id}/comments/${comment.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ body: 'edited' }),
@@ -211,20 +226,21 @@ describe('issues HTTP routes', () => {
     expect(editRes.status).toBe(200);
     expect((await editRes.json()).body).toBe('edited');
 
-    const delRes = await fetch(url(`/issues/${issue.id}/comments/${comment.id}`), {
+    const delRes = await request(url(`/issues/${issue.id}/comments/${comment.id}`), {
       method: 'DELETE',
       headers: auth(),
     });
     expect(delRes.status).toBe(200);
 
     // After delete the pre-merged feed shows a deleted placeholder.
-    const detail = await (await fetch(url(`/issues/${issue.id}`), { headers: auth() })).json();
-    const deleted = detail.comments.find((x: { id: string }) => x.id === comment.id);
-    expect(deleted.deleted_at).not.toBeNull();
+    const detail = await (await request(url(`/issues/${issue.id}`), { headers: auth() })).json();
+    const comments = detail.comments as unknown as Array<{ id: string; deleted_at: unknown }>;
+    const deleted = comments.find((x) => x.id === (comment.id as unknown as string));
+    expect(deleted?.deleted_at).not.toBeNull();
   });
 
   it('404s an unknown issue', async () => {
-    const res = await fetch(url('/issues/issue_missing'), { headers: auth() });
+    const res = await request(url('/issues/issue_missing'), { headers: auth() });
     expect(res.status).toBe(404);
   });
 
@@ -232,29 +248,29 @@ describe('issues HTTP routes', () => {
     const issue = await createIssue();
     const subtask = await createIssue({ parent_issue_id: issue.id });
 
-    const delRes = await fetch(url(`/issues/${issue.id}`), {
+    const delRes = await request(url(`/issues/${issue.id}`), {
       method: 'DELETE',
       headers: auth(),
     });
     expect(delRes.status).toBe(200);
     expect(await delRes.json()).toEqual({ ok: true });
 
-    expect((await fetch(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
-    expect((await fetch(url(`/issues/${subtask.id}`), { headers: auth() })).status).toBe(404);
+    expect((await request(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
+    expect((await request(url(`/issues/${subtask.id}`), { headers: auth() })).status).toBe(404);
   });
 
   it('deletes an issue by human key', async () => {
     const issue = await createIssue();
-    const delRes = await fetch(url(`/issues/${issue.key}`), {
+    const delRes = await request(url(`/issues/${issue.key}`), {
       method: 'DELETE',
       headers: auth(),
     });
     expect(delRes.status).toBe(200);
-    expect((await fetch(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
+    expect((await request(url(`/issues/${issue.id}`), { headers: auth() })).status).toBe(404);
   });
 
   it('404s delete of an unknown issue', async () => {
-    const res = await fetch(url('/issues/issue_missing'), {
+    const res = await request(url('/issues/issue_missing'), {
       method: 'DELETE',
       headers: auth(),
     });
@@ -263,7 +279,7 @@ describe('issues HTTP routes', () => {
 
   it('links a session to an issue and surfaces it in detail', async () => {
     const issue = await createIssue();
-    const res = await fetch(url(`/issues/${issue.id}/sessions`), {
+    const res = await request(url(`/issues/${issue.id}/sessions`), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ session_id: 'conv-42', agent_id: 'Developer' }),
@@ -274,16 +290,15 @@ describe('issues HTTP routes', () => {
     expect(link.agent_id).toBe('Developer');
     expect(link.issue_id).toBe(issue.id);
 
-    const detail = await (await fetch(url(`/issues/${issue.id}`), { headers: auth() })).json();
-    expect(detail.linked_sessions.map((l: { session_id: string }) => l.session_id)).toEqual([
-      'conv-42',
-    ]);
+    const detail = await (await request(url(`/issues/${issue.id}`), { headers: auth() })).json();
+    const linked = detail.linked_sessions as unknown as Array<{ session_id: string }>;
+    expect(linked.map((l) => l.session_id)).toEqual(['conv-42']);
   });
 
   it('link is idempotent per (session, issue) — re-posting bumps reference_count', async () => {
     const issue = await createIssue();
     const post = () =>
-      fetch(url(`/issues/${issue.id}/sessions`), {
+      request(url(`/issues/${issue.id}/sessions`), {
         method: 'POST',
         headers: auth(),
         body: JSON.stringify({ session_id: 'conv-42' }),
@@ -295,14 +310,14 @@ describe('issues HTTP routes', () => {
 
   it('400s a session link without session_id and 404s an unknown issue', async () => {
     const issue = await createIssue();
-    const noSession = await fetch(url(`/issues/${issue.id}/sessions`), {
+    const noSession = await request(url(`/issues/${issue.id}/sessions`), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({}),
     });
     expect(noSession.status).toBe(400);
 
-    const missing = await fetch(url('/issues/issue_missing/sessions'), {
+    const missing = await request(url('/issues/issue_missing/sessions'), {
       method: 'POST',
       headers: auth(),
       body: JSON.stringify({ session_id: 'conv-42' }),
@@ -313,21 +328,21 @@ describe('issues HTTP routes', () => {
   it('404s comment edit/delete on an unknown issue id', async () => {
     const issue = await createIssue();
     const comment = await (
-      await fetch(url(`/issues/${issue.id}/comments`), {
+      await request(url(`/issues/${issue.id}/comments`), {
         method: 'POST',
         headers: auth(),
         body: JSON.stringify({ body: 'hello' }),
       })
     ).json();
 
-    const editRes = await fetch(url(`/issues/issue_missing/comments/${comment.id}`), {
+    const editRes = await request(url(`/issues/issue_missing/comments/${comment.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ body: 'edited' }),
     });
     expect(editRes.status).toBe(404);
 
-    const delRes = await fetch(url(`/issues/issue_missing/comments/${comment.id}`), {
+    const delRes = await request(url(`/issues/issue_missing/comments/${comment.id}`), {
       method: 'DELETE',
       headers: auth(),
     });
@@ -336,7 +351,7 @@ describe('issues HTTP routes', () => {
 
   it('drops unknown patch fields and ignores them on update', async () => {
     const issue = await createIssue();
-    const res = await fetch(url(`/issues/${issue.id}`), {
+    const res = await request(url(`/issues/${issue.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ status: 'todo', bogus_field: 'x', id: 'issue_hacked' }),
@@ -351,7 +366,7 @@ describe('issues HTTP routes', () => {
 
   it('rejects an invalid status on issue PATCH', async () => {
     const issue = await createIssue();
-    const res = await fetch(url(`/issues/${issue.id}`), {
+    const res = await request(url(`/issues/${issue.id}`), {
       method: 'PATCH',
       headers: auth(),
       body: JSON.stringify({ status: 'not_a_status' }),
@@ -363,25 +378,27 @@ describe('issues HTTP routes', () => {
 describe('inbox HTTP routes', () => {
   it('returns an InboxItem[] including a waiting_on_human item', async () => {
     const issue = await createIssue({ status: 'in_progress', sub_status: 'waiting_on_human' });
-    const res = await fetch(url('/inbox'), { headers: auth() });
+    const res = await request(url('/inbox'), { headers: auth() });
     expect(res.status).toBe(200);
     const inbox = await res.json();
     expect(Array.isArray(inbox)).toBe(true);
     // A freshly-assigned waiting_on_human issue surfaces under both the
     // waiting_on_human and new_activity reasons (never-seen → new activity).
     // Match the waiting_on_human entry specifically.
-    const item = inbox.find(
-      (x: { issue: { id: string }; reason: string }) =>
-        x.issue.id === issue.id && x.reason === 'waiting_on_human',
-    );
+    const entries = inbox as unknown as Array<{
+      issue: { id: string };
+      reason: string;
+      trigger_at: unknown;
+    }>;
+    const item = entries.find((x) => x.issue.id === issue.id && x.reason === 'waiting_on_human');
     expect(item).toBeDefined();
-    expect(item.reason).toBe('waiting_on_human');
-    expect(typeof item.trigger_at).toBe('string');
+    expect(item?.reason).toBe('waiting_on_human');
+    expect(typeof item?.trigger_at).toBe('string');
   });
 
   it('marks an issue read', async () => {
     const issue = await createIssue();
-    const res = await fetch(url(`/inbox/${issue.id}/mark-read`), {
+    const res = await request(url(`/inbox/${issue.id}/mark-read`), {
       method: 'POST',
       headers: auth(),
     });
@@ -390,7 +407,7 @@ describe('inbox HTTP routes', () => {
   });
 
   it('404s mark-read for an unknown issue', async () => {
-    const res = await fetch(url('/inbox/issue_missing/mark-read'), {
+    const res = await request(url('/inbox/issue_missing/mark-read'), {
       method: 'POST',
       headers: auth(),
     });

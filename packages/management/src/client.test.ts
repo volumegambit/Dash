@@ -124,6 +124,7 @@ describe('ManagementClient', () => {
       description: 'Explore ideas',
       location: '/tmp/skills/brainstorming/SKILL.md',
       editable: true,
+      source: 'managed',
     };
     const baseSkillContent: SkillContent = { ...baseSkill, content: '# Brainstorm' };
     let storedContent = '# Brainstorm';
@@ -151,6 +152,7 @@ describe('ManagementClient', () => {
             name,
             description,
             content,
+            source: 'managed' as const,
             location: `/tmp/skills/${name}/SKILL.md`,
             editable: true,
           }),
@@ -224,7 +226,7 @@ describe('ManagementClient', () => {
         paths: ['/new/path'],
         urls: [],
       });
-      expect(result.requiresRestart).toBe(true);
+      expect((result as SkillsConfig & { requiresRestart?: boolean }).requiresRestart).toBe(true);
       expect(storedConfig.paths).toContain('/new/path');
     });
 
@@ -579,6 +581,7 @@ describe('ManagementClient', () => {
       status: 'loaded',
       enabled: true,
       trusted: false,
+      builtin: false,
       activated: ['skills'],
       noop: ['hooks'],
       version: '1.2.3',
