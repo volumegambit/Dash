@@ -22,7 +22,9 @@ struct ChatReducerTests {
           userMessageId: "user-1",
           assistantMessageId: "assistant-1",
           revision: 2,
-          seq: 1
+          seq: 1,
+          origin: nil,
+          kind: nil
         )
       )
     )
@@ -106,7 +108,9 @@ struct ChatReducerTests {
           userMessageId: "user-1",
           assistantMessageId: "assistant-1",
           revision: 2,
-          seq: 1
+          seq: 1,
+          origin: nil,
+          kind: nil
         )
       )
     )
@@ -1092,6 +1096,140 @@ struct ChatReducerTests {
     )
   }
 
+  // MARK: - Server-initiated turns (task C7, sub-agents design 7.6/8.5)
+
+  @Test("an accepted for an unknown turn with a notification origin registers the turn as a notification row, not a blank user bubble")
+  func acceptedNotificationRegistersNotificationRow() {
+    var state = chatState()
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-notification",
+          conversationId: "conv-1",
+          userMessageId: "notif-user",
+          assistantMessageId: "notif-assistant",
+          revision: 4,
+          seq: 1,
+          origin: .notification,
+          kind: .user
+        )
+      )
+    )
+
+    #expect(state.messages.map(\.id) == ["notif-user", "notif-assistant"])
+    let user = state.messages.first
+    #expect(user?.role == .user)
+    #expect(user?.origin == .notification)
+    #expect(isNotificationRow(user!))
+    #expect(state.messages.last?.origin == .notification)
+    #expect(state.activeTurnID == "turn-notification")
+  }
+
+  @Test("an accepted with no origin still reconciles an ordinary turn as a user message")
+  func acceptedWithoutOriginStaysAUserTurn() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(turnID: "turn-1", localUserID: "local-u", text: "Hello", images: [])
+    )
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-1",
+          conversationId: "conv-1",
+          userMessageId: "user-1",
+          assistantMessageId: "assistant-1",
+          revision: 2,
+          seq: 1,
+          origin: nil,
+          kind: nil
+        )
+      )
+    )
+
+    #expect(state.messages.first?.origin == nil)
+    #expect(isNotificationRow(state.messages[0]) == false)
+  }
+
+  @Test("a replayed accepted, which carries no origin at all, never downgrades an origin the canonical row already reported")
+  func replayedAcceptedKeepsKnownOrigin() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .cachedMessagesLoaded(
+        [
+          message(
+            id: "notif-user",
+            turnID: "turn-notification",
+            ordinal: 1,
+            role: .user,
+            status: .completed,
+            content: .user(text: "[SYSTEM NOTIFICATION - NOT USER INPUT]", images: nil),
+            origin: "notification"
+          )
+        ],
+        cursor: 0
+      )
+    )
+    #expect(state.messages.first?.origin == .notification)
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-notification",
+          conversationId: "conv-1",
+          userMessageId: "notif-user",
+          assistantMessageId: "notif-assistant",
+          revision: 4,
+          seq: 1,
+          origin: nil,
+          kind: nil
+        )
+      )
+    )
+
+    #expect(state.messages.first?.origin == .notification)
+  }
+
+  @Test("canonical messages carry their origin into the projection")
+  func projectedMessagesCarryOrigin() {
+    var state = chatState()
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .cachedMessagesLoaded(
+        [
+          message(
+            id: "notif-user",
+            turnID: "turn-notification",
+            ordinal: 1,
+            role: .user,
+            status: .completed,
+            content: .user(text: "notification text", images: nil),
+            origin: "notification"
+          ),
+          message(
+            id: "u1",
+            turnID: "turn-1",
+            ordinal: 2,
+            role: .user,
+            status: .completed,
+            content: .user(text: "Hello", images: nil)
+          ),
+        ],
+        cursor: 0
+      )
+    )
+
+    #expect(state.messages.first?.origin == .notification)
+    #expect(state.messages.last?.origin == nil)
+  }
+
   private func acceptedState(cursor: Int) -> ChatState {
     var state = chatState()
     _ = ChatReducer.reduce(
@@ -1107,7 +1245,9 @@ struct ChatReducerTests {
           userMessageId: "user-1",
           assistantMessageId: "assistant-1",
           revision: 2,
-          seq: 1
+          seq: 1,
+          origin: nil,
+          kind: nil
         )
       )
     )
@@ -1151,7 +1291,8 @@ struct ChatReducerTests {
     ordinal: Int,
     role: MessageRole,
     status: MessageStatus,
-    content: MessageContent
+    content: MessageContent,
+    origin: String? = nil
   ) -> ConversationMessageDTO {
     ConversationMessageDTO(
       id: id,
@@ -1162,7 +1303,8 @@ struct ChatReducerTests {
       status: status,
       content: content,
       createdAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
-      updatedAt: Date(timeIntervalSince1970: TimeInterval(ordinal))
+      updatedAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
+      origin: origin
     )
   }
 

@@ -354,7 +354,9 @@ struct ChatConnectionTests {
             userMessageId: "018f0f4a-5c42-7a8b-9c01-3234567890ab",
             assistantMessageId: "018f0f4a-5c42-7a8b-9c01-4234567890ab",
             revision: 2,
-            seq: 1
+            seq: 1,
+            origin: nil,
+            kind: nil
           ))))
     let expected = try canonicalFrames()
     for frame in expected {
@@ -1208,6 +1210,214 @@ struct ChatConnectionTests {
     #expect(await task.waitForClose() == .goingAway)
   }
 
+  // MARK: - Conversation subscriptions (task C7, sub-agents design 7.6)
+
+  @Test("subscribe and unsubscribe send the canonical conversation frames")
+  func subscriptionFrameShapes() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    try await connection.connect()
+
+    try await connection.subscribe(agentID: "agent-1", conversationID: conversationID)
+    try await connection.unsubscribe(agentID: "agent-1", conversationID: conversationID)
+
+    let frames = await task.sentFrames
+    #expect(frames.count == 2)
+    #expect(isSubscribe(frames.first, agentID: "agent-1", conversationID: conversationID))
+    #expect(isUnsubscribe(frames.last, agentID: "agent-1", conversationID: conversationID))
+    await connection.detach()
+  }
+
+  @Test("an accepted frame for a subscribed conversation registers its turn and is yielded")
+  func acceptedForSubscribedConversationRegistersTurn() async throws {
+    let serverTurnID = "018f0f4a-5c42-7a8b-9c01-777777777777"
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let sink = FrameSink()
+    let collector = await collectFrames(from: connection, into: sink)
+    try await connection.connect()
+    try await connection.subscribe(agentID: "agent-1", conversationID: conversationID)
+
+    let accepted = MobileWSServerFrame.accepted(
+      id: serverTurnID,
+      conversationId: conversationID,
+      userMessageId: "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+      assistantMessageId: "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+      revision: 4,
+      seq: 7,
+      origin: .notification,
+      kind: .user
+    )
+    // The event proves the turn was REGISTERED, not merely let through once:
+    // a frame for an unregistered turn id is dropped by the receive loop.
+    let followUp = MobileWSServerFrame.event(
+      id: serverTurnID,
+      conversationId: conversationID,
+      seq: 8,
+      event: .textDelta(text: "The child finished.")
+    )
+    await task.enqueue(.string(serverJSON(accepted)))
+    await task.enqueue(.string(serverJSON(followUp)))
+    await waitForFrames(2, in: sink)
+
+    #expect(await sink.frames == [accepted, followUp])
+    collector.cancel()
+    await connection.detach()
+  }
+
+  @Test("an accepted frame for a conversation this socket never subscribed to is dropped")
+  func acceptedForUnsubscribedConversationIsDropped() async throws {
+    let otherConversationID = "018f0f4a-5c42-7a8b-9c01-8234567890ab"
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let sink = FrameSink()
+    let collector = await collectFrames(from: connection, into: sink)
+    try await connection.connect()
+    try await connection.subscribe(agentID: "agent-1", conversationID: conversationID)
+
+    let unrelated = MobileWSServerFrame.accepted(
+      id: "018f0f4a-5c42-7a8b-9c01-666666666666",
+      conversationId: otherConversationID,
+      userMessageId: "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+      assistantMessageId: "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+      revision: 4,
+      seq: 7,
+      origin: .notification,
+      kind: .user
+    )
+    await task.enqueue(.string(serverJSON(unrelated)))
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 0
+    )
+    let mine = try fixture("chat-accepted-notification.json", replacingID: turnID)
+    await task.enqueue(.string(serverJSON(mine)))
+    await waitForFrames(1, in: sink)
+    await settleConcurrentWork()
+
+    #expect(await sink.frames == [mine])
+    collector.cancel()
+    await connection.detach()
+  }
+
+  @Test("an unsubscribed conversation stops registering server-initiated turns")
+  func unsubscribeStopsRegisteringTurns() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let sink = FrameSink()
+    let collector = await collectFrames(from: connection, into: sink)
+    try await connection.connect()
+    try await connection.subscribe(agentID: "agent-1", conversationID: conversationID)
+    try await connection.unsubscribe(agentID: "agent-1", conversationID: conversationID)
+
+    let dropped = MobileWSServerFrame.accepted(
+      id: "018f0f4a-5c42-7a8b-9c01-555555555555",
+      conversationId: conversationID,
+      userMessageId: "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+      assistantMessageId: "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+      revision: 4,
+      seq: 7,
+      origin: .notification,
+      kind: .user
+    )
+    await task.enqueue(.string(serverJSON(dropped)))
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 0
+    )
+    let mine = try fixture("chat-accepted.json", replacingID: turnID)
+    await task.enqueue(.string(serverJSON(mine)))
+    await waitForFrames(1, in: sink)
+    await settleConcurrentWork()
+
+    #expect(await sink.frames == [mine])
+    collector.cancel()
+    await connection.detach()
+  }
+
+  @Test("transient reconnect replays conversation subscriptions over the fresh socket")
+  func transientReconnectReplaysSubscriptions() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let clock = TestAppClock(now: Date(timeIntervalSince1970: 0))
+    let connection = makeChatConnection(session: session, clock: clock)
+    try await connection.connect()
+    try await connection.subscribe(agentID: "agent-1", conversationID: conversationID)
+
+    await first.fail()
+    await waitForRequestCount(2, in: session)
+    await settleConcurrentWork()
+
+    let frames = await second.sentFrames
+    #expect(frames.count == 1)
+    #expect(isSubscribe(frames.first, agentID: "agent-1", conversationID: conversationID))
+    await connection.detach()
+  }
+
+  @Test("suspending the connection forgets its conversation subscriptions")
+  func suspendClearsSubscriptions() async throws {
+    let first = FakeWebSocketTask()
+    let second = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [first, second])
+    let connection = makeChatConnection(session: session)
+    let sink = FrameSink()
+    let collector = await collectFrames(from: connection, into: sink)
+    try await connection.connect()
+    try await connection.subscribe(agentID: "agent-1", conversationID: conversationID)
+
+    await connection.suspend()
+    try await connection.connect()
+
+    let afterSuspend = MobileWSServerFrame.accepted(
+      id: "018f0f4a-5c42-7a8b-9c01-444444444444",
+      conversationId: conversationID,
+      userMessageId: "018f0f4a-5c42-7a8b-9c01-3234567890ab",
+      assistantMessageId: "018f0f4a-5c42-7a8b-9c01-4234567890ab",
+      revision: 4,
+      seq: 7,
+      origin: .notification,
+      kind: .user
+    )
+    await second.enqueue(.string(serverJSON(afterSuspend)))
+    try await connection.resume(
+      turnID: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      sinceSeq: 0
+    )
+    let mine = try fixture("chat-accepted.json", replacingID: turnID)
+    await second.enqueue(.string(serverJSON(mine)))
+    await waitForFrames(1, in: sink)
+    await settleConcurrentWork()
+
+    #expect(await sink.frames == [mine])
+    collector.cancel()
+    await connection.detach()
+  }
+
+  private func isSubscribe(
+    _ frame: MobileWSClientFrame?,
+    agentID: String,
+    conversationID: String
+  ) -> Bool {
+    guard case let .subscribe(id, agent, conversation)? = frame else { return false }
+    return id.isEmpty == false && agent == agentID && conversation == conversationID
+  }
+
+  private func isUnsubscribe(
+    _ frame: MobileWSClientFrame?,
+    agentID: String,
+    conversationID: String
+  ) -> Bool {
+    guard case let .unsubscribe(id, agent, conversation)? = frame else { return false }
+    return id.isEmpty == false && agent == agentID && conversation == conversationID
+  }
+
   private func makeChatConnection(
     task: FakeWebSocketTask,
     clock: any AppClock = SystemAppClock()
@@ -1341,6 +1551,42 @@ private func chatGatewayError(
   } catch {
     Issue.record("Unexpected error: \(error)")
     return nil
+  }
+}
+
+/// Frames yielded by a connection, collected without a fixed expected count so
+/// a DROPPED frame fails an assertion instead of hanging the suite on a
+/// `collectFrames(count:)` that can never complete.
+private actor FrameSink {
+  private(set) var frames: [MobileWSServerFrame] = []
+
+  func append(_ frame: MobileWSServerFrame) {
+    frames.append(frame)
+  }
+}
+
+private func collectFrames(
+  from connection: ChatConnection,
+  into sink: FrameSink
+) async -> Task<Void, Never> {
+  let events = await connection.events()
+  return Task {
+    do {
+      for try await event in events {
+        if case .frame(let frame) = event { await sink.append(frame) }
+      }
+    } catch {
+      return
+    }
+  }
+}
+
+/// Bounded: gives up after `attempts` cooperative yields and lets the caller's
+/// `#expect` report what actually arrived.
+private func waitForFrames(_ count: Int, in sink: FrameSink, attempts: Int = 5_000) async {
+  for _ in 0..<attempts {
+    if await sink.frames.count >= count { return }
+    await Task.yield()
   }
 }
 

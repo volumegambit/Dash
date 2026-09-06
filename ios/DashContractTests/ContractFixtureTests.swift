@@ -315,6 +315,84 @@ struct ContractFixtureTests {
     try assertSSEShape("sse-conversation-deleted.txt")
   }
 
+  @Test("sub-agent conversation fields decode, and their absence still reads as a user conversation")
+  func subagentConversationFields() throws {
+    // Task C7 / sub-agents design 7.6: `origin` and `kind` ride the accepted
+    // frame only for a turn the client could not have started itself.
+    let notification = try FixtureLoader.decode(
+      MobileWSServerFrame.self,
+      "chat-accepted-notification.json"
+    )
+    guard case let .accepted(_, _, _, _, _, _, origin, kind) = notification else {
+      Issue.record("expected an accepted frame")
+      return
+    }
+    #expect(origin == .notification)
+    #expect(kind == .user)
+
+    let child = try FixtureLoader.decode(MobileWSServerFrame.self, "chat-accepted-subagent.json")
+    guard case let .accepted(_, _, _, _, _, _, childOrigin, childKind) = child else {
+      Issue.record("expected an accepted frame")
+      return
+    }
+    #expect(childOrigin == .parent)
+    #expect(childKind == .subagent)
+
+    // An ordinary turn carries neither, and absent means `.user` on the wire.
+    let ordinary = try FixtureLoader.decode(MobileWSServerFrame.self, "chat-accepted.json")
+    guard case let .accepted(_, _, _, _, _, _, plainOrigin, plainKind) = ordinary else {
+      Issue.record("expected an accepted frame")
+      return
+    }
+    #expect(plainOrigin == nil)
+    #expect(plainKind == nil)
+
+    let childSummary = try FixtureLoader.decode(
+      ConversationSummaryDTO.self,
+      "conversation-summary-subagent.json"
+    )
+    #expect(childSummary.conversationKind == .subagent)
+    #expect(childSummary.parentConversationId?.isEmpty == false)
+    #expect(childSummary.subagent?.type == "code-reviewer")
+
+    // Backward compatibility both ways: a gateway that predates `kind` sends
+    // no such field, and reading absence as "not a user conversation" would
+    // hide every conversation the client has. Built from the real fixture with
+    // the key removed, so it stays a genuine older-gateway payload.
+    var legacyObject = try #require(
+      JSONSerialization.jsonObject(with: try FixtureLoader.data("conversation-summary.json"))
+        as? [String: Any]
+    )
+    legacyObject["kind"] = nil
+    let legacySummary = try ContractCoding.decoder().decode(
+      ConversationSummaryDTO.self,
+      from: try JSONSerialization.data(withJSONObject: legacyObject)
+    )
+    #expect(legacySummary.kind == nil)
+    #expect(legacySummary.conversationKind == .user)
+
+    // An origin this build has never heard of degrades to `nil`, it does not
+    // fail the frame (which would take the whole socket down).
+    let futureOrigin = Data(
+      #"{"type":"accepted","id":"t","conversationId":"c","userMessageId":"u","assistantMessageId":"a","revision":1,"seq":1,"origin":"telepathy","kind":"user"}"#
+        .utf8
+    )
+    guard
+      case let .accepted(_, _, _, _, _, _, unknownOrigin, _) = try ContractCoding.decoder()
+        .decode(MobileWSServerFrame.self, from: futureOrigin)
+    else {
+      Issue.record("expected an accepted frame")
+      return
+    }
+    #expect(unknownOrigin == nil)
+
+    let page = try FixtureLoader.decode(
+      ConversationMessagePageDTO.self,
+      "conversation-messages-page.json"
+    )
+    #expect(page.items.allSatisfy { $0.messageOrigin == .user })
+  }
+
   @Test("manifest inventory is exhaustive and every case has an explicit dispatcher")
   func manifestInventory() throws {
     let manifest = try FixtureLoader.decode(FixtureManifest.self, "manifest.json")
@@ -407,7 +485,9 @@ struct ContractFixtureTests {
     case ("json", "chat-ws", "ChatSend"),
       ("json", "chat-ws", "ChatResume"),
       ("json", "chat-ws", "ChatAnswer"),
-      ("json", "chat-ws", "ChatCancel"):
+      ("json", "chat-ws", "ChatCancel"),
+      ("json", "chat-ws", "ChatSubscribe"),
+      ("json", "chat-ws", "ChatUnsubscribe"):
       try decodeIfValid(MobileWSClientFrame.self, fixture)
     case ("json", "chat-ws", "ChatAccepted"),
       ("json", "chat-ws", "ChatEvent"),

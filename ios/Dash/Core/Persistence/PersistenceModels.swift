@@ -134,6 +134,12 @@ final class MessageRecord {
   var contentData: Data
   var createdAt: Date
   var updatedAt: Date
+  /// Who caused this turn (sub-agents design 7.6), raw so an origin a newer
+  /// gateway invents survives a round-trip through the cache. Optional, and
+  /// therefore a SwiftData lightweight migration: rows written before this
+  /// column existed read back as `nil`, which the projection treats as
+  /// UNKNOWN (renders exactly like a user turn).
+  var originRaw: String?
 
   init(
     scopedID: String,
@@ -146,7 +152,8 @@ final class MessageRecord {
     statusRaw: String,
     contentData: Data,
     createdAt: Date,
-    updatedAt: Date
+    updatedAt: Date,
+    originRaw: String? = nil
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -159,6 +166,7 @@ final class MessageRecord {
     self.contentData = contentData
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    self.originRaw = originRaw
   }
 }
 

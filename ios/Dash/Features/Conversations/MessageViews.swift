@@ -24,6 +24,59 @@ func userMessageID(forTurnID turnID: String, in messages: [ChatMessageState]) ->
   messages.first { $0.role == .user && $0.turnID == turnID }?.id
 }
 
+/// Shown on a notification row when there is no text to summarize yet. That is
+/// the LIVE path: an `accepted` frame carries `origin` but not the message
+/// text, so the row exists before its content does (the text lands with the
+/// next canonical refresh).
+let notificationRowFallbackLabel = "Background task update"
+
+/// A `.user` row the USER did not write (sub-agents design 8.5): the gateway
+/// started this turn to wake the orchestrator with a background sub-agent's
+/// result, and the row's text is the `[SYSTEM NOTIFICATION - NOT USER INPUT]`
+/// block it was fed. `nil` origin is UNKNOWN — a replayed turn or an older
+/// gateway — and stays a normal bubble.
+func isNotificationRow(_ message: ChatMessageState) -> Bool {
+  guard message.role == .user, let origin = message.origin else { return false }
+  return origin != .user
+}
+
+/// Every `<open>…<close>` body in `text`, in document order.
+private func taggedValues(in text: String, open: String, close: String) -> [String] {
+  var values: [String] = []
+  var cursor = text.startIndex
+  while let start = text.range(of: open, range: cursor..<text.endIndex) {
+    guard let end = text.range(of: close, range: start.upperBound..<text.endIndex) else { break }
+    let value = String(text[start.upperBound..<end.lowerBound])
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.isEmpty == false { values.append(value) }
+    cursor = end.upperBound
+  }
+  return values
+}
+
+private func unescapeAttribute(_ value: String) -> String {
+  value
+    .replacingOccurrences(of: "&quot;", with: "\"")
+    .replacingOccurrences(of: "&lt;", with: "<")
+    .replacingOccurrences(of: "&gt;", with: ">")
+    .replacingOccurrences(of: "&amp;", with: "&")
+}
+
+/// One muted line for a notification row. Every notification queued for a
+/// conversation rides ONE turn in creation order (design 7.3, coalescing), so
+/// a turn carrying several is summarized as several summaries. Mirrors
+/// `apps/web/src/ui/notification-row.ts`.
+func notificationRowLabel(_ text: String) -> String {
+  let summaries = taggedValues(in: text, open: "<summary>", close: "</summary>")
+  if summaries.isEmpty == false { return summaries.joined(separator: " · ") }
+
+  let senders = taggedValues(in: text, open: "<subagent-message from=\"", close: "\">")
+    .map(unescapeAttribute)
+  if senders.isEmpty == false { return "Message from \(senders.joined(separator: ", "))" }
+
+  return notificationRowFallbackLabel
+}
+
 struct MessageListView: View {
   let messages: [ChatMessageState]
   let isAnsweringEnabled: Bool
@@ -55,8 +108,7 @@ struct MessageListView: View {
           message: message,
           isAnsweringEnabled: isAnsweringEnabled,
           isFailedTurn: message.role == .user && failedTurns.contains(message.turnID),
-          retryTargetID: message.role == .assistant && message.status == .failed
-            ? userMessageID(forTurnID: message.turnID, in: messages) : nil,
+          retryTargetID: retryTargetID(for: message, in: messages),
           onAnswer: onAnswer,
           onRetry: onRetry,
           onEditAndResend: onEditAndResend
@@ -95,6 +147,18 @@ struct MessageListView: View {
     // own doc comment for why an append always does.
     .animation(reduceMotion ? nil : .default, value: messageEntranceSignature(for: messages))
   }
+}
+
+/// The user message a failed assistant row's inline Retry should resend, or
+/// `nil` when there is nothing to offer. A notification row is never a retry
+/// target (sub-agents design 8.5): resending it would submit the
+/// `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the gateway wrote as if the
+/// user had typed it — `ChatFeature.resendFromMessage` refuses it too.
+func retryTargetID(for message: ChatMessageState, in messages: [ChatMessageState]) -> String? {
+  guard message.role == .assistant, message.status == .failed else { return nil }
+  guard let targetID = userMessageID(forTurnID: message.turnID, in: messages) else { return nil }
+  guard let target = messages.first(where: { $0.id == targetID }) else { return nil }
+  return isNotificationRow(target) ? nil : targetID
 }
 
 /// The `.animation(value:)` signal for `MessageListView`'s entrance
@@ -168,6 +232,14 @@ struct ChatMessageView: View {
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
       switch message.role {
+      case .user where isNotificationRow(message):
+        // A row the user did not write (sub-agents design 8.5): the gateway
+        // started this turn to wake the orchestrator with a background
+        // child's result. Compact, muted, leading-aligned — no bubble, no
+        // context menu, since Retry/Edit would resend the
+        // `[SYSTEM NOTIFICATION - NOT USER INPUT]` block as user input.
+        NotificationRowView(message: message)
+
       case .user:
         // User keeps the bubble: right-aligned, accent-tinted background,
         // rounded corners, held off the leading edge by a min-width spacer.
@@ -319,6 +391,22 @@ extension ChatMessageState {
     case .completed, .cancelled, .failed, .interrupted:
       true
     }
+  }
+}
+
+private struct NotificationRowView: View {
+  let message: ChatMessageState
+
+  var body: some View {
+    Label(
+      notificationRowLabel(message.user?.text ?? ""),
+      systemImage: "bell"
+    )
+    .font(.footnote)
+    .foregroundStyle(.secondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("chat.notification.\(message.id)")
   }
 }
 

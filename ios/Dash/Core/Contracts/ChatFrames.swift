@@ -17,6 +17,12 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
   case resume(id: String, agentId: String, conversationId: String, sinceSeq: Int)
   case answer(id: String, questionId: String, answer: String)
   case cancel(id: String)
+  /// Watch a conversation this socket did not start a turn on, so
+  /// server-initiated turns reach it (sub-agents design 7.6). `message` and
+  /// `resume` subscribe implicitly; this frame is for a conversation that is
+  /// merely open.
+  case subscribe(id: String, agentId: String, conversationId: String)
+  case unsubscribe(id: String, agentId: String, conversationId: String)
 
   private enum CodingKeys: String, CodingKey {
     case type
@@ -85,6 +91,18 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       )
     case "cancel":
       self = .cancel(id: try container.decode(String.self, forKey: .id))
+    case "subscribe":
+      self = .subscribe(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId)
+      )
+    case "unsubscribe":
+      self = .unsubscribe(
+        id: try container.decode(String.self, forKey: .id),
+        agentId: try container.decode(String.self, forKey: .agentId),
+        conversationId: try container.decode(String.self, forKey: .conversationId)
+      )
     default:
       throw DecodingError.dataCorruptedError(
         forKey: .type,
@@ -130,18 +148,36 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     case let .cancel(id):
       try container.encode("cancel", forKey: .type)
       try container.encode(id, forKey: .id)
+    case let .subscribe(id, agentId, conversationId):
+      try container.encode("subscribe", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
+    case let .unsubscribe(id, agentId, conversationId):
+      try container.encode("unsubscribe", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(agentId, forKey: .agentId)
+      try container.encode(conversationId, forKey: .conversationId)
     }
   }
 }
 
 enum MobileWSServerFrame: Codable, Hashable, Sendable {
+  /// `origin`/`kind` are omitted by the gateway for an ordinary user turn on a
+  /// user conversation, so absent means `.user` on a LIVE frame — and UNKNOWN
+  /// (still `nil`) on the replay path, which never carries them at all
+  /// (sub-agents design 7.6). Both decode leniently: a value this build has
+  /// never heard of reads as `nil` rather than failing the frame and taking
+  /// the whole socket down with `updateRequired`.
   case accepted(
     id: String,
     conversationId: String,
     userMessageId: String,
     assistantMessageId: String,
     revision: Int,
-    seq: Int
+    seq: Int,
+    origin: MessageOrigin?,
+    kind: ConversationKind?
   )
   case event(id: String, conversationId: String?, seq: Int?, event: AgentEvent)
   case done(id: String, conversationId: String?, seq: Int?, outcome: TurnOutcome?)
@@ -163,6 +199,8 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     case assistantMessageId
     case revision
     case seq
+    case origin
+    case kind
     case event
     case outcome
     case error
@@ -182,7 +220,9 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
         userMessageId: try container.decode(String.self, forKey: .userMessageId),
         assistantMessageId: try container.decode(String.self, forKey: .assistantMessageId),
         revision: try container.decode(Int.self, forKey: .revision),
-        seq: try container.decode(Int.self, forKey: .seq)
+        seq: try container.decode(Int.self, forKey: .seq),
+        origin: try? container.decodeIfPresent(MessageOrigin.self, forKey: .origin),
+        kind: try? container.decodeIfPresent(ConversationKind.self, forKey: .kind)
       )
     case "event":
       self = .event(
@@ -220,7 +260,16 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
   func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     switch self {
-    case let .accepted(id, conversationId, userMessageId, assistantMessageId, revision, seq):
+    case let .accepted(
+      id,
+      conversationId,
+      userMessageId,
+      assistantMessageId,
+      revision,
+      seq,
+      origin,
+      kind
+    ):
       try container.encode("accepted", forKey: .type)
       try container.encode(id, forKey: .id)
       try container.encode(conversationId, forKey: .conversationId)
@@ -228,6 +277,8 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       try container.encode(assistantMessageId, forKey: .assistantMessageId)
       try container.encode(revision, forKey: .revision)
       try container.encode(seq, forKey: .seq)
+      try container.encodeIfPresent(origin, forKey: .origin)
+      try container.encodeIfPresent(kind, forKey: .kind)
     case let .event(id, conversationId, seq, event):
       try container.encode("event", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -280,7 +331,7 @@ enum CapableServerFrame: Hashable, Sendable {
 
   static func validating(_ frame: MobileWSServerFrame) throws -> CapableServerFrame {
     switch frame {
-    case let .accepted(id, conversationId, userMessageId, assistantMessageId, revision, seq):
+    case let .accepted(id, conversationId, userMessageId, assistantMessageId, revision, seq, _, _):
       return .accepted(
         id: id,
         conversationId: conversationId,

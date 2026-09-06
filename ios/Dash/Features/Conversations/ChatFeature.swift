@@ -195,6 +195,10 @@ protocol ChatFeatureTransporting: Actor {
   ) async throws
   func answer(turnID: String, questionID: String, answer: String) async throws
   func cancel(turnID: String) async throws
+  /// Watch the conversation the user has open, so server-initiated turns
+  /// reach this client (sub-agents design 7.6).
+  func subscribe(agentID: String, conversationID: String) async throws
+  func unsubscribe(agentID: String, conversationID: String) async throws
   func suspendForDetachment() async
   func shutdown() async
 }
@@ -324,6 +328,14 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
 
   func cancel(turnID: String) async throws {
     try await connection.cancel(turnID: turnID)
+  }
+
+  func subscribe(agentID: String, conversationID: String) async throws {
+    try await connection.subscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func unsubscribe(agentID: String, conversationID: String) async throws {
+    try await connection.unsubscribe(agentID: agentID, conversationID: conversationID)
   }
 
   func suspendForDetachment() async {
@@ -682,6 +694,10 @@ final class ChatFeature {
   @ObservationIgnored private var draftWriteRevision: UInt64 = 0
   @ObservationIgnored private var attachmentIntentRevision: UInt64 = 0
   @ObservationIgnored private var attachmentRequested = false
+  /// Whether this conversation is currently WATCHED over the live socket
+  /// (sub-agents design 7.6). Reset whenever the transport stops being
+  /// connected, so the next appear/reconnect re-establishes it.
+  @ObservationIgnored private var isSubscribed = false
   @ObservationIgnored private var canonicalRefreshRevision: UInt64 = 0
   @ObservationIgnored private var recoveryClassificationRevision: UInt64?
   @ObservationIgnored private var recoveryClassificationTurnID: String?
@@ -810,6 +826,7 @@ final class ChatFeature {
     await refreshCanonical(preserveLiveProjection: true)
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
   }
 
   func disappear() async {
@@ -1052,6 +1069,12 @@ final class ChatFeature {
       let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
       let user = state.messages[index].user
     else { return false }
+    // A `.user` row the user did not write (sub-agents design 8.5): its text
+    // is the `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator
+    // was fed, so resending it would submit that block as user input.
+    // `MessageListView` withholds the affordance too; this guard holds
+    // regardless of caller.
+    guard isNotificationRow(state.messages[index]) == false else { return false }
     guard composerMutationAllowed, sendAuthorityIsAvailable else { return false }
 
     let attachments: [PreparedAttachment] = user.images.compactMap { image in
@@ -1188,6 +1211,7 @@ final class ChatFeature {
       return
     }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
   }
 
   func sceneDidEnterBackground() async {
@@ -1205,6 +1229,7 @@ final class ChatFeature {
     await refreshCanonical(preserveLiveProjection: true)
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
+    await subscribeToOpenConversation()
   }
 
   func prepareForShutdown() {
@@ -1787,6 +1812,27 @@ final class ChatFeature {
     }
   }
 
+  /// Watches the conversation the user has open, connecting first if nothing
+  /// else has (sub-agents design 7.6, ruling 1). Without this an idle open
+  /// conversation never hears the server-initiated turn that carries a
+  /// background sub-agent's result — the whole point of the subscription.
+  private func subscribeToOpenConversation() async {
+    guard isShutdown == false, isVisible, connection == .online else { return }
+    do {
+      try await ensureConnected()
+      guard isSubscribed == false, isShutdown == false else { return }
+      try await transport.subscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+      isSubscribed = true
+    } catch is CancellationError {
+      return
+    } catch {
+      await applyFailure(error)
+    }
+  }
+
   private func ensureConnected() async throws {
     startEventTaskIfNeeded()
     guard isConnected == false else { return }
@@ -1797,6 +1843,15 @@ final class ChatFeature {
 
   private func suspendForDetachment() async {
     guard isConnected || state.transport != .detached else { return }
+    // Drop the conversation subscription on the way out, so a long session
+    // that visits many conversations never accumulates them (ruling 1).
+    if isSubscribed {
+      isSubscribed = false
+      try? await transport.unsubscribe(
+        agentID: state.conversation.agentId,
+        conversationID: state.conversation.id
+      )
+    }
     await transport.suspendForDetachment()
     isConnected = false
     wasReconnecting = false
@@ -1823,6 +1878,7 @@ final class ChatFeature {
         finishEventTask(generation: generation)
         guard isShutdown == false else { return }
         isConnected = false
+        isSubscribed = false
         wasReconnecting = false
         if let pendingSendReconciliation {
           await reconcileAmbiguousSend(pendingSendReconciliation)
@@ -1844,6 +1900,10 @@ final class ChatFeature {
       let reconnectCompleted = wasReconnecting && transportState == .connected
       wasReconnecting = if case .reconnecting = transportState { true } else { false }
       isConnected = transportState == .connected
+      // `ChatConnection` replays its own subscriptions across a transient
+      // reconnect, but a suspend/detach/terminal failure drops them — so the
+      // feature only ever treats "connected" as still-subscribed.
+      if isConnected == false { isSubscribed = false }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))
       if reconnectCompleted {
         await replayAndResumeActiveTurn()
@@ -2848,7 +2908,7 @@ extension MobileWSServerFrame {
 
   fileprivate var turnIDForFeature: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _):
@@ -2858,7 +2918,7 @@ extension MobileWSServerFrame {
 
   fileprivate var sequenceForFeature: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq):
+    case .accepted(_, _, _, _, _, let seq, _, _):
       seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _):

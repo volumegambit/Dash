@@ -1518,6 +1518,12 @@ extension AppDependenciesFactory {
 
     func connect() {}
 
+    /// The UI-test harness has no gateway to subscribe against; a
+    /// server-initiated turn is scripted directly onto `continuation`.
+    func subscribe(agentID: String, conversationID: String) {}
+
+    func unsubscribe(agentID: String, conversationID: String) {}
+
     func sendTurn(
       id: String,
       agentID: String,
@@ -1588,7 +1594,9 @@ extension AppDependenciesFactory {
           userMessageId: "user-ui-turn",
           assistantMessageId: "assistant-ui-turn",
           revision: 2,
-          seq: takeSequence()
+          seq: takeSequence(),
+          origin: nil,
+          kind: nil
         )
       )
       guard await pause(.milliseconds(100)) else { return }

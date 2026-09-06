@@ -77,6 +77,11 @@ struct ChatMessageState: Equatable, Identifiable, Sendable {
   var status: MessageStatus
   var user: UserMessageProjection?
   var assistant: AssistantMessageProjection?
+  /// Who caused this turn (sub-agents design 7.6). `nil` means UNKNOWN, which
+  /// renders exactly like `.user`: a replayed `accepted` carries no origin at
+  /// all, and an older gateway never sends one. A `.notification`/`.parent`
+  /// user row renders as a compact system row instead of a bubble (8.5).
+  var origin: MessageOrigin?
 }
 
 struct UserMessageProjection: Equatable, Sendable {
@@ -351,11 +356,12 @@ enum ChatReducer {
     state: inout ChatState
   ) -> [ChatEffect] {
     switch frame {
-    case let .accepted(id, _, userMessageID, assistantMessageID, revision, seq):
+    case let .accepted(id, _, userMessageID, assistantMessageID, revision, seq, origin, _):
       reconcileAccepted(
         turnID: id,
         userMessageID: userMessageID,
         assistantMessageID: assistantMessageID,
+        origin: origin,
         state: &state
       )
       state.activeTurnID = id
@@ -429,16 +435,27 @@ enum ChatReducer {
     turnID: String,
     userMessageID: String,
     assistantMessageID: String,
+    origin: MessageOrigin?,
     state: inout ChatState
   ) {
+    // `origin` is only ever WRITTEN when the frame carried one. A replayed
+    // `accepted` carries none at all (sub-agents design 7.6), so treating
+    // absent as `.user` here would turn a known notification row back into a
+    // user bubble the moment a replay ran over it.
     if let canonicalUser = state.messages.firstIndex(where: { $0.id == userMessageID }) {
       state.messages[canonicalUser].status = .accepted
+      if let origin { state.messages[canonicalUser].origin = origin }
     } else if let optimisticUser = state.messages.firstIndex(where: {
       $0.turnID == turnID && $0.role == .user
     }) {
       state.messages[optimisticUser].id = userMessageID
       state.messages[optimisticUser].status = .accepted
+      if let origin { state.messages[optimisticUser].origin = origin }
     } else {
+      // A turn this client never started. With a non-user origin this is a
+      // server-initiated turn (design 7.3): the row is a compact system row,
+      // not the blank user bubble an empty projection used to render as, and
+      // its text arrives with the next canonical refresh.
       state.messages.append(
         ChatMessageState(
           id: userMessageID,
@@ -447,7 +464,8 @@ enum ChatReducer {
           role: .user,
           status: .accepted,
           user: UserMessageProjection(text: "", images: []),
-          assistant: nil
+          assistant: nil,
+          origin: origin
         )
       )
     }
@@ -455,11 +473,13 @@ enum ChatReducer {
 
     if let canonicalAssistant = state.messages.firstIndex(where: { $0.id == assistantMessageID }) {
       state.messages[canonicalAssistant].status = .streaming
+      if let origin { state.messages[canonicalAssistant].origin = origin }
     } else if let existingAssistant = state.messages.firstIndex(where: {
       $0.turnID == turnID && $0.role == .assistant
     }) {
       state.messages[existingAssistant].id = assistantMessageID
       state.messages[existingAssistant].status = .streaming
+      if let origin { state.messages[existingAssistant].origin = origin }
     } else {
       state.messages.append(
         ChatMessageState(
@@ -469,7 +489,8 @@ enum ChatReducer {
           role: .assistant,
           status: .streaming,
           user: nil,
-          assistant: AssistantMessageProjection()
+          assistant: AssistantMessageProjection(),
+          origin: origin
         )
       )
     }
@@ -757,7 +778,8 @@ enum ChatReducer {
         role: message.role,
         status: message.status,
         user: UserMessageProjection(text: text, images: images ?? []),
-        assistant: nil
+        assistant: nil,
+        origin: message.messageOrigin
       )
 
     case let .assistant(events):
@@ -795,7 +817,8 @@ enum ChatReducer {
         role: message.role,
         status: message.status,
         user: nil,
-        assistant: assistant
+        assistant: assistant,
+        origin: message.messageOrigin
       )
     }
   }
@@ -811,7 +834,7 @@ enum ChatReducer {
 
   private static func sequence(of frame: MobileWSServerFrame) -> Int? {
     switch frame {
-    case let .accepted(_, _, _, _, _, seq): seq
+    case let .accepted(_, _, _, _, _, seq, _, _): seq
     case let .event(_, _, seq, _): seq
     case let .done(_, _, seq, _): seq
     case let .error(_, _, seq, _, _, _, _): seq
@@ -820,7 +843,7 @@ enum ChatReducer {
 
   private static func conversationID(of frame: MobileWSServerFrame) -> String? {
     switch frame {
-    case let .accepted(_, conversationID, _, _, _, _): conversationID
+    case let .accepted(_, conversationID, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
@@ -840,7 +863,7 @@ enum ChatReducer {
 
   private static func turnID(of frame: MobileWSServerFrame) -> String {
     switch frame {
-    case let .accepted(id, _, _, _, _, _): id
+    case let .accepted(id, _, _, _, _, _, _, _): id
     case let .event(id, _, _, _): id
     case let .done(id, _, _, _): id
     case let .error(id, _, _, _, _, _, _): id
@@ -856,7 +879,12 @@ enum ChatReducer {
         userMessageId: userMessageID,
         assistantMessageId: assistantMessageID,
         revision: revision,
-        seq: entry.seq
+        seq: entry.seq,
+        // The durable replay payload does not carry origin/kind, so this is
+        // UNKNOWN, not `.user` (sub-agents design 7.6). `reconcileAccepted`
+        // must therefore never overwrite an origin the REST row already knows.
+        origin: nil,
+        kind: nil
       )
     case let .event(event):
       .event(

@@ -264,7 +264,7 @@ struct ChatFeatureTests {
 
     #expect(feature.canSend == false)
     await feature.send()
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
 
     let opening = Task { await feature.appear() }
     await gate.waitUntilWaiting()
@@ -299,6 +299,9 @@ struct ChatFeatureTests {
     #expect(
       calls == [
         .connect,
+        // `appear()` on an online conversation now connects and watches it,
+        // so server-initiated turns reach this client (task C7).
+        .subscribe(agentID: "agent-1", conversationID: "conv-1"),
         .send(
           turnID: turnID.uuidString.lowercased(),
           agentID: "agent-1",
@@ -315,7 +318,11 @@ struct ChatFeatureTests {
     let stagedSend = try #require(operations.lastIndex(of: "persist.pending.stage"))
     let connect = try #require(operations.lastIndex(of: "chat.connect"))
     let send = try #require(operations.lastIndex(of: "chat.send"))
-    #expect(stagedSend < connect)
+    // The socket is already connected by `appear()` (task C7), so `connect`
+    // no longer trails the staging step. What must still hold — and is the
+    // point of the assertion — is that the pending send is DURABLE before the
+    // socket write it recovers.
+    #expect(stagedSend < send)
     #expect(connect < send)
   }
 
@@ -375,6 +382,7 @@ struct ChatFeatureTests {
     #expect(
       calls == [
         .connect,
+        .subscribe(agentID: "agent-1", conversationID: "conv-1"),
         .send(
           turnID: turnID.uuidString.lowercased(),
           agentID: "agent-1",
@@ -449,7 +457,7 @@ struct ChatFeatureTests {
     #expect(sent == false)
 
     #expect(featureMessageIDs(feature) == ["u1"])
-    let calls = await chat.calls
+    let calls = await chat.turnCalls
     #expect(calls.isEmpty)
   }
 
@@ -1259,7 +1267,9 @@ struct ChatFeatureTests {
           userMessageId: "user-stale",
           assistantMessageId: "assistant-stale",
           revision: 6,
-          seq: 9
+          seq: 9,
+          origin: nil,
+          kind: nil
         )
       )
     )
@@ -2585,7 +2595,7 @@ struct ChatFeatureTests {
 
     await feature.send()
 
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(feature.state.draft == "Keep this message")
     #expect(feature.state.activeTurnID == nil)
     #expect(feature.draftStatus == .failed)
@@ -2607,7 +2617,7 @@ struct ChatFeatureTests {
     await clearGate.release()
     await sending.value
 
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(feature.state.draft == "Keep this message")
     #expect(await persistence.persistedDraft?.text == "Keep this message")
     #expect(feature.state.activeTurnID == nil)
@@ -2841,7 +2851,7 @@ struct ChatFeatureTests {
 
     await feature.send()
 
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(feature.state.attachments == attachments)
     #expect(feature.state.errorBanner == "Choose up to 4 images.")
   }
@@ -2877,7 +2887,9 @@ struct ChatFeatureTests {
           userMessageId: "user-1",
           assistantMessageId: "assistant-1",
           revision: 2,
-          seq: 1
+          seq: 1,
+          origin: nil,
+          kind: nil
         )
       )
     )
@@ -3063,7 +3075,10 @@ struct ChatFeatureTests {
 
     #expect(await chat.calls.filter { $0 == .resetAfterTerminalFailure }.count == 1)
     #expect(await chat.eventStreamRequestCount == 2)
-    #expect(await chat.calls.filter { $0 == .connect }.count == 1)
+    // Two connects now: `appear()`'s (task C7 subscribes the open
+    // conversation) and the one the recovery attaches with after the terminal
+    // failure tore the first socket down.
+    #expect(await chat.calls.filter { $0 == .connect }.count == 2)
     #expect(
       await chat.calls.contains(
         .resume(
@@ -3422,7 +3437,7 @@ struct ChatFeatureTests {
     #expect(feature.state.draft == "Can edit")
     #expect(feature.draftEditingAllowed)
     #expect(feature.canSend == false)
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
     #expect(await persistence.savedDrafts.last?.text == "Can edit")
   }
 
@@ -3468,7 +3483,7 @@ struct ChatFeatureTests {
     #expect(feature.composerDisabledReason == "This conversation is read-only")
     #expect(feature.state.draft == "Do not send")
     #expect(feature.state.attachments.isEmpty)
-    #expect(await chat.calls.isEmpty)
+    #expect(await chat.turnCalls.isEmpty)
   }
 
   @Test("canonical terminal transcripts do not expose stale questions")
@@ -4612,6 +4627,79 @@ struct ChatFeatureTests {
     #expect(second.isShutdown)
   }
 
+  @Test("resendFromMessage refuses a notification row: its text is a system notification, not user input")
+  func resendRefusesANotificationRow() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "notif-user",
+              turnID: "turn-notification",
+              text: "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+              ordinal: 1,
+              origin: "notification"
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    let sent = await feature.resendFromMessage(id: "notif-user")
+
+    #expect(sent == false)
+    #expect(await chat.turnCalls.isEmpty)
+    #expect(featureMessageIDs(feature) == ["notif-user"])
+  }
+
+  // MARK: - Conversation subscriptions (task C7, sub-agents design 7.6)
+
+  @Test("appearing on an online conversation connects and subscribes to it")
+  func appearSubscribesToTheOpenConversation() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+
+    await feature.appear()
+
+    let calls = await chat.calls
+    #expect(calls.contains(.connect))
+    #expect(calls.contains(.subscribe(agentID: "agent-1", conversationID: "conv-1")))
+  }
+
+  @Test("leaving the conversation unsubscribes it, so a long session cannot accumulate subscriptions")
+  func disappearUnsubscribes() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.disappear()
+
+    let calls = await chat.calls
+    #expect(calls.contains(.unsubscribe(agentID: "agent-1", conversationID: "conv-1")))
+    #expect(calls.contains(.suspendForDetachment))
+  }
+
+  @Test("an offline conversation neither connects nor subscribes")
+  func offlineConversationDoesNotSubscribe() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat)
+    feature.setConnection(.offline)
+
+    await feature.appear()
+
+    let calls = await chat.calls
+    #expect(calls.contains(.connect) == false)
+    #expect(calls.contains { if case .subscribe = $0 { return true } else { return false } } == false)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -5300,6 +5388,19 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
   private(set) var calls: [FakeChatTransportCall] = []
   private(set) var eventStreamRequestCount = 0
 
+  /// Turn traffic only. `connect`/`subscribe`/`unsubscribe` are lifecycle
+  /// bookkeeping that `appear()` now performs unconditionally on an online
+  /// conversation (task C7, sub-agents design 7.6) — a test asserting "this
+  /// guard sent nothing" means no TURN was sent.
+  var turnCalls: [FakeChatTransportCall] {
+    calls.filter {
+      switch $0 {
+      case .connect, .subscribe, .unsubscribe: false
+      default: true
+      }
+    }
+  }
+
   init(
     recorder: ChatOperationRecorder? = nil,
     sendGate: TestGate? = nil,
@@ -5408,6 +5509,14 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
     }
   }
 
+  func subscribe(agentID: String, conversationID: String) async throws {
+    calls.append(.subscribe(agentID: agentID, conversationID: conversationID))
+  }
+
+  func unsubscribe(agentID: String, conversationID: String) async throws {
+    calls.append(.unsubscribe(agentID: agentID, conversationID: conversationID))
+  }
+
   func suspendForDetachment() async {
     calls.append(.suspendForDetachment)
   }
@@ -5448,6 +5557,8 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   case resume(turnID: String, agentID: String, conversationID: String, sinceSeq: Int)
   case answer(turnID: String, questionID: String, answer: String)
   case cancel(turnID: String)
+  case subscribe(agentID: String, conversationID: String)
+  case unsubscribe(agentID: String, conversationID: String)
   case suspendForDetachment
   case resetAfterTerminalFailure
   case shutdown
@@ -5625,7 +5736,8 @@ private func message(
   status: MessageStatus = .completed,
   text: String = "",
   events: [AgentEvent] = [],
-  ordinal: Int
+  ordinal: Int,
+  origin: String? = nil
 ) -> ConversationMessageDTO {
   ConversationMessageDTO(
     id: id,
@@ -5636,7 +5748,8 @@ private func message(
     status: status,
     content: role == .user ? .user(text: text, images: nil) : .assistant(events: events),
     createdAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
-    updatedAt: Date(timeIntervalSince1970: TimeInterval(ordinal))
+    updatedAt: Date(timeIntervalSince1970: TimeInterval(ordinal)),
+    origin: origin
   )
 }
 
@@ -5647,7 +5760,9 @@ private func accepted(seq: Int) -> MobileWSServerFrame {
     userMessageId: "user-1",
     assistantMessageId: "assistant-1",
     revision: 2,
-    seq: seq
+    seq: seq,
+    origin: nil,
+    kind: nil
   )
 }
 

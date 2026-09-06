@@ -117,6 +117,88 @@ struct MessageEntranceSignatureTests {
   }
 }
 
+/// Task C7 (sub-agents design 8.5): the user-side row of a turn the GATEWAY
+/// started renders as a compact system row, not a user bubble. Same
+/// ViewInspector-free limitation as the suite above, so this pins the two pure
+/// inputs `ChatMessageView` branches on: which rows are notification rows, and
+/// what a notification row reads.
+@Suite("Notification rows (task C7, sub-agents design 8.5)")
+struct NotificationRowTests {
+  @Test("a user row whose origin is not the user is a notification row")
+  func originDrivesTheRow() {
+    var notification = userMessage(id: "n1", turnID: "t1", text: "")
+    notification.origin = .notification
+    var fromParent = userMessage(id: "p1", turnID: "t1", text: "")
+    fromParent.origin = .parent
+    var typed = userMessage(id: "u1", turnID: "t1", text: "Hi")
+    typed.origin = .user
+
+    #expect(isNotificationRow(notification))
+    #expect(isNotificationRow(fromParent))
+    #expect(isNotificationRow(typed) == false)
+    // Absent origin (an older gateway, or a replayed turn) stays a bubble.
+    #expect(isNotificationRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
+    #expect(isNotificationRow(assistantMessage(id: "a1", turnID: "t1", status: .completed)) == false)
+  }
+
+  @Test("a failed reply to a notification turn offers no inline Retry — its user row is not user input")
+  func notificationTurnsAreNeverRetryTargets() {
+    var notification = userMessage(id: "n1", turnID: "turn-notification", text: "")
+    notification.origin = .notification
+    let failedReply = assistantMessage(id: "a1", turnID: "turn-notification", status: .failed)
+    let ordinary = userMessage(id: "u1", turnID: "turn-1", text: "Hi")
+    let failedOrdinary = assistantMessage(id: "a2", turnID: "turn-1", status: .failed)
+    let messages = [notification, failedReply, ordinary, failedOrdinary]
+
+    #expect(retryTargetID(for: failedReply, in: messages) == nil)
+    #expect(retryTargetID(for: failedOrdinary, in: messages) == "u1")
+    #expect(retryTargetID(for: notification, in: messages) == nil)
+  }
+
+  @Test("the row reads the notification block's own summary, never the raw prompt")
+  func labelReadsSummary() {
+    let text = [
+      "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+      "This is an automated background-task event, NOT a message from the user.",
+      "",
+      "<task-notification>",
+      "<task-id>sub_01</task-id>",
+      "<status>completed</status>",
+      #"<summary>Agent "Map gateway internals" finished</summary>"#,
+      "<result>",
+      "It is all wired through the hub.",
+      "</result>",
+      "</task-notification>",
+    ].joined(separator: "\n")
+
+    #expect(notificationRowLabel(text) == #"Agent "Map gateway internals" finished"#)
+  }
+
+  @Test("coalesced notifications riding one turn all appear, in order")
+  func labelJoinsCoalescedSummaries() {
+    let text = """
+      <task-notification><summary>Agent "A" finished</summary></task-notification>
+
+      <task-notification><summary>Agent "B" finished</summary></task-notification>
+      """
+
+    #expect(notificationRowLabel(text) == #"Agent "A" finished · Agent "B" finished"#)
+  }
+
+  @Test("a child-to-main message names its sender, with the attribute unescaped")
+  func labelNamesTheSender() {
+    let text = #"<subagent-message from="the &quot;fast&quot; one">Halfway.</subagent-message>"#
+
+    #expect(notificationRowLabel(text) == #"Message from the "fast" one"#)
+  }
+
+  @Test("live, where only the accepted frame has landed, the row falls back to a generic label")
+  func labelFallsBackWithoutText() {
+    #expect(notificationRowLabel("") == notificationRowFallbackLabel)
+    #expect(notificationRowLabel("[SYSTEM NOTIFICATION - NOT USER INPUT]") == notificationRowFallbackLabel)
+  }
+}
+
 private func userMessage(
   id: String,
   turnID: String,

@@ -13,6 +13,26 @@ enum MessageRole: String, Codable, Hashable, Sendable {
   case assistant
 }
 
+/// Who caused a turn (sub-agents design 7.6). `notification` is a turn the
+/// GATEWAY started to wake this conversation's orchestrator with a background
+/// child's result; `parent` is an orchestrator message inside a child
+/// transcript. Absent means `user` for a live turn, and UNKNOWN for a replayed
+/// one — hence every use site keeps it optional rather than defaulting.
+enum MessageOrigin: String, Codable, Hashable, Sendable {
+  case user
+  case notification
+  case parent
+}
+
+/// `subagent` conversations are sub-agent children (sub-agents design 7.4).
+/// Absent means `user`: an older gateway does not send the field at all, and a
+/// client that read absence as "not a user conversation" would hide every
+/// conversation it has (see `ConversationSummaryDTO.conversationKind`).
+enum ConversationKind: String, Codable, Hashable, Sendable {
+  case user
+  case subagent
+}
+
 enum MessageStatus: String, Codable, Hashable, Sendable {
   case accepted
   case streaming
@@ -92,6 +112,42 @@ struct ConversationSummaryDTO: Codable, Hashable, Identifiable, Sendable {
   let createdAt: Date
   let updatedAt: Date
   let deletedAt: Date?
+  /// Raw so an unrecognized kind from a newer gateway degrades to "treat it as
+  /// a user conversation" instead of failing the decode of the whole page.
+  /// Read `conversationKind`, never this.
+  var kind: String? = nil
+  var parentConversationId: String? = nil
+  var parentTurnId: String? = nil
+  var subagent: SubagentInfoDTO? = nil
+
+  /// Ruling: absent `kind` means `.user`. A `kind == .user` test written
+  /// against the raw field would silently drop every conversation returned by
+  /// a gateway that predates the field.
+  var conversationKind: ConversationKind {
+    kind.flatMap(ConversationKind.init(rawValue:)) ?? .user
+  }
+}
+
+/// The sub-agent facts a child conversation's summary carries (sub-agents
+/// design 7.4). `status` and `isolation` are plain strings for the same
+/// forward-compatibility reason as `SubagentListEntryDTO.status`.
+struct SubagentInfoDTO: Codable, Hashable, Sendable {
+  let type: String
+  let name: String?
+  let status: String
+  let description: String
+  let prompt: String
+  let model: String
+  let background: Bool
+  let isolation: String?
+  let depth: Int
+  let startedAt: Date
+  let endedAt: Date?
+  let usage: SubagentUsageDTO?
+  let toolCallCount: Int
+  let report: String?
+  let oneShot: Bool
+  let workspace: String?
 }
 
 struct ConversationMessageDTO: Codable, Hashable, Identifiable, Sendable {
@@ -104,6 +160,13 @@ struct ConversationMessageDTO: Codable, Hashable, Identifiable, Sendable {
   let content: MessageContent
   let createdAt: Date
   let updatedAt: Date
+  /// Raw for forward compatibility (see `ConversationSummaryDTO.kind`); read
+  /// `messageOrigin`. Absent on a row written before origins existed.
+  var origin: String? = nil
+
+  var messageOrigin: MessageOrigin? {
+    origin.flatMap(MessageOrigin.init(rawValue:))
+  }
 }
 
 struct ConversationPageDTO: Codable, Hashable, Sendable {
