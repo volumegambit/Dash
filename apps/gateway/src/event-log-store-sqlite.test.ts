@@ -203,6 +203,25 @@ describe('SqliteEventLogStore', () => {
     expect(store.listInterrupted()).toEqual([]);
   });
 
+  it('tracks interruption by outer run while preserving segmented event identities', () => {
+    store.append('agent-a', 'conv-segmented', 'run-1', evt('before'), 'run-1');
+    store.append('agent-a', 'conv-segmented', 'run-1', evt('after'), 'segment-2');
+    store.append(
+      'agent-a',
+      'conv-segmented',
+      'run-1',
+      { type: 'done', outcome: 'completed' },
+      'segment-2',
+    );
+
+    expect(store.listInterrupted()).toEqual([]);
+    expect(store.readSince('agent-a', 'conv-segmented', 0)).toEqual([
+      expect.objectContaining({ msgId: 'run-1', segmentTurnId: 'run-1' }),
+      expect.objectContaining({ msgId: 'run-1', segmentTurnId: 'segment-2' }),
+      expect.objectContaining({ msgId: 'run-1', segmentTurnId: 'segment-2' }),
+    ]);
+  });
+
   it('listInterrupted reports the most recent terminal seq and the tail msgId', () => {
     // A completed first turn, then a second turn cut off mid-stream.
     store.append('agent-a', 'conv-1', 'msg-1', evt('turn one'));

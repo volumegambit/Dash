@@ -9,14 +9,12 @@ import type {
   MobileApiError,
   MobileImage,
 } from '@dash/mobile-contract';
-import type {
-  MobileV2ConversationBootstrap,
-  MobileV2SequencedFrame,
-} from '@dash/mobile-contract-v2';
+import type { MobileV2ConversationBootstrap } from '@dash/mobile-contract-v2';
 import type {
   AcceptRunInput,
   AcceptedRun,
   AppendRunEventInput,
+  ClaimedFollowUp,
   CommandMutationResult,
   DeliverSteerInput,
   DeliveredInput,
@@ -33,6 +31,7 @@ import type {
   StoredConversationMessage,
   TerminalizeSteersInput,
   V2RecoveryResult,
+  V2ReplayResult,
 } from './conversation-domain.js';
 import type { EventLogPayload, EventLogStore } from './event-log-store.js';
 
@@ -129,12 +128,9 @@ export interface ConversationService {
   resumeFollowUps(input: ResumeFollowUpsCommand): CommandMutationResult;
   pauseFollowUpsForAgentDisable(agentId: string): PersistedQueueTransition[];
   finishRunAndClaimNext(input: FinishRunInput): FinishRunResult;
+  claimNextFollowUp(conversationId: string): ClaimedFollowUp | null;
   bootstrapV2(input: ListMessagesInput): MobileV2ConversationBootstrap;
-  readV2Since(
-    agentId: string,
-    conversationId: string,
-    sinceV2Seq: number,
-  ): MobileV2SequencedFrame[];
+  readV2Since(agentId: string, conversationId: string, sinceV2Seq: number): V2ReplayResult;
   listDeliveredSteers(conversationId: string): DeliveredSteerContext[];
   recoverV2State(): V2RecoveryResult;
   listRunMessages(conversationId: string, runId: string): StoredConversationMessage[];

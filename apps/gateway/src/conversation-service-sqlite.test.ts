@@ -149,7 +149,17 @@ describe('SqliteConversationService schema', () => {
       service.eventLog.readSince('agent-01', conversation.id, 0).map(({ seq }) => seq),
     ).toEqual([1, 2]);
     expect(frames.map(({ v2Seq }) => v2Seq)).toEqual([1, 2, 3]);
-    expect(service.readV2Since('agent-01', conversation.id, 0)).toEqual(frames);
+    expect(service.readV2Since('agent-01', conversation.id, 0)).toEqual({
+      frames,
+      throughSeq: 3,
+    });
+    expect(service.readV2Since('agent-01', conversation.id, 999)).toEqual({
+      frames: [],
+      throughSeq: 3,
+    });
+    expect(() => service.readV2Since('agent-other', conversation.id, 0)).toThrowError(
+      expect.objectContaining({ code: 'not_found', status: 404 }),
+    );
     expect(
       JSON.parse(
         storage.db
@@ -193,7 +203,10 @@ describe('SqliteConversationService schema', () => {
       })(),
     ).toThrow('roll back');
 
-    expect(service.readV2Since('agent-01', conversation.id, 0)).toEqual([]);
+    expect(service.readV2Since('agent-01', conversation.id, 0)).toEqual({
+      frames: [],
+      throughSeq: 0,
+    });
     expect(
       storage.db
         .prepare('SELECT v2_last_seq FROM conversations WHERE id = ?')
@@ -1052,16 +1065,21 @@ describe('SqliteConversationService Follow Up queue commands', () => {
     return service as unknown as { db: DatabaseType };
   }
 
-  function createConversation(active = false): string {
+  function createConversation(active = true): string {
     const conversation = service.create({
       agentId: AGENT_ID,
       agentName: 'Queue Helper',
       requestId: nextUuid(),
     });
     if (active) {
-      storage()
-        .db.prepare("UPDATE conversations SET status = 'running', active_turn_id = ? WHERE id = ?")
-        .run(ACTIVE_RUN_ID, conversation.id);
+      service.acceptRun({
+        protocol: 'v2',
+        agentId: AGENT_ID,
+        channelId: CHANNEL_ID,
+        conversationId: conversation.id,
+        runId: `${ACTIVE_RUN_ID}-${conversation.id}`,
+        text: 'Active request',
+      });
     }
     return conversation.id;
   }
@@ -1094,7 +1112,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
       conversationId,
       text: 'Steer here',
       behavior: 'steer',
-      expectedActiveTurnId: ACTIVE_RUN_ID,
+      expectedActiveTurnId: service.get(conversationId)?.activeTurnId ?? ACTIVE_RUN_ID,
       ...overrides,
     };
   }
@@ -1167,7 +1185,8 @@ describe('SqliteConversationService Follow Up queue commands', () => {
       service.close();
       service = reopenService();
 
-      expect(operation()).toEqual({ ...first, replayed: true });
+      const { conversation: _conversation, ...durableResult } = first;
+      expect(operation()).toEqual({ ...durableResult, replayed: true });
     },
   );
 
@@ -1237,7 +1256,9 @@ describe('SqliteConversationService Follow Up queue commands', () => {
         },
       ],
     });
-    expect(service.enqueueInput(command)).toEqual({ ...first, replayed: true });
+    expect(changed).not.toHaveProperty('conversation');
+    const { conversation: _conversation, ...durableResult } = first;
+    expect(service.enqueueInput(command)).toEqual({ ...durableResult, replayed: true });
     expect(
       storage()
         .db.prepare('SELECT COUNT(*) FROM conversation_command_results WHERE conversation_id = ?')
@@ -1324,7 +1345,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
         enqueueOrder: 1,
       },
     });
-    expect(service.get(conversationId)).toMatchObject({ revision: 3 });
+    expect(service.get(conversationId)).toMatchObject({ revision: 4 });
   });
 
   it('removes a middle Follow Up and closes derived presentation positions', () => {
@@ -1387,7 +1408,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
     service.enqueueInput(enqueueFollowUp(conversationId));
     const paused = service.pauseFollowUpsForAgentDisable(AGENT_ID);
     expect(paused[0]).toMatchObject({
-      conversation: { queuePaused: true, queueRevision: 2, revision: 3 },
+      conversation: { queuePaused: true, queueRevision: 2, revision: 4 },
       frame: { type: 'queue_paused', queueRevision: 2, pendingFollowUpCount: 1 },
     });
 
@@ -1501,7 +1522,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
       code: 'validation_failed',
       details: { kind: 'follow_up', count: 20, limit: 20, queueRevision: 20 },
     });
-    expect(service.get(conversationId)).toMatchObject({ revision: 21 });
+    expect(service.get(conversationId)).toMatchObject({ revision: 22 });
   });
 
   it('rejects aggregate queue bytes over 100 MiB and removal frees capacity', () => {
@@ -1564,6 +1585,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
 
   it('admits a Follow Up before a Steer without allocating Follow Up transcript ordinals', () => {
     const conversationId = createConversation(true);
+    const activeRunId = service.get(conversationId)?.activeTurnId;
     service.enqueueInput(
       enqueueFollowUp(conversationId, { commandId: 'follow-up-first', inputId: 'follow-up-first' }),
     );
@@ -1584,7 +1606,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
       {
         input_id: 'follow-up-first',
         kind: 'follow_up',
-        target_turn_id: ACTIVE_RUN_ID,
+        target_turn_id: activeRunId,
         reserved_user_ordinal: null,
         reserved_assistant_ordinal: null,
         enqueue_order: 1,
@@ -1592,9 +1614,9 @@ describe('SqliteConversationService Follow Up queue commands', () => {
       {
         input_id: 'steer-second',
         kind: 'steer',
-        target_turn_id: ACTIVE_RUN_ID,
-        reserved_user_ordinal: 1,
-        reserved_assistant_ordinal: 2,
+        target_turn_id: activeRunId,
+        reserved_user_ordinal: 3,
+        reserved_assistant_ordinal: 4,
         enqueue_order: 2,
       },
     ]);
@@ -1604,10 +1626,14 @@ describe('SqliteConversationService Follow Up queue commands', () => {
           'SELECT ordinal, role, delivery_kind, delivery_status FROM conversation_messages',
         )
         .all(),
-    ).toEqual([{ ordinal: 1, role: 'user', delivery_kind: 'steer', delivery_status: 'pending' }]);
+    ).toEqual([
+      { ordinal: 1, role: 'user', delivery_kind: 'normal', delivery_status: null },
+      { ordinal: 2, role: 'assistant', delivery_kind: 'normal', delivery_status: null },
+      { ordinal: 3, role: 'user', delivery_kind: 'steer', delivery_status: 'pending' },
+    ]);
     expect(
       storage().db.prepare('SELECT next_message_ordinal FROM conversations').pluck().get(),
-    ).toBe(3);
+    ).toBe(5);
   });
 
   it('replays the original command result bytes after an edit without storing content in outcome_json', () => {
@@ -1630,7 +1656,7 @@ describe('SqliteConversationService Follow Up queue commands', () => {
       .pluck()
       .get(conversationId, original.commandId) as string;
 
-    expect(JSON.parse(outcomeJson)).toEqual({ kind: 'sequenced', v2Seqs: [1] });
+    expect(JSON.parse(outcomeJson)).toEqual({ kind: 'sequenced', v2Seqs: [2] });
     for (const privateValue of [
       'original private text',
       'edited private text',
@@ -1644,10 +1670,11 @@ describe('SqliteConversationService Follow Up queue commands', () => {
 
     const replayed = service.enqueueInput(original);
     expect(JSON.stringify(replayed.frames[0])).toBe(JSON.stringify(accepted.frames[0]));
-    expect(replayed).toEqual({ ...accepted, replayed: true });
+    const { conversation: _conversation, ...durableResult } = accepted;
+    expect(replayed).toEqual({ ...durableResult, replayed: true });
     expect(replayed.frames[0]).toMatchObject({
       type: 'input_accepted',
-      v2Seq: 1,
+      v2Seq: 2,
       input: {
         text: 'original private text',
         images: [{ mediaType: 'image/png', data: 'b3JpZ2luYWwtYmFzZTY0' }],
@@ -1690,5 +1717,947 @@ describe('SqliteConversationService Follow Up queue commands', () => {
     expect(
       storage().db.prepare('SELECT COUNT(*) FROM conversation_command_results').pluck().get(),
     ).toBe(commandCount);
+  });
+});
+
+describe('SqliteConversationService segmented run lifecycle', () => {
+  const NOW = '2026-09-06T10:00:00.000Z';
+  const AGENT_ID = 'agent-segments';
+  const CHANNEL_ID = 'web';
+  let tmpDir: string;
+  let service: SqliteConversationService;
+  let uuidCounter: number;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'conversation-segments-'));
+    uuidCounter = 0;
+    service = reopen();
+  });
+
+  afterEach(async () => {
+    service.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function uuid(): string {
+    return `30000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`;
+  }
+
+  function reopen(): SqliteConversationService {
+    return new SqliteConversationService({ dataDir: tmpDir, now: () => NOW, uuid });
+  }
+
+  function db(): DatabaseType {
+    return (service as unknown as { db: DatabaseType }).db;
+  }
+
+  function createConversation(requestId = uuid()): string {
+    return service.create({
+      agentId: AGENT_ID,
+      agentName: 'Segment Helper',
+      requestId,
+    }).id;
+  }
+
+  function acceptRun(conversationId: string, runId: string, protocol: 'v1' | 'v2' = 'v2') {
+    return service.acceptRun({
+      protocol,
+      agentId: AGENT_ID,
+      channelId: CHANNEL_ID,
+      conversationId,
+      runId,
+      text: `Prompt for ${runId}`,
+    });
+  }
+
+  function enqueueFollowUp(conversationId: string, suffix: string) {
+    return service.enqueueInput({
+      commandId: `command-${suffix}`,
+      inputId: `input-${suffix}`,
+      agentId: AGENT_ID,
+      channelId: CHANNEL_ID,
+      conversationId,
+      text: `Follow Up ${suffix}`,
+      behavior: 'followUp',
+    });
+  }
+
+  function enqueueSteer(conversationId: string, runId: string, suffix: string, text = 'same') {
+    return service.enqueueInput({
+      commandId: `command-${suffix}`,
+      inputId: `input-${suffix}`,
+      agentId: AGENT_ID,
+      channelId: CHANNEL_ID,
+      conversationId,
+      text,
+      behavior: 'steer',
+      expectedActiveTurnId: runId,
+    });
+  }
+
+  it('hydrates a run by segment across Steer delivery in v2 and v1 history', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-1');
+    service.appendRunEvent({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: run.segmentTurnId,
+      event: { type: 'text_delta', text: 'before' },
+    });
+    enqueueSteer(conversationId, run.runId, 'steer-1', 'Focus here');
+
+    const delivered = service.deliverSteer({
+      conversationId,
+      runId: run.runId,
+      inputId: 'input-steer-1',
+    });
+    expect(delivered.segmentTurnId).not.toBe(run.runId);
+    service.appendRunEvent({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: delivered.segmentTurnId,
+      event: { type: 'text_delta', text: 'after' },
+    });
+
+    const page = service.bootstrapV2({ conversationId, limit: 100 });
+    expect(page.messages.map((message) => [message.role, message.ordinal])).toEqual([
+      ['user', 1],
+      ['assistant', 2],
+      ['user', 3],
+      ['assistant', 4],
+    ]);
+    expect(page.messages[1].content).toEqual({
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'before' }],
+    });
+    expect(page.messages[3].content).toEqual({
+      type: 'assistant',
+      events: [{ type: 'text_delta', text: 'after' }],
+    });
+    expect(service.listMessages({ conversationId, limit: 100 }).items).toEqual(
+      page.messages.map(
+        ({
+          runId: _runId,
+          segmentIndex: _index,
+          deliveryKind: _kind,
+          deliveryStatus: _status,
+          ...message
+        }) => message,
+      ),
+    );
+    expect(service.listDeliveredSteers(conversationId)).toEqual([
+      { inputId: 'input-steer-1', text: 'Focus here' },
+    ]);
+  });
+
+  it('correlates two identical Steers by input identity and rejects a closed segment event', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-identical');
+    enqueueSteer(conversationId, run.runId, 'steer-a');
+    enqueueSteer(conversationId, run.runId, 'steer-b');
+    const first = service.deliverSteer({
+      conversationId,
+      runId: run.runId,
+      inputId: 'input-steer-a',
+    });
+    const second = service.deliverSteer({
+      conversationId,
+      runId: run.runId,
+      inputId: 'input-steer-b',
+    });
+
+    expect(first.segmentTurnId).not.toBe(second.segmentTurnId);
+    expect(service.listDeliveredSteers(conversationId).map(({ inputId }) => inputId)).toEqual([
+      'input-steer-a',
+      'input-steer-b',
+    ]);
+    const through = service.get(conversationId)?.lastSeq;
+    expect(
+      service.appendRunEvent({
+        conversationId,
+        runId: run.runId,
+        segmentTurnId: first.segmentTurnId,
+        event: { type: 'text_delta', text: 'late' },
+      }),
+    ).toBeNull();
+    expect(service.get(conversationId)?.lastSeq).toBe(through);
+  });
+
+  it('keeps an undelivered Steer as one failed user row and preserves its assistant gap', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-not-delivered');
+    enqueueSteer(conversationId, run.runId, 'steer-failed', 'Cannot consume');
+
+    const transitions = service.terminalizeSteersNotDelivered({
+      conversationId,
+      runId: run.runId,
+      inputIds: ['input-steer-failed'],
+      code: 'gateway_offline',
+      error: 'Backend stopped before delivery',
+    });
+
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      input: { state: 'failed', failureCode: 'gateway_offline' },
+      frame: { type: 'input_failed' },
+    });
+    expect(service.bootstrapV2({ conversationId, limit: 100 }).messages).toEqual([
+      expect.objectContaining({ ordinal: 1, role: 'user' }),
+      expect.objectContaining({ ordinal: 2, role: 'assistant' }),
+      expect.objectContaining({
+        ordinal: 3,
+        role: 'user',
+        status: 'failed',
+        deliveryKind: 'steer',
+        deliveryStatus: 'not_delivered',
+      }),
+    ]);
+    expect(
+      db().prepare('SELECT COUNT(*) FROM conversation_messages WHERE ordinal = 4').pluck().get(),
+    ).toBe(0);
+    expect(service.listMessages({ conversationId, limit: 100 }).items.at(-1)).toMatchObject({
+      role: 'user',
+      status: 'failed',
+    });
+  });
+
+  it('persists accepted and model frames to both journals with outer v1 run identity', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-dual');
+    const persisted = service.appendCurrentRunEvent(AGENT_ID, conversationId, run.runId, {
+      type: 'text_delta',
+      text: 'dual',
+    });
+
+    expect(service.eventLog.readSince(AGENT_ID, conversationId, 0)).toEqual([
+      expect.objectContaining({
+        seq: 1,
+        msgId: run.runId,
+        segmentTurnId: run.segmentTurnId,
+        payload: expect.objectContaining({ type: 'accepted' }),
+      }),
+      expect.objectContaining({
+        seq: 2,
+        msgId: run.runId,
+        segmentTurnId: run.segmentTurnId,
+        payload: { type: 'event', event: { type: 'text_delta', text: 'dual' } },
+      }),
+    ]);
+    expect(run.v1Payload).toEqual(
+      expect.objectContaining({
+        type: 'accepted',
+        userMessageId: run.userMessage.id,
+        assistantMessageId: run.assistantMessage.id,
+      }),
+    );
+    expect(persisted?.v1Payload).toEqual({
+      type: 'event',
+      event: { type: 'text_delta', text: 'dual' },
+    });
+    expect(service.readV2Since(AGENT_ID, conversationId, 0).frames).toEqual([
+      run.v2Frame,
+      persisted?.v2Frame,
+    ]);
+  });
+
+  it('rolls back v1 acceptance when its v2 mirror cannot append', () => {
+    const conversationId = createConversation();
+    db().exec(`
+      CREATE TRIGGER fail_v2_accept BEFORE INSERT ON conversation_v2_events
+      WHEN json_extract(NEW.payload, '$.type') = 'accepted'
+      BEGIN SELECT RAISE(ABORT, 'fail v2 accepted'); END;
+    `);
+
+    expect(() => acceptRun(conversationId, 'run-rollback')).toThrow('fail v2 accepted');
+    expect(service.eventLog.readSince(AGENT_ID, conversationId, 0)).toEqual([]);
+    expect(service.listMessages({ conversationId, limit: 100 }).items).toEqual([]);
+    expect(service.get(conversationId)).toMatchObject({ status: 'idle', activeTurnId: null });
+  });
+
+  it('rolls back Steer delivery and run completion when a transition cannot append', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-transition-rollback');
+    enqueueSteer(conversationId, run.runId, 'steer-rollback');
+    enqueueFollowUp(conversationId, 'queued');
+    db().exec(`
+      CREATE TRIGGER fail_delivery BEFORE INSERT ON conversation_v2_events
+      WHEN json_extract(NEW.payload, '$.type') = 'input_delivered'
+      BEGIN SELECT RAISE(ABORT, 'fail delivery'); END;
+    `);
+
+    expect(() =>
+      service.deliverSteer({
+        conversationId,
+        runId: run.runId,
+        inputId: 'input-steer-rollback',
+      }),
+    ).toThrow('fail delivery');
+    expect(() =>
+      service.finishRunAndClaimNext({
+        conversationId,
+        runId: run.runId,
+        segmentTurnId: run.segmentTurnId,
+        outcome: 'completed',
+      }),
+    ).toThrow('fail delivery');
+    expect(service.get(conversationId)).toMatchObject({
+      status: 'running',
+      activeTurnId: run.runId,
+    });
+    expect(
+      db()
+        .prepare("SELECT state FROM conversation_pending_inputs WHERE input_id = 'input-queued'")
+        .pluck()
+        .get(),
+    ).toBe('queued');
+  });
+
+  it('claims three Follow Ups exactly once in FIFO order across terminal outcomes', () => {
+    const conversationId = createConversation();
+    let run = acceptRun(conversationId, 'run-root');
+    for (const suffix of ['a', 'b', 'c']) enqueueFollowUp(conversationId, suffix);
+
+    const claimedIds: string[] = [];
+    for (const outcome of ['completed', 'cancelled', 'interrupted'] as const) {
+      const finished = service.finishRunAndClaimNext({
+        conversationId,
+        runId: run.runId,
+        segmentTurnId: run.segmentTurnId,
+        outcome,
+      });
+      expect(finished.claimedRun).toBeDefined();
+      if (outcome === 'interrupted') {
+        expect(finished.terminal.v1Payload).toEqual({
+          type: 'error',
+          error: 'Gateway restarted while this turn was in progress.',
+          code: 'gateway_offline',
+          retryable: true,
+        });
+        expect(finished.terminal.v2Frame).toMatchObject({
+          type: 'done',
+          outcome: 'interrupted',
+        });
+      }
+      run = finished.claimedRun as typeof run;
+      claimedIds.push(run.sourceInputId as string);
+      expect(service.get(conversationId)?.activeTurnId).toBe(run.runId);
+    }
+    expect(claimedIds).toEqual(['input-a', 'input-b', 'input-c']);
+    expect(
+      db()
+        .prepare(
+          "SELECT input_id FROM conversation_pending_inputs WHERE state = 'delivered' ORDER BY enqueue_order",
+        )
+        .all()
+        .map((row) => (row as { input_id: string }).input_id),
+    ).toEqual(claimedIds);
+  });
+
+  it('allocates a Follow Up admitted first after a later Steer reserved pair', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-order');
+    enqueueFollowUp(conversationId, 'earlier-follow-up');
+    enqueueSteer(conversationId, run.runId, 'later-steer', 'Later Steer');
+    const steer = service.deliverSteer({
+      conversationId,
+      runId: run.runId,
+      inputId: 'input-later-steer',
+    });
+
+    const finished = service.finishRunAndClaimNext({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: steer.segmentTurnId,
+      outcome: 'completed',
+    });
+
+    expect(
+      service
+        .bootstrapV2({ conversationId, limit: 100 })
+        .messages.map((item) => [item.deliveryKind, item.role, item.ordinal]),
+    ).toEqual([
+      ['normal', 'user', 1],
+      ['normal', 'assistant', 2],
+      ['steer', 'user', 3],
+      ['steer', 'assistant', 4],
+      ['follow_up', 'user', 5],
+      ['follow_up', 'assistant', 6],
+    ]);
+    expect(finished.claimedRun?.sourceInputId).toBe('input-earlier-follow-up');
+  });
+
+  it('pauses after failure and explicit resume atomically claims the oldest Follow Up', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-fails');
+    enqueueFollowUp(conversationId, 'a');
+    enqueueFollowUp(conversationId, 'b');
+
+    const failed = service.finishRunAndClaimNext({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: run.segmentTurnId,
+      outcome: 'failed',
+      error: 'Provider secret should be sanitized',
+      code: 'gateway_offline',
+      retryable: true,
+    });
+    expect(failed.claimedRun).toBeUndefined();
+    expect(failed.transitions.map(({ frame }) => frame.type)).toEqual(['queue_paused']);
+    expect(service.get(conversationId)).toMatchObject({ activeTurnId: null });
+    const bootstrap = service.bootstrapV2({ conversationId, limit: 100 });
+    expect(bootstrap).toMatchObject({ queuePaused: true, queueRevision: 3 });
+
+    const resumed = service.resumeFollowUps({
+      commandId: 'resume-command',
+      conversationId,
+      expectedQueueRevision: bootstrap.queueRevision,
+    });
+    expect(resumed.frames.map((frame) => frame.type)).toEqual([
+      'queue_resumed',
+      'input_delivered',
+      'accepted',
+    ]);
+    expect(resumed.promotedRun?.sourceInputId).toBe('input-a');
+  });
+
+  it('rejects ordinary v2 admission while paused but lets v1 run without advancing the queue', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-pause');
+    enqueueFollowUp(conversationId, 'a');
+    enqueueFollowUp(conversationId, 'b');
+    service.finishRunAndClaimNext({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: run.segmentTurnId,
+      outcome: 'failed',
+      error: 'Failed',
+      retryable: false,
+    });
+
+    expect(() => acceptRun(conversationId, 'run-v2-blocked', 'v2')).toThrowError(
+      expect.objectContaining({ code: 'validation_failed', status: 409 }),
+    );
+    const compatibility = acceptRun(conversationId, 'run-v1-compatible', 'v1');
+    const finished = service.finishRunAndClaimNext({
+      conversationId,
+      runId: compatibility.runId,
+      segmentTurnId: compatibility.segmentTurnId,
+      outcome: 'completed',
+    });
+    expect(finished.claimedRun).toBeUndefined();
+    expect(service.bootstrapV2({ conversationId, limit: 100 })).toMatchObject({
+      queuePaused: true,
+      pendingInputs: [
+        expect.objectContaining({ inputId: 'input-a', state: 'queued' }),
+        expect.objectContaining({ inputId: 'input-b', state: 'queued' }),
+      ],
+    });
+    expect(service.recoverV2State().eligibleConversationIds).not.toContain(conversationId);
+  });
+
+  it('atomically promotes an idle Follow Up and never restarts it on exact command replay', () => {
+    const conversationId = createConversation();
+    const command = {
+      commandId: 'idle-command',
+      inputId: 'idle-input',
+      agentId: AGENT_ID,
+      channelId: CHANNEL_ID,
+      conversationId,
+      text: 'Run immediately',
+      behavior: 'followUp' as const,
+    };
+
+    const first = service.enqueueInput(command);
+    expect(first.frames.map((frame) => frame.type)).toEqual([
+      'input_accepted',
+      'input_delivered',
+      'accepted',
+    ]);
+    expect(first.promotedRun).toMatchObject({ sourceInputId: 'idle-input', created: true });
+    const promoted = first.promotedRun;
+    expect(promoted).toBeDefined();
+    expect(promoted?.segmentTurnId).toBe(promoted?.runId);
+    expect(promoted?.userMessage.turnId).toBe(promoted?.runId);
+    expect(promoted?.assistantMessage.turnId).toBe(promoted?.runId);
+    expect(
+      db()
+        .prepare(
+          `SELECT reserved_run_id, reserved_segment_turn_id
+           FROM conversation_pending_inputs WHERE input_id = ?`,
+        )
+        .get('idle-input'),
+    ).toEqual({
+      reserved_run_id: promoted?.runId,
+      reserved_segment_turn_id: promoted?.runId,
+    });
+    expect(first.frames[1]).toMatchObject({
+      type: 'input_delivered',
+      runId: promoted?.runId,
+      segmentTurnId: promoted?.runId,
+    });
+    expect(first.frames[2]).toMatchObject({
+      type: 'accepted',
+      runId: promoted?.runId,
+      segmentTurnId: promoted?.runId,
+    });
+    expect(
+      service.eventLog
+        .readSince(AGENT_ID, conversationId, 0)
+        .find((entry) => entry.payload.type === 'accepted'),
+    ).toMatchObject({
+      msgId: promoted?.runId,
+      segmentTurnId: promoted?.runId,
+    });
+    expect(first.conversation).toMatchObject({
+      status: 'running',
+      activeRunId: first.promotedRun?.runId,
+      pendingFollowUpCount: 0,
+    });
+    expect(service.get(conversationId)?.activeTurnId).toBe(first.promotedRun?.runId);
+
+    service.close();
+    service = reopen();
+    const replay = service.enqueueInput(command);
+    expect(replay).toEqual({ replayed: true, frames: first.frames });
+    expect(replay).not.toHaveProperty('conversation');
+    expect(replay.promotedRun).toBeUndefined();
+  });
+
+  it('tombstones all persistence rows before retaining only the deleted conversation', () => {
+    const conversationId = createConversation();
+    const promoted = enqueueFollowUp(conversationId, 'idle').promotedRun;
+    expect(promoted).toBeDefined();
+    service.finishRunAndClaimNext({
+      conversationId,
+      runId: promoted?.runId as string,
+      segmentTurnId: promoted?.segmentTurnId as string,
+      outcome: 'completed',
+    });
+    const revision = service.get(conversationId)?.revision as number;
+
+    service.delete(conversationId, revision);
+
+    for (const table of [
+      'conversation_pending_inputs',
+      'conversation_command_results',
+      'conversation_v2_events',
+      'agent_stream_events',
+      'conversation_messages',
+    ]) {
+      expect(
+        db()
+          .prepare(`SELECT COUNT(*) FROM ${table} WHERE conversation_id = ?`)
+          .pluck()
+          .get(conversationId),
+      ).toBe(0);
+    }
+    expect(service.get(conversationId, { includeDeleted: true })).toMatchObject({
+      status: 'deleted',
+    });
+  });
+
+  it('archives by terminalizing pending Steers and queued or orphan-delivering Follow Ups', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-archive');
+    enqueueSteer(conversationId, run.runId, 'steer-archive', 'Pending Steer');
+    enqueueFollowUp(conversationId, 'queued-archive');
+    enqueueFollowUp(conversationId, 'orphan-archive');
+    service.finishRunAndClaimNext({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: run.segmentTurnId,
+      outcome: 'cancelled',
+      suppressPromotion: true,
+    });
+    db()
+      .prepare("UPDATE conversation_pending_inputs SET state = 'delivering' WHERE input_id = ?")
+      .run('input-orphan-archive');
+    const [paused] = service.pauseFollowUpsForAgentDisable(AGENT_ID);
+    expect(paused?.conversation.id).toBe(conversationId);
+    const beforeArchive = service.bootstrapV2({ conversationId, limit: 100 });
+    expect(beforeArchive.queuePaused).toBe(true);
+    const auditCount = db()
+      .prepare('SELECT COUNT(*) FROM conversation_command_results WHERE conversation_id = ?')
+      .pluck()
+      .get(conversationId);
+
+    service.archiveAgentConversations(AGENT_ID);
+
+    expect(
+      db()
+        .prepare(
+          `SELECT input_id, state, failure_code, failure_message
+           FROM conversation_pending_inputs WHERE conversation_id = ? ORDER BY enqueue_order`,
+        )
+        .all(conversationId),
+    ).toEqual([
+      expect.objectContaining({ input_id: 'input-steer-archive', state: 'failed' }),
+      {
+        input_id: 'input-queued-archive',
+        state: 'failed',
+        failure_code: 'not_found',
+        failure_message: 'Agent archived before this input could be delivered',
+      },
+      {
+        input_id: 'input-orphan-archive',
+        state: 'failed',
+        failure_code: 'not_found',
+        failure_message: 'Agent archived before this input could be delivered',
+      },
+    ]);
+    const bootstrap = service.bootstrapV2({ conversationId, limit: 100 });
+    expect(bootstrap).toMatchObject({
+      conversation: { status: 'archived', pendingFollowUpCount: 0 },
+      queuePaused: false,
+    });
+    const archiveReplay = service.readV2Since(
+      AGENT_ID,
+      conversationId,
+      paused?.frame.v2Seq as number,
+    );
+    expect(archiveReplay.frames.map((frame) => frame.type)).toEqual([
+      'input_failed',
+      'input_failed',
+      'input_failed',
+      'queue_resumed',
+    ]);
+    expect(archiveReplay.frames.at(-1)).toMatchObject({
+      type: 'queue_resumed',
+      conversationId,
+      queuePaused: false,
+      queueRevision: bootstrap.queueRevision,
+      pendingFollowUpCount: bootstrap.conversation.pendingFollowUpCount,
+      v2Seq: bootstrap.v2ThroughSeq,
+    });
+    expect(archiveReplay.throughSeq).toBe(bootstrap.v2ThroughSeq);
+    expect(bootstrap.queueRevision).toBe(beforeArchive.queueRevision + 4);
+    expect(bootstrap.conversation.revision).toBe(beforeArchive.conversation.revision + 5);
+    expect(
+      db()
+        .prepare('SELECT COUNT(*) FROM conversation_command_results WHERE conversation_id = ?')
+        .pluck()
+        .get(conversationId),
+    ).toBe(auditCount);
+    expect(service.recoverV2State().eligibleConversationIds).not.toContain(conversationId);
+    const archivedRevision = service.get(conversationId)?.revision;
+    const archivedV2Count = db()
+      .prepare('SELECT COUNT(*) FROM conversation_v2_events WHERE conversation_id = ?')
+      .pluck()
+      .get(conversationId);
+    service.archiveAgentConversations(AGENT_ID);
+    expect(service.get(conversationId)?.revision).toBe(archivedRevision);
+    expect(
+      db()
+        .prepare('SELECT COUNT(*) FROM conversation_v2_events WHERE conversation_id = ?')
+        .pluck()
+        .get(conversationId),
+    ).toBe(archivedV2Count);
+  });
+
+  it('recovers the current segment, seals Steers, and preserves queued Follow Ups idempotently', () => {
+    const conversationId = createConversation();
+    const run = acceptRun(conversationId, 'run-recover');
+    enqueueSteer(conversationId, run.runId, 'steer-recover');
+    enqueueFollowUp(conversationId, 'follow-recover');
+    service.appendRunEvent({
+      conversationId,
+      runId: run.runId,
+      segmentTurnId: run.segmentTurnId,
+      event: { type: 'text_delta', text: 'partial' },
+    });
+    service.close();
+    service = reopen();
+
+    expect(service.recoverV2State()).toEqual({
+      conversationsInterrupted: 1,
+      terminalsAppended: 1,
+      eligibleConversationIds: [conversationId],
+    });
+    expect(service.eventLog.readSince(AGENT_ID, conversationId, 0).at(-1)?.payload).toEqual({
+      type: 'error',
+      error: 'Gateway restarted while this turn was in progress.',
+      code: 'gateway_offline',
+      retryable: true,
+    });
+    expect(service.readV2Since(AGENT_ID, conversationId, 0).frames.at(-1)).toMatchObject({
+      type: 'done',
+      runId: run.runId,
+      segmentTurnId: run.segmentTurnId,
+      outcome: 'interrupted',
+    });
+    expect(service.bootstrapV2({ conversationId, limit: 100 }).pendingInputs).toEqual([
+      expect.objectContaining({ inputId: 'input-follow-recover', state: 'queued' }),
+    ]);
+    expect(service.bootstrapV2({ conversationId, limit: 100 }).messages).toContainEqual(
+      expect.objectContaining({
+        deliveryKind: 'steer',
+        deliveryStatus: 'not_delivered',
+        status: 'failed',
+      }),
+    );
+    expect(service.recoverV2State()).toEqual({
+      conversationsInterrupted: 0,
+      terminalsAppended: 0,
+      eligibleConversationIds: [conversationId],
+    });
+  });
+
+  it('keeps a real queued pre-claim eligible without delivery drift during recovery', () => {
+    const conversationId = createConversation('queued-pre-claim');
+    const root = acceptRun(conversationId, 'run-before-queued');
+    enqueueFollowUp(conversationId, 'queued');
+    service.finishRunAndClaimNext({
+      conversationId,
+      runId: root.runId,
+      segmentTurnId: root.segmentTurnId,
+      outcome: 'completed',
+      suppressPromotion: true,
+    });
+    const before = db()
+      .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+      .get('input-queued');
+    const beforeV2Seq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+
+    expect(service.recoverV2State().eligibleConversationIds).toContain(conversationId);
+    expect(
+      db()
+        .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+        .get('input-queued'),
+    ).toEqual(before);
+    expect(service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames).toEqual([]);
+    expect(service.recoverV2State().eligibleConversationIds).toContain(conversationId);
+  });
+
+  it('releases an orphan delivering Follow Up to queued exactly once during recovery', () => {
+    const conversationId = createConversation('orphan-delivery');
+    db().prepare('UPDATE conversations SET queue_paused = 1 WHERE id = ?').run(conversationId);
+    enqueueFollowUp(conversationId, 'orphan');
+    db()
+      .prepare("UPDATE conversation_pending_inputs SET state = 'delivering' WHERE input_id = ?")
+      .run('input-orphan');
+    db().prepare('UPDATE conversations SET queue_paused = 0 WHERE id = ?').run(conversationId);
+    const beforeV2Seq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+
+    expect(service.recoverV2State().eligibleConversationIds).toContain(conversationId);
+    expect(
+      db()
+        .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+        .get('input-orphan'),
+    ).toEqual({ state: 'queued', revision: 2 });
+    expect(
+      service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames.map((frame) => frame.type),
+    ).toEqual(['input_updated']);
+    const afterFirstRecoverySeq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+    expect(service.recoverV2State().eligibleConversationIds).toContain(conversationId);
+    expect(service.readV2Since(AGENT_ID, conversationId, afterFirstRecoverySeq).frames).toEqual([]);
+  });
+
+  it('recovers a real atomic post-claim without duplicating its delivery transition', () => {
+    const conversationId = createConversation('atomic-post-claim');
+    const root = acceptRun(conversationId, 'run-before-atomic-claim');
+    enqueueFollowUp(conversationId, 'atomic-claimed');
+    const claimed = service.finishRunAndClaimNext({
+      conversationId,
+      runId: root.runId,
+      segmentTurnId: root.segmentTurnId,
+      outcome: 'completed',
+    }).claimedRun;
+    expect(claimed).toBeDefined();
+    const beforeInput = db()
+      .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+      .get('input-atomic-claimed');
+    const beforeV2Seq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+
+    expect(service.recoverV2State()).toMatchObject({
+      conversationsInterrupted: 1,
+      terminalsAppended: 1,
+    });
+    expect(
+      db()
+        .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+        .get('input-atomic-claimed'),
+    ).toEqual(beforeInput);
+    expect(
+      service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames.map((frame) => frame.type),
+    ).toEqual(['done']);
+    const afterFirstRecoverySeq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+    expect(service.recoverV2State()).toMatchObject({
+      conversationsInterrupted: 0,
+      terminalsAppended: 0,
+    });
+    expect(service.readV2Since(AGENT_ID, conversationId, afterFirstRecoverySeq).frames).toEqual([]);
+  });
+
+  it('repairs a legacy represented delivery with a durable transition without revision drift', () => {
+    const conversationId = createConversation('legacy-durable-delivery');
+    const root = acceptRun(conversationId, 'run-before-legacy-durable');
+    enqueueFollowUp(conversationId, 'legacy-durable');
+    const claimed = service.finishRunAndClaimNext({
+      conversationId,
+      runId: root.runId,
+      segmentTurnId: root.segmentTurnId,
+      outcome: 'completed',
+    }).claimedRun;
+    expect(claimed).toBeDefined();
+    const durableDelivery = service
+      .readV2Since(AGENT_ID, conversationId, 0)
+      .frames.find(
+        (frame) =>
+          frame.type === 'input_delivered' && frame.input.inputId === 'input-legacy-durable',
+      );
+    if (!durableDelivery || durableDelivery.type !== 'input_delivered') {
+      throw new Error('Expected durable delivery transition');
+    }
+    db()
+      .prepare(
+        `UPDATE conversation_pending_inputs
+         SET state = 'delivering', revision = 1, delivered_at = NULL,
+             updated_at = '1999-01-01T00:00:00.000Z'
+         WHERE input_id = ?`,
+      )
+      .run('input-legacy-durable');
+    const beforeQueueRevision = service.bootstrapV2({
+      conversationId,
+      limit: 100,
+    }).queueRevision;
+    const beforeV2Seq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+
+    service.recoverV2State();
+
+    expect(
+      db()
+        .prepare(
+          `SELECT state, revision, delivered_at, updated_at
+           FROM conversation_pending_inputs WHERE input_id = ?`,
+        )
+        .get('input-legacy-durable'),
+    ).toEqual({
+      state: 'delivered',
+      revision: durableDelivery.input.revision,
+      delivered_at: durableDelivery.input.deliveredAt,
+      updated_at: durableDelivery.input.updatedAt,
+    });
+    expect(service.bootstrapV2({ conversationId, limit: 100 }).queueRevision).toBe(
+      beforeQueueRevision,
+    );
+    expect(
+      service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames.map((frame) => frame.type),
+    ).toEqual(['done']);
+    expect(
+      service
+        .readV2Since(AGENT_ID, conversationId, 0)
+        .frames.filter(
+          (frame) =>
+            frame.type === 'input_delivered' && frame.input.inputId === 'input-legacy-durable',
+        ),
+    ).toHaveLength(1);
+  });
+
+  it('appends one missing delivery transition for a legacy partial represented claim', () => {
+    const conversationId = createConversation('legacy-missing-delivery');
+    db().prepare('UPDATE conversations SET queue_paused = 1 WHERE id = ?').run(conversationId);
+    enqueueFollowUp(conversationId, 'legacy-missing');
+    const pending = db()
+      .prepare(
+        `SELECT reserved_run_id, reserved_segment_turn_id, reserved_user_message_id,
+                reserved_assistant_message_id
+         FROM conversation_pending_inputs WHERE input_id = ?`,
+      )
+      .get('input-legacy-missing') as {
+      reserved_run_id: string;
+      reserved_segment_turn_id: string;
+      reserved_user_message_id: string;
+      reserved_assistant_message_id: string;
+    };
+    db().transaction(() => {
+      db()
+        .prepare(
+          `UPDATE conversations
+           SET status = 'running', active_turn_id = @runId, queue_paused = 0,
+               next_message_ordinal = 3
+           WHERE id = @conversationId`,
+        )
+        .run({ conversationId, runId: pending.reserved_run_id });
+      db()
+        .prepare("UPDATE conversation_pending_inputs SET state = 'delivering' WHERE input_id = ?")
+        .run('input-legacy-missing');
+      const insert = db().prepare(
+        `INSERT INTO conversation_messages (
+           id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+           delivery_kind, delivery_status, created_at, updated_at
+         ) VALUES (
+           @id, @conversationId, @turnId, @runId, 0, @ordinal, @role, @content, @status,
+           'follow_up', NULL, @now, @now
+         )`,
+      );
+      insert.run({
+        id: pending.reserved_user_message_id,
+        conversationId,
+        turnId: pending.reserved_segment_turn_id,
+        runId: pending.reserved_run_id,
+        ordinal: 1,
+        role: 'user',
+        content: JSON.stringify({ type: 'user', text: 'Follow Up legacy-missing' }),
+        status: 'accepted',
+        now: NOW,
+      });
+      insert.run({
+        id: pending.reserved_assistant_message_id,
+        conversationId,
+        turnId: pending.reserved_segment_turn_id,
+        runId: pending.reserved_run_id,
+        ordinal: 2,
+        role: 'assistant',
+        content: JSON.stringify({ type: 'assistant', events: [] }),
+        status: 'streaming',
+        now: NOW,
+      });
+    })();
+    const beforeV2Seq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+
+    service.recoverV2State();
+
+    expect(
+      service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames.map((frame) => frame.type),
+    ).toEqual(['input_delivered', 'done']);
+    expect(
+      service
+        .readV2Since(AGENT_ID, conversationId, 0)
+        .frames.filter(
+          (frame) =>
+            frame.type === 'input_delivered' && frame.input.inputId === 'input-legacy-missing',
+        ),
+    ).toHaveLength(1);
+    const afterFirstRecoverySeq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+    service.recoverV2State();
+    expect(service.readV2Since(AGENT_ID, conversationId, afterFirstRecoverySeq).frames).toEqual([]);
+  });
+
+  it('claims one recovered idle Follow Up atomically and repeat calls cannot double-claim', () => {
+    const conversationId = createConversation();
+    const root = acceptRun(conversationId, 'run-before-recovery-pump');
+    enqueueFollowUp(conversationId, 'pump-a');
+    enqueueFollowUp(conversationId, 'pump-b');
+    service.finishRunAndClaimNext({
+      conversationId,
+      runId: root.runId,
+      segmentTurnId: root.segmentTurnId,
+      outcome: 'completed',
+      suppressPromotion: true,
+    });
+
+    const first = service.claimNextFollowUp(conversationId);
+    const racingRepeat = service.claimNextFollowUp(conversationId);
+
+    expect(first?.run.sourceInputId).toBe('input-pump-a');
+    expect(first?.transition.frame.type).toBe('input_delivered');
+    expect(racingRepeat).toBeNull();
+    expect(service.get(conversationId)?.activeTurnId).toBe(first?.run.runId);
+    expect(
+      db()
+        .prepare("SELECT COUNT(*) FROM conversation_pending_inputs WHERE state = 'delivered'")
+        .pluck()
+        .get(),
+    ).toBe(1);
   });
 });

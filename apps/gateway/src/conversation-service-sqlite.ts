@@ -18,7 +18,12 @@ import type {
   MobileV2SequencedFrame,
 } from '@dash/mobile-contract-v2';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
-import { mapConversationV1, mapMessageV1 } from './conversation-contract-mappers.js';
+import {
+  mapConversationV1,
+  mapConversationV2,
+  mapMessageV1,
+  mapMessageV2,
+} from './conversation-contract-mappers.js';
 import {
   decodeConversationCursor,
   decodeMessageCursor,
@@ -29,6 +34,7 @@ import type {
   AcceptRunInput,
   AcceptedRun,
   AppendRunEventInput,
+  ClaimedFollowUp,
   CommandMutationResult,
   DeliverSteerInput,
   DeliveredInput,
@@ -46,8 +52,10 @@ import type {
   StoredCommandOutcome,
   StoredConversation,
   StoredConversationMessage,
+  StoredPendingInput,
   TerminalizeSteersInput,
   V2RecoveryResult,
+  V2ReplayResult,
 } from './conversation-domain.js';
 import { migrateConversationSchema } from './conversation-schema.js';
 import {
@@ -550,11 +558,51 @@ export class SqliteConversationService implements ConversationService {
     return this.db
       .prepare(
         `SELECT COALESCE(MAX(segment_index), 0) + 1
-         FROM conversation_messages
-         WHERE conversation_id = ? AND run_id = ?`,
+         FROM (
+           SELECT segment_index
+           FROM conversation_messages
+           WHERE conversation_id = @conversationId AND run_id = @runId
+           UNION ALL
+           SELECT segment_index
+           FROM conversation_pending_inputs
+           WHERE conversation_id = @conversationId AND reserved_run_id = @runId
+             AND kind = 'steer' AND state = 'queued'
+         )`,
       )
       .pluck()
-      .get(conversationId, runId) as number;
+      .get({ conversationId, runId }) as number;
+  }
+
+  private mapStoredPendingInput(row: PendingInputRow): StoredPendingInput {
+    return {
+      inputId: row.input_id,
+      enqueueCommandId: row.enqueue_command_id,
+      conversationId: row.conversation_id,
+      agentId: row.agent_id,
+      channelId: row.channel_id,
+      kind: row.kind,
+      targetTurnId: row.target_turn_id,
+      text: row.text,
+      ...(row.images_json !== null
+        ? { images: JSON.parse(row.images_json) as StoredPendingInput['images'] }
+        : {}),
+      payloadBytes: row.payload_bytes,
+      state: row.state,
+      revision: row.revision,
+      enqueueOrder: row.enqueue_order,
+      reservedRunId: row.reserved_run_id,
+      reservedSegmentTurnId: row.reserved_segment_turn_id,
+      reservedUserMessageId: row.reserved_user_message_id,
+      reservedAssistantMessageId: row.reserved_assistant_message_id,
+      reservedUserOrdinal: row.reserved_user_ordinal,
+      reservedAssistantOrdinal: row.reserved_assistant_ordinal,
+      segmentIndex: row.segment_index,
+      ...(row.failure_code !== null ? { failureCode: row.failure_code } : {}),
+      ...(row.failure_message !== null ? { failureMessage: row.failure_message } : {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(row.delivered_at !== null ? { deliveredAt: row.delivered_at } : {}),
+    };
   }
 
   private advanceQueueMutation(
@@ -578,6 +626,315 @@ export class SqliteConversationService implements ConversationService {
       }) as ConversationRow | undefined;
     if (!advanced) throw new Error(`Conversation ${conversationId} was not found`);
     return advanced;
+  }
+
+  private updateLastSeq(conversationId: string, seq: number): void {
+    const changed = this.db
+      .prepare(`
+        UPDATE conversations
+        SET last_seq = CASE WHEN last_seq < @seq THEN @seq ELSE last_seq END
+        WHERE id = @conversationId
+      `)
+      .run({ conversationId, seq });
+    if (changed.changes !== 1) {
+      throw new Error(`Conversation ${conversationId} was not found while updating its journal`);
+    }
+  }
+
+  private appendAcceptedJournals(
+    conversation: ConversationRow,
+    runId: string,
+    segmentTurnId: string,
+    userMessageId: string,
+    assistantMessageId: string,
+    revision: number,
+  ): {
+    v1Seq: number;
+    v1Payload: AcceptedRun['v1Payload'];
+    v2Frame: AcceptedRun['v2Frame'];
+  } {
+    const v1Payload: AcceptedRun['v1Payload'] = {
+      type: 'accepted',
+      userMessageId,
+      assistantMessageId,
+      revision,
+    };
+    const v1Seq = this.eventLog.append(
+      conversation.agent_id,
+      conversation.id,
+      runId,
+      v1Payload,
+      segmentTurnId,
+    );
+    this.updateLastSeq(conversation.id, v1Seq);
+    const v2Frame = this.appendV2(conversation, {
+      type: 'accepted',
+      id: runId,
+      conversationId: conversation.id,
+      runId,
+      segmentTurnId,
+      userMessageId,
+      assistantMessageId,
+      revision,
+    }) as AcceptedRun['v2Frame'];
+    return { v1Seq, v1Payload, v2Frame };
+  }
+
+  private appendEventJournals(
+    conversation: ConversationRow,
+    runId: string,
+    segmentTurnId: string,
+    event: AgentEvent,
+  ): PersistedRunFrames {
+    const payload: EventLogPayload = { type: 'event', event: sanitizeAgentEvent(event) };
+    const v1Seq = this.eventLog.append(
+      conversation.agent_id,
+      conversation.id,
+      runId,
+      payload,
+      segmentTurnId,
+    );
+    this.updateLastSeq(conversation.id, v1Seq);
+    const v2Frame = this.appendV2(conversation, {
+      type: 'event',
+      id: runId,
+      conversationId: conversation.id,
+      runId,
+      segmentTurnId,
+      event: payload.event,
+    });
+    return {
+      conversation: this.mapStoredConversation(this.requireConversationRow(conversation.id)),
+      v1Seq,
+      v1Payload: payload,
+      v2Frame,
+    };
+  }
+
+  private selectMessageById(id: string): ConversationMessageRow {
+    const row = this.db.prepare('SELECT * FROM conversation_messages WHERE id = ?').get(id) as
+      | ConversationMessageRow
+      | undefined;
+    if (!row) throw new Error(`Conversation message ${id} was not found`);
+    return row;
+  }
+
+  private claimNextFollowUpInTransaction(conversationId: string): ClaimedFollowUp | null {
+    const current = this.requireConversationRow(conversationId);
+    if (
+      current.active_turn_id !== null ||
+      current.queue_paused === 1 ||
+      current.status === 'archived' ||
+      current.status === 'deleted'
+    ) {
+      return null;
+    }
+    const pending = this.db
+      .prepare(`
+        SELECT *
+        FROM conversation_pending_inputs
+        WHERE conversation_id = ? AND kind = 'follow_up' AND state = 'queued'
+        ORDER BY enqueue_order ASC
+        LIMIT 1
+      `)
+      .get(conversationId) as PendingInputRow | undefined;
+    if (!pending) return null;
+
+    const delivering = this.db
+      .prepare(`
+        UPDATE conversation_pending_inputs
+        SET state = 'delivering', updated_at = @now
+        WHERE input_id = @inputId AND conversation_id = @conversationId
+          AND kind = 'follow_up' AND state = 'queued'
+      `)
+      .run({ inputId: pending.input_id, conversationId, now: this.now() });
+    if (delivering.changes !== 1) {
+      throw new Error(`Failed to claim Follow Up ${pending.input_id}`);
+    }
+
+    const userOrdinal = this.reserveMessageOrdinals(conversationId, 2);
+    const timestamp = this.now();
+    const userContent: ConversationContent = {
+      type: 'user',
+      text: pending.text,
+      ...(pending.images_json !== null
+        ? { images: JSON.parse(pending.images_json) as StoredPendingInput['images'] }
+        : {}),
+    };
+    const insertMessage = this.db.prepare(`
+      INSERT INTO conversation_messages (
+        id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+        delivery_kind, delivery_status, created_at, updated_at
+      ) VALUES (
+        @id, @conversationId, @turnId, @runId, 0, @ordinal, @role, @content, @status,
+        'follow_up', NULL, @now, @now
+      )
+    `);
+    insertMessage.run({
+      id: pending.reserved_user_message_id,
+      conversationId,
+      turnId: pending.reserved_segment_turn_id,
+      runId: pending.reserved_run_id,
+      ordinal: userOrdinal,
+      role: 'user',
+      content: JSON.stringify(userContent),
+      status: 'accepted',
+      now: timestamp,
+    });
+    insertMessage.run({
+      id: pending.reserved_assistant_message_id,
+      conversationId,
+      turnId: pending.reserved_segment_turn_id,
+      runId: pending.reserved_run_id,
+      ordinal: userOrdinal + 1,
+      role: 'assistant',
+      content: JSON.stringify({ type: 'assistant', events: [] }),
+      status: 'streaming',
+      now: timestamp,
+    });
+    const inputChanged = this.db
+      .prepare(`
+        UPDATE conversation_pending_inputs
+        SET state = 'delivered', revision = revision + 1,
+            delivered_at = @now, updated_at = @now
+        WHERE input_id = @inputId AND conversation_id = @conversationId AND state = 'delivering'
+      `)
+      .run({
+        inputId: pending.input_id,
+        conversationId,
+        now: timestamp,
+      });
+    if (inputChanged.changes !== 1) {
+      throw new Error(`Failed to deliver Follow Up ${pending.input_id}`);
+    }
+
+    const advanced = this.advanceQueueMutation(conversationId);
+    const lease = this.db
+      .prepare(`
+        UPDATE conversations
+        SET status = 'running', active_turn_id = @runId, updated_at = @now
+        WHERE id = @conversationId AND active_turn_id IS NULL AND queue_paused = 0
+          AND deleted_at IS NULL AND status NOT IN ('archived', 'deleted')
+      `)
+      .run({ conversationId, runId: pending.reserved_run_id, now: timestamp });
+    if (lease.changes !== 1) {
+      throw new Error(`Failed to acquire promoted run lease ${pending.reserved_run_id}`);
+    }
+    const deliveredRow = this.selectPendingInput(pending.input_id);
+    if (!deliveredRow) throw new Error(`Delivered Follow Up ${pending.input_id} disappeared`);
+    const deliveryFrame = this.appendV2(advanced, {
+      type: 'input_delivered',
+      id: pending.enqueue_command_id,
+      conversationId,
+      queueRevision: advanced.queue_revision,
+      input: this.mapPendingInput(deliveredRow),
+      runId: pending.reserved_run_id,
+      segmentTurnId: pending.reserved_segment_turn_id,
+      userMessageId: pending.reserved_user_message_id,
+      assistantMessageId: pending.reserved_assistant_message_id,
+    }) as PersistedInputTransition['frame'];
+    const accepted = this.appendAcceptedJournals(
+      advanced,
+      pending.reserved_run_id,
+      pending.reserved_segment_turn_id,
+      pending.reserved_user_message_id,
+      pending.reserved_assistant_message_id,
+      advanced.revision,
+    );
+    const conversation = this.mapStoredConversation(this.requireConversationRow(conversationId));
+    const storedInput = this.mapStoredPendingInput(deliveredRow);
+    return {
+      transition: { conversation, input: storedInput, frame: deliveryFrame },
+      run: {
+        conversation,
+        runId: pending.reserved_run_id,
+        segmentTurnId: pending.reserved_segment_turn_id,
+        channelId: pending.channel_id,
+        text: pending.text,
+        ...(pending.images_json !== null
+          ? { images: JSON.parse(pending.images_json) as AcceptedRun['images'] }
+          : {}),
+        userMessage: this.mapStoredMessage(
+          this.selectMessageById(pending.reserved_user_message_id),
+        ),
+        assistantMessage: this.mapStoredMessage(
+          this.selectMessageById(pending.reserved_assistant_message_id),
+        ),
+        v1Seq: accepted.v1Seq,
+        v1Payload: accepted.v1Payload,
+        v2Frame: accepted.v2Frame,
+        created: true,
+        firstUserMessage: userOrdinal === 1,
+        sourceInputId: pending.input_id,
+      },
+    };
+  }
+
+  private terminalizeSteersNotDeliveredInTransaction(
+    input: TerminalizeSteersInput,
+  ): PersistedInputTransition[] {
+    const current = this.requireConversationRow(input.conversationId, true);
+    const transitions: PersistedInputTransition[] = [];
+    for (const inputId of input.inputIds) {
+      const pending = this.selectPendingInput(inputId);
+      if (
+        !pending ||
+        pending.conversation_id !== current.id ||
+        pending.kind !== 'steer' ||
+        pending.reserved_run_id !== input.runId ||
+        pending.state !== 'queued'
+      ) {
+        continue;
+      }
+      const timestamp = this.now();
+      const changed = this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET state = 'failed', revision = revision + 1,
+              failure_code = @code, failure_message = @error, updated_at = @now
+          WHERE input_id = @inputId AND conversation_id = @conversationId
+            AND kind = 'steer' AND state = 'queued'
+        `)
+        .run({
+          inputId,
+          conversationId: current.id,
+          code: input.code,
+          error: input.error,
+          now: timestamp,
+        });
+      if (changed.changes !== 1) throw new Error(`Failed to terminalize Steer ${inputId}`);
+      const messageChanged = this.db
+        .prepare(`
+          UPDATE conversation_messages
+          SET status = 'failed', delivery_status = 'not_delivered', updated_at = @now
+          WHERE id = @messageId AND conversation_id = @conversationId
+            AND role = 'user' AND delivery_kind = 'steer' AND delivery_status = 'pending'
+        `)
+        .run({
+          messageId: pending.reserved_user_message_id,
+          conversationId: current.id,
+          now: timestamp,
+        });
+      if (messageChanged.changes !== 1) {
+        throw new Error(`Failed to mark Steer message ${pending.reserved_user_message_id}`);
+      }
+      const advanced = this.advanceQueueMutation(current.id);
+      const failed = this.selectPendingInput(inputId);
+      if (!failed) throw new Error(`Terminalized Steer ${inputId} disappeared`);
+      const frame = this.appendV2(advanced, {
+        type: 'input_failed',
+        id: pending.enqueue_command_id,
+        conversationId: current.id,
+        queueRevision: advanced.queue_revision,
+        input: this.mapPendingInput(failed),
+      }) as PersistedInputTransition['frame'];
+      transitions.push({
+        conversation: this.mapStoredConversation(this.requireConversationRow(current.id, true)),
+        input: this.mapStoredPendingInput(failed),
+        frame,
+      });
+    }
+    return transitions;
   }
 
   private replayCommandResult(
@@ -645,7 +1002,11 @@ export class SqliteConversationService implements ConversationService {
       kind: 'sequenced',
       v2Seqs: frames.map((frame) => frame.v2Seq),
     });
-    return { replayed: false, frames };
+    return {
+      replayed: false,
+      conversation: this.mapStoredConversation(this.requireConversationRow(conversationId)),
+      frames,
+    };
   }
 
   private rejectCommand(
@@ -717,6 +1078,64 @@ export class SqliteConversationService implements ConversationService {
       false,
       { current: this.mapConversation(current) },
     );
+  }
+
+  private selectMessagePageRows(input: ListMessagesInput): {
+    rows: ConversationMessageRow[];
+    nextCursor: string | null;
+  } {
+    if (!Number.isInteger(input.limit) || input.limit <= 0) {
+      throw new ConversationServiceError('validation_failed', 'Invalid page limit', 400, false);
+    }
+    const before = input.before ? decodeMessageCursor(input.before) : undefined;
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM (
+          SELECT * FROM conversation_messages
+          WHERE conversation_id = :conversationId
+            AND (
+              :beforeOrdinal IS NULL
+              OR ordinal < :beforeOrdinal
+              OR (ordinal = :beforeOrdinal AND id < :beforeId)
+            )
+          ORDER BY ordinal DESC, id DESC
+          LIMIT :fetchLimit
+        )
+        ORDER BY ordinal ASC, id ASC
+      `)
+      .all({
+        conversationId: input.conversationId,
+        beforeOrdinal: before?.ordinal ?? null,
+        beforeId: before?.id ?? null,
+        fetchLimit: input.limit + 1,
+      }) as ConversationMessageRow[];
+    const hasMore = rows.length > input.limit;
+    const pageRows = hasMore ? rows.slice(1) : rows;
+    const boundary = hasMore ? pageRows[0] : undefined;
+    return {
+      rows: pageRows,
+      nextCursor: boundary
+        ? encodeMessageCursor({ ordinal: boundary.ordinal, id: boundary.id })
+        : null,
+    };
+  }
+
+  private hydrateStoredMessages(
+    conversation: ConversationRow,
+    rows: readonly ConversationMessageRow[],
+  ): StoredConversationMessage[] {
+    const allEvents = this.eventLog.readSince(conversation.agent_id, conversation.id, 0);
+    return rows.map((row) => {
+      const stored = this.mapStoredMessage(row);
+      if (row.role !== 'assistant') return stored;
+      const events: MobileAgentEvent[] = allEvents
+        .filter(
+          (entry) =>
+            entry.payload.type === 'event' && (entry.segmentTurnId ?? entry.msgId) === row.turn_id,
+        )
+        .map((entry) => (entry.payload as { type: 'event'; event: MobileAgentEvent }).event);
+      return { ...stored, content: { type: 'assistant', events } };
+    });
   }
 
   create(input: CreateConversationInput): ConversationSummary {
@@ -879,8 +1298,11 @@ export class SqliteConversationService implements ConversationService {
       }
       this.assertRevision(current, expectedRevision);
       const timestamp = this.now();
-      this.db.prepare('DELETE FROM conversation_messages WHERE conversation_id = ?').run(id);
+      this.db.prepare('DELETE FROM conversation_pending_inputs WHERE conversation_id = ?').run(id);
+      this.db.prepare('DELETE FROM conversation_command_results WHERE conversation_id = ?').run(id);
+      this.db.prepare('DELETE FROM conversation_v2_events WHERE conversation_id = ?').run(id);
       this.eventLog.deleteConversation(current.agent_id, id);
+      this.db.prepare('DELETE FROM conversation_messages WHERE conversation_id = ?').run(id);
       const tombstoned = this.db
         .prepare(`
           UPDATE conversations
@@ -907,53 +1329,15 @@ export class SqliteConversationService implements ConversationService {
   }
 
   listMessages(input: ListMessagesInput): ConversationMessagePage {
-    if (!Number.isInteger(input.limit) || input.limit <= 0) {
-      throw new ConversationServiceError('validation_failed', 'Invalid page limit', 400, false);
-    }
-    const conversation = this.requireConversationRow(input.conversationId);
-    const before = input.before ? decodeMessageCursor(input.before) : undefined;
-    const rows = this.db
-      .prepare(`
-        SELECT * FROM (
-          SELECT * FROM conversation_messages
-          WHERE conversation_id = :conversationId
-            AND (
-              :beforeOrdinal IS NULL
-              OR ordinal < :beforeOrdinal
-              OR (ordinal = :beforeOrdinal AND id < :beforeId)
-            )
-          ORDER BY ordinal DESC, id DESC
-          LIMIT :fetchLimit
-        )
-        ORDER BY ordinal ASC, id ASC
-      `)
-      .all({
-        conversationId: input.conversationId,
-        beforeOrdinal: before?.ordinal ?? null,
-        beforeId: before?.id ?? null,
-        fetchLimit: input.limit + 1,
-      }) as ConversationMessageRow[];
-    const hasMore = rows.length > input.limit;
-    const pageRows = hasMore ? rows.slice(1) : rows;
-    const boundary = hasMore ? pageRows[0] : undefined;
-    const allEvents = this.eventLog.readSince(conversation.agent_id, conversation.id, 0);
-    const items = pageRows.map((row): ConversationMessage => {
-      const stored = this.mapStoredMessage(row);
-      if (row.role === 'assistant') {
-        const events: MobileAgentEvent[] = allEvents
-          .filter((entry) => entry.msgId === row.turn_id && entry.payload.type === 'event')
-          .map((entry) => (entry.payload as { type: 'event'; event: MobileAgentEvent }).event);
-        stored.content = { type: 'assistant', events };
-      }
-      return mapMessageV1(stored);
-    });
-    return {
-      items,
-      nextCursor: boundary
-        ? encodeMessageCursor({ ordinal: boundary.ordinal, id: boundary.id })
-        : null,
-      throughSeq: conversation.last_seq,
-    };
+    return this.db.transaction(() => {
+      const conversation = this.requireConversationRow(input.conversationId);
+      const page = this.selectMessagePageRows(input);
+      return {
+        items: this.hydrateStoredMessages(conversation, page.rows).map(mapMessageV1),
+        nextCursor: page.nextCursor,
+        throughSeq: conversation.last_seq,
+      };
+    })();
   }
 
   acceptTurn(input: AcceptTurnInput): AcceptedTurn {
@@ -1282,16 +1666,92 @@ export class SqliteConversationService implements ConversationService {
           { activeTurnId: active.active_turn_id },
         );
       }
-      const timestamp = this.now();
-      const changed = this.db
+      const writable = this.db
         .prepare(`
-          UPDATE conversations
-          SET status = 'archived', active_turn_id = NULL,
-              revision = revision + 1, updated_at = @now
-          WHERE agent_id = @agentId AND deleted_at IS NULL
+          SELECT * FROM conversations
+          WHERE agent_id = ? AND deleted_at IS NULL AND status NOT IN ('archived', 'deleted')
+          ORDER BY id ASC
         `)
-        .run({ agentId, now: timestamp });
-      if (changed.changes === 0) return [];
+        .all(agentId) as ConversationRow[];
+      for (const conversation of writable) {
+        const pendingSteers = this.db
+          .prepare(`
+            SELECT input_id, reserved_run_id
+            FROM conversation_pending_inputs
+            WHERE conversation_id = ? AND kind = 'steer' AND state = 'queued'
+            ORDER BY enqueue_order ASC
+          `)
+          .all(conversation.id) as Array<{ input_id: string; reserved_run_id: string }>;
+        for (const pending of pendingSteers) {
+          this.terminalizeSteersNotDeliveredInTransaction({
+            conversationId: conversation.id,
+            runId: pending.reserved_run_id,
+            inputIds: [pending.input_id],
+            code: 'not_found',
+            error: 'Agent archived before this input could be delivered',
+          });
+        }
+
+        const followUps = this.db
+          .prepare(`
+            SELECT * FROM conversation_pending_inputs
+            WHERE conversation_id = ? AND kind = 'follow_up'
+              AND state IN ('queued', 'delivering')
+            ORDER BY enqueue_order ASC
+          `)
+          .all(conversation.id) as PendingInputRow[];
+        for (const pending of followUps) {
+          const timestamp = this.now();
+          const changed = this.db
+            .prepare(`
+              UPDATE conversation_pending_inputs
+              SET state = 'failed', revision = revision + 1,
+                  failure_code = 'not_found',
+                  failure_message = 'Agent archived before this input could be delivered',
+                  updated_at = @now
+              WHERE input_id = @inputId AND conversation_id = @conversationId
+                AND kind = 'follow_up' AND state IN ('queued', 'delivering')
+            `)
+            .run({ inputId: pending.input_id, conversationId: conversation.id, now: timestamp });
+          if (changed.changes !== 1) {
+            throw new Error(`Failed to terminalize archived Follow Up ${pending.input_id}`);
+          }
+          const advanced = this.advanceQueueMutation(conversation.id);
+          const failed = this.selectPendingInput(pending.input_id);
+          if (!failed) throw new Error(`Archived Follow Up ${pending.input_id} disappeared`);
+          this.appendV2(advanced, {
+            type: 'input_failed',
+            id: pending.enqueue_command_id,
+            conversationId: conversation.id,
+            queueRevision: advanced.queue_revision,
+            input: this.mapPendingInput(failed),
+          });
+        }
+        const prepared = this.requireConversationRow(conversation.id);
+        if (prepared.queue_paused === 1) {
+          const resumed = this.advanceQueueMutation(conversation.id, false);
+          this.appendV2(resumed, {
+            type: 'queue_resumed',
+            conversationId: conversation.id,
+            queueRevision: resumed.queue_revision,
+            queuePaused: false,
+            pendingFollowUpCount: this.pendingFollowUpCount(conversation.id),
+          });
+        }
+        const timestamp = this.now();
+        const archived = this.db
+          .prepare(`
+            UPDATE conversations
+            SET status = 'archived', active_turn_id = NULL, queue_paused = 0,
+                revision = revision + 1, updated_at = @now
+            WHERE id = @id AND active_turn_id IS NULL
+              AND deleted_at IS NULL AND status NOT IN ('archived', 'deleted')
+          `)
+          .run({ id: conversation.id, now: timestamp });
+        if (archived.changes !== 1) {
+          throw new Error(`Failed to archive conversation ${conversation.id}`);
+        }
+      }
       const rows = this.db
         .prepare(`
           SELECT * FROM conversations
@@ -1359,29 +1819,366 @@ export class SqliteConversationService implements ConversationService {
     })();
   }
 
-  acceptRun(_input: AcceptRunInput): AcceptedRun {
-    throw new Error('Conversation v2 run acceptance is not implemented');
+  acceptRun(input: AcceptRunInput): AcceptedRun {
+    return this.db.transaction((value: AcceptRunInput): AcceptedRun => {
+      const current = this.requireConversationRow(value.conversationId);
+      this.assertTurnWritable(current);
+      if (current.agent_id !== value.agentId) {
+        throw new ConversationServiceError(
+          'not_found',
+          `Conversation ${value.conversationId} does not belong to agent ${value.agentId}`,
+          404,
+          false,
+        );
+      }
+
+      const existingRows = this.db
+        .prepare('SELECT * FROM conversation_messages WHERE run_id = ? ORDER BY ordinal ASC')
+        .all(value.runId) as ConversationMessageRow[];
+      if (existingRows.length > 0) {
+        const user = existingRows.find((row) => row.segment_index === 0 && row.role === 'user');
+        const assistant = existingRows.find(
+          (row) => row.segment_index === 0 && row.role === 'assistant',
+        );
+        if (
+          !user ||
+          !assistant ||
+          user.conversation_id !== value.conversationId ||
+          assistant.conversation_id !== value.conversationId
+        ) {
+          throw new ConversationServiceError(
+            'validation_failed',
+            `Run ${value.runId} is already owned by another conversation`,
+            409,
+            false,
+          );
+        }
+        const accepted = this.eventLog
+          .readSince(current.agent_id, current.id, 0)
+          .find(
+            (entry) =>
+              entry.msgId === value.runId &&
+              entry.segmentTurnId === user.turn_id &&
+              entry.payload.type === 'accepted',
+          );
+        const v2Frame = this.readV2Rows(current.id, 0).find(
+          (frame): frame is AcceptedRun['v2Frame'] =>
+            frame.type === 'accepted' &&
+            frame.runId === value.runId &&
+            frame.segmentTurnId === user.turn_id,
+        );
+        if (!accepted || accepted.payload.type !== 'accepted' || !v2Frame) {
+          throw new ConversationServiceError(
+            'validation_failed',
+            `Run ${value.runId} is missing its accepted journal entries`,
+            409,
+            false,
+          );
+        }
+        const userContent = parseContent(user.content);
+        return {
+          conversation: this.mapStoredConversation(current),
+          runId: value.runId,
+          segmentTurnId: user.turn_id,
+          channelId: value.channelId,
+          text: userContent.type === 'user' ? userContent.text : value.text,
+          ...(userContent.type === 'user' && userContent.images !== undefined
+            ? { images: userContent.images }
+            : {}),
+          userMessage: this.mapStoredMessage(user),
+          assistantMessage: this.mapStoredMessage(assistant),
+          v1Seq: accepted.seq,
+          v1Payload: accepted.payload,
+          v2Frame,
+          created: false,
+          firstUserMessage: user.ordinal === 1,
+        };
+      }
+
+      if (
+        value.protocol === 'v2' &&
+        current.queue_paused === 1 &&
+        this.pendingFollowUpCount(current.id) > 0
+      ) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          'Resume or remove paused Follow Ups before starting a new turn',
+          409,
+          false,
+          this.queueRefreshDetails(current),
+        );
+      }
+      if (current.active_turn_id !== null) {
+        throw new ConversationServiceError(
+          'conversation_busy',
+          'Conversation has an active turn',
+          409,
+          false,
+          { activeTurnId: current.active_turn_id },
+        );
+      }
+
+      const userOrdinal = this.reserveMessageOrdinals(current.id, 2);
+      const userMessageId = this.uuid();
+      const assistantMessageId = this.uuid();
+      const timestamp = this.now();
+      const userContent: ConversationContent = {
+        type: 'user',
+        text: value.text,
+        ...(value.images !== undefined ? { images: value.images } : {}),
+      };
+      const insertMessage = this.db.prepare(`
+        INSERT INTO conversation_messages (
+          id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+          delivery_kind, delivery_status, created_at, updated_at
+        ) VALUES (
+          @id, @conversationId, @runId, @runId, 0, @ordinal, @role, @content, @status,
+          'normal', NULL, @now, @now
+        )
+      `);
+      insertMessage.run({
+        id: userMessageId,
+        conversationId: current.id,
+        runId: value.runId,
+        ordinal: userOrdinal,
+        role: 'user',
+        content: JSON.stringify(userContent),
+        status: 'accepted',
+        now: timestamp,
+      });
+      insertMessage.run({
+        id: assistantMessageId,
+        conversationId: current.id,
+        runId: value.runId,
+        ordinal: userOrdinal + 1,
+        role: 'assistant',
+        content: JSON.stringify({ type: 'assistant', events: [] }),
+        status: 'streaming',
+        now: timestamp,
+      });
+
+      const nextRevision = current.revision + 1;
+      const acquired = this.db
+        .prepare(`
+          UPDATE conversations
+          SET status = 'running', active_turn_id = @runId, revision = @revision,
+              updated_at = @now
+          WHERE id = @conversationId AND active_turn_id IS NULL AND deleted_at IS NULL
+            AND status NOT IN ('archived', 'deleted')
+        `)
+        .run({
+          conversationId: current.id,
+          runId: value.runId,
+          revision: nextRevision,
+          now: timestamp,
+        });
+      if (acquired.changes !== 1) {
+        throw new Error(`Failed to acquire conversation lease for run ${value.runId}`);
+      }
+      const accepted = this.appendAcceptedJournals(
+        current,
+        value.runId,
+        value.runId,
+        userMessageId,
+        assistantMessageId,
+        nextRevision,
+      );
+      const conversation = this.mapStoredConversation(this.requireConversationRow(current.id));
+      return {
+        conversation,
+        runId: value.runId,
+        segmentTurnId: value.runId,
+        channelId: value.channelId,
+        text: value.text,
+        ...(value.images !== undefined ? { images: value.images } : {}),
+        userMessage: this.mapStoredMessage(this.selectMessageById(userMessageId)),
+        assistantMessage: this.mapStoredMessage(this.selectMessageById(assistantMessageId)),
+        v1Seq: accepted.v1Seq,
+        v1Payload: accepted.v1Payload,
+        v2Frame: accepted.v2Frame,
+        created: true,
+        firstUserMessage: userOrdinal === 1,
+      };
+    })(input);
   }
 
-  appendRunEvent(_input: AppendRunEventInput): PersistedRunFrames | null {
-    throw new Error('Conversation v2 run events are not implemented');
+  appendRunEvent(input: AppendRunEventInput): PersistedRunFrames | null {
+    try {
+      return this.db.transaction((value: AppendRunEventInput): PersistedRunFrames | null => {
+        const current = this.requireConversationRow(value.conversationId, true);
+        if (
+          current.status !== 'running' ||
+          current.active_turn_id !== value.runId ||
+          current.status === 'archived' ||
+          current.status === 'deleted'
+        ) {
+          return null;
+        }
+        const assistant = this.db
+          .prepare(`
+            SELECT * FROM conversation_messages
+            WHERE conversation_id = @conversationId AND run_id = @runId
+              AND role = 'assistant' AND status = 'streaming'
+            ORDER BY segment_index DESC, ordinal DESC
+            LIMIT 1
+          `)
+          .get(value) as ConversationMessageRow | undefined;
+        if (!assistant || assistant.turn_id !== value.segmentTurnId) return null;
+        return this.appendEventJournals(current, value.runId, value.segmentTurnId, value.event);
+      })(input);
+    } catch (error) {
+      if (error instanceof LateTurnEventError) return null;
+      throw error;
+    }
   }
 
   appendCurrentRunEvent(
-    _agentId: string,
-    _conversationId: string,
-    _runId: string,
-    _event: AgentEvent,
+    agentId: string,
+    conversationId: string,
+    runId: string,
+    event: AgentEvent,
   ): PersistedRunFrames | null {
-    throw new Error('Conversation v2 current-run events are not implemented');
+    return this.db.transaction(() => {
+      const current = this.requireConversationRow(conversationId, true);
+      if (
+        current.agent_id !== agentId ||
+        current.status !== 'running' ||
+        current.active_turn_id !== runId
+      ) {
+        return null;
+      }
+      const assistant = this.db
+        .prepare(`
+          SELECT * FROM conversation_messages
+          WHERE conversation_id = ? AND run_id = ? AND role = 'assistant' AND status = 'streaming'
+          ORDER BY segment_index DESC, ordinal DESC
+          LIMIT 1
+        `)
+        .get(conversationId, runId) as ConversationMessageRow | undefined;
+      if (!assistant) return null;
+      return this.appendEventJournals(current, runId, assistant.turn_id, event);
+    })();
   }
 
-  deliverSteer(_input: DeliverSteerInput): DeliveredInput {
-    throw new Error('Conversation v2 steer delivery is not implemented');
+  deliverSteer(input: DeliverSteerInput): DeliveredInput {
+    return this.db.transaction((value: DeliverSteerInput): DeliveredInput => {
+      const current = this.requireConversationRow(value.conversationId);
+      if (current.status !== 'running' || current.active_turn_id !== value.runId) {
+        throw new ConversationServiceError(
+          'revision_conflict',
+          'Steer target is no longer active',
+          409,
+          false,
+          { activeTurnId: current.active_turn_id, refreshRequired: true },
+        );
+      }
+      const pending = this.selectPendingInput(value.inputId);
+      if (
+        !pending ||
+        pending.conversation_id !== current.id ||
+        pending.kind !== 'steer' ||
+        pending.state !== 'queued' ||
+        pending.reserved_run_id !== value.runId
+      ) {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Steer ${value.inputId} is not queued for this run`,
+          409,
+          false,
+        );
+      }
+      const previous = this.db
+        .prepare(`
+          SELECT * FROM conversation_messages
+          WHERE conversation_id = ? AND run_id = ? AND role = 'assistant' AND status = 'streaming'
+          ORDER BY segment_index DESC, ordinal DESC
+          LIMIT 1
+        `)
+        .get(current.id, value.runId) as ConversationMessageRow | undefined;
+      if (!previous) throw new Error(`Run ${value.runId} has no streaming assistant segment`);
+      const timestamp = this.now();
+      const completed = this.db
+        .prepare(`
+          UPDATE conversation_messages
+          SET status = 'completed', updated_at = @now
+          WHERE id = @id AND status = 'streaming'
+        `)
+        .run({ id: previous.id, now: timestamp });
+      if (completed.changes !== 1) throw new Error(`Failed to close segment ${previous.turn_id}`);
+      const userChanged = this.db
+        .prepare(`
+          UPDATE conversation_messages
+          SET delivery_status = 'delivered', updated_at = @now
+          WHERE id = @id AND role = 'user' AND delivery_kind = 'steer'
+            AND delivery_status = 'pending'
+        `)
+        .run({ id: pending.reserved_user_message_id, now: timestamp });
+      if (userChanged.changes !== 1) {
+        throw new Error(`Steer user message ${pending.reserved_user_message_id} was not pending`);
+      }
+      this.db
+        .prepare(`
+          INSERT INTO conversation_messages (
+            id, conversation_id, turn_id, run_id, segment_index, ordinal, role, content, status,
+            delivery_kind, delivery_status, created_at, updated_at
+          ) VALUES (
+            @id, @conversationId, @turnId, @runId, @segmentIndex, @ordinal, 'assistant', @content,
+            'streaming', 'steer', NULL, @now, @now
+          )
+        `)
+        .run({
+          id: pending.reserved_assistant_message_id,
+          conversationId: current.id,
+          turnId: pending.reserved_segment_turn_id,
+          runId: value.runId,
+          segmentIndex: pending.segment_index,
+          ordinal: pending.reserved_assistant_ordinal,
+          content: JSON.stringify({ type: 'assistant', events: [] }),
+          now: timestamp,
+        });
+      const inputChanged = this.db
+        .prepare(`
+          UPDATE conversation_pending_inputs
+          SET state = 'delivered', revision = revision + 1,
+              delivered_at = @now, updated_at = @now
+          WHERE input_id = @inputId AND state = 'queued'
+        `)
+        .run({ inputId: pending.input_id, now: timestamp });
+      if (inputChanged.changes !== 1)
+        throw new Error(`Failed to deliver Steer ${pending.input_id}`);
+      const advanced = this.advanceQueueMutation(current.id);
+      const deliveredRow = this.selectPendingInput(pending.input_id);
+      if (!deliveredRow) throw new Error(`Delivered Steer ${pending.input_id} disappeared`);
+      const frame = this.appendV2(advanced, {
+        type: 'input_delivered',
+        id: pending.enqueue_command_id,
+        conversationId: current.id,
+        queueRevision: advanced.queue_revision,
+        input: this.mapPendingInput(deliveredRow),
+        runId: value.runId,
+        segmentTurnId: pending.reserved_segment_turn_id,
+        userMessageId: pending.reserved_user_message_id,
+        assistantMessageId: pending.reserved_assistant_message_id,
+      }) as DeliveredInput['frame'];
+      return {
+        conversation: this.mapStoredConversation(this.requireConversationRow(current.id)),
+        input: this.mapStoredPendingInput(deliveredRow),
+        segmentTurnId: pending.reserved_segment_turn_id,
+        userMessage: this.mapStoredMessage(
+          this.selectMessageById(pending.reserved_user_message_id),
+        ),
+        assistantMessage: this.mapStoredMessage(
+          this.selectMessageById(pending.reserved_assistant_message_id),
+        ),
+        frame,
+      };
+    })(input);
   }
 
-  terminalizeSteersNotDelivered(_input: TerminalizeSteersInput): PersistedInputTransition[] {
-    throw new Error('Conversation v2 steer terminalization is not implemented');
+  terminalizeSteersNotDelivered(input: TerminalizeSteersInput): PersistedInputTransition[] {
+    return this.db.transaction((value: TerminalizeSteersInput) =>
+      this.terminalizeSteersNotDeliveredInTransaction(value),
+    )(input);
   }
 
   enqueueInput(input: EnqueueInputCommand): CommandMutationResult {
@@ -1484,7 +2281,7 @@ export class SqliteConversationService implements ConversationService {
       }
 
       const reservedRunId = kind === 'steer' ? (current.active_turn_id as string) : this.uuid();
-      const reservedSegmentTurnId = this.uuid();
+      const reservedSegmentTurnId = kind === 'steer' ? this.uuid() : reservedRunId;
       const reservedUserMessageId = this.uuid();
       const reservedAssistantMessageId = this.uuid();
       const segmentIndex = kind === 'steer' ? this.nextSegmentIndex(current.id, reservedRunId) : 0;
@@ -1567,7 +2364,17 @@ export class SqliteConversationService implements ConversationService {
         queueRevision: advanced.queue_revision,
         input: this.mapPendingInput(storedInput),
       });
-      return this.acceptCommandResult(current.id, value.commandId, operation, fingerprint, [frame]);
+      const frames: MobileV2SequencedFrame[] = [frame];
+      const claimed = kind === 'follow_up' ? this.claimNextFollowUpInTransaction(current.id) : null;
+      if (claimed) frames.push(claimed.transition.frame, claimed.run.v2Frame);
+      const result = this.acceptCommandResult(
+        current.id,
+        value.commandId,
+        operation,
+        fingerprint,
+        frames,
+      );
+      return claimed ? { ...result, promotedRun: claimed.run } : result;
     })(input);
   }
 
@@ -1828,7 +2635,17 @@ export class SqliteConversationService implements ConversationService {
         queuePaused: false,
         pendingFollowUpCount: this.pendingFollowUpCount(current.id),
       });
-      return this.acceptCommandResult(current.id, value.commandId, operation, fingerprint, [frame]);
+      const frames: MobileV2SequencedFrame[] = [frame];
+      const claimed = this.claimNextFollowUpInTransaction(current.id);
+      if (claimed) frames.push(claimed.transition.frame, claimed.run.v2Frame);
+      const result = this.acceptCommandResult(
+        current.id,
+        value.commandId,
+        operation,
+        fingerprint,
+        frames,
+      );
+      return claimed ? { ...result, promotedRun: claimed.run } : result;
     })(input);
   }
 
@@ -1866,34 +2683,455 @@ export class SqliteConversationService implements ConversationService {
     })();
   }
 
-  finishRunAndClaimNext(_input: FinishRunInput): FinishRunResult {
-    throw new Error('Conversation v2 run completion is not implemented');
+  finishRunAndClaimNext(input: FinishRunInput): FinishRunResult {
+    return this.db.transaction((value: FinishRunInput): FinishRunResult => {
+      const current = this.requireConversationRow(value.conversationId, true);
+      const existingV1 = this.eventLog
+        .readSince(current.agent_id, current.id, 0)
+        .findLast(
+          (entry) =>
+            entry.msgId === value.runId &&
+            entry.segmentTurnId === value.segmentTurnId &&
+            isTerminalPayload(entry.payload),
+        );
+      const existingV2 = this.readV2Rows(current.id, 0).findLast(
+        (frame) =>
+          frame.runId === value.runId &&
+          frame.segmentTurnId === value.segmentTurnId &&
+          (frame.type === 'done' || frame.type === 'error'),
+      );
+      if (existingV1 && existingV2) {
+        return {
+          terminal: {
+            conversation: this.mapStoredConversation(current),
+            v1Seq: existingV1.seq,
+            v1Payload: existingV1.payload,
+            v2Frame: existingV2,
+          },
+          transitions: [],
+        };
+      }
+
+      this.assertTurnWritable(current);
+      if (current.status !== 'running' || current.active_turn_id !== value.runId) {
+        if (current.active_turn_id !== null) {
+          throw new ConversationServiceError(
+            'conversation_busy',
+            'Conversation has an active turn',
+            409,
+            false,
+            { activeTurnId: current.active_turn_id },
+          );
+        }
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Run ${value.runId} is not active`,
+          409,
+          false,
+        );
+      }
+      const assistant = this.db
+        .prepare(`
+          SELECT * FROM conversation_messages
+          WHERE conversation_id = @conversationId AND run_id = @runId
+            AND turn_id = @segmentTurnId AND role = 'assistant'
+        `)
+        .get(value) as ConversationMessageRow | undefined;
+      if (!assistant || assistant.status !== 'streaming') {
+        throw new ConversationServiceError(
+          'validation_failed',
+          `Segment ${value.segmentTurnId} is not the current streaming assistant`,
+          409,
+          false,
+        );
+      }
+      const nonterminalEarlier = this.db
+        .prepare(`
+          SELECT COUNT(*)
+          FROM conversation_messages
+          WHERE conversation_id = @conversationId AND run_id = @runId
+            AND role = 'assistant' AND turn_id <> @segmentTurnId
+            AND status IN ('accepted', 'streaming')
+        `)
+        .pluck()
+        .get(value) as number;
+      if (nonterminalEarlier !== 0) {
+        throw new Error(`Run ${value.runId} has an earlier nonterminal assistant segment`);
+      }
+
+      const v1Payload: EventLogPayload =
+        value.outcome === 'failed'
+          ? {
+              type: 'error',
+              error: value.error,
+              ...(value.code !== undefined ? { code: value.code } : {}),
+              retryable: value.retryable,
+            }
+          : value.outcome === 'interrupted'
+            ? {
+                type: 'error',
+                error: 'Gateway restarted while this turn was in progress.',
+                code: 'gateway_offline',
+                retryable: true,
+              }
+            : { type: 'done', outcome: value.outcome };
+      const assistantStatus: ConversationMessage['status'] =
+        value.outcome === 'failed' ? 'failed' : value.outcome;
+      const timestamp = this.now();
+      const v1Seq = this.eventLog.append(
+        current.agent_id,
+        current.id,
+        value.runId,
+        v1Payload,
+        value.segmentTurnId,
+      );
+      const assistantChanged = this.db
+        .prepare(`
+          UPDATE conversation_messages
+          SET status = @status, updated_at = @now
+          WHERE id = @id AND status = 'streaming'
+        `)
+        .run({ id: assistant.id, status: assistantStatus, now: timestamp });
+      if (assistantChanged.changes !== 1) {
+        throw new Error(`Failed to terminalize assistant segment ${value.segmentTurnId}`);
+      }
+      const released = this.db
+        .prepare(`
+          UPDATE conversations
+          SET status = @status, active_turn_id = NULL, revision = revision + 1,
+              last_seq = @lastSeq, updated_at = @now
+          WHERE id = @conversationId AND status = 'running' AND active_turn_id = @runId
+        `)
+        .run({
+          conversationId: current.id,
+          runId: value.runId,
+          status: value.outcome === 'interrupted' ? 'interrupted' : 'idle',
+          lastSeq: v1Seq,
+          now: timestamp,
+        });
+      if (released.changes !== 1) throw new Error(`Failed to release run ${value.runId}`);
+      const afterRelease = this.requireConversationRow(current.id);
+      const v2Frame =
+        value.outcome === 'failed'
+          ? this.appendV2(afterRelease, {
+              type: 'error',
+              id: value.runId,
+              conversationId: current.id,
+              runId: value.runId,
+              segmentTurnId: value.segmentTurnId,
+              error: value.error,
+              ...(value.code !== undefined ? { code: value.code } : {}),
+              retryable: value.retryable,
+            })
+          : this.appendV2(afterRelease, {
+              type: 'done',
+              id: value.runId,
+              conversationId: current.id,
+              runId: value.runId,
+              segmentTurnId: value.segmentTurnId,
+              outcome: value.outcome,
+            });
+      const transitions: FinishRunResult['transitions'] = [];
+      if (
+        value.outcome === 'failed' &&
+        afterRelease.queue_paused === 0 &&
+        this.pendingFollowUpCount(current.id) > 0
+      ) {
+        const paused = this.advanceQueueMutation(current.id, true);
+        const frame = this.appendV2(paused, {
+          type: 'queue_paused',
+          conversationId: current.id,
+          queueRevision: paused.queue_revision,
+          queuePaused: true,
+          pendingFollowUpCount: this.pendingFollowUpCount(current.id),
+        }) as PersistedQueueTransition['frame'];
+        transitions.push({
+          conversation: this.mapStoredConversation(this.requireConversationRow(current.id)),
+          frame,
+        });
+      }
+
+      const claimed =
+        value.outcome !== 'failed' && value.suppressPromotion !== true
+          ? this.claimNextFollowUpInTransaction(current.id)
+          : null;
+      if (claimed) transitions.push(claimed.transition);
+      return {
+        terminal: {
+          conversation: this.mapStoredConversation(this.requireConversationRow(current.id)),
+          v1Seq,
+          v1Payload,
+          v2Frame,
+        },
+        transitions,
+        ...(claimed ? { claimedRun: claimed.run } : {}),
+      };
+    })(input);
   }
 
-  bootstrapV2(_input: ListMessagesInput): MobileV2ConversationBootstrap {
-    throw new Error('Conversation v2 bootstrap is not implemented');
+  claimNextFollowUp(conversationId: string): ClaimedFollowUp | null {
+    return this.db.transaction(() => this.claimNextFollowUpInTransaction(conversationId))();
   }
 
-  readV2Since(
-    agentId: string,
-    conversationId: string,
-    sinceV2Seq: number,
-  ): MobileV2SequencedFrame[] {
-    const conversation = this.selectConversationRow(conversationId);
-    if (!conversation || conversation.agent_id !== agentId) return [];
-    return this.readV2Rows(conversationId, sinceV2Seq);
+  bootstrapV2(input: ListMessagesInput): MobileV2ConversationBootstrap {
+    return this.db.transaction((value: ListMessagesInput): MobileV2ConversationBootstrap => {
+      const conversationRow = this.requireConversationRow(value.conversationId);
+      const page = this.selectMessagePageRows(value);
+      const pendingRows = this.db
+        .prepare(`
+          SELECT * FROM conversation_pending_inputs
+          WHERE conversation_id = @conversationId
+            AND (
+              (kind = 'steer' AND state = 'queued')
+              OR (kind = 'follow_up' AND state IN ('queued', 'delivering'))
+            )
+          ORDER BY enqueue_order ASC
+        `)
+        .all({ conversationId: value.conversationId }) as PendingInputRow[];
+      const conversation = this.mapStoredConversation(conversationRow);
+      return {
+        conversation: mapConversationV2(conversation),
+        messages: this.hydrateStoredMessages(conversationRow, page.rows).map(mapMessageV2),
+        nextCursor: page.nextCursor,
+        pendingInputs: pendingRows.map((row) => this.mapPendingInput(row)),
+        queuePaused: conversation.queuePaused,
+        queueRevision: conversation.queueRevision,
+        v2ThroughSeq: conversation.v2LastSeq,
+      };
+    })(input);
   }
 
-  listDeliveredSteers(_conversationId: string): DeliveredSteerContext[] {
-    throw new Error('Conversation v2 delivered steer reads are not implemented');
+  readV2Since(agentId: string, conversationId: string, sinceV2Seq: number): V2ReplayResult {
+    return this.db.transaction(() => {
+      const conversation = this.requireConversationRow(conversationId);
+      if (conversation.agent_id !== agentId) {
+        throw new ConversationServiceError(
+          'not_found',
+          `Conversation ${conversationId} does not belong to agent ${agentId}`,
+          404,
+          false,
+        );
+      }
+      return {
+        frames: this.readV2Rows(conversationId, sinceV2Seq),
+        throughSeq: conversation.v2_last_seq,
+      };
+    })();
+  }
+
+  listDeliveredSteers(conversationId: string): DeliveredSteerContext[] {
+    return this.db.transaction(() => {
+      this.requireConversationRow(conversationId);
+      const rows = this.db
+        .prepare(`
+          SELECT input_id, text, images_json
+          FROM conversation_pending_inputs
+          WHERE conversation_id = ? AND kind = 'steer' AND state = 'delivered'
+          ORDER BY reserved_user_ordinal ASC, enqueue_order ASC
+        `)
+        .all(conversationId) as Array<{
+        input_id: string;
+        text: string;
+        images_json: string | null;
+      }>;
+      return rows.map((row) => ({
+        inputId: row.input_id,
+        text: row.text,
+        ...(row.images_json !== null
+          ? { images: JSON.parse(row.images_json) as DeliveredSteerContext['images'] }
+          : {}),
+      }));
+    })();
   }
 
   recoverV2State(): V2RecoveryResult {
-    throw new Error('Conversation v2 recovery is not implemented');
+    return this.db.transaction(() => {
+      const activeRows = this.db
+        .prepare(`
+          SELECT * FROM conversations
+          WHERE status = 'running' AND active_turn_id IS NOT NULL AND deleted_at IS NULL
+            AND status NOT IN ('archived', 'deleted')
+          ORDER BY id ASC
+        `)
+        .all() as ConversationRow[];
+      let conversationsInterrupted = 0;
+      let terminalsAppended = 0;
+
+      for (const conversation of activeRows) {
+        const runId = conversation.active_turn_id as string;
+        const assistant = this.db
+          .prepare(`
+            SELECT * FROM conversation_messages
+            WHERE conversation_id = ? AND run_id = ? AND role = 'assistant'
+              AND status = 'streaming'
+            ORDER BY segment_index DESC, ordinal DESC
+            LIMIT 1
+          `)
+          .get(conversation.id, runId) as ConversationMessageRow | undefined;
+        if (!assistant) {
+          this.db
+            .prepare(`
+              UPDATE conversations
+              SET status = 'interrupted', active_turn_id = NULL,
+                  revision = revision + 1, updated_at = @now
+              WHERE id = @id AND active_turn_id = @runId
+            `)
+            .run({ id: conversation.id, runId, now: this.now() });
+          conversationsInterrupted++;
+          continue;
+        }
+        const representedDeliveries = this.db
+          .prepare(`
+            SELECT * FROM conversation_pending_inputs
+            WHERE conversation_id = @conversationId AND kind = 'follow_up'
+              AND state = 'delivering' AND reserved_run_id = @runId
+              AND EXISTS (
+                SELECT 1 FROM conversation_messages
+                WHERE conversation_id = @conversationId AND run_id = @runId
+                  AND id = conversation_pending_inputs.reserved_assistant_message_id
+              )
+            ORDER BY enqueue_order ASC
+          `)
+          .all({ conversationId: conversation.id, runId }) as PendingInputRow[];
+        for (const pending of representedDeliveries) {
+          const timestamp = this.now();
+          const journaledDelivery = this.readV2Rows(pending.conversation_id, 0).find(
+            (frame): frame is Extract<MobileV2SequencedFrame, { type: 'input_delivered' }> =>
+              frame.type === 'input_delivered' &&
+              frame.input.inputId === pending.input_id &&
+              frame.runId === pending.reserved_run_id,
+          );
+          if (journaledDelivery) {
+            const repaired = this.db
+              .prepare(`
+                UPDATE conversation_pending_inputs
+                SET state = 'delivered', revision = @revision,
+                    delivered_at = @deliveredAt, updated_at = @updatedAt
+                WHERE input_id = @inputId AND state = 'delivering'
+              `)
+              .run({
+                inputId: pending.input_id,
+                revision: journaledDelivery.input.revision,
+                deliveredAt: journaledDelivery.input.deliveredAt ?? null,
+                updatedAt: journaledDelivery.input.updatedAt,
+              });
+            if (repaired.changes !== 1) {
+              throw new Error(`Failed to repair delivered Follow Up ${pending.input_id}`);
+            }
+            continue;
+          }
+          const changed = this.db
+            .prepare(`
+              UPDATE conversation_pending_inputs
+              SET state = 'delivered', revision = revision + 1,
+                  delivered_at = COALESCE(delivered_at, @now), updated_at = @now
+              WHERE input_id = @inputId AND state = 'delivering'
+            `)
+            .run({ inputId: pending.input_id, now: timestamp });
+          if (changed.changes !== 1) continue;
+          const advanced = this.advanceQueueMutation(pending.conversation_id);
+          const delivered = this.selectPendingInput(pending.input_id);
+          if (!delivered) throw new Error(`Recovered Follow Up ${pending.input_id} disappeared`);
+          this.appendV2(advanced, {
+            type: 'input_delivered',
+            id: pending.enqueue_command_id,
+            conversationId: pending.conversation_id,
+            queueRevision: advanced.queue_revision,
+            input: this.mapPendingInput(delivered),
+            runId: pending.reserved_run_id,
+            segmentTurnId: pending.reserved_segment_turn_id,
+            userMessageId: pending.reserved_user_message_id,
+            assistantMessageId: pending.reserved_assistant_message_id,
+          });
+        }
+        const pendingSteerIds = this.db
+          .prepare(`
+            SELECT input_id
+            FROM conversation_pending_inputs
+            WHERE conversation_id = ? AND kind = 'steer' AND state = 'queued'
+              AND reserved_run_id = ?
+            ORDER BY enqueue_order ASC
+          `)
+          .all(conversation.id, runId)
+          .map((row) => (row as { input_id: string }).input_id);
+        this.terminalizeSteersNotDeliveredInTransaction({
+          conversationId: conversation.id,
+          runId,
+          inputIds: pendingSteerIds,
+          code: 'gateway_offline',
+          error: 'Gateway restarted before this Steer could be delivered.',
+        });
+        this.finishRunAndClaimNext({
+          conversationId: conversation.id,
+          runId,
+          segmentTurnId: assistant.turn_id,
+          outcome: 'interrupted',
+          suppressPromotion: true,
+        });
+        conversationsInterrupted++;
+        terminalsAppended++;
+      }
+
+      const deliveringRows = this.db
+        .prepare(`
+          SELECT * FROM conversation_pending_inputs
+          WHERE kind = 'follow_up' AND state = 'delivering'
+          ORDER BY conversation_id ASC, enqueue_order ASC
+        `)
+        .all() as PendingInputRow[];
+      for (const pending of deliveringRows) {
+        const timestamp = this.now();
+        const changed = this.db
+          .prepare(`
+            UPDATE conversation_pending_inputs
+            SET state = 'queued', revision = revision + 1, updated_at = @now
+            WHERE input_id = @inputId AND state = 'delivering'
+          `)
+          .run({ inputId: pending.input_id, now: timestamp });
+        if (changed.changes !== 1) continue;
+        const advanced = this.advanceQueueMutation(pending.conversation_id);
+        const queued = this.selectPendingInput(pending.input_id);
+        if (!queued) throw new Error(`Released Follow Up ${pending.input_id} disappeared`);
+        this.appendV2(advanced, {
+          type: 'input_updated',
+          id: pending.enqueue_command_id,
+          conversationId: pending.conversation_id,
+          queueRevision: advanced.queue_revision,
+          input: this.mapPendingInput(queued),
+        });
+      }
+
+      const eligibleConversationIds = this.db
+        .prepare(`
+          SELECT id
+          FROM conversations
+          WHERE deleted_at IS NULL AND status NOT IN ('archived', 'deleted')
+            AND active_turn_id IS NULL AND queue_paused = 0
+            AND EXISTS (
+              SELECT 1 FROM conversation_pending_inputs
+              WHERE conversation_id = conversations.id
+                AND kind = 'follow_up' AND state = 'queued'
+            )
+          ORDER BY id ASC
+        `)
+        .all()
+        .map((row) => (row as { id: string }).id);
+      return { conversationsInterrupted, terminalsAppended, eligibleConversationIds };
+    })();
   }
 
-  listRunMessages(_conversationId: string, _runId: string): StoredConversationMessage[] {
-    throw new Error('Conversation v2 run message reads are not implemented');
+  listRunMessages(conversationId: string, runId: string): StoredConversationMessage[] {
+    return this.db.transaction(() => {
+      const conversation = this.requireConversationRow(conversationId);
+      const rows = this.db
+        .prepare(`
+          SELECT * FROM conversation_messages
+          WHERE conversation_id = ? AND run_id = ?
+          ORDER BY ordinal ASC, id ASC
+        `)
+        .all(conversationId, runId) as ConversationMessageRow[];
+      return this.hydrateStoredMessages(conversation, rows);
+    })();
   }
 
   close(): void {

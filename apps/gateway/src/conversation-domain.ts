@@ -94,6 +94,7 @@ export interface AcceptedRun {
   userMessage: StoredConversationMessage;
   assistantMessage: StoredConversationMessage;
   v1Seq: number;
+  v1Payload: Extract<import('./event-log-store.js').EventLogPayload, { type: 'accepted' }>;
   v2Frame: Extract<import('@dash/mobile-contract-v2').MobileV2SequencedFrame, { type: 'accepted' }>;
   created: boolean;
   firstUserMessage: boolean;
@@ -110,6 +111,7 @@ export interface AppendRunEventInput {
 export interface PersistedRunFrames {
   conversation: StoredConversation;
   v1Seq: number;
+  v1Payload: import('./event-log-store.js').EventLogPayload;
   v2Frame: import('@dash/mobile-contract-v2').MobileV2SequencedFrame;
 }
 
@@ -199,6 +201,8 @@ export interface ResumeFollowUpsCommand {
 
 export interface CommandMutationResult {
   replayed: boolean;
+  /** Present only for a newly committed, accepted mutation that should invalidate observers. */
+  conversation?: StoredConversation;
   frames: readonly (
     | import('@dash/mobile-contract-v2').MobileV2SequencedFrame
     | import('@dash/mobile-contract-v2').MobileV2ControlFrame
@@ -235,6 +239,16 @@ export interface FinishRunResult {
   terminal: PersistedRunFrames;
   transitions: Array<PersistedInputTransition | PersistedQueueTransition>;
   claimedRun?: AcceptedRun;
+}
+
+export interface ClaimedFollowUp {
+  run: AcceptedRun;
+  transition: PersistedInputTransition;
+}
+
+export interface V2ReplayResult {
+  frames: import('@dash/mobile-contract-v2').MobileV2SequencedFrame[];
+  throughSeq: number;
 }
 
 export interface DeliveredSteerContext {
