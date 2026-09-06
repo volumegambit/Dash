@@ -1127,3 +1127,40 @@ describe('mountChatWs client location', () => {
     expect(harness.requests[0]?.location).toBeUndefined();
   });
 });
+
+describe('summarizeInboundForLog location handling', () => {
+  it('records location presence without ever logging coordinates', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const harness = makeWsHarness({ verbose: true });
+      const connection = harness.connect();
+
+      dispatch(connection, {
+        ...RESUMABLE_MESSAGE,
+        location: {
+          timezone: 'Asia/Singapore',
+          utcOffsetMinutes: 480,
+          locale: 'en-SG',
+          precise: {
+            latitude: 1.2966,
+            longitude: 103.7764,
+            accuracyMeters: 12,
+            capturedAt: '2026-09-06T10:11:02Z',
+            place: 'National University of Singapore',
+          },
+        },
+      });
+
+      const logged = log.mock.calls.map((call) => JSON.stringify(call)).join('\n');
+      expect(logged).toContain('hasLocation');
+      expect(logged).toContain('hasPreciseLocation');
+      // The sensitive values must never reach the log.
+      expect(logged).not.toContain('1.2966');
+      expect(logged).not.toContain('103.7764');
+      expect(logged).not.toContain('National University');
+      expect(logged).not.toContain('Asia/Singapore');
+    } finally {
+      log.mockRestore();
+    }
+  });
+});

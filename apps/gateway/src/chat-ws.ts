@@ -58,6 +58,7 @@ const STRUCTURAL_CLIENT_FIELDS = new Set([
   'text',
   'answer',
   'images',
+  'location',
 ]);
 
 /** Allowlist protocol metadata; never recursively serialize untrusted values. */
@@ -91,6 +92,13 @@ function summarizeInboundForLog(raw: string, value: unknown): Record<string, unk
   }
   if (typeof record.text === 'string') summary.textLength = record.text.length;
   if (typeof record.answer === 'string') summary.answerLength = record.answer.length;
+  // Presence only, NEVER values: a precise location is the most sensitive
+  // thing on this frame and verbose logs are not the place for coordinates.
+  if (record.location !== null && typeof record.location === 'object') {
+    summary.hasLocation = true;
+    const location = record.location as Record<string, unknown>;
+    summary.hasPreciseLocation = location.precise !== null && typeof location.precise === 'object';
+  }
   if (Array.isArray(record.images)) {
     summary.imageCount = record.images.length;
     summary.imageDataCharacters = record.images.reduce((total, image) => {
