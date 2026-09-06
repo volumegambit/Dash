@@ -2489,6 +2489,50 @@ describe('createWebAppStore', () => {
       ).toHaveLength(1);
     });
 
+    /**
+     * Fix round 2 (F3). The tasks panel holds no subscription of its own, but
+     * it is now the primary resume path and it is routinely used against a
+     * child whose block IS expanded. Whether an optimistic row can ever be
+     * reconciled turns on exactly one thing — whether this client holds a
+     * subscription on that child, because that is what decides whether the
+     * `accepted` echoing the row's id ever arrives. So the store exposes the
+     * refcount it already keeps, and callers read it at submit time.
+     *
+     * The DESIRED refcount, not `activeChildSubscriptions`. Desired is written
+     * synchronously by `subscribeSubagent` and is what the deferred release
+     * re-checks; active lags a `resolveAgentId` round trip on the way up and
+     * is cleared wholesale by `clearChildSubscriptions` on a reconnect, and
+     * neither of those changes whether an `accepted` will reach this client.
+     */
+    it('reports whether a subscription is held for a child, following the refcount', async () => {
+      const { rest } = fakeRest({});
+      const { factory, sockets } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+
+      expect(store.getState().isSubagentSubscribed(CHILD_ID)).toBe(false);
+
+      store.getState().subscribeSubagent(CHILD_ID);
+      expect(store.getState().isSubagentSubscribed(CHILD_ID)).toBe(true);
+
+      // Two holders, one release: still held. Same refcount the wire frames
+      // follow, so the answer cannot drift from what is on the socket.
+      store.getState().subscribeSubagent(CHILD_ID);
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      expect(store.getState().isSubagentSubscribed(CHILD_ID)).toBe(true);
+
+      // The bookkeeping is immediate even though the wire frame is deferred:
+      // a caller submitting in this tick must not be told it is still
+      // subscribed just because the `unsubscribe` has not gone out yet.
+      store.getState().unsubscribeSubagent(CHILD_ID);
+      expect(store.getState().isSubagentSubscribed(CHILD_ID)).toBe(false);
+      await Promise.resolve();
+      expect(store.getState().isSubagentSubscribed(CHILD_ID)).toBe(false);
+
+      // A child that was never subscribed is not subscribed.
+      expect(store.getState().isSubagentSubscribed('child-never-seen')).toBe(false);
+    });
+
     // Fix round 2, C1. The refcount really does go 1 -> 0 -> 1 across the
     // ChatView subtree swap: `done` clears `streaming` and materialises the
     // finalized message in ONE `set()` (store.ts's frame handler +
@@ -3289,13 +3333,21 @@ describe('createWebAppStore', () => {
     });
 
     /**
-     * The other half of the same case: the block for that child IS expanded
-     * and subscribed when the panel's resume lands. The `accepted` names no
-     * local row, so it takes the same path a resume issued by a PEER client
-     * takes — materialise the server's row, then fill its text from the
-     * replay `done` triggers. Still exactly one row.
+     * The other half of the same case: the transcript IS open and subscribed
+     * when an UNCORRELATED resume lands — one with no local row to echo. That
+     * is a resume issued by a PEER client, or by the gateway itself;
+     * `reconcileAccepted` materialises the server's row and the replay `done`
+     * triggers fills in its text. Still exactly one row.
+     *
+     * It stopped describing the tasks PANEL in round 2 (F3): the panel now
+     * asks `isSubagentSubscribed`, so against an open block it opts in and
+     * takes the reconciliation path above instead. The reason is exactly the
+     * blank window this test's own shape exposes — between the `accepted` and
+     * the replay the materialised row carries `content.text: ''`, which is
+     * the right answer for a peer's sentence this client never had and the
+     * wrong one for a sentence the user just typed here.
      */
-    it('shows a panel resume once in a transcript that is already open', async () => {
+    it('shows an uncorrelated resume once in a transcript that is already open', async () => {
       const serverRow = message({
         id: 'server-user-1',
         conversationId: CHILD_ID,

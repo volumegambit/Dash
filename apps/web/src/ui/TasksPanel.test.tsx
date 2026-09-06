@@ -33,6 +33,7 @@ interface StoreSpies {
   patchSubagent: ReturnType<typeof vi.fn>;
   stopSubagent: ReturnType<typeof vi.fn>;
   sendToSubagent: ReturnType<typeof vi.fn>;
+  isSubagentSubscribed: ReturnType<typeof vi.fn>;
   refreshSubagents: ReturnType<typeof vi.fn>;
   subscribeSubagent: ReturnType<typeof vi.fn>;
   unsubscribeSubagent: ReturnType<typeof vi.fn>;
@@ -50,6 +51,9 @@ function scriptStore(initial: Partial<WebAppState> = {}) {
     patchSubagent: vi.fn(),
     stopSubagent: vi.fn(async () => {}),
     sendToSubagent: vi.fn(async () => {}),
+    // The panel never subscribes itself, so `false` is the default the real
+    // store gives it for a child whose block is closed.
+    isSubagentSubscribed: vi.fn(() => false),
     refreshSubagents: vi.fn(async () => {}),
     subscribeSubagent: vi.fn(),
     unsubscribeSubagent: vi.fn(),
@@ -250,12 +254,55 @@ describe('TasksPanel', () => {
         fireEvent.submit(composer);
       });
 
-      // Exactly two arguments: the panel DECLINES the optimistic row (fix
-      // I2). It never subscribes to the child, so nothing would ever
-      // reconcile one, and the next expansion of that child's block merged
-      // the server's own copy alongside it — the sentence twice.
-      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay');
-      expect(scripted.sendToSubagent.mock.calls[0]).toHaveLength(2);
+      // The panel DECLINES the optimistic row here (fix I2): nothing holds a
+      // subscription on this child, so no `accepted` echoing the row's id
+      // will ever reach this client to reconcile it, and the next expansion
+      // of that child's block merged the server's own copy alongside it —
+      // the sentence twice.
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay', {
+        optimistic: false,
+      });
+    });
+
+    /**
+     * Fix round 2 (F3). The panel is the primary resume path, and the common
+     * case is resuming a child the user is already watching — its block
+     * expanded, so a subscription IS held. Declining unconditionally cost
+     * those users their own sentence: the `accepted` materialised the
+     * server's row with `content.text: ''`, which `OrchestratorRow` renders
+     * as a bare `from orchestrator` with nothing after it, for the WHOLE
+     * child turn (the text only arrives with the replay `done` triggers —
+     * minutes, for a queued steer).
+     *
+     * So the panel asks the store the same question the block's condition
+     * answers structurally: is a subscription held for this child? When it
+     * is, the row is asked for and the `accepted` reconciles it normally.
+     *
+     * Read at SUBMIT time, not at render: the user can expand the block
+     * between opening this composer and sending.
+     */
+    it('asks for the optimistic row when the child is already subscribed', async () => {
+      const isSubagentSubscribed = vi.fn(() => true);
+      const scripted = scriptStore({
+        subagentIds: { [CONVERSATION]: [CHILD] },
+        subagents: { [CHILD]: { facts: facts({ status: 'done' }) } },
+        isSubagentSubscribed,
+      } as unknown as Partial<WebAppState>);
+      renderPanel(scripted);
+
+      fireEvent.click(screen.getByTestId(`tasks-resume-${CHILD}`));
+      const composer = screen.getByTestId(`tasks-resume-composer-${CHILD}`);
+      fireEvent.change(within(composer).getByRole('textbox'), {
+        target: { value: 'also check the relay' },
+      });
+      await act(async () => {
+        fireEvent.submit(composer);
+      });
+
+      expect(scripted.sendToSubagent).toHaveBeenCalledWith(CHILD, 'also check the relay', {
+        optimistic: true,
+      });
+      expect(isSubagentSubscribed).toHaveBeenCalledWith(CHILD);
     });
 
     /** Its draft lives in the store under its own key, like every other

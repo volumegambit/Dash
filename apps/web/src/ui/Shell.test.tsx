@@ -52,6 +52,7 @@ function fakeWebAppState() {
     loadSubagentTranscript: vi.fn(async () => undefined),
     subscribeSubagent: vi.fn(),
     unsubscribeSubagent: vi.fn(),
+    isSubagentSubscribed: vi.fn(() => false),
     sendToSubagent: vi.fn(async () => undefined),
     refreshSubagents: vi.fn(async () => undefined),
     stopSubagent: vi.fn(async () => undefined),

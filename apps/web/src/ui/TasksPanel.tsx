@@ -264,15 +264,25 @@ function TasksRow({
         // `tasks:` key of its own so a keystroke cannot re-render the block's
         // row (see `bodyComposerKey`).
         //
-        // It declines the optimistic row (fix I2). That row is reconciled by
-        // the `accepted` frame echoing its id, which only reaches a client
-        // SUBSCRIBED to the child — and point 2 above is that this panel
-        // never subscribes. So the row could never be reconciled here, and
-        // the next time the user expanded the block the REST read merged the
-        // server's own copy alongside it: the sentence twice, until the
-        // conversation was left. Nothing is lost by declining, because the
-        // panel renders no transcript for the row to appear in; the refusal
-        // path still reports itself through the composer's error line.
+        // The optimistic row is asked for exactly when a subscription on the
+        // child is HELD (fix I2, refined in round 2 by F3), because that is
+        // precisely when the `accepted` echoing the row's id comes back to
+        // reconcile it. This panel never subscribes itself — point 2 above —
+        // so it asks the store, at SUBMIT time rather than at render, since
+        // the user can expand the block while this composer is open.
+        //
+        // Neither branch is free to be the default. Opting in unconditionally
+        // is the I2 duplicate: nothing reconciles the row, and the next
+        // expansion of that child's block merged the server's own copy
+        // alongside it — the sentence twice, until the conversation was left.
+        // Declining unconditionally is what F3 caught: against an OPEN block
+        // the `accepted` materialises the server's row with empty text, which
+        // renders as a bare `from orchestrator` until the `done`-triggered
+        // replay fills it in — the whole child turn, and minutes for a queued
+        // steer. Asking gets both right, and when the answer is `false`
+        // nothing is lost: no transcript is rendered here for a row to appear
+        // in, and the refusal path still reports itself through the
+        // composer's error line.
         <InlineComposer
           store={store}
           uiKey={resumeComposerKey(subagentId)}
@@ -281,7 +291,9 @@ function TasksRow({
           placeholder="Send a follow-up…"
           onSend={async (text) => {
             if (!store) throw new Error('Cannot reach this agent from here');
-            await store.getState().sendToSubagent(subagentId, text);
+            await store.getState().sendToSubagent(subagentId, text, {
+              optimistic: store.getState().isSubagentSubscribed(subagentId),
+            });
           }}
         />
       ) : null}

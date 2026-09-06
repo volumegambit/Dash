@@ -378,20 +378,54 @@ export interface WebAppState {
   /** Releases one hold on a child's subscription; the last one out unsubscribes. */
   unsubscribeSubagent(childId: string): void;
   /**
+   * Whether this client currently holds a subscription on a child — i.e.
+   * whether an `accepted` frame naming that child will reach it.
+   *
+   * Exists for `sendToSubagent`'s `optimistic` decision (fix round 2, F3).
+   * A caller that renders the child's transcript answers that question
+   * structurally, by holding the subscription itself; the tasks panel does
+   * not render one and never subscribes, yet it is routinely used against a
+   * child SOMETHING else has open, and in that case an optimistic row is both
+   * wanted and reconcilable. Asking here is how it finds out.
+   *
+   * Reads the DESIRED refcount, not `activeChildSubscriptions`: desired is
+   * written synchronously by `subscribeSubagent` and is what the deferred
+   * release re-checks, whereas active lags a `resolveAgentId` round trip and
+   * is cleared wholesale on a reconnect — neither of which changes whether an
+   * `accepted` will reach this client.
+   *
+   * A point-in-time answer. It says nothing about the window between the send
+   * and the `accepted`: a row asked for while subscribed and orphaned by a
+   * collapse before the echo lands is still duplicated by the next REST read
+   * of that transcript (D2-era residue, see `store.test.ts`'s "the row was
+   * collapsed while the steer sat on the child's queue").
+   */
+  isSubagentSubscribed(childId: string): boolean;
+  /**
    * Types a user turn INTO a child ("type into a child's transcript", §8.3)
    * via `POST /subagents/:id/resume`.
    *
-   * `optimistic` is the caller's declaration that it RENDERS this child's
-   * transcript and is subscribed to the child. It opts into a local user row
-   * in `transcripts[childId]`, marked `failed` if the resume is refused and
-   * reconciled by the `accepted` frame echoing its id as `requestId`.
+   * `optimistic` is the caller's declaration that a subscription on this
+   * child is HELD — by itself or by anything else in this client. It opts
+   * into a local user row in `transcripts[childId]`, marked `failed` if the
+   * resume is refused and reconciled by the `accepted` frame echoing its id
+   * as `requestId`.
    *
    * Off by default, and that default is the fix for round-1 I2. The echo is
    * the only correlation there is, and it only reaches a client that is
-   * SUBSCRIBED to the child. The tasks panel deliberately never subscribes —
-   * it renders a list, not a transcript — so a resume sent from a panel row
-   * left a row nothing could ever reconcile, and the next expansion merged
-   * the server's own copy alongside it: the user's sentence, twice.
+   * SUBSCRIBED to the child, so a resume sent with no subscription held left
+   * a row nothing could ever reconcile, and the next expansion merged the
+   * server's own copy alongside it: the user's sentence, twice.
+   *
+   * Round 2 (F3) unified the two callers on that one question rather than on
+   * "do I render a transcript". The block answers it structurally — its
+   * `open && nested` IS the condition its own subscription effect uses. The
+   * tasks panel renders a list and never subscribes, but it is routinely
+   * used against a child whose block is open, so it ASKS
+   * (`isSubagentSubscribed`) instead of hardcoding a decline: declining there
+   * cost those users their own sentence for the whole child turn, since the
+   * `accepted` materialises the server's row with empty text and only the
+   * `done`-triggered replay fills it in.
    * `mergeMessagesById` cannot help, because it only supersedes a row whose
    * `turnId` the incoming page carries and the local row's `turnId` is a
    * client uuid the server never saw.
@@ -1427,16 +1461,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           refreshMessages(conversationId);
         }
         // The trigger a BACKGROUND child needs, and the one the two below
-        // cannot give it. Paired with the `accepted`/`notification` read
-        // above, which gets the same news sooner; this one stays because it
-        // backstops every other trigger going missing and because a child
-        // spawned DURING a turn is only visible once the turn ends. A background child is spawned to OUTLIVE the turn
+        // cannot give it. A background child is spawned to OUTLIVE the turn
         // that spawned it, so its finish never lands as a
         // `subagent_finished` in that turn's message — it arrives as a
         // notification turn on the parent (§7.3/§8.5). Without this the
         // panel would show it `running` until the user navigated away and
-        // back, which is the panel's headline case. One read per parent
-        // turn, and it backstops every other trigger going missing.
+        // back, which is the panel's headline case. Paired with the
+        // `accepted`/`notification` read above, which gets the same news
+        // sooner; this one stays because it backstops every other trigger
+        // going missing and because a child spawned DURING a turn is only
+        // visible once the turn ends. One read per parent turn.
         if (conversationId === currentConversationId) {
           void fetchSubagentList(conversationId);
         }
@@ -1989,6 +2023,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         const parentId = currentConversationId;
         if (!socket || !parentId) return;
         void flushChildSubscriptions(socket, parentId);
+      },
+
+      isSubagentSubscribed(childId) {
+        return desiredChildSubscriptions.has(childId);
       },
 
       /**
