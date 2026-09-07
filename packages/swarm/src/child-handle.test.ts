@@ -304,6 +304,53 @@ describe('ChildHandle', () => {
     ]);
   });
 
+  it('a resume rewrites the RUN-scoped meta, not the status alone', () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver, {}, { resumeWith: 'pick this back up' });
+    handle.start();
+
+    // `createSubagent` is idempotent on `id`, so the resume's `createChild`
+    // returns the finished row UNTOUCHED and this patch is the only thing that
+    // describes run 2. Held-`undefined` keys, not missing ones: the store's
+    // merge is a spread, so a key that is absent leaves run 1's value standing.
+    expect(d.patches).toEqual([
+      {
+        id: CHILD_ID,
+        status: 'running',
+        info: {
+          startedAt: handle.startedAtIso,
+          endedAt: undefined,
+          report: undefined,
+          usage: undefined,
+          toolCallCount: 0,
+        },
+      },
+    ]);
+    expect(Object.keys(d.patches[0].info ?? {}).sort()).toEqual([
+      'endedAt',
+      'report',
+      'startedAt',
+      'toolCallCount',
+      'usage',
+    ]);
+  });
+
+  it('a spawn writes NO patch: `createChild` already carries the first run', () => {
+    const d = fakeDriver();
+    const { handle } = makeHandle(d.driver);
+    handle.start();
+    expect(d.patches).toEqual([]);
+    expect(d.created[0]?.subagent).toMatchObject({
+      status: 'running',
+      startedAt: handle.startedAtIso,
+      toolCallCount: 0,
+    });
+    // The shape a resume now restores the row to.
+    expect(d.created[0]?.subagent).not.toHaveProperty('endedAt');
+    expect(d.created[0]?.subagent).not.toHaveProperty('report');
+    expect(d.created[0]?.subagent).not.toHaveProperty('usage');
+  });
+
   it('spends no requestId on an ANSWER: no turn starts, so nothing echoes it', async () => {
     const d = fakeDriver();
     const { handle } = makeHandle(d.driver);

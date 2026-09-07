@@ -78,6 +78,7 @@ describe('createChildTurnDriver', () => {
     await hub.stop();
     conversations.close();
     await rm(tmpDir, { recursive: true, force: true });
+    vi.useRealTimers();
   });
 
   function makeDriver(hubRef: () => ResumableChatHub | undefined = () => hub) {
@@ -517,6 +518,88 @@ describe('createChildTurnDriver', () => {
     });
     // …and it stays addressable from the parent after the turn.
     expect(coordinator.findChild(parent.id, 'scout')?.subagentId).toBe(subagentId);
+  });
+
+  it('a RESUME rewrites the run-scoped meta, so nothing reads run 1 beside a running run 2', async () => {
+    // `Date` only: the hub and the handle's heartbeat keep their real timers,
+    // and the two runs get distinguishable `startedAt`s that a same-millisecond
+    // spawn/resume could not give them.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-08T10:00:00.000Z'));
+    const parent = parentConversation();
+    const driver = makeDriver();
+    const coordinator = new SwarmCoordinator({
+      childDriver: driver,
+      // `onChildTerminal` drops the resolved spec on purpose, so every resume
+      // goes through the rebuild. What the rebuild produces is
+      // `subagent-resume.test.ts`'s subject; here it only has to succeed.
+      reconstructChildSpec: (id) => specFor(id, parent.id),
+    });
+    coordinator.attach({
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      conversationId: parent.id,
+      messageId: 'parent-turn-1',
+      orchestratorModel: 'test/model',
+      workspace: '/repo',
+    });
+
+    const originalGet = scripts.get.bind(scripts);
+    scripts.get = (id: string) =>
+      originalGet(id) ?? [
+        { type: 'tool_use_start', id: 't-1', name: 'read', input: {} },
+        { type: 'response', content: 'run one report', usage: { inputTokens: 5, outputTokens: 7 } },
+      ];
+
+    const { subagentId } = coordinator.spawnChild(
+      {
+        agentId: 'agent-01',
+        agentName: 'Helper',
+        conversationId: parent.id,
+        turnId: 'parent-turn-1',
+        depth: 0,
+        workspace: '/repo',
+      },
+      { role: 'scout', brief: 'survey the repo', description: 'survey repo', name: 'scout' },
+    );
+    await coordinator.waitChild(subagentId);
+
+    const afterRunOne = conversations.get(subagentId)?.subagent;
+    expect(afterRunOne?.status).toBe('done');
+    expect(afterRunOne?.startedAt).toBe('2026-09-08T10:00:00.000Z');
+    expect(afterRunOne?.endedAt).toBe('2026-09-08T10:00:00.000Z');
+    expect(afterRunOne?.report).toBe('run one report');
+    expect(afterRunOne?.toolCallCount).toBe(1);
+    expect(afterRunOne?.usage).toEqual({ inputTokens: 5, outputTokens: 7 });
+
+    // A day later the user taps Resume. `ChildHandle.start()` persists before
+    // the route answers, so the row is read SYNCHRONOUSLY, exactly as the GET
+    // behind `POST /subagents/:id/resume` reads it.
+    vi.setSystemTime(new Date('2026-09-09T12:14:00.000Z'));
+    coordinator.sendToChild(parent.id, 'scout', 'pick this back up');
+
+    const resumed = conversations.get(subagentId)?.subagent;
+    expect(resumed?.status).toBe('running');
+    // The four fields that describe a RUN, not a child: run 2's start, and no
+    // trace of run 1. A `running` row carrying run 1's `startedAt` is what
+    // makes every client tick an elapsed upward from yesterday.
+    // `soft`, so one run names every field that is still run 1's.
+    expect.soft(resumed?.startedAt).toBe('2026-09-09T12:14:00.000Z');
+    expect.soft(resumed?.endedAt).toBeUndefined();
+    expect.soft(resumed?.report).toBeUndefined();
+    expect.soft(resumed?.usage).toBeUndefined();
+    expect.soft(resumed?.toolCallCount).toBe(0);
+    // Not run-scoped: a resumed child keeps the checkout it was isolated into.
+    expect(resumed?.prompt).toBe('survey the repo');
+
+    await coordinator.waitChild(subagentId);
+    const afterRunTwo = conversations.get(subagentId)?.subagent;
+    // PER-RUN, not cumulative — which is what the terminal write at
+    // `child-handle.ts:586` has always done, because `resumeChild` builds a
+    // FRESH handle whose counters start at zero.
+    expect(afterRunTwo?.toolCallCount).toBe(1);
+    expect(afterRunTwo?.usage).toEqual({ inputTokens: 5, outputTokens: 7 });
+    expect(afterRunTwo?.startedAt).toBe('2026-09-09T12:14:00.000Z');
   });
 
   function createRow(

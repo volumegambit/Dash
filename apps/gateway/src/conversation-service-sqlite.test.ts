@@ -1189,6 +1189,56 @@ describe('SqliteConversationService subagent persistence', () => {
     );
   });
 
+  it('CLEARS a field a patch names as undefined, which is how a resume drops run 1', () => {
+    const parent = createParent();
+    service.createSubagent({
+      id: 'sub_reset',
+      agentId: 'agent-01',
+      agentName: 'Helper',
+      parentConversationId: parent.id,
+      parentTurnId: 'turn-parent-01',
+      title: 'Resume me',
+      subagent: subagentInfo(),
+    });
+    service.updateSubagent('sub_reset', {
+      status: 'done',
+      info: {
+        toolCallCount: 4,
+        endedAt: '2026-09-04T00:05:00.000Z',
+        usage: { inputTokens: 120, outputTokens: 34 },
+        report: 'Found two issues.',
+      },
+    });
+
+    // The merge is `{ ...mapSubagent(current), ...patch.info }`, so a key held
+    // at `undefined` beats the stored value, and `JSON.stringify` then drops it
+    // from `subagent_meta` — an ABSENT key rather than a null one, which is
+    // what `mapSubagent` reads back as unset. This is the mechanism
+    // `ChildHandle`'s resume persist depends on; nothing else on this branch
+    // exercises it.
+    const reset = service.updateSubagent('sub_reset', {
+      status: 'running',
+      info: {
+        startedAt: '2026-09-05T09:00:00.000Z',
+        endedAt: undefined,
+        report: undefined,
+        usage: undefined,
+        toolCallCount: 0,
+      },
+    });
+    expect(reset.subagent).toEqual({
+      ...subagentInfo(),
+      status: 'running',
+      startedAt: '2026-09-05T09:00:00.000Z',
+      toolCallCount: 0,
+    });
+    expect(reset.subagent).not.toHaveProperty('endedAt');
+    expect(reset.subagent).not.toHaveProperty('report');
+    expect(reset.subagent).not.toHaveProperty('usage');
+    // …and it survives a round trip through the row, not just the return value.
+    expect(service.get('sub_reset')).toEqual(reset);
+  });
+
   it('lists only the interrupted children', () => {
     const parent = createParent();
     for (const [id, status] of [

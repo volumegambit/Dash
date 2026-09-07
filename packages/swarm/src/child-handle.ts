@@ -286,9 +286,45 @@ export class ChildHandle {
       return;
     }
 
-    // A RESUME re-creates a row that already exists, so `createChild` left the
-    // terminal status it was written with; the child is running again now.
-    if (this.opts.resumeWith !== undefined) this.persist({ status: 'running' });
+    // A RESUME re-creates a row that already exists, so `createChild`
+    // early-returns it UNTOUCHED (`conversation-service-sqlite.ts:1031-1052`)
+    // and this patch is the only thing that ever describes run 2.
+    //
+    // Status alone is not enough. `endedAt`, `report`, `usage` and
+    // `toolCallCount` are RUN-scoped, and the store merges a patch over the
+    // stored meta, so a status-only write leaves a `running` row carrying run
+    // 1's values — every REST-fed surface then reads the previous run's tool
+    // count and, because a non-terminal row renders a LIVE elapsed off
+    // `startedAt`, a duration ticking upward from run 1's start for the whole
+    // of run 2. The keys are held at `undefined` rather than omitted: the
+    // merge is a spread, so an absent key leaves the old value standing while
+    // an explicit `undefined` wins and `JSON.stringify` then drops it from
+    // `subagent_meta` — the same ABSENT shape `createChild` writes for a first
+    // run.
+    //
+    // PER-RUN rather than cumulative, because that is what already ships:
+    // `resumeChild` builds a FRESH handle (`coordinator.ts:745-756`), so
+    // `this.toolCallCount` and `this.usage` restart at zero and the terminal
+    // write at :622 has always overwritten run 1's totals with run 2's alone.
+    // Design §7.4 names the fields and is silent on resume semantics; making
+    // the running row agree with the terminal one it is about to become is the
+    // only choice that needs no second change.
+    //
+    // `workspace` is deliberately NOT cleared: a resumed isolated child keeps
+    // the checkout it was cut into, so that field describes the child, not the
+    // run.
+    if (this.opts.resumeWith !== undefined) {
+      this.persist({
+        status: 'running',
+        info: {
+          startedAt: this.startedAtIsoPrivate(),
+          endedAt: undefined,
+          report: undefined,
+          usage: undefined,
+          toolCallCount: 0,
+        },
+      });
+    }
 
     this.emitStarted();
     this.startHeartbeat();
