@@ -304,15 +304,23 @@ export class ChildHandle {
     //
     // PER-RUN rather than cumulative, because that is what already ships:
     // `resumeChild` builds a FRESH handle (`coordinator.ts:745-756`), so
-    // `this.toolCallCount` and `this.usage` restart at zero and the terminal
-    // write at :622 has always overwritten run 1's totals with run 2's alone.
-    // Design §7.4 names the fields and is silent on resume semantics; making
-    // the running row agree with the terminal one it is about to become is the
-    // only choice that needs no second change.
+    // `this.toolCallCount` and `this.usage` restart at zero, and the terminal
+    // write in `finalizeTerminal` (`this.persist` at :630) has always
+    // overwritten run 1's totals with run 2's alone. Design §7.4 names the
+    // fields and is silent on resume semantics; making the running row agree
+    // with the terminal one it is about to become is the only choice that
+    // needs no second change.
     //
-    // `workspace` is deliberately NOT cleared: a resumed isolated child keeps
-    // the checkout it was cut into, so that field describes the child, not the
-    // run.
+    // `workspace` is deliberately NOT cleared, but what survives a resume is
+    // the PATH, not the checkout. On a clean terminal the finish hook REMOVES
+    // an isolated child's worktree (`createWorktreeCleanupHook` runs on every
+    // terminal path, `subagent-wiring.ts:423-434`), and the resume then re-cuts
+    // a fresh detached checkout at the identical path — `childWorktreePath` is
+    // a pure function of `(dataDir, agentName, childId)`
+    // (`subagent-worktree.ts:21-27`) and `ensureChildWorktree` reuses the
+    // directory when it outlived the hook and re-creates it there when it did
+    // not (`:85-93`). The stored value is correct in both branches, so the
+    // field describes the child, not the run.
     if (this.opts.resumeWith !== undefined) {
       this.persist({
         status: 'running',

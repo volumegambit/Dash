@@ -112,18 +112,42 @@ export function createFakeChildDriver(factory: WorkerFactory): ChildTurnDriver &
     persisted,
 
     prepareChild(spec: ChildSpec): void {
+      const existing = entries.get(spec.childConversationId);
       entries.set(spec.childConversationId, {
         spec,
+        // A resume re-prepares a child that already has a row, and the store
+        // behind the real driver does not forget that row — so neither does
+        // this. See `createChild` for why this pair exists at all.
+        ...(existing?.info !== undefined ? { info: existing.info } : {}),
         alive: true,
         cancelled: new Set(),
         turnSeq: 0,
       });
     },
 
+    /**
+     * Idempotent on id, like the service this stands in for: the real
+     * `createSubagent` early-returns an existing row UNTOUCHED
+     * (`conversation-service-sqlite.ts:1031-1052`), which is exactly what makes
+     * `ChildHandle`'s resume patch the only write that describes run 2. This
+     * fake overwrote instead, and `prepareChild` — which a resume runs again —
+     * dropped `info` outright, so both halves above are needed for the
+     * divergence to be gone.
+     *
+     * FIDELITY, NOT COVERAGE. This reddens no test and pins no assertion, and
+     * it repaired nothing that was broken: `ChildEntry.info` is write-only.
+     * Nothing outside `updateChild`'s own guard reads it, `entries` is
+     * closure-local, and the public surface is `ChildTurnDriver & { persisted
+     * }`, whose `listChildren` serves the `persisted` array tests seed by hand.
+     * The divergence therefore hid nothing and could hide nothing. The reason
+     * to close it anyway is that a fake which disagrees with production in a
+     * dimension its suites are about is a trap for the next reader who does try
+     * to observe it.
+     */
     createChild(input: ChildConversationInput): void {
       const entry = entries.get(input.id);
       if (!entry) throw new Error(`no prepared child ${input.id}`);
-      entry.info = input.subagent;
+      if (entry.info === undefined) entry.info = input.subagent;
     },
 
     startTurn({ agentId, conversationId, text }): { turnId: string } {

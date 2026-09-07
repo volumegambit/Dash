@@ -571,6 +571,7 @@ describe('createChildTurnDriver', () => {
     expect(afterRunOne?.report).toBe('run one report');
     expect(afterRunOne?.toolCallCount).toBe(1);
     expect(afterRunOne?.usage).toEqual({ inputTokens: 5, outputTokens: 7 });
+    expect(afterRunOne?.workspace).toBe('/repo');
 
     // A day later the user taps Resume. `ChildHandle.start()` persists before
     // the route answers, so the row is read SYNCHRONOUSLY, exactly as the GET
@@ -589,14 +590,20 @@ describe('createChildTurnDriver', () => {
     expect.soft(resumed?.report).toBeUndefined();
     expect.soft(resumed?.usage).toBeUndefined();
     expect.soft(resumed?.toolCallCount).toBe(0);
-    // Not run-scoped: a resumed child keeps the checkout it was isolated into.
+    // NOT run-scoped, so the resume leaves both standing: `prompt` is the
+    // brief the child was spawned on and `workspace` is where it runs, and the
+    // resume patch names neither — both still hold the values run 1's
+    // `createChild` wrote. A `workspace: undefined` added to that patch reddens
+    // the second line.
     expect(resumed?.prompt).toBe('survey the repo');
+    expect(resumed?.workspace).toBe(afterRunOne?.workspace);
 
     await coordinator.waitChild(subagentId);
     const afterRunTwo = conversations.get(subagentId)?.subagent;
-    // PER-RUN, not cumulative — which is what the terminal write at
-    // `child-handle.ts:586` has always done, because `resumeChild` builds a
-    // FRESH handle whose counters start at zero.
+    // PER-RUN, not cumulative — which is what the terminal write has always
+    // done (`finalizeTerminal`'s `this.persist`, `child-handle.ts:630`),
+    // because `resumeChild` builds a FRESH handle whose counters start at
+    // zero.
     expect(afterRunTwo?.toolCallCount).toBe(1);
     expect(afterRunTwo?.usage).toEqual({ inputTokens: 5, outputTokens: 7 });
     expect(afterRunTwo?.startedAt).toBe('2026-09-09T12:14:00.000Z');
