@@ -556,12 +556,13 @@ private struct SubagentStatusGlyph: View {
 
 /// One-line composer for a child.
 ///
-/// The text lives in `ChatFeature.subagentDrafts` under `draftKey`, NOT in
-/// `@State` and NOT in `ChatState.subagentUI`. `@State` dies with the view, so
+/// The text lives in `ChatFeature.subagentComposerDrafts` under `draftKey`,
+/// NOT in `@State` and NOT in `ChatState.subagentUI`. `@State` dies with the view, so
 /// collapsing a row threw the draft away where web keeps it; `ChatState` would
 /// invalidate the whole transcript per keystroke. A separate `@Observable`
 /// property is neither: Observation tracks access per stored property, so the
-/// read below invalidates this composer alone. See `ChatFeature.subagentDrafts`.
+/// read below invalidates this composer alone. See
+/// `ChatFeature.subagentComposerDrafts`.
 ///
 /// It is NOT cleared on submit and NOT cleared on failure — only on a send the
 /// caller reports as successful, by way of the row's `isSending` returning to

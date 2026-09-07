@@ -1284,17 +1284,25 @@ final class ChatFeature {
   /// invalidates that composer and nothing else. The first round ruled out
   /// `ChatState` correctly and then stopped looking, and the cost was a
   /// divergence from web that the goal's parity requirement does not allow.
-  var subagentDrafts: [String: String] = [:]
+  ///
+  /// **`Composer` is in the name deliberately.** `ChatAssistantState` already
+  /// has an unrelated `subagentDrafts` (`ChatReducer.swift:198`) — the
+  /// accumulating `[SubagentDraft]` sub-agent *cards*, which `ChatView` reads
+  /// for the transcript signature. Two different things sharing one name in
+  /// two files a reader of this feature has open at once is how a future
+  /// reader chasing "the draft store" lands in the wrong one; the compiler
+  /// would not stop them, because it separates the two by type, not by intent.
+  var subagentComposerDrafts: [String: String] = [:]
 
-  func subagentDraft(_ key: String) -> String { subagentDrafts[key] ?? "" }
+  func subagentComposerDraft(_ key: String) -> String { subagentComposerDrafts[key] ?? "" }
 
   /// Empty text REMOVES the key rather than storing `""`, so a session that
   /// visits many rows does not accumulate one entry per composer it rendered.
-  func setSubagentDraft(_ key: String, _ text: String) {
+  func setSubagentComposerDraft(_ key: String, _ text: String) {
     if text.isEmpty {
-      subagentDrafts.removeValue(forKey: key)
+      subagentComposerDrafts.removeValue(forKey: key)
     } else {
-      subagentDrafts[key] = text
+      subagentComposerDrafts[key] = text
     }
   }
 

@@ -5097,31 +5097,31 @@ struct ChatFeatureTests {
     an unsent sub-agent draft survives a collapse and is keyed per composer,     which is web's behaviour and what `@State` in the composer could not do
     """
   )
-  func subagentDraftsSurviveCollapseAndDoNotShareABuffer() async {
+  func subagentComposerDraftsSurviveCollapseAndDoNotShareABuffer() async {
     let feature = makeFeature()
     feature.setConnection(.online)
     await feature.appear()
     await feature.setSubagentExpanded("child-1", true).value
 
-    feature.setSubagentDraft("body:child-1", "half a sentence")
-    feature.setSubagentDraft("reply:child-1", "the answer is yes")
+    feature.setSubagentComposerDraft("body:child-1", "half a sentence")
+    feature.setSubagentComposerDraft("reply:child-1", "the answer is yes")
 
     // One child renders BOTH composers when it is `waiting_input` and open.
-    #expect(feature.subagentDraft("body:child-1") == "half a sentence")
-    #expect(feature.subagentDraft("reply:child-1") == "the answer is yes")
+    #expect(feature.subagentComposerDraft("body:child-1") == "half a sentence")
+    #expect(feature.subagentComposerDraft("reply:child-1") == "the answer is yes")
 
     await feature.setSubagentExpanded("child-1", false).value
     await feature.setSubagentExpanded("child-1", true).value
 
-    #expect(feature.subagentDraft("body:child-1") == "half a sentence")
-    #expect(feature.subagentDraft("reply:child-1") == "the answer is yes")
+    #expect(feature.subagentComposerDraft("body:child-1") == "half a sentence")
+    #expect(feature.subagentComposerDraft("reply:child-1") == "the answer is yes")
 
     // Clearing REMOVES the key, so a long session does not accumulate one
     // entry per composer it has ever rendered.
-    feature.setSubagentDraft("body:child-1", "")
-    #expect(feature.subagentDraft("body:child-1").isEmpty)
-    #expect(feature.subagentDrafts.keys.contains("body:child-1") == false)
-    #expect(feature.subagentDrafts == ["reply:child-1": "the answer is yes"])
+    feature.setSubagentComposerDraft("body:child-1", "")
+    #expect(feature.subagentComposerDraft("body:child-1").isEmpty)
+    #expect(feature.subagentComposerDrafts.keys.contains("body:child-1") == false)
+    #expect(feature.subagentComposerDrafts == ["reply:child-1": "the answer is yes"])
   }
 
   @Test("resendFromMessage refuses an orchestrator-authored row, not just a notification row")
