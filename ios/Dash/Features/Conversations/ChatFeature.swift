@@ -1359,9 +1359,13 @@ final class ChatFeature {
   ///
   /// **A transcript ROW is not this list and does not follow that rule.** It
   /// reads `restSubagentStatus` when the server has an entry for it and its own
-  /// fold otherwise — when-present, not terminal-wins, which is why D3's bug
-  /// cannot occur in it. See `restSubagentStatus` for the two costs that does
-  /// carry and the one it cannot fix.
+  /// fold otherwise — when-present, not terminal-wins. That rule shows the
+  /// fresher value ONLY while this list is fresh, so a resume that leaves it
+  /// unread reproduces D3's bug from the other side: same trigger, same
+  /// symptom, same duration, with the stale value coming from REST instead of
+  /// the fold. `sendToSubagent` therefore re-reads on a successful resume, the
+  /// way `stopSubagent` always has. See `restSubagentStatus` for the two costs
+  /// this does carry and the one it cannot fix.
   ///
   /// **Why a property on the feature and not a `ChatState` field.** Swift
   /// Observation tracks access per STORED property, and `ChatState` is one
@@ -1446,7 +1450,7 @@ final class ChatFeature {
     } catch {
       // Only a dead credential is worth escalating; every other failure leaves
       // the sheet on the snapshot it had, and a start, a finish, a turn end, a
-      // reconnect or a foreground fires this again.
+      // reconnect, a foreground, a stop or a resume fires this again.
       if case GatewayError.unauthorized = error { await applyFailure(error) }
       return
     }
@@ -1508,6 +1512,21 @@ final class ChatFeature {
   /// read. Patching this list from a live event to close it would be the
   /// fold ∪ REST merge D3 rejected, for a window bounded by a request already
   /// in flight.
+  ///
+  /// **And one that is closed only for THIS client's own resume.**
+  /// `sendToSubagent` re-reads the list after a successful resume, so a resume
+  /// taken here can no longer leave a terminal status laid over a running
+  /// child. A resume taken somewhere else — web, Mission Control, another
+  /// device — reaches this client through nothing at all while its parent has
+  /// no live turn (`packages/swarm/src/coordinator.ts:1549-1554`), so this list
+  /// keeps the terminal status for the whole of that second run. For a
+  /// FOREGROUND child that is exactly what the fold said before this accessor
+  /// existed, because its terminal event is persisted and never changes; for a
+  /// BACKGROUND child the fold said `running` and was accidentally right, so
+  /// that one case is genuinely worse here than it was. It is the price of the
+  /// case this exists for — a background child whose finish the fold can never
+  /// learn — and it cannot be bought back without a trigger the gateway does
+  /// not offer.
   func restSubagentStatus(_ childID: String) -> SubagentCardStatus? {
     guard let entry = subagents.first(where: { $0.id == childID }) else { return nil }
     return SubagentCardStatus(wire: entry.status)
@@ -1675,6 +1694,26 @@ final class ChatFeature {
       try await synchronizer.resumeSubagent(id: childID, message: trimmed, requestID: requestID)
       guard isShutdown == false else { return false }
       await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))
+      // A resume RESTARTS a child, so the list that every surface reads is now
+      // wrong about it, and this is the only thing that can say so. Outside a
+      // live parent turn `Coordinator.emitToParent` has no turn to emit into
+      // (`packages/swarm/src/coordinator.ts:1549-1554`), so not one of the
+      // child's frames — started, progress or finished — reaches this socket,
+      // and the next trigger in `refreshesSubagentList` is the SECOND run's
+      // notification turn. Without this read the row, the sheet, the strip and
+      // the badge all keep the pre-resume status for the whole of that run,
+      // which since the row began reading REST is a terminal one beating a
+      // fold that was right. `stopSubagent` has had the mirror-image read from
+      // the start; this is the same asymmetry, closed.
+      //
+      // The whole ENTRY rather than the route's `status`: `endedAt`, `report`,
+      // `toolCallCount` and `usage` all belong to the previous run too, and
+      // only the list corrects them. The status is also the one field the
+      // client could have guessed — `ChildHandle.start()` persists `running`
+      // before the route answers (`packages/swarm/src/child-handle.ts:291`) —
+      // so plumbing `SubagentResumeResponseDTO.status` back through
+      // `ChatSynchronizing` would widen a protocol for the least of it.
+      await refreshSubagents()
       return true
     } catch is CancellationError {
       return false

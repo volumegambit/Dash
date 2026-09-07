@@ -5556,6 +5556,40 @@ struct ChatFeatureTests {
     #expect(feature.restSubagentStatus("grandchild-1") == nil)
   }
 
+  @Test(
+    """
+    a resume re-reads the list, so a row that reads the server stops showing     the status the child had before it was resumed
+    """
+  )
+  func aResumeReReadsTheList() async {
+    let sync = FakeChatSynchronizer()
+    // §8.4's Resume on its headline target: a BACKGROUND child that finished
+    // after its spawning turn, whose `done` the notification turn's read
+    // already brought here — and which `SubagentTaskRow.canResume` offers
+    // Resume on precisely because `coordinator.resumeChild` is built to
+    // rebuild a finished child's grant.
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    await sync.enqueueResume(.success(()))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    let feature = makeFeature(sync: sync, ids: ["turn-1", "local-1", "req-1"])
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(await sync.subagentListCalls.count == 1)
+    #expect(feature.restSubagentStatus("child-1") == .done)
+
+    #expect(await feature.sendToSubagent("child-1", text: "one more pass"))
+
+    // Nothing else can close this window. A resume outside a live parent turn
+    // reaches `Coordinator.emitToParent` with no live turn to emit into
+    // (`packages/swarm/src/coordinator.ts:1549-1554`), so not one of the
+    // child's frames — started, progress or finished — arrives on this socket,
+    // and no other trigger fires until the SECOND run's notification turn.
+    #expect(await sync.subagentListCalls.count == 2)
+    // The row, the sheet, the strip and the badge all read this.
+    #expect(feature.restSubagentStatus("child-1") == .running)
+    #expect(feature.liveSubagentCount == 1)
+  }
+
   @Test("revealing a child the transcript has no row for expands nothing and fetches nothing")
   func revealingAChildWithNoCardExpandsNothing() async {
     let sync = FakeChatSynchronizer()

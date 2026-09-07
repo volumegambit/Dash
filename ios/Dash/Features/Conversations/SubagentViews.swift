@@ -105,8 +105,14 @@ struct SubagentInteraction {
   /// terminal-wins for a LIST, and its bug was the fold's PERSISTED `done`
   /// beating REST's fresh `running` for a resumed child. Reading REST
   /// when-present is the other rule: the resumed child reads `running` and the
-  /// finished background child reads `done`, both fresher. See
-  /// `ChatFeature.restSubagentStatus` for the two costs this does carry.
+  /// finished background child reads `done`, both fresher.
+  ///
+  /// **The resumed child reads `running` only because the resume re-reads the
+  /// list.** Nothing else could tell it: a resume outside a live parent turn
+  /// puts not one of the child's frames on this socket, so without that read
+  /// this rule reproduces D3's bug with REST as the stale source. See
+  /// `ChatFeature.sendToSubagent` for the read and
+  /// `ChatFeature.restSubagentStatus` for the costs this does carry.
   ///
   /// Default `nil`, so `.inert` and any caller with no feature behind it keep
   /// the fold's own answer and nothing else has to change.
