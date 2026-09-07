@@ -1,9 +1,10 @@
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { basename } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { type BlobSigner, imageContentType } from './blob.js';
 import type {
   ChannelHealthEntry,
   ErrorResponse,
@@ -42,6 +43,12 @@ export interface ManagementServerOptions {
     agentName: string,
     patch: { model?: string; fallbackModels?: string[]; tools?: string[]; systemPrompt?: string },
   ) => Promise<void>;
+  /**
+   * Blob signer for outbound image delivery (DASH-11). When present, the
+   * server exposes `GET /blob/:id` streaming a workspace-scoped file that a
+   * signed id resolves to. Omit to disable the endpoint entirely.
+   */
+  blobSigner?: BlobSigner;
 }
 
 export function createManagementApp(options: ManagementServerOptions): Hono {
@@ -49,9 +56,13 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
   const startTime = Date.now();
   let channelHealthStore: ChannelHealthEntry[] = [];
 
-  // Bearer token auth middleware — /health is exempt (public liveness check)
+  // Bearer token auth middleware — /health is exempt (public liveness check).
+  // /blob/:id is also exempt: its authorization is the HMAC-signed, expiring id
+  // itself (verified in the route), so remote clients fetching over the relay
+  // tunnel do not need the management bearer token. An unsigned/expired/tampered
+  // id fails verification and returns 403/404.
   app.use('*', async (c, next) => {
-    if (c.req.path === '/health') {
+    if (c.req.path === '/health' || c.req.path.startsWith('/blob/')) {
       await next();
       return;
     }
@@ -75,6 +86,82 @@ export function createManagementApp(options: ManagementServerOptions): Hono {
   app.get('/info', (c) => {
     return c.json(options.getInfo());
   });
+
+  // --- Outbound image delivery (DASH-11): GET /blob/:id -------------------
+  if (options.blobSigner) {
+    const signer = options.blobSigner;
+    app.get('/blob/:id', async (c) => {
+      const id = c.req.param('id');
+      const claims = signer.verify(id);
+      if (!claims) {
+        // Bad signature, tampered, or expired — do not distinguish, and do not
+        // leak whether a path exists.
+        return c.json({ error: 'Invalid or expired blob id' } satisfies ErrorResponse, 403);
+      }
+
+      const contentType = imageContentType(claims.path);
+      if (!contentType) {
+        return c.json({ error: 'Unsupported media type' } satisfies ErrorResponse, 415);
+      }
+
+      let fileStat: import('node:fs').Stats;
+      try {
+        fileStat = await stat(claims.path);
+      } catch {
+        return c.json({ error: 'Not found' } satisfies ErrorResponse, 404);
+      }
+      if (!fileStat.isFile()) {
+        return c.json({ error: 'Not found' } satisfies ErrorResponse, 404);
+      }
+
+      const total = fileStat.size;
+      const baseHeaders: Record<string, string> = {
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        // Signed ids are immutable + expiring, so the bytes behind one are safe
+        // to cache hard for the id's lifetime.
+        'Cache-Control': 'private, max-age=300, immutable',
+      };
+
+      // Range support (single range only) so large images and viewers seek.
+      const range = c.req.header('Range');
+      if (range) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (m && (m[1] !== '' || m[2] !== '')) {
+          const start = m[1] === '' ? total - Number(m[2]) : Number(m[1]);
+          let end = m[2] === '' || m[1] === '' ? total - 1 : Number(m[2]);
+          if (Number.isNaN(start) || Number.isNaN(end) || start > end || start < 0) {
+            return new Response(null, {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${total}` },
+            });
+          }
+          if (end >= total) end = total - 1;
+          if (start >= total) {
+            return new Response(null, {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${total}` },
+            });
+          }
+          const nodeStream = createReadStream(claims.path, { start, end });
+          return new Response(nodeStream as unknown as ReadableStream, {
+            status: 206,
+            headers: {
+              ...baseHeaders,
+              'Content-Range': `bytes ${start}-${end}/${total}`,
+              'Content-Length': String(end - start + 1),
+            },
+          });
+        }
+      }
+
+      const nodeStream = createReadStream(claims.path);
+      return new Response(nodeStream as unknown as ReadableStream, {
+        status: 200,
+        headers: { ...baseHeaders, 'Content-Length': String(total) },
+      });
+    });
+  }
 
   app.post('/lifecycle/shutdown', async (c) => {
     await options.onShutdown();

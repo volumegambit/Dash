@@ -5,7 +5,7 @@ import { MemoryOpError, readBook } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
-import { mountProjectsRoutes } from '@dash/management';
+import { imageContentType, mountProjectsRoutes } from '@dash/management';
 import type { GatewayIdentity, MobileApiError, MobileCapability } from '@dash/mobile-contract';
 import type { PluginConfigStore } from '@dash/plugins';
 import { heuristicPluginScan, installPluginToDir, realpathContained } from '@dash/plugins';
@@ -69,6 +69,14 @@ export interface GatewayManagementOptions {
    * tests and embedders that do not run learning still construct the app.
    */
   managedSkillsDir?: (agentId: string) => string | null;
+  /**
+   * Blob signer for outbound image delivery (DASH-11). When present, the app
+   * exposes `GET /blob/:id` streaming a workspace-scoped file a signed id
+   * resolves to. Authorization is the signed, expiring id itself, so the route
+   * is exempt from bearer auth (remote clients fetch it over the relay tunnel
+   * without the management token). Omit to disable the endpoint.
+   */
+  blobSigner?: import('@dash/management').BlobSigner;
   /** Capability bearer accepted only by the `/mobile/v1` namespace. */
   mobileToken?: string;
   /** Administrative bearer accepted by every non-mobile management route. */
@@ -524,7 +532,11 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (
       c.req.path === '/health' ||
       c.req.path === '/mobile/v1/health' ||
-      c.req.path === '/projects/ws'
+      c.req.path === '/projects/ws' ||
+      // /blob/:id carries its own authorization: an HMAC-signed, expiring id
+      // verified inside the route. Remote clients fetch it over the relay
+      // tunnel without the management bearer token.
+      c.req.path.startsWith('/blob/')
     ) {
       await next();
       return;
@@ -564,6 +576,84 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   };
   app.get('/health', healthHandler);
   mobileV1.get('/health', healthHandler);
+
+  // --- Outbound image delivery (DASH-11): GET /blob/:id ------------------
+  // Streams a workspace-scoped file that a short-lived, HMAC-signed id
+  // resolves to. Auth is the signed id itself (verified here), so this route
+  // is exempt from the bearer middleware above. See
+  // docs/plans/2026-09-06-outbound-image-delivery-design.md.
+  if (options.blobSigner) {
+    const signer = options.blobSigner;
+    app.get('/blob/:id', async (c) => {
+      const { createReadStream } = await import('node:fs');
+      const { stat } = await import('node:fs/promises');
+      const claims = signer.verify(c.req.param('id'));
+      if (!claims) {
+        return c.json(
+          { code: 'forbidden', error: 'Invalid or expired blob id', retryable: false },
+          403,
+        );
+      }
+      const contentType = imageContentType(claims.path);
+      if (!contentType) {
+        return c.json(
+          { code: 'unsupported_media_type', error: 'Unsupported media type', retryable: false },
+          415,
+        );
+      }
+      let fileStat: import('node:fs').Stats;
+      try {
+        fileStat = await stat(claims.path);
+      } catch {
+        return c.json({ code: 'not_found', error: 'Not found', retryable: false }, 404);
+      }
+      if (!fileStat.isFile()) {
+        return c.json({ code: 'not_found', error: 'Not found', retryable: false }, 404);
+      }
+      const total = fileStat.size;
+      const baseHeaders: Record<string, string> = {
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'private, max-age=300, immutable',
+      };
+      const range = c.req.header('Range');
+      if (range) {
+        const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (m && (m[1] !== '' || m[2] !== '')) {
+          const start = m[1] === '' ? total - Number(m[2]) : Number(m[1]);
+          let end = m[2] === '' || m[1] === '' ? total - 1 : Number(m[2]);
+          if (
+            Number.isNaN(start) ||
+            Number.isNaN(end) ||
+            start > end ||
+            start < 0 ||
+            start >= total
+          ) {
+            return new Response(null, {
+              status: 416,
+              headers: { 'Content-Range': `bytes */${total}` },
+            });
+          }
+          if (end >= total) end = total - 1;
+          return new Response(
+            createReadStream(claims.path, { start, end }) as unknown as ReadableStream,
+            {
+              status: 206,
+              headers: {
+                ...baseHeaders,
+                'Content-Range': `bytes ${start}-${end}/${total}`,
+                'Content-Length': String(end - start + 1),
+              },
+            },
+          );
+        }
+      }
+      return new Response(createReadStream(claims.path) as unknown as ReadableStream, {
+        status: 200,
+        headers: { ...baseHeaders, 'Content-Length': String(total) },
+      });
+    });
+  }
 
   // --- Lifecycle ---
   // Bearer-authed (the app.use('*') middleware above). MC's GatewaySupervisor

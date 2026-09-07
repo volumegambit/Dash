@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { networkInterfaces } from 'node:os';
@@ -18,7 +19,7 @@ import {
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
-import { mountProjectsWs } from '@dash/management';
+import { createBlobSigner, mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
@@ -962,6 +963,19 @@ async function main() {
     }
   }
 
+  // Blob signer for outbound image delivery (DASH-11). The HMAC secret is
+  // derived from the management token (stable for the process lifetime,
+  // already the gateway's shared secret) via a fixed label so it is not the
+  // bearer token verbatim. Blobs are scoped per conversation to
+  // `<dataDir>/workspaces/<conversationId>`. When no token is configured
+  // (some test/embedded setups), the signer is omitted and the route is off.
+  const blobSigner = flags.token
+    ? createBlobSigner({
+        secret: createHmac('sha256', flags.token).update('dash:blob:v1').digest('hex'),
+        workspaceRoot: (conversationId) => join(dataDir, 'workspaces', conversationId),
+      })
+    : undefined;
+
   // Management API (HTTP + WebSocket for /projects/ws)
   const managementApp = createGatewayManagementApp({
     gateway,
@@ -970,6 +984,7 @@ async function main() {
     channelRegistry,
     credentialStore,
     modelsStore,
+    blobSigner,
     identity: mobileIdentity,
     // Same resolver the review service uses, so the lesson routes read exactly
     // the directory learning writes to.

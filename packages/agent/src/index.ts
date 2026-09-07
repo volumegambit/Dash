@@ -4,6 +4,8 @@ export type {
   AgentEvent,
   ExtraTool,
   ImageBlock,
+  OutboundImage,
+  OutboundImageMediaType,
   PluginModelCatalog,
   RunOptions,
   DashAgentConfig,

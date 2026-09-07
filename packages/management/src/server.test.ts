@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createBlobSigner } from './blob.js';
 import { createManagementApp, startManagementServer } from './server.js';
 import type { InfoResponse, SkillsConfig } from './types.js';
 
@@ -644,5 +645,88 @@ describe('Management Server', () => {
         expect(line).toContain('[info]');
       }
     });
+  });
+});
+
+describe('GET /blob/:id (outbound image delivery)', () => {
+  let server: Server;
+  let close: () => Promise<void>;
+  let port: number;
+  let workspaces: string;
+  let signer: ReturnType<typeof createBlobSigner>;
+  const conv = 'conv-abc';
+  // 1x1 transparent PNG.
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  beforeEach(async () => {
+    workspaces = await mkdtemp(join(tmpdir(), 'dash-blob-'));
+    // mkdtemp gives us a dir; create the conversation subdir + file.
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(join(workspaces, conv), { recursive: true });
+    await writeFile(join(workspaces, conv, 'pic.png'), pngBytes);
+
+    signer = createBlobSigner({
+      secret: 'blob-test-secret',
+      workspaceRoot: (id) => join(workspaces, id),
+    });
+
+    const result = startManagementServer({
+      port: 0,
+      token: TEST_TOKEN,
+      getInfo: () => ({ agents: [] }),
+      onShutdown: vi.fn().mockResolvedValue(undefined),
+      blobSigner: signer,
+    });
+    server = result.server;
+    close = result.close;
+    await new Promise<void>((resolve) => {
+      if (server.listening) resolve();
+      else server.once('listening', resolve);
+    });
+    const addr = server.address();
+    port = typeof addr === 'object' && addr ? addr.port : 0;
+  });
+
+  afterEach(async () => {
+    await close();
+    await rm(workspaces, { recursive: true, force: true });
+  });
+
+  function blobUrl(id: string): string {
+    return `http://localhost:${port}/blob/${encodeURIComponent(id)}`;
+  }
+
+  it('streams a signed image with no bearer token', async () => {
+    const id = signer.sign({ path: join(workspaces, conv, 'pic.png'), conversationId: conv });
+    const res = await fetch(blobUrl(id));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+    expect(res.headers.get('Accept-Ranges')).toBe('bytes');
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(pngBytes)).toBe(true);
+  });
+
+  it('returns 403 for a tampered/invalid id', async () => {
+    const res = await fetch(blobUrl('not-a-valid-id'));
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 when the signed file does not exist', async () => {
+    const id = signer.sign({ path: join(workspaces, conv, 'missing.png'), conversationId: conv });
+    const res = await fetch(blobUrl(id));
+    expect(res.status).toBe(404);
+  });
+
+  it('supports a Range request with 206 + Content-Range', async () => {
+    const id = signer.sign({ path: join(workspaces, conv, 'pic.png'), conversationId: conv });
+    const res = await fetch(blobUrl(id), { headers: { Range: 'bytes=0-3' } });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('Content-Range')).toBe(`bytes 0-3/${pngBytes.length}`);
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.length).toBe(4);
+    expect(body.equals(pngBytes.subarray(0, 4))).toBe(true);
   });
 });

@@ -33,6 +33,39 @@ export interface ImageBlock {
   data: string; // base64-encoded
 }
 
+/** Media type accepted for outbound (agent to client) images. */
+export type OutboundImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+/**
+ * An image an agent produced on the gateway (generated art, chart, screenshot,
+ * a file written into the workspace) being delivered to clients. Carried on the
+ * outbound event stream so MC/iOS/web render it via their existing image viewer
+ * instead of the bytes only reaching the user as a third-party URL in text.
+ *
+ * Transport rule (see docs/plans/2026-09-06-outbound-image-delivery-design.md):
+ * images above ~32 KB MUST use `blobId` (resolved by the client against its
+ * known gateway base to `GET /blob/:id`); only tiny thumbnails may inline
+ * base64 in `data`. Exactly one of `blobId`/`data` is expected to be set;
+ * `blobId` wins when both are present.
+ */
+export interface OutboundImage {
+  mediaType: OutboundImageMediaType;
+  /** Short-lived HMAC-signed blob id resolved to `GET /blob/:id`. Preferred. */
+  blobId?: string;
+  /** base64-encoded inline bytes; tiny-thumbnail fallback only. */
+  data?: string;
+  /** Accessible description / alt text. */
+  alt?: string;
+  /** Intrinsic pixel dimensions, when known, so clients can reserve layout. */
+  width?: number;
+  height?: number;
+  // Index signature so `{ type: 'image' } & OutboundImage` is assignable to the
+  // mobile-contract `MobileAgentEvent` ({ type: string; [k: string]: unknown }),
+  // which the durable event log and mobile replay stream carry. All fields
+  // above are already `unknown`-compatible.
+  [key: string]: unknown;
+}
+
 // --- Agent types ---
 
 export type AgentEvent =
@@ -59,6 +92,7 @@ export type AgentEvent =
       };
     }
   | { type: 'error'; error: Error; timestamp?: string }
+  | ({ type: 'image' } & OutboundImage)
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
   | {
