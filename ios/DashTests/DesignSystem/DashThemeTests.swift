@@ -75,4 +75,9 @@ struct DashThemeTests {
     #expect(DashTheme.success != DashTheme.danger)
     #expect(DashTheme.codeBackground != DashTheme.accent)
   }
+
+  @Test("readable width matches the Claude/ChatGPT iPad column")
+  func readableWidthSnapshot() {
+    #expect(DashTheme.Layout.readableWidth == 760)
+  }
 }

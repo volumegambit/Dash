@@ -34,6 +34,13 @@ struct RootView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
+  @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
+  /// Covers the async gap between tapping the empty detail's "New
+  /// conversation" button and `openConversation` actually navigating — the
+  /// same window `ConversationListView.isComposing` guards for the list's own
+  /// compose button. See `composeFromEmptyDetail()`.
+  @State private var isComposingFromDetail = false
+
   var body: some View {
     OfflineBanner(banner: appModel.banner) {
       if appModel.selectedProfile == nil {
@@ -45,6 +52,15 @@ struct RootView: View {
       }
     }
     .tint(DashTheme.accent)
+    // iPad goal Phase B: the shell's own commands (⌘, ⌘1 ⌘2). All three
+    // write `selectedTab`, which is the source of truth at BOTH widths — on
+    // the two-column layout `sidebarPath` turns `.agents` into a push and
+    // `isSettingsPresented` turns `.settings` into a sheet, so these need no
+    // presentation-specific branch of their own.
+    .background { AppCommandPublisher(actions: appCommands).equatable() }
+    .onChange(of: navigationPresentation) { _, presentation in
+      appModel.reconcileNavigation(for: presentation)
+    }
     .alert("Agent update failed", isPresented: agentMutationErrorPresented) {
       Button("OK") { appModel.agentsFeature?.mutationError = nil }
     } message: {
@@ -58,6 +74,15 @@ struct RootView: View {
           ?? "The saved message remains available."
       )
     }
+  }
+
+  /// `nil` — which DISABLES ⌘, ⌘1 ⌘2 rather than leaving them listed and
+  /// inert — while signed out, since `pairingNavigation` has no tabs at all.
+  /// Publishing them there would let ⌘, quietly set `selectedTab = .settings`
+  /// behind the sign-in screen, so the first thing the user saw after pairing
+  /// would be the Settings sheet they never asked for.
+  private var appCommands: AppCommandActions? {
+    appModel.selectedProfile == nil ? nil : AppCommandActions(appModel: appModel)
   }
 
   private var agentMutationErrorPresented: Binding<Bool> {
@@ -129,88 +154,164 @@ struct RootView: View {
     }
   }
 
-  private var regularNavigation: some View {
-    @Bindable var appModel = appModel
-    let selection = Binding<AppTab?>(
-      get: { appModel.selectedTab },
-      set: { tab in
-        if let tab { appModel.selectedTab = tab }
+  /// iPad two-column layout (design §1.1): the sidebar's local push stack —
+  /// `[.agents]` while Agents is showing, empty (root = the conversation
+  /// list) otherwise. `SidebarFooterView`'s Conversations row sets
+  /// `selectedTab = .conversations` directly, which this binding's `get`
+  /// turns into an empty path — i.e. popping the stack to its root — for
+  /// free, no separate "pop" case needed.
+  private var sidebarPath: Binding<[SidebarRoute]> {
+    Binding(
+      get: { appModel.selectedTab == .agents ? [.agents] : [] },
+      set: { path in
+        appModel.selectedTab = path.contains(.agents) ? .agents : .conversations
       }
     )
-    // Settings is two columns, everything else is three (UI-quality goal).
-    //
-    // Settings had no middle pane to fill, so the content column rendered a
-    // `FeatureSlotView` placeholder: the word "Settings" appeared three
-    // times at regular width — sidebar row, placeholder, and the detail's
-    // own navigation title — around a dead column. The tab's selection and
-    // both navigation paths live on `AppModel`, not in view state, so
-    // building a different split view for this tab costs nothing but the
-    // transition.
-    if appModel.selectedTab == .settings {
-      return AnyView(
-        NavigationSplitView {
-          tabSidebar(selection: selection)
-        } detail: {
-          NavigationStack { settingsRoot }
-        }
-      )
-    }
+  }
 
-    return AnyView(
-      NavigationSplitView {
-        tabSidebar(selection: selection)
-      } content: {
-      NavigationStack {
-        switch appModel.selectedTab {
-        case .conversations:
-          conversationListRoot
-        case .agents:
-          agentsListRoot
-        case .settings:
-          // Unreachable: `.settings` takes the two-column branch above.
-          EmptyView()
-        }
+  /// Settings is a sheet on the two-column layout, not a third column or a
+  /// pushed route.
+  ///
+  /// MERGE NOTE (2026-09-07): main's `edd5a29f` ("Settings is two columns on
+  /// iPad, not three with a dead middle pane") fixed the SAME defect inside
+  /// the three-column `NavigationSplitView` this branch replaced — the
+  /// content column had no middle pane to fill for Settings, so the word
+  /// "Settings" appeared three times around a dead column. That fix is
+  /// SUBSUMED here rather than dropped: this layout has no tab-sidebar
+  /// column and no content column at all, so Settings is never a column,
+  /// never has a dead pane beside it, and appears exactly once. Main's
+  /// `tabSidebar(selection:)` helper came with that fix and has no caller in
+  /// this structure, so it is deliberately not carried over.
+  ///
+  /// Presented whenever `selectedTab == .settings`, and
+  /// dismissing it (swipe-down or the sheet's own dismiss) sends the tab
+  /// back to Conversations rather than leaving `selectedTab` stuck on a tab
+  /// with no on-screen representation.
+  private var isSettingsPresented: Binding<Bool> {
+    Binding(
+      get: { appModel.selectedTab == .settings },
+      set: { presented in if presented == false { appModel.selectedTab = .conversations } }
+    )
+  }
+
+  private var regularNavigation: some View {
+    NavigationSplitView(columnVisibility: $columnVisibility) {
+      // `SidebarFooterView` is attached via `.sidebarFooter(...)` to EACH
+      // page inside the stack (the conversation-list root AND the pushed
+      // Agents destination) rather than once on the `NavigationStack`
+      // itself: each pushed page becomes its own full-bleed UIKit
+      // navigation-controller page, so a `.safeAreaInset` (or a VStack
+      // sibling — tried first, same result) attached to the stack
+      // container only ever decorates its ROOT page and disappears the
+      // moment anything is pushed — confirmed via the accessibility
+      // hierarchy dump showing zero `tab.*` elements once Agents was
+      // pushed. Attaching the inset per-page keeps the footer's identity
+      // (and the `tab.*` identifiers `DashUITestCase.selectTab` looks for)
+      // present on every page of the sidebar stack.
+      NavigationStack(path: sidebarPath) {
+        conversationListRoot
+          .sidebarFooter(selectedTab: appModel.selectedTab) { tab in
+            appModel.selectedTab = tab
+          }
+          .navigationDestination(for: SidebarRoute.self) { route in
+            switch route {
+            case .agents:
+              agentsListRoot
+                .sidebarFooter(selectedTab: appModel.selectedTab) { tab in
+                  appModel.selectedTab = tab
+                }
+            }
+          }
+
       }
-      .navigationDestination(for: ConversationRoute.self) { route in
-        conversationDestination(route)
-      }
-      .navigationDestination(for: AgentRoute.self) { route in
-        agentDestination(route)
-      }
+      .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
     } detail: {
       NavigationStack {
         switch appModel.selectedTab {
-        case .conversations:
-          if let selection = appModel.splitConversationSelection {
-            conversationDestination(selection)
-          } else {
-            ContentUnavailableView(
-              "Select a conversation",
-              systemImage: "bubble.left.and.bubble.right"
-            )
-          }
         case .agents:
           if let selection = appModel.splitAgentSelection {
             agentDestination(selection)
           } else {
             ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
           }
-        case .settings:
-          EmptyView()
+        case .conversations, .settings:
+          if let selection = appModel.splitConversationSelection {
+            conversationDestination(selection)
+          } else {
+            emptyDetail
+          }
         }
       }
     }
+    .navigationSplitViewStyle(.balanced)
+    .sheet(isPresented: isSettingsPresented) {
+      // Presentation audit (iPad goal Phase D, Task 11 / design §1.1):
+      // Settings at regular width is a form sheet, not the phone's
+      // full-height column blown up. `FormSheetSizing` is a no-op on iOS 17.
+      NavigationStack { settingsRoot }
+        .modifier(FormSheetSizing())
+    }
+  }
+
+  private var emptyDetail: some View {
+    ContentUnavailableView {
+      Label("Select a conversation", systemImage: "bubble.left.and.bubble.right")
+    } actions: {
+      Button("New conversation") {
+        Task { await composeFromEmptyDetail() }
+      }
+      .buttonStyle(.borderedProminent)
+      .frame(minHeight: 44)
+      .disabled(isComposingFromDetail || composeUnavailable)
+      .accessibilityIdentifier("detail.newConversation")
+      .accessibilityHint(composeUnavailableHint)
+    }
+  }
+
+  /// The empty detail's compose button answers to the SAME availability
+  /// predicate as the conversation list's own compose button
+  /// (`ComposeAgentSelection.isUnavailable`), rather than being permanently
+  /// enabled and silently doing nothing when `composeConversation()` can find
+  /// no agent to compose under. `nil` feature means the list hasn't been
+  /// built yet, which is likewise not composable.
+  private var composeUnavailable: Bool {
+    guard let feature = appModel.conversationListFeature else { return true }
+    return ComposeAgentSelection.isUnavailable(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
     )
   }
 
-  private func tabSidebar(selection: Binding<AppTab?>) -> some View {
-    List(AppTab.allCases, selection: selection) { tab in
-      Label(tab.title, systemImage: tab.systemImage)
-        .frame(minWidth: 44, minHeight: 44)
-        .accessibilityIdentifier(tab.accessibilityID)
-        .tag(tab)
-    }
-    .navigationTitle(Self.title)
+  private var composeUnavailableHint: String {
+    guard let feature = appModel.conversationListFeature else { return "" }
+    return ComposeAgentSelection.unavailableHint(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    )
+  }
+
+  /// The two-column layout's empty-detail compose entry point (iPad goal
+  /// Phase A, Task 2): delegates agent resolution and conversation
+  /// creation to `ConversationListFeature.composeConversation()` — the same
+  /// path `ConversationListView.startCompose()` uses — then owns
+  /// navigation itself, since the feature deliberately holds no `AppModel`
+  /// reference.
+  private func composeFromEmptyDetail() async {
+    guard isComposingFromDetail == false else { return }
+    // Armed BEFORE the first `await`: `composeConversation()` suspends twice
+    // (`lastUsedAgentID()`, then `create(agentID:)`), and a second tap landing
+    // inside that window would otherwise pass this guard and run a concurrent
+    // create with interleaved `pendingCreateRequestID` / `pendingCreateAgentID`
+    // mutation. Mirrors `ConversationListView.startCompose()`.
+    isComposingFromDetail = true
+    defer { isComposingFromDetail = false }
+    guard let feature = appModel.conversationListFeature,
+      let id = await feature.composeConversation()
+    else { return }
+    appModel.openConversation(id, presentation: .regular)
+
   }
 
   @ViewBuilder
@@ -257,8 +358,11 @@ struct RootView: View {
   private func conversationDestination(_ route: ConversationRoute) -> some View {
     switch route {
     case .transcript(let id):
-      if let conversation = conversationSummary(id: id) {
-        ChatFeatureHostView(appModel: appModel, conversation: conversation)
+      if let conversation = appModel.conversationSummary(id: id) {
+        ChatFeatureHostView(appModel: appModel, conversation: conversation) {
+          appModel.splitConversationSelection = nil
+          appModel.conversationPath = []
+        }
       } else {
         ContentUnavailableView(
           "Conversation unavailable",
@@ -290,11 +394,6 @@ struct RootView: View {
     }
   }
 
-  private func conversationSummary(id: String) -> ConversationSummaryDTO? {
-    appModel.conversationListFeature?.conversations.first { $0.id == id }?.summary
-      ?? appModel.snapshot?.conversations.first { $0.id == id }?.summary
-  }
-
   @ViewBuilder
   private func agentDestination(_ route: AgentRoute) -> some View {
     if let feature = appModel.agentsFeature {
@@ -323,60 +422,6 @@ struct RootView: View {
       FeatureSlotView(title: "Agent", systemImage: "person.crop.circle")
     }
   }
-}
-
-@MainActor
-private struct ChatFeatureHostView: View {
-  @Bindable var appModel: AppModel
-  let conversation: ConversationSummaryDTO
-
-  @State private var feature: ChatFeature?
-  @State private var didFailToLoad = false
-
-  var body: some View {
-    Group {
-      if let feature {
-        ChatView()
-          .environment(feature)
-          .id(ObjectIdentifier(feature))
-      } else if didFailToLoad {
-        ContentUnavailableView(
-          "Chat unavailable",
-          systemImage: "exclamationmark.bubble",
-          description: Text("Check this gateway's connection and try again.")
-        )
-        .navigationTitle(conversation.title)
-      } else {
-        ProgressView("Opening conversation")
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .navigationTitle(conversation.title)
-      }
-    }
-    .task(
-      id: ChatHostTaskID(
-        conversationID: conversation.id,
-        appGeneration: appModel.chatHostGeneration
-      )
-    ) {
-      feature = nil
-      didFailToLoad = false
-      let loaded = await appModel.makeChatFeature(conversation)
-      guard Task.isCancelled == false else { return }
-      feature = loaded
-      didFailToLoad = loaded == nil
-    }
-    .onChange(of: appModel.connectionState) { _, connection in
-      feature?.setConnection(connection)
-      if connection == .online, let feature {
-        Task { await feature.connectionDidBecomeOnline() }
-      }
-    }
-  }
-}
-
-private struct ChatHostTaskID: Equatable {
-  let conversationID: String
-  let appGeneration: UInt64
 }
 
 /// Signed-out entry point: `SignInView` until the Clerk account session has a
@@ -443,21 +488,5 @@ private struct FeatureSlotView: View {
 extension AppTab {
   fileprivate var accessibilityID: String {
     "tab.\(rawValue)"
-  }
-
-  fileprivate var title: LocalizedStringKey {
-    switch self {
-    case .conversations: "Conversations"
-    case .agents: "Agents"
-    case .settings: "Settings"
-    }
-  }
-
-  fileprivate var systemImage: String {
-    switch self {
-    case .conversations: "bubble.left.and.bubble.right"
-    case .agents: "person.2"
-    case .settings: "gearshape"
-    }
   }
 }

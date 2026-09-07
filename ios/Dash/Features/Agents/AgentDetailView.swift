@@ -69,6 +69,8 @@ struct AgentDetailView: View {
           swarmSection(agent)
         }
         .accessibilityIdentifier("agent.detail.\(agentID)")
+        .frame(maxWidth: DashTheme.Layout.readableWidth)
+        .frame(maxWidth: .infinity)
       } else {
         ContentUnavailableView(
           "Agent unavailable",
@@ -101,49 +103,9 @@ struct AgentDetailView: View {
           .accessibilityIdentifier("agent.edit")
         }
         ToolbarItem(placement: .topBarTrailing) {
-          Menu {
-            if agent.status == .disabled {
-              Button {
-                Task { await setEnabled(true) }
-              } label: {
-                Label("Enable", systemImage: "play.circle")
-              }
-            } else {
-              Button {
-                showDisableConfirmation = true
-              } label: {
-                Label("Disable", systemImage: "pause.circle")
-              }
-            }
-            Button(role: .destructive) {
-              deleteName = ""
-              showDeleteConfirmation = true
-            } label: {
-              Label("Delete", systemImage: "trash")
-            }
-          } label: {
-            Label("Agent actions", systemImage: "ellipsis.circle")
-              .frame(minWidth: 44, minHeight: 44)
-          }
-          .disabled(feature.mutationsAllowed == false || isWorking)
-          .accessibilityHint(
-            feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
-          )
-          .accessibilityIdentifier("agent.actions")
+          agentActionsMenu(agent)
         }
       }
-    }
-    .confirmationDialog(
-      "Disable \(agent?.name ?? "agent")?",
-      isPresented: $showDisableConfirmation,
-      titleVisibility: .visible
-    ) {
-      Button("Disable", role: .destructive) {
-        Task { await setEnabled(false) }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Disabling this agent stops its active work. Existing conversations remain available.")
     }
     .alert("Delete \(agent?.name ?? "agent")?", isPresented: $showDeleteConfirmation) {
       TextField("Type the agent name", text: $deleteName)
@@ -155,6 +117,83 @@ struct AgentDetailView: View {
       .disabled(deleteName != agent?.name)
     } message: {
       Text("Type the exact agent name. Its conversations stay archived and read-only.")
+    }
+  }
+
+  /// The `agent.actions` toolbar menu, extracted from `body`'s `.toolbar`
+  /// because attaching its confirmation dialog inline pushed that expression
+  /// past the type-checker's budget.
+  private func agentActionsMenu(_ agent: RegisteredAgentDTO) -> some View {
+    Menu {
+      if agent.status == .disabled {
+        Button {
+          Task { await setEnabled(true) }
+        } label: {
+          Label("Enable", systemImage: "play.circle")
+        }
+      } else {
+        Button {
+          showDisableConfirmation = true
+        } label: {
+          Label("Disable", systemImage: "pause.circle")
+        }
+      }
+      Button(role: .destructive) {
+        deleteName = ""
+        showDeleteConfirmation = true
+      } label: {
+        Label("Delete", systemImage: "trash")
+      }
+    } label: {
+      Label("Agent actions", systemImage: "ellipsis.circle")
+        .frame(minWidth: 44, minHeight: 44)
+    }
+    .disabled(feature.mutationsAllowed == false || isWorking)
+    .accessibilityHint(
+      feature.mutationsAllowed ? "" : "Connect to the gateway to manage this agent"
+    )
+    .accessibilityIdentifier("agent.actions")
+    // Presentation audit (iPad goal Phase D, Task 11): a `confirmationDialog`
+    // is a POPOVER at iPad regular width, and UIKit takes its source rect from
+    // the view the modifier is attached to. Attached to `body`'s root — where
+    // this used to live — it anchored to the middle-left edge of the whole
+    // agent-detail pane, diagonally opposite this toolbar button. Attached
+    // here it anchors to the button. Compact width is unaffected: still a
+    // bottom action sheet.
+    //
+    // Deliberately OUTSIDE the `.disabled(…)` above: presented content
+    // inherits the presenter's environment, so wrapping it the other way round
+    // would let `isWorking` grey out the dialog's own buttons.
+    //
+    // Review follow-up: moving the anchor here also coupled the dialog's
+    // lifecycle to `agent` — this menu only exists inside `body`'s
+    // `if let agent { ToolbarItem { agentActionsMenu(agent) } }`, and `agent`
+    // is a lookup (`feature.agents.first { $0.id == agentID }`) over a live
+    // array that `AgentsFeature.refresh()` replaces wholesale, so it can
+    // transiently go nil. If that happens while this dialog is open, the
+    // whole `ToolbarItem` — dialog included — is torn out of the hierarchy.
+    // `showDisableConfirmation` is `@State` on `AgentDetailView`, not on this
+    // menu, so the flag would otherwise outlive that teardown: if SwiftUI
+    // does not reset the binding itself, a later refresh that repopulates
+    // the same id would bring this menu back with the flag still `true` and
+    // the dialog reappearing unprompted, unconfirmed. The `.onDisappear`
+    // below makes that impossible regardless of what SwiftUI does with the
+    // binding. It only fires when this menu's `ToolbarItem` actually leaves
+    // the hierarchy (i.e. `agent` really went nil), not on an ordinary
+    // refresh that keeps `agent` non-nil, so it cannot cancel a dialog the
+    // user is actively looking at during a routine refresh.
+    .onDisappear { showDisableConfirmation = false }
+    .confirmationDialog(
+      "Disable \(agent.name)?",
+      isPresented: $showDisableConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Disable", role: .destructive) {
+        Task { await setEnabled(false) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Disabling this agent stops its active work. Existing conversations remain available.")
     }
   }
 

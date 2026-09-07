@@ -1,5 +1,7 @@
+import CoreTransferable
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Turn ids whose assistant reply failed (chat-ux Phase 2, Task 4 / audit
 /// #5's message actions). "Failed" is only ever recorded on the
@@ -32,6 +34,29 @@ struct MessageListView: View {
   /// viewport before a page prepends above it.
   let firstRowFrameCoordinateSpace: String?
   let isAnsweringEnabled: Bool
+  /// Scroll anchor (iPad goal Phase A, Task 4 review fix, Important 1):
+  /// tags THIS view's stack — the one that actually holds
+  /// `ForEach(messages)` — as the enclosing `ScrollView`'s scroll-target
+  /// layout, so `ChatView`'s `.scrollPosition(id:anchor:)` binding resolves
+  /// real row identities. NOTE (merge with main, 2026-09-07): that identity
+  /// is now `ChatMessageState.rowID`, not `.id` — main re-keyed the `ForEach`
+  /// so the gateway ack rewriting `id` stops removing and re-inserting the
+  /// row — so everything `scrollPosition` reports and everything
+  /// `scrollTo` matches is a `rowID`. `ChatView.anchorBinding` and
+  /// `ChatScrollRestoration.decide` were repointed to match. It previously
+  /// sat on `ChatView`'s OUTER stack, whose direct arranged children are only
+  /// `olderMessagesControl` / this whole view as one opaque box / the bottom
+  /// sentinel; `scrollTargetLayout()` does not descend into a nested
+  /// `LazyVStack` inside a custom `View` struct. Measured consequence (see
+  /// the task-4 report): with the tag on the outer stack the RESTORE
+  /// direction still worked — `.scrollPosition(id:)` will scroll to any
+  /// `.id()`-tagged view in the scroll view — but the TRACKING direction was
+  /// dead, so `scrollAnchorMessageID` stayed `nil` forever and there was
+  /// never anything to restore.
+  /// Opt-in (default `false`) rather than unconditional because it is only
+  /// meaningful inside a `ScrollView` that reads it; `ChatView`'s transcript
+  /// is the one place that does.
+  let isScrollTarget: Bool
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
@@ -42,6 +67,7 @@ struct MessageListView: View {
     messages: [ChatMessageState],
     firstRowFrameCoordinateSpace: String? = nil,
     isAnsweringEnabled: Bool = true,
+    isScrollTarget: Bool = false,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
     onEditAndResend: @escaping (String) -> Void = { _ in }
@@ -49,6 +75,7 @@ struct MessageListView: View {
     self.messages = messages
     self.firstRowFrameCoordinateSpace = firstRowFrameCoordinateSpace
     self.isAnsweringEnabled = isAnsweringEnabled
+    self.isScrollTarget = isScrollTarget
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
@@ -104,6 +131,7 @@ struct MessageListView: View {
         .background(firstRowFrameReporter(for: message))
       }
     }
+    .modifier(ScrollTargetLayoutIfNeeded(isEnabled: isScrollTarget))
     // `messageEntranceSignature(for:)` (review fix, chat-ux Phase 3 Task 4,
     // audit #18) — NOT `messages` itself (would animate on every streamed
     // token mutating the LAST message's own properties) and NOT
@@ -130,6 +158,25 @@ extension MessageListView {
           value: proxy.frame(in: .named(space))
         )
       }
+    }
+  }
+}
+
+/// Applies `scrollTargetLayout()` only when the caller is inside a
+/// `ScrollView` that uses `.scrollPosition(id:)` (iPad goal Phase A, Task 4
+/// review fix, Important 1). A `ViewModifier` rather than an inline `if` in
+/// the `ViewBuilder` so the stack's view identity — and therefore the
+/// `ForEach` rows' `@State`/transition bookkeeping — is unaffected by the
+/// flag.
+private struct ScrollTargetLayoutIfNeeded: ViewModifier {
+  let isEnabled: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if isEnabled {
+      content.scrollTargetLayout()
+    } else {
+      content
     }
   }
 }
@@ -170,6 +217,23 @@ func messageEntranceSignature(for messages: [ChatMessageState]) -> String? {
   // `rowID`, not `id`: the ack rewriting the last row's id is the same row
   // (see `ChatMessageState.rowID`), so it must not read as an append.
   messages.last?.rowID
+}
+
+extension View {
+  /// Applies `.draggable` only `when` the payload is worth offering — used
+  /// so an image-only user message (empty `text`) doesn't advertise an
+  /// empty-string drag payload, matching `userContextMenuItems`'s existing
+  /// `if !user.text.isEmpty` gate on Copy/Share (review fix round 1, Minor
+  /// 1). Plain `if`/`else` rather than a ternary since `.draggable` isn't
+  /// itself optional-payload-aware.
+  @ViewBuilder
+  func draggable(_ payload: String, when condition: Bool) -> some View {
+    if condition {
+      draggable(payload)
+    } else {
+      self
+    }
+  }
 }
 
 struct ChatMessageView: View {
@@ -234,6 +298,17 @@ struct ChatMessageView: View {
           UserMessageView(message: user)
             .padding(12)
             .background(DashTheme.accent.opacity(DashTheme.Opacity.fillEmphasis), in: RoundedRectangle(cornerRadius: DashTheme.Radius.large))
+            // Drag out (iPad goal Phase B, Task 8; review fix round 1,
+            // Important 1): co-located with `.contextMenu` on this SAME
+            // view, matching the assistant case below. This used to live
+            // inside `UserMessageView`'s own body, on an inner `VStack` one
+            // level removed from the `.contextMenu` applied here — see
+            // `task-8-report.md`'s "Fix round 1" section for why that was a
+            // risk and how it was verified. Gated on non-empty text (Minor
+            // 1), mirroring `userContextMenuItems`'s own Copy/Share gate two
+            // lines below, so an image-only message doesn't offer an
+            // empty-string drag payload.
+            .draggable(user.text, when: !user.text.isEmpty)
             .contextMenu { userContextMenuItems(user) }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(message.accessibilityStatusLabel)
@@ -268,6 +343,11 @@ struct ChatMessageView: View {
           }
           .padding(.vertical, 12)
           .frame(maxWidth: .infinity, alignment: .leading)
+          // Drag out (iPad goal Phase B, Task 8): the same flattened plain
+          // text the Copy/Share context menu items below use
+          // (`markdownPlainTextAccessibilityLabel`), not the raw markdown —
+          // one flattener shared by both affordances, per the task brief.
+          .draggable(markdownPlainTextAccessibilityLabel(for: assistant.text))
           .contextMenu { assistantContextMenuItems(assistant) }
           .accessibilityElement(children: .contain)
           .accessibilityLabel(message.accessibilityStatusLabel)
@@ -347,6 +427,7 @@ private struct InlineRetryButton: View {
         .font(.footnote.weight(.semibold))
     }
     .buttonStyle(.bordered)
+    .hoverEffect(.lift)
     .tint(.red)
     .frame(minHeight: 44)
     .accessibilityLabel("Retry sending this message")
@@ -405,6 +486,11 @@ private struct UserMessageView: View {
         .scrollIndicators(.hidden)
       }
     }
+    // Drag out (iPad goal Phase B, Task 8): lets the whole bubble's text be
+    // dragged into another app (Notes, Mail, another window) or dropped
+    // back into this app's own composer. Applied by the CALLER
+    // (`ChatMessageView.body`'s `.user` case), co-located with
+    // `.contextMenu`, not here — review fix round 1, Important 1.
     .fullScreenCover(item: $viewerImage) { item in
       ImageViewerView(image: item.image) { viewerImage = nil }
     }
@@ -434,9 +520,24 @@ private struct MessageImageView: View {
             .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
         }
         .buttonStyle(.plain)
+        .hoverEffect(.lift)
+        // Drag out (iPad goal Phase B, Task 8): drop targets like the
+        // composer, Files, or another app get the decoded image bytes for
+        // this message's own `mediaType`, not a re-derived guess.
+        .draggable(DraggableMessageImage(image))
         .accessibilityLabel("Attached image \(index + 1)")
         .accessibilityHint("Opens full screen")
-        .accessibilityIdentifier("chat.image.\(index)")
+        // Renamed from `chat.image.<n>` (Task 7 handoff): the identifier
+        // stays on this `Button`, not the inner `Image` — a SwiftUI `Button`
+        // always vends ONE accessibility element of trait `.button` for its
+        // label, so moving the identifier onto the `Image` would not make
+        // `XCUIApplication.images` (which matches by `XCUIElementType`, not
+        // by identifier prefix) start seeing it as an image. The UI test
+        // queries this identifier through the type-agnostic
+        // `app.descendants(matching: .any)`, the same pattern the test
+        // already uses for its target-side `chat.attachment.0` assertion —
+        // see `IPadUITests.testDroppingAnImageAttachesIt`.
+        .accessibilityIdentifier("chat.message.image.\(index)")
       } else {
         Label("Image unavailable", systemImage: "photo.badge.exclamationmark")
           .labelStyle(.iconOnly)
@@ -450,6 +551,34 @@ private struct MessageImageView: View {
   }
 }
 
+/// A transcript image, offered as a drag payload out of the chat (iPad goal
+/// Phase B, Task 8) — the drag-source counterpart to `DroppedImage`
+/// (`DroppedImage.swift`), which is the drop-destination side. Base64-decodes
+/// `MessageImage.data` once at construction, mirroring
+/// `RecoveryAttachmentTransfer`'s `.exportingCondition`-per-type pattern
+/// (`ConversationListView.swift`) rather than re-deriving the type from raw
+/// bytes: `MessageImage.mediaType` is already the ground truth for this
+/// message, same four types as the rest of the image-attachment contract.
+struct DraggableMessageImage: Transferable, Sendable {
+  let data: Data
+  let mediaType: ImageMediaType
+
+  init(_ image: MessageImage) {
+    data = Data(base64Encoded: image.data) ?? Data()
+    mediaType = image.mediaType
+  }
+
+  static var transferRepresentation: some TransferRepresentation {
+    DataRepresentation(exportedContentType: .jpeg) { $0.data }
+      .exportingCondition { $0.mediaType == .jpeg }
+    DataRepresentation(exportedContentType: .png) { $0.data }
+      .exportingCondition { $0.mediaType == .png }
+    DataRepresentation(exportedContentType: .gif) { $0.data }
+      .exportingCondition { $0.mediaType == .gif }
+    DataRepresentation(exportedContentType: .webP) { $0.data }
+      .exportingCondition { $0.mediaType == .webp }
+  }
+}
 
 /// The chip a `notice` message renders as — a skill the agent learned, or a
 /// memory it saved, after the turn had already finished.

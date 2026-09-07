@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Testing
+import UIKit
 
 @testable import Dash
 
@@ -336,6 +337,256 @@ struct ChatTranscriptExportTests {
       text == "Assistant: First reply\n\nYou: Follow-up\n\nAssistant: Cut off (interrupted)"
     )
   }
+}
+
+/// The re-host restore decision (iPad goal Phase A, Task 4 review fix,
+/// Important 2 + 3), as a table. Spec §1.3's two obligations — "a re-hosted
+/// `ChatView` restores position instead of jumping" and "a transcript that
+/// was pinned to the bottom stays pinned" — are exactly the two outcomes
+/// below, so every row here is one of those sentences made executable.
+/// Before this existed the decision lived inline in an `onAppear` closure
+/// keyed off `ChatView.isNearBottom`, where the restore branch was
+/// unreachable and nothing could tell you so.
+@Suite("ChatScrollRestoration.decide (Task 4 review fix)")
+struct ChatScrollRestorationTests {
+  struct Case: Sendable, CustomStringConvertible {
+    let name: String
+    let anchor: String?
+    let wasPinnedToBottom: Bool
+    let messageIDs: Set<String>
+    let expected: ChatScrollRestoration
+
+    var description: String { name }
+  }
+
+  static let transcript: Set<String> = ["m-1", "m-2", "m-3"]
+
+  static let cases: [Case] = [
+    Case(
+      name: "pinned + no anchor -> bottom (a transcript nobody scrolled)",
+      anchor: nil,
+      wasPinnedToBottom: true,
+      messageIDs: transcript,
+      expected: .bottom
+    ),
+    Case(
+      name: "pinned + a tracked anchor -> bottom (pinned wins; tracking never stops)",
+      anchor: "m-2",
+      wasPinnedToBottom: true,
+      messageIDs: transcript,
+      expected: .bottom
+    ),
+    Case(
+      name: "scrolled away + a live anchor -> restore that message (the spec §1.3 case)",
+      anchor: "m-2",
+      wasPinnedToBottom: false,
+      messageIDs: transcript,
+      expected: .message(id: "m-2")
+    ),
+    Case(
+      name: "scrolled away + the FIRST message as anchor -> restore it, not the bottom",
+      anchor: "m-1",
+      wasPinnedToBottom: false,
+      messageIDs: transcript,
+      expected: .message(id: "m-1")
+    ),
+    Case(
+      name: "scrolled away + no anchor yet -> bottom (nothing to restore to)",
+      anchor: nil,
+      wasPinnedToBottom: false,
+      messageIDs: transcript,
+      expected: .bottom
+    ),
+    Case(
+      name: "scrolled away + an anchor that is gone (edit & resend truncation) -> bottom",
+      anchor: "m-9",
+      wasPinnedToBottom: false,
+      messageIDs: transcript,
+      expected: .bottom
+    ),
+    Case(
+      name: "scrolled away + an anchor but an empty transcript -> bottom",
+      anchor: "m-2",
+      wasPinnedToBottom: false,
+      messageIDs: [],
+      expected: .bottom
+    ),
+    Case(
+      name: "scrolled away + a non-message id (the old outer-stack children) -> bottom",
+      anchor: "chat-bottom",
+      wasPinnedToBottom: false,
+      messageIDs: transcript,
+      expected: .bottom
+    ),
+  ]
+
+  @Test("decision table", arguments: cases)
+  func decide(_ testCase: Case) {
+    #expect(
+      ChatScrollRestoration.decide(
+        anchor: testCase.anchor,
+        wasPinnedToBottom: testCase.wasPinnedToBottom,
+        messageIDs: testCase.messageIDs
+      ) == testCase.expected,
+      "\(testCase.name)"
+    )
+  }
+}
+
+/// Evidence for Important 1 — that the per-message `.id()`s from
+/// `MessageListView`'s `ForEach(messages)` really are resolvable scroll
+/// targets under the fixed nesting, rather than an assumption that moving
+/// `.scrollTargetLayout()` one level deeper "worked".
+///
+/// The nesting under test is reproduced exactly as
+/// `ChatView.transcriptScrollView` builds it: an outer `LazyVStack` holding a
+/// header stand-in, `MessageListView` (whose OWN `LazyVStack` carries
+/// `.scrollTargetLayout()` via `isScrollTarget: true`), and the bottom
+/// sentinel — with `.scrollPosition(id:anchor:)` on the `ScrollView`.
+///
+/// What this suite deliberately does NOT claim, both established by
+/// measurement rather than assumed (see the task-4 report):
+///
+/// 1. That it discriminates the tag's placement. It does not: running this
+///    same harness with `.scrollTargetLayout()` back on the OUTER stack still
+///    passes, because `.scrollPosition(id:)` will scroll to any `.id()`-tagged
+///    view in the scroll view regardless of the tagged layout. The shallow
+///    placement broke the TRACKING direction only.
+/// 2. That SwiftUI writes the topmost visible id BACK into the binding. That
+///    write-back only happens for genuine touch-driven scrolling — driving the
+///    `UIScrollView` from code, with or without simulated drag delegate
+///    callbacks, with or without `.scrollTargetBehavior(.viewAligned)`,
+///    produces no writes at all. Tracking is therefore proven by
+///    `IPadUITests.testScrollingAwayFromTheBottomSurvivesRotation`, which
+///    swipes for real and reads the `chat.scrollAnchor` probe.
+@MainActor
+@Suite("Transcript scroll targets resolve real message ids (Task 4 review fix)")
+struct TranscriptScrollTargetTests {
+  private static let messages = (1...40).map {
+    userMessage(id: "m-\($0)", text: "Message number \($0)")
+  }
+
+  @Test("real ChatMessageState.ids resolve as distinct scroll targets, in transcript order")
+  func messageIDsResolveAsDistinctScrollTargets() async throws {
+    let anchor = ScrollAnchorBox()
+    let harness = TranscriptScrollTargetHarness(messages: Self.messages, anchor: anchor)
+    let host = try hostForTesting(harness)
+    defer { host.tearDown() }
+
+    await host.settle()
+    let scrollView = try #require(
+      firstScrollView(in: host.window), "the harness renders a UIScrollView")
+    // Not `== 0`: the hosting controller's safe-area inset makes the resting
+    // top offset negative, so the meaningful baseline is "wherever it sits
+    // with no anchor set".
+    let restingOffset = scrollView.contentOffset.y
+    #expect(
+      scrollView.contentSize.height > scrollView.bounds.height,
+      "sanity: the transcript must overflow the viewport for scrolling to mean anything"
+    )
+
+    anchor.value = "m-30"
+    await host.settle()
+    let farOffset = scrollView.contentOffset.y
+    #expect(
+      farOffset > restingOffset,
+      """
+      a real message id must resolve as a scroll target — offset stayed at \
+      \(farOffset) against a resting \(restingOffset), which is what happens \
+      when .scrollTargetLayout() is attached to a container that does not hold \
+      ForEach(messages)
+      """
+    )
+
+    anchor.value = "m-10"
+    await host.settle()
+    let nearOffset = scrollView.contentOffset.y
+    #expect(
+      nearOffset > restingOffset && nearOffset < farOffset,
+      """
+      ids must resolve INDIVIDUALLY, in transcript order — m-10 landed at \
+      \(nearOffset), which should sit between the resting \(restingOffset) and \
+      m-30's \(farOffset)
+      """
+    )
+  }
+}
+
+/// Reproduces `ChatView.transcriptScrollView`'s container nesting for
+/// `TranscriptScrollTargetTests`.
+private struct TranscriptScrollTargetHarness: View {
+  let messages: [ChatMessageState]
+  let anchor: ScrollAnchorBox
+
+  var body: some View {
+    ScrollView {
+      LazyVStack(spacing: 16) {
+        // Stands in for `olderMessagesControl` — a direct child of the outer
+        // stack that carries no message id, which is what made the outer
+        // stack the wrong place for `.scrollTargetLayout()`.
+        Color.clear.frame(height: 24)
+
+        MessageListView(messages: messages, isScrollTarget: true)
+
+        Color.clear.frame(height: 1).id("chat-bottom")
+      }
+      .frame(maxWidth: .infinity)
+    }
+    .scrollPosition(
+      id: Binding(get: { anchor.value }, set: { anchor.value = $0 }),
+      anchor: .top
+    )
+  }
+}
+
+/// Observable holder so the harness re-renders when a test writes an anchor,
+/// and so SwiftUI's writes are readable afterwards.
+@MainActor
+@Observable
+private final class ScrollAnchorBox {
+  var value: String?
+}
+
+@MainActor
+private struct TestHost {
+  let window: UIWindow
+  let controller: UIViewController
+
+  func settle(iterations: Int = 12) async {
+    for _ in 0..<iterations {
+      window.layoutIfNeeded()
+      CATransaction.flush()
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+  }
+
+  func tearDown() {
+    window.isHidden = true
+    window.rootViewController = nil
+  }
+}
+
+@MainActor
+private func hostForTesting(_ view: some View) throws -> TestHost {
+  let frame = CGRect(x: 0, y: 0, width: 390, height: 500)
+  let scene = UIApplication.shared.connectedScenes.first { $0 is UIWindowScene } as? UIWindowScene
+  let window = scene.map { UIWindow(windowScene: $0) } ?? UIWindow(frame: frame)
+  window.frame = frame
+  let controller = UIHostingController(rootView: view)
+  controller.view.frame = frame
+  window.rootViewController = controller
+  window.isHidden = false
+  window.layoutIfNeeded()
+  return TestHost(window: window, controller: controller)
+}
+
+@MainActor
+private func firstScrollView(in view: UIView) -> UIScrollView? {
+  if let scrollView = view as? UIScrollView { return scrollView }
+  for subview in view.subviews {
+    if let found = firstScrollView(in: subview) { return found }
+  }
+  return nil
 }
 
 private func userMessage(id: String, text: String) -> ChatMessageState {

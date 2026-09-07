@@ -345,8 +345,15 @@ class DashUITestCase: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) -> XCUIElement {
+    // `Self.exposureWait`, not a sub-second peek: at regular width the
+    // sidebar footer publishes `tab.*` as BUTTONS, so this is the branch the
+    // iPad takes, and one prematurely-expired wait here falls all the way
+    // through to `tabBarFallback` — a tab bar that cannot exist at regular
+    // width — turning a timing blip into "Expected the tab bar button for
+    // tab.agents". See `exposureWait` for why sub-second windows expire
+    // before a query round-trips on a contended host.
     let compactButton = app.buttons.matching(identifier: identifier).firstMatch
-    if compactButton.waitForExistence(timeout: 0.5) {
+    if compactButton.waitForExistence(timeout: Self.exposureWait) {
       return compactButton
     }
 
@@ -367,13 +374,34 @@ class DashUITestCase: XCTestCase {
     return fallback ?? regularLabel
   }
 
+  /// How long every `waitUntilExposed` check inside `revealSidebarIfNeeded`
+  /// — and the regular-width button lookup in `tab(_:in:)` — gets.
+  /// A single XCUITest element query round-trips in roughly a second on
+  /// a contended host, so the sub-second timeouts this used to pass expired
+  /// before `XCTNSPredicateExpectation` ever evaluated its predicate once:
+  /// the check reported "not exposed" no matter what was on screen, and the
+  /// caller always fell through to tapping a control it did not need.
+  ///
+  /// That misfire is destructive on the iPad two-column layout (design
+  /// §1.1), where Agents is a PUSH inside the sidebar's own `NavigationStack`
+  /// rather than a separate column: the unnecessary "BackButton" tap popped
+  /// the very page `selectTab("tab.agents")` had just navigated to, so
+  /// `agent.list` was gone by the time it was checked for. Giving each check
+  /// a full poll cycle lets it see the already-correct screen and return
+  /// without touching anything.
+  ///
+  /// A window this wide necessarily spans UIKit transition animations, during
+  /// which `isHittable` RAISES on a control with no usable activation point —
+  /// see `isSafelyHittable`, which is what makes a long poll safe.
+  private static let exposureWait: TimeInterval = 2
+
   func revealSidebarIfNeeded(
     toExpose identifier: String,
     in app: XCUIApplication,
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
-    if waitUntilExposed(identifier, in: app, timeout: 0.25) { return }
+    if waitUntilExposed(identifier, in: app, timeout: Self.exposureWait) { return }
 
     // iOS 26 publishes `BackButton`/`ToggleSidebar` identifiers; iOS 18 (the
     // CI runtime) exposes the back control only as an unidentified leading
@@ -388,8 +416,11 @@ class DashUITestCase: XCTestCase {
     ]
     let isCompact = app.windows.firstMatch.frame.width < 700
     for _ in 0..<4 {
-      if waitUntilExposed(identifier, in: app, timeout: 0.5) { return }
-      if let control = controls.first(where: { $0.exists && $0.isHittable }) {
+      if waitUntilExposed(identifier, in: app, timeout: Self.exposureWait) { return }
+      // `isSafelyHittable`, not `isHittable`: a back/toggle control that is
+      // itself mid-transition raises rather than reporting false, and this
+      // loop now polls long enough to catch one in that state.
+      if let control = controls.first(where: { isSafelyHittable($0, in: app) }) {
         control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         continue
       }
@@ -438,19 +469,18 @@ class DashUITestCase: XCTestCase {
         predicate: NSPredicate { object, _ in
           guard let app = object as? XCUIApplication else { return false }
           let compactButton = app.buttons.matching(identifier: identifier).firstMatch
-          if compactButton.exists, compactButton.isHittable {
+          if isSafelyHittable(compactButton, in: app) {
             return true
           }
           let regularLabel = app.staticTexts.matching(identifier: identifier).firstMatch
-          if regularLabel.exists, regularLabel.isHittable {
+          if isSafelyHittable(regularLabel, in: app) {
             return true
           }
           // See `tabBarFallback(_:in:)`: the tab-bar button is there and
           // hittable, but SwiftUI may never publish the `.tabItem` label's
           // accessibility identifier onto it for this launch.
           guard let titleFallback else { return false }
-          let barButton = app.tabBars.buttons[titleFallback]
-          return barButton.exists && barButton.isHittable
+          return isSafelyHittable(app.tabBars.buttons[titleFallback], in: app)
         },
         object: app
       )
@@ -488,11 +518,58 @@ class DashUITestCase: XCTestCase {
   }
 
   func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    // Deliberately a hand-rolled poll rather than
+    // `XCTNSPredicateExpectation(NSPredicate(format: "hittable == true"))`.
+    //
+    // Two reasons. First, evaluating `hittable` on an element that is
+    // mid-transition RAISES instead of returning false, and the raise escapes
+    // the predicate and fails the test outright — the hazard `isSafelyHittable`
+    // exists for, and one this helper is fully exposed to since it polls for
+    // the whole of `exposureWait` and its callers pass rows and controls that
+    // animate. Second, a *block* predicate is not a drop-in replacement for a
+    // format predicate here: XCTest re-evaluates it as fast as the UI settles
+    // and every property read inside takes a fresh accessibility snapshot, and
+    // at accessibility text sizes that snapshot is big enough that the extra
+    // traffic made the app's UI queries time out. A fixed 0.25s cadence keeps
+    // the safe probe affordable.
+    let app = XCUIApplication()
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      if isSafelyHittable(element, in: app) { return true }
+      _ = XCTWaiter.wait(for: [XCTestExpectation(description: "settle")], timeout: 0.25)
+    } while Date() < deadline
+    return false
+  }
+
+  /// Polls `ChatView`'s DEBUG `chat.scrollAnchor` probe (only rendered by the
+  /// `long-transcript` scenario) until it reports a real `ChatMessageState.id`
+  /// — i.e. until `.scrollPosition(id:)` has tracked a transcript row rather
+  /// than `"none"` or one of the outer stack's non-message children. Returns
+  /// the tracked id (Task 4 review fix, Important 1).
+  func waitForTrackedScrollAnchor(
+    prefix: String,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 10,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> String {
+    let probe = element("chat.scrollAnchor", in: app, file: file, line: line)
     let expectation = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "exists == true AND hittable == true"),
-      object: element
+      predicate: NSPredicate(format: "label BEGINSWITH %@", prefix),
+      object: probe
     )
-    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    XCTAssertEqual(
+      XCTWaiter.wait(for: [expectation], timeout: timeout),
+      .completed,
+      """
+      Expected .scrollPosition(id:) to track a real message id after scrolling, \
+      got "\(probe.label)". A value of "none" means the scroll anchor is never \
+      populated — the tracking direction is dead.
+      """,
+      file: file,
+      line: line
+    )
+    return probe.label
   }
 
   func waitUntilSelected(
@@ -601,6 +678,122 @@ class DashUITestCase: XCTestCase {
     XCTAssertLessThanOrEqual(frame.maxX, appFrame.maxX + 1, file: file, line: line)
   }
 
+  /// Asserts that every glyph `element` renders lies inside the window
+  /// horizontally.
+  ///
+  /// Use this instead of `assertFitsHorizontally` when the element under test
+  /// is a CONTAINER whose frame the system, not the app, positions. A `List`
+  /// and its cells expand into safe areas by design, so their frames describe
+  /// the safe area rather than where anything is drawn. On iPadOS 18.4
+  /// `NavigationSplitView` puts its sidebar column's host view 100 pt off the
+  /// window's leading edge -- `(-100, 0, column + 100, height)` -- with a
+  /// matching 100 pt leading safe-area inset that puts the drawn content back,
+  /// so `conversation.list`, its cells and the row buttons inside them all
+  /// report `minX == -100` while every glyph sits at `x >= 16`. That overhang
+  /// is the system's column geometry, not this app's layout: it is identical at
+  /// the DEFAULT text size, widening the column moves it instead of removing
+  /// it, and a bare `List { Text("hello") }` as the entire sidebar reproduces
+  /// it exactly (sixteen variants measured; see task-2-report.md).
+  ///
+  /// This is not a relaxation of `assertFitsHorizontally`. There is no
+  /// tolerance -- each text element is held to the same window edge plus or
+  /// minus 1 pt -- and checking the glyphs individually is what actually
+  /// detects the failure the assertion exists for: text grown by Dynamic Type
+  /// past the width of its column. A container's frame never showed that,
+  /// because the container keeps its layout width while its contents overflow.
+  func assertTextFitsHorizontally(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertTrue(element.exists, file: file, line: line)
+    let texts = element.descendants(matching: .staticText).allElementsBoundByIndex
+    XCTAssertFalse(
+      texts.isEmpty,
+      "Expected \(element) to render some text to check for clipping",
+      file: file,
+      line: line
+    )
+    for text in texts where text.frame.isEmpty == false {
+      assertFitsHorizontally(text, in: app, file: file, line: line)
+    }
+  }
+
+  /// Scrolls the Settings list until `identifier` is on screen and hittable.
+  ///
+  /// Settings is a full-height column on compact width but a form SHEET on the
+  /// iPad two-column layout (design §1.1), and a sheet is a much shorter
+  /// viewport — rows below its fold are neither hittable nor reliably present
+  /// in the accessibility hierarchy at all. Swiping the list itself (rather
+  /// than the app) also keeps the gesture off the sheet's own drag-to-dismiss
+  /// area.
+  func scrollSettingsToElement(
+    _ identifier: String,
+    in app: XCUIApplication,
+    maxSwipes: Int = 6,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    let settingsList = element("settings.list", in: app, file: file, line: line)
+    let window = app.windows.firstMatch
+    XCTAssertTrue(
+      window.waitForExistence(timeout: 2),
+      "Expected the app window before scrolling settings",
+      file: file,
+      line: line
+    )
+    let value = app.descendants(matching: .any)[identifier]
+
+    func isExposed() -> Bool {
+      guard value.exists, value.isHittable else { return false }
+      return value.frame.intersects(settingsList.frame) && value.frame.intersects(window.frame)
+    }
+
+    for _ in 0..<maxSwipes where isExposed() == false {
+      settingsList.swipeUp()
+    }
+    XCTAssertTrue(
+      isExposed(),
+      "Expected \(identifier) to be exposed and hittable after \(maxSwipes) settings-list swipes",
+      file: file,
+      line: line
+    )
+    return value
+  }
+
+  /// Returns the conversation list's `.searchable` search field, first
+  /// scrolling the list back to the top if the search bar is hidden.
+  ///
+  /// UIKit hides a `.searchable` search bar as soon as its list scrolls
+  /// (`hidesSearchBarWhenScrolling`). On the iPad two-column layout (design
+  /// §1.1) the conversation list IS the split view's sidebar, and that column
+  /// can settle a few points scrolled once it has laid out, so the search bar
+  /// is sometimes already hidden by the time a test looks for it and never
+  /// comes back on its own — the same lookup passes or fails purely on
+  /// timing. Scrolling back to the top is what a person would do to reach it,
+  /// and it makes the lookup deterministic.
+  func revealSearchField(
+    in app: XCUIApplication,
+    maxSwipes: Int = 4,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    let field = app.searchFields.firstMatch
+    let list = app.descendants(matching: .any)["conversation.list"]
+    for _ in 0..<maxSwipes where field.exists == false {
+      guard list.exists else { break }
+      list.swipeDown()
+    }
+    XCTAssertTrue(
+      field.waitForExistence(timeout: 5),
+      "Expected the conversation search field after \(maxSwipes) downward swipes",
+      file: file,
+      line: line
+    )
+    return field
+  }
+
   func scrollToElement(
     _ identifier: String,
     in app: XCUIApplication,
@@ -620,4 +813,66 @@ class DashUITestCase: XCTestCase {
     )
     return value
   }
+}
+
+/// `isHittable`, but never fatal for an element that is mid-transition.
+///
+/// `XCUIElement.isHittable` does not return `false` for an element that exists
+/// yet has no usable activation point — it RAISES ("Failed to determine
+/// hittability of … : Activation point invalid and no suggested hit points
+/// based on element frame"), and that raise escapes an `NSPredicate` block and
+/// fails the whole test. A UIKit tab-bar button passes through exactly that
+/// state while the bar animates in or out (iOS 26 hides the phone's tab bar
+/// under a pushed detail), so ANY poll long enough to span a transition — see
+/// `DashUITestCase.exposureWait` — will eventually sample it. The failure is
+/// therefore a property of the poll window, not of the app.
+///
+/// So ask `isHittable` only when the element's frame is real and OVERLAPS the
+/// window, rather than requiring the window to fully contain it. Full
+/// containment was tried first and is too strong: at accessibility XXXL a
+/// conversation row is taller than the visible viewport, so its frame can
+/// never be fully inside the window even though the row is genuinely on
+/// screen and tappable (`AccessibilityUITests.testAccessibilityXXXL`) — the
+/// stricter guard reported it as permanently "not exposed" and
+/// `revealSidebarIfNeeded` never returned. An element whose frame is entirely
+/// outside the window — the actual mid-transition case above, where a
+/// tab-bar button slides fully off before it settles — has no overlap at all
+/// and is still correctly rejected here without ever reaching `isHittable`.
+/// Once there is real overlap, `isHittable` itself resolves the activation
+/// point from the visible, on-screen portion, so it neither raises nor lies
+/// about a partially-visible control. Nothing is weakened for settled UI: a
+/// settled control fully overlaps the window too, so `isHittable` is still
+/// consulted and still decides.
+///
+/// A free function purely for locality — it is `@MainActor` all the same, and
+/// must be. `XCUIElement`'s `exists` / `frame` / `isHittable` and
+/// `XCUIApplication.windows` are main-actor-isolated under the iOS 18 SDK, so
+/// a nonisolated version of this cannot read any of them: Xcode 16.3 / Swift
+/// 6.1 rejected exactly that with "main actor-isolated property 'exists' can
+/// not be referenced from a nonisolated context" (and the same for `frame`,
+/// `windows`, `firstMatch`, `isHittable`), failing the whole `DashUITests`
+/// target before a single test could run.
+///
+/// Being `@MainActor` costs the callers nothing, which is the part worth
+/// recording: `NSPredicate(block:)` does NOT take a `@Sendable` closure, so
+/// the blocks in `waitUntilExposed` and `waitUntilVisible` INHERIT the
+/// isolation of the `@MainActor` method that builds them. That is why those
+/// blocks already read `app.buttons…firstMatch` and `element.frame` directly
+/// without complaint. Every call site here is likewise already isolated, so
+/// no `MainActor.assumeIsolated` is needed anywhere.
+@MainActor
+private func isSafelyHittable(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+  guard element.exists else { return false }
+  let frame = element.frame
+  guard frame.isNull == false, frame.isInfinite == false, frame.isEmpty == false else {
+    return false
+  }
+  let window = app.windows.firstMatch.frame
+  // 1pt of slack: a settled control may round a hair past the window edge,
+  // which would otherwise make two touching-but-not-overlapping rects report
+  // no intersection.
+  guard window.isEmpty == false, window.insetBy(dx: -1, dy: -1).intersects(frame) else {
+    return false
+  }
+  return element.isHittable
 }

@@ -573,6 +573,29 @@ final class ChatFeature {
   private(set) var retryAt: Date?
   private(set) var pendingSendRecovery: RecoverablePendingSend?
 
+  /// Scroll anchor (iPad goal Phase A, Task 4): the id of the last visible
+  /// transcript message, tracked by `ChatView`'s `scrollPosition(id:)`
+  /// binding. View-owned, not persisted — it only needs to survive a
+  /// re-host of `ChatView` within the same process, which is exactly what
+  /// this cached-per-conversation `ChatFeature` instance already does (see
+  /// `AppModel.chatFeatures`). Cleared by `clearScrollAnchor()`, which
+  /// `ChatView`'s `onDisappear` only calls when the conversation is
+  /// genuinely being left, not on a transient re-host.
+  var scrollAnchorMessageID: String?
+
+  /// Whether the transcript was sitting at (or within
+  /// `ChatScrollGeometry.nearBottomThreshold` of) its bottom when it was
+  /// last observed — the other half of the re-host restore decision (Task 4
+  /// review fix, Important 2), consumed by `ChatScrollRestoration.decide`.
+  ///
+  /// This lives here, next to the anchor, for the same reason the anchor
+  /// does: `ChatView`'s own `isNearBottom` is view `@State` and is
+  /// re-initialized to `true` by the very re-host the restore has to survive,
+  /// so deriving "was the user pinned?" from it reads `true` for everybody
+  /// and makes the restore branch dead code. `true` by default: a transcript
+  /// nobody has scrolled yet is pinned to the bottom.
+  private(set) var scrollWasPinnedToBottom = true
+
   var canSend: Bool {
     guard
       sendAuthorityIsAvailable,
@@ -601,6 +624,61 @@ final class ChatFeature {
       && state.activeTurnID.map(localTurnIDs.contains) == true
       && cancelRequestSent == false
       && cancelRequestInFlight == false
+  }
+
+  /// The newest assistant reply's raw markdown, or `nil` when no assistant
+  /// message has produced text yet, or its text is empty/whitespace-only.
+  private var lastAssistantMarkdown: String? {
+    guard
+      let text = state.messages.last(where: { $0.role == .assistant })?.assistant?.text,
+      text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    else { return nil }
+    return text
+  }
+
+  /// Whether ⌘⇧C (`KeyboardCommand.copyLastResponse`) has anything to copy.
+  ///
+  /// MUST agree with `lastAssistantText`'s emptiness (Task 5 review fix,
+  /// Important 1): `copyLastResponse()` writes `lastAssistantText` straight
+  /// to `UIPasteboard.general.string`, so if this predicate says "copyable"
+  /// while the flattened text is actually empty, ⌘⇧C silently wipes the
+  /// user's clipboard — and, via Handoff, their Universal Clipboard — on a
+  /// keypress that looked enabled. That was reachable with no race at all:
+  /// a reply that is only a thematic break (`"---"`) is non-empty raw
+  /// markdown but flattens to `""`, because `markdownPlainTextAccessibilityLabel`
+  /// drops horizontal rules entirely.
+  ///
+  /// This is NOT simply `lastAssistantText != nil`, though: that would
+  /// re-parse the whole reply through `attributedInlineMarkdown` (which
+  /// builds an `AttributedString(markdown:)` and runs an `NSDataDetector`
+  /// pass) every time this predicate is read, and per the design's own
+  /// tradeoff (see `ChatCommandActions`'s doc comment) enablement is
+  /// re-derived through `@Observable` whenever `state.messages` mutates —
+  /// i.e. potentially once per streamed frame while a reply is still
+  /// arriving. That cost is what previously starved the main thread badly
+  /// enough that typing into the composer stopped landing. Instead this
+  /// reuses `segmentMarkdown`'s cheap, single-pass block split and
+  /// `markdownBlocksHaveVisibleText`'s raw-text check, which approximates
+  /// "will this flatten to nothing" without the expensive inline parse.
+  /// `copyLastResponse()` still guards again at the write for the residual
+  /// gap between "approximately agrees" and "byte-for-byte agrees".
+  var canCopyLastAssistantText: Bool {
+    guard let markdown = lastAssistantMarkdown else { return false }
+    return markdownBlocksHaveVisibleText(segmentMarkdown(markdown))
+  }
+
+  /// The newest assistant reply as plain text, for ⌘⇧C. Computed on demand —
+  /// i.e. when the command actually fires — never per frame; see
+  /// `canCopyLastAssistantText` for why that distinction matters.
+  ///
+  /// Flattened with the SAME `markdownPlainTextAccessibilityLabel(for:)` the
+  /// assistant bubble's context-menu Copy uses (`MessageViews.swift`,
+  /// `assistantContextMenuItems`), deliberately rather than a second
+  /// flattener: copying the last response from the keyboard has to put the
+  /// exact same characters on the pasteboard as long-pressing that bubble
+  /// and choosing Copy.
+  var lastAssistantText: String? {
+    lastAssistantMarkdown.map { markdownPlainTextAccessibilityLabel(for: $0) }
   }
 
   var composerDisabledReason: String? {
@@ -674,7 +752,15 @@ final class ChatFeature {
   /// existing thread looked "fresh" and stole focus (keyboard up on open —
   /// seen in the 2026-09-05 transcript-scroll test videos).
   private(set) var hasLoadedCache = false
-  @ObservationIgnored private var isVisible = false
+  /// How many hosts currently have this feature on screen (whole-branch
+  /// final review, blocking 1). Task 10 made one `ChatFeature` serve TWO
+  /// hosts at once — the main window's detail column and the chat-only
+  /// scene `ConversationWindowView` opens — and this used to be a single
+  /// `Bool` (`isVisible`), so the first host to tear down suspended the
+  /// transport out from under a host that was still visible. Incremented by
+  /// `appear()`, decremented by `disappear()`; only the transition to zero
+  /// detaches.
+  @ObservationIgnored private var visibleHostCount = 0
   @ObservationIgnored private var isConnected = false
   @ObservationIgnored private var wasReconnecting = false
   @ObservationIgnored private var cancelRequestSent = false
@@ -796,10 +882,18 @@ final class ChatFeature {
     lifecycleChangeHandler = handler
   }
 
+  /// Whether any host still has this transcript on screen. `ChatView`'s
+  /// `onDisappear` cleanup (`clearScrollAnchor()` and the empty-compose
+  /// discard) is computed from the MAIN window's navigation state alone, so
+  /// it cannot tell "the user left this conversation" from "one of two
+  /// windows showing it went away" — this is what lets it tell the
+  /// difference.
+  var hasVisibleHosts: Bool { visibleHostCount > 0 }
+
   func appear() async {
     guard rejectIfShutdown() == false else { return }
+    visibleHostCount += 1
     let attachmentIntent = beginAttachmentIntent(attached: true)
-    isVisible = true
     startEventTaskIfNeeded()
     await startRecoveryChangeObservation()
     guard isShutdown == false else { return }
@@ -820,12 +914,52 @@ final class ChatFeature {
 
   func disappear() async {
     guard isShutdown == false else { return }
+    // Count down synchronously, before the first `await`: an appear from the
+    // other host can interleave around `persistDraft()` below, and a count
+    // read after that suspension is not the count this teardown belongs to.
+    // `> 0` rather than an unconditional decrement so an unbalanced extra
+    // teardown cannot drive the count negative, which would leave the next
+    // genuine departure unable to detach at all.
+    guard visibleHostCount > 0 else { return }
+    visibleHostCount -= 1
+    guard visibleHostCount == 0 else {
+      // Another host still has this transcript on screen. The draft is still
+      // worth flushing (it is shared state and this host may never run
+      // again), but nothing else about detachment applies — in particular
+      // NOT `beginAttachmentIntent(attached: false)`, which would cancel the
+      // other host's in-flight `appear()` at its `isCurrentAttachmentIntent`
+      // guards.
+      await persistDraft()
+      return
+    }
     let attachmentIntent = beginAttachmentIntent(attached: false)
-    isVisible = false
     await persistDraft()
     guard isCurrentAttachmentIntent(attachmentIntent, attached: false) else { return }
     guard state.activeTurnID == nil else { return }
     await suspendForDetachment()
+  }
+
+  /// Drops the remembered scroll position. Callers must only do this when
+  /// the conversation is genuinely being left (see `ChatView`'s
+  /// `onDisappear` and its `stillNavigatedTo` check) — a transient re-host
+  /// must leave `scrollAnchorMessageID` intact so the transcript can
+  /// restore its position. Also resets `scrollWasPinnedToBottom` to its
+  /// pinned default, so a later return to this conversation starts at the
+  /// bottom rather than inheriting a stale "was scrolled away" intent with
+  /// no anchor to go with it.
+  func clearScrollAnchor() {
+    scrollAnchorMessageID = nil
+    scrollWasPinnedToBottom = true
+  }
+
+  /// Records the transcript's current pinned-to-bottom state so it outlives
+  /// `ChatView` (Task 4 review fix, Important 2). Called from `ChatView`'s
+  /// `onChange(of: isNearBottom)` — the two-arm
+  /// `onScrollGeometryChange`/`PreferenceKey` mechanism (audit #4) stays the
+  /// single source of that signal; this only mirrors it somewhere that
+  /// survives a re-host.
+  func recordScrollPinnedToBottom(_ pinned: Bool) {
+    scrollWasPinnedToBottom = pinned
   }
 
   func loadOlder() async {
@@ -1229,7 +1363,7 @@ final class ChatFeature {
     deferredReplayTurnID = nil
     deferredRecoveryFrames.removeAll()
     _ = beginAttachmentIntent(attached: false)
-    isVisible = false
+    visibleHostCount = 0
     eventTask?.cancel()
     cacheLoadGeneration &+= 1
     cacheLoadTask?.cancel()
@@ -1935,7 +2069,7 @@ final class ChatFeature {
         cancelRequestSent = false
         isCancelling = false
       }
-      if isVisible == false, state.activeTurnID == nil {
+      if hasVisibleHosts == false, state.activeTurnID == nil {
         await suspendForDetachment()
       }
     }

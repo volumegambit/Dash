@@ -603,6 +603,123 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertTrue(element("chat.transcript", in: app).exists)
   }
 
+  /// iPad goal Phase C: the ONE assertion that observes what
+  /// `UIApplication.shared.supportsMultipleScenes` actually reports on each
+  /// device, rather than assuming it. This suite runs on BOTH the iPhone and
+  /// the iPad, and neither branch skips: the "Rename" item proves the menu
+  /// really opened, and "Open in New Window" is then required to be present
+  /// exactly on the wide (iPad) layout and absent on the narrow (iPhone)
+  /// one. An affordance offered where `openWindow` could do nothing would
+  /// fail this on iPhone; a missing affordance on iPad would fail it there.
+  func testOpenInNewWindowIsOfferedOnlyWhereASecondSceneCanExist() {
+    let app = launch(scenario: "paired-online")
+    let row = element("conversation.row.shared-plan", in: app)
+    XCTAssertTrue(row.waitForExistence(timeout: 5))
+    row.press(forDuration: 1.0)
+
+    XCTAssertTrue(
+      app.buttons["Rename"].waitForExistence(timeout: 3),
+      "Expected the conversation row's context menu to open. UI: \(app.debugDescription)"
+    )
+    let supportsMultipleScenes = app.windows.firstMatch.frame.width >= 700
+    XCTAssertEqual(
+      app.buttons["Open in New Window"].exists,
+      supportsMultipleScenes,
+      """
+      "Open in New Window" must appear exactly where a second scene can \
+      exist. Window width \(app.windows.firstMatch.frame.width).
+      """
+    )
+  }
+
+  /// Review fix round 1 (Task 10, "also required"): `.draggable` landed on
+  /// the SAME modifier chain as this row's two `.swipeActions` (leading
+  /// Rename, trailing Delete), and nothing exercised either gesture before
+  /// this task. If the drag interaction claimed the touch first, a swipe
+  /// would lift-and-snap-back like a failed drag instead of revealing its
+  /// action buttons. Runs on both iPhone and iPad — the drag is gated on
+  /// `supportsMultipleScenes` but the swipe actions must survive its mere
+  /// presence in the chain on iPad regardless.
+  func testConversationRowSwipeActionsStillWorkWithDraggableAttached() {
+    let app = launch(scenario: "paired-online")
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    let row = element("conversation.row.shared-plan", in: app)
+
+    // Trailing edge: swiping the row left reveals "Delete".
+    row.swipeLeft()
+    let deleteAction = app.buttons["Delete"].firstMatch
+    XCTAssertTrue(
+      deleteAction.waitForExistence(timeout: 3),
+      "Expected the trailing swipe action to reveal Delete. UI: \(app.debugDescription)"
+    )
+    deleteAction.tap()
+    let deleteConfirmation = confirmationDialog(titled: "Delete this conversation?", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(deleteConfirmation.buttons["Delete"].firstMatch, timeout: 5),
+      "Expected the delete confirmation's destructive action to be available"
+    )
+    dismissConfirmation(deleteConfirmation, in: app)
+
+    // Leading edge: swiping the row right reveals "Rename".
+    XCTAssertTrue(
+      waitUntilHittable(row, timeout: 3),
+      "Expected the conversation row to become actionable again after dismissing the confirmation"
+    )
+    row.swipeRight()
+    let renameAction = app.buttons["Rename"].firstMatch
+    XCTAssertTrue(
+      renameAction.waitForExistence(timeout: 3),
+      "Expected the leading swipe action to reveal Rename. UI: \(app.debugDescription)"
+    )
+    renameAction.tap()
+    let renameAlert = app.alerts["Rename conversation"]
+    XCTAssertTrue(renameAlert.waitForExistence(timeout: 3))
+    XCTAssertEqual(renameAlert.textFields.firstMatch.value as? String, "Shared launch plan")
+    let cancelRename = renameAlert.buttons["Cancel"].firstMatch
+    XCTAssertTrue(waitUntilHittable(cancelRename, timeout: 3))
+    cancelRename.tap()
+    XCTAssertTrue(renameAlert.waitForNonExistence(timeout: 3))
+  }
+
+  /// Review fix round 1 (Task 8, Important 1): `.draggable` and
+  /// `.contextMenu` on a user bubble used to be applied to DIFFERENT views —
+  /// `.draggable` inside `UserMessageView`'s own body, `.contextMenu` on the
+  /// ancestor `ChatMessageView.body`'s `.user` case wraps it in. A real
+  /// long-press is the only way `UIContextMenuInteraction` ever fires, and
+  /// nothing in this suite exercised that gesture on a message bubble
+  /// before this test — the only other `press(forDuration:)` coverage is
+  /// `testCachedOfflineHistoryAllowsDraftButBlocksRemoteMutations`'s
+  /// conversation-ROW long-press above, which is a different view entirely.
+  /// This would have FAILED had the inner drag interaction claimed the
+  /// touch before the outer context menu got it.
+  func testLongPressingAUserBubbleShowsItsContextMenu() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `cached-user` (text "Saved from your Mac") is the fixture's first
+    // user bubble — non-empty text, non-failed turn, so Copy/Share/Edit &
+    // Resend should all be offered and Retry should not. It also carries an
+    // attached image below the text (needed for the unrelated image-drag
+    // test above), so the press is aimed at a normalized offset over the
+    // TEXT row near the top of the bubble, not the element's raw center —
+    // the center of this particular bubble's frame falls over the image
+    // thumbnail, which has its own `.draggable`/tap handling and would
+    // confound this test with a second, unrelated interaction.
+    let bubble = element("chat.message.cached-user", in: app)
+    bubble.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(forDuration: 1)
+
+    XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.buttons["Share"].exists)
+    XCTAssertTrue(app.buttons["Edit & Resend"].exists)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+
+    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+    XCTAssertTrue(
+      waitUntilHittable(bubble, timeout: 3),
+      "Expected the user bubble to become actionable again after dismissing its context menu"
+    )
+  }
+
   /// Phase 4 Task 4 (audit #19): an attached image is no longer a dead
   /// 88pt thumbnail — tapping it opens the full-screen viewer with Share
   /// and Save, and Close returns to the transcript.
@@ -610,7 +727,7 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    let thumbnail = element("chat.image.0", in: app)
+    let thumbnail = element("chat.message.image.0", in: app)
     XCTAssertTrue(waitUntilHittable(thumbnail, timeout: 5))
     thumbnail.tap()
 
@@ -732,8 +849,7 @@ final class ConversationUITests: DashUITestCase {
     // the identifier (which would fail its own existence assertion first).
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
 
@@ -773,8 +889,7 @@ final class ConversationUITests: DashUITestCase {
     revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
     XCTAssertTrue(row.waitForNonExistence(timeout: 5))

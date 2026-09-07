@@ -187,6 +187,48 @@ struct AppModelTests {
     #expect(model.splitConversationSelection == nil)
   }
 
+  @Test("regular→compact rebuilds the stacks from the split selections")
+  func reconcileToCompactRebuildsStacks() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    model.openConversation("conv-a", presentation: .regular)
+    model.conversationPath = []  // simulate the regular detail column owning the selection alone
+    model.splitAgentSelection = .detail("agent-1")
+
+    model.reconcileNavigation(for: .compact)
+
+    #expect(model.conversationPath == [.transcript("conv-a")])
+    #expect(model.agentPath == [.detail("agent-1")])
+    #expect(model.splitConversationSelection == .transcript("conv-a"))
+  }
+
+  @Test("compact→regular promotes the top of each stack to the split selection")
+  func reconcileToRegularPromotesStackTops() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    model.openConversation("conv-a", presentation: .compact)
+    model.openConversationRecovery("conv-a", presentation: .compact)
+    model.closeConversationRecovery("conv-a", presentation: .compact)  // leaves split nil, path [transcript]
+    #expect(model.splitConversationSelection == nil)
+
+    model.reconcileNavigation(for: .regular)
+
+    #expect(model.splitConversationSelection == .transcript("conv-a"))
+    #expect(model.conversationPath == [.transcript("conv-a")])
+  }
+
+  @Test("reconciliation is idempotent and keeps an empty state empty")
+  func reconcileIsIdempotent() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+
+    model.reconcileNavigation(for: .regular)
+    model.reconcileNavigation(for: .compact)
+    model.reconcileNavigation(for: .compact)
+
+    #expect(model.conversationPath.isEmpty)
+    #expect(model.agentPath.isEmpty)
+    #expect(model.splitConversationSelection == nil)
+    #expect(model.splitAgentSelection == nil)
+  }
+
   @Test("agent navigation survives an adaptive width transition")
   func agentNavigationSurvivesWidthTransition() {
     let model = AppModel(
@@ -564,6 +606,39 @@ struct AppModelTests {
     await model.sceneWillEnterForeground()
 
     #expect(await engine.events == [.bootstrap, .background, .bootstrap, .foreground])
+  }
+
+  @Test("engine backgrounds only when the last scene leaves")
+  func multiSceneBackgroundsOnce() async {
+    let engine = FakeAppSyncEngine()
+    let model = AppModel(dependencies: dependencies(profile: connectionProfile(), engine: engine))
+    await model.start()
+    let a = UUID(), b = UUID()
+    await model.sceneChanged(id: a, isActive: true)
+    await model.sceneChanged(id: b, isActive: true)
+
+    await model.sceneChanged(id: a, isActive: false)
+    #expect(await engine.backgroundCallCount == 0)
+
+    await model.sceneChanged(id: b, isActive: false)
+    #expect(await engine.backgroundCallCount == 1)
+  }
+
+  @Test("a scene re-activating after full background resumes exactly once")
+  func multiSceneForegroundsOnce() async {
+    let engine = FakeAppSyncEngine()
+    let model = AppModel(dependencies: dependencies(profile: connectionProfile(), engine: engine))
+    await model.start()
+    let a = UUID(), b = UUID()
+    await model.sceneChanged(id: a, isActive: true)
+    await model.sceneChanged(id: a, isActive: false)
+    let backgrounds = await engine.backgroundCallCount
+
+    await model.sceneChanged(id: a, isActive: true)
+    await model.sceneChanged(id: b, isActive: true)
+    #expect(await engine.backgroundCallCount == backgrounds)
+    #expect(model.isSceneForegrounded)
+    #expect(await engine.events == [.bootstrap, .background, .foreground])
   }
 
   @Test("Keychain forget failure retains matching cache in a non-writable repair state")
@@ -1219,6 +1294,26 @@ struct AppModelTests {
     #expect(try await factory.signer.signerId() == nil)
   }
 
+  // MARK: - AppCommandActions identity Equatable (Task 5 review fix, Important 3)
+  //
+  // Same shape and the same reason as `ChatCommandActions` — see its doc
+  // comment: `AppCommandActions` is `Equatable` on `appModel`'s identity so
+  // `RootView`'s `focusedSceneValue` is never re-applied merely because its
+  // body ran again, which would resign the composer's first responder
+  // mid-typing.
+
+  @Test("two AppCommandActions over the same app model compare equal")
+  func appCommandActionsEqualOnModelIdentity() {
+    let model = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    let first = AppCommandActions(appModel: model)
+    let second = AppCommandActions(appModel: model)
+    #expect(first == second)
+
+    let otherModel = AppModel(dependencies: dependencies(profile: nil, engine: FakeAppSyncEngine()))
+    let third = AppCommandActions(appModel: otherModel)
+    #expect(first != third, "a different app model identity must compare unequal")
+  }
+
   private func dependencies(
     profile: ConnectionProfileSnapshot?,
     engine: FakeAppSyncEngine,
@@ -1269,6 +1364,37 @@ struct AppModelTests {
         lastSuccessfulSyncAt: nil
       )
     )
+  }
+
+  /// `conversationSummary(id:)` became internal API on `AppModel` in Task 10
+  /// so the chat-only window scene (`ConversationWindowView`) can resolve a
+  /// `ConversationWindowValue` the same way `RootView`'s
+  /// `.navigationDestination` does. The snapshot fallback is the branch that
+  /// window leans on hardest: a freshly restored scene can be on screen
+  /// before `conversationListFeature` exists.
+  @Test("conversation summary resolves from the snapshot and is nil for an unknown id")
+  func conversationSummaryResolvesFromSnapshot() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let model = AppModel(dependencies: dependencies(profile: profile, engine: engine))
+    await model.start()
+    let cached = CachedConversation(gatewayID: profile.gatewayID, summary: conversation())
+
+    await model.consume(
+      SyncSnapshot(
+        connection: .online,
+        conversations: [cached],
+        agents: [],
+        lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+      )
+    )
+
+    // Either way round in this harness — no list feature at all, or one
+    // holding nothing — the lookup below can only be answered by the
+    // snapshot, which is the branch being covered.
+    #expect(model.conversationListFeature?.conversations.isEmpty ?? true)
+    #expect(model.conversationSummary(id: cached.id) == cached.summary)
+    #expect(model.conversationSummary(id: "no-such-conversation") == nil)
   }
 
   private func conversation() -> ConversationSummaryDTO {

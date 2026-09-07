@@ -121,6 +121,50 @@ extension AppDependenciesFactory {
     }
   }
 
+  /// Whether `ChatView` should render its `chat.scrollAnchor` probe — the
+  /// only way a UI test can observe that `.scrollPosition(id:)` is genuinely
+  /// tracking real `ChatMessageState.id`s (Task 4 review fix, Important 1).
+  /// Scoped to the single scenario that needs it, so no other UI suite ever
+  /// sees the extra accessibility element.
+  enum UITestProbe {
+    @MainActor
+    static let isScrollAnchorProbeEnabled: Bool = {
+      let environment = ProcessInfo.processInfo.environment
+      let arguments = ProcessInfo.processInfo.arguments
+      let raw =
+        environment["DASH_UI_TEST_SCENARIO"]
+        ?? arguments.uiTestValue(after: "--dash-ui-test-scenario")
+      return raw == UITestScenario.longTranscript.rawValue
+    }()
+
+    /// Whether this process is running a UI-test scenario at all. Used by
+    /// `ConversationWindowSceneGuard` to close conversation windows that
+    /// iPadOS RESTORED from a previous run's scene session.
+    ///
+    /// Why this exists: scene sessions outlive the app, and
+    /// `XCUIApplication.terminate()` does NOT destroy them. Measured on the
+    /// iPad 26.5 simulator, a run that opens a conversation window leaves
+    /// that scene behind, and the NEXT launch comes up with the chat-only
+    /// window frontmost and the main window demoted to "1 Hidden Window" —
+    /// which broke the two `IPadUITests` cases that happened to run next
+    /// (6 tests, 2 failures) even though nothing was wrong with the app.
+    /// Every other piece of cross-launch state the suite depends on is
+    /// already isolated per launch by `DASH_UI_TEST_DATA_IDENTIFIER`; scene
+    /// sessions are the one thing that identifier cannot reach.
+    ///
+    /// Deliberately NOT a change to shipping behaviour: restoring the
+    /// last-used window is what iPadOS does for every multi-window app, and
+    /// Dash keeps doing it in Release. This only makes the UI-test harness's
+    /// "each launch starts from the main window" assumption true.
+    @MainActor
+    static let isRunningUITestScenario: Bool = {
+      let environment = ProcessInfo.processInfo.environment
+      let arguments = ProcessInfo.processInfo.arguments
+      return environment["DASH_UI_TEST_SCENARIO"] != nil
+        || arguments.uiTestValue(after: "--dash-ui-test-scenario") != nil
+    }()
+  }
+
   enum UITestScenarioError: Error, Equatable, Sendable {
     case unsupported(String)
   }
@@ -169,6 +213,21 @@ extension AppDependenciesFactory {
     /// page (ordinals 1–10) behind `longTranscriptOlderCursor` for "Load
     /// earlier", and a send that streams 90 text deltas over ~11s so a UI test
     /// can scroll mid-stream. Every other scenario keeps its 2-message thread.
+    ///
+    /// MERGE NOTE (2026-09-07): two sessions independently created a
+    /// `long-transcript` scenario for the same reason — `.pairedOnline`'s
+    /// two-message fixture cannot overflow a viewport, so there is nothing to
+    /// scroll away from, and adding filler to `.pairedOnline` was tried once
+    /// and broke every test built on the shared fixture. They are now ONE
+    /// case backed by main's fixture, which is a strict superset of the iPad
+    /// branch's 40 all-`user` `filler-` rows: it has the same 40 visible
+    /// messages plus a second page for "Load earlier" and an ~11s streamed
+    /// reply. `IPadUITests.testScrollingAwayFromTheBottomSurvivesRotation`
+    /// was repointed from the `filler-` id prefix to `long-` accordingly.
+    ///
+    /// It is also the only scenario that renders the `chat.scrollAnchor`
+    /// probe (`ChatView.scrollAnchorProbe`), so no other suite sees an extra
+    /// accessibility element.
     case longTranscript = "long-transcript"
 
     /// Explicit enumeration (rather than `self != .unpaired`) so adding a new

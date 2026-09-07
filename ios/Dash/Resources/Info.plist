@@ -47,6 +47,24 @@
   <string>Dash shares your approximate position with your agent so it can answer questions about where you are. It is stored with the conversation. Your time zone and region are shared without this permission.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Connect to your Dash gateway on this network.</string>
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+  </dict>
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>app.dash.ios.conversation</string>
+      <key>UTTypeDescription</key>
+      <string>Dash Conversation</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+    </dict>
+  </array>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UISupportedInterfaceOrientations</key>
