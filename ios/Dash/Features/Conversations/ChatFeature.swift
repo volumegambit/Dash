@@ -1376,6 +1376,27 @@ final class ChatFeature {
   /// next attempt and by a re-read that shows the child terminal.
   private(set) var subagentStopErrors: [String: String] = [:]
 
+  /// The one error line a tasks-sheet row can show, whichever of the row's two
+  /// actions produced it.
+  ///
+  /// **Why this exists at all.** A refused RESUME does not land here — it lands
+  /// on `ChatState.subagentUI[id].lastError`, whose only other render site is
+  /// the transcript card. The sheet's headline case is a background child that
+  /// finished after its spawning turn, which the transcript has NO card for, so
+  /// before this accessor the gateway's three actionable 409s
+  /// (`coordinator.ts:674/717/726` — one-shot type, unrebuildable grant, steer
+  /// cap) were rendered by no view anywhere: the spinner stopped, the sentence
+  /// stayed in the field, and nothing said why.
+  ///
+  /// **Precedence is "whichever action was taken last", and it is maintained by
+  /// the two writers rather than by this reader.** `stopSubagent` clears BOTH
+  /// slots on its attempt and `sendToSubagent` clears both on its, so at most
+  /// one of them is non-nil for a child that has an action in flight, and a
+  /// stale refusal from the other action can never mask the fresh one.
+  func subagentRowError(_ childID: String) -> String? {
+    subagentStopErrors[childID] ?? state.subagentUI[childID]?.lastError
+  }
+
   /// Monotonic cursor for list reads, so only the NEWEST one ever writes.
   ///
   /// Every trigger fires in bursts — two children starting inside one turn is
@@ -1454,6 +1475,11 @@ final class ChatFeature {
     guard rejectIfShutdown() == false else { return false }
     guard stoppingSubagentIDs.insert(childID).inserted else { return false }
     subagentStopErrors[childID] = nil
+    // BOTH slots, because the row shows ONE line: leaving a previous resume
+    // refusal up while a stop is in flight reads as though the stop had failed
+    // for a reason that has nothing to do with it, and a stop that then
+    // succeeds would leave it there for good.
+    await applyReducerAction(.subagentActionRetried(id: childID))
     defer { stoppingSubagentIDs.remove(childID) }
     do {
       let status = try await synchronizer.stopSubagent(id: childID)
@@ -1500,6 +1526,14 @@ final class ChatFeature {
 
   private func applyStopped(_ status: String, to childID: String) {
     guard let index = subagents.firstIndex(where: { $0.id == childID }) else { return }
+    // The list is being written by something that is NOT a read, so the read
+    // cursor has to move with it. A read issued before the stop and still in
+    // flight otherwise satisfies `readSeq > appliedSubagentReadSeq` when it
+    // lands, restores the pre-stop row and re-offers Stop for a child that is
+    // already gone. Costs at most one dropped read, and the stop's own
+    // re-read — issued immediately after this and therefore newer than the
+    // cursor — replaces the whole list anyway.
+    appliedSubagentReadSeq = subagentReadSeq
     let entry = subagents[index]
     subagents[index] = SubagentListEntryDTO(
       id: entry.id,
@@ -1580,6 +1614,10 @@ final class ChatFeature {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.isEmpty == false else { return false }
     let optimistic = subscribedSubagentIDs.contains(childID)
+    // The tasks row shows ONE error line for the child, so the action being
+    // taken now owns it — `.subagentReplyStarted` clears `lastError` below and
+    // this clears the stop's slot, which is the other half of the same rule.
+    subagentStopErrors[childID] = nil
     let requestID = makeID()
     await applyReducerAction(
       .subagentReplyStarted(

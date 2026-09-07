@@ -627,27 +627,97 @@ class DashUITestCase: XCTestCase {
     // composer has focus — the swipe then scrolls nothing at all, and the loop
     // below burns all its attempts without moving. That is not hypothetical:
     // this test passed in isolation and failed inside the full suite, where the
-    // keyboard is up from `openFirstConversation`, with "not hittable after
-    // scrolling both ways".
+    // keyboard is up from `openFirstConversation`.
     let scroller = app.descendants(matching: .any)["chat.transcript"]
     let surface = scroller.exists ? scroller : app
-    // Both directions, because the caller cannot know which one it needs: a
-    // row can sit BELOW the viewport (the transcript grew) or ABOVE it (the
-    // view scrolled past it), and swiping the wrong way pins it harder against
-    // the far edge.
-    for _ in 0..<maxSwipes where element.isHittable == false {
-      surface.swipeUp()
+    // **The scroller's frame is not the visible band.** `chat.transcript` is a
+    // full-screen `ScrollView` — measured `(0, 0, 402, 874)` — and everything
+    // that covers its bottom (the composer, §8.4's tasks strip, and the
+    // software keyboard whenever the composer has focus) sits INSIDE that frame
+    // while hiding what is under it. A midpoint inside `surface.frame` is
+    // therefore not enough, which is exactly how this helper failed once the
+    // frame loop was in place: `Expected chat.subagent.ui-subagent.header to be
+    // hittable once inside (0.0, 0.0, 402.0, 874.0)`. The band below is the
+    // scroller minus whatever is actually on top of it.
+    let visible = visibleBand(of: surface, in: app)
+
+    // **`isHittable` is not a predicate on an off-screen row — it RAISES.**
+    // Measured, not inferred: on a fresh iOS 26.5 simulator this helper failed
+    // at its first loop CONDITION, before a single swipe, with `Failed to
+    // determine hittability of "chat.subagent.ui-subagent-2.reply" TextField:
+    // Activation point invalid and no suggested hit points based on element
+    // frame`. A row that is mounted but outside the scroller has no activation
+    // point, so asking whether it is hittable fails the test instead of
+    // answering. It reproduces on the UNTOUCHED tree, so it is a property of
+    // the device instance and the layout, not of any one change.
+    //
+    // So the scrolling is driven by the element's FRAME, which is always
+    // readable, and hittability is asked exactly once, at the end, when the row
+    // is known to be inside the scroller. One loop rather than an up pass
+    // followed by a down pass, because the direction can CHANGE between two
+    // checks while a turn is still streaming — and a pass structure cannot go
+    // back, which is how the same helper once burned twelve swipes travelling
+    // away from its target.
+    for _ in 0..<(maxSwipes * 3) {
+      let frame = element.frame
+      if frame.height > 0, visible.contains(CGPoint(x: frame.midX, y: frame.midY)) { break }
+      // An unreadable (zero) frame is treated as "below", which is the common
+      // case for a row the transcript has grown under.
+      if frame.height == 0 || frame.midY >= visible.midY {
+        surface.swipeUp()
+      } else {
+        surface.swipeDown()
+      }
     }
-    for _ in 0..<(maxSwipes * 2) where element.isHittable == false {
-      surface.swipeDown()
+
+    let frame = element.frame
+    // `isHittable` is only SAFE to ask once the row is inside the scroller —
+    // outside it, it raises rather than answering.
+    guard frame.height > 0, surface.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) else {
+      XCTFail(
+        """
+        Expected \(element.identifier) to be scrolled into \(surface.frame);         its frame is \(frame) and the visible band is \(visible)
+        """,
+        file: file,
+        line: line
+      )
+      return element
     }
     XCTAssertTrue(
       element.isHittable,
-      "Expected \(element.identifier) to be hittable after scrolling both ways",
+      "Expected \(element.identifier) at \(frame) to be hittable inside the visible band \(visible)",
       file: file,
       line: line
     )
     return element
+  }
+
+  /// The part of `surface` a tap can actually reach: its own frame, minus the
+  /// chrome that overlays it.
+  ///
+  /// Every occluder here is one that has actually cost a run: the software
+  /// KEYBOARD (up whenever the composer has focus, which `openFirstConversation`
+  /// leaves it with), the COMPOSER and §8.4's tasks STRIP in the bottom safe
+  /// area, and the NAVIGATION BAR at the top. Each is looked up by existence, so
+  /// a screen without one is unaffected.
+  private func visibleBand(of surface: XCUIElement, in app: XCUIApplication) -> CGRect {
+    let bounds = surface.frame
+    var top = bounds.minY
+    var bottom = bounds.maxY
+    let navigationBar = app.navigationBars.firstMatch
+    if navigationBar.exists, navigationBar.frame.height > 0 {
+      top = max(top, navigationBar.frame.maxY)
+    }
+    let occluders = [
+      app.keyboards.firstMatch,
+      app.descendants(matching: .any)["chat.tasks.strip"],
+      app.descendants(matching: .any)["chat.composer"],
+    ]
+    for occluder in occluders where occluder.exists && occluder.frame.height > 0 {
+      bottom = min(bottom, occluder.frame.minY)
+    }
+    guard bottom > top else { return bounds }
+    return CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
   }
 
   func scrollToElement(

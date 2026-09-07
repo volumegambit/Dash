@@ -222,6 +222,13 @@ final class ConversationUITests: DashUITestCase {
   /// tap target and its Stop button are siblings with their own identifiers.
   /// Tapping Stop must not fire the row, which would dismiss the sheet — that
   /// is what the "sheet is still up" assertion after each stop is for.
+  ///
+  /// The tail of the test is fix round 1's Critical: a resume the gateway
+  /// REFUSES has to say so on the row that sent it. `chat.tasks.resume.<id>`
+  /// and `chat.tasks.composer.<id>` are queried with a `count == 1` assertion
+  /// here for the same reason the other five are — they were added beyond D6's
+  /// brief, no test rendered them, and that is exactly why the missing error
+  /// surface behind them shipped.
   func testTasksSheetListsLiveChildrenAndStoppingThemCountsTheBadgeDown() {
     let app = launch(scenario: "streaming-reconnect")
     openFirstConversation(in: app)
@@ -295,6 +302,46 @@ final class ConversationUITests: DashUITestCase {
         element("chat.tasks.row.ui-subagent-2", in: app),
         "Agent reviewer, Cancelled"
       )
+    )
+
+    // §8.4's resume, and the defect fix round 1 exists for. `canResume` is
+    // `oneShot == false || status == .waiting`, so Resume is offered on the
+    // child that was just STOPPED — and the gateway refuses a resume it cannot
+    // rebuild a grant for with a 409 carrying actionable prose. That prose used
+    // to reach `ChatState.subagentUI[id].lastError`, whose only render site is
+    // the transcript CARD; a background child that finished after its spawning
+    // turn has no card, so the refusal was rendered by no view at all: the
+    // spinner stopped, the sentence stayed in the field, and nothing said why.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tasks.resume.ui-subagent").count,
+      1,
+      "chat.tasks.resume.ui-subagent must resolve to exactly one element"
+    )
+    element("chat.tasks.resume.ui-subagent", in: app).tap()
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tasks.composer.ui-subagent")
+        .count,
+      1,
+      "chat.tasks.composer.ui-subagent must resolve to exactly one element"
+    )
+    replaceText(
+      in: element("chat.tasks.composer.ui-subagent", in: app),
+      with: "One more pass",
+      clearExisting: false
+    )
+    element("chat.tasks.composer.ui-subagent.send", in: app).tap()
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.error.ui-subagent", in: app),
+        #"Agent "scout" cannot be resumed: its grant cannot be rebuilt."#
+      ),
+      "A refused resume must show the gateway's own reason on the row that sent it"
+    )
+    // The refusal did not clear the sentence: it is still there to edit, which
+    // is the whole reason `SubagentComposer` clears only on acceptance.
+    XCTAssertEqual(
+      element("chat.tasks.composer.ui-subagent", in: app).value as? String,
+      "One more pass"
     )
 
     // Also a `ToolbarItem`, so also two matches under a bare identifier lookup

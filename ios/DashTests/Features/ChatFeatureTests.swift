@@ -5422,6 +5422,145 @@ struct ChatFeatureTests {
     #expect(feature.stoppingSubagentIDs.isEmpty)
   }
 
+  @Test(
+    """
+    a resume the gateway refuses reaches the tasks row, which is the only     surface a background child has
+    """
+  )
+  func aRefusedResumeIsTheTasksRowsError() async throws {
+    URLProtocolStub.reset()
+    // A REAL 409 on the wire, not a synthesised `GatewayError`: the point of
+    // the test is the whole path — the route's status is dropped by
+    // `HTTPTransport`, the prose survives, `subagentFailureText` keeps it
+    // verbatim, and it has to arrive somewhere a view reads. The text is
+    // `coordinator.resumeChild`'s own refusal (`coordinator.ts:717`), which is
+    // what a finished child whose grant cannot be rebuilt answers.
+    let refusal = #"Agent "scout" cannot be resumed: its grant cannot be rebuilt."#
+    let body = try JSONSerialization.data(
+      withJSONObject: ["code": "validation_failed", "error": refusal, "retryable": false]
+    )
+    URLProtocolStub.enqueue(status: 409, data: body)
+    let store = try PersistenceStore.inMemory()
+    let api = makeChatGatewayAPI()
+    let feature = ChatFeature(
+      gatewayID: "gateway-1",
+      conversation: summary(),
+      persistence: LiveChatPersistence(store: store),
+      synchronizer: LiveChatSynchronizer(gatewayID: "gateway-1", store: store, makeAPI: { api }),
+      transport: FakeChatFeatureTransport(),
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+      announcer: FakeChatAccessibilityAnnouncer(),
+      validator: ImageAttachmentValidator(),
+      makeID: { "req-1" }
+    )
+    feature.setConnection(.online)
+
+    #expect(await feature.sendToSubagent("child-1", text: "one more pass") == false)
+
+    // Where it lands today — rendered by `SubagentCardView`, i.e. by the
+    // transcript row, which a background child that finished after its
+    // spawning turn does not have.
+    #expect(feature.state.subagentUI["child-1"]?.lastError == refusal)
+    // Where the sheet reads. Before this, `TasksRowView` rendered
+    // `subagentStopErrors` alone and a refused resume was silent.
+    #expect(feature.subagentRowError("child-1") == refusal)
+  }
+
+  @Test("the tasks row's error line belongs to the last action taken, not to the older one")
+  func theRowErrorLineBelongsToTheLastActionTaken() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    await sync.enqueueStop(.failure(.validation("This agent cannot be stopped from here")))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    await sync.enqueueResume(.failure(GatewayError.validation(#"steer cap reached for "scout""#)))
+    // Three ids, not two: the resume takes one for its `requestId`.
+    let feature = makeFeature(sync: sync, ids: ["turn-1", "local-1", "req-1"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(await feature.stopSubagent("child-1") == false)
+    #expect(feature.subagentRowError("child-1") == "This agent cannot be stopped from here")
+
+    // A resume attempted after it OWNS the line: leaving the stop's older
+    // refusal up would read as though the sentence had been refused for a
+    // reason that has nothing to do with it.
+    #expect(await feature.sendToSubagent("child-1", text: "one more pass") == false)
+    #expect(feature.subagentRowError("child-1") == #"steer cap reached for "scout""#)
+
+    // And back the other way. `stopSubagent` clears its own slot on the
+    // attempt, so without clearing the resume's the row would show the
+    // resume refusal for the whole of the next stop and, if that stop
+    // succeeded, forever after.
+    await sync.enqueueStop(.success("cancelled"))
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "cancelled")]))
+    #expect(await feature.stopSubagent("child-1"))
+    #expect(feature.subagentRowError("child-1") == nil)
+  }
+
+  @Test("a stop's local write moves the read cursor, so an older read cannot undo it")
+  func aStopsLocalWriteCannotBeUndoneByAnOlderRead() async {
+    let stale = TestGate()
+    let afterStop = TestGate()
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "running")]))
+    // Issued BEFORE the stop and still in flight when it lands: a read this old
+    // carries the pre-stop row.
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "running")]),
+      waitingOn: stale
+    )
+    await sync.enqueueStop(.success("cancelled"))
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "cancelled")]),
+      waitingOn: afterStop
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    let staleRead = Task { await feature.refreshSubagents() }
+    await stale.waitUntilWaiting()
+
+    let stop = Task { await feature.stopSubagent("child-1") }
+    // The stop's own re-read has been ISSUED, which is how we know
+    // `applyStopped` has already run.
+    await afterStop.waitUntilWaiting()
+    #expect(feature.subagents.first?.status == "cancelled")
+
+    await stale.release()
+    await staleRead.value
+
+    // The whole point: `applyStopped` writes the list without any read having
+    // written it, so it must move the cursor too, or a read issued before it
+    // still satisfies `readSeq > appliedSubagentReadSeq` and restores the
+    // pre-stop row — Stop offered again for one frame on a child that is gone.
+    #expect(feature.subagents.first?.status == "cancelled")
+    #expect(feature.liveSubagentCount == 0)
+
+    await afterStop.release()
+    #expect(await stop.value)
+  }
+
+  @Test("revealing a child the transcript has no row for expands nothing and fetches nothing")
+  func revealingAChildWithNoCardExpandsNothing() async {
+    let sync = FakeChatSynchronizer()
+    // In the list and nowhere else — the sheet's headline case, a background
+    // child whose start event sits in no message this client has loaded.
+    await sync.enqueueSubagentList(.success([listEntry(id: "ghost-1", status: "running")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(feature.subagents.map(\.id) == ["ghost-1"])
+
+    feature.revealSubagent("ghost-1")
+    await settle()
+
+    // Expanding it anyway would fetch a transcript and hold a subscription
+    // that no view renders — the leak class D2, D3 and D5 each paid for.
+    #expect(feature.state.subagentUI["ghost-1"] == nil)
+    #expect(await sync.subagentTranscriptCalls.isEmpty)
+  }
+
   private func acceptedFrame(origin: MessageOrigin?) -> MobileWSServerFrame {
     .accepted(
       id: "turn-notify",

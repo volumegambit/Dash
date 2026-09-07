@@ -292,7 +292,7 @@ private struct TasksRowView: View {
       }
       .font(.caption)
 
-      if let error = feature.subagentStopErrors[row.id] {
+      if let error = feature.subagentRowError(row.id) {
         Text(error)
           .font(.caption)
           .foregroundStyle(DashTheme.danger)

@@ -140,6 +140,11 @@ enum ChatAction: Sendable {
   /// caller's choice and must be true only when a subscription is held for
   /// this child, because that is the only condition under which an `accepted`
   /// can come back to reconcile the row.
+  /// A new action was started on a child's tasks-sheet row, so the row's error
+  /// line is stale. Allocates NOTHING for a child that has no UI state: an
+  /// entry created here would flip `ChatReducer`'s child-frame routing gate for
+  /// an id this client holds no subscription for.
+  case subagentActionRetried(id: String)
   case subagentReplyStarted(id: String, requestID: String, text: String, optimistic: Bool)
   case subagentReplySucceeded(id: String, requestID: String)
   case subagentReplyFailed(id: String, requestID: String, message: String)
@@ -645,6 +650,12 @@ enum ChatReducer {
     case let .subagentInfoLoaded(id, oneShot):
       var ui = state.subagentUI[id] ?? SubagentUIState()
       ui.oneShot = oneShot
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentActionRetried(id):
+      guard var ui = state.subagentUI[id] else { return [] }
+      ui.lastError = nil
       state.subagentUI[id] = ui
       return []
 

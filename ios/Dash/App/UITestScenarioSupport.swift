@@ -1656,10 +1656,24 @@ extension AppDependenciesFactory {
     }
 
     func resumeSubagent(id: String, message: String, requestID: String) throws {
-      guard subagentEntries.contains(where: { $0.id == id }) else { throw GatewayError.notFound }
-      // The scripted gateway accepts it; the assertion that matters is in the
-      // app, where the optimistic row must render as an orchestrator row
-      // carrying the user's own text.
+      guard let entry = subagentEntries.first(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      // A TERMINAL child is refused, reproducing `coordinator.resumeChild`'s
+      // own text (`packages/swarm/src/coordinator.ts:717`): a finished child
+      // has no live handle, so a resume goes down the rebuild path and a grant
+      // that cannot be rebuilt is refused with a 409. This is reachable from
+      // the tasks sheet by design — `SubagentTaskRow.canResume` offers Resume
+      // on every non-one-shot child including one that has finished — and it
+      // is the refusal that had no render site at all before D6 fix round 1.
+      guard SubagentCardStatus(wire: entry.status).isTerminal == false else {
+        throw GatewayError.validation(
+          "Agent \"\(entry.name ?? entry.id)\" cannot be resumed: its grant cannot be rebuilt."
+        )
+      }
+      // Otherwise the scripted gateway accepts it; the assertion that matters
+      // is in the app, where the optimistic row must render as an orchestrator
+      // row carrying the user's own text.
       _ = message
       _ = requestID
     }
