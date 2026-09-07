@@ -249,8 +249,40 @@ extension AppDependenciesFactory {
     static let onePixelPNG =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
 
+    /// The id of the scripted NOTIFICATION turn on the parent conversation.
+    ///
+    /// §8.5's row: the gateway starts a turn on the orchestrator's own
+    /// conversation to wake it with a background child's result, and the body
+    /// is a machine-written `<subagent-result>` envelope the user never typed.
+    /// It exists so `chat.notification.<messageId>` — named in the D5 brief's
+    /// identifier list and in its Step 1 — is queried by something. Before
+    /// this, `NotificationRowView` was reachable in the app and rendered by no
+    /// test at any level.
+    static let notificationID = "ui-notification"
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
-      if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
+      if scenario == .streamingReconnect {
+        return [
+          message(
+            id: notificationID,
+            turnID: "ui-notification-turn",
+            role: .user,
+            status: .completed,
+            // `<summary>` on purpose: `notificationRowLabel` prefers it over
+            // the sender form and over the fallback, so the rendered label is
+            // deterministic and the UI test can assert the SUMMARY rather than
+            // the envelope.
+            text:
+              "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+              + "<subagent-result id=\"ui-subagent\">"
+              + "<summary>researcher finished the launch checklist review</summary>"
+              + "</subagent-result>",
+            ordinal: 1,
+            origin: MessageOrigin.notification.rawValue
+          )
+        ]
+      }
+      if scenario == .pendingRecovery { return [] }
       if scenario == .remoteBusy {
         return [
           message(
@@ -402,7 +434,8 @@ extension AppDependenciesFactory {
       text: String = "",
       images: [MessageImage]? = nil,
       events: [AgentEvent] = [],
-      ordinal: Int
+      ordinal: Int,
+      origin: String? = nil
     ) -> ConversationMessageDTO {
       ConversationMessageDTO(
         id: id,
@@ -413,7 +446,8 @@ extension AppDependenciesFactory {
         status: status,
         content: role == .user ? .user(text: text, images: images) : .assistant(events: events),
         createdAt: now.addingTimeInterval(TimeInterval(ordinal)),
-        updatedAt: now.addingTimeInterval(TimeInterval(ordinal))
+        updatedAt: now.addingTimeInterval(TimeInterval(ordinal)),
+        origin: origin
       )
     }
 

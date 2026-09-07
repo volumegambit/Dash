@@ -113,6 +113,21 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "streaming-reconnect")
     openFirstConversation(in: app)
 
+    // §8.5's notification row — the brief's Step 1 asks for exactly this and
+    // the first round shipped without it. The gateway started this turn to
+    // wake the orchestrator with a background child's result, so it renders
+    // SUMMARIZED (the body is a machine-written envelope, unlike an
+    // orchestrator row, which keeps its text) and carries no user bubble:
+    // Retry/Edit would resend `[SYSTEM NOTIFICATION - NOT USER INPUT]` as the
+    // user's own words.
+    let notification = element("chat.notification.ui-notification", in: app)
+    XCTAssertTrue(notification.exists)
+    XCTAssertEqual(notification.label, "researcher finished the launch checklist review")
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.message.ui-notification"].exists,
+      "A notification row must never render as a user bubble with Retry/Edit"
+    )
+
     replaceText(
       in: element("chat.composer", in: app),
       with: "Prepare the launch plan",
