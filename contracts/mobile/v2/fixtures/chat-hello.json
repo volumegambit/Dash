@@ -1,7 +1,5 @@
 {
   "type": "hello",
   "contractVersion": 2,
-  "capabilities": [
-    "chat-input-queue-v1"
-  ]
+  "capabilities": ["chat-input-queue-v1"]
 }

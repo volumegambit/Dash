@@ -1,8 +1,6 @@
 {
   "type": "hello_ack",
   "contractVersion": 2,
-  "capabilities": [
-    "chat-input-queue-v1"
-  ],
+  "capabilities": ["chat-input-queue-v1"],
   "v2Seq": 1
 }

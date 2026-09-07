@@ -5,9 +5,5 @@
   "agents": 1,
   "channels": 1,
   "apiVersion": 2,
-  "capabilities": [
-    "conversation-sync-v1",
-    "chat-resume-v1",
-    "chat-input-queue-v1"
-  ]
+  "capabilities": ["conversation-sync-v1", "chat-resume-v1", "chat-input-queue-v1"]
 }
