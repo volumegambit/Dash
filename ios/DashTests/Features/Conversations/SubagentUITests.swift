@@ -22,7 +22,7 @@ struct SubagentUISliceTests {
   )
   func sliceSurvivesReprojection() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentInfoLoaded(id: "child-1", oneShot: true))
     apply(
       &state,
@@ -46,7 +46,7 @@ struct SubagentUISliceTests {
   @Test("collapsing keeps the fetched transcript rather than blanking the body")
   func collapseKeepsTranscript() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(
       &state,
       .subagentTranscriptLoaded(
@@ -55,7 +55,7 @@ struct SubagentUISliceTests {
       )
     )
 
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: false))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: false, opensTranscript: true))
 
     #expect(state.subagentUI["child-1"]?.isExpanded == false)
     #expect(state.subagentUI["child-1"]?.childMessages?.count == 1)
@@ -71,7 +71,7 @@ struct SubagentUISliceTests {
   )
   func childAcceptedDoesNotDisturbTheParent() {
     var state = chatState(cursor: 7)
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
 
     let effects = ChatReducer.reduce(
@@ -126,7 +126,7 @@ struct SubagentUISliceTests {
   )
   func childFrameWithoutAFetchedTranscriptIsIgnored() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
 
     _ = ChatReducer.reduce(
       state: &state,
@@ -141,7 +141,7 @@ struct SubagentUISliceTests {
   @Test("a child's events and terminal frame project onto that child's own assistant row")
   func childEventsProjectOntoTheChild() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
 
     for frame in [
@@ -170,7 +170,7 @@ struct SubagentUISliceTests {
   @Test("an optimistic reply is written only when the caller asks for one, and reads as parent-origin")
   func optimisticRowIsOptIn() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
 
     apply(
@@ -197,7 +197,7 @@ struct SubagentUISliceTests {
   @Test("the echoed requestId adopts the optimistic row instead of adding a second one")
   func acceptedAdoptsTheOptimisticRow() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
     apply(
       &state,
@@ -238,7 +238,7 @@ struct SubagentUISliceTests {
   )
   func acceptedWithoutARequestIdDoesNotAdopt() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
     apply(
       &state,
@@ -274,7 +274,7 @@ struct SubagentUISliceTests {
   )
   func aLateFailureCannotWithdrawAnAdoptedRow() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
     apply(
       &state,
@@ -317,7 +317,7 @@ struct SubagentUISliceTests {
   )
   func aFailedReadDoesNotDisarmASend() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(
       &state,
       .subagentReplyStarted(id: "child-1", requestID: "req-1", text: "keep going", optimistic: false)
@@ -335,7 +335,7 @@ struct SubagentUISliceTests {
   @Test("a refused reply drops its optimistic row and keeps the gateway's own text")
   func refusalDropsTheRowAndKeepsTheReason() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
     apply(
       &state,
@@ -360,7 +360,7 @@ struct SubagentUISliceTests {
   @Test("the next attempt clears the previous refusal, so a stale reason cannot read as a new one")
   func attemptClearsThePreviousError() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentReplyFailed(id: "child-1", requestID: "req-0", message: "Steer cap"))
 
     apply(
@@ -374,7 +374,7 @@ struct SubagentUISliceTests {
   @Test("a REST page merges under an in-flight optimistic row rather than replacing it")
   func transcriptLoadKeepsLiveRows() {
     var state = chatState()
-    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true, opensTranscript: true))
     apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
     apply(
       &state,

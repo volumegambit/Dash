@@ -72,6 +72,18 @@ struct ChatState: Equatable, Sendable {
 struct SubagentUIState: Equatable, Sendable {
   /// §8.3's disclosure state. Rows start collapsed.
   var isExpanded = false
+  /// Whether THIS row's expansion opens a transcript — i.e. the row's `nested`,
+  /// which is `depth < maxSubagentDepth`.
+  ///
+  /// Recorded rather than re-derived because the reconnect path
+  /// (`ChatFeature.resubscribeExpandedSubagents`) has no depth to ask about:
+  /// it walks `subagentUI` by id. A row AT the cap is `isExpanded == true`
+  /// with no transcript and no subscription on purpose, and a foreground
+  /// re-subscribe that could not tell the two apart would start fetching and
+  /// subscribing grandchildren nothing renders — the leak class D2, D3 and
+  /// D5's own second defect all paid for. `isExpanded` alone is not enough;
+  /// this is the fact, not a proxy for it.
+  var opensTranscript = false
   /// The child's own transcript. `nil` means NEVER FETCHED — distinct from a
   /// fetched-and-empty child, which renders "Nothing from this agent yet."
   /// rather than a loading line.
@@ -93,8 +105,9 @@ struct SubagentUIState: Equatable, Sendable {
   /// once the child's current turn ends, but an ANSWER to a parked
   /// `ask_orchestrator` question resolves INSIDE the running turn and produces
   /// none, ever — and `SubagentResumeResponse.mode` reports both as `queued`.
-  /// The row is written only when a subscription is held (i.e. the body is
-  /// open), which is precisely when an echo could reach us.
+  /// The row is written only when this client HOLDS a subscription for the
+  /// child — read from `ChatFeature.subscribedSubagentIDs`, not inferred from
+  /// the row being open — which is precisely when an echo could reach us.
   var pendingRequestIDs: Set<String> = []
 }
 
@@ -113,7 +126,7 @@ enum ChatAction: Sendable {
   /// §8.3's disclosure toggle. Collapsing keeps the fetched transcript: a
   /// re-expansion re-reads anyway, and dropping it would blank the body for a
   /// round trip every time.
-  case subagentExpanded(id: String, isExpanded: Bool)
+  case subagentExpanded(id: String, isExpanded: Bool, opensTranscript: Bool)
   /// The child's own messages, from `GET /conversations/{childId}/messages`.
   case subagentTranscriptLoaded(id: String, messages: [ConversationMessageDTO])
   /// `SubagentInfoDTO.oneShot` for a child, from its conversation summary.
@@ -583,9 +596,10 @@ enum ChatReducer {
       }
       return []
 
-    case let .subagentExpanded(id, isExpanded):
+    case let .subagentExpanded(id, isExpanded, opensTranscript):
       var ui = state.subagentUI[id] ?? SubagentUIState()
       ui.isExpanded = isExpanded
+      ui.opensTranscript = opensTranscript
       state.subagentUI[id] = ui
       return []
 

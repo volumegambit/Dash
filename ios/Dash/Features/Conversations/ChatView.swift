@@ -399,8 +399,8 @@ struct ChatView: View {
                   loadsTranscript: loadsTranscript
                 )
               },
-              send: { childID, text, optimistic in
-                await feature.sendToSubagent(childID, text: text, optimistic: optimistic)
+              send: { childID, text in
+                await feature.sendToSubagent(childID, text: text)
               },
               // Gated on `unauthorized` ALONE, never on socket state: the send
               // is REST, and a reconnect must not stop the user answering a

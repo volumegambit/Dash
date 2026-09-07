@@ -71,11 +71,14 @@ struct SubagentInteraction {
   /// toggles open but must not fetch or subscribe, because its body renders no
   /// transcript to put the result in.
   var setExpanded: (_ childID: String, _ isExpanded: Bool, _ loadsTranscript: Bool) -> Void
-  /// `optimistic` is the CALLER's choice, taken only where a subscription is
-  /// held for that child — see `SubagentCardView`'s two call sites. Returns
-  /// whether the gateway accepted it, which is the ONLY thing that clears the
-  /// composer: a refused sentence stays where the user can edit it.
-  var send: (_ childID: String, _ text: String, _ optimistic: Bool) async -> Bool
+  /// **No `optimistic` flag.** Whether the row is written optimistically is
+  /// decided inside `ChatFeature.sendToSubagent`, from the subscription set
+  /// itself. A view can see `isExpanded`; it cannot see whether a subscription
+  /// is held, and every attempt to infer one from the other has been wrong in
+  /// both directions. Returns whether the gateway accepted the send, which is
+  /// the ONLY thing that clears the composer: a refused sentence stays where
+  /// the user can edit it.
+  var send: (_ childID: String, _ text: String) async -> Bool
   /// False only for a dead credential. **Not** gated on socket state: the send
   /// is REST, and a reconnect must not stop the user answering a child parked
   /// in `waiting_input`, whose `waitForQuestion` fails the child's tool call
@@ -87,7 +90,7 @@ struct SubagentInteraction {
   static let inert = SubagentInteraction(
     state: { _ in SubagentUIState() },
     setExpanded: { _, _, _ in },
-    send: { _, _, _ in false },
+    send: { _, _ in false },
     isEnabled: false
   )
 }
@@ -314,13 +317,10 @@ struct SubagentCardView: View {
         isEnabled: interaction.isEnabled,
         isSending: ui.isSending
       ) { text in
-        // NOT optimistic. An answer to `ask_orchestrator` usually resolves
-        // inside the child's running turn and produces no `accepted` at all,
-        // and this row may be collapsed — in which case no subscription is
-        // held and no echo could reach us even for the queued-steer case a
-        // resolved question falls through to. An unreconcilable optimistic row
-        // is a permanent duplicate; web reached the same rule.
-        await interaction.send(card.id, text, false)
+        // Optimism is not decided here. This composer renders whether or not
+        // the row is expanded, and expansion is not the subscription — see
+        // `ChatFeature.sendToSubagent`, which reads the set.
+        await interaction.send(card.id, text)
       }
     }
   }
@@ -365,12 +365,7 @@ struct SubagentCardView: View {
           isEnabled: interaction.isEnabled && ui.oneShot != true,
           isSending: ui.isSending
         ) { text in
-          // Same expression as the reply composer above, and it is `true` by
-          // construction here — this composer only renders inside
-          // `if isExpanded` and `if nested`. Written out rather than hardcoded
-          // so the two call sites cannot drift into disagreeing about what the
-          // subscription condition is.
-          await interaction.send(card.id, text, isExpanded && nested)
+          await interaction.send(card.id, text)
         }
       }
     }

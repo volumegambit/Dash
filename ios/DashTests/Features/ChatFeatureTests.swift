@@ -4855,7 +4855,7 @@ struct ChatFeatureTests {
     await feature.appear()
     await feature.setSubagentExpanded("child-1", true).value
 
-    let sent = await feature.sendToSubagent("child-1", text: "  keep going  ", optimistic: true)
+    let sent = await feature.sendToSubagent("child-1", text: "  keep going  ")
 
     #expect(sent)
     #expect(
@@ -4878,13 +4878,166 @@ struct ChatFeatureTests {
     await feature.appear()
     await feature.setSubagentExpanded("child-1", true).value
 
-    let sent = await feature.sendToSubagent("child-1", text: "again", optimistic: true)
+    let sent = await feature.sendToSubagent("child-1", text: "again")
 
     #expect(sent == false)
     #expect(
       feature.state.subagentUI["child-1"]?.lastError == "One-shot agents cannot be resumed"
     )
     #expect(feature.state.subagentUI["child-1"]?.childMessages?.isEmpty == true)
+  }
+
+  // MARK: - Optimism is derived from the subscription set (D5 fix round 1)
+  //
+  // These four are FEATURE-level on purpose. `SubagentUITests` pins that
+  // `.subagentReplyStarted` respects the flag it is handed; nothing there can
+  // see what value the send path produces, and that is the exact hole the
+  // first review round fell through — a composer hardcoding `false` shipped
+  // under a fully green reducer suite.
+
+  @Test(
+    """
+    a send from a row whose subscription is HELD writes an optimistic row,     because only then can the echoed accepted reconcile it
+    """
+  )
+  func aSubscribedSendIsOptimistic() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1"))
+    )
+
+    #expect(await feature.sendToSubagent("child-1", text: "keep going"))
+
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+    let row = feature.state.subagentUI["child-1"]?.childMessages?.first { $0.id == "req-1" }
+    #expect(row?.user?.text == "keep going")
+    #expect(row?.origin == .parent)
+  }
+
+  @Test(
+    """
+    a send with NO subscription held writes no optimistic row, so the accepted     it can never receive cannot leave a permanent duplicate
+    """
+  )
+  func anUnsubscribedSendIsNotOptimistic() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    // Never expanded: the `waiting_input` reply composer renders on a
+    // COLLAPSED row, so this is the reply composer's live path.
+    #expect(feature.state.subagentUI["child-1"] == nil)
+
+    #expect(await feature.sendToSubagent("child-1", text: "the answer is yes"))
+
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs.isEmpty == true)
+    #expect(feature.state.subagentUI["child-1"]?.childMessages == nil)
+    #expect(
+      await sync.resumeCalls
+        == [SubagentResumeCall(id: "child-1", message: "the answer is yes", requestID: "req-1")]
+    )
+  }
+
+  @Test(
+    """
+    backgrounding and returning re-reads and re-subscribes an expanded row, so     a send from the still-open body is not optimistic against a dropped     subscription
+    """
+  )
+  func returningFromTheBackgroundRestoresChildSubscriptions() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    // `suspendForDetachment` drops the socket and `ChatConnection.clearAllTurns`
+    // empties the gateway-side map with it. The body stays open and still
+    // looks live.
+    await feature.sceneDidEnterBackground()
+    await feature.sceneWillEnterForeground()
+
+    #expect(await sync.subagentTranscriptCalls == ["child-1", "child-1"])
+    #expect(
+      await chat.calls.filter { $0 == .subscribe(agentID: "agent-1", conversationID: "child-1") }
+        .count == 2
+    )
+
+    // And the send from that body is optimistic again, because the
+    // subscription that makes an `accepted` reachable is genuinely back.
+    #expect(await feature.sendToSubagent("child-1", text: "keep going"))
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+  }
+
+  @Test(
+    """
+    a row at the depth cap is NOT re-read or re-subscribed on return, because     its expansion never opened a transcript to stream into
+    """
+  )
+  func returningFromTheBackgroundLeavesCappedRowsAlone() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("grandchild-1", true, loadsTranscript: false).value
+
+    await feature.sceneDidEnterBackground()
+    await feature.sceneWillEnterForeground()
+
+    #expect(feature.state.subagentUI["grandchild-1"]?.isExpanded == true)
+    #expect(await sync.subagentTranscriptCalls.isEmpty)
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "grandchild-1"))
+        == false
+    )
+  }
+
+  @Test(
+    """
+    a transcript READ failing while a send is in flight leaves the send armed —     asserted where the ACTION is chosen, not where it is reduced
+    """
+  )
+  func aFailedReadDoesNotDisarmAnInFlightSendAtTheFeatureLevel() async {
+    let sync = FakeChatSynchronizer()
+    let gate = TestGate()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    // The send parks inside the resume; the concurrent re-read fails.
+    await sync.enqueueResume(.success(()), waitingOn: gate)
+    await sync.enqueueSubagentTranscript(.failure(GatewayError.notFound))
+    let feature = makeFeature(sync: sync, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    let sending = Task { await feature.sendToSubagent("child-1", text: "keep going") }
+    await gate.waitUntilWaiting()
+    #expect(feature.state.subagentUI["child-1"]?.isSending == true)
+
+    await feature.loadSubagentTranscript(childID: "child-1")
+
+    // The read reports on the row and disarms nothing.
+    #expect(feature.state.subagentUI["child-1"]?.lastError == "This agent is no longer available.")
+    #expect(feature.state.subagentUI["child-1"]?.isSending == true)
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
+
+    await gate.release()
+    #expect(await sending.value)
+    #expect(feature.state.subagentUI["child-1"]?.isSending == false)
   }
 
   @Test("resendFromMessage refuses an orchestrator-authored row, not just a notification row")
@@ -5564,6 +5717,7 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
   private var subagentTranscriptResults: [FakeChatResult<SubagentTranscriptSnapshot>] = []
   private var subagentTranscriptGates: [TestGate?] = []
   private var resumeResults: [FakeChatResult<Void>] = []
+  private var resumeGates: [TestGate?] = []
   private(set) var subagentTranscriptCalls: [String] = []
   private(set) var resumeCalls: [SubagentResumeCall] = []
 
@@ -5613,8 +5767,9 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
     subagentTranscriptGates.append(gate)
   }
 
-  func enqueueResume(_ result: FakeChatResult<Void>) {
+  func enqueueResume(_ result: FakeChatResult<Void>, waitingOn gate: TestGate? = nil) {
     resumeResults.append(result)
+    resumeGates.append(gate)
   }
 
   func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot {
@@ -5626,9 +5781,10 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
     return try resolve(subagentTranscriptResults.removeFirst())
   }
 
-  func resumeSubagent(id: String, message: String, requestID: String) throws {
+  func resumeSubagent(id: String, message: String, requestID: String) async throws {
     resumeCalls.append(SubagentResumeCall(id: id, message: message, requestID: requestID))
     guard resumeResults.isEmpty == false else { return }
+    if let gate = resumeGates.removeFirst() { await gate.wait() }
     _ = try resolve(resumeResults.removeFirst())
   }
 

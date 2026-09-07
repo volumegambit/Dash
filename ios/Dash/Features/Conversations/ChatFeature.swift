@@ -876,6 +876,7 @@ final class ChatFeature {
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
     await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
   }
 
   func disappear() async {
@@ -1212,7 +1213,11 @@ final class ChatFeature {
     guard rejectIfShutdown() == false else { return Task {} }
     _ = ChatReducer.reduce(
       state: &state,
-      action: .subagentExpanded(id: childID, isExpanded: isExpanded)
+      action: .subagentExpanded(
+        id: childID,
+        isExpanded: isExpanded,
+        opensTranscript: loadsTranscript
+      )
     )
     guard loadsTranscript else { return Task {} }
     return Task { [self] in
@@ -1272,16 +1277,25 @@ final class ChatFeature {
   /// a second turn while the question stays blocked; and it bypasses the
   /// coordinator's one-shot, steer-cap and grant checks entirely.
   ///
-  /// Optimism is the CALLER's choice and is taken only when this client holds
-  /// a subscription for the child — which, on iOS, is exactly while its body
-  /// is expanded — because that is the only condition under which an
-  /// `accepted` can come back to reconcile the row. The collapsed
-  /// waiting-input reply therefore declines it.
+  /// **Optimism is derived here, from `subscribedSubagentIDs`, and is not a
+  /// parameter.** The rule is "optimistic exactly when a subscription is
+  /// held", and this is the only place that knows whether one is. Every proxy
+  /// for it has been wrong in both directions: `isExpanded && nested` is true
+  /// for a row whose `subscribeToSubagent` swallowed a failure and true again
+  /// after the app is backgrounded (which clears the set and the gateway's
+  /// side with it), and in both states the `accepted` never arrives, the
+  /// optimistic row is never adopted, and `.subagentTranscriptLoaded` keeps it
+  /// forever beside the real server row — the user's sentence rendered twice
+  /// for the life of the conversation. A hardcoded `false` is wrong the other
+  /// way: a queued STEER *does* echo, finds nothing in `pendingRequestIDs`,
+  /// and `applyChildFrame`'s else-branch appends a blank "from orchestrator"
+  /// line. Web converged on the same rule after three rounds.
   @discardableResult
-  func sendToSubagent(_ childID: String, text: String, optimistic: Bool) async -> Bool {
+  func sendToSubagent(_ childID: String, text: String) async -> Bool {
     guard rejectIfShutdown() == false else { return false }
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.isEmpty == false else { return false }
+    let optimistic = subscribedSubagentIDs.contains(childID)
     let requestID = makeID()
     await applyReducerAction(
       .subagentReplyStarted(
@@ -1353,6 +1367,45 @@ final class ChatFeature {
       // re-expanding re-reads. Not worth driving the conversation into a
       // failure state for.
       return
+    }
+  }
+
+  /// Re-establish the child subscriptions a socket reset dropped, beside the
+  /// parent's own `subscribeToOpenConversation`.
+  ///
+  /// `subscribedSubagentIDs.removeAll()` fires in `ensureConnected`, on a
+  /// terminal receive-loop failure and in `consume(.state)` for
+  /// `.idle`/`.detached`. Clearing the set is correct — the gateway really has
+  /// dropped those subscriptions — but until this existed, nothing put them
+  /// back. A transient reconnect was already covered (`ChatConnection`'s
+  /// `replayTurnSubscriptions` re-sends every conversation subscribe on
+  /// `.reconnecting` → `.connected`); **backgrounding the app was not**, and
+  /// that is the most routine lifecycle event on a phone. `suspendForDetachment`
+  /// → `.detached` → `clearAllTurns()` empties the transport's own map, so it
+  /// is a genuine drop, and the open body went on looking live while every
+  /// send from it was optimistic against a subscription no longer held.
+  ///
+  /// The REST re-read is as load-bearing as the subscribe: everything the
+  /// child said while this client was detached reached nobody, and the page is
+  /// the only thing that fills the hole.
+  ///
+  /// Rows already in the set are skipped, so an `appear()` that did not reset
+  /// the socket re-reads nothing. Rows at `maxSubagentDepth` are skipped by
+  /// `opensTranscript`, which is the recorded fact rather than a guess:
+  /// `setSubagentExpanded(loadsTranscript: false)` deliberately neither
+  /// fetches nor subscribes, and a reconnect must not undo that.
+  private func resubscribeExpandedSubagents() async {
+    guard isShutdown == false, isVisible, connection == .online else { return }
+    let dropped =
+      state.subagentUI
+      .filter { $0.value.isExpanded && $0.value.opensTranscript }
+      .map(\.key)
+      .filter { subscribedSubagentIDs.contains($0) == false }
+      .sorted()
+    for childID in dropped {
+      guard isShutdown == false else { return }
+      await loadSubagentTranscript(childID: childID)
+      await subscribeToSubagent(childID)
     }
   }
 
@@ -1445,6 +1498,7 @@ final class ChatFeature {
     }
     await attachToCanonicalTurnIfNeeded()
     await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
   }
 
   func sceneDidEnterBackground() async {
@@ -1463,6 +1517,7 @@ final class ChatFeature {
     guard isCurrentAttachmentIntent(attachmentIntent, attached: true) else { return }
     await attachToCanonicalTurnIfNeeded()
     await subscribeToOpenConversation()
+    await resubscribeExpandedSubagents()
   }
 
   func prepareForShutdown() {
