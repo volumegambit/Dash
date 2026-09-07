@@ -1,7 +1,13 @@
 import type { AgentEvent } from '@dash/agent';
-import { SwarmCoordinator } from './coordinator.js';
+import { CanonicalSwarmJournalError, SwarmCoordinator } from './coordinator.js';
 import type { AttachOptions } from './coordinator.js';
-import type { SwarmEventLogSink, WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
+import type {
+  SwarmEventLogSink,
+  SwarmJournalIdentity,
+  WorkerBackend,
+  WorkerFactory,
+  WorkerSpec,
+} from './types.js';
 
 /** A deferred promise, resolved/rejected externally. */
 function deferred<T>() {
@@ -29,8 +35,10 @@ class FakeBackend implements WorkerBackend {
   segments: SegmentController[] = [];
   abortCalls = 0;
   stopCalls = 0;
-  /** Set to true to make stop() hang forever (proves teardown does not await it). */
+  /** Set to true to make stop() hang forever for settlement-barrier tests. */
   hangStop = false;
+  /** Optional deterministic teardown rejection for multi-failure tests. */
+  stopError?: unknown;
   private segmentStarted: Array<(c: SegmentController) => void> = [];
   /** Segments that started before onNextSegment() was called, awaiting a consumer. */
   private pendingSegments: SegmentController[] = [];
@@ -89,6 +97,7 @@ class FakeBackend implements WorkerBackend {
 
   async stop(): Promise<void> {
     this.stopCalls++;
+    if (this.stopError !== undefined) throw this.stopError;
     if (this.hangStop) {
       await new Promise<void>(() => {});
     }
@@ -123,12 +132,12 @@ function makeEventLog() {
   const appends: Array<{
     agentId: string;
     conversationId: string;
-    messageId: string;
+    identity: SwarmJournalIdentity;
     payload: { type: 'event'; event: AgentEvent };
   }> = [];
   const sink: SwarmEventLogSink = {
-    append(agentId, conversationId, messageId, payload) {
-      appends.push({ agentId, conversationId, messageId, payload });
+    append(agentId, conversationId, identity, payload) {
+      appends.push({ agentId, conversationId, identity, payload });
       return Promise.resolve();
     },
   };
@@ -173,7 +182,7 @@ async function drain(channel: {
 describe('SwarmCoordinator', () => {
   // Behavior 1: ownership.
   describe('ownership', () => {
-    it('a second attach on a live key is non-authoritative (dead channel, aborted closed, no-op finalize)', () => {
+    it('a second attach on a live key is non-authoritative (dead channel, aborted closed, no-op finalize)', async () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const a = coord.attach(baseAttach());
@@ -185,7 +194,7 @@ describe('SwarmCoordinator', () => {
       // b's channel is dead: a push is a no-op / take reports done.
       b.channel.push({ type: 'text_delta', text: 'x' });
       // finalize on b must not throw and must not affect a.
-      expect(() => b.finalize({ consumerAlive: true })).not.toThrow();
+      await expect(b.finalize({ consumerAlive: true })).resolves.toBeUndefined();
       expect(a.live).toBe(true);
     });
 
@@ -197,7 +206,7 @@ describe('SwarmCoordinator', () => {
       await backends[0].onNextSegment();
 
       const b = coord.attach(baseAttach());
-      b.finalize({ consumerAlive: false }); // stale token: must be a no-op
+      await b.finalize({ consumerAlive: false }); // stale token: must be a no-op
 
       expect(backends[0].abortCalls).toBe(0);
       // A's run is still live: another spawn succeeds and routes to A.
@@ -230,11 +239,11 @@ describe('SwarmCoordinator', () => {
       expect(coord.getRuns(AGENT_ID)).toHaveLength(0);
     });
 
-    it('spawnWorker throws after the attachment is finalized (no zombie run)', () => {
+    it('spawnWorker throws after the attachment is finalized (no zombie run)', async () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const a = coord.attach(baseAttach());
-      a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).toThrow(
         /swarm turn is closed/,
       );
@@ -501,7 +510,7 @@ describe('SwarmCoordinator', () => {
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
       const waitP = coord.waitWorkers(AGENT_ID, CONVO_ID, { workerIds: [workerId] });
-      a.finalize({ consumerAlive: false });
+      await a.finalize({ consumerAlive: false });
       const res = await waitP;
       expect(res).toHaveLength(1);
     });
@@ -546,14 +555,14 @@ describe('SwarmCoordinator', () => {
 
   // Behavior 10: finalize.
   describe('finalize', () => {
-    it('is idempotent and only effective from the owning attachment', () => {
+    it('is idempotent and only effective from the owning attachment', async () => {
       const { factory } = makeFactory();
       const orchestratorAbort = vi.fn();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const a = coord.attach(baseAttach({ orchestratorAbort }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
-      a.finalize({ consumerAlive: true });
-      a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
       expect(orchestratorAbort).toHaveBeenCalledTimes(1);
     });
 
@@ -563,24 +572,30 @@ describe('SwarmCoordinator', () => {
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
-      a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
       const events = await drain(a.channel);
       const done = events.find((e) => e.type === 'worker_done');
       expect(done).toMatchObject({ type: 'worker_done', status: 'cancelled' });
     });
 
-    it('returns synchronously even when a backend stop() hangs forever', async () => {
+    it('changes state synchronously but waits for backend stop settlement', async () => {
       const { factory, backends } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
-      backends[0].hangStop = true;
-      const before = Date.now();
-      a.finalize({ consumerAlive: true });
-      // Returned synchronously (no await for stop settlement).
-      expect(Date.now() - before).toBeLessThan(50);
+      const stop = deferred<void>();
+      vi.spyOn(backends[0], 'stop').mockImplementation(() => stop.promise);
+      let settled = false;
+      const finalizing = a.finalize({ consumerAlive: true }).then(() => {
+        settled = true;
+      });
+      expect(a.live).toBe(false);
       expect(backends[0].abortCalls).toBe(1);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      stop.resolve(undefined);
+      await finalizing;
     });
 
     it('appends terminal worker_done to the eventLog ONLY on consumer-gone finalize', async () => {
@@ -590,13 +605,12 @@ describe('SwarmCoordinator', () => {
       const a = coord.attach(baseAttach({ messageId: 'm-1' }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
-      a.finalize({ consumerAlive: false });
-      await Promise.resolve();
+      await a.finalize({ consumerAlive: false });
       expect(appends.length).toBeGreaterThanOrEqual(1);
       expect(appends[0]).toMatchObject({
         agentId: AGENT_ID,
         conversationId: CONVO_ID,
-        messageId: 'm-1',
+        identity: { kind: 'legacy', messageId: 'm-1' },
         payload: { type: 'event', event: { type: 'worker_done' } },
       });
     });
@@ -620,8 +634,7 @@ describe('SwarmCoordinator', () => {
       const { workerId: liveId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'b', brief: 'b' });
       await backends[1].onNextSegment();
 
-      expect(coord.cancelTurn(AGENT_ID, CONVO_ID)).toBe(true);
-      await Promise.resolve();
+      await expect(coord.cancelTurn(AGENT_ID, CONVO_ID)).resolves.toBe(true);
 
       // Only worker B's cancellation was unlogged; re-appending worker A's done
       // event would duplicate it in the durable log.
@@ -641,8 +654,7 @@ describe('SwarmCoordinator', () => {
       const a = coord.attach(baseAttach({ messageId: 'm-1' }));
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
-      a.finalize({ consumerAlive: true });
-      await Promise.resolve();
+      await a.finalize({ consumerAlive: true });
       expect(appends).toHaveLength(0);
     });
 
@@ -653,26 +665,26 @@ describe('SwarmCoordinator', () => {
       const a = coord.attach(baseAttach()); // no messageId
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
-      a.finalize({ consumerAlive: false });
-      await Promise.resolve();
+      await a.finalize({ consumerAlive: false });
       expect(appends).toHaveLength(0);
     });
 
-    it('clears the live attachment so subsequent spawn throws', () => {
+    it('clears the live attachment synchronously so subsequent spawn throws', async () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const a = coord.attach(baseAttach());
       coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
-      a.finalize({ consumerAlive: true });
+      const finalizing = a.finalize({ consumerAlive: true });
       expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' })).toThrow(
         /swarm turn is closed/,
       );
+      await finalizing;
     });
   });
 
   // Ring buffer retention.
   describe('ring buffer', () => {
-    it('retains the last 20 runs per agent; the 21st run evicts the 1st', () => {
+    it('retains the last 20 runs per agent; the 21st run evicts the 1st', async () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const runIds: string[] = [];
@@ -680,7 +692,7 @@ describe('SwarmCoordinator', () => {
         const a = coord.attach(baseAttach({ conversationId: `c-${i}` }));
         runIds.push(a.runIdHint);
         coord.spawnWorker(AGENT_ID, `c-${i}`, { role: 'r', brief: 'b' });
-        a.finalize({ consumerAlive: true });
+        await a.finalize({ consumerAlive: true });
       }
       const runs = coord.getRuns(AGENT_ID);
       expect(runs).toHaveLength(20);
@@ -752,17 +764,17 @@ describe('SwarmCoordinator', () => {
       const seg = await backends[0].onNextSegment();
       seg.complete();
       await new Promise((r) => setTimeout(r, 0));
-      const res = coord.cancelWorker(AGENT_ID, a.runIdHint, workerId);
+      const res = await coord.cancelWorker(AGENT_ID, a.runIdHint, workerId);
       expect(res).toEqual({ ok: false, reason: 'worker terminal' });
     });
 
-    it('sendPanelMessage on a finalized run returns {ok:false, reason:"run finalized"}', () => {
+    it('sendPanelMessage on a finalized run returns {ok:false, reason:"run finalized"}', async () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ workerFactory: factory });
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       const runId = a.runIdHint;
-      a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
       const res = coord.sendPanelMessage(AGENT_ID, runId, workerId, 'hi');
       expect(res).toEqual({ ok: false, reason: 'run finalized' });
     });
@@ -773,7 +785,7 @@ describe('SwarmCoordinator', () => {
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
       await backends[0].onNextSegment();
-      const res = coord.cancelWorker(AGENT_ID, a.runIdHint, workerId);
+      const res = await coord.cancelWorker(AGENT_ID, a.runIdHint, workerId);
       expect(res.ok).toBe(true);
       expect(backends[0].abortCalls).toBe(1);
     });
@@ -791,7 +803,7 @@ describe('SwarmCoordinator', () => {
       await waitForBackends(backends, 2);
       await backends[0].onNextSegment();
       await backends[1].onNextSegment();
-      coord.cancelRunsFor(AGENT_ID);
+      await coord.cancelRunsFor(AGENT_ID);
       expect(backends[0].abortCalls).toBe(1);
       expect(backends[1].abortCalls).toBe(1);
       // Both turns are closed now.
@@ -809,15 +821,15 @@ describe('SwarmCoordinator', () => {
       await backends[0].onNextSegment();
       await backends[1].onNextSegment();
 
-      expect(coord.cancelTurn(AGENT_ID, 'c1')).toBe(true);
+      await expect(coord.cancelTurn(AGENT_ID, 'c1')).resolves.toBe(true);
       // c1's worker aborted; c2 untouched and still spawnable.
       expect(backends[0].abortCalls).toBe(1);
       expect(backends[1].abortCalls).toBe(0);
       expect(() => coord.spawnWorker(AGENT_ID, 'c1', { role: 'r', brief: 'b' })).toThrow();
       expect(() => coord.spawnWorker(AGENT_ID, 'c2', { role: 'r', brief: 'b' })).not.toThrow();
       // Idempotent + accurate return for unknown/finalized turns.
-      expect(coord.cancelTurn(AGENT_ID, 'c1')).toBe(false);
-      expect(coord.cancelTurn(AGENT_ID, 'nope')).toBe(false);
+      await expect(coord.cancelTurn(AGENT_ID, 'c1')).resolves.toBe(false);
+      await expect(coord.cancelTurn(AGENT_ID, 'nope')).resolves.toBe(false);
     });
 
     it('stop finalizes runs across all agents', async () => {
@@ -830,7 +842,7 @@ describe('SwarmCoordinator', () => {
       await waitForBackends(backends, 2);
       await backends[0].onNextSegment();
       await backends[1].onNextSegment();
-      coord.stop();
+      await coord.stop();
       expect(backends[0].abortCalls).toBe(1);
       expect(backends[1].abortCalls).toBe(1);
     });
@@ -851,7 +863,7 @@ describe('SwarmCoordinator', () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(onRunChanged).toHaveBeenCalled();
       onRunChanged.mockClear();
-      a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
       expect(onRunChanged).toHaveBeenCalled();
     });
   });
@@ -898,7 +910,7 @@ describe('SwarmCoordinator', () => {
       const a = coord.attach(baseAttach());
       const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'coder', brief: 'b' });
       await backends[0].onNextSegment();
-      a.finalize({ consumerAlive: true });
+      await a.finalize({ consumerAlive: true });
       expect(stops).toEqual([{ workerId, role: 'coder', status: 'cancelled' }]);
     });
 
@@ -1018,10 +1030,293 @@ describe('SwarmCoordinator', () => {
         if (run?.getHandle(workerId)?.status === 'waiting_input') break;
         await new Promise((r) => setTimeout(r, 1));
       }
-      a.finalize({ consumerAlive: true }); // fires run.closed → cancels the worker
+      await a.finalize({ consumerAlive: true }); // fires run.closed → cancels the worker
 
       const err = await askError.promise;
       expect(err).toBeInstanceOf(Error);
     });
+  });
+});
+
+describe('SwarmCoordinator lifecycle settlement', () => {
+  it('awaits canonical consumer-gone journal writes and keeps outerRunId distinct', async () => {
+    const { factory, backends } = makeFactory();
+    const write = deferred<unknown>();
+    const append = vi.fn(
+      (
+        _agentId: string,
+        _conversationId: string,
+        _identity: SwarmJournalIdentity,
+        _payload: { type: 'event'; event: AgentEvent },
+      ) => write.promise,
+    );
+    const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: { append } });
+    const attachment = coord.attach(baseAttach({ outerRunId: 'outer-run-1' }));
+    coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+    await backends[0].onNextSegment();
+
+    let settled = false;
+    const finalizing = attachment.finalize({ consumerAlive: false }).then(() => {
+      settled = true;
+    });
+    expect(attachment.live).toBe(false);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(append).toHaveBeenCalledWith(
+      AGENT_ID,
+      CONVO_ID,
+      { kind: 'canonical', outerRunId: 'outer-run-1' },
+      expect.objectContaining({ type: 'event' }),
+    );
+
+    write.resolve({});
+    await finalizing;
+    expect(settled).toBe(true);
+  });
+
+  it.each([null, new Error('dual journal failed')])(
+    'surfaces canonical journal failure %s instead of falling back to a legacy append',
+    async (failure) => {
+      const { factory, backends } = makeFactory();
+      const append = vi.fn(
+        (
+          _agentId: string,
+          _conversationId: string,
+          _identity: SwarmJournalIdentity,
+          _payload: { type: 'event'; event: AgentEvent },
+        ) => (failure instanceof Error ? Promise.reject(failure) : Promise.resolve(failure)),
+      );
+      const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: { append } });
+      const attachment = coord.attach(
+        baseAttach({ outerRunId: 'outer-run-1', messageId: 'legacy-message-1' }),
+      );
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      await backends[0].onNextSegment();
+
+      await expect(attachment.finalize({ consumerAlive: false })).rejects.toThrow(
+        'canonical swarm journal',
+      );
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(append.mock.calls[0]?.[2]).toEqual({
+        kind: 'canonical',
+        outerRunId: 'outer-run-1',
+      });
+    },
+  );
+
+  it('preserves a canonical journal failure when worker disposal rejects first', async () => {
+    const { factory, backends } = makeFactory();
+    const append = vi.fn().mockRejectedValue(new Error('journal unavailable'));
+    const coord = new SwarmCoordinator({ workerFactory: factory, eventLog: { append } });
+    const attachment = coord.attach(baseAttach({ outerRunId: 'outer-run-1' }));
+    coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+    await backends[0].onNextSegment();
+    backends[0].stopError = new Error('worker disposal failed first');
+
+    await expect(attachment.finalize({ consumerAlive: false })).rejects.toBeInstanceOf(
+      CanonicalSwarmJournalError,
+    );
+    expect(backends[0].stopCalls).toBe(1);
+    expect(append).toHaveBeenCalledOnce();
+  });
+
+  it('stops a worker factory result completed under a retired admission generation', async () => {
+    const factoryResult = deferred<WorkerBackend>();
+    let generation = 0;
+    const coord = new SwarmCoordinator({
+      workerFactory: () => factoryResult.promise,
+      admission: {
+        capture: (agentId, conversationId) => ({ agentId, conversationId, generation }),
+        isCurrent: (token) => (token as { generation: number }).generation === generation,
+      },
+    });
+    coord.attach(baseAttach());
+    const { workerId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+    generation++;
+    const backend = new FakeBackend();
+    factoryResult.resolve(backend);
+
+    const deadline = Date.now() + 1_000;
+    while (backend.stopCalls === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(backend.stopCalls).toBe(1);
+    expect(backend.segments).toHaveLength(0);
+    expect(coord.getLiveRun(AGENT_ID, CONVO_ID)?.getHandle(workerId)?.status).toBe('failed');
+  });
+
+  it('keeps a pre-fence attachment stale after re-enable and permits a fresh attachment', async () => {
+    const generations = new Map<string, number>();
+    const { factory } = makeFactory();
+    const coord = new SwarmCoordinator({
+      workerFactory: factory,
+      admission: {
+        capture: (agentId, conversationId) => ({
+          agentId,
+          conversationId,
+          generation: generations.get(agentId) ?? 0,
+        }),
+        isCurrent: (token) => {
+          const captured = token as { agentId: string; generation: number };
+          return captured.generation === (generations.get(captured.agentId) ?? 0);
+        },
+      },
+    });
+    const stale = coord.attach(baseAttach());
+
+    generations.set(AGENT_ID, 1); // disable
+    generations.set(AGENT_ID, 2); // re-enable must not revive the captured token
+    expect(() =>
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'stale', brief: 'must reject' }),
+    ).toThrow(/admission|retired|closed/);
+    await stale.finalize({ consumerAlive: true });
+
+    const fresh = coord.attach(baseAttach());
+    expect(fresh.live).toBe(true);
+    expect(() =>
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'fresh', brief: 'allowed' }),
+    ).not.toThrow();
+    await fresh.finalize({ consumerAlive: true });
+  });
+
+  it('retires a pending agent worker while an unaffected sibling still starts', async () => {
+    const pendingA = deferred<WorkerBackend>();
+    const generations = new Map<string, number>();
+    const backendA = new FakeBackend();
+    const backendB = new FakeBackend();
+    const coord = new SwarmCoordinator({
+      workerFactory: (spec) =>
+        spec.agentId === 'agent-a' ? pendingA.promise : Promise.resolve(backendB),
+      admission: {
+        capture: (agentId, conversationId) => ({
+          agentId,
+          conversationId,
+          generation: generations.get(agentId) ?? 0,
+        }),
+        isCurrent: (token) => {
+          const captured = token as { agentId: string; generation: number };
+          return captured.generation === (generations.get(captured.agentId) ?? 0);
+        },
+      },
+    });
+    coord.attach(baseAttach({ agentId: 'agent-a', conversationId: 'conversation-a' }));
+    coord.attach(baseAttach({ agentId: 'agent-b', conversationId: 'conversation-b' }));
+    coord.spawnWorker('agent-a', 'conversation-a', { role: 'a', brief: 'pending' });
+    coord.spawnWorker('agent-b', 'conversation-b', { role: 'b', brief: 'healthy' });
+    generations.set('agent-a', 1);
+    const cancellingA = coord.cancelRunsFor('agent-a');
+    pendingA.resolve(backendA);
+
+    await cancellingA;
+    expect(backendA.stopCalls).toBe(1);
+    expect(backendA.segments).toHaveLength(0);
+    expect((await backendB.onNextSegment()).message).toBe('healthy');
+    expect(() =>
+      coord.spawnWorker('agent-b', 'conversation-b', { role: 'b2', brief: 'still healthy' }),
+    ).not.toThrow();
+    await coord.stop();
+  });
+
+  it('settles every pending worker disposal after a process fence when one stop rejects', async () => {
+    const pendingA = deferred<WorkerBackend>();
+    const pendingB = deferred<WorkerBackend>();
+    let processGeneration = 0;
+    const stopA = vi.fn(async () => {
+      throw new Error('worker a stop failed');
+    });
+    const stopB = vi.fn(async () => {});
+    const makeLateBackend = (stop: () => Promise<void>): WorkerBackend => ({
+      async *chat(): AsyncGenerator<AgentEvent> {
+        yield { type: 'text_delta', text: 'must not run' };
+      },
+      abort: vi.fn(),
+      stop,
+    });
+    const coord = new SwarmCoordinator({
+      workerFactory: (spec) => (spec.agentId === 'agent-a' ? pendingA.promise : pendingB.promise),
+      admission: {
+        capture: (agentId, conversationId) => ({
+          agentId,
+          conversationId,
+          processGeneration,
+        }),
+        isCurrent: (token) =>
+          (token as { processGeneration: number }).processGeneration === processGeneration,
+      },
+    });
+    const attachmentA = coord.attach(
+      baseAttach({ agentId: 'agent-a', conversationId: 'conversation-a' }),
+    );
+    const attachmentB = coord.attach(
+      baseAttach({ agentId: 'agent-b', conversationId: 'conversation-b' }),
+    );
+    coord.spawnWorker('agent-a', 'conversation-a', { role: 'a', brief: 'pending a' });
+    coord.spawnWorker('agent-b', 'conversation-b', { role: 'b', brief: 'pending b' });
+
+    processGeneration++;
+    const stopping = coord.stop();
+    expect(attachmentA.live).toBe(false);
+    expect(attachmentB.live).toBe(false);
+    pendingA.resolve(makeLateBackend(stopA));
+    pendingB.resolve(makeLateBackend(stopB));
+
+    await expect(stopping).rejects.toThrow('worker a stop failed');
+    expect(stopA).toHaveBeenCalledOnce();
+    expect(stopB).toHaveBeenCalledOnce();
+  });
+
+  it.each(['cancelRunsFor', 'stop'] as const)(
+    '%s joins a matching finalization after its run left the live map',
+    async (operation) => {
+      const { factory, backends } = makeFactory();
+      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const attachment = coord.attach(baseAttach());
+      coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'r', brief: 'b' });
+      await backends[0].onNextSegment();
+      const stop = deferred<void>();
+      vi.spyOn(backends[0], 'stop').mockImplementation(() => stop.promise);
+
+      const firstFinalization = attachment.finalize({ consumerAlive: true });
+      let joinedSettled = false;
+      const joined = (operation === 'stop' ? coord.stop() : coord.cancelRunsFor(AGENT_ID)).finally(
+        () => {
+          joinedSettled = true;
+        },
+      );
+      const firstAssertion = expect(firstFinalization).rejects.toThrow('late stop failed');
+      const joinedAssertion = expect(joined).rejects.toThrow('late stop failed');
+
+      await Promise.resolve();
+      const settledWhileHeld = joinedSettled;
+      stop.reject(new Error('late stop failed'));
+
+      await firstAssertion;
+      await joinedAssertion;
+      expect(settledWhileHeld).toBe(false);
+    },
+  );
+
+  it('contains one worker abort throw, terminalizes later workers, disposes all, then rejects', async () => {
+    const { factory, backends } = makeFactory();
+    const coord = new SwarmCoordinator({ workerFactory: factory });
+    const attachment = coord.attach(baseAttach());
+    coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'first', brief: 'a' });
+    coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'second', brief: 'b' });
+    await waitForBackends(backends, 2);
+    await backends[0].onNextSegment();
+    await backends[1].onNextSegment();
+    backends[0].abort = vi.fn(() => {
+      throw new Error('first abort failed');
+    });
+
+    const stopping = coord.stop();
+
+    expect(attachment.live).toBe(false);
+    expect(backends[1].abortCalls).toBe(1);
+    expect(backends[0].stopCalls).toBe(1);
+    expect(backends[1].stopCalls).toBe(1);
+    const events = await drain(attachment.channel);
+    expect(events.filter((event) => event.type === 'worker_done')).toHaveLength(2);
+    await expect(stopping).rejects.toThrow('first abort failed');
   });
 });

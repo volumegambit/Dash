@@ -3044,4 +3044,46 @@ describe('SqliteConversationService segmented run lifecycle', () => {
         .get(),
     ).toBe(1);
   });
+
+  it('skips every mutation for an excluded recovery conversation, including orphan delivery reset', () => {
+    const conversationId = createConversation('recovery-excluded');
+    const run = acceptRun(conversationId, 'run-recovery-excluded');
+    enqueueSteer(conversationId, run.runId, 'excluded-steer');
+    enqueueFollowUp(conversationId, 'excluded-follow-up');
+    db()
+      .prepare("UPDATE conversation_pending_inputs SET state = 'delivering' WHERE input_id = ?")
+      .run('input-excluded-follow-up');
+    const beforeConversation = service.get(conversationId);
+    const beforeInput = db()
+      .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+      .get('input-excluded-follow-up');
+    const beforeSteer = db()
+      .prepare(
+        'SELECT state, revision, failure_code FROM conversation_pending_inputs WHERE input_id = ?',
+      )
+      .get('input-excluded-steer');
+    const beforeLegacy = service.eventLog.readSince(AGENT_ID, conversationId, 0);
+    const beforeV2Seq = service.bootstrapV2({ conversationId, limit: 100 }).v2ThroughSeq;
+
+    expect(service.recoverV2State({ excludeConversationIds: new Set([conversationId]) })).toEqual({
+      conversationsInterrupted: 0,
+      terminalsAppended: 0,
+      eligibleConversationIds: [],
+    });
+    expect(service.get(conversationId)).toEqual(beforeConversation);
+    expect(
+      db()
+        .prepare('SELECT state, revision FROM conversation_pending_inputs WHERE input_id = ?')
+        .get('input-excluded-follow-up'),
+    ).toEqual(beforeInput);
+    expect(
+      db()
+        .prepare(
+          'SELECT state, revision, failure_code FROM conversation_pending_inputs WHERE input_id = ?',
+        )
+        .get('input-excluded-steer'),
+    ).toEqual(beforeSteer);
+    expect(service.eventLog.readSince(AGENT_ID, conversationId, 0)).toEqual(beforeLegacy);
+    expect(service.readV2Since(AGENT_ID, conversationId, beforeV2Seq).frames).toEqual([]);
+  });
 });

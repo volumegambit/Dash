@@ -3,11 +3,38 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import type { RunSnapshot } from '@dash/swarm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { SqliteEventLogStore } from './event-log-store-sqlite.js';
 import type { EventLogPayload } from './event-log-store.js';
 import { recoverInterruptedSwarmTurns } from './swarm-log-recovery.js';
+
+function canonicalSpawned(workerId: string, runId = 'run-1'): AgentEvent {
+  return {
+    type: 'worker_spawned',
+    workerId,
+    runId,
+    role: `role-${workerId}`,
+    brief: `brief for ${workerId}`,
+    model: 'test-model',
+  };
+}
+
+function canonicalDone(
+  workerId: string,
+  status: 'done' | 'failed' | 'cancelled' = 'done',
+  runId = 'run-1',
+): AgentEvent {
+  return {
+    type: 'worker_done',
+    workerId,
+    runId,
+    role: `role-${workerId}`,
+    status,
+    report: `report from ${workerId}`,
+    usage: { inputTokens: 10, outputTokens: 20 },
+  };
+}
 
 /**
  * Boot-time recovery for swarm turns a previous gateway process died in
@@ -35,14 +62,7 @@ describe('recoverInterruptedSwarmTurns', () => {
   }
 
   function spawned(workerId: string, runId = 'run-1'): AgentEvent {
-    return {
-      type: 'worker_spawned',
-      workerId,
-      runId,
-      role: `role-${workerId}`,
-      brief: `brief for ${workerId}`,
-      model: 'test-model',
-    };
+    return canonicalSpawned(workerId, runId);
   }
 
   function done(
@@ -50,15 +70,7 @@ describe('recoverInterruptedSwarmTurns', () => {
     status: 'done' | 'failed' | 'cancelled' = 'done',
     runId = 'run-1',
   ): AgentEvent {
-    return {
-      type: 'worker_done',
-      workerId,
-      runId,
-      role: `role-${workerId}`,
-      status,
-      report: `report from ${workerId}`,
-      usage: { inputTokens: 10, outputTokens: 20 },
-    };
+    return canonicalDone(workerId, status, runId);
   }
 
   it('synthesizes worker_done(cancelled) for each dangling worker plus one error marker', () => {
@@ -69,7 +81,12 @@ describe('recoverInterruptedSwarmTurns', () => {
 
     const result = recoverInterruptedSwarmTurns({ eventLog: store });
 
-    expect(result).toEqual({ conversationsRepaired: 1, workersCancelled: 2 });
+    expect(result).toEqual({
+      conversationsRepaired: 1,
+      workersCancelled: 2,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
+    });
 
     const entries = store.readSince('agent-a', 'conv-1', 3);
     expect(entries).toHaveLength(3);
@@ -105,7 +122,12 @@ describe('recoverInterruptedSwarmTurns', () => {
 
     const result = recoverInterruptedSwarmTurns({ eventLog: store });
 
-    expect(result).toEqual({ conversationsRepaired: 0, workersCancelled: 0 });
+    expect(result).toEqual({
+      conversationsRepaired: 0,
+      workersCancelled: 0,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
+    });
     expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(1);
   });
 
@@ -118,7 +140,12 @@ describe('recoverInterruptedSwarmTurns', () => {
 
     const result = recoverInterruptedSwarmTurns({ eventLog: store });
 
-    expect(result).toEqual({ conversationsRepaired: 0, workersCancelled: 0 });
+    expect(result).toEqual({
+      conversationsRepaired: 0,
+      workersCancelled: 0,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
+    });
     expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(2);
   });
 
@@ -132,7 +159,12 @@ describe('recoverInterruptedSwarmTurns', () => {
 
     const result = recoverInterruptedSwarmTurns({ eventLog: store });
 
-    expect(result).toEqual({ conversationsRepaired: 0, workersCancelled: 0 });
+    expect(result).toEqual({
+      conversationsRepaired: 0,
+      workersCancelled: 0,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
+    });
     expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(4);
   });
 
@@ -143,7 +175,12 @@ describe('recoverInterruptedSwarmTurns', () => {
 
     const result = recoverInterruptedSwarmTurns({ eventLog: store });
 
-    expect(result).toEqual({ conversationsRepaired: 1, workersCancelled: 1 });
+    expect(result).toEqual({
+      conversationsRepaired: 1,
+      workersCancelled: 1,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
+    });
     const tail = store.readSince('agent-a', 'conv-1', 3);
     expect(tail).toHaveLength(2);
     expect(tail[0].payload).toMatchObject({
@@ -161,7 +198,12 @@ describe('recoverInterruptedSwarmTurns', () => {
 
     const second = recoverInterruptedSwarmTurns({ eventLog: store });
 
-    expect(second).toEqual({ conversationsRepaired: 0, workersCancelled: 0 });
+    expect(second).toEqual({
+      conversationsRepaired: 0,
+      workersCancelled: 0,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
+    });
     expect(store.readSince('agent-a', 'conv-1', 0)).toHaveLength(afterFirst.length);
   });
 
@@ -267,6 +309,8 @@ describe('swarm and canonical conversation recovery ordering', () => {
     expect(recoverInterruptedSwarmTurns({ eventLog: service.eventLog })).toEqual({
       conversationsRepaired: 1,
       workersCancelled: 1,
+      canonicalConversationsRepaired: [],
+      failedCanonicalConversationIds: [],
     });
     expect(service.recoverInterruptedTurns()).toEqual({
       conversationsInterrupted: 1,
@@ -286,5 +330,333 @@ describe('swarm and canonical conversation recovery ordering', () => {
       revision: 3,
       lastSeq: entries.at(-1)?.seq,
     });
+  });
+
+  it('repairs a canonical worker through the current segment journal and leaves the sole terminal to v2 recovery', () => {
+    const conversation = service.create({
+      agentId: 'agent-a',
+      agentName: 'Canonical Helper',
+      requestId: 'create-canonical',
+    });
+    service.acceptTurn({
+      agentId: 'agent-a',
+      conversationId: conversation.id,
+      turnId: 'outer-run-1',
+      text: 'Delegate this canonically',
+    });
+    service.appendTurnEvent(conversation.id, 'outer-run-1', canonicalSpawned('worker-canonical'));
+    const before = service.eventLog.readSince('agent-a', conversation.id, 0).length;
+
+    const recovered = recoverInterruptedSwarmTurns({
+      eventLog: service.eventLog,
+      canonicalRuns: [
+        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: 'outer-run-1' },
+      ],
+      appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
+        service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
+    });
+
+    expect(recovered).toMatchObject({
+      conversationsRepaired: 1,
+      workersCancelled: 1,
+      canonicalConversationsRepaired: [conversation.id],
+      failedCanonicalConversationIds: [],
+    });
+    const afterSwarm = service.eventLog.readSince('agent-a', conversation.id, before);
+    expect(afterSwarm).toHaveLength(1);
+    expect(afterSwarm[0]?.payload).toMatchObject({
+      type: 'event',
+      event: { type: 'worker_done', workerId: 'worker-canonical' },
+    });
+    expect(afterSwarm.some((entry) => entry.payload.type === 'error')).toBe(false);
+
+    expect(service.recoverV2State()).toMatchObject({
+      conversationsInterrupted: 1,
+      terminalsAppended: 1,
+    });
+    expect(
+      service.eventLog
+        .readSince('agent-a', conversation.id, 0)
+        .filter((entry) => entry.payload.type === 'error'),
+    ).toHaveLength(1);
+  });
+
+  it('never falls back to the legacy journal when a canonical dual append returns null', () => {
+    const conversation = service.create({
+      agentId: 'agent-a',
+      agentName: 'Canonical Helper',
+      requestId: 'create-canonical-failure',
+    });
+    service.acceptTurn({
+      agentId: 'agent-a',
+      conversationId: conversation.id,
+      turnId: 'outer-run-failure',
+      text: 'Delegate this canonically',
+    });
+    service.appendTurnEvent(
+      conversation.id,
+      'outer-run-failure',
+      canonicalSpawned('worker-failure'),
+    );
+    const legacyAppend = vi.spyOn(service.eventLog, 'append');
+
+    const recovered = recoverInterruptedSwarmTurns({
+      eventLog: service.eventLog,
+      canonicalRuns: [
+        {
+          agentId: 'agent-a',
+          conversationId: conversation.id,
+          outerRunId: 'outer-run-failure',
+        },
+      ],
+      appendCurrentRunEvent: () => null,
+    });
+
+    expect(recovered.failedCanonicalConversationIds).toEqual([conversation.id]);
+    expect(legacyAppend).not.toHaveBeenCalled();
+    expect(service.get(conversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'outer-run-failure',
+    });
+  });
+
+  it('repairs only the active post-compaction, post-Steer segment through both journals', () => {
+    const conversation = service.create({
+      agentId: 'agent-a',
+      agentName: 'Canonical Helper',
+      requestId: 'create-compacted',
+    });
+    const old = service.acceptRun({
+      protocol: 'v2',
+      agentId: 'agent-a',
+      channelId: 'direct',
+      conversationId: conversation.id,
+      runId: 'outer-old',
+      text: 'Old completed run',
+    });
+    service.appendRunEvent({
+      conversationId: conversation.id,
+      runId: old.runId,
+      segmentTurnId: old.segmentTurnId,
+      event: canonicalSpawned('worker-old', 'swarm-old'),
+    });
+    service.appendRunEvent({
+      conversationId: conversation.id,
+      runId: old.runId,
+      segmentTurnId: old.segmentTurnId,
+      event: canonicalDone('worker-old', 'done', 'swarm-old'),
+    });
+    service.finishRunAndClaimNext({
+      conversationId: conversation.id,
+      runId: old.runId,
+      segmentTurnId: old.segmentTurnId,
+      outcome: 'completed',
+      suppressPromotion: true,
+    });
+
+    const active = service.acceptRun({
+      protocol: 'v2',
+      agentId: 'agent-a',
+      channelId: 'direct',
+      conversationId: conversation.id,
+      runId: 'outer-active',
+      text: 'Active canonical run',
+    });
+    service.enqueueInput({
+      commandId: 'command-steer-recovery',
+      inputId: 'input-steer-recovery',
+      agentId: 'agent-a',
+      channelId: 'direct',
+      conversationId: conversation.id,
+      text: 'Continue on a later segment',
+      behavior: 'steer',
+      expectedActiveTurnId: active.runId,
+    });
+    const steer = service.deliverSteer({
+      conversationId: conversation.id,
+      runId: active.runId,
+      inputId: 'input-steer-recovery',
+    });
+    service.appendRunEvent({
+      conversationId: conversation.id,
+      runId: active.runId,
+      segmentTurnId: steer.segmentTurnId,
+      event: canonicalSpawned('worker-active', 'swarm-active'),
+    });
+
+    const recovered = recoverInterruptedSwarmTurns({
+      eventLog: service.eventLog,
+      canonicalRuns: [
+        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: active.runId },
+      ],
+      appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
+        service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
+    });
+
+    expect(recovered).toMatchObject({
+      workersCancelled: 1,
+      canonicalConversationsRepaired: [conversation.id],
+      failedCanonicalConversationIds: [],
+    });
+    const repaired = service.eventLog.readSince('agent-a', conversation.id, 0).at(-1);
+    expect(repaired).toMatchObject({
+      msgId: active.runId,
+      segmentTurnId: steer.segmentTurnId,
+      payload: {
+        type: 'event',
+        event: { type: 'worker_done', workerId: 'worker-active', runId: 'swarm-active' },
+      },
+    });
+    expect(
+      service.eventLog
+        .readSince('agent-a', conversation.id, 0)
+        .filter(
+          (entry) =>
+            entry.payload.type === 'event' &&
+            entry.payload.event.type === 'worker_done' &&
+            entry.payload.event.workerId === 'worker-old',
+        ),
+    ).toHaveLength(1);
+  });
+
+  it('retries only missing canonical worker repairs after a partial dual-journal append', () => {
+    const conversation = service.create({
+      agentId: 'agent-a',
+      agentName: 'Canonical Helper',
+      requestId: 'create-partial',
+    });
+    const active = service.acceptRun({
+      protocol: 'v2',
+      agentId: 'agent-a',
+      channelId: 'direct',
+      conversationId: conversation.id,
+      runId: 'outer-partial',
+      text: 'Repair two workers',
+    });
+    for (const workerId of ['worker-one', 'worker-two']) {
+      service.appendRunEvent({
+        conversationId: conversation.id,
+        runId: active.runId,
+        segmentTurnId: active.segmentTurnId,
+        event: canonicalSpawned(workerId, 'swarm-partial'),
+      });
+    }
+    let failSecond = true;
+    const appendCurrentRunEvent = vi.fn(
+      (agentId: string, conversationId: string, outerRunId: string, event: AgentEvent) => {
+        if (failSecond && event.type === 'worker_done' && event.workerId === 'worker-two') {
+          return null;
+        }
+        return service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event);
+      },
+    );
+    const options = {
+      eventLog: service.eventLog,
+      canonicalRuns: [
+        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: active.runId },
+      ],
+      appendCurrentRunEvent,
+    };
+
+    const first = recoverInterruptedSwarmTurns(options);
+    expect(first.failedCanonicalConversationIds).toEqual([conversation.id]);
+    expect(service.get(conversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: active.runId,
+    });
+    expect(
+      service.eventLog
+        .readSince('agent-a', conversation.id, 0)
+        .filter(
+          (entry) => entry.payload.type === 'event' && entry.payload.event.type === 'worker_done',
+        )
+        .map((entry) =>
+          entry.payload.type === 'event' && entry.payload.event.type === 'worker_done'
+            ? entry.payload.event.workerId
+            : '',
+        ),
+    ).toEqual(['worker-one']);
+
+    failSecond = false;
+    const second = recoverInterruptedSwarmTurns(options);
+    expect(second).toMatchObject({
+      workersCancelled: 1,
+      canonicalConversationsRepaired: [conversation.id],
+      failedCanonicalConversationIds: [],
+    });
+    expect(
+      appendCurrentRunEvent.mock.calls.filter(
+        (call) => call[3].type === 'worker_done' && call[3].workerId === 'worker-one',
+      ),
+    ).toHaveLength(1);
+
+    expect(service.recoverV2State()).toMatchObject({
+      conversationsInterrupted: 1,
+      terminalsAppended: 1,
+    });
+    const afterTerminal = service.eventLog.readSince('agent-a', conversation.id, 0);
+    expect(afterTerminal.filter((entry) => entry.payload.type === 'error')).toHaveLength(1);
+    expect(recoverInterruptedSwarmTurns(options)).toMatchObject({
+      workersCancelled: 0,
+      failedCanonicalConversationIds: [],
+    });
+    expect(service.eventLog.readSince('agent-a', conversation.id, 0)).toHaveLength(
+      afterTerminal.length,
+    );
+  });
+
+  it('restores a canonical active run whose workers are already terminal before the sole terminal', () => {
+    const conversation = service.create({
+      agentId: 'agent-a',
+      agentName: 'Canonical Helper',
+      requestId: 'create-terminal-workers',
+    });
+    const active = service.acceptRun({
+      protocol: 'v2',
+      agentId: 'agent-a',
+      channelId: 'direct',
+      conversationId: conversation.id,
+      runId: 'outer-terminal-workers',
+      text: 'Workers already settled',
+    });
+    service.appendRunEvent({
+      conversationId: conversation.id,
+      runId: active.runId,
+      segmentTurnId: active.segmentTurnId,
+      event: canonicalSpawned('worker-done', 'swarm-terminal-workers'),
+    });
+    service.appendRunEvent({
+      conversationId: conversation.id,
+      runId: active.runId,
+      segmentTurnId: active.segmentTurnId,
+      event: canonicalDone('worker-done', 'done', 'swarm-terminal-workers'),
+    });
+    const restoreRun = vi.fn();
+
+    const repaired = recoverInterruptedSwarmTurns({
+      eventLog: service.eventLog,
+      canonicalRuns: [
+        { agentId: 'agent-a', conversationId: conversation.id, outerRunId: active.runId },
+      ],
+      appendCurrentRunEvent: (agentId, conversationId, outerRunId, event) =>
+        service.appendCurrentRunEvent(agentId, conversationId, outerRunId, event),
+      restoreRun,
+    });
+
+    expect(repaired).toMatchObject({
+      workersCancelled: 0,
+      canonicalConversationsRepaired: [conversation.id],
+      failedCanonicalConversationIds: [],
+    });
+    expect(restoreRun).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: conversation.id, finalized: true }),
+    );
+    expect(service.get(conversation.id)).toMatchObject({ status: 'running' });
+    expect(service.recoverV2State()).toMatchObject({ terminalsAppended: 1 });
+    expect(
+      service.eventLog
+        .readSince('agent-a', conversation.id, 0)
+        .filter((entry) => entry.payload.type === 'error'),
+    ).toHaveLength(1);
   });
 });

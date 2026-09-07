@@ -1,7 +1,7 @@
 import type { AgentEvent } from '@dash/agent';
 import type { MobileAgentEvent } from '@dash/mobile-contract';
 import type { RunSnapshot } from '@dash/swarm';
-import type { EventLogPayload, EventLogStore } from './event-log-store.js';
+import type { EventLogEntry, EventLogPayload, EventLogStore } from './event-log-store.js';
 
 /**
  * Boot-time repair of swarm turns a previous gateway process died in the
@@ -68,6 +68,18 @@ const TURN_ERROR_PAYLOAD = { type: 'error', error: TURN_ERROR } satisfies EventL
 
 export interface SwarmLogRecoveryOptions {
   eventLog: EventLogStore;
+  /** Active canonical outer runs. Their worker terminals must use the dual journal. */
+  canonicalRuns?: ReadonlyArray<{
+    agentId: string;
+    conversationId: string;
+    outerRunId: string;
+  }>;
+  appendCurrentRunEvent?: (
+    agentId: string,
+    conversationId: string,
+    outerRunId: string,
+    event: AgentEvent,
+  ) => unknown | null;
   /** Push a reconstructed finalized snapshot into the panel history. */
   restoreRun?: (snapshot: RunSnapshot) => void;
   /** Boot logger; recovery is chatty only about what it changed or skipped on error. */
@@ -77,6 +89,8 @@ export interface SwarmLogRecoveryOptions {
 export interface SwarmLogRecoveryResult {
   conversationsRepaired: number;
   workersCancelled: number;
+  canonicalConversationsRepaired: string[];
+  failedCanonicalConversationIds: string[];
 }
 
 export function recoverInterruptedSwarmTurns(
@@ -85,13 +99,22 @@ export function recoverInterruptedSwarmTurns(
   const { eventLog, restoreRun, log } = options;
   let conversationsRepaired = 0;
   let workersCancelled = 0;
+  const canonicalConversationsRepaired: string[] = [];
+  const failedCanonicalConversationIds: string[] = [];
+  const canonicalRuns = new Map(
+    (options.canonicalRuns ?? []).map((run) => [`${run.agentId}\u0000${run.conversationId}`, run]),
+  );
 
   for (const conv of eventLog.listInterrupted()) {
     // A failure in one conversation must never break boot or the rest of
     // the scan — log it and move on; that conversation stays interrupted
     // and gets another chance on the next boot.
     try {
-      const tail = eventLog.readSince(conv.agentId, conv.conversationId, conv.lastTerminalSeq);
+      const canonical = canonicalRuns.get(`${conv.agentId}\u0000${conv.conversationId}`);
+      const wholeTail = eventLog.readSince(conv.agentId, conv.conversationId, conv.lastTerminalSeq);
+      const tail = canonical
+        ? wholeTail.filter((entry) => entry.msgId === canonical.outerRunId)
+        : wholeTail;
 
       // Group the tail's swarm events. Spawn order is preserved by seq order.
       const spawns = new Map<string, { event: WorkerSpawnedEvent; timestamp: string }>();
@@ -108,6 +131,43 @@ export function recoverInterruptedSwarmTurns(
       if (spawns.size === 0) continue; // interrupted, but not a swarm turn
 
       const dangling = [...spawns.values()].filter(({ event }) => !terminals.has(event.workerId));
+
+      if (canonical) {
+        if (!options.appendCurrentRunEvent) {
+          throw new Error('Canonical swarm recovery requires appendCurrentRunEvent');
+        }
+        for (const { event } of dangling) {
+          const synthesized: WorkerDoneEvent = {
+            type: 'worker_done',
+            workerId: event.workerId,
+            runId: event.runId,
+            role: event.role,
+            status: 'cancelled',
+            report: CANCELLED_WORKER_REPORT,
+            usage: { inputTokens: 0, outputTokens: 0 },
+          };
+          const persisted = options.appendCurrentRunEvent(
+            conv.agentId,
+            conv.conversationId,
+            canonical.outerRunId,
+            synthesized,
+          );
+          if (persisted === null) {
+            throw new Error(`Canonical journal rejected worker ${event.workerId}`);
+          }
+          terminals.set(event.workerId, synthesized);
+          workersCancelled++;
+        }
+
+        restoreRun?.(buildSnapshot(conv.agentId, conv.conversationId, tail, spawns, terminals));
+        conversationsRepaired++;
+        canonicalConversationsRepaired.push(conv.conversationId);
+        log?.(
+          `[swarm-recovery] repaired ${dangling.length} canonical worker(s) in conversation ${conv.conversationId} (agent ${conv.agentId}, outer run ${canonical.outerRunId})`,
+        );
+        continue;
+      }
+
       if (dangling.length === 0) continue; // every worker already terminal (e.g. user cancel)
 
       // 1) Synthesize a terminal event per dangling worker, keyed to the
@@ -136,32 +196,8 @@ export function recoverInterruptedSwarmTurns(
       // 3) Rebuild the run for the panel. Timestamps come from the log
       //    itself: the run started at its first spawn and can't have
       //    outlived the last thing the dead process wrote.
-      const ordered = [...spawns.values()];
-      const runId = ordered[0].event.runId;
-      const startedAt = Date.parse(ordered[0].timestamp);
-      const endedAt = Date.parse(tail[tail.length - 1].timestamp);
-      restoreRun?.({
-        runId,
-        agentId: conv.agentId,
-        conversationId: conv.conversationId,
-        startedAt,
-        endedAt,
-        finalized: true,
-        workerCount: ordered.length,
-        activeCount: 0,
-        workers: ordered.map(({ event }) => {
-          const terminal = terminals.get(event.workerId) as WorkerDoneEvent;
-          return {
-            workerId: event.workerId,
-            role: event.role,
-            status: terminal.status,
-            brief: event.brief,
-            model: event.model,
-            report: terminal.report,
-            usage: terminal.usage ?? { inputTokens: 0, outputTokens: 0 },
-          };
-        }),
-      });
+      const runId = [...spawns.values()][0].event.runId;
+      restoreRun?.(buildSnapshot(conv.agentId, conv.conversationId, tail, spawns, terminals));
 
       conversationsRepaired++;
       workersCancelled += dangling.length;
@@ -169,11 +205,55 @@ export function recoverInterruptedSwarmTurns(
         `[swarm-recovery] terminalized ${dangling.length} dangling worker(s) in conversation ${conv.conversationId} (agent ${conv.agentId}, run ${runId})`,
       );
     } catch (err) {
+      const canonical = canonicalRuns.has(`${conv.agentId}\u0000${conv.conversationId}`);
+      if (canonical && !failedCanonicalConversationIds.includes(conv.conversationId)) {
+        failedCanonicalConversationIds.push(conv.conversationId);
+      }
       log?.(
         `[swarm-recovery] failed to repair conversation ${conv.conversationId} (agent ${conv.agentId}): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
-  return { conversationsRepaired, workersCancelled };
+  return {
+    conversationsRepaired,
+    workersCancelled,
+    canonicalConversationsRepaired,
+    failedCanonicalConversationIds,
+  };
+}
+
+function buildSnapshot(
+  agentId: string,
+  conversationId: string,
+  tail: EventLogEntry[],
+  spawns: Map<string, { event: WorkerSpawnedEvent; timestamp: string }>,
+  terminals: Map<string, WorkerDoneEvent>,
+): RunSnapshot {
+  const ordered = [...spawns.values()];
+  const runId = ordered[0].event.runId;
+  const startedAt = Date.parse(ordered[0].timestamp);
+  const endedAt = Date.parse(tail.at(-1)?.timestamp ?? ordered[0].timestamp);
+  return {
+    runId,
+    agentId,
+    conversationId,
+    startedAt,
+    endedAt,
+    finalized: true,
+    workerCount: ordered.length,
+    activeCount: 0,
+    workers: ordered.map(({ event }) => {
+      const terminal = terminals.get(event.workerId) as WorkerDoneEvent;
+      return {
+        workerId: event.workerId,
+        role: event.role,
+        status: terminal.status,
+        brief: event.brief,
+        model: event.model,
+        report: terminal.report,
+        usage: terminal.usage ?? { inputTokens: 0, outputTokens: 0 },
+      };
+    }),
+  };
 }

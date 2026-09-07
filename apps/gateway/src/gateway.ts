@@ -1,8 +1,19 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentClient } from '@dash/agent';
+import type { AgentClient, AgentEvent } from '@dash/agent';
 import { SLASH_HELP, formatSkillList, parseSlashCommand } from '@dash/channels';
-import type { ChannelAdapter, InboundMessage, MessageHook, MessageLogEntry } from '@dash/channels';
+import type {
+  ChannelAdapter,
+  InboundMessage,
+  MessageHook,
+  MessageLogEntry,
+  OutboundMessage,
+} from '@dash/channels';
+import {
+  type AdmissionAbortReason,
+  type AdmissionLease,
+  GatewayAdmissionController,
+} from './admission-controller.js';
 import { describeError, withTimeout } from './shutdown.js';
 
 /**
@@ -47,6 +58,7 @@ interface RoutingRule {
 interface ChannelState {
   adapter: ChannelAdapter;
   rules: RoutingRule[];
+  started: boolean;
 }
 
 /**
@@ -80,6 +92,7 @@ export interface DynamicGatewayOptions {
    * message unchanged. Omit it (or leave it undefined) for zero overhead.
    */
   messageHook?: MessageHook;
+  admission?: GatewayAdmissionController;
 }
 
 export interface DynamicGateway {
@@ -97,7 +110,9 @@ export interface DynamicGateway {
         denyList: string[];
       }>;
     },
+    options?: { start?: boolean },
   ): Promise<void>;
+  startChannel(channelName: string): Promise<boolean>;
   /**
    * Stop the adapter for a channel and remove it from the running gateway.
    * Returns `true` if the channel was running and has been stopped; `false`
@@ -117,6 +132,12 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
   const channels = new Map<string, ChannelState>();
   const resolveRouting = options?.resolveRouting;
   const messageHook = options?.messageHook;
+  const admission = options?.admission ?? new GatewayAdmissionController();
+  let accepting = true;
+
+  const assertAccepting = (): void => {
+    if (!accepting) throw new Error('Gateway is shutting down');
+  };
 
   // Set up channel message logging
   let logDir: string | null = null;
@@ -159,13 +180,77 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
     return { rules, removed: false };
   }
 
+  function outboundAbortError(signal: AbortSignal): Error {
+    if (signal.reason instanceof Error) return signal.reason;
+    const reason = signal.reason as Partial<AdmissionAbortReason> | undefined;
+    return new Error(
+      typeof reason?.message === 'string'
+        ? reason.message
+        : 'Channel outbound delivery interrupted',
+      { cause: signal.reason },
+    );
+  }
+
+  /** Bound an async handoff to the exact ingress lease and observe late rejection. */
+  async function runWhileAdmitted<T>(
+    signal: AbortSignal,
+    operation: () => T | PromiseLike<T>,
+  ): Promise<T> {
+    if (signal.aborted) throw outboundAbortError(signal);
+
+    let rejectAborted!: (error: Error) => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = reject;
+    });
+    let didAbort = false;
+    const onAbort = (): void => {
+      if (didAbort) return;
+      didAbort = true;
+      rejectAborted(outboundAbortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      if (signal.aborted) onAbort();
+      if (didAbort) {
+        return aborted;
+      }
+
+      let pending: Promise<T>;
+      try {
+        pending = Promise.resolve(operation());
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      void pending.catch(() => {});
+      return await Promise.race([pending, aborted]);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /**
+   * Bound every adapter delivery to the exact ingress lease that admitted it.
+   * The adapter receives the signal for transport-native cancellation, while
+   * the race is the gateway-level guarantee for custom adapters that ignore it.
+   */
+  async function sendOutbound(
+    adapter: ChannelAdapter,
+    conversationId: string,
+    message: OutboundMessage,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await runWhileAdmitted(signal, () => adapter.send(conversationId, message, signal));
+  }
+
   async function handleMessage(
     channelName: string,
     msg: InboundMessage,
     adapter: ChannelAdapter,
   ): Promise<void> {
     const state = channels.get(channelName);
-    if (!state) return;
+    if (!state || !state.started || !accepting) return;
+    let ingress: AdmissionLease | undefined;
 
     const baseLog: Omit<MessageLogEntry, 'outcome' | 'agentName' | 'blockReason'> = {
       timestamp: new Date().toISOString(),
@@ -226,6 +311,14 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
         return;
       }
 
+      const prefixedConvId = `${channelName}:${msg.conversationId}`;
+      try {
+        ingress = admission.acquire(matched.agentId, prefixedConvId);
+      } catch {
+        logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'lifecycle_fence' });
+        return;
+      }
+
       logMessage({ ...baseLog, outcome: 'routed', agentName });
 
       // Channel slash-commands, handled before the prompt hook / LLM.
@@ -238,16 +331,25 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
       //    text — see AgentSession._expandSkillCommand.)
       const slash = parseSlashCommand(msg.text);
       if (slash?.kind === 'help') {
-        await adapter.send(msg.conversationId, { text: SLASH_HELP });
+        await sendOutbound(adapter, msg.conversationId, { text: SLASH_HELP }, ingress.signal);
         return;
       }
       if (slash?.kind === 'skills') {
-        const skills = (await agent.listSkills?.()) ?? [];
-        await adapter.send(msg.conversationId, { text: formatSkillList(skills) });
+        type SkillsPromise = ReturnType<NonNullable<AgentClient['listSkills']>>;
+        const listSkills = agent.listSkills as
+          | ((signal?: AbortSignal) => SkillsPromise)
+          | undefined;
+        const skills = listSkills
+          ? await runWhileAdmitted(ingress.signal, () => listSkills.call(agent, ingress.signal))
+          : [];
+        await sendOutbound(
+          adapter,
+          msg.conversationId,
+          { text: formatSkillList(skills) },
+          ingress.signal,
+        );
         return;
       }
-
-      const prefixedConvId = `${channelName}:${msg.conversationId}`;
 
       // UserPromptSubmit hook (e.g. plugins). Fires after allow/deny, before
       // the agent runs. FAIL-OPEN: any throw falls through to normal dispatch
@@ -259,16 +361,24 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           : msg.text;
       if (messageHook) {
         try {
-          const decision = await messageHook({
-            prompt: promptText,
-            channel: channelName,
-            conversationId: prefixedConvId,
-            senderId: msg.senderId,
-          });
+          const decision = await runWhileAdmitted(ingress.signal, () =>
+            messageHook({
+              prompt: promptText,
+              channel: channelName,
+              conversationId: prefixedConvId,
+              senderId: msg.senderId,
+              signal: ingress.signal,
+            }),
+          );
           if (decision.block) {
             logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'prompt_hook' });
             if (decision.reason) {
-              await adapter.send(msg.conversationId, { text: decision.reason });
+              await sendOutbound(
+                adapter,
+                msg.conversationId,
+                { text: decision.reason },
+                ingress.signal,
+              );
             }
             return;
           }
@@ -276,6 +386,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
             promptText = `${decision.additionalContext}\n\n${promptText}`;
           }
         } catch (err) {
+          if (ingress.signal.aborted) return;
           console.warn(
             `[gateway] messageHook error (failing open) channel=${channelName}:`,
             err instanceof Error ? err.message : err,
@@ -285,8 +396,21 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
 
       let fullResponse = '';
       let streamError: Error | null = null;
+      let streamCompleted = false;
+      let iterator: AsyncIterator<AgentEvent> | undefined;
       try {
-        for await (const event of agent.chat(msg.channelId, prefixedConvId, promptText)) {
+        const events = agent.chat(msg.channelId, prefixedConvId, promptText, {
+          signal: ingress.signal,
+        });
+        const streamIterator = events[Symbol.asyncIterator]();
+        iterator = streamIterator;
+        while (true) {
+          const next = await runWhileAdmitted(ingress.signal, () => streamIterator.next());
+          if (next.done) {
+            streamCompleted = true;
+            break;
+          }
+          const event = next.value;
           if (event.type === 'response') {
             fullResponse = event.content;
           } else if (event.type === 'error') {
@@ -305,6 +429,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           }
         }
       } catch (err) {
+        if (ingress.signal.aborted) return;
         // Exception-from-generator path: the agent backend threw instead
         // of yielding. Treat as an internal error, record it, and send a
         // sanitized reply so the user isn't left hanging.
@@ -314,6 +439,16 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           streamError.stack ?? streamError.message,
         );
         fullResponse = 'Error: internal agent failure (see gateway logs)';
+      } finally {
+        if (!streamCompleted && iterator?.return) {
+          try {
+            const closing = Promise.resolve(iterator.return());
+            void closing.catch(() => {});
+          } catch {
+            // The run already failed or was lifecycle-aborted; ingress release
+            // must never wait on a misbehaving iterator's optional cleanup.
+          }
+        }
       }
 
       if (streamError) {
@@ -330,8 +465,9 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
 
       if (fullResponse) {
         try {
-          await adapter.send(msg.conversationId, { text: fullResponse });
+          await sendOutbound(adapter, msg.conversationId, { text: fullResponse }, ingress.signal);
         } catch (err) {
+          if (ingress.signal.aborted) return;
           // Delivery failed — the routing bookkeeping said 'routed' but
           // the user will never see it. Record the discrepancy so the
           // audit log reflects reality.
@@ -348,6 +484,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
         }
       }
     } catch (err) {
+      if (ingress?.signal.aborted) return;
       // Anything unexpected (rule-match callback throwing, logMessage
       // re-throwing, etc.). Do NOT re-throw — this function is called
       // from inside the adapter's message middleware and rethrowing
@@ -366,11 +503,14 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
         // logMessage already does its own warn on failure — if it still
         // throws (it shouldn't, we catch inside), we've done our best.
       }
+    } finally {
+      ingress?.release();
     }
   }
 
   return {
     registerAgent(agentId, client) {
+      assertAccepting();
       agents.set(agentId, client);
     },
 
@@ -391,7 +531,8 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
       return removedChannels;
     },
 
-    async registerChannel(channelName, adapter, config) {
+    async registerChannel(channelName, adapter, config, registrationOptions) {
+      assertAccepting();
       const newRules: RoutingRule[] = config.routing.map((r) => ({
         globalDenyList: config.globalDenyList ?? [],
         condition: r.condition,
@@ -407,12 +548,48 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
         const state: ChannelState = {
           adapter,
           rules: newRules,
+          started: false,
         };
         channels.set(channelName, state);
         adapter.onMessage(async (msg) => {
           await handleMessage(channelName, msg, adapter);
         });
-        await adapter.start();
+        if (registrationOptions?.start !== false) {
+          state.started = true;
+          try {
+            await adapter.start();
+            if (!accepting || channels.get(channelName) !== state) {
+              state.started = false;
+              if (channels.get(channelName) === state) channels.delete(channelName);
+              await stopAdapterSafely(channelName, adapter);
+              throw new Error('Gateway is shutting down');
+            }
+          } catch (error) {
+            state.started = false;
+            throw error;
+          }
+        }
+      }
+    },
+
+    async startChannel(channelName) {
+      assertAccepting();
+      const state = channels.get(channelName);
+      if (!state) return false;
+      if (state.started) return true;
+      state.started = true;
+      try {
+        await state.adapter.start();
+        if (!accepting || channels.get(channelName) !== state) {
+          state.started = false;
+          if (channels.get(channelName) === state) channels.delete(channelName);
+          await stopAdapterSafely(channelName, state.adapter);
+          throw new Error('Gateway is shutting down');
+        }
+        return true;
+      } catch (error) {
+        state.started = false;
+        throw error;
       }
     },
 
@@ -431,10 +608,11 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
     channelCount: () => channels.size,
 
     async start() {
-      // no-op: adapters are started on registerChannel
+      await Promise.all([...channels.keys()].map((name) => this.startChannel(name)));
     },
 
     async stop() {
+      accepting = false;
       // Best-effort, bounded, and never rejecting: one adapter failing (or
       // hanging) to stop must not prevent the others from stopping, and the
       // caller (the process shutdown handler) must always regain control.

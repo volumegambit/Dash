@@ -21,6 +21,10 @@ export type PoolBackendFactory = (
 export interface ConversationPoolOptions {
   maxSize: number;
   backendFactory: PoolBackendFactory;
+  admission?: {
+    capture(agentId: string, conversationId: string): unknown;
+    isCurrent(token: unknown): boolean;
+  };
 }
 
 interface LeaseRefState {
@@ -34,6 +38,7 @@ interface PendingCreation {
   epoch: number;
   processEpoch: number;
   agentEpoch: number;
+  externalToken?: unknown;
   retired: boolean;
   promise: Promise<PoolEntry>;
 }
@@ -55,6 +60,7 @@ interface RetiringGeneration {
 interface AdmissionEpoch {
   process: number;
   agent: number;
+  externalToken?: unknown;
 }
 
 class PoolCreationRetiredError extends Error {
@@ -74,13 +80,19 @@ export class ConversationPool {
   private slotEpochs = new Map<string, number>();
   private agentEpochs = new Map<string, number>();
   private processEpoch = 0;
+  private processRetiring = false;
+  private readonly retiringAgents = new Set<string>();
+  private processRetirement?: Promise<void>;
+  private readonly agentRetirements = new Map<string, Promise<void>>();
   private nextSlotEpoch = 0;
   private readonly maxSize: number;
   private readonly backendFactory: PoolBackendFactory;
+  private readonly admission?: ConversationPoolOptions['admission'];
 
   constructor(options: ConversationPoolOptions) {
     this.maxSize = options.maxSize;
     this.backendFactory = options.backendFactory;
+    this.admission = options.admission;
   }
 
   get size(): number {
@@ -95,7 +107,7 @@ export class ConversationPool {
     return this.getOrCreateAtEpoch(
       agentName,
       conversationId,
-      this.captureAdmissionEpoch(agentName),
+      this.captureAdmissionEpoch(agentName, conversationId),
     );
   }
 
@@ -150,6 +162,7 @@ export class ConversationPool {
       epoch: ++this.nextSlotEpoch,
       processEpoch: admission.process,
       agentEpoch: admission.agent,
+      externalToken: admission.externalToken,
       retired: false,
       promise,
     };
@@ -159,17 +172,25 @@ export class ConversationPool {
     return promise;
   }
 
-  private captureAdmissionEpoch(agentName: string): AdmissionEpoch {
+  private captureAdmissionEpoch(agentName: string, conversationId: string): AdmissionEpoch {
+    if (this.processRetiring || this.retiringAgents.has(agentName)) {
+      throw new PoolCreationRetiredError(agentName, conversationId);
+    }
     return {
       process: this.processEpoch,
       agent: this.agentEpochs.get(agentName) ?? 0,
+      externalToken: this.admission?.capture(agentName, conversationId),
     };
   }
 
   private isAdmissionCurrent(agentName: string, admission: AdmissionEpoch): boolean {
     return (
       admission.process === this.processEpoch &&
-      admission.agent === (this.agentEpochs.get(agentName) ?? 0)
+      admission.agent === (this.agentEpochs.get(agentName) ?? 0) &&
+      !this.processRetiring &&
+      !this.retiringAgents.has(agentName) &&
+      (admission.externalToken === undefined ||
+        this.admission?.isCurrent(admission.externalToken) === true)
     );
   }
 
@@ -272,7 +293,11 @@ export class ConversationPool {
       this.pending.get(creation.key) === creation &&
       this.slotEpochs.get(creation.key) === creation.epoch &&
       creation.processEpoch === this.processEpoch &&
-      creation.agentEpoch === (this.agentEpochs.get(creation.agentName) ?? 0)
+      creation.agentEpoch === (this.agentEpochs.get(creation.agentName) ?? 0) &&
+      !this.processRetiring &&
+      !this.retiringAgents.has(creation.agentName) &&
+      (creation.externalToken === undefined ||
+        this.admission?.isCurrent(creation.externalToken) === true)
     );
   }
 
@@ -283,7 +308,7 @@ export class ConversationPool {
   }
 
   async acquire(agentName: string, conversationId: string): Promise<PoolLease> {
-    const admission = this.captureAdmissionEpoch(agentName);
+    const admission = this.captureAdmissionEpoch(agentName, conversationId);
     const k = this.key(agentName, conversationId);
     const refs = this.leaseRefs.get(k) ?? { count: 0 };
     refs.count++;
@@ -294,6 +319,10 @@ export class ConversationPool {
     let entry: PoolEntry;
     try {
       entry = await this.getOrCreateAtEpoch(agentName, conversationId, admission);
+      this.assertAdmissionCurrent(agentName, conversationId, admission);
+      if (this.pool.get(k) !== entry) {
+        throw new PoolCreationRetiredError(agentName, conversationId);
+      }
       entry.pinned = true;
     } catch (error) {
       this.releaseLeaseRef(k, refs);
@@ -405,26 +434,24 @@ export class ConversationPool {
     return this.pool.has(this.key(agentName, conversationId));
   }
 
-  async evictAgent(agentName: string): Promise<void> {
+  evictAgent(agentName: string): Promise<void> {
+    if (this.processRetirement) return this.processRetirement;
+    const activeRetirement = this.agentRetirements.get(agentName);
+    if (activeRetirement) return activeRetirement;
+
+    this.retiringAgents.add(agentName);
     this.agentEpochs.set(agentName, (this.agentEpochs.get(agentName) ?? 0) + 1);
-    const prefix = `${agentName}/`;
-    const toEvict: PoolEntry[] = [];
-    for (const [key] of this.pool) {
-      if (!key.startsWith(prefix)) continue;
-      const retired = this.retireEntry(key);
-      if (retired) toEvict.push(retired.entry);
-    }
-    const pending = this.retirePending((creation) => creation.agentName === agentName);
-    const retirements = [...this.retiring.values()].filter(
-      (retirement) => retirement.agentName === agentName,
-    );
-    const [entryErrors, pendingErrors, retirementErrors] = await Promise.all([
-      Promise.all(toEvict.map((entry) => this.stopEntry(entry, true))),
-      this.awaitRetiredCreations(pending),
-      this.awaitRetirements(retirements),
-    ]);
-    const errors = [...entryErrors.flat(), ...pendingErrors, ...retirementErrors];
-    if (errors.length > 0) throw errors[0];
+    const retirement = (async () => {
+      try {
+        const errors = await this.drainMatching((candidate) => candidate === agentName, true);
+        if (errors.length > 0) throw errors[0];
+      } finally {
+        this.retiringAgents.delete(agentName);
+        this.agentRetirements.delete(agentName);
+      }
+    })();
+    this.agentRetirements.set(agentName, retirement);
+    return retirement;
   }
 
   /**
@@ -449,6 +476,25 @@ export class ConversationPool {
     if (errors.length > 0) throw errors[0];
   }
 
+  /**
+   * Synchronously interrupt every pinned backend without retiring pool state.
+   * Process shutdown uses this to unwind ingress-holding streams before its
+   * fixed admission drain; full disposal remains owned by {@link clear} after
+   * already-admitted maintenance mutations have settled.
+   */
+  interruptAll(): void {
+    const errors: unknown[] = [];
+    for (const entry of this.pool.values()) {
+      if (!entry.pinned) continue;
+      try {
+        entry.backend.abort();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw errors[0];
+  }
+
   async forAgent(agentName: string, fn: (entry: PoolEntry) => Promise<void>): Promise<void> {
     const prefix = `${agentName}/`;
     for (const [key, entry] of this.pool) {
@@ -458,22 +504,59 @@ export class ConversationPool {
     }
   }
 
-  async clear(): Promise<void> {
+  clear(): Promise<void> {
+    if (this.processRetirement) return this.processRetirement;
+
+    this.processRetiring = true;
     this.processEpoch++;
-    const entries: PoolEntry[] = [];
-    for (const [key] of this.pool) {
-      const retired = this.retireEntry(key);
-      if (retired) entries.push(retired.entry);
+    const priorAgentRetirements = [...this.agentRetirements.values()];
+    const retirement = (async () => {
+      try {
+        const [errors, priorResults] = await Promise.all([
+          this.drainMatching(() => true, false),
+          Promise.allSettled(priorAgentRetirements),
+        ]);
+        errors.push(
+          ...priorResults.flatMap((result) =>
+            result.status === 'rejected' ? [result.reason] : [],
+          ),
+        );
+        if (errors.length > 0) throw errors[0];
+      } finally {
+        this.processRetiring = false;
+        this.processRetirement = undefined;
+      }
+    })();
+    this.processRetirement = retirement;
+    return retirement;
+  }
+
+  private async drainMatching(
+    matchesAgent: (agentName: string) => boolean,
+    abortPinned: boolean,
+  ): Promise<unknown[]> {
+    const errors: unknown[] = [];
+    while (true) {
+      const entries: PoolEntry[] = [];
+      for (const [key] of this.pool) {
+        const agentName = this.entryAgents.get(key) ?? key.split('/')[0];
+        if (!matchesAgent(agentName)) continue;
+        const retired = this.retireEntry(key);
+        if (retired) entries.push(retired.entry);
+      }
+      const pending = this.retirePending((creation) => matchesAgent(creation.agentName));
+      const retirements = [...this.retiring.values()].filter((retirement) =>
+        matchesAgent(retirement.agentName),
+      );
+      if (entries.length === 0 && pending.length === 0 && retirements.length === 0) break;
+      const [entryErrors, pendingErrors, retirementErrors] = await Promise.all([
+        Promise.all(entries.map((entry) => this.stopEntry(entry, abortPinned))),
+        this.awaitRetiredCreations(pending),
+        this.awaitRetirements(retirements),
+      ]);
+      errors.push(...entryErrors.flat(), ...pendingErrors, ...retirementErrors);
     }
-    const pending = this.retirePending(() => true);
-    const retirements = [...this.retiring.values()];
-    const [entryErrors, pendingErrors, retirementErrors] = await Promise.all([
-      Promise.all(entries.map((entry) => this.stopEntry(entry, false))),
-      this.awaitRetiredCreations(pending),
-      this.awaitRetirements(retirements),
-    ]);
-    const errors = [...entryErrors.flat(), ...pendingErrors, ...retirementErrors];
-    if (errors.length > 0) throw errors[0];
+    return errors;
   }
 
   stats(): { size: number; maxSize: number; pinned: number; agents: Record<string, number> } {

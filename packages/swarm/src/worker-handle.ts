@@ -5,6 +5,8 @@ export interface WorkerHandleOptions {
   spec: Omit<WorkerSpec, 'extraTools'>;
   /** Registration is sync; backend construction is async. */
   backendPromise: Promise<WorkerBackend>;
+  /** Rechecked after backend construction and immediately before first use. */
+  isBackendCurrent?(): boolean;
   /** Pushes into the run's channel; the handle owns its own status transitions. */
   emit(event: AgentEvent): void;
   maxSteers: number;
@@ -38,8 +40,9 @@ interface QuestionWaiter {
  *     and enqueues/answers synchronously. Together this closes the TOCTOU where a
  *     steer could return {ok:true} yet be dropped by a concurrent finalize.
  *
- *  2. `cancel()` is synchronous and never awaits the backend. pi's abort is
- *     cooperative-only, so awaiting a run to settle during cancel could hang.
+ *  2. `cancel()` applies its terminal state synchronously, then returns the
+ *     tracked backend-disposal promise. A backend arriving after cancellation
+ *     is still stopped exactly once before that promise settles.
  */
 export class WorkerHandle {
   readonly workerId: string;
@@ -63,6 +66,10 @@ export class WorkerHandle {
   private questionWaiter?: QuestionWaiter;
   /** Resolved backend, once construction completes. Undefined while pending. */
   private backend?: WorkerBackend;
+  /** Shared, exactly-once backend stop operation (including a pending factory). */
+  private backendStopPromise?: Promise<void>;
+  /** Stable promise returned by repeated cancellation calls. */
+  private cancellationPromise?: Promise<void>;
   /** True once cancel()/terminal has fired — makes cancel idempotent and gates start. */
   private finalized = false;
   private started = false;
@@ -210,17 +217,20 @@ export class WorkerHandle {
   }
 
   /**
-   * Synchronous, idempotent cancel. NEVER awaits the backend: rejects the pending
-   * question waiter, aborts the backend if constructed, emits worker_done{cancelled},
-   * fires onTerminal, then fire-and-forget stop().
+   * Idempotent cancellation with a synchronous terminal transition. The
+   * returned promise waits for a constructed or still-pending backend to be
+   * stopped, but no state change is deferred until that settlement.
    */
-  cancel(reason: string): void {
-    if (this.finalized) return;
+  cancel(reason: string): Promise<void> {
+    if (this.finalized) return this.cancellationPromise ?? this.dispose();
     this.finalized = true;
     this.status = 'cancelled';
     this.report = reason;
     this.endedAt = Date.now();
     this.stopHeartbeat();
+
+    const completion = Promise.withResolvers<void>();
+    this.cancellationPromise = completion.promise;
 
     const waiter = this.questionWaiter;
     if (waiter) {
@@ -228,8 +238,15 @@ export class WorkerHandle {
       waiter.reject(new Error(`worker cancelled: ${reason}`));
     }
 
-    // abort() only if the backend has actually been constructed.
-    this.backend?.abort();
+    // abort() only if the backend has actually been constructed. A synchronous
+    // abort failure is part of the eventual cleanup result, never allowed to
+    // interrupt the terminal transition or later worker cancellation.
+    let abortFailure: Promise<void> | undefined;
+    try {
+      this.backend?.abort();
+    } catch (error) {
+      abortFailure = Promise.reject(error);
+    }
 
     this.emit({
       type: 'worker_done',
@@ -248,8 +265,17 @@ export class WorkerHandle {
     this.opts.onTerminal(this);
     this.terminal.resolve();
 
-    // Fire-and-forget: never await the cooperative stop.
-    this.backend?.stop().catch(() => {});
+    const disposal = this.dispose();
+    void settleAll(abortFailure ? [abortFailure, disposal] : [disposal]).then(
+      completion.resolve,
+      completion.reject,
+    );
+    return this.cancellationPromise;
+  }
+
+  /** Await exactly-once disposal without changing an already-terminal status. */
+  dispose(): Promise<void> {
+    return this.ensureBackendStopped();
   }
 
   snapshot(): {
@@ -278,6 +304,15 @@ export class WorkerHandle {
 
   // --- internals ---
 
+  private isBackendCurrent(): boolean {
+    if (this.finalized) return false;
+    try {
+      return this.opts.isBackendCurrent?.() ?? true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Runs one conversational segment to completion, then applies the terminal transition. */
   private async runSegment(message: string): Promise<void> {
     let backend: WorkerBackend;
@@ -289,10 +324,23 @@ export class WorkerHandle {
     }
     this.backend = backend;
     // A cancel() may have landed while awaiting construction.
-    if (this.finalized) return;
+    if (this.finalized) {
+      // cancel() already owns the tracked disposal promise. Re-entering is safe
+      // and makes the late-backend requirement explicit at this handoff.
+      void this.ensureBackendStopped().catch(() => {});
+      return;
+    }
+
+    if (!this.isBackendCurrent()) {
+      this.finalizeFailed('worker admission retired');
+      void this.ensureBackendStopped().catch(() => {});
+      return;
+    }
 
     try {
-      for await (const event of backend.chat(message)) {
+      for await (const event of backend.chat(message, {
+        isRunCurrent: () => this.isBackendCurrent(),
+      })) {
         // A cancel() may have landed between events.
         if (this.finalized) return;
         this.processEvent(event);
@@ -382,6 +430,39 @@ export class WorkerHandle {
     return this.finalized;
   }
 
+  /**
+   * Starts backend disposal exactly once. If construction is still pending,
+   * the returned promise follows it and stops the late backend. Factory
+   * rejection means there is no resource to dispose; stop rejection remains
+   * observable to lifecycle callers.
+   */
+  private ensureBackendStopped(): Promise<void> {
+    if (this.backendStopPromise) return this.backendStopPromise;
+
+    const stop = (backend: WorkerBackend): Promise<void> => {
+      try {
+        return Promise.resolve(backend.stop());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    const backend = this.backend;
+    this.backendStopPromise = backend
+      ? stop(backend)
+      : this.opts.backendPromise.then(
+          (lateBackend) => {
+            this.backend ??= lateBackend;
+            return stop(lateBackend);
+          },
+          () => undefined,
+        );
+
+    // Mark the promise handled even when no lifecycle caller is currently
+    // awaiting it; callers still receive this original rejecting promise.
+    void this.backendStopPromise.catch(() => {});
+    return this.backendStopPromise;
+  }
+
   private clearQuestion(): void {
     this.questionWaiter?.cleanup();
     this.questionWaiter = undefined;
@@ -462,4 +543,12 @@ function summarize(event: AgentEvent): string {
     default:
       return event.type;
   }
+}
+
+async function settleAll(promises: Iterable<Promise<unknown>>): Promise<void> {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) throw failed.reason;
 }

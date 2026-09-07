@@ -31,9 +31,7 @@ class FakeBackend implements WorkerBackend {
   segments: SegmentController[] = [];
   abortCalls = 0;
   stopCalls = 0;
-  /** Resolves once stop() is allowed to settle; kept pending to prove cancel never awaits. */
-  stopGate = deferred<void>();
-  /** Set to true to make stop() hang forever (proves cancel does not await it). */
+  /** Set to true to make stop() hang forever for settlement-barrier tests. */
   hangStop = false;
   /** Resolves each time a new segment (chat call) begins. */
   private segmentStarted: Array<(c: SegmentController) => void> = [];
@@ -90,7 +88,6 @@ class FakeBackend implements WorkerBackend {
       await new Promise<void>(() => {});
       return;
     }
-    await this.stopGate.promise;
   }
 }
 
@@ -390,7 +387,7 @@ describe('WorkerHandle', () => {
     const qp = handle.waitForQuestion('proceed?', undefined, 10_000);
     const assertion = expect(qp).rejects.toBeDefined();
 
-    handle.cancel('user cancelled');
+    await handle.cancel('user cancelled');
     await assertion;
 
     expect(handle.status).toBe('cancelled');
@@ -403,9 +400,9 @@ describe('WorkerHandle', () => {
     });
   });
 
-  // Requirement 5 + 7: cancel() during waiting_input rejects the waiter immediately
-  // WITHOUT awaiting the backend (stop hangs forever).
-  it('cancel() during waiting_input rejects the waiter without awaiting the backend', async () => {
+  // Requirement 5 + 7: the synchronous cancel transition rejects the waiter
+  // immediately even though the returned disposal promise remains pending.
+  it('cancel() during waiting_input rejects the waiter before backend disposal settles', async () => {
     const { handle, backend, events, terminals } = makeHandle();
     backend.hangStop = true; // stop() never resolves
     handle.start();
@@ -413,13 +410,17 @@ describe('WorkerHandle', () => {
     const qp = handle.waitForQuestion('proceed?', undefined, 10_000);
     const assertion = expect(qp).rejects.toBeDefined();
 
-    handle.cancel('user cancelled');
+    let settled = false;
+    const cancelling = handle.cancel('user cancelled').then(() => {
+      settled = true;
+    });
 
-    await assertion; // resolves promptly even though stop() hangs
+    await assertion;
     expect(handle.status).toBe('cancelled');
     expect(backend.abortCalls).toBe(1);
     expect(backend.stopCalls).toBe(1);
     expect(terminals).toHaveLength(1);
+    expect(settled).toBe(false);
     const done = events.find((e) => e.type === 'worker_done');
     expect(done).toMatchObject({
       type: 'worker_done',
@@ -433,8 +434,10 @@ describe('WorkerHandle', () => {
     const { handle, backend, events, terminals } = makeHandle();
     handle.start();
     await backend.onNextSegment();
-    handle.cancel('once');
-    handle.cancel('twice');
+    const first = handle.cancel('once');
+    const second = handle.cancel('twice');
+    expect(second).toBe(first);
+    await first;
     expect(terminals).toHaveLength(1);
     expect(backend.abortCalls).toBe(1);
     expect(events.filter((e) => e.type === 'worker_done')).toHaveLength(1);
@@ -446,7 +449,7 @@ describe('WorkerHandle', () => {
     const gate = deferred<WorkerBackend>();
     const { handle, events, terminals } = makeHandle({ backendPromise: gate.promise });
     handle.start();
-    handle.cancel('early');
+    const cancelling = handle.cancel('early');
     expect(handle.status).toBe('cancelled');
     expect(terminals).toHaveLength(1);
     const done = events.find((e) => e.type === 'worker_done');
@@ -454,9 +457,9 @@ describe('WorkerHandle', () => {
     // Backend resolves later — must not be started/looped after cancel.
     const backend = new FakeBackend();
     gate.resolve(backend);
-    await Promise.resolve();
-    await Promise.resolve();
+    await cancelling;
     expect(backend.segments).toHaveLength(0);
+    expect(backend.stopCalls).toBe(1);
   });
 
   // Requirement 6: heartbeat emission under fake timers.
@@ -561,5 +564,84 @@ describe('WorkerHandle', () => {
     handle.start();
     await backend.onNextSegment();
     expect(handle.answerQuestion('nobody asked')).toBe(false);
+  });
+
+  it('makes cancellation synchronous but waits for a late factory backend to be disposed', async () => {
+    const factory = deferred<WorkerBackend>();
+    const stop = deferred<void>();
+    const { handle } = makeHandle({ backendPromise: factory.promise });
+    handle.start();
+
+    const cancelled = handle.cancel('shutdown');
+    expect(handle.status).toBe('cancelled');
+
+    let settled = false;
+    void cancelled.then(() => {
+      settled = true;
+    });
+    const backend: WorkerBackend = {
+      async *chat() {},
+      abort: vi.fn(),
+      stop: vi.fn(() => stop.promise),
+    };
+    factory.resolve(backend);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(backend.stop).toHaveBeenCalledTimes(1);
+
+    stop.resolve();
+    await cancelled;
+    expect(settled).toBe(true);
+  });
+
+  it('threads the live admission predicate through held worker provider preparation', async () => {
+    const preparationEntered = deferred<void>();
+    const allowPreparation = deferred<void>();
+    const provider = vi.fn();
+    let current = true;
+    const backend: WorkerBackend = {
+      async *chat(
+        _message: string,
+        options?: { isRunCurrent?(): boolean },
+      ): AsyncGenerator<AgentEvent> {
+        preparationEntered.resolve();
+        await allowPreparation.promise;
+        if (options?.isRunCurrent?.() === false) return;
+        provider();
+        yield response('unexpected');
+      },
+      abort: vi.fn(),
+      stop: vi.fn(async () => {}),
+    };
+    const { handle } = makeHandle({
+      backendPromise: Promise.resolve(backend),
+      isBackendCurrent: () => current,
+    });
+    handle.start();
+    await preparationEntered.promise;
+
+    current = false;
+    allowPreparation.resolve();
+    await handle.terminalPromise;
+
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it('contains a synchronous abort failure, emits terminal state, disposes, then rejects', async () => {
+    const { handle, backend, events, terminals } = makeHandle();
+    backend.abort = vi.fn(() => {
+      throw new Error('abort failed');
+    });
+    handle.start();
+    await backend.onNextSegment();
+
+    const cancellation = handle.cancel('shutdown');
+
+    expect(handle.status).toBe('cancelled');
+    expect(terminals).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'worker_done', status: 'cancelled' });
+    expect(backend.stopCalls).toBe(1);
+    await expect(cancellation).rejects.toThrow('abort failed');
   });
 });

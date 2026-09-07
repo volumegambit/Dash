@@ -1,8 +1,13 @@
 import type { AgentEvent } from '@dash/agent';
 
+export interface WorkerRunOptions {
+  /** Live turn + gateway admission predicate, rechecked before provider work. */
+  isRunCurrent?(): boolean;
+}
+
 /** One conversational segment of a worker. Duck-typed over DashAgent.chat. */
 export interface WorkerBackend {
-  chat(message: string): AsyncGenerator<AgentEvent>;
+  chat(message: string, options?: WorkerRunOptions): AsyncGenerator<AgentEvent>;
   abort(): void;
   stop(): Promise<void>;
 }
@@ -51,11 +56,15 @@ export interface SwarmCaps {
   maxRunSeconds: number; // 1800
 }
 
+export type SwarmJournalIdentity =
+  | { kind: 'canonical'; outerRunId: string }
+  | { kind: 'legacy'; messageId: string };
+
 export interface SwarmEventLogSink {
   append(
     agentId: string,
     conversationId: string,
-    messageId: string,
+    identity: SwarmJournalIdentity,
     payload: { type: 'event'; event: AgentEvent },
   ): Promise<unknown>;
 }

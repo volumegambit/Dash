@@ -28,7 +28,12 @@ export interface ChannelAdapter {
   readonly name: string;
   start(): Promise<void>;
   stop(): Promise<void>;
-  send(conversationId: string, message: OutboundMessage): Promise<void>;
+  /**
+   * Deliver one outbound message. Implementations must settle promptly when
+   * `signal` aborts and make a best-effort transport cancellation so work that
+   * has not already reached the remote service cannot deliver later.
+   */
+  send(conversationId: string, message: OutboundMessage, signal?: AbortSignal): Promise<void>;
   onMessage(handler: MessageHandler): void;
   getHealth(): ChannelHealth;
   onHealthChange(handler: (health: ChannelHealth) => void): void;
@@ -84,4 +89,5 @@ export type MessageHook = (input: {
   channel: string;
   conversationId: string;
   senderId: string;
+  signal?: AbortSignal;
 }) => Promise<{ block: boolean; reason?: string; additionalContext?: string }>;

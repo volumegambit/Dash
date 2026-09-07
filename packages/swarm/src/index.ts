@@ -1,6 +1,7 @@
 export { AsyncChannel } from './channel.js';
 export {
   type AttachOptions,
+  CanonicalSwarmJournalError,
   type RunSnapshot,
   type RunSummary,
   type SwarmAttachment,
@@ -17,9 +18,11 @@ export { WorkerHandle, type WorkerHandleOptions } from './worker-handle.js';
 export type {
   SwarmCaps,
   SwarmEventLogSink,
+  SwarmJournalIdentity,
   SwarmExtraTool,
   WorkerBackend,
   WorkerFactory,
+  WorkerRunOptions,
   WorkerSpec,
   WorkerStatus,
 } from './types.js';

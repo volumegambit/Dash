@@ -25,7 +25,7 @@ interface NodeBindings {
  *   the LAN-forward and relay-replay paths; doing it here too would only double
  *   the `Vary` header.
  */
-export function createLanMobileApp(managementApp: Hono): Hono {
+export function createLanMobileApp(managementApp: Hono): Hono<{ Bindings: NodeBindings }> {
   const app = new Hono<{ Bindings: NodeBindings }>();
   const forward = (request: Request) => managementApp.fetch(request);
   app.all('*', async (c, next) => {

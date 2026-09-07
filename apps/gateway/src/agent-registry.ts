@@ -118,6 +118,8 @@ export interface RegisteredAgent {
   config: GatewayAgentConfig;
   status: AgentStatus;
   registeredAt: string;
+  /** Internal durable tombstone used to resume a partially-completed deletion. */
+  deletionIntent?: true;
 }
 
 export interface AgentRegistryOptions {
@@ -178,6 +180,10 @@ export class AgentRegistry {
           entry.registeredAt = new Date(entry.registeredAt).toISOString();
           migrated = true;
         }
+        if (entry.deletionIntent === true && entry.status !== 'disabled') {
+          entry.status = 'disabled';
+          migrated = true;
+        }
         this.agents.set(entry.id, entry);
       }
       // Persist migrated data so IDs are stable across restarts
@@ -210,10 +216,11 @@ export class AgentRegistry {
     return run;
   }
 
-  private async writeSnapshot(): Promise<void> {
+  private async writeSnapshot(
+    entries: RegisteredAgent[] = [...this.agents.values()],
+  ): Promise<void> {
     if (!this.filePath) return;
     await mkdir(dirname(this.filePath), { recursive: true });
-    const entries = [...this.agents.values()];
     // Randomize the temp path so concurrent saves don't write the same file and
     // corrupt/interleave each other's contents (or ENOENT on the loser's
     // rename after the winner already consumed a shared `.tmp`).
@@ -362,6 +369,52 @@ export class AgentRegistry {
     return this.agents.delete(id);
   }
 
+  markDeletionIntent(id: string): RegisteredAgent {
+    const entry = this.agents.get(id);
+    if (!entry) throw new Error(`Agent '${id}' not found`);
+    entry.status = 'disabled';
+    entry.deletionIntent = true;
+    return entry;
+  }
+
+  listDeletionMarked(): RegisteredAgent[] {
+    return [...this.agents.values()].filter((entry) => entry.deletionIntent === true);
+  }
+
+  /** Persist the projected registry first; mutate live routing only after the write succeeds. */
+  removeAndSave(id: string): Promise<boolean> {
+    const entry = this.agents.get(id);
+    if (!entry) return Promise.resolve(false);
+    if (!this.filePath) {
+      return Promise.resolve(this.agents.delete(id));
+    }
+    const run = this.writeQueue.then(
+      async () => {
+        const current = this.agents.get(id);
+        if (!current) return false;
+        await this.writeSnapshot(
+          [...this.agents.values()].filter((candidate) => candidate !== current),
+        );
+        if (this.agents.get(id) === current) this.agents.delete(id);
+        return true;
+      },
+      async () => {
+        const current = this.agents.get(id);
+        if (!current) return false;
+        await this.writeSnapshot(
+          [...this.agents.values()].filter((candidate) => candidate !== current),
+        );
+        if (this.agents.get(id) === current) this.agents.delete(id);
+        return true;
+      },
+    );
+    this.writeQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
   disable(id: string): void {
     const entry = this.agents.get(id);
     if (!entry) throw new Error(`Agent '${id}' not found`);
@@ -371,7 +424,46 @@ export class AgentRegistry {
   enable(id: string): void {
     const entry = this.agents.get(id);
     if (!entry) throw new Error(`Agent '${id}' not found`);
+    if (entry.deletionIntent === true) throw new Error(`Agent '${id}' is pending deletion`);
     entry.status = 'registered';
+  }
+
+  /**
+   * Persist an enabled projection without exposing it through the live Map
+   * until the queued write succeeds. Keeping both operations inside the same
+   * write-queue turn prevents an earlier queued save for another agent from
+   * accidentally persisting a transient enable that later fails.
+   */
+  enableAndSave(id: string): Promise<void> {
+    const entry = this.agents.get(id);
+    if (!entry) throw new Error(`Agent '${id}' not found`);
+    if (entry.deletionIntent === true) throw new Error(`Agent '${id}' is pending deletion`);
+    if (!this.filePath) {
+      entry.status = 'registered';
+      return Promise.resolve();
+    }
+
+    const enable = async (): Promise<void> => {
+      const current = this.agents.get(id);
+      if (!current) throw new Error(`Agent '${id}' not found`);
+      if (current.deletionIntent === true) throw new Error(`Agent '${id}' is pending deletion`);
+      const projected: RegisteredAgent = { ...current, status: 'registered' };
+      await this.writeSnapshot(
+        [...this.agents.values()].map((candidate) =>
+          candidate === current ? projected : candidate,
+        ),
+      );
+      if (this.agents.get(id) !== current) {
+        throw new Error(`Agent '${id}' changed while enabling`);
+      }
+      current.status = 'registered';
+    };
+    const run = this.writeQueue.then(enable, enable);
+    this.writeQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
   }
 
   setActive(id: string): void {

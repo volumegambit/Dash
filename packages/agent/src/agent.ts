@@ -24,6 +24,32 @@ import type {
  */
 export type DashAgentConfigResolver = () => Promise<DashAgentConfig>;
 
+const RUN_PREPARATION_ABORTED = Symbol('run_preparation_aborted');
+
+async function awaitRunPreparation<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T | typeof RUN_PREPARATION_ABORTED> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    void promise.catch(() => {});
+    return RUN_PREPARATION_ABORTED;
+  }
+
+  let abort!: () => void;
+  const aborted = new Promise<typeof RUN_PREPARATION_ABORTED>((resolve) => {
+    abort = () => resolve(RUN_PREPARATION_ABORTED);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    const result = await Promise.race([promise, aborted]);
+    if (result === RUN_PREPARATION_ABORTED) void promise.catch(() => {});
+    return result;
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
+}
+
 export class DashAgent {
   constructor(
     private backend: AgentBackend,
@@ -42,7 +68,9 @@ export class DashAgent {
     // remain frozen at backend-construction time are those the
     // backend captures into its start()-time session (tools
     // registered at pi session init, MCP managers, etc.).
-    const config = await this.configResolver();
+    const resolvedConfig = await awaitRunPreparation(this.configResolver(), options.signal);
+    if (resolvedConfig === RUN_PREPARATION_ABORTED) return;
+    const config = resolvedConfig;
 
     let systemPrompt = config.systemPrompt;
 
@@ -67,11 +95,16 @@ export class DashAgent {
     // rebuilt on every turn from the resolver read, so toggling memory in the
     // registry takes effect on the next message without a pool eviction.
     if (config.memory) {
-      const memoryPrompt = await composeMemoryPrompt(config.memory.dir, userMessage, {
-        // `tools: false` (swarm workers) inherit the memory read-only, so the
-        // rules must not tell them to call tools they were never registered.
-        tools: config.memory.tools !== false,
-      });
+      const resolvedMemoryPrompt = await awaitRunPreparation(
+        composeMemoryPrompt(config.memory.dir, userMessage, {
+          // `tools: false` (swarm workers) inherit the memory read-only, so the
+          // rules must not tell them to call tools they were never registered.
+          tools: config.memory.tools !== false,
+        }),
+        options.signal,
+      );
+      if (resolvedMemoryPrompt === RUN_PREPARATION_ABORTED) return;
+      const memoryPrompt = resolvedMemoryPrompt;
       systemPrompt = `${systemPrompt}\n\n${memoryPrompt}`;
     }
 
@@ -94,6 +127,11 @@ export class DashAgent {
       location: options.location,
     };
 
+    // Config and memory are intentionally resolved per turn, but either can
+    // yield while an agent/process lifecycle fence closes. The pool's factory
+    // generation only protects backend construction; this final host token is
+    // authoritative for the handoff into an already-warm backend.
+    if (options.signal?.aborted || options.isRunCurrent?.() === false) return;
     yield* this.backend.run(state, options);
   }
 

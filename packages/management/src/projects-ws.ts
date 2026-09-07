@@ -27,6 +27,12 @@ export interface ProjectsWsDeps {
 
 interface BroadcastClient {
   send(data: string): void;
+  close(code?: number, reason?: string): void;
+}
+
+export interface ProjectsWsLifecycle {
+  beginClosing(code: number, reason: string): void;
+  flushAndCloseAll(code: number, reason: string, timeoutMs: number): Promise<void>;
 }
 
 /**
@@ -94,11 +100,23 @@ export function normalizeForWire<E extends ProjectsWsTopic>(
  * duplicate listeners and doubles broadcast delivery. The Task 10 gateway
  * wiring is the single intended caller.
  */
-export function mountProjectsWs(app: Hono, deps: ProjectsWsDeps): void {
+export function mountProjectsWs(app: Hono, deps: ProjectsWsDeps): ProjectsWsLifecycle {
   const { emitter, upgradeWebSocket } = deps;
 
   // Connected clients shared across all upgrades on this mount.
   const clients = new Set<BroadcastClient>();
+  const emptyWaiters = new Set<() => void>();
+  let closing: { code: number; reason: string } | undefined;
+
+  const notifyIfEmpty = (): void => {
+    if (clients.size !== 0) return;
+    for (const resolve of emptyWaiters) resolve();
+    emptyWaiters.clear();
+  };
+
+  const beginClosing = (code: number, reason: string): void => {
+    closing ??= { code, reason };
+  };
 
   const broadcast = (topic: ProjectsWsTopic, payload: unknown): void => {
     const frame = JSON.stringify({ topic, payload });
@@ -136,13 +154,52 @@ export function mountProjectsWs(app: Hono, deps: ProjectsWsDeps): void {
 
       return {
         onOpen(_event, ws) {
-          client = { send: (data: string) => ws.send(data) };
+          if (closing) {
+            ws.close(closing.code, closing.reason);
+            return;
+          }
+          client = {
+            send: (data: string) => ws.send(data),
+            close: (code?: number, reason?: string) => ws.close(code, reason),
+          };
           clients.add(client);
         },
         onClose() {
           if (client) clients.delete(client);
+          notifyIfEmpty();
         },
       };
     }),
   );
+
+  return {
+    beginClosing,
+    async flushAndCloseAll(code, reason, timeoutMs) {
+      beginClosing(code, reason);
+      const closeState = closing;
+      if (!closeState) return;
+      for (const client of clients) {
+        try {
+          client.close(closeState.code, closeState.reason);
+        } catch {
+          clients.delete(client);
+        }
+      }
+      notifyIfEmpty();
+      if (clients.size === 0) return;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          emptyWaiters.delete(done);
+          resolve();
+        };
+        const timeout = setTimeout(done, Math.max(0, timeoutMs));
+        emptyWaiters.add(done);
+        notifyIfEmpty();
+      });
+    },
+  };
 }

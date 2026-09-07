@@ -334,6 +334,37 @@ describe('TelegramAdapter.send', () => {
 
     await expect(adapter.send('1', { text: 'x' })).rejects.toThrow('429 rate limited');
   });
+
+  it('forwards the exact abort signal so a held API send settles without a late delivery', async () => {
+    const adapter = new TelegramAdapter('fake-token');
+    if (!lastBot) throw new Error('bot not captured');
+    const releaseApi = Promise.withResolvers<void>();
+    lastBot.api.sendMessage.mockImplementationOnce(
+      (_chatId: number, _text: string, _options: unknown, signal?: AbortSignal): Promise<void> =>
+        new Promise<void>((resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('send aborted')), {
+            once: true,
+          });
+          void releaseApi.promise.then(resolve);
+        }),
+    );
+    const controller = new AbortController();
+    const sending = adapter.send('42', { text: 'held reply' }, controller.signal);
+
+    try {
+      expect(lastBot.api.sendMessage).toHaveBeenCalledWith(
+        42,
+        'held reply',
+        { parse_mode: undefined },
+        controller.signal,
+      );
+      controller.abort();
+      await expect(sending).rejects.toThrow('send aborted');
+    } finally {
+      releaseApi.resolve();
+      await Promise.allSettled([sending]);
+    }
+  });
 });
 
 // ── Lifecycle: start / stop / polling errors ─────────────────────────────

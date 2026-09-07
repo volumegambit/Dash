@@ -8,21 +8,24 @@ import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/age
 import { StructuredLoggerImpl } from '@dash/logging';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
-import { Hono } from 'hono';
+import { type Env, Hono } from 'hono';
+import { GatewayAdmissionController } from './admission-controller.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import { ChannelRegistry } from './channel-registry.js';
-import { mountChatWs } from './chat-ws.js';
+import { type ChatWsLifecycle, mountChatWs } from './chat-ws.js';
 import { createConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
 import { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import { recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
-import { createGatewayManagementApp } from './management-api.js';
+import { createGatewayManagementApp, resumePendingAgentDeletions } from './management-api.js';
 import { ModelsStore } from './models-store.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
+import { type GatewayShutdownCoordinator, createGatewayShutdownCoordinator } from './shutdown.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 export type MobileTestHarnessScenario = 'stream' | 'question' | 'slow';
@@ -180,8 +183,8 @@ interface OwnedServer {
   close(): Promise<void>;
 }
 
-async function listen(
-  app: Hono,
+async function listen<E extends Env>(
+  app: Hono<E>,
   injectWebSocket: (server: Server) => void,
   tls?: { privateKey: string; certificate: string },
 ): Promise<OwnedServer> {
@@ -280,22 +283,46 @@ export async function startMobileTestHarness(
   const modelsStore = new ModelsStore(dataDir);
   const conversations = new SqliteConversationService({ dataDir });
   const eventBus = new EventBus();
-  const gateway = createDynamicGateway({ dataDir });
+  const admission = new GatewayAdmissionController();
+  const gateway = createDynamicGateway({ dataDir, admission });
   const slowEventRelease = deferred<void>();
   let managementServer: OwnedServer | undefined;
   let chatServer: OwnedServer | undefined;
   let lanServer: OwnedServer | undefined;
+  let directChatLifecycle: ChatWsLifecycle | undefined;
+  let lanChatLifecycle: ChatWsLifecycle | undefined;
+  let shutdownCoordinator: GatewayShutdownCoordinator | undefined;
 
   await credentialStore.init();
-  const registered = agentRegistry.register({
-    name: 'mobile-test-agent',
-    model: 'test/scripted',
-    systemPrompt: 'Deterministic mobile contract test agent.',
+  await agentRegistry.load();
+  for (const entry of agentRegistry.list()) {
+    if (entry.status === 'disabled' || entry.deletionIntent) admission.closeAgent(entry.id);
+  }
+  const restoredAgent = agentRegistry.list().find((entry) => entry.name === 'mobile-test-agent');
+  let registered =
+    restoredAgent ??
+    agentRegistry.register({
+      name: 'mobile-test-agent',
+      model: 'test/scripted',
+      systemPrompt: 'Deterministic mobile contract test agent.',
+    });
+  if (!restoredAgent) {
+    await agentRegistry.save();
+  }
+
+  const gatewayRecovery = recoverGatewayTurns({
+    eventLog: conversations.eventLog,
+    conversations,
+    admission,
+    isDeletionMarked: (agentId) => agentRegistry.get(agentId)?.deletionIntent === true,
   });
-  await agentRegistry.save();
+  for (const entry of agentRegistry.list()) {
+    if (entry.status === 'disabled') conversations.pauseFollowUpsForAgentDisable(entry.id);
+  }
 
   const agents = createAgentChatCoordinator({
     registry: agentRegistry,
+    admission,
     poolMaxSize: 32,
     // Memory is ON for this harness (mirrors the production wiring in index.ts)
     // so the mobile memory routes emit REAL store output — the contract-output
@@ -305,16 +332,6 @@ export async function startMobileTestHarness(
     memoryDir: (agentId) => join(dataDir, 'memory', agentId),
     createBackend: async () => new ScriptedMobileBackend(scenario, slowEventRelease.promise),
   });
-  gateway.registerAgent(registered.id, {
-    chat(channelId, conversationId, text) {
-      return agents.chat({ agentId: registered.id, channelId, conversationId, text });
-    },
-    listSkills() {
-      return agents.listSkills(registered.id);
-    },
-  });
-  await gateway.start();
-
   const autoTitle = createConversationAutoTitleService({
     conversations,
     generateTitle: async () => 'Mobile test conversation',
@@ -330,9 +347,10 @@ export async function startMobileTestHarness(
     conversations,
     agents,
     autoTitle,
+    admission,
     isAgentEnabled: (agentId) => {
       const entry = agentRegistry.get(agentId);
-      return agentId === registered.id && entry !== undefined && entry.status !== 'disabled';
+      return entry !== undefined && entry.status !== 'disabled' && !entry.deletionIntent;
     },
     onChanged: (summary) =>
       eventBus.emit({
@@ -342,17 +360,71 @@ export async function startMobileTestHarness(
       }),
   });
 
+  await resumePendingAgentDeletions(
+    {
+      gateway,
+      agents,
+      agentRegistry,
+      channelRegistry,
+      conversationService: conversations,
+      resumableChatHub: hub,
+      admission,
+      eventBus,
+    },
+    { excludeConversationIds: gatewayRecovery.excludedConversationIds },
+  );
+  if (!agentRegistry.get(registered.id)) {
+    registered = agentRegistry.register({
+      name: 'mobile-test-agent',
+      model: 'test/scripted',
+      systemPrompt: 'Deterministic mobile contract test agent.',
+    });
+    await agentRegistry.save();
+  }
+
+  for (const entry of agentRegistry.list()) {
+    if (entry.status === 'disabled' || entry.deletionIntent) continue;
+    const agentId = entry.id;
+    gateway.registerAgent(agentId, {
+      chat(channelId, conversationId, text, runOptions) {
+        return agents.chat({
+          agentId,
+          channelId,
+          conversationId,
+          text,
+          signal: runOptions?.signal,
+        });
+      },
+      listSkills() {
+        return agents.listSkills(agentId);
+      },
+    });
+  }
+  await hub.resumeRecoveredQueues(
+    gatewayRecovery.conversations.eligibleConversationIds.filter((conversationId) => {
+      const conversation = conversations.get(conversationId);
+      if (!conversation) return false;
+      const entry = agentRegistry.get(conversation.agentId);
+      return entry !== undefined && entry.status !== 'disabled' && !entry.deletionIntent;
+    }),
+  );
+  await gateway.start();
+
   let stopPromise: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
-      await hub.stop();
-      await autoTitle.flush();
-      await agents.stop();
-      await gateway.stop();
+      if (shutdownCoordinator) {
+        await shutdownCoordinator.shutdown().completion;
+      } else {
+        await hub.stop();
+        await autoTitle.flush();
+        await agents.stop();
+        await gateway.stop();
+        conversations.close();
+      }
       await closeServer(managementServer);
       await closeServer(chatServer);
       await closeServer(lanServer);
-      conversations.close();
       await logger.close();
       if (ownsDataDir) await rm(dataDir, { recursive: true, force: true });
     })();
@@ -371,12 +443,18 @@ export async function startMobileTestHarness(
       modelsStore,
       conversationService: conversations,
       resumableChatHub: hub,
+      admission,
       mobileToken: chatToken,
       token: managementToken,
       lanTlsFingerprint: lanTls.fingerprint,
       startedAt: '2026-07-12T00:00:00.000Z',
       eventBus,
       logger,
+      onShutdown: (ownerLease) => {
+        const coordinator = shutdownCoordinator;
+        if (!coordinator) throw new Error('Mobile test harness shutdown is not ready');
+        return coordinator.shutdown(ownerLease);
+      },
     });
     managementApp.post('/mobile/v1/__mobile-test/slow/release', (context) => {
       if (context.req.header('Authorization') !== `Bearer ${chatToken}`) {
@@ -389,7 +467,6 @@ export async function startMobileTestHarness(
       return context.body(null, 204);
     });
     const managementWebSocket = createNodeWebSocket({ app: managementApp });
-    managementServer = await listen(managementApp, managementWebSocket.injectWebSocket);
 
     // Mirrors the production wiring in index.ts: ONE ticket store, created
     // before any listener (which also registers `POST /mobile/v1/ws-ticket` on
@@ -401,28 +478,53 @@ export async function startMobileTestHarness(
 
     const chatApp = new Hono();
     const chatWebSocket = createNodeWebSocket({ app: chatApp });
-    mountChatWs(chatApp, {
+    directChatLifecycle = mountChatWs(chatApp, {
       agents,
       resumableChatHub: hub,
+      admission,
       token: chatToken,
       upgradeWebSocket: chatWebSocket.upgradeWebSocket,
       eventLogStore: conversations.eventLog,
       verbose: false,
       wsTickets,
     });
-    chatServer = await listen(chatApp, chatWebSocket.injectWebSocket);
 
     const lanApp = createLanMobileApp(managementApp);
     const lanWebSocket = createNodeWebSocket({ app: lanApp });
-    mountChatWs(lanApp, {
+    lanChatLifecycle = mountChatWs(lanApp, {
       agents,
       resumableChatHub: hub,
+      admission,
       token: chatToken,
       upgradeWebSocket: lanWebSocket.upgradeWebSocket,
       eventLogStore: conversations.eventLog,
       verbose: false,
       wsTickets,
     });
+
+    shutdownCoordinator = createGatewayShutdownCoordinator({
+      admission,
+      resumableChatHub: hub,
+      getChatLifecycles: () =>
+        [directChatLifecycle, lanChatLifecycle].filter(
+          (lifecycle): lifecycle is ChatWsLifecycle => lifecycle !== undefined,
+        ),
+      getProjectsLifecycle: () => undefined,
+      mcpManager: { stop() {} },
+      swarmCoordinator: { stop() {} },
+      agents,
+      gateway,
+      backgroundFlushes: [{ label: 'conversationAutoTitle.flush', flush: () => autoTitle.flush() }],
+      getManagementServer: () => managementServer?.server,
+      getChannelServer: () => chatServer?.server,
+      getLanServer: () => lanServer?.server,
+      projectsDb: { close() {} },
+      conversationService: conversations,
+      timeoutMs: 100,
+    });
+
+    managementServer = await listen(managementApp, managementWebSocket.injectWebSocket);
+    chatServer = await listen(chatApp, chatWebSocket.injectWebSocket);
     lanServer = await listen(lanApp, lanWebSocket.injectWebSocket, lanTls);
 
     const managementPort = portOf(managementServer);

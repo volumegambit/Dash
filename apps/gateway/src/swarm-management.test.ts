@@ -26,7 +26,7 @@ import { createGatewayManagementApp } from './management-api.js';
 let agentIdCounter = 0;
 
 function makeAgentRegistry(): AgentRegistry {
-  const agents = new Map<string, RegisteredAgent>();
+  const agents = new Map<string, RegisteredAgent & { deletionIntent?: true }>();
   return {
     register: vi.fn((config) => {
       const id = `a${++agentIdCounter}`;
@@ -50,6 +50,16 @@ function makeAgentRegistry(): AgentRegistry {
       return entry;
     }),
     remove: vi.fn((id: string) => agents.delete(id)),
+    removeAndSave: vi.fn(async (id: string) => {
+      agents.delete(id);
+    }),
+    markDeletionIntent: vi.fn((id: string) => {
+      const entry = agents.get(id);
+      if (!entry) throw new Error(`Agent '${id}' not found`);
+      entry.status = 'disabled';
+      entry.deletionIntent = true;
+    }),
+    listDeletionMarked: vi.fn(() => [...agents.values()].filter((entry) => entry.deletionIntent)),
     disable: vi.fn((id: string) => {
       const entry = agents.get(id);
       if (!entry) throw new Error(`Agent '${id}' not found`);
@@ -175,6 +185,8 @@ function makeConversationService(): ConversationService {
     acceptTurn: vi.fn(),
     appendTurnEvent: vi.fn(() => null),
     finishTurn: vi.fn(),
+    pauseFollowUpsForAgentDisable: vi.fn(() => []),
+    listActiveRunsForRecovery: vi.fn(() => []),
     trySetAutoTitle: vi.fn(() => null),
     archiveAgentConversations: vi.fn(() => []),
     recoverInterruptedTurns: vi.fn(() => ({ conversationsInterrupted: 0, terminalsAppended: 0 })),
@@ -185,6 +197,8 @@ function makeConversationService(): ConversationService {
 function makeResumableChatHub() {
   return {
     cancelAgent: vi.fn().mockResolvedValue(undefined),
+    disableAgent: vi.fn().mockResolvedValue(undefined),
+    deleteAgent: vi.fn().mockResolvedValue(undefined),
     allowAgent: vi.fn(),
   };
 }
@@ -302,8 +316,8 @@ describe('swarm management routes', () => {
     coordinator = new SwarmCoordinator({ workerFactory: fake.factory });
   });
 
-  afterEach(() => {
-    coordinator.stop();
+  afterEach(async () => {
+    await coordinator.stop();
   });
 
   // --- Auth inheritance: 401 without bearer on every new route ---
@@ -375,6 +389,30 @@ describe('swarm management routes', () => {
       const { app } = createApp({ swarmCoordinator: coordinator });
       const res = await app.request('/agents/ghost/swarm/runs/r1', { headers: AUTH });
       expect(res.status).toBe(404);
+    });
+
+    it('does not respond until turn cancellation disposal settles', async () => {
+      const { app, agentRegistry } = createApp({ swarmCoordinator: coordinator });
+      const id = registerAgent(agentRegistry);
+      const disposal = deferred<boolean>();
+      vi.spyOn(coordinator, 'cancelTurn').mockImplementation(() => disposal.promise as never);
+
+      let settled = false;
+      const request = app
+        .request(`/agents/${id}/conversations/conv/swarm/cancel`, {
+          method: 'POST',
+          headers: AUTH,
+        })
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      disposal.resolve(true);
+      expect(await (await request).json()).toEqual({ cancelled: true });
     });
 
     it('404s for an unknown run', async () => {
@@ -459,7 +497,7 @@ describe('swarm management routes', () => {
       const id = registerAgent(agentRegistry);
       const { attachment, runId, workerId } = spawnRun(coordinator, id);
       // Finalize the run: it moves to history and is no longer a LIVE run.
-      attachment.finalize({ consumerAlive: true });
+      await attachment.finalize({ consumerAlive: true });
 
       const res = await app.request(
         `/agents/${id}/swarm/runs/${runId}/workers/${workerId}/cancel`,
@@ -488,6 +526,30 @@ describe('swarm management routes', () => {
       const body = await res.json();
       expect(body.ok).toBe(false);
       expect(body.reason).toBe('worker terminal');
+    });
+
+    it('does not respond until worker cancellation disposal settles', async () => {
+      const { app, agentRegistry } = createApp({ swarmCoordinator: coordinator });
+      const id = registerAgent(agentRegistry);
+      const disposal = deferred<{ ok: boolean }>();
+      vi.spyOn(coordinator, 'cancelWorker').mockImplementation(() => disposal.promise as never);
+
+      let settled = false;
+      const request = app
+        .request(`/agents/${id}/swarm/runs/run-1/workers/worker-1/cancel`, {
+          method: 'POST',
+          headers: AUTH,
+        })
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      disposal.resolve({ ok: true });
+      expect(await (await request).json()).toEqual({ ok: true });
     });
   });
 
@@ -545,7 +607,7 @@ describe('swarm management routes', () => {
       const { app, agentRegistry } = createApp({ swarmCoordinator: coordinator });
       const id = registerAgent(agentRegistry);
       const { attachment, runId, workerId } = spawnRun(coordinator, id);
-      attachment.finalize({ consumerAlive: true });
+      await attachment.finalize({ consumerAlive: true });
 
       const res = await app.request(`/agents/${id}/swarm/runs/${runId}/workers/${workerId}/send`, {
         method: 'POST',
@@ -645,8 +707,8 @@ describe('lifecycle cascades', () => {
     coordinator = new SwarmCoordinator({ workerFactory: fake.factory });
   });
 
-  afterEach(() => {
-    coordinator.stop();
+  afterEach(async () => {
+    await coordinator.stop();
   });
 
   // Behavior 6: PUT eviction on swarm change.
@@ -713,18 +775,21 @@ describe('lifecycle cascades', () => {
         const cancellation = deferred<void>();
         const order: string[] = [];
         const resumableChatHub = {
-          cancelAgent: vi.fn(async (agentId: string) => {
+          cancelAgent: vi.fn().mockResolvedValue(undefined),
+          disableAgent: vi.fn(async (agentId: string) => {
             order.push('hub-start');
             await cancellation.promise;
             conversationService.finishTurn({
               conversationId: conversation.id,
               turnId: 'turn-01',
-              outcome: 'cancelled',
+              outcome: 'interrupted',
             });
             order.push(`hub-resolved:${agentId}`);
           }),
+          deleteAgent: vi.fn().mockResolvedValue(undefined),
+          allowAgent: vi.fn(),
         };
-        const cancelRuns = vi.spyOn(coordinator, 'cancelRunsFor').mockImplementation(() => {
+        const cancelRuns = vi.spyOn(coordinator, 'cancelRunsFor').mockImplementation(async () => {
           order.push('swarm');
         });
         const { app, agentRegistry, agents } = createApp({
@@ -756,14 +821,16 @@ describe('lifecycle cascades', () => {
           });
           expect(
             conversationService.eventLog.readSince(entry.id, conversation.id, 0).at(-1),
-          ).toMatchObject({ payload: { type: 'done', outcome: 'cancelled' } });
+          ).toMatchObject({ payload: { type: 'done', outcome: 'interrupted' } });
         });
 
         const response = app.request(`/agents/${entry.id}/disable`, {
           method: 'POST',
           headers: AUTH,
         });
-        await vi.waitFor(() => expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id));
+        await vi.waitFor(() =>
+          expect(resumableChatHub.disableAgent).toHaveBeenCalledWith(entry.id, expect.any(Object)),
+        );
         expect(cancelRuns).not.toHaveBeenCalled();
         expect(agents.evict).not.toHaveBeenCalled();
 

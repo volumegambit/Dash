@@ -59,8 +59,9 @@ export interface SwarmRunOptions {
  * `AbortSignal` used to settle in-flight tool calls (wait_workers, ask).
  *
  * Correctness discipline mirrors WorkerHandle: `register`, `cancelAll`, and
- * `finalize` apply their effects in synchronous blocks with no awaits between a
- * check and its effect, and teardown NEVER awaits worker settlement.
+ * `finalize` apply their state/channel effects synchronously with no awaits
+ * between a check and its effect. Their returned promises then await every
+ * backend disposal using all-settled semantics.
  */
 export class SwarmRun {
   readonly runId: string;
@@ -79,6 +80,8 @@ export class SwarmRun {
   private readonly onWorkerTerminal?: (run: SwarmRun) => void;
 
   private finalizedAt?: number;
+  private finalizationPromise?: Promise<AgentEvent[]>;
+  private finalizationEvents: AgentEvent[] = [];
 
   constructor(opts: SwarmRunOptions) {
     this.runId = opts.runId;
@@ -207,16 +210,22 @@ export class SwarmRun {
     };
   }
 
-  /** Cancel every non-terminal worker synchronously (worker_done pushed to channel first). */
-  cancelAll(reason: string): void {
+  /**
+   * Cancel every non-terminal worker synchronously, then await all backend
+   * disposal attempts before settling.
+   */
+  cancelAll(reason: string): Promise<void> {
+    const settlements: Promise<void>[] = [];
     for (const id of this.order) {
       const h = this.handles.get(id) as WorkerHandle;
-      if (!TERMINAL.has(h.status)) h.cancel(reason);
+      if (!TERMINAL.has(h.status)) settlements.push(h.cancel(reason));
     }
+    return settleAll(settlements);
   }
 
   /**
-   * Finalize the run. Synchronous, idempotent, NEVER awaits worker settlement.
+   * Finalize the run. The state transition is synchronous and idempotent; the
+   * returned promise resolves only after every worker backend disposal settles.
    * Order: cancel non-terminal workers (their worker_done{cancelled} lands in
    * the channel first), abort the orchestrator, fire `closed`, close the
    * channel, stop the wall-clock timer.
@@ -225,35 +234,67 @@ export class SwarmRun {
    * coordinator (which knows the eventLog + messageId) — this method returns the
    * terminal worker_done events it produced so the coordinator can log them.
    */
-  finalize(reason: string): AgentEvent[] {
-    if (this.finalized) return [];
-    this.finalizedAt = Date.now();
+  finalize(reason: string): Promise<AgentEvent[]> {
+    if (this.finalizationPromise) return this.finalizationPromise;
+    // Publish identity before cancel/orchestrator callbacks. Either can
+    // synchronously re-enter finalize(), and every caller must join this exact
+    // settlement instead of starting a second teardown.
+    const finalization = Promise.withResolvers<AgentEvent[]>();
+    this.finalizationPromise = finalization.promise;
 
-    // Workers still live at entry are the only ones whose worker_done has not
-    // already ridden the live channel — already-terminal workers emitted theirs
-    // at completion time. Snapshot before cancelAll terminalizes them so the
-    // returned events cover exactly what THIS call produced (no double-logging).
-    const cancelledHere = new Set(
-      this.order.filter((id) => !TERMINAL.has((this.handles.get(id) as WorkerHandle).status)),
-    );
+    try {
+      this.finalizedAt = Date.now();
 
-    // 1) Cancel non-terminal workers; worker_done{cancelled} lands in the channel first.
-    this.cancelAll(reason);
+      // Workers still live at entry are the only ones whose worker_done has not
+      // already ridden the live channel — already-terminal workers emitted theirs
+      // at completion time. Snapshot before cancelAll terminalizes them so the
+      // returned events cover exactly what THIS call produced (no double-logging).
+      const cancelledHere = new Set(
+        this.order.filter((id) => !TERMINAL.has((this.handles.get(id) as WorkerHandle).status)),
+      );
 
-    // 2) Abort the orchestrator (cooperative).
-    this.orchestratorAbort?.();
+      // 1) Cancel non-terminal workers; worker_done{cancelled} lands in the channel first.
+      const cancellations = this.cancelAll(reason);
 
-    // 3) Fire `closed` for in-flight tool settlement, then close the channel.
-    if (!this.closedController.signal.aborted) this.closedController.abort();
-    this.channel.close();
+      // 2) Abort the orchestrator (cooperative).
+      let abortSettlement = Promise.resolve();
+      try {
+        this.orchestratorAbort?.();
+      } catch (error) {
+        abortSettlement = Promise.reject(error);
+      }
 
-    // 4) Stop the wall-clock timer.
-    clearTimeout(this.wallClockTimer);
+      // 3) Fire `closed` for in-flight tool settlement, then close the channel.
+      if (!this.closedController.signal.aborted) this.closedController.abort();
+      this.channel.close();
 
-    // Return ONLY the worker_done events this call produced (cancellations) for
-    // optional out-of-band logging — events from earlier terminal transitions
-    // already reached the consumer via the live channel.
-    return this.terminalDoneEvents(cancelledHere);
+      // 4) Stop the wall-clock timer.
+      clearTimeout(this.wallClockTimer);
+
+      // Record ONLY the worker_done events this call produced (cancellations) for
+      // optional out-of-band logging — events from earlier terminal transitions
+      // already reached the consumer via the live channel.
+      this.finalizationEvents = this.terminalDoneEvents(cancelledHere);
+
+      // `cancelAll` covers the non-terminal handles. `dispose` also includes
+      // workers that completed before finalization, whose warm backend must still
+      // be released. Repeated promises are harmless and backend.stop remains
+      // exactly-once inside WorkerHandle.
+      const disposals = this.order.map((id) => (this.handles.get(id) as WorkerHandle).dispose());
+      const events = this.finalizationEvents;
+      void settleAll([cancellations, abortSettlement, ...disposals]).then(
+        () => finalization.resolve(events),
+        (error: unknown) => finalization.reject(error),
+      );
+    } catch (error) {
+      finalization.reject(error);
+    }
+    return finalization.promise;
+  }
+
+  /** Terminal events synchronously produced by the current finalization. */
+  getFinalizationEvents(): readonly AgentEvent[] {
+    return this.finalizationEvents;
   }
 
   private terminalDoneEvents(only: ReadonlySet<string>): AgentEvent[] {
@@ -278,10 +319,18 @@ export class SwarmRun {
 
   private onWallClock(): void {
     if (this.finalized) return;
-    // Wall-clock expiry: cancel all workers, abort orchestrator, fire closed.
-    // The attachment's finalize() runs later (idempotent) via the merge wrapper.
-    this.cancelAll(`run exceeded ${this.caps.maxRunSeconds}s wall clock`);
-    this.orchestratorAbort?.();
-    if (!this.closedController.signal.aborted) this.closedController.abort();
+    // Use the authoritative, stable finalization barrier so a synchronous abort
+    // failure cannot escape the timer callback or skip closed/channel cleanup.
+    // The attachment's later finalize() call joins this exact settlement and can
+    // still observe a cleanup failure after every worker backend is disposed.
+    void this.finalize(`run exceeded ${this.caps.maxRunSeconds}s wall clock`).catch(() => {});
   }
+}
+
+async function settleAll(promises: Iterable<Promise<unknown>>): Promise<void> {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) throw failed.reason;
 }

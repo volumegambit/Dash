@@ -90,6 +90,39 @@ describe('DashAgent.chat()', () => {
     expect(resolver).toHaveBeenCalledTimes(3);
   });
 
+  it('unwinds a permanently held config resolution when the run is aborted', async () => {
+    const configEntered = Promise.withResolvers<void>();
+    const configHeld = Promise.withResolvers<DashAgentConfig>();
+    const run = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield { type: 'text_delta', text: 'provider started' };
+    });
+    const agent = new DashAgent({ ...makeBackend(), run }, async () => {
+      configEntered.resolve();
+      return configHeld.promise;
+    });
+    const controller = new AbortController();
+
+    const events = collect(
+      agent.chat('ch', 'held-config', 'hello', {
+        signal: controller.signal,
+      }),
+    );
+    await configEntered.promise;
+    controller.abort();
+
+    let outcome: AgentEvent[] | undefined;
+    void events.then((value) => {
+      outcome = value;
+    });
+    try {
+      await vi.waitFor(() => expect(outcome).toEqual([]));
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      configHeld.resolve({ model: 'm', systemPrompt: 'late config' });
+      await events;
+    }
+  });
+
   it('picks up model changes between chats without rebuilding the agent', async () => {
     const captured: string[] = [];
     const backend = makeBackend([], (state) => {
@@ -167,6 +200,33 @@ describe('DashAgent.chat()', () => {
 
     expect(received).toEqual([options]);
   });
+
+  it('does not hand off to the backend when admission retires during config resolution', async () => {
+    const configEntered = Promise.withResolvers<void>();
+    const allowConfig = Promise.withResolvers<void>();
+    const run = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield { type: 'text_delta', text: 'provider started' };
+    });
+    const backend = { ...makeBackend(), run };
+    const agent = new DashAgent(backend, async () => {
+      configEntered.resolve();
+      await allowConfig.promise;
+      return { model: 'm', systemPrompt: 'test' };
+    });
+    let current = true;
+
+    const events = collect(
+      agent.chat('ch', 'conv', 'hello', {
+        isRunCurrent: () => current,
+      }),
+    );
+    await configEntered.promise;
+    current = false;
+    allowConfig.resolve();
+
+    await expect(events).resolves.toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
 });
 
 describe('DashAgent memory prompt', () => {
@@ -178,6 +238,75 @@ describe('DashAgent memory prompt', () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('does not hand off to the backend when admission retires during memory loading', async () => {
+    const memoryEntered = Promise.withResolvers<void>();
+    const allowMemory = Promise.withResolvers<void>();
+    const list = vi.spyOn(MemoryStore.prototype, 'list').mockImplementationOnce(async () => {
+      memoryEntered.resolve();
+      await allowMemory.promise;
+      return [];
+    });
+    const run = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield { type: 'text_delta', text: 'provider started' };
+    });
+    const agent = new DashAgent(
+      { ...makeBackend(), run },
+      staticResolver({ model: 'm', systemPrompt: 'base', memory: { dir } }),
+    );
+    let current = true;
+
+    const events = collect(
+      agent.chat('swarm', 'worker', 'hello', {
+        isRunCurrent: () => current,
+      }),
+    );
+    await memoryEntered.promise;
+    current = false;
+    allowMemory.resolve();
+
+    await expect(events).resolves.toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+    list.mockRestore();
+  });
+
+  it('unwinds a permanently held memory load when the run is aborted', async () => {
+    const memoryEntered = Promise.withResolvers<void>();
+    const memoryHeld = Promise.withResolvers<Awaited<ReturnType<MemoryStore['list']>>>();
+    const list = vi.spyOn(MemoryStore.prototype, 'list').mockImplementationOnce(async () => {
+      memoryEntered.resolve();
+      return memoryHeld.promise;
+    });
+    const run = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield { type: 'text_delta', text: 'provider started' };
+    });
+    const agent = new DashAgent(
+      { ...makeBackend(), run },
+      staticResolver({ model: 'm', systemPrompt: 'base', memory: { dir } }),
+    );
+    const controller = new AbortController();
+
+    const events = collect(
+      agent.chat('swarm', 'held-memory', 'hello', {
+        signal: controller.signal,
+      }),
+    );
+    await memoryEntered.promise;
+    controller.abort();
+
+    let outcome: AgentEvent[] | undefined;
+    void events.then((value) => {
+      outcome = value;
+    });
+    try {
+      await vi.waitFor(() => expect(outcome).toEqual([]));
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      memoryHeld.resolve([]);
+      await events;
+      list.mockRestore();
+    }
   });
 
   it('appends the <memory> block with the index when config.memory is set', async () => {

@@ -6,23 +6,27 @@ import { type ProjectsDb, openProjectsDb } from '@dash/projects';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { UpgradeWebSocket } from 'hono/ws';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { mountProjectsWs } from './projects-ws.js';
+import { type ProjectsWsLifecycle, mountProjectsWs } from './projects-ws.js';
 
 const TOKEN = 'ws-token';
 let dir: string;
 let db: ProjectsDb;
 let server: Server;
 let port: number;
+let lifecycle: ProjectsWsLifecycle;
+let openSockets: WebSocket[];
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'dash-projects-ws-'));
   db = openProjectsDb(dir);
+  openSockets = [];
 
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-  mountProjectsWs(app, { emitter: db.emitter, token: TOKEN, upgradeWebSocket });
+  lifecycle = mountProjectsWs(app, { emitter: db.emitter, token: TOKEN, upgradeWebSocket });
 
   await new Promise<void>((resolve) => {
     server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, () => resolve()) as Server;
@@ -33,6 +37,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  for (const socket of openSockets) socket.terminate();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   db.db.close();
   await rm(dir, { recursive: true, force: true });
@@ -41,6 +46,7 @@ afterEach(async () => {
 function connect(token: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://localhost:${port}/projects/ws?token=${token}`);
+    openSockets.push(ws);
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
@@ -65,9 +71,81 @@ function nextFrame(
 }
 
 describe('projects WebSocket', () => {
+  it('closes an authenticated upgrade that reaches onOpen after shutdown starts', async () => {
+    type TestSocket = { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+    type Handlers = {
+      onOpen?(event: unknown, socket: TestSocket): void;
+      onClose?(event: unknown, socket: TestSocket): void;
+    };
+    let createEvents:
+      | ((context: { req: { query(name: string): string | undefined } }) => Handlers)
+      | undefined;
+    const upgradeWebSocket = ((factory: typeof createEvents) => {
+      createEvents = factory;
+      return () => new Response(null, { status: 200 });
+    }) as unknown as UpgradeWebSocket;
+    const app = new Hono();
+    const lateLifecycle = mountProjectsWs(app, {
+      emitter: db.emitter,
+      token: TOKEN,
+      upgradeWebSocket,
+    });
+    if (!createEvents) throw new Error('Projects WebSocket handler was not mounted');
+    const handlers = createEvents({ req: { query: () => TOKEN } });
+    const socket: TestSocket = { send: vi.fn(), close: vi.fn() };
+
+    await lateLifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000);
+    handlers.onOpen?.({}, socket);
+
+    expect(socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it('closes an authenticated upgrade whose onOpen arrives after synchronous shutdown fencing', () => {
+    type TestSocket = { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+    type Handlers = {
+      onOpen?(event: unknown, socket: TestSocket): void;
+      onClose?(event: unknown, socket: TestSocket): void;
+    };
+    let createEvents:
+      | ((context: { req: { query(name: string): string | undefined } }) => Handlers)
+      | undefined;
+    const upgradeWebSocket = ((factory: typeof createEvents) => {
+      createEvents = factory;
+      return () => new Response(null, { status: 200 });
+    }) as unknown as UpgradeWebSocket;
+    const app = new Hono();
+    const lateLifecycle = mountProjectsWs(app, {
+      emitter: db.emitter,
+      token: TOKEN,
+      upgradeWebSocket,
+    });
+    if (!createEvents) throw new Error('Projects WebSocket handler was not mounted');
+    const handlers = createEvents({ req: { query: () => TOKEN } });
+    const socket: TestSocket = { send: vi.fn(), close: vi.fn() };
+
+    lateLifecycle.beginClosing(1012, 'gateway_shutdown');
+    handlers.onOpen?.({}, socket);
+
+    expect(socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it('flushes and closes every upgraded socket with the gateway restart reason', async () => {
+    const ws = await connect(TOKEN);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+
+    await lifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000);
+
+    await expect(closed).resolves.toEqual({ code: 1012, reason: 'gateway_shutdown' });
+  });
+
   it('rejects a bad token', async () => {
     const closed = new Promise<number>((resolve) => {
       const ws = new WebSocket(`ws://localhost:${port}/projects/ws?token=wrong`);
+      openSockets.push(ws);
       ws.once('close', (code) => resolve(code));
       ws.once('error', () => {});
     });

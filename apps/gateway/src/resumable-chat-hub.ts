@@ -10,6 +10,11 @@ import type {
   MobileV2WsClientFrame,
   MobileV2WsServerFrame,
 } from '@dash/mobile-contract-v2';
+import {
+  type AdmissionToken,
+  GatewayAdmissionController,
+  type LifecycleCleanupToken,
+} from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { toClientLocation, toClientLocationV2 } from './client-location.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
@@ -47,10 +52,13 @@ export interface ResumableChatHubOptions {
   agents: AgentChatCoordinator;
   autoTitle: ConversationAutoTitleService;
   isAgentEnabled(agentId: string): boolean;
+  admission?: GatewayAdmissionController;
   /** Optional post-turn memory sweep; scheduled only for runs that complete. */
   memorySweep?: Pick<MemorySweepService, 'schedule'>;
   skillReview?: Pick<SkillReviewService, 'schedule'>;
-  swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
+  swarmCoordinator?: {
+    cancelTurn(agentId: string, conversationId: string): boolean | Promise<boolean>;
+  };
   onChanged?(summary: ConversationSummary): void;
 }
 
@@ -92,8 +100,10 @@ export interface ResumableChatHub {
     sink: V2ConversationFrameSink,
   ): Promise<void>;
   resumeRecoveredQueues(conversationIds: readonly string[]): Promise<void>;
-  suspend(): Promise<void>;
+  suspend(cleanupToken?: LifecycleCleanupToken): Promise<void>;
   detach(sink: V1TurnFrameSink | V2ConversationFrameSink): void;
+  disableAgent(agentId: string, cleanupToken: LifecycleCleanupToken): Promise<void>;
+  deleteAgent(agentId: string, cleanupToken: LifecycleCleanupToken): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;
   allowAgent(agentId: string): void;
   stop(): Promise<void>;
@@ -119,11 +129,13 @@ interface LiveRun {
   agentId: string;
   conversationId: string;
   channelId: string;
+  admissionToken: AdmissionToken;
   controller: AbortController;
   v1Subscribers: Set<V1TurnFrameSink>;
   admissionOpen: boolean;
   cancelRequested: boolean;
   terminal: boolean;
+  recoveryRequired: boolean;
   settled: boolean;
   providerFinished: boolean;
   executionStarted: boolean;
@@ -161,6 +173,33 @@ interface OutboundState {
 
 function liveRunKey(agentId: string, conversationId: string): string {
   return JSON.stringify([agentId, conversationId]);
+}
+
+function containsCanonicalSwarmJournalError(
+  error: unknown,
+  seen: Set<unknown> = new Set(),
+): boolean {
+  if (!(error instanceof Error) || seen.has(error)) return false;
+  seen.add(error);
+  if (error.name === 'CanonicalSwarmJournalError') return true;
+  if (
+    error instanceof AggregateError &&
+    error.errors.some((nested) => containsCanonicalSwarmJournalError(nested, seen))
+  ) {
+    return true;
+  }
+  return containsCanonicalSwarmJournalError(error.cause, seen);
+}
+
+class LiveRunRecoveryRequiredError extends Error {
+  override readonly name = 'LiveRunRecoveryRequiredError';
+}
+
+class SteerContinuationFencedError extends Error {
+  constructor(runId: string) {
+    super(`Run ${runId} is no longer accepting Steers`);
+    this.name = 'SteerContinuationFencedError';
+  }
 }
 
 function frameFromEntry(entry: EventLogEntry): MobileWsServerFrame {
@@ -209,6 +248,7 @@ function acceptedFrames(accepted: AcceptedRun): PersistedRunFrames {
 
 export function createResumableChatHub(options: ResumableChatHubOptions): ResumableChatHub {
   const { conversations, agents } = options;
+  const admission = options.admission ?? new GatewayAdmissionController();
   const liveRuns = new Map<string, LiveRun>();
   const v1RunBySink = new Map<V1TurnFrameSink, string>();
   const v1SinkVersions = new WeakMap<V1TurnFrameSink, number>();
@@ -234,6 +274,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         true,
       );
     }
+  };
+
+  const assertAdmissionCurrent = (token: AdmissionToken): void => {
+    if (admission.isCurrent(token)) return;
+    // Prefer the stable public reason for a closed process/agent/conversation.
+    admission.capture(token.agentId, token.conversationId);
+    throw new Error('Gateway admission changed while the operation was in flight');
   };
 
   const notifyChanged = (conversation: StoredConversation): void => {
@@ -416,13 +463,15 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     sinceSeq: number,
     sink: V1TurnFrameSink,
     expectedVersion: number,
+    token: AdmissionToken,
   ): boolean => {
+    if (!admission.isCurrent(token)) return false;
     for (const entry of conversations.eventLog.readSince(agentId, conversationId, sinceSeq)) {
-      if (v1SinkVersions.get(sink) !== expectedVersion) return false;
+      if (!admission.isCurrent(token) || v1SinkVersions.get(sink) !== expectedVersion) return false;
       if (!sendV1(sink, frameFromEntry(entry))) return false;
-      if (v1SinkVersions.get(sink) !== expectedVersion) return false;
+      if (!admission.isCurrent(token) || v1SinkVersions.get(sink) !== expectedVersion) return false;
     }
-    return v1SinkVersions.get(sink) === expectedVersion;
+    return admission.isCurrent(token) && v1SinkVersions.get(sink) === expectedVersion;
   };
 
   const attachV1IfLive = (
@@ -431,11 +480,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     conversationId: string,
     sink: V1TurnFrameSink,
     expectedVersion: number,
+    token: AdmissionToken,
   ): void => {
-    if (v1SinkVersions.get(sink) !== expectedVersion) return;
+    if (!admission.isCurrent(token) || v1SinkVersions.get(sink) !== expectedVersion) return;
     const conversation = conversations.get(conversationId);
     const live = liveRuns.get(liveRunKey(agentId, conversationId));
     if (
+      admission.isCurrent(token) &&
       v1SinkVersions.get(sink) === expectedVersion &&
       conversation?.activeTurnId === runId &&
       live?.runId === runId &&
@@ -532,7 +583,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     return live;
   };
 
-  const createLiveRun = (accepted: AcceptedRun): LiveRun => {
+  const createLiveRun = (accepted: AcceptedRun, token: AdmissionToken): LiveRun => {
     let resolvePromise!: () => void;
     const promise = new Promise<void>((resolve) => {
       resolvePromise = resolve;
@@ -543,11 +594,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       agentId: accepted.conversation.agentId,
       conversationId: accepted.conversation.id,
       channelId: accepted.channelId,
+      admissionToken: token,
       controller: new AbortController(),
       v1Subscribers: new Set(),
       admissionOpen: true,
       cancelRequested: false,
       terminal: false,
+      recoveryRequired: false,
       settled: false,
       providerFinished: false,
       executionStarted: false,
@@ -564,8 +617,12 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     };
   };
 
-  const installLiveRun = (accepted: AcceptedRun, v1Sink?: V1TurnFrameSink): LiveRun => {
-    const live = createLiveRun(accepted);
+  const installLiveRun = (
+    accepted: AcceptedRun,
+    token: AdmissionToken,
+    v1Sink?: V1TurnFrameSink,
+  ): LiveRun => {
+    const live = createLiveRun(accepted, token);
     liveRuns.set(liveRunKey(live.agentId, live.conversationId), live);
     if (v1Sink) attachV1Sink(live, v1Sink);
     return live;
@@ -582,6 +639,23 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     } catch {
       // Accepted storage is authoritative; title work cannot strand a run.
     }
+  };
+
+  const recoveryRequiredError = (live: LiveRun): LiveRunRecoveryRequiredError =>
+    new LiveRunRecoveryRequiredError(
+      `Conversation '${live.conversationId}' requires recovery before terminal cleanup`,
+    );
+
+  const assertLiveRecoveryNotRequired = (live: LiveRun): void => {
+    if (live.recoveryRequired) throw recoveryRequiredError(live);
+  };
+
+  const quarantineCanonicalFailure = (live: LiveRun, error: unknown): boolean => {
+    if (!containsCanonicalSwarmJournalError(error)) return false;
+    admission.markRecoveryRequired(live.agentId, live.conversationId);
+    live.recoveryRequired = true;
+    live.settled = true;
+    return true;
   };
 
   const signalBackendStop = (live: LiveRun): void => {
@@ -612,34 +686,44 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     const previous = live.terminalIntent;
     if (!previous || terminalRank(intent) > terminalRank(previous)) {
       live.terminalIntent = intent;
-    } else if (intent.suppressPromotion && !previous.suppressPromotion) {
-      live.terminalIntent = { ...previous, suppressPromotion: true } as TerminalIntent;
+      return intent;
     }
-    return live.terminalIntent;
+    if (intent.suppressPromotion && !previous.suppressPromotion) {
+      const merged = { ...previous, suppressPromotion: true } as TerminalIntent;
+      live.terminalIntent = merged;
+      return merged;
+    }
+    return previous;
   };
 
+  const steerConsumptionIsCurrent = (live: LiveRun): boolean =>
+    !live.terminal &&
+    live.admissionOpen &&
+    !live.cancelRequested &&
+    live.terminalIntent === undefined &&
+    !live.recoveryRequired &&
+    admission.isCurrent(live.admissionToken);
+
   const handleSteerConsumed = async (live: LiveRun, inputId: string): Promise<void> => {
+    let deliveryCommitted = false;
     try {
       await withLiveRunLock(live, async () => {
-        if (live.terminal) {
-          throw new ConversationServiceError(
-            'revision_conflict',
-            `Run ${live.runId} is no longer active`,
-            409,
-            false,
-          );
-        }
+        if (!steerConsumptionIsCurrent(live)) throw new SteerContinuationFencedError(live.runId);
         const delivered = conversations.deliverSteer({
           conversationId: live.conversationId,
           runId: live.runId,
           inputId,
         });
+        deliveryCommitted = true;
         live.currentSegmentTurnId = delivered.segmentTurnId;
         await publishV2Transaction(delivered.conversation, [delivered.frame]);
+        if (!steerConsumptionIsCurrent(live)) throw new SteerContinuationFencedError(live.runId);
       });
     } catch (error) {
-      live.consumptionFailureInputIds.add(inputId);
-      live.backendRejectedInputIds.add(inputId);
+      if (!deliveryCommitted) {
+        live.consumptionFailureInputIds.add(inputId);
+        live.backendRejectedInputIds.add(inputId);
+      }
       live.cancelRequested = true;
       const intent: TerminalIntent = {
         outcome: 'failed',
@@ -682,6 +766,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         live.cancelRequested ||
         live.terminalIntent !== undefined ||
         live.terminal ||
+        !admission.isCurrent(live.admissionToken) ||
         liveRuns.get(liveRunKey(live.agentId, live.conversationId)) !== live
       ) {
         live.providerFinished = true;
@@ -726,6 +811,17 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       providerError === undefined
         ? { outcome: 'completed' }
         : { outcome: 'failed', error: providerError };
+    if (providerError !== undefined && quarantineCanonicalFailure(live, providerError)) {
+      if (stream) {
+        try {
+          await stream.return(undefined);
+        } catch {
+          // The canonical journal failure already owns the outcome. Cleanup is
+          // still awaited, but no secondary disposal failure may terminalize it.
+        }
+      }
+      return result;
+    }
     mergeTerminalIntent(
       live,
       result.outcome === 'completed'
@@ -743,7 +839,14 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     } catch (error) {
       preparationError = error;
     }
-    if (stream) await stream.return(undefined);
+    if (stream) {
+      try {
+        await stream.return(undefined);
+      } catch (error) {
+        if (quarantineCanonicalFailure(live, error)) return result;
+        throw error;
+      }
+    }
     live.settled = true;
     if (preparationError !== undefined) throw preparationError;
     return result;
@@ -751,7 +854,11 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
 
   const beginLiveRun = (live: LiveRun, accepted: AcceptedRun, location?: ClientLocation): void => {
     if (live.executionStarted || live.terminal) return;
-    if (live.terminalIntent !== undefined || live.cancelRequested) {
+    if (
+      live.terminalIntent !== undefined ||
+      live.cancelRequested ||
+      !admission.isCurrent(live.admissionToken)
+    ) {
       live.providerFinished = true;
       live.settled = true;
       return;
@@ -783,16 +890,19 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     accepted: AcceptedRun,
     location?: ClientLocation,
   ): void => {
+    if (!admission.isCurrent(live.admissionToken)) return;
     scheduleAutoTitle(live, accepted);
+    if (!admission.isCurrent(live.admissionToken)) return;
     beginLiveRun(live, accepted, location);
   };
 
   const registerAcceptedRun = (
     accepted: AcceptedRun,
+    token: AdmissionToken,
     location?: ClientLocation,
     v1Sink?: V1TurnFrameSink,
   ): LiveRun => {
-    const live = installLiveRun(accepted, v1Sink);
+    const live = installLiveRun(accepted, token, v1Sink);
     void publishRunTransaction(live, acceptedFrames(accepted), [], () => {
       activateLiveRun(live, accepted, location);
     });
@@ -874,8 +984,30 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     if (live.terminal) return;
 
     if (live.sealedInputIds === undefined) {
-      const sealed = await agents.sealSteering(live.agentId, live.conversationId, live.runId);
-      live.sealedInputIds = [...new Set([...sealed, ...live.backendRejectedInputIds])];
+      let sealing!: Promise<string[]>;
+      try {
+        // Starting this call first synchronously records the coordinator's
+        // seal request. Interrupt immediately afterwards so a run still stuck
+        // in config/readiness can unwind and settle that seal.
+        sealing = agents.sealSteering(live.agentId, live.conversationId, live.runId);
+      } finally {
+        if (!live.settled && !live.providerFinished) signalBackendStop(live);
+      }
+      const sealed = await sealing;
+      // A preparing owner has no safe backend seal to query when cancellation
+      // wins readiness. SQLite is authoritative for every durably accepted,
+      // still-undelivered Steer, so include those IDs before terminalization.
+      const durableSteers = conversations
+        .bootstrapV2({ conversationId: live.conversationId, limit: 1 })
+        .pendingInputs.filter(
+          (input) =>
+            input.kind === 'steer' &&
+            (input.runId === live.runId || input.targetTurnId === live.runId),
+        )
+        .map((input) => input.inputId);
+      live.sealedInputIds = [
+        ...new Set([...sealed, ...durableSteers, ...live.backendRejectedInputIds]),
+      ];
     }
 
     const inputIds = [...new Set([...live.sealedInputIds, ...live.backendRejectedInputIds])];
@@ -918,7 +1050,10 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       if (live.terminal) return;
       const intent = live.terminalIntent ?? { outcome: 'completed', suppressPromotion: false };
       const agentAccepting =
-        !stopped && !quiescingAgents.has(live.agentId) && options.isAgentEnabled(live.agentId);
+        !stopped &&
+        !quiescingAgents.has(live.agentId) &&
+        options.isAgentEnabled(live.agentId) &&
+        admission.isCurrent(live.admissionToken);
       const suppressPromotion = intent.suppressPromotion || !agentAccepting;
       const input: FinishRunInput = {
         conversationId: live.conversationId,
@@ -939,7 +1074,9 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       live.terminal = true;
       live.admissionOpen = false;
       const legacySinks = retireLiveRun(live);
-      const claimedLive = result.claimedRun ? installLiveRun(result.claimedRun) : undefined;
+      const claimedLive = result.claimedRun
+        ? installLiveRun(result.claimedRun, live.admissionToken)
+        : undefined;
       await queueOutbound(live.conversationId, () => {
         notifyChanged(result.terminal.conversation);
         const terminalV1 = frameFromV1Payload(
@@ -969,17 +1106,20 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   };
 
   const terminalizeLive = async (live: LiveRun): Promise<void> => {
+    assertLiveRecoveryNotRequired(live);
     await ensureTerminalPrepared(live);
 
-    if (!live.settled && !live.providerFinished) signalBackendStop(live);
     if (live.executionStarted && !live.settled) await live.executionPromise;
+    assertLiveRecoveryNotRequired(live);
     if (!live.settled) live.settled = true;
     await catchUpRunJournals(live);
+    assertLiveRecoveryNotRequired(live);
     await finishLiveRun(live);
   };
 
   function requestTerminal(live: LiveRun, intent: TerminalIntent): Promise<void> {
     mergeTerminalIntent(live, intent);
+    if (live.recoveryRequired) return Promise.reject(recoveryRequiredError(live));
     if (live.terminal) return Promise.resolve();
     if (live.terminalAttempt) return live.terminalAttempt;
     const attempt = terminalizeLive(live);
@@ -1014,12 +1154,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
     result: CommandMutationResult,
     sink: V2ConversationFrameSink,
     subscription: V2Subscription,
+    token: AdmissionToken,
   ): Promise<LiveRun | undefined> => {
     if (result.replayed || !result.conversation) {
       sendCommandResult(result, sink, subscription);
       return undefined;
     }
-    const claimedLive = result.promotedRun ? installLiveRun(result.promotedRun) : undefined;
+    const claimedLive = result.promotedRun ? installLiveRun(result.promotedRun, token) : undefined;
     await publishV2Transaction(result.conversation, result.frames, () => {
       if (claimedLive && result.promotedRun) activateLiveRun(claimedLive, result.promotedRun);
     });
@@ -1056,8 +1197,13 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   const startSteerAdmission = (
     live: LiveRun,
     frame: Extract<MobileV2WsClientFrame, { type: 'enqueue_input' }>,
+    token: AdmissionToken,
   ): Promise<void> => {
-    const admission = Promise.resolve().then(async () => {
+    const pendingAdmission = Promise.resolve().then(async () => {
+      if (!canAdmitSteer(live) || !admission.isCurrent(token)) {
+        live.backendRejectedInputIds.add(frame.inputId);
+        return;
+      }
       let result: Awaited<ReturnType<AgentChatCoordinator['steerRun']>>;
       try {
         result = await agents.steerRun(
@@ -1077,6 +1223,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
           live.consumptionFailureInputIds.delete(frame.inputId);
           throw error;
         }
+        if (error instanceof SteerContinuationFencedError) throw error;
         await terminalizeBackendRejectedSteer(
           live,
           frame.inputId,
@@ -1091,27 +1238,30 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         `Steer was not accepted by the active run: ${result.reason}`,
       );
     });
-    live.pendingAdmissions.add(admission);
-    void admission.then(
-      () => live.pendingAdmissions.delete(admission),
-      () => live.pendingAdmissions.delete(admission),
+    live.pendingAdmissions.add(pendingAdmission);
+    void pendingAdmission.then(
+      () => live.pendingAdmissions.delete(pendingAdmission),
+      () => live.pendingAdmissions.delete(pendingAdmission),
     );
-    return admission;
+    return pendingAdmission;
   };
 
-  const canAdmitSteer = (live: LiveRun | undefined): live is LiveRun =>
+  const canAdmitSteer = (live: LiveRun | undefined): boolean =>
     live?.admissionOpen === true &&
     !live.cancelRequested &&
     live.terminalIntent === undefined &&
     !live.terminal;
 
-  const settleAll = async (operations: readonly Promise<void>[]): Promise<void> => {
+  const settleAll = async (
+    operations: readonly Promise<void>[],
+    aggregateMessage = 'Failed to settle live runs',
+  ): Promise<void> => {
     const results = await Promise.allSettled(operations);
     const failures = results
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => result.reason);
     if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, 'Failed to settle live runs');
+    if (failures.length > 1) throw new AggregateError(failures, aggregateMessage);
   };
 
   const quiescingIntent = (
@@ -1129,6 +1279,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
   const startAccepted = (
     protocol: 'v1' | 'v2',
     frame: ResumableSendFrame | Extract<MobileV2WsClientFrame, { type: 'message' }>,
+    token: AdmissionToken,
     v1Sink?: V1TurnFrameSink,
     v2Sink?: V2ConversationFrameSink,
   ): void => {
@@ -1181,6 +1332,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
             accepted.v1Seq,
             v1Sink,
             version,
+            token,
           )
         ) {
           attachV1IfLive(
@@ -1189,6 +1341,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
             accepted.conversation.id,
             v1Sink,
             version,
+            token,
           );
         }
       } else if (protocol === 'v2' && v2Sink) {
@@ -1202,149 +1355,194 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       }
       return;
     }
-    registerAcceptedRun(accepted, location, v1Sink);
+    registerAcceptedRun(accepted, token, location, v1Sink);
   };
 
   const hub: ResumableChatHub = {
     start(frame, sink) {
-      startAccepted('v1', frame, sink);
+      assertAgentAccepting(frame.agentId);
+      const lease = admission.acquire(frame.agentId, frame.conversationId);
+      try {
+        startAccepted('v1', frame, lease.token, sink);
+      } finally {
+        lease.release();
+      }
     },
 
     startV2(frame, sink) {
-      startAccepted('v2', frame, undefined, sink);
+      assertAgentAccepting(frame.agentId);
+      const lease = admission.acquire(frame.agentId, frame.conversationId);
+      try {
+        startAccepted('v2', frame, lease.token, undefined, sink);
+      } finally {
+        lease.release();
+      }
     },
 
     resume(frame, sink) {
-      assertAccepting();
-      const conversation = conversations.get(frame.conversationId);
-      if (!conversation || conversation.agentId !== frame.agentId) {
-        throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+      const lease = admission.acquire(frame.agentId, frame.conversationId);
+      try {
+        assertAccepting();
+        const conversation = conversations.get(frame.conversationId);
+        if (!conversation || conversation.agentId !== frame.agentId) {
+          throw new ConversationServiceError('not_found', 'Conversation not found', 404, false);
+        }
+        const version = bumpV1SinkVersion(sink);
+        if (
+          !replayV1(frame.agentId, frame.conversationId, frame.sinceSeq, sink, version, lease.token)
+        ) {
+          return;
+        }
+        attachV1IfLive(frame.id, frame.agentId, frame.conversationId, sink, version, lease.token);
+      } finally {
+        lease.release();
       }
-      const version = bumpV1SinkVersion(sink);
-      if (!replayV1(frame.agentId, frame.conversationId, frame.sinceSeq, sink, version)) return;
-      attachV1IfLive(frame.id, frame.agentId, frame.conversationId, sink, version);
     },
 
     subscribeConversation(frame, sink) {
-      assertAccepting();
-      const version = (v2SubscriptionVersions.get(sink) ?? 0) + 1;
-      v2SubscriptionVersions.set(sink, version);
-      const previous = v2SubscriptionBySink.get(sink);
-      const subscription: V2Subscription = {
-        sink,
-        agentId: frame.agentId,
-        conversationId: frame.conversationId,
-        replaying: true,
-        buffer: [],
-        deliveredThrough: 0,
-        active: false,
-        version,
-      };
-      let records = v2Subscriptions.get(frame.conversationId);
-      if (!records) {
-        records = new Set();
-        v2Subscriptions.set(frame.conversationId, records);
-      }
-      records.add(subscription);
-      pendingV2SubscriptionBySink.set(sink, subscription);
-      const replayIsCurrent = (): boolean =>
-        v2SubscriptionVersions.get(sink) === version &&
-        pendingV2SubscriptionBySink.get(sink) === subscription;
-      const abandonSupersededReplay = (): boolean => {
-        if (replayIsCurrent()) return false;
-        removeV2Subscription(subscription);
-        return true;
-      };
-
+      const lease = admission.acquire(frame.agentId, frame.conversationId);
       try {
-        const replay = conversations.readV2Since(
-          frame.agentId,
-          frame.conversationId,
-          frame.sinceV2Seq,
-        );
-        subscription.deliveredThrough = Math.min(frame.sinceV2Seq, replay.throughSeq);
-        for (const replayFrame of replay.frames) {
-          if (abandonSupersededReplay()) return;
-          if (replayFrame.v2Seq <= frame.sinceV2Seq) continue;
-          if (!deliverV2(subscription, replayFrame)) throw new Error('V2 replay sink failed');
-          if (abandonSupersededReplay()) return;
+        assertAccepting();
+        const version = (v2SubscriptionVersions.get(sink) ?? 0) + 1;
+        v2SubscriptionVersions.set(sink, version);
+        const previous = v2SubscriptionBySink.get(sink);
+        const subscription: V2Subscription = {
+          sink,
+          agentId: frame.agentId,
+          conversationId: frame.conversationId,
+          replaying: true,
+          buffer: [],
+          deliveredThrough: 0,
+          active: false,
+          version,
+        };
+        let records = v2Subscriptions.get(frame.conversationId);
+        if (!records) {
+          records = new Set();
+          v2Subscriptions.set(frame.conversationId, records);
         }
-        subscription.deliveredThrough = Math.max(subscription.deliveredThrough, replay.throughSeq);
-        while (subscription.buffer.length > 0) {
+        records.add(subscription);
+        pendingV2SubscriptionBySink.set(sink, subscription);
+        const replayIsCurrent = (): boolean =>
+          admission.isCurrent(lease.token) &&
+          v2SubscriptionVersions.get(sink) === version &&
+          pendingV2SubscriptionBySink.get(sink) === subscription;
+        const abandonSupersededReplay = (): boolean => {
+          if (replayIsCurrent()) return false;
+          removeV2Subscription(subscription);
+          return true;
+        };
+
+        try {
           if (abandonSupersededReplay()) return;
-          const wave = subscription.buffer.splice(0).sort((a, b) => a.v2Seq - b.v2Seq);
-          for (const buffered of wave) {
+          const replay = conversations.readV2Since(
+            frame.agentId,
+            frame.conversationId,
+            frame.sinceV2Seq,
+          );
+          subscription.deliveredThrough = Math.min(frame.sinceV2Seq, replay.throughSeq);
+          for (const replayFrame of replay.frames) {
             if (abandonSupersededReplay()) return;
-            if (!deliverV2(subscription, buffered)) throw new Error('V2 replay sink failed');
+            if (replayFrame.v2Seq <= frame.sinceV2Seq) continue;
+            if (!deliverV2(subscription, replayFrame)) throw new Error('V2 replay sink failed');
+            if (abandonSupersededReplay()) return;
+          }
+          subscription.deliveredThrough = Math.max(
+            subscription.deliveredThrough,
+            replay.throughSeq,
+          );
+          while (subscription.buffer.length > 0) {
+            if (abandonSupersededReplay()) return;
+            const wave = subscription.buffer.splice(0).sort((a, b) => a.v2Seq - b.v2Seq);
+            for (const buffered of wave) {
+              if (abandonSupersededReplay()) return;
+              if (!deliverV2(subscription, buffered)) throw new Error('V2 replay sink failed');
+              if (abandonSupersededReplay()) return;
+            }
             if (abandonSupersededReplay()) return;
           }
           if (abandonSupersededReplay()) return;
-        }
-        if (abandonSupersededReplay()) return;
-        subscription.replaying = false;
-        subscription.active = true;
-        if (previous && previous !== subscription) removeV2Subscription(previous);
-        v2SubscriptionBySink.set(sink, subscription);
-        if (pendingV2SubscriptionBySink.get(sink) === subscription) {
-          pendingV2SubscriptionBySink.delete(sink);
-        }
-        if (
-          !sendV2(sink, {
-            type: 'conversation_subscribed',
-            id: frame.id,
-            conversationId: frame.conversationId,
-            v2ThroughSeq: subscription.deliveredThrough,
-          })
-        ) {
+          subscription.replaying = false;
+          subscription.active = true;
+          if (previous && previous !== subscription) removeV2Subscription(previous);
+          v2SubscriptionBySink.set(sink, subscription);
+          if (pendingV2SubscriptionBySink.get(sink) === subscription) {
+            pendingV2SubscriptionBySink.delete(sink);
+          }
+          if (
+            !sendV2(sink, {
+              type: 'conversation_subscribed',
+              id: frame.id,
+              conversationId: frame.conversationId,
+              v2ThroughSeq: subscription.deliveredThrough,
+            })
+          ) {
+            removeV2Subscription(subscription);
+          } else if (!admission.isCurrent(lease.token)) {
+            removeV2Subscription(subscription);
+          }
+        } catch (error) {
+          const buffered = subscription.buffer.splice(0).sort((a, b) => a.v2Seq - b.v2Seq);
           removeV2Subscription(subscription);
+          if (
+            previous?.active &&
+            previous.conversationId === frame.conversationId &&
+            v2SubscriptionBySink.get(sink) === previous
+          ) {
+            for (const bufferedFrame of buffered) deliverV2(previous, bufferedFrame);
+          }
+          throw error;
         }
-      } catch (error) {
-        const buffered = subscription.buffer.splice(0).sort((a, b) => a.v2Seq - b.v2Seq);
-        removeV2Subscription(subscription);
-        if (
-          previous?.active &&
-          previous.conversationId === frame.conversationId &&
-          v2SubscriptionBySink.get(sink) === previous
-        ) {
-          for (const bufferedFrame of buffered) deliverV2(previous, bufferedFrame);
-        }
-        throw error;
+      } finally {
+        lease.release();
       }
     },
 
     async answer(runId, questionId, answer, sink) {
       assertAccepting();
       const live = requireLiveRun(runId, sink);
-      await withLiveRunLock(live, async () => {
-        if (live.terminal || live.terminalIntent !== undefined) {
-          throw new ConversationServiceError('not_found', `Run ${runId} is not live`, 404, false);
-        }
-        if (sink) assertCurrentV1Binding(live, sink);
-        await agents.answerQuestion(live.agentId, live.conversationId, questionId, answer);
-      });
+      const lease = admission.acquire(live.agentId, live.conversationId);
+      try {
+        await withLiveRunLock(live, async () => {
+          assertAdmissionCurrent(lease.token);
+          if (live.terminal || live.terminalIntent !== undefined) {
+            throw new ConversationServiceError('not_found', `Run ${runId} is not live`, 404, false);
+          }
+          if (sink) assertCurrentV1Binding(live, sink);
+          await agents.answerQuestion(live.agentId, live.conversationId, questionId, answer);
+        });
+      } finally {
+        lease.release();
+      }
     },
 
     async answerV2(frame, sink) {
       assertAccepting();
       const subscription = requireV2Subscription(sink);
       const live = requireV2LiveRun(frame.id, sink);
-      await withLiveRunLock(live, async () => {
-        if (live.terminal || live.terminalIntent !== undefined) {
-          throw new ConversationServiceError(
-            'not_found',
-            `Run ${frame.id} is not live`,
-            404,
-            false,
+      const lease = admission.acquire(live.agentId, live.conversationId);
+      try {
+        await withLiveRunLock(live, async () => {
+          assertAdmissionCurrent(lease.token);
+          if (live.terminal || live.terminalIntent !== undefined) {
+            throw new ConversationServiceError(
+              'not_found',
+              `Run ${frame.id} is not live`,
+              404,
+              false,
+            );
+          }
+          assertCurrentV2Subscription(sink, subscription);
+          await agents.answerQuestion(
+            live.agentId,
+            live.conversationId,
+            frame.questionId,
+            frame.answer,
           );
-        }
-        assertCurrentV2Subscription(sink, subscription);
-        await agents.answerQuestion(
-          live.agentId,
-          live.conversationId,
-          frame.questionId,
-          frame.answer,
-        );
-      });
+        });
+      } finally {
+        lease.release();
+      }
     },
 
     async cancel(runId, sink) {
@@ -1362,150 +1560,216 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         }
         throw error;
       }
-      await cancelLive(live);
+      const lease = admission.acquire(live.agentId, live.conversationId);
+      try {
+        await cancelLive(live);
+      } finally {
+        lease.release();
+      }
     },
 
     async cancelV2(frame, sink) {
       assertAccepting();
       const live = requireV2LiveRun(frame.id, sink);
-      await cancelLive(live);
+      const lease = admission.acquire(live.agentId, live.conversationId);
+      try {
+        await cancelLive(live);
+      } finally {
+        lease.release();
+      }
     },
 
     async enqueueInput(frame, sink) {
       const subscription = requireV2Subscription(sink, frame.conversationId, frame.agentId);
-      assertAgentAccepting(frame.agentId);
-      const key = liveRunKey(subscription.agentId, subscription.conversationId);
-      const live = liveRuns.get(key);
-      let admission: Promise<void> | undefined;
-      const mutate = async (): Promise<void> => {
+      const lease = admission.acquire(frame.agentId, frame.conversationId);
+      try {
         assertAgentAccepting(frame.agentId);
-        if (live) await catchUpRunJournals(live);
-        assertCurrentV2Subscription(sink, subscription);
-        const result = conversations.enqueueInput(
-          {
-            commandId: frame.id,
-            inputId: frame.inputId,
-            agentId: frame.agentId,
-            channelId: frame.channelId,
-            conversationId: frame.conversationId,
-            text: frame.text,
-            images: frame.images,
-            behavior: frame.behavior,
-            expectedActiveTurnId: frame.expectedActiveTurnId,
-          },
-          { steerAdmissionOpen: canAdmitSteer(live) },
+        const key = liveRunKey(subscription.agentId, subscription.conversationId);
+        const live = liveRuns.get(key);
+        const steerAdmissions: Promise<void>[] = [];
+        const mutate = async (): Promise<void> => {
+          assertAdmissionCurrent(lease.token);
+          assertAgentAccepting(frame.agentId);
+          if (live) await catchUpRunJournals(live);
+          assertAdmissionCurrent(lease.token);
+          assertCurrentV2Subscription(sink, subscription);
+          const result = conversations.enqueueInput(
+            {
+              commandId: frame.id,
+              inputId: frame.inputId,
+              agentId: frame.agentId,
+              channelId: frame.channelId,
+              conversationId: frame.conversationId,
+              text: frame.text,
+              images: frame.images,
+              behavior: frame.behavior,
+              expectedActiveTurnId: frame.expectedActiveTurnId,
+            },
+            { steerAdmissionOpen: canAdmitSteer(live) },
+          );
+          await publishCommandResult(result, sink, subscription, lease.token);
+          if (
+            frame.behavior === 'steer' &&
+            live &&
+            !result.replayed &&
+            result.conversation !== undefined
+          ) {
+            if (canAdmitSteer(live) && admission.isCurrent(lease.token)) {
+              steerAdmissions.push(startSteerAdmission(live, frame, lease.token));
+            } else {
+              live.backendRejectedInputIds.add(frame.inputId);
+            }
+          }
+        };
+        if (live) await withLiveRunLock(live, mutate);
+        else await mutate();
+        await Promise.all(
+          steerAdmissions.map((pending) =>
+            pending.catch(() => {
+              // The command is already durably accepted. Admission/terminalization
+              // failure is retained on the LiveRun for terminal recovery and must
+              // never be reclassified by the caller as command_rejected.
+            }),
+          ),
         );
-        await publishCommandResult(result, sink, subscription);
-        if (
-          frame.behavior === 'steer' &&
-          live &&
-          !result.replayed &&
-          result.conversation !== undefined
-        ) {
-          if (canAdmitSteer(live)) admission = startSteerAdmission(live, frame);
-          else live.backendRejectedInputIds.add(frame.inputId);
-        }
-      };
-      if (live) await withLiveRunLock(live, mutate);
-      else await mutate();
-      if (admission) {
-        await admission.catch(() => {
-          // The command is already durably accepted. Admission/terminalization
-          // failure is retained on the LiveRun for terminal recovery and must
-          // never be reclassified by the caller as command_rejected.
-        });
+      } finally {
+        lease.release();
       }
     },
 
     async editFollowUp(frame, sink) {
       assertAccepting();
       const subscription = requireV2Subscription(sink, frame.conversationId);
-      const live = liveRuns.get(liveRunKey(subscription.agentId, subscription.conversationId));
-      const mutate = async (): Promise<void> => {
-        assertAccepting();
-        if (live) await catchUpRunJournals(live);
-        assertCurrentV2Subscription(sink, subscription);
-        const result = conversations.editFollowUp({
-          commandId: frame.id,
-          conversationId: frame.conversationId,
-          inputId: frame.inputId,
-          expectedRevision: frame.expectedRevision,
-          text: frame.text,
-          images: frame.images,
-        });
-        await publishCommandResult(result, sink, subscription);
-      };
-      if (live) await withLiveRunLock(live, mutate);
-      else await mutate();
+      const lease = admission.acquire(subscription.agentId, frame.conversationId);
+      try {
+        const live = liveRuns.get(liveRunKey(subscription.agentId, subscription.conversationId));
+        const mutate = async (): Promise<void> => {
+          assertAdmissionCurrent(lease.token);
+          assertAccepting();
+          if (live) await catchUpRunJournals(live);
+          assertAdmissionCurrent(lease.token);
+          assertCurrentV2Subscription(sink, subscription);
+          const result = conversations.editFollowUp({
+            commandId: frame.id,
+            conversationId: frame.conversationId,
+            inputId: frame.inputId,
+            expectedRevision: frame.expectedRevision,
+            text: frame.text,
+            images: frame.images,
+          });
+          await publishCommandResult(result, sink, subscription, lease.token);
+        };
+        if (live) await withLiveRunLock(live, mutate);
+        else await mutate();
+      } finally {
+        lease.release();
+      }
     },
 
     async removeFollowUp(frame, sink) {
       assertAccepting();
       const subscription = requireV2Subscription(sink, frame.conversationId);
-      const live = liveRuns.get(liveRunKey(subscription.agentId, subscription.conversationId));
-      const mutate = async (): Promise<void> => {
-        assertAccepting();
-        if (live) await catchUpRunJournals(live);
-        assertCurrentV2Subscription(sink, subscription);
-        const result = conversations.removeFollowUp({
-          commandId: frame.id,
-          conversationId: frame.conversationId,
-          inputId: frame.inputId,
-          expectedRevision: frame.expectedRevision,
-        });
-        await publishCommandResult(result, sink, subscription);
-      };
-      if (live) await withLiveRunLock(live, mutate);
-      else await mutate();
+      const lease = admission.acquire(subscription.agentId, frame.conversationId);
+      try {
+        const live = liveRuns.get(liveRunKey(subscription.agentId, subscription.conversationId));
+        const mutate = async (): Promise<void> => {
+          assertAdmissionCurrent(lease.token);
+          assertAccepting();
+          if (live) await catchUpRunJournals(live);
+          assertAdmissionCurrent(lease.token);
+          assertCurrentV2Subscription(sink, subscription);
+          const result = conversations.removeFollowUp({
+            commandId: frame.id,
+            conversationId: frame.conversationId,
+            inputId: frame.inputId,
+            expectedRevision: frame.expectedRevision,
+          });
+          await publishCommandResult(result, sink, subscription, lease.token);
+        };
+        if (live) await withLiveRunLock(live, mutate);
+        else await mutate();
+      } finally {
+        lease.release();
+      }
     },
 
     async resumeFollowUps(frame, sink) {
       const subscription = requireV2Subscription(sink, frame.conversationId);
-      assertAgentAccepting(subscription.agentId);
-      const live = liveRuns.get(liveRunKey(subscription.agentId, frame.conversationId));
-      const mutate = async (): Promise<void> => {
+      const lease = admission.acquire(subscription.agentId, frame.conversationId);
+      try {
         assertAgentAccepting(subscription.agentId);
-        if (live) await catchUpRunJournals(live);
-        assertCurrentV2Subscription(sink, subscription);
-        const result = conversations.resumeFollowUps({
-          commandId: frame.id,
-          conversationId: frame.conversationId,
-          expectedQueueRevision: frame.expectedQueueRevision,
-        });
-        await publishCommandResult(result, sink, subscription);
-      };
-      if (live) await withLiveRunLock(live, mutate);
-      else await mutate();
+        const live = liveRuns.get(liveRunKey(subscription.agentId, frame.conversationId));
+        const mutate = async (): Promise<void> => {
+          assertAdmissionCurrent(lease.token);
+          assertAgentAccepting(subscription.agentId);
+          if (live) await catchUpRunJournals(live);
+          assertAdmissionCurrent(lease.token);
+          assertCurrentV2Subscription(sink, subscription);
+          const result = conversations.resumeFollowUps({
+            commandId: frame.id,
+            conversationId: frame.conversationId,
+            expectedQueueRevision: frame.expectedQueueRevision,
+          });
+          await publishCommandResult(result, sink, subscription, lease.token);
+        };
+        if (live) await withLiveRunLock(live, mutate);
+        else await mutate();
+      } finally {
+        lease.release();
+      }
     },
 
     async resumeRecoveredQueues(conversationIds) {
       assertAccepting();
-      for (const conversationId of new Set(conversationIds)) {
-        const conversation = conversations.get(conversationId);
-        if (!conversation) {
-          throw new ConversationServiceError(
-            'not_found',
-            `Conversation ${conversationId} was not found`,
-            404,
-            false,
-          );
-        }
-        assertAgentAccepting(conversation.agentId);
-        const key = liveRunKey(conversation.agentId, conversationId);
-        if (liveRuns.has(key)) continue;
-        assertAgentAccepting(conversation.agentId);
-        const claimed = conversations.claimNextFollowUp(conversationId);
-        if (!claimed) continue;
-        const live = installLiveRun(claimed.run);
-        await publishV2Transaction(
-          claimed.run.conversation,
-          [claimed.transition.frame, claimed.run.v2Frame],
-          () => activateLiveRun(live, claimed.run),
-        );
-      }
+      await settleAll(
+        [...new Set(conversationIds)].map(async (conversationId) => {
+          const before = conversations.getV2(conversationId);
+          if (
+            !before ||
+            before.queuePaused ||
+            before.status === 'archived' ||
+            before.status === 'deleted' ||
+            !options.isAgentEnabled(before.agentId)
+          ) {
+            return;
+          }
+          const lease = admission.acquire(before.agentId, conversationId);
+          try {
+            assertAdmissionCurrent(lease.token);
+            const current = conversations.getV2(conversationId);
+            if (
+              !current ||
+              current.queuePaused ||
+              current.status === 'archived' ||
+              current.status === 'deleted' ||
+              !options.isAgentEnabled(current.agentId)
+            ) {
+              return;
+            }
+            const key = liveRunKey(current.agentId, conversationId);
+            if (liveRuns.has(key)) return;
+            assertAdmissionCurrent(lease.token);
+            const claimed = conversations.claimNextFollowUp(conversationId);
+            if (!claimed) return;
+            assertAdmissionCurrent(lease.token);
+            const live = installLiveRun(claimed.run, lease.token);
+            await publishV2Transaction(
+              claimed.run.conversation,
+              [claimed.transition.frame, claimed.run.v2Frame],
+              () => {
+                activateLiveRun(live, claimed.run);
+              },
+            );
+          } finally {
+            lease.release();
+          }
+        }),
+        'Failed to resume recovered Follow Up queues',
+      );
     },
 
-    async suspend() {
+    async suspend(cleanupToken) {
+      if (cleanupToken) admission.assertCleanupToken(cleanupToken, 'process');
       stopped = true;
       const active = [...liveRuns.values()];
       for (const live of active) live.cancelRequested = true;
@@ -1537,13 +1801,69 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       );
     },
 
+    async disableAgent(agentId, cleanupToken) {
+      admission.assertCleanupToken(cleanupToken, 'agent', agentId);
+      quiescingAgents.add(agentId);
+      const paused = conversations.pauseFollowUpsForAgentDisable(agentId);
+      for (const transition of paused) {
+        await publishV2Transaction(transition.conversation, [transition.frame]);
+      }
+      const matching = [...liveRuns.values()].filter((live) => live.agentId === agentId);
+      for (const live of matching) live.cancelRequested = true;
+      await settleAll(
+        matching.map((live) => requestTerminal(live, quiescingIntent(live, 'interrupted'))),
+      );
+    },
+
+    async deleteAgent(agentId, cleanupToken) {
+      admission.assertCleanupToken(cleanupToken, 'agent', agentId);
+      quiescingAgents.add(agentId);
+      const conversationsBefore = [];
+      let cursor: string | undefined;
+      do {
+        const page = conversations.listV2({
+          agentId,
+          limit: 100,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        conversationsBefore.push(...page.items);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      const watermarks = new Map(
+        conversationsBefore.map((conversation) => [conversation.id, conversation.v2LastSeq]),
+      );
+      const matching = [...liveRuns.values()].filter((live) => live.agentId === agentId);
+      for (const live of matching) live.cancelRequested = true;
+      await settleAll(
+        matching.map((live) => requestTerminal(live, quiescingIntent(live, 'interrupted'))),
+      );
+      const archived = conversations.archiveAgentConversations(agentId);
+      for (const summary of archived) {
+        const frames = conversations.readV2Since(
+          agentId,
+          summary.id,
+          watermarks.get(summary.id) ?? 0,
+        ).frames;
+        const current = conversations.getV2(summary.id);
+        if (!current) continue;
+        await queueOutbound(summary.id, () => {
+          try {
+            options.onChanged?.(summary);
+          } catch {
+            // Storage is authoritative.
+          }
+          for (const frame of frames) broadcastV2Now(frame);
+        });
+      }
+    },
+
     allowAgent(agentId) {
       quiescingAgents.delete(agentId);
     },
 
     async stop() {
       stopped = true;
-      const active = [...liveRuns.values()];
+      const active = [...liveRuns.values()].filter((live) => !live.recoveryRequired);
       for (const live of active) live.cancelRequested = true;
       await settleAll(
         active.map((live) => requestTerminal(live, quiescingIntent(live, 'cancelled'))),

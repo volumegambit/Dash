@@ -51,6 +51,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private handlers: MessageHandler[] = [];
   private sock: WASocket | null = null;
   private stopped = false;
+  private startGeneration = 0;
   private health: ChannelHealth = 'connecting';
   private healthHandlers: Array<(h: ChannelHealth) => void> = [];
 
@@ -78,6 +79,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
   }
 
   async start(): Promise<void> {
+    const generation = ++this.startGeneration;
     this.stopped = false;
     // Ensure auth directory exists
     await mkdir(this.authStateDir, { recursive: true });
@@ -91,8 +93,19 @@ export class WhatsAppAdapter implements ChannelAdapter {
     // Bootstrap Baileys auth state
     const { state, saveCreds } = await makeBaileysAuthState(store, '');
 
+    // A stop or newer reconnect won while async auth preparation was held.
+    if (this.stopped || generation !== this.startGeneration) return;
+
     // Create the Baileys socket
     const sock = makeWASocket({ auth: state, printQRInTerminal: false });
+    if (this.stopped || generation !== this.startGeneration) {
+      try {
+        sock.end(undefined);
+      } catch {
+        // It was never published; there is nothing else to retire.
+      }
+      return;
+    }
     this.sock = sock;
 
     // Persist credentials on update
@@ -100,6 +113,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     // Handle connection state changes
     sock.ev.on('connection.update', (update: Partial<ConnectionState>) => {
+      // A retired socket may report close/open after its replacement is live.
+      // It must never mutate health or schedule another replacement.
+      if (this.sock !== sock) return;
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -118,9 +134,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
           lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
         )?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
-          this.setHealth('connecting');
-          this.start().catch((err) => console.error('[WhatsApp] Reconnect failed:', err));
+          this.scheduleRestart(sock);
         } else {
+          this.sock = null;
           this.setHealth('needs_reauth');
           console.warn('[WhatsApp] Logged out. Please re-authenticate.');
         }
@@ -185,17 +201,108 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.sock) {
-      this.sock.end(undefined);
-      this.sock = null;
+    this.startGeneration++;
+    const sock = this.sock;
+    this.sock = null;
+    if (sock) {
+      sock.end(undefined);
     }
     this.healthHandlers = [];
   }
 
-  async send(conversationId: string, message: OutboundMessage): Promise<void> {
-    if (!this.sock) {
+  async send(
+    conversationId: string,
+    message: OutboundMessage,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const sock = this.sock;
+    if (!sock) {
       throw new Error('[WhatsApp] Adapter not started');
     }
-    await this.sock.sendMessage(conversationId, { text: message.text });
+
+    let rejectAborted!: (error: Error) => void;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAborted = reject;
+    });
+    let didAbort = false;
+    const endSocket = (candidate: WASocket): void => {
+      try {
+        candidate.end(undefined);
+      } catch (error) {
+        console.warn(
+          '[WhatsApp] Failed to close an aborted outbound socket:',
+          error instanceof Error ? error.message : error,
+        );
+      }
+    };
+    const onAbort = (): void => {
+      if (didAbort) return;
+      didAbort = true;
+      const reason = signal?.reason as { code?: unknown; scope?: unknown } | null | undefined;
+      const agentScoped = reason?.code === 'gateway_admission_aborted' && reason.scope === 'agent';
+      if (agentScoped) {
+        if (this.sock === sock) {
+          // End the exact transport first so Baileys cannot complete this
+          // message later. A synchronous close callback may schedule the one
+          // replacement; the identity check below is the async-close fallback.
+          endSocket(sock);
+          if (this.sock === sock) this.scheduleRestart(sock);
+        } else {
+          endSocket(sock);
+        }
+      } else {
+        // Process/transport cancellation retires the shared connection. Set
+        // stopped before ending either socket so a synchronous close callback
+        // cannot reconnect. Agent cancellation must leave sibling routes live.
+        this.stopped = true;
+        this.startGeneration++;
+        const current = this.sock;
+        this.sock = null;
+        endSocket(sock);
+        if (current && current !== sock) endSocket(current);
+      }
+      rejectAborted(new Error('[WhatsApp] send aborted'));
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+
+    if (didAbort) {
+      await aborted;
+    }
+
+    let sending: Promise<void>;
+    try {
+      sending = Promise.resolve(sock.sendMessage(conversationId, { text: message.text })).then(
+        () => undefined,
+      );
+    } catch (error) {
+      sending = Promise.reject(error);
+    }
+    // Promise.race installs a rejection handler, but retain an explicit late
+    // observer so a transport that rejects after the abort can never surface
+    // as an unhandled rejection if this implementation changes.
+    void sending.catch(() => {});
+
+    try {
+      if (!signal) {
+        await sending;
+        return;
+      }
+      await Promise.race([sending, aborted]);
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private scheduleRestart(expected: WASocket): void {
+    if (this.stopped || this.sock !== expected) return;
+    // Claim replacement ownership synchronously so a stale close callback or
+    // a second abort cannot start another socket for the same generation.
+    this.sock = null;
+    this.setHealth('connecting');
+    void this.start().catch((error) => {
+      console.error('[WhatsApp] Reconnect failed:', error);
+    });
   }
 }

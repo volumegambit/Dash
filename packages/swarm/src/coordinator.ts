@@ -3,7 +3,13 @@ import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
 import { type RunSnapshot, type RunSummary, SwarmRun } from './run.js';
 import { createAskOrchestratorTool } from './tools.js';
-import type { SwarmCaps, SwarmEventLogSink, WorkerFactory, WorkerStatus } from './types.js';
+import type {
+  SwarmCaps,
+  SwarmEventLogSink,
+  SwarmJournalIdentity,
+  WorkerFactory,
+  WorkerStatus,
+} from './types.js';
 import type { WorkerHandleOptions } from './worker-handle.js';
 
 export type { RunSnapshot, RunSummary } from './run.js';
@@ -39,11 +45,23 @@ const DEFAULT_GLOBAL_MAX_CONCURRENT = 16;
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 300;
 const RING_BUFFER_SIZE = 20;
 
+export class CanonicalSwarmJournalError extends Error {
+  constructor(agentId: string, conversationId: string, outerRunId: string, cause?: unknown) {
+    super(
+      `canonical swarm journal write failed for '${agentId}/${conversationId}' run '${outerRunId}'`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = 'CanonicalSwarmJournalError';
+  }
+}
+
 export interface AttachOptions {
   agentId: string;
   agentName: string;
   conversationId: string;
-  /** For out-of-band event-log keying on the consumer-gone finalize path. */
+  /** Canonical outer run identity for dual-journal consumer-gone writes. */
+  outerRunId?: string;
+  /** Legacy v1 message identity when there is no canonical outer run. */
   messageId?: string;
   /** Cooperative abort of the orchestrator (pool entry backend.abort). */
   orchestratorAbort?: () => void;
@@ -63,7 +81,7 @@ export interface SwarmAttachment {
   readonly runIdHint: string;
   channel: AsyncChannel<AgentEvent>;
   /** Finalize under this attachment's ownership. consumerAlive=true only on normal completion. */
-  finalize(opts: { consumerAlive: boolean }): void;
+  finalize(opts: { consumerAlive: boolean }): Promise<void>;
   /** Fires on finalize / wall-clock — for in-flight tool settlement. */
   readonly closed: AbortSignal;
   readonly live: boolean;
@@ -77,13 +95,25 @@ interface LiveTurn {
   readonly closedController: AbortController;
   /** Channel handed to the attachment before its first spawn creates the run. */
   readonly preRunChannel: AsyncChannel<AgentEvent>;
+  readonly admissionToken?: unknown;
   run?: SwarmRun;
   finalized: boolean;
+  finalization?: Promise<void>;
+}
+
+/** A teardown that has left `live` but whose async cleanup is not yet settled. */
+interface FinalizingTurn {
+  readonly agentId: string;
+  readonly settlement: Promise<void>;
 }
 
 export interface SwarmCoordinatorOptions {
   workerFactory: WorkerFactory;
   eventLog?: SwarmEventLogSink;
+  admission?: {
+    capture(agentId: string, conversationId: string): unknown;
+    isCurrent(token: unknown): boolean;
+  };
   globalMaxConcurrentWorkers?: number;
   defaultCaps?: Partial<SwarmCaps>;
   hooks?: WorkerHandleOptions['hooks'];
@@ -116,6 +146,7 @@ function abortedSignal(): AbortSignal {
 export class SwarmCoordinator {
   private readonly workerFactory: WorkerFactory;
   private readonly eventLog?: SwarmEventLogSink;
+  private readonly admission?: SwarmCoordinatorOptions['admission'];
   private readonly globalMax: number;
   private readonly defaultCaps: Partial<SwarmCaps>;
   private readonly hooks?: WorkerHandleOptions['hooks'];
@@ -123,12 +154,15 @@ export class SwarmCoordinator {
 
   /** Live turns keyed by `${agentId}/${conversationId}`. */
   private readonly live = new Map<string, LiveTurn>();
+  /** Teardowns remain visible to lifecycle barriers after leaving `live`. */
+  private readonly finalizing = new Set<FinalizingTurn>();
   /** Finalized run snapshots, ring-buffered per agent (most-recent last). */
   private readonly history = new Map<string, RunSnapshot[]>();
 
   constructor(opts: SwarmCoordinatorOptions) {
     this.workerFactory = opts.workerFactory;
     this.eventLog = opts.eventLog;
+    this.admission = opts.admission;
     this.globalMax = opts.globalMaxConcurrentWorkers ?? DEFAULT_GLOBAL_MAX_CONCURRENT;
     this.defaultCaps = opts.defaultCaps ?? {};
     this.hooks = opts.hooks;
@@ -149,11 +183,15 @@ export class SwarmCoordinator {
         channel: deadChannel<AgentEvent>(),
         closed: abortedSignal(),
         live: false,
-        finalize: () => {},
+        finalize: () => Promise.resolve(),
       };
     }
 
     const caps = this.mergeCaps(opts.caps);
+    const admissionToken = this.admission?.capture(opts.agentId, opts.conversationId);
+    if (this.admission && !this.admission.isCurrent(admissionToken)) {
+      throw new Error('swarm admission retired — cannot attach');
+    }
     // Placeholder channel returned before the first spawn creates the run; once
     // the run exists the `channel` getter returns the run's channel instead.
     const preRunChannel = new AsyncChannel<AgentEvent>();
@@ -163,6 +201,7 @@ export class SwarmCoordinator {
       runIdHint: randomUUID().slice(0, 8),
       closedController: new AbortController(),
       preRunChannel,
+      admissionToken,
       finalized: false,
     };
     this.live.set(k, turn);
@@ -184,38 +223,84 @@ export class SwarmCoordinator {
     } as SwarmAttachment;
   }
 
-  private finalizeTurn(k: string, turn: LiveTurn, o: { consumerAlive: boolean }): void {
+  private finalizeTurn(k: string, turn: LiveTurn, o: { consumerAlive: boolean }): Promise<void> {
     // Only the owning (still-registered) turn can finalize. If the map entry has
     // been replaced or the turn is already finalized, this is a no-op.
     const current = this.live.get(k);
-    if (current !== turn || turn.finalized) return;
-    turn.finalized = true;
+    if (current !== turn || turn.finalized) return turn.finalization ?? Promise.resolve();
 
-    const run = turn.run;
-    if (run) {
-      const terminalEvents = run.finalize('swarm turn finalized');
-      // Out-of-band append only on the consumer-gone path (nothing else logs them).
-      const eventLog = this.eventLog;
-      const messageId = turn.opts.messageId;
-      if (!o.consumerAlive && eventLog && messageId) {
-        const { agentId, conversationId } = turn.opts;
-        for (const event of terminalEvents) {
-          // Fire-and-forget: never await settlement.
-          void Promise.resolve(
-            eventLog.append(agentId, conversationId, messageId, { type: 'event', event }),
-          ).catch(() => {});
+    // Publish one stable completion before any cancellation callback can
+    // re-enter stop()/cancelRunsFor(). The turn stays in `finalizing` after it
+    // leaves `live`, so every lifecycle barrier can still join its teardown.
+    const completion = Promise.withResolvers<void>();
+    turn.finalization = completion.promise;
+    turn.finalized = true;
+    const finalizingTurn: FinalizingTurn = {
+      agentId: turn.opts.agentId,
+      settlement: completion.promise,
+    };
+    this.finalizing.add(finalizingTurn);
+
+    const settlements: Array<Promise<unknown>> = [];
+    try {
+      const run = turn.run;
+      if (run) {
+        const runFinalization = run.finalize('swarm turn finalized');
+        settlements.push(runFinalization);
+        const terminalEvents = run.getFinalizationEvents();
+        // Out-of-band append only on the consumer-gone path (nothing else logs them).
+        const eventLog = this.eventLog;
+        const outerRunId = turn.opts.outerRunId;
+        const messageId = turn.opts.messageId;
+        if (!o.consumerAlive && eventLog && outerRunId) {
+          const { agentId, conversationId } = turn.opts;
+          for (const event of terminalEvents) {
+            settlements.push(
+              this.appendCanonicalEvent(eventLog, agentId, conversationId, outerRunId, event),
+            );
+          }
+        } else if (!o.consumerAlive && eventLog && messageId) {
+          const { agentId, conversationId } = turn.opts;
+          for (const event of terminalEvents) {
+            settlements.push(
+              this.appendEvent(
+                eventLog,
+                agentId,
+                conversationId,
+                { kind: 'legacy', messageId },
+                event,
+              ),
+            );
+          }
         }
+        // Snapshot into the ring buffer for the panel API.
+        this.pushHistory(turn.opts.agentId, run.snapshot());
+        this.onRunChanged?.(turn.opts.agentId, run.runId);
+      } else {
+        // No run was ever created; still fire the pre-run closed signal + channel.
+        if (!turn.closedController.signal.aborted) turn.closedController.abort();
+        turn.preRunChannel.close();
       }
-      // Snapshot into the ring buffer for the panel API.
-      this.pushHistory(turn.opts.agentId, run.snapshot());
-      this.onRunChanged?.(turn.opts.agentId, run.runId);
-    } else {
-      // No run was ever created; still fire the pre-run closed signal + channel.
-      if (!turn.closedController.signal.aborted) turn.closedController.abort();
-      turn.preRunChannel.close();
+    } catch (error) {
+      settlements.push(Promise.reject(error));
     }
 
-    this.live.delete(k);
+    // A callback above may already have attached a replacement at this key.
+    // Never delete a newer owner's turn.
+    if (this.live.get(k) === turn) this.live.delete(k);
+
+    const settlement = settleAll(settlements);
+    void settlement.then(
+      () => {
+        this.finalizing.delete(finalizingTurn);
+        completion.resolve();
+      },
+      (error) => {
+        this.finalizing.delete(finalizingTurn);
+        completion.reject(error);
+      },
+    );
+    return completion.promise;
   }
 
   // --- tool-facing API (resolved by agentId, conversationId) ---
@@ -230,6 +315,7 @@ export class SwarmCoordinator {
     if (!turn || turn.finalized) {
       throw new Error('swarm turn is closed — cannot spawn');
     }
+    this.assertTurnAdmissionCurrent(turn);
     // Wall-clock expiry fires the run's `closed` before the attachment's
     // finalize lands; refuse spawns into a run that is already closing so no
     // worker is registered into a dead run.
@@ -267,6 +353,10 @@ export class SwarmCoordinator {
 
     const model = this.validateModel(turn, p.model);
     const tools = this.validateTools(turn, p.tools);
+    const workerAdmissionToken = this.admission?.capture(agentId, conversationId);
+    if (this.admission && !this.admission.isCurrent(workerAdmissionToken)) {
+      throw new Error('swarm admission retired — cannot spawn');
+    }
 
     const workerId = randomUUID().slice(0, 8);
     const spec = {
@@ -287,11 +377,19 @@ export class SwarmCoordinator {
     // threaded into the WorkerSpec before the factory is invoked. The factory
     // promise is chained into a deferred backend promise inside register — it is
     // NOT awaited here, preserving synchronous registration.
-    run.register({ spec, hooks: this.hooks }, (handle) =>
-      this.workerFactory({
-        ...spec,
-        extraTools: [createAskOrchestratorTool(handle, run.closed)],
-      }),
+    run.register(
+      {
+        spec,
+        hooks: this.hooks,
+        isBackendCurrent: () =>
+          this.isTurnAdmissionCurrent(k, turn) &&
+          (!this.admission || this.admission.isCurrent(workerAdmissionToken)),
+      },
+      (handle) =>
+        this.workerFactory({
+          ...spec,
+          extraTools: [createAskOrchestratorTool(handle, run.closed)],
+        }),
     );
     // worker_spawned + agent_spawned emitted synchronously into the channel.
     run.channel.push({
@@ -455,16 +553,22 @@ export class SwarmCoordinator {
     return undefined;
   }
 
-  cancelWorker(agentId: string, runId: string, workerId: string): { ok: boolean; reason?: string } {
+  cancelWorker(
+    agentId: string,
+    runId: string,
+    workerId: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
     const run = this.findLiveRun(agentId, runId);
-    if (!run) return { ok: false, reason: 'run finalized' };
+    if (!run) return Promise.resolve({ ok: false, reason: 'run finalized' });
     const handle = run.getHandle(workerId);
-    if (!handle) return { ok: false, reason: 'worker terminal' };
+    if (!handle) return Promise.resolve({ ok: false, reason: 'worker terminal' });
     // Shared synchronous check+effect discipline (no await between).
-    if (this.isHandleTerminal(handle.status)) return { ok: false, reason: 'worker terminal' };
-    handle.cancel('cancelled by panel');
+    if (this.isHandleTerminal(handle.status)) {
+      return Promise.resolve({ ok: false, reason: 'worker terminal' });
+    }
+    const settlement = handle.cancel('cancelled by panel');
     this.onRunChanged?.(agentId, run.runId);
-    return { ok: true };
+    return settlement.then(() => ({ ok: true }));
   }
 
   sendPanelMessage(
@@ -489,20 +593,29 @@ export class SwarmCoordinator {
    * terminal events to the event log (consumer-gone path) so history
    * replays the cards as Cancelled. Returns whether a live turn existed.
    */
-  cancelTurn(agentId: string, conversationId: string): boolean {
+  cancelTurn(agentId: string, conversationId: string): Promise<boolean> {
     const k = key(agentId, conversationId);
     const turn = this.live.get(k);
-    if (!turn || turn.finalized) return false;
-    this.finalizeTurn(k, turn, { consumerAlive: false });
-    return true;
+    if (!turn || turn.finalized) return Promise.resolve(false);
+    const settlement = this.finalizeTurn(k, turn, { consumerAlive: false });
+    return settlement.then(() => true);
   }
 
-  cancelRunsFor(agentId: string): void {
-    for (const [k, turn] of this.live) {
+  cancelRunsFor(agentId: string): Promise<void> {
+    const settlements = new Set<Promise<void>>();
+    for (const finalizing of this.finalizing) {
+      if (finalizing.agentId === agentId) settlements.add(finalizing.settlement);
+    }
+    for (const [k, turn] of [...this.live]) {
       if (turn.opts.agentId === agentId) {
-        this.finalizeTurn(k, turn, { consumerAlive: false });
+        settlements.add(this.finalizeTurn(k, turn, { consumerAlive: false }));
       }
     }
+    // Include any teardown synchronously started by finalization callbacks.
+    for (const finalizing of this.finalizing) {
+      if (finalizing.agentId === agentId) settlements.add(finalizing.settlement);
+    }
+    return settleAll(settlements);
   }
 
   /**
@@ -535,10 +648,15 @@ export class SwarmCoordinator {
     return turn.run;
   }
 
-  stop(): void {
-    for (const [k, turn] of this.live) {
-      this.finalizeTurn(k, turn, { consumerAlive: false });
+  stop(): Promise<void> {
+    const settlements = new Set<Promise<void>>();
+    for (const finalizing of this.finalizing) settlements.add(finalizing.settlement);
+    for (const [k, turn] of [...this.live]) {
+      settlements.add(this.finalizeTurn(k, turn, { consumerAlive: false }));
     }
+    // Include any teardown synchronously started by finalization callbacks.
+    for (const finalizing of this.finalizing) settlements.add(finalizing.settlement);
+    return settleAll(settlements);
   }
 
   // --- internals ---
@@ -556,6 +674,63 @@ export class SwarmCoordinator {
     });
     turn.run = run;
     return run;
+  }
+
+  private isTurnAdmissionCurrent(k: string, turn: LiveTurn): boolean {
+    return (
+      this.live.get(k) === turn &&
+      !turn.finalized &&
+      !turn.run?.closed.aborted &&
+      (!this.admission || this.admission.isCurrent(turn.admissionToken))
+    );
+  }
+
+  private assertTurnAdmissionCurrent(turn: LiveTurn): void {
+    if (!this.isTurnAdmissionCurrent(key(turn.opts.agentId, turn.opts.conversationId), turn)) {
+      throw new Error('swarm admission retired — cannot spawn');
+    }
+  }
+
+  private appendEvent(
+    eventLog: SwarmEventLogSink,
+    agentId: string,
+    conversationId: string,
+    identity: SwarmJournalIdentity,
+    event: AgentEvent,
+  ): Promise<unknown> {
+    try {
+      return Promise.resolve(
+        eventLog.append(agentId, conversationId, identity, { type: 'event', event }),
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private appendCanonicalEvent(
+    eventLog: SwarmEventLogSink,
+    agentId: string,
+    conversationId: string,
+    outerRunId: string,
+    event: AgentEvent,
+  ): Promise<unknown> {
+    return this.appendEvent(
+      eventLog,
+      agentId,
+      conversationId,
+      { kind: 'canonical', outerRunId },
+      event,
+    ).then(
+      (result) => {
+        if (result === null) {
+          throw new CanonicalSwarmJournalError(agentId, conversationId, outerRunId);
+        }
+        return result;
+      },
+      (error) => {
+        throw new CanonicalSwarmJournalError(agentId, conversationId, outerRunId, error);
+      },
+    );
   }
 
   private mergeCaps(perAttach?: Partial<SwarmCaps>): SwarmCaps {
@@ -621,4 +796,16 @@ export class SwarmCoordinator {
     while (list.length > RING_BUFFER_SIZE) list.shift();
     this.history.set(agentId, list);
   }
+}
+
+async function settleAll(promises: Iterable<Promise<unknown>>): Promise<void> {
+  const results = await Promise.allSettled(promises);
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  const canonicalFailure = failures.find(
+    (error): error is CanonicalSwarmJournalError => error instanceof CanonicalSwarmJournalError,
+  );
+  if (canonicalFailure) throw canonicalFailure;
+  if (failures.length > 0) throw failures[0];
 }

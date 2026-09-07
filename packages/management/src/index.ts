@@ -57,5 +57,6 @@ export {
   normalizeForWire,
   PROJECTS_WS_TOPICS,
   type ProjectsWsDeps,
+  type ProjectsWsLifecycle,
   type ProjectsWsTopic,
 } from './projects-ws.js';

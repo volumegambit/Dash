@@ -216,15 +216,26 @@ export class TelegramAdapter implements ChannelAdapter {
     this.healthHandlers = [];
   }
 
-  async send(conversationId: string, message: OutboundMessage): Promise<void> {
+  async send(
+    conversationId: string,
+    message: OutboundMessage,
+    signal?: AbortSignal,
+  ): Promise<void> {
     // The agent's reply is about to land — Telegram's own message will
     // clear the typing indicator visually, but we still need to cancel the
     // refresh timer so it stops re-arming the action. Do this BEFORE the
     // network call so a rejected sendMessage doesn't leak the loop.
     this.stopTypingLoop(conversationId);
-    await this.bot.api.sendMessage(Number(conversationId), message.text, {
-      parse_mode: message.parseMode,
-    });
+    const options = { parse_mode: message.parseMode };
+    if (signal) {
+      // grammY's Node declarations name the abort-controller shim type even
+      // though its fetch transport accepts Node's native AbortSignal. Preserve
+      // the exact runtime signal and bridge only that declaration mismatch.
+      const grammySignal = signal as unknown as Parameters<typeof this.bot.api.sendMessage>[3];
+      await this.bot.api.sendMessage(Number(conversationId), message.text, options, grammySignal);
+    } else {
+      await this.bot.api.sendMessage(Number(conversationId), message.text, options);
+    }
   }
 
   // ── Acknowledgement helpers ─────────────────────────────────────────────

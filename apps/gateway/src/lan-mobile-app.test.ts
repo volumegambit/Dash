@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
+import type { UpgradeWebSocket } from 'hono/ws';
+import { GatewayAdmissionController } from './admission-controller.js';
+import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { mountChatWs } from './chat-ws.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { createGatewayManagementApp } from './management-api.js';
+import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { mountWsTicketRoute } from './ws-ticket-store.js';
 
 const MOBILE_TOKEN = 'mobile-test-token';
@@ -9,7 +14,10 @@ const ADMIN_TOKEN = 'admin-test-token';
 // Minimal stub deps for createGatewayManagementApp — same pattern as
 // management-api.projects.test.ts's makeStubDeps. Only the auth middleware
 // and the ws-ticket route mounted onto it are exercised here.
-function makeRealManagementApp(webOrigins: string[] = []): Hono {
+function makeRealManagementApp(
+  webOrigins: string[] = [],
+  overrides: Record<string, unknown> = {},
+): Hono {
   return createGatewayManagementApp({
     // biome-ignore lint/suspicious/noExplicitAny: stubs for unrelated subsystems
     gateway: {} as any,
@@ -32,6 +40,8 @@ function makeRealManagementApp(webOrigins: string[] = []): Hono {
     token: ADMIN_TOKEN,
     mobileToken: MOBILE_TOKEN,
     webOrigins,
+    admission: new GatewayAdmissionController(),
+    ...overrides,
     // biome-ignore lint/suspicious/noExplicitAny: stub deps cast, mirrors management-api.projects.test.ts
   } as any);
 }
@@ -63,6 +73,66 @@ function makeAuthedManagementApp(): Hono {
 const ALLOWED_ORIGIN = 'https://app.example.com';
 
 describe('createLanMobileApp', () => {
+  it('closes an authenticated LAN chat upgrade that reaches onOpen after shutdown', async () => {
+    const managementApp = new Hono();
+    const app = createLanMobileApp(managementApp);
+    const admission = new GatewayAdmissionController();
+    const hub = {
+      start: vi.fn(),
+      detach: vi.fn(),
+    } as unknown as ResumableChatHub;
+    const agents = { chat: vi.fn() } as unknown as AgentChatCoordinator;
+    type TestSocket = { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+    type Handlers = {
+      onOpen?(event: unknown, socket: TestSocket): void;
+      onMessage?(event: { data: unknown }, socket: TestSocket): void;
+    };
+    let createEvents:
+      | ((context: {
+          req: {
+            query(name: string): string | undefined;
+            header(name: string): string | undefined;
+          };
+        }) => Handlers)
+      | undefined;
+    const upgradeWebSocket = ((factory: typeof createEvents) => {
+      createEvents = factory;
+      return () => new Response(null, { status: 200 });
+    }) as unknown as UpgradeWebSocket;
+    const lifecycle = mountChatWs(app, {
+      agents,
+      resumableChatHub: hub,
+      upgradeWebSocket,
+      admission,
+    });
+    if (!createEvents) throw new Error('LAN chat WebSocket handler was not mounted');
+    const handlers = createEvents({
+      req: { query: () => undefined, header: () => undefined },
+    });
+    const socket: TestSocket = { send: vi.fn(), close: vi.fn() };
+
+    await lifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000);
+    handlers.onOpen?.({}, socket);
+    handlers.onMessage?.(
+      {
+        data: JSON.stringify({
+          type: 'message',
+          id: 'turn-late-lan',
+          agentId: 'agent-01',
+          channelId: 'mobile-ios',
+          conversationId: 'conversation-01',
+          text: 'Too late',
+          resumable: true,
+        }),
+      },
+      socket,
+    );
+
+    expect(socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(hub.start).not.toHaveBeenCalled();
+    expect(agents.chat).not.toHaveBeenCalled();
+  });
+
   it('adds no CORS of its own — the management app owns the single policy', async () => {
     // CORS lives on `managementApp` so the LAN-forward and relay-replay paths
     // share one policy; a second mount here would only double `Vary: Origin`.
@@ -372,6 +442,42 @@ describe('management app CORS on both exact mobile versions', () => {
         headers: { origin: ALLOWED_ORIGIN, 'access-control-request-method': 'GET' },
       });
       expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    },
+  );
+});
+
+describe('LAN-forwarded lifecycle admission', () => {
+  it.each(['/mobile/v1/agents', '/mobile/v2/agents'])(
+    'inherits the process fence before mutating %s',
+    async (path) => {
+      const admission = new GatewayAdmissionController();
+      const register = vi.fn();
+      const managementApp = makeRealManagementApp([], {
+        admission,
+        agentRegistry: { list: () => [], register },
+      });
+      const app = createLanMobileApp(managementApp);
+      admission.beginProcessShutdown().finish();
+
+      const response = await app.request(path, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${MOBILE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'too-late',
+          model: 'test/model',
+          systemPrompt: 'must not persist',
+        }),
+      });
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: 'gateway_offline',
+        retryable: true,
+      });
+      expect(register).not.toHaveBeenCalled();
     },
   );
 });

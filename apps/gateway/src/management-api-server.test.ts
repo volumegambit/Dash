@@ -3,11 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { type Server, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEvent } from '@dash/agent';
+import type { AgentClient, AgentEvent } from '@dash/agent';
 import { MemoryOpError, listBooks, listPending, stagePending } from '@dash/agent';
+import type { ChannelAdapter, InboundMessage } from '@dash/channels';
 import { serve } from '@hono/node-server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { GatewayAdmissionController } from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import type { RegisteredAgent } from './agent-registry.js';
@@ -16,16 +18,18 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
-import type { DynamicGateway } from './gateway.js';
+import { type DynamicGateway, createDynamicGateway } from './gateway.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
+import { createGatewayShutdownCoordinator } from './shutdown.js';
 
 // --- Mock factories ---
 
 let agentIdCounter = 0;
 
 function makeAgentRegistry(): AgentRegistry {
-  const agents = new Map<string, RegisteredAgent>();
+  const agents = new Map<string, RegisteredAgent & { deletionIntent?: boolean }>();
+  const save = vi.fn().mockResolvedValue(undefined);
   return {
     register: vi.fn((config) => {
       const id = `a${++agentIdCounter}`;
@@ -49,6 +53,16 @@ function makeAgentRegistry(): AgentRegistry {
       return entry;
     }),
     remove: vi.fn((id: string) => agents.delete(id)),
+    removeAndSave: vi.fn(async (id: string) => {
+      agents.delete(id);
+    }),
+    markDeletionIntent: vi.fn((id: string) => {
+      const entry = agents.get(id);
+      if (!entry) throw new Error(`Agent '${id}' not found`);
+      entry.status = 'disabled';
+      entry.deletionIntent = true;
+    }),
+    listDeletionMarked: vi.fn(() => [...agents.values()].filter((entry) => entry.deletionIntent)),
     disable: vi.fn((id: string) => {
       const entry = agents.get(id);
       if (!entry) throw new Error(`Agent '${id}' not found`);
@@ -59,9 +73,16 @@ function makeAgentRegistry(): AgentRegistry {
       if (!entry) throw new Error(`Agent '${id}' not found`);
       entry.status = 'registered';
     }),
+    enableAndSave: vi.fn(async (id: string) => {
+      const entry = agents.get(id);
+      if (!entry) throw new Error(`Agent '${id}' not found`);
+      if (entry.deletionIntent) throw new Error(`Agent '${id}' is pending deletion`);
+      await save();
+      entry.status = 'registered';
+    }),
     setActive: vi.fn(),
     has: vi.fn((id: string) => agents.has(id)),
-    save: vi.fn().mockResolvedValue(undefined),
+    save,
     load: vi.fn().mockResolvedValue(undefined),
   } as unknown as AgentRegistry;
 }
@@ -141,6 +162,25 @@ function makeGateway(): DynamicGateway {
   };
 }
 
+function makeRoutableAdapter(name: string): ChannelAdapter & {
+  send: ReturnType<typeof vi.fn>;
+  trigger(message: InboundMessage): Promise<void>;
+} {
+  let handler: ((message: InboundMessage) => Promise<void>) | undefined;
+  return {
+    name,
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    send: vi.fn().mockResolvedValue(undefined),
+    onMessage(next) {
+      handler = next;
+    },
+    async trigger(message) {
+      await handler?.(message);
+    },
+  };
+}
+
 function makeAgents(): AgentChatCoordinator {
   return {
     chat: vi.fn(),
@@ -169,6 +209,7 @@ function makeAgents(): AgentChatCoordinator {
     saveMemory: vi.fn().mockResolvedValue({ record: { name: 'a' }, action: 'created' }),
     removeMemory: vi.fn().mockResolvedValue(true),
     stats: vi.fn().mockReturnValue({ size: 0, maxSize: 0, pinned: 0, agents: {} }),
+    interruptAll: vi.fn(),
     stop: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -200,6 +241,7 @@ function makeConversationService(): ConversationService {
     acceptTurn: vi.fn(),
     appendTurnEvent: vi.fn(() => null),
     finishTurn: vi.fn(),
+    pauseFollowUpsForAgentDisable: vi.fn(() => []),
     trySetAutoTitle: vi.fn(() => null),
     archiveAgentConversations: vi.fn(() => []),
     recoverInterruptedTurns: vi.fn(() => ({ conversationsInterrupted: 0, terminalsAppended: 0 })),
@@ -210,6 +252,8 @@ function makeConversationService(): ConversationService {
 function makeResumableChatHub() {
   return {
     cancelAgent: vi.fn().mockResolvedValue(undefined),
+    disableAgent: vi.fn().mockResolvedValue(undefined),
+    deleteAgent: vi.fn().mockResolvedValue(undefined),
     allowAgent: vi.fn(),
   };
 }
@@ -220,6 +264,28 @@ function deferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function heldJsonRequest(path: string, method: 'POST' | 'PATCH', headers: Record<string, string>) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(nextController) {
+      controller = nextController;
+    },
+  });
+  const request = new Request(`http://localhost${path}`, {
+    method,
+    headers,
+    body,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' });
+  return {
+    request,
+    release(value: unknown) {
+      controller.enqueue(new TextEncoder().encode(JSON.stringify(value)));
+      controller.close();
+    },
+  };
 }
 
 async function rawHttpRequest(
@@ -257,6 +323,7 @@ function createApp(overrides: Record<string, unknown> = {}) {
     conversationService: makeConversationService(),
     resumableChatHub: makeResumableChatHub(),
     eventBus: new EventBus(),
+    admission: new GatewayAdmissionController(),
     identity: { gatewayId: 'gateway-test-id', publicKey: 'PUBKEY_B64' },
     startedAt: '2026-04-03T00:00:00Z',
     token: 'test-token',
@@ -1058,10 +1125,78 @@ describe('createGatewayManagementApp', () => {
     });
   });
 
+  describe('agent lifecycle channel delivery cancellation', () => {
+    it.each([
+      { label: 'disable', method: 'POST', suffix: '/disable' },
+      { label: 'delete', method: 'DELETE', suffix: '' },
+    ])('aborts a held channel reply before $label drains ingress', async ({ method, suffix }) => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const admission = new GatewayAdmissionController();
+      const gateway = createDynamicGateway({ admission });
+      const agentRegistry = makeAgentRegistry();
+      const agent = agentRegistry.register({
+        name: 'Held Reply Agent',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      gateway.registerAgent(agent.id, {
+        chat: vi.fn(),
+        listSkills: vi.fn(),
+      } as unknown as AgentClient);
+      const adapter = makeRoutableAdapter('held-reply');
+      const sendStarted = Promise.withResolvers<void>();
+      const releaseSend = Promise.withResolvers<void>();
+      let sendSignal: AbortSignal | undefined;
+      adapter.send.mockImplementationOnce(
+        async (_conversationId: string, _message: unknown, signal?: AbortSignal) => {
+          sendSignal = signal;
+          sendStarted.resolve();
+          await releaseSend.promise;
+        },
+      );
+      await gateway.registerChannel('held-reply', adapter, {
+        globalDenyList: [],
+        routing: [
+          {
+            condition: { type: 'default' },
+            agentId: agent.id,
+            allowList: [],
+            denyList: [],
+          },
+        ],
+      });
+      const { app } = createApp({ admission, gateway, agentRegistry });
+      const inbound = adapter.trigger({
+        channelId: 'held-reply',
+        conversationId: 'conversation-1',
+        senderId: 'user-1',
+        senderName: 'User',
+        text: '/help',
+        timestamp: new Date('2026-09-07T00:00:00.000Z'),
+      });
+      await sendStarted.promise;
+      const lifecycleRequest = app.request(`/agents/${agent.id}${suffix}`, {
+        method,
+        headers: AUTH,
+      });
+
+      try {
+        await vi.waitFor(() => expect(sendSignal?.aborted).toBe(true));
+        await expect(inbound).resolves.toBeUndefined();
+        expect((await lifecycleRequest).status).toBe(200);
+      } finally {
+        releaseSend.resolve();
+        await Promise.allSettled([inbound, lifecycleRequest, gateway.stop()]);
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
   describe('DELETE /agents/:id', () => {
     it('removes agent and cleans up channels, pool, and registry', async () => {
+      const swarmCoordinator = { cancelRunsFor: vi.fn().mockResolvedValue(undefined) };
       const { app, agentRegistry, gateway, channelRegistry, agents, resumableChatHub, eventBus } =
-        createApp();
+        createApp({ swarmCoordinator });
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1074,19 +1209,20 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(entry.id);
+      expect(resumableChatHub.deleteAgent).toHaveBeenCalledWith(entry.id, expect.any(Object));
       expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id);
       expect(channelRegistry.remove).toHaveBeenCalledWith('ch1');
       expect(channelRegistry.removeRoutesForAgent).toHaveBeenCalledWith(entry.id);
       // Warm pool entries must be evicted so in-flight streams are aborted
       // and backend.stop() runs on any cached DashAgent / AgentBackend.
       expect(agents.evict).toHaveBeenCalledWith(entry.id);
-      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(resumableChatHub.deleteAgent.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
       );
-      expect(agentRegistry.remove).toHaveBeenCalledWith(entry.id);
-      expect(agentRegistry.save).toHaveBeenCalled();
+      expect(agentRegistry.markDeletionIntent).toHaveBeenCalledWith(entry.id);
+      expect(agentRegistry.removeAndSave).toHaveBeenCalledWith(entry.id);
       expect(channelRegistry.save).toHaveBeenCalled();
+      expect(swarmCoordinator.cancelRunsFor).toHaveBeenCalledWith(entry.id);
       expect(emit).toHaveBeenCalledWith({
         type: 'agent:config-changed',
         agent: 'x',
@@ -1096,6 +1232,30 @@ describe('createGatewayManagementApp', () => {
         emit.mock.invocationCallOrder[0] as number,
       );
       expect(vi.mocked(channelRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+        emit.mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(agentRegistry.markDeletionIntent).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agentRegistry.save).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+        resumableChatHub.deleteAgent.mock.invocationCallOrder[0] as number,
+      );
+      expect(resumableChatHub.deleteAgent.mock.invocationCallOrder[0]).toBeLessThan(
+        swarmCoordinator.cancelRunsFor.mock.invocationCallOrder[0] as number,
+      );
+      expect(swarmCoordinator.cancelRunsFor.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(agents.evict).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(gateway.deregisterAgent).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(gateway.deregisterAgent).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(channelRegistry.save).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(channelRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agentRegistry.removeAndSave).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(agentRegistry.removeAndSave).mock.invocationCallOrder[0]).toBeLessThan(
         emit.mock.invocationCallOrder[0] as number,
       );
     });
@@ -1117,6 +1277,7 @@ describe('createGatewayManagementApp', () => {
       let enableRequest: Promise<Response> | undefined;
       let resumableChatHub: ReturnType<typeof createResumableChatHub> | undefined;
       try {
+        const admission = new GatewayAdmissionController();
         const agents = makeAgents();
         vi.mocked(agents.chat).mockImplementation(async function* (): AsyncGenerator<AgentEvent> {
           try {
@@ -1140,6 +1301,7 @@ describe('createGatewayManagementApp', () => {
           agents,
           autoTitle,
           isAgentEnabled: () => true,
+          admission,
         });
         const gateway = makeGateway();
         vi.mocked(gateway.deregisterAgent).mockImplementation(() => deregistered.promise);
@@ -1148,6 +1310,7 @@ describe('createGatewayManagementApp', () => {
           conversationService,
           resumableChatHub,
           gateway,
+          admission,
         });
         const agent = (agentRegistry.register as ReturnType<typeof vi.fn>)({
           name: 'Quiescing Helper',
@@ -1244,7 +1407,7 @@ describe('createGatewayManagementApp', () => {
         deregistered.resolve([]);
         expect((await deleteRequest).status).toBe(200);
         expect((await enableRequest).status).toBe(404);
-        expect(agentRegistry.enable).not.toHaveBeenCalled();
+        expect(agentRegistry.enableAndSave).not.toHaveBeenCalled();
         for (const conversation of [active, duringCancellation, duringCleanup]) {
           expect(conversationService.get(conversation.id)).toMatchObject({ status: 'archived' });
         }
@@ -1263,11 +1426,14 @@ describe('createGatewayManagementApp', () => {
     it('serializes overlapping disable, delete, and enable operations for one agent', async () => {
       const firstCancellation = deferred<void>();
       const resumableChatHub = {
-        cancelAgent: vi.fn(async () => {
-          if (resumableChatHub.cancelAgent.mock.calls.length === 1) {
+        // Explicit user Stop only; lifecycle routes must not call this method.
+        cancelAgent: vi.fn().mockResolvedValue(undefined),
+        disableAgent: vi.fn(async () => {
+          if (resumableChatHub.disableAgent.mock.calls.length === 1) {
             await firstCancellation.promise;
           }
         }),
+        deleteAgent: vi.fn().mockResolvedValue(undefined),
         allowAgent: vi.fn(),
       };
       const { app, agentRegistry, gateway } = createApp({ resumableChatHub });
@@ -1281,7 +1447,7 @@ describe('createGatewayManagementApp', () => {
         method: 'POST',
         headers: AUTH,
       });
-      await vi.waitFor(() => expect(resumableChatHub.cancelAgent).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(resumableChatHub.disableAgent).toHaveBeenCalledOnce());
       const deleting = app.request(`/agents/${entry.id}`, { method: 'DELETE', headers: AUTH });
       const enabling = app.request(`/agents/${entry.id}/enable`, {
         method: 'POST',
@@ -1290,9 +1456,10 @@ describe('createGatewayManagementApp', () => {
 
       try {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(resumableChatHub.cancelAgent).toHaveBeenCalledOnce();
+        expect(resumableChatHub.disableAgent).toHaveBeenCalledOnce();
+        expect(resumableChatHub.deleteAgent).not.toHaveBeenCalled();
         expect(gateway.deregisterAgent).not.toHaveBeenCalled();
-        expect(agentRegistry.enable).not.toHaveBeenCalled();
+        expect(agentRegistry.enableAndSave).not.toHaveBeenCalled();
         expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
       } finally {
         firstCancellation.resolve(undefined);
@@ -1306,14 +1473,19 @@ describe('createGatewayManagementApp', () => {
       expect(disableResponse.status).toBe(200);
       expect(deleteResponse.status).toBe(200);
       expect(enableResponse.status).toBe(404);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
+      expect(resumableChatHub.disableAgent).toHaveBeenCalledOnce();
+      expect(resumableChatHub.deleteAgent).toHaveBeenCalledOnce();
+      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
       expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /agents/:id/disable', () => {
     it('disables agent', async () => {
-      const { app, agentRegistry, agents, eventBus } = createApp();
+      const swarmCoordinator = { cancelRunsFor: vi.fn().mockResolvedValue(undefined) };
+      const { app, agentRegistry, agents, resumableChatHub, eventBus } = createApp({
+        swarmCoordinator,
+      });
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1327,6 +1499,9 @@ describe('createGatewayManagementApp', () => {
       expect(res.status).toBe(200);
       expect(agentRegistry.disable).toHaveBeenCalledWith(entry.id);
       expect(agentRegistry.save).toHaveBeenCalled();
+      expect(resumableChatHub.disableAgent).toHaveBeenCalledWith(entry.id, expect.any(Object));
+      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+      expect(swarmCoordinator.cancelRunsFor).toHaveBeenCalledWith(entry.id);
       expect(emit).toHaveBeenCalledWith({
         type: 'agent:config-changed',
         agent: 'x',
@@ -1338,20 +1513,32 @@ describe('createGatewayManagementApp', () => {
       expect(vi.mocked(agents.evict).mock.invocationCallOrder[0]).toBeLessThan(
         emit.mock.invocationCallOrder[0] as number,
       );
+      expect(vi.mocked(agentRegistry.disable).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agentRegistry.save).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+        resumableChatHub.disableAgent.mock.invocationCallOrder[0] as number,
+      );
+      expect(resumableChatHub.disableAgent.mock.invocationCallOrder[0]).toBeLessThan(
+        swarmCoordinator.cancelRunsFor.mock.invocationCallOrder[0] as number,
+      );
+      expect(swarmCoordinator.cancelRunsFor.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
+      );
     });
 
     it('returns 404 for unknown ID', async () => {
       const { app, agents, resumableChatHub } = createApp();
       const res = await app.request('/agents/nope/disable', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(404);
-      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+      expect(resumableChatHub.disableAgent).not.toHaveBeenCalled();
       expect(agents.evict).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /agents/:id/enable', () => {
     it('enables agent', async () => {
-      const { app, agentRegistry, resumableChatHub, eventBus } = createApp();
+      const { app, agentRegistry, gateway, resumableChatHub, eventBus } = createApp();
       const emit = vi.spyOn(eventBus, 'emit');
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
         name: 'x',
@@ -1365,9 +1552,13 @@ describe('createGatewayManagementApp', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(agentRegistry.enable).toHaveBeenCalledWith(entry.id);
+      expect(agentRegistry.enableAndSave).toHaveBeenCalledWith(entry.id);
+      expect(gateway.registerAgent).toHaveBeenCalledWith(entry.id, expect.any(Object));
       expect(resumableChatHub.allowAgent).toHaveBeenCalledWith(entry.id);
-      expect(vi.mocked(agentRegistry.save).mock.invocationCallOrder[0]).toBeLessThan(
+      expect(vi.mocked(agentRegistry.enableAndSave).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(gateway.registerAgent).mock.invocationCallOrder[0] as number,
+      );
+      expect(vi.mocked(gateway.registerAgent).mock.invocationCallOrder[0]).toBeLessThan(
         resumableChatHub.allowAgent.mock.invocationCallOrder[0] as number,
       );
       expect(emit).toHaveBeenCalledWith({
@@ -1377,6 +1568,125 @@ describe('createGatewayManagementApp', () => {
       });
       expect(resumableChatHub.allowAgent.mock.invocationCallOrder[0]).toBeLessThan(
         emit.mock.invocationCallOrder[0] as number,
+      );
+    });
+
+    it('restores a disabled-at-boot channel bridge only after the enabled registry is durable', async () => {
+      const admission = new GatewayAdmissionController();
+      const gateway = createDynamicGateway({ admission });
+      const registerBridge = vi.spyOn(gateway, 'registerAgent');
+      const agentRegistry = makeAgentRegistry();
+      const agents = makeAgents();
+      vi.mocked(agents.chat).mockImplementation(async function* () {
+        yield { type: 'response', content: 'Bridge restored' };
+      });
+      const entry = agentRegistry.register({
+        name: 'Restored Helper',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      agentRegistry.disable(entry.id);
+      admission.closeAgent(entry.id);
+      const adapter = makeRoutableAdapter('restored-channel');
+      await gateway.registerChannel('restored-channel', adapter, {
+        globalDenyList: [],
+        routing: [
+          { condition: { type: 'default' }, agentId: entry.id, allowList: [], denyList: [] },
+        ],
+      });
+      const saved = deferred<void>();
+      vi.mocked(agentRegistry.save).mockReturnValueOnce(saved.promise);
+      const resumableChatHub = makeResumableChatHub();
+      const allowAdmission = vi.spyOn(admission, 'allowAgent');
+      const { app } = createApp({
+        admission,
+        agentRegistry,
+        agents,
+        gateway,
+        resumableChatHub,
+      });
+
+      try {
+        const enabling = app.request(`/agents/${entry.id}/enable`, {
+          method: 'POST',
+          headers: AUTH,
+        });
+        await vi.waitFor(() => expect(agentRegistry.save).toHaveBeenCalledOnce());
+
+        expect(gateway.agentCount()).toBe(0);
+        expect(registerBridge).not.toHaveBeenCalled();
+        expect(allowAdmission).not.toHaveBeenCalled();
+        saved.resolve();
+        const response = await enabling;
+
+        expect(response.status).toBe(200);
+        expect(gateway.agentCount()).toBe(1);
+        expect(registerBridge).toHaveBeenCalledWith(entry.id, expect.any(Object));
+        expect(registerBridge.mock.invocationCallOrder[0]).toBeLessThan(
+          allowAdmission.mock.invocationCallOrder[0] as number,
+        );
+        await adapter.trigger({
+          channelId: 'restored-channel',
+          conversationId: 'conversation-1',
+          senderId: 'user-1',
+          senderName: 'User',
+          text: 'Continue',
+          timestamp: new Date('2026-09-07T00:00:00.000Z'),
+        });
+        expect(agents.chat).toHaveBeenCalledWith({
+          agentId: entry.id,
+          channelId: 'restored-channel',
+          conversationId: 'restored-channel:conversation-1',
+          text: 'Continue',
+          signal: expect.any(AbortSignal),
+        });
+        expect(adapter.send).toHaveBeenCalledWith(
+          'conversation-1',
+          { text: 'Bridge restored' },
+          expect.any(AbortSignal),
+        );
+      } finally {
+        saved.resolve();
+        await gateway.stop();
+      }
+    });
+
+    it('does not install a channel bridge or reopen admission when the enable save fails', async () => {
+      const admission = new GatewayAdmissionController();
+      const gateway = makeGateway();
+      const resumableChatHub = makeResumableChatHub();
+      const { app, agentRegistry } = createApp({ admission, gateway, resumableChatHub });
+      const entry = agentRegistry.register({
+        name: 'Still Disabled',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      agentRegistry.disable(entry.id);
+      admission.closeAgent(entry.id);
+      vi.mocked(agentRegistry.save).mockRejectedValueOnce(new Error('disk unavailable'));
+
+      const response = await app.request(`/agents/${entry.id}/enable`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+
+      expect(response.status).toBe(500);
+      expect(gateway.registerAgent).not.toHaveBeenCalled();
+      expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
+      expect(admission.isOpen(entry.id)).toBe(false);
+      expect(agentRegistry.get(entry.id)).toMatchObject({ status: 'disabled' });
+
+      const retry = await app.request(`/agents/${entry.id}/enable`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+
+      expect(retry.status).toBe(200);
+      expect(agentRegistry.get(entry.id)).toMatchObject({ status: 'registered' });
+      expect(gateway.registerAgent).toHaveBeenCalledOnce();
+      expect(resumableChatHub.allowAgent).toHaveBeenCalledOnce();
+      expect(vi.mocked(gateway.registerAgent).mock.invocationCallOrder[0]).toBeLessThan(
+        resumableChatHub.allowAgent.mock.invocationCallOrder[0] as number,
       );
     });
 
@@ -1477,9 +1787,8 @@ describe('createGatewayManagementApp', () => {
         model: 'test/model',
         systemPrompt: '',
       });
-      (
-        agentRegistry[action as 'enable' | 'disable'] as ReturnType<typeof vi.fn>
-      ).mockImplementation(() => {
+      const operation = action === 'enable' ? agentRegistry.enableAndSave : agentRegistry.disable;
+      (operation as ReturnType<typeof vi.fn>).mockImplementation(() => {
         throw new Error('injected action failure');
       });
 
@@ -1497,78 +1806,108 @@ describe('createGatewayManagementApp', () => {
       expect(emit).not.toHaveBeenCalled();
     });
 
-    it('keeps a failed delete fenced until explicit enable recovery or a safe retry', async () => {
-      let fenced = false;
-      const resumableChatHub = {
-        cancelAgent: vi.fn(async () => {
-          fenced = true;
-        }),
-        allowAgent: vi.fn(() => {
-          fenced = false;
-        }),
-      };
-      const eventBus = new EventBus();
-      const emit = vi.spyOn(eventBus, 'emit');
-      const { app, agentRegistry, gateway } = createApp({ resumableChatHub, eventBus });
-      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
-        name: 'x',
-        model: 'test/model',
-        systemPrompt: '',
-      });
-      const failDelete = deferred<void>();
-      (gateway.deregisterAgent as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
-        await failDelete.promise;
-        throw new Error('injected delete failure');
-      });
-
-      const deleting = app.request(`/agents/${entry.id}`, {
-        method: 'DELETE',
-        headers: AUTH,
-      });
-      await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
-      let recoverySettled = false;
-      const recovering = app
-        .request(`/agents/${entry.id}/enable`, { method: 'POST', headers: AUTH })
-        .then((response) => {
-          recoverySettled = true;
-          return response;
+    it.each([
+      'initial registry save',
+      'hub archive',
+      'swarm cancellation',
+      'backend eviction',
+      'gateway deregistration',
+      'channel registry save',
+      'final registry removal',
+    ] as const)(
+      'keeps deletion marked and privately projected after a %s failure, then retries safely',
+      async (phase) => {
+        const admission = new GatewayAdmissionController();
+        const swarmCoordinator = { cancelRunsFor: vi.fn().mockResolvedValue(undefined) };
+        const { app, agentRegistry, resumableChatHub, agents, gateway, channelRegistry } =
+          createApp({ admission, swarmCoordinator });
+        const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+          name: 'x',
+          model: 'test/model',
+          systemPrompt: '',
         });
-      try {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(recoverySettled).toBe(false);
-        expect(fenced).toBe(true);
+        vi.mocked(gateway.deregisterAgent).mockResolvedValue(['channel-x']);
+        const failure = new Error(`injected ${phase} failure`);
+        switch (phase) {
+          case 'initial registry save':
+            vi.mocked(agentRegistry.save).mockRejectedValueOnce(failure);
+            break;
+          case 'hub archive':
+            resumableChatHub.deleteAgent.mockRejectedValueOnce(failure);
+            break;
+          case 'swarm cancellation':
+            swarmCoordinator.cancelRunsFor.mockImplementationOnce(() => {
+              throw failure;
+            });
+            break;
+          case 'backend eviction':
+            vi.mocked(agents.evict).mockRejectedValueOnce(failure);
+            break;
+          case 'gateway deregistration':
+            vi.mocked(gateway.deregisterAgent).mockRejectedValueOnce(failure);
+            break;
+          case 'channel registry save':
+            vi.mocked(channelRegistry.save).mockRejectedValueOnce(failure);
+            break;
+          case 'final registry removal':
+            vi.mocked(agentRegistry.removeAndSave).mockRejectedValueOnce(failure);
+            break;
+        }
+
+        const failedDelete = await app.request(`/agents/${entry.id}`, {
+          method: 'DELETE',
+          headers: AUTH,
+        });
+
+        expect(failedDelete.status).toBe(500);
+        expect(await failedDelete.json()).toEqual({
+          code: 'gateway_offline',
+          error: 'Internal gateway error',
+          retryable: true,
+        });
+        expect(agentRegistry.get(entry.id)).toMatchObject({
+          status: 'disabled',
+          deletionIntent: true,
+        });
+        expect(admission.isOpen(entry.id)).toBe(false);
+        expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+        if (phase === 'hub archive') {
+          expect(swarmCoordinator.cancelRunsFor).not.toHaveBeenCalled();
+          expect(agents.evict).not.toHaveBeenCalled();
+          expect(gateway.deregisterAgent).not.toHaveBeenCalled();
+          expect(channelRegistry.save).not.toHaveBeenCalled();
+          expect(agentRegistry.removeAndSave).not.toHaveBeenCalled();
+        }
+
+        for (const path of [`/agents/${entry.id}`, '/agents', '/info']) {
+          const response = await app.request(path, { headers: AUTH });
+          expect(response.status, path).toBe(200);
+          expect(JSON.stringify(await response.json()), path).not.toContain('deletionIntent');
+        }
+
+        const enable = await app.request(`/agents/${entry.id}/enable`, {
+          method: 'POST',
+          headers: AUTH,
+        });
+        expect(enable.status).toBe(409);
+        expect(await enable.json()).toEqual({
+          code: 'validation_failed',
+          error: 'Agent is pending deletion',
+          retryable: false,
+        });
+        expect(gateway.registerAgent).not.toHaveBeenCalled();
         expect(resumableChatHub.allowAgent).not.toHaveBeenCalled();
-        expect(emit).not.toHaveBeenCalled();
-      } finally {
-        failDelete.resolve(undefined);
-      }
 
-      const response = await deleting;
-      expect(response.status).toBe(500);
-      expect(await response.json()).toEqual({
-        code: 'gateway_offline',
-        error: 'Internal gateway error',
-        retryable: true,
-      });
-      expect(emit).not.toHaveBeenCalledWith({
-        type: 'agent:config-changed',
-        agent: 'x',
-        fields: ['removed'],
-      });
-
-      const recovery = await recovering;
-      expect(recovery.status).toBe(200);
-      expect(resumableChatHub.allowAgent).toHaveBeenCalledOnce();
-      expect(fenced).toBe(false);
-
-      const retry = await app.request(`/agents/${entry.id}`, {
-        method: 'DELETE',
-        headers: AUTH,
-      });
-      expect(retry.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledTimes(2);
-      expect(fenced).toBe(true);
-    });
+        const retry = await app.request(`/agents/${entry.id}`, {
+          method: 'DELETE',
+          headers: AUTH,
+        });
+        expect(retry.status).toBe(200);
+        expect(agentRegistry.get(entry.id)).toBeUndefined();
+        expect(agentRegistry.removeAndSave).toHaveBeenCalled();
+        expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+      },
+    );
   });
 
   // Channel routes
@@ -1756,6 +2095,64 @@ describe('createGatewayManagementApp', () => {
         body,
       });
       expect(second.status).toBe(409);
+    });
+
+    it('finishes an admitted channel registration before routed-agent deletion cleans it up', async () => {
+      const admission = new GatewayAdmissionController();
+      const credentialStore = makeCredentialStore();
+      const gateway = makeGateway();
+      const tokenRead = deferred<string | null>();
+      const deregistered = deferred<string[]>();
+      vi.mocked(credentialStore.get).mockReturnValueOnce(tokenRead.promise);
+      vi.mocked(gateway.deregisterAgent).mockReturnValueOnce(deregistered.promise);
+      const { app, agentRegistry, channelRegistry } = createApp({
+        admission,
+        credentialStore,
+        gateway,
+      });
+      const entry = agentRegistry.register({
+        name: 'Routed Agent',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+
+      const creating = app.request('/channels', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'held-channel',
+          adapter: 'telegram',
+          routing: [
+            { condition: { type: 'default' }, agentId: entry.id, allowList: [], denyList: [] },
+          ],
+        }),
+      });
+      await vi.waitFor(() =>
+        expect(credentialStore.get).toHaveBeenCalledWith('channel:held-channel:token'),
+      );
+
+      const deleting = app.request(`/agents/${entry.id}`, { method: 'DELETE', headers: AUTH });
+      await vi.waitFor(() =>
+        expect(agentRegistry.markDeletionIntent).toHaveBeenCalledWith(entry.id),
+      );
+      await Promise.resolve();
+      const deletionOvertookCredentialRead =
+        vi.mocked(gateway.deregisterAgent).mock.calls.length > 0;
+
+      tokenRead.resolve('telegram-token');
+      const createResponse = await creating;
+      await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
+      deregistered.resolve(['held-channel']);
+      expect((await deleting).status).toBe(200);
+
+      expect(deletionOvertookCredentialRead).toBe(false);
+      expect(createResponse.status).toBe(201);
+      expect(gateway.registerChannel).toHaveBeenCalledOnce();
+      expect(gateway.registerAgent).not.toHaveBeenCalled();
+      expect(vi.mocked(gateway.registerChannel).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(gateway.deregisterAgent).mock.invocationCallOrder[0] as number,
+      );
+      expect(channelRegistry.get('held-channel')).toBeUndefined();
     });
   });
 
@@ -2049,6 +2446,64 @@ describe('createGatewayManagementApp', () => {
       expect(gateway.stopChannel).not.toHaveBeenCalled();
       expect(gateway.registerChannel).not.toHaveBeenCalled();
     });
+
+    it('finishes an admitted token rotation before routed-agent deletion cleans it up', async () => {
+      const admission = new GatewayAdmissionController();
+      const credentialStore = makeCredentialStore();
+      const gateway = makeGateway();
+      const tokenRead = deferred<string | null>();
+      const deregistered = deferred<string[]>();
+      vi.mocked(credentialStore.get).mockReturnValueOnce(tokenRead.promise);
+      vi.mocked(gateway.deregisterAgent).mockReturnValueOnce(deregistered.promise);
+      const { app, agentRegistry, channelRegistry } = createApp({
+        admission,
+        credentialStore,
+        gateway,
+      });
+      const entry = agentRegistry.register({
+        name: 'Routed Agent',
+        model: 'test/model',
+        systemPrompt: '',
+      });
+      channelRegistry.register({
+        name: 'tg1',
+        adapter: 'telegram',
+        globalDenyList: [],
+        allowedUsers: [],
+        routing: [
+          { condition: { type: 'default' }, agentId: entry.id, allowList: [], denyList: [] },
+        ],
+      });
+
+      const rotating = app.request('/credentials', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ key: 'channel:tg1:token', value: 'new-token' }),
+      });
+      await vi.waitFor(() => expect(credentialStore.get).toHaveBeenCalledWith('channel:tg1:token'));
+
+      const deleting = app.request(`/agents/${entry.id}`, { method: 'DELETE', headers: AUTH });
+      await vi.waitFor(() =>
+        expect(agentRegistry.markDeletionIntent).toHaveBeenCalledWith(entry.id),
+      );
+      await Promise.resolve();
+      const deletionOvertookTokenRead = vi.mocked(gateway.deregisterAgent).mock.calls.length > 0;
+
+      tokenRead.resolve('new-token');
+      expect((await rotating).status).toBe(201);
+      await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
+      deregistered.resolve(['tg1']);
+      expect((await deleting).status).toBe(200);
+
+      expect(deletionOvertookTokenRead).toBe(false);
+      expect(gateway.stopChannel).toHaveBeenCalledWith('tg1');
+      expect(gateway.registerChannel).toHaveBeenCalledOnce();
+      expect(gateway.registerAgent).not.toHaveBeenCalled();
+      expect(vi.mocked(gateway.registerChannel).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(gateway.deregisterAgent).mock.invocationCallOrder[0] as number,
+      );
+      expect(channelRegistry.get('tg1')).toBeUndefined();
+    });
   });
 
   describe('GET /credentials', () => {
@@ -2099,6 +2554,175 @@ describe('createGatewayManagementApp', () => {
       });
     });
   });
+});
+
+describe('agent-scoped conversation mutation admission', () => {
+  const surfaces = [
+    { label: 'direct', prefix: '', headers: JSON_HEADERS, version: 1 as const },
+    {
+      label: 'mobile v1',
+      prefix: '/mobile/v1',
+      headers: MOBILE_JSON_HEADERS,
+      version: 1 as const,
+    },
+    {
+      label: 'mobile v2',
+      prefix: '/mobile/v2',
+      headers: MOBILE_JSON_HEADERS,
+      version: 2 as const,
+    },
+  ];
+
+  it.each(surfaces)(
+    'rejects a held $label conversation create when agent deletion wins before body ownership resolves',
+    async ({ prefix, headers, version }) => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'management-conversation-create-fence-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      const admission = new GatewayAdmissionController();
+      const gateway = makeGateway();
+      const deregistered = deferred<string[]>();
+      vi.mocked(gateway.deregisterAgent).mockReturnValueOnce(deregistered.promise);
+      try {
+        const { app, agentRegistry } = createApp({ conversationService, admission, gateway });
+        const entry = agentRegistry.register({
+          name: 'Conversation Owner',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const createConversation = vi.spyOn(
+          conversationService,
+          version === 1 ? 'create' : 'createV2',
+        );
+        const held = heldJsonRequest(`${prefix}/conversations`, 'POST', headers);
+        const creating = app.request(held.request);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        const deleting = app.request(`/agents/${entry.id}`, {
+          method: 'DELETE',
+          headers: AUTH,
+        });
+        await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
+
+        held.release({ agentId: entry.id, requestId: `held-create-${version}` });
+        const createResponse = await creating;
+        deregistered.resolve([]);
+        const deleteResponse = await deleting;
+
+        expect(createResponse.status).toBe(503);
+        expect(createConversation).not.toHaveBeenCalled();
+        expect(deleteResponse.status).toBe(200);
+      } finally {
+        deregistered.resolve([]);
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(surfaces)(
+    'drains a held $label conversation patch before agent deletion cleanup',
+    async ({ prefix, headers, version }) => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'management-conversation-patch-fence-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      const admission = new GatewayAdmissionController();
+      const gateway = makeGateway();
+      const deregistered = deferred<string[]>();
+      vi.mocked(gateway.deregisterAgent).mockReturnValueOnce(deregistered.promise);
+      try {
+        const { app, agentRegistry } = createApp({ conversationService, admission, gateway });
+        const entry = agentRegistry.register({
+          name: 'Conversation Owner',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const conversation =
+          version === 1
+            ? conversationService.create({
+                agentId: entry.id,
+                agentName: entry.name,
+                requestId: `held-patch-${version}`,
+              })
+            : conversationService.createV2({
+                agentId: entry.id,
+                agentName: entry.name,
+                requestId: `held-patch-${version}`,
+              });
+        const held = heldJsonRequest(`${prefix}/conversations/${conversation.id}`, 'PATCH', {
+          ...headers,
+          'If-Match': `"${conversation.revision}"`,
+        });
+        const patching = app.request(held.request);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        const deleting = app.request(`/agents/${entry.id}`, {
+          method: 'DELETE',
+          headers: AUTH,
+        });
+        await vi.waitFor(() =>
+          expect(agentRegistry.markDeletionIntent).toHaveBeenCalledWith(entry.id),
+        );
+        await Promise.resolve();
+        const deletionOvertookPatch = vi.mocked(gateway.deregisterAgent).mock.calls.length > 0;
+
+        held.release({ title: 'Patched before deletion' });
+        expect((await patching).status).toBe(200);
+        await vi.waitFor(() => expect(gateway.deregisterAgent).toHaveBeenCalledWith(entry.id));
+        deregistered.resolve([]);
+        expect((await deleting).status).toBe(200);
+        expect(deletionOvertookPatch).toBe(false);
+      } finally {
+        deregistered.resolve([]);
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(surfaces)(
+    'rejects a $label conversation delete after the owner deletion marker is durable',
+    async ({ prefix, headers, version }) => {
+      const tmpDir = await mkdtemp(join(tmpdir(), 'management-conversation-delete-fence-'));
+      const conversationService = new SqliteConversationService({ dataDir: tmpDir });
+      const admission = new GatewayAdmissionController();
+      try {
+        const { app, agentRegistry } = createApp({ conversationService, admission });
+        const entry = agentRegistry.register({
+          name: 'Conversation Owner',
+          model: 'test/model',
+          systemPrompt: '',
+        });
+        const conversation =
+          version === 1
+            ? conversationService.create({
+                agentId: entry.id,
+                agentName: entry.name,
+                requestId: `marked-delete-${version}`,
+              })
+            : conversationService.createV2({
+                agentId: entry.id,
+                agentName: entry.name,
+                requestId: `marked-delete-${version}`,
+              });
+        const removeConversation = vi.spyOn(
+          conversationService,
+          version === 1 ? 'delete' : 'deleteV2',
+        );
+        agentRegistry.markDeletionIntent(entry.id);
+        admission.closeAgent(entry.id);
+
+        const response = await app.request(`${prefix}/conversations/${conversation.id}`, {
+          method: 'DELETE',
+          headers: { ...headers, 'If-Match': `"${conversation.revision}"` },
+        });
+
+        expect(response.status).toBe(409);
+        expect(removeConversation).not.toHaveBeenCalled();
+      } finally {
+        conversationService.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('skill routes', () => {
@@ -2254,6 +2878,93 @@ describe('memory routes', () => {
   const RECORD = { ...INFO, content: 'c' };
   const PUT_BODY = JSON.stringify({ description: 'd', type: 'user', content: 'c' });
   const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+
+  it('allows safe memory and skill maintenance while an agent is durably disabled', async () => {
+    const admission = new GatewayAdmissionController();
+    const { app, agentRegistry, agents } = createApp({ admission });
+    const { id } = registerAgent(agentRegistry);
+    agentRegistry.disable(id);
+    admission.closeAgent(id);
+
+    mock(agents.removeMemory).mockResolvedValueOnce(true);
+    const removed = await app.request(`/agents/${id}/memory/a`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    const configured = await app.request(`/agents/${id}/skills/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ learning: 'off' }),
+    });
+
+    expect(removed.status).toBe(200);
+    expect(configured.status).toBe(200);
+    expect(agents.removeMemory).toHaveBeenCalledWith(id, 'a');
+    expect(agentRegistry.update).toHaveBeenCalledWith(id, {
+      skills: expect.objectContaining({ learning: 'off' }),
+    });
+  });
+
+  it('rejects disabled-agent maintenance after the process shutdown fence', async () => {
+    const admission = new GatewayAdmissionController();
+    const { app, agentRegistry, agents } = createApp({ admission });
+    const { id } = registerAgent(agentRegistry);
+    agentRegistry.disable(id);
+    admission.closeAgent(id);
+    admission.beginProcessShutdown().finish();
+
+    const removed = await app.request(`/agents/${id}/memory/a`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    const configured = await app.request(`/agents/${id}/skills/config`, {
+      method: 'PATCH',
+      headers: JSON_AUTH,
+      body: JSON.stringify({ learning: 'off' }),
+    });
+
+    expect(removed.status).toBe(503);
+    expect(configured.status).toBe(503);
+    expect(agents.removeMemory).not.toHaveBeenCalled();
+    expect(agentRegistry.update).not.toHaveBeenCalled();
+  });
+
+  it('drains pre-delete maintenance and rejects new maintenance after deletion is marked', async () => {
+    const admission = new GatewayAdmissionController();
+    const { app, agentRegistry, agents } = createApp({ admission });
+    const { id } = registerAgent(agentRegistry);
+    agentRegistry.disable(id);
+    admission.closeAgent(id);
+    const removing = deferred<boolean>();
+    mock(agents.removeMemory).mockReturnValueOnce(removing.promise);
+
+    const maintenance = app.request(`/agents/${id}/memory/a`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    await vi.waitFor(() => expect(agents.removeMemory).toHaveBeenCalledOnce());
+
+    let deletionSettled = false;
+    const deleting = app
+      .request(`/agents/${id}`, { method: 'DELETE', headers: AUTH })
+      .finally(() => {
+        deletionSettled = true;
+      });
+    await vi.waitFor(() => expect(agentRegistry.markDeletionIntent).toHaveBeenCalledWith(id));
+    await Promise.resolve();
+    expect(deletionSettled).toBe(false);
+
+    const lateMaintenance = await app.request(`/agents/${id}/memory/b`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(lateMaintenance.status).toBe(409);
+    expect(agents.removeMemory).toHaveBeenCalledOnce();
+
+    removing.resolve(true);
+    expect((await maintenance).status).toBe(200);
+    expect((await deleting).status).toBe(200);
+  });
 
   it('lists, gets, puts and deletes memories', async () => {
     const { app, agentRegistry, agents } = createApp();
@@ -2676,6 +3387,162 @@ describe('memory routes', () => {
   });
 });
 
+describe('management lifecycle admission', () => {
+  beforeEach(() => {
+    agentIdCounter = 0;
+  });
+
+  it('transfers its ingress lease and drains prior work without waiting for itself', async () => {
+    const admission = new GatewayAdmissionController();
+    const resumableChatHub = makeResumableChatHub();
+    const beginAgentLifecycle = vi.spyOn(admission, 'beginAgentLifecycle');
+    const { app, agentRegistry } = createApp({ admission, resumableChatHub });
+    const entry = agentRegistry.register({
+      name: 'Lifecycle Helper',
+      model: 'test/model',
+      systemPrompt: '',
+    });
+    const prior = admission.acquire(entry.id, 'conversation-before-disable');
+    let settled = false;
+
+    const disabling = app
+      .request(`/agents/${entry.id}/disable`, { method: 'POST', headers: AUTH })
+      .then((response) => {
+        settled = true;
+        return response;
+      });
+    try {
+      await vi.waitFor(() => expect(admission.isOpen(entry.id)).toBe(false));
+      expect(beginAgentLifecycle).toHaveBeenCalledWith(entry.id, expect.any(Object));
+      expect(settled).toBe(false);
+      expect(() => admission.acquire(entry.id, 'conversation-after-disable')).toThrow('disabled');
+    } finally {
+      prior.release();
+    }
+
+    const response = await disabling;
+    expect(response.status).toBe(200);
+    expect(resumableChatHub.disableAgent).toHaveBeenCalledWith(entry.id, expect.any(Object));
+    expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
+  });
+
+  it('retains the synchronous disabled fence after save failure and admits lifecycle retry', async () => {
+    const admission = new GatewayAdmissionController();
+    const resumableChatHub = makeResumableChatHub();
+    const { app, agentRegistry, agents } = createApp({ admission, resumableChatHub });
+    const entry = agentRegistry.register({
+      name: 'Retryable Disable',
+      model: 'test/model',
+      systemPrompt: '',
+    });
+    vi.mocked(agentRegistry.save).mockRejectedValueOnce(new Error('disk unavailable'));
+
+    const failed = await app.request(`/agents/${entry.id}/disable`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+
+    expect(failed.status).toBe(500);
+    expect(admission.isOpen(entry.id)).toBe(false);
+    expect(resumableChatHub.disableAgent).not.toHaveBeenCalled();
+    expect(agents.evict).not.toHaveBeenCalled();
+
+    const retry = await app.request(`/agents/${entry.id}/disable`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(retry.status).toBe(200);
+    expect(resumableChatHub.disableAgent).toHaveBeenCalledOnce();
+    expect(agents.evict).toHaveBeenCalledOnce();
+    expect(admission.isOpen(entry.id)).toBe(false);
+  });
+
+  it('rejects every new direct and mobile mutation after the process fence', async () => {
+    const admission = new GatewayAdmissionController();
+    const reloadPlugins = vi.fn().mockResolvedValue(undefined);
+    const { app, agentRegistry, channelRegistry, credentialStore, gateway } = createApp({
+      admission,
+      reloadPlugins,
+    });
+    const entry = agentRegistry.register({
+      name: 'Existing Helper',
+      model: 'test/model',
+      systemPrompt: '',
+    });
+    vi.mocked(agentRegistry.register).mockClear();
+    admission.beginProcessShutdown().finish();
+
+    const requests: Array<{ path: string; init: RequestInit }> = [
+      {
+        path: '/agents',
+        init: {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ name: 'late', model: 'test/model', systemPrompt: '' }),
+        },
+      },
+      {
+        path: '/mobile/v1/agents',
+        init: {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({ name: 'late-v1', model: 'test/model', systemPrompt: '' }),
+        },
+      },
+      {
+        path: '/mobile/v2/agents',
+        init: {
+          method: 'POST',
+          headers: MOBILE_JSON_HEADERS,
+          body: JSON.stringify({ name: 'late-v2', model: 'test/model', systemPrompt: '' }),
+        },
+      },
+      {
+        path: `/agents/${entry.id}`,
+        init: { method: 'DELETE', headers: AUTH },
+      },
+      {
+        path: '/channels',
+        init: {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({
+            name: 'late-channel',
+            adapter: 'telegram',
+            routing: [],
+          }),
+        },
+      },
+      {
+        path: '/credentials',
+        init: {
+          method: 'POST',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ key: 'late-key', value: 'secret' }),
+        },
+      },
+      { path: '/plugins/reload', init: { method: 'POST', headers: AUTH } },
+    ];
+
+    for (const request of requests) {
+      const response = await app.request(request.path, request.init);
+      expect(response.status, request.path).toBe(503);
+      expect(await response.json(), request.path).toEqual({
+        code: 'gateway_offline',
+        error: 'Gateway is shutting down',
+        retryable: true,
+      });
+    }
+
+    expect(agentRegistry.register).not.toHaveBeenCalled();
+    expect(agentRegistry.markDeletionIntent).not.toHaveBeenCalled();
+    expect(channelRegistry.register).not.toHaveBeenCalled();
+    expect(credentialStore.set).not.toHaveBeenCalled();
+    expect(gateway.registerChannel).not.toHaveBeenCalled();
+    expect(reloadPlugins).not.toHaveBeenCalled();
+  });
+});
+
 // MC's GatewaySupervisor POSTs this before falling back to SIGTERM
 // (packages/mc/src/runtime/process.ts shutdownStaleProcess). Until this route
 // existed the graceful path 404'd and every MC-initiated restart was
@@ -2687,17 +3554,118 @@ describe('POST /lifecycle/shutdown', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 200 before invoking onShutdown, then invokes it', async () => {
-    const onShutdown = vi.fn();
-    const { app } = createApp({ onShutdown });
+  it('transfers lifecycle ingress and closes process admission before returning 200', async () => {
+    const admission = new GatewayAdmissionController();
+    let cleanupRelease!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      cleanupRelease = resolve;
+    });
+    const onShutdown = vi.fn((ownerLease) => {
+      const lifecycle = admission.beginProcessShutdown(ownerLease);
+      void cleanup.finally(() => lifecycle.finish());
+      return { completion: cleanup, ownerLeaseTransferred: true };
+    });
+    const { app } = createApp({ admission, onShutdown });
     const res = await app.request('/lifecycle/shutdown', { method: 'POST', headers: AUTH });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    // The handler must NOT run teardown before responding — the gateway's
-    // shutdown sequence closes this very server and exits the process, which
-    // would kill the in-flight response. It defers instead.
-    expect(onShutdown).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(onShutdown).toHaveBeenCalledTimes(1));
+    expect(onShutdown).toHaveBeenCalledOnce();
+    expect(onShutdown.mock.calls[0][0]).toMatchObject({ token: expect.any(Object) });
+    expect(admission.isOpen()).toBe(false);
+    cleanupRelease();
+  });
+
+  it('releases lifecycle ingress when a duplicate shutdown joins without taking ownership', async () => {
+    const admission = new GatewayAdmissionController();
+    const duplicateIngress = admission.acquireLifecycleIngress();
+    const release = vi.spyOn(duplicateIngress, 'release');
+    vi.spyOn(admission, 'acquireLifecycleIngress').mockReturnValueOnce(duplicateIngress);
+    const onShutdown = vi.fn(() => ({
+      completion: Promise.resolve(),
+      ownerLeaseTransferred: false,
+    }));
+    const { app } = createApp({ admission, onShutdown });
+
+    const response = await app.request('/lifecycle/shutdown', {
+      method: 'POST',
+      headers: AUTH,
+    });
+
+    expect(response.status).toBe(200);
+    expect(onShutdown).toHaveBeenCalledWith(duplicateIngress);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('drains a held channel mutation before gateway teardown can overtake registration', async () => {
+    const admission = new GatewayAdmissionController();
+    const gateway = makeGateway();
+    const credentialStore = makeCredentialStore();
+    const tokenRead = deferred<string | null>();
+    vi.mocked(credentialStore.get).mockReturnValueOnce(tokenRead.promise);
+    const resumableChatHub = {
+      ...makeResumableChatHub(),
+      suspend: vi.fn().mockResolvedValue(undefined),
+    };
+    const agents = makeAgents();
+    const coordinator = createGatewayShutdownCoordinator({
+      admission,
+      resumableChatHub,
+      getChatLifecycles: () => [],
+      getProjectsLifecycle: () => undefined,
+      mcpManager: { stop: vi.fn().mockResolvedValue(undefined) },
+      swarmCoordinator: { stop: vi.fn().mockResolvedValue(undefined) },
+      agents,
+      gateway,
+      getManagementServer: () => undefined,
+      getLanServer: () => undefined,
+      conversationService: { close: vi.fn() },
+      projectsDb: { close: vi.fn() },
+    });
+    const { app, agentRegistry } = createApp({
+      admission,
+      gateway,
+      credentialStore,
+      agents,
+      resumableChatHub,
+      onShutdown: (ownerLease: Parameters<typeof coordinator.shutdown>[0]) =>
+        coordinator.shutdown(ownerLease),
+    });
+    const entry = agentRegistry.register({
+      name: 'Channel Helper',
+      model: 'test/model',
+      systemPrompt: '',
+    });
+    const creating = app.request('/channels', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        name: 'held-channel',
+        adapter: 'telegram',
+        routing: [
+          { condition: { type: 'default' }, agentId: entry.id, allowList: [], denyList: [] },
+        ],
+      }),
+    });
+    await vi.waitFor(() =>
+      expect(credentialStore.get).toHaveBeenCalledWith('channel:held-channel:token'),
+    );
+
+    const response = await app.request('/lifecycle/shutdown', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(resumableChatHub.suspend).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(gateway.stop).not.toHaveBeenCalled();
+
+    tokenRead.resolve('telegram-token');
+    expect((await creating).status).toBe(201);
+    await coordinator.shutdown().completion;
+    expect(gateway.registerChannel).toHaveBeenCalledOnce();
+    expect(vi.mocked(gateway.registerChannel).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(gateway.stop).mock.invocationCallOrder[0] as number,
+    );
   });
 
   it('is not mounted when onShutdown is not wired', async () => {
@@ -2846,13 +3814,23 @@ describe('canonical and legacy conversation replay', () => {
       const deleteAgentEvents = vi.spyOn(conversationService.eventLog, 'deleteAgent');
       let liveConversationId = '';
       const resumableChatHub = {
-        cancelAgent: vi.fn(async () => {
+        cancelAgent: vi.fn().mockResolvedValue(undefined),
+        disableAgent: vi.fn().mockResolvedValue(undefined),
+        deleteAgent: vi.fn(async (agentId: string) => {
           conversationService.finishTurn({
             conversationId: liveConversationId,
             turnId: 'turn-01',
-            outcome: 'cancelled',
+            outcome: 'interrupted',
           });
+          for (const archived of conversationService.archiveAgentConversations(agentId)) {
+            eventBus.emit({
+              type: 'conversation:changed',
+              conversationId: archived.id,
+              revision: archived.revision,
+            });
+          }
         }),
+        allowAgent: vi.fn(),
       };
       const { app, agentRegistry, agents } = createApp({
         conversationService,
@@ -2888,10 +3866,11 @@ describe('canonical and legacy conversation replay', () => {
 
       const removed = await app.request(`/agents/${agent.id}`, { method: 'DELETE', headers: AUTH });
       expect(removed.status).toBe(200);
-      expect(resumableChatHub.cancelAgent).toHaveBeenCalledWith(agent.id);
-      expect(resumableChatHub.cancelAgent.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(resumableChatHub.deleteAgent).toHaveBeenCalledWith(agent.id, expect.any(Object));
+      expect(resumableChatHub.deleteAgent.mock.invocationCallOrder[0]).toBeLessThan(
         vi.mocked(agents.evict).mock.invocationCallOrder[0] as number,
       );
+      expect(resumableChatHub.cancelAgent).not.toHaveBeenCalled();
       expect(agentRegistry.get(agent.id)).toBeUndefined();
       expect(conversationService.get(conversation.id)).toMatchObject({
         status: 'archived',
@@ -2912,7 +3891,7 @@ describe('canonical and legacy conversation replay', () => {
         }),
         expect.objectContaining({
           role: 'assistant',
-          status: 'cancelled',
+          status: 'interrupted',
           content: {
             type: 'assistant',
             events: [{ type: 'text_delta', text: 'Remembered' }],
@@ -2942,7 +3921,7 @@ describe('canonical and legacy conversation replay', () => {
       ).toEqual(['accepted', 'event', 'done']);
       expect(
         conversationService.eventLog.readSince(agent.id, conversation.id, 0).at(-1)?.payload,
-      ).toEqual({ type: 'done', outcome: 'cancelled' });
+      ).toEqual({ type: 'done', outcome: 'interrupted' });
     } finally {
       conversationService.close();
       await rm(tmpDir, { recursive: true, force: true });

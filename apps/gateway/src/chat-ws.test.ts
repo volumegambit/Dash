@@ -5,6 +5,7 @@ import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-cont
 import { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describe, expect, it, vi } from 'vitest';
+import { GatewayAdmissionController } from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
@@ -463,9 +464,11 @@ function makeWsHarness(
     streamFactory?: () => ScriptedStream;
     eventLogStore?: EventLogStore;
     wsTickets?: WsTicketStore;
+    admission?: GatewayAdmissionController;
   } = {},
 ) {
   const hub = makeResumableHub();
+  const admission = options.admission ?? new GatewayAdmissionController();
   const streams: ScriptedStream[] = [];
   const requests: Array<Parameters<AgentChatCoordinator['chat']>[0]> = [];
   const chat = vi.fn((request: Parameters<AgentChatCoordinator['chat']>[0]) => {
@@ -502,7 +505,7 @@ function makeWsHarness(
     return () => new Response(null, { status: 200 });
   }) as unknown as UpgradeWebSocket;
   const app = new Hono();
-  mountChatWs(app, {
+  const lifecycle = mountChatWs(app, {
     agents,
     token: options.token,
     upgradeWebSocket,
@@ -511,6 +514,7 @@ function makeWsHarness(
     verbose: options.verbose,
     eventLogStore: options.eventLogStore,
     wsTickets: options.wsTickets,
+    admission,
   });
 
   return {
@@ -526,6 +530,8 @@ function makeWsHarness(
     swarmCancel,
     requests,
     streams,
+    admission,
+    lifecycle,
     connect(token = options.token, authorization?: string, ticket?: string) {
       if (!createEvents) throw new Error('WebSocket handler was not mounted');
       const handlers = createEvents({
@@ -1156,18 +1162,111 @@ describe('mountChatWs protocol ownership', () => {
   });
 });
 
+describe('mountChatWs shutdown lifecycle', () => {
+  it.each(['process shutdown', 'agent disable', 'agent delete'] as const)(
+    'rejects v1 resume before replay or subscriber attachment after %s admission closes',
+    async (fence) => {
+      const admission = new GatewayAdmissionController();
+      const harness = makeWsHarness({ admission });
+      const connection = harness.connect();
+      connection.handlers.onOpen?.({}, connection.socket);
+
+      if (fence === 'process shutdown') {
+        admission.beginProcessShutdown().finish();
+      } else {
+        admission.beginAgentLifecycle('agent-01').finish();
+      }
+      dispatch(connection, {
+        type: 'resume',
+        id: 'turn-01',
+        agentId: 'agent-01',
+        conversationId: 'conversation-01',
+        sinceSeq: 0,
+      });
+
+      await vi.waitFor(() => expect(sentFrames(connection.socket)).toHaveLength(1));
+      expect(harness.hub.resume).not.toHaveBeenCalled();
+      expect(sentFrames(connection.socket)).toEqual([
+        expect.objectContaining({
+          type: 'error',
+          id: 'turn-01',
+          conversationId: 'conversation-01',
+          code: 'gateway_offline',
+          retryable: true,
+        }),
+      ]);
+      expect(connection.socket.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stops dispatch, closes every upgraded socket, and waits for onClose', async () => {
+    const harness = makeWsHarness();
+    const first = harness.connect();
+    const second = harness.connect();
+    first.handlers.onOpen?.({}, first.socket);
+    second.handlers.onOpen?.({}, second.socket);
+
+    let settled = false;
+    const closing = harness.lifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000).then(() => {
+      settled = true;
+    });
+    expect(first.socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(second.socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+
+    dispatch(first, RESUMABLE_MESSAGE);
+    expect(harness.hub.start).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    first.handlers.onClose?.({}, first.socket);
+    second.handlers.onClose?.({}, second.socket);
+    await closing;
+    expect(settled).toBe(true);
+  });
+
+  it('closes an authenticated upgrade that reaches onOpen after closing began and dispatches nothing', async () => {
+    const harness = makeWsHarness();
+    const late = harness.connect();
+
+    await harness.lifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000);
+    late.handlers.onOpen?.({}, late.socket);
+    dispatch(late, RESUMABLE_MESSAGE);
+
+    expect(late.socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(harness.hub.start).not.toHaveBeenCalled();
+    expect(harness.agents.chat).not.toHaveBeenCalled();
+  });
+
+  it('closes an authenticated upgrade whose onOpen arrives after synchronous shutdown fencing', () => {
+    const harness = makeWsHarness();
+    const late = harness.connect();
+
+    harness.lifecycle.beginClosing(1012, 'gateway_shutdown');
+    late.handlers.onOpen?.({}, late.socket);
+    dispatch(late, RESUMABLE_MESSAGE);
+
+    expect(late.socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(harness.hub.start).not.toHaveBeenCalled();
+    expect(harness.agents.chat).not.toHaveBeenCalled();
+  });
+});
+
 describe('gateway resumable chat composition', () => {
-  it('stops resumable turns and flushes titles before swarm, agents, and conversation storage', () => {
-    const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+  it('interrupts streams, drains admitted work, then stops swarm, agents, and storage', () => {
+    const indexSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    const shutdownSource = readFileSync(new URL('./shutdown.ts', import.meta.url), 'utf8');
     const orderedShutdownSteps = [
-      "safeStep('resumableChatHub.stop'",
-      "safeFlush('conversationAutoTitle.flush'",
+      "safeStep('agents.interruptAll'",
+      "safeStep('resumableChatHub.suspend'",
+      "safeStep('admission.drainPrior'",
       "safeStep('swarmCoordinator.stop'",
       "safeStep('agents.stop'",
+      "safeStep('gateway.stop'",
+      "safeStep('projectsDb.close'",
       "safeStep('conversationService.close'",
     ];
-    const positions = orderedShutdownSteps.map((step) => source.indexOf(step));
+    const positions = orderedShutdownSteps.map((step) => shutdownSource.indexOf(step));
 
+    expect(indexSource).toContain('createGatewayShutdownCoordinator({');
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
   });

@@ -906,6 +906,61 @@ describe('PiAgentBackend ordered steering', () => {
     expect(admission).toEqual({ accepted: true });
   });
 
+  it('rechecks legacy admission after held credential refresh and before session.prompt', async () => {
+    const credentialsEntered = deferred<void>();
+    const allowCredentials = deferred<void>();
+    let credentialReads = 0;
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(
+      harness,
+      new PiAgentBackend(
+        { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'test' },
+        async () => {
+          credentialReads++;
+          if (credentialReads > 1) {
+            credentialsEntered.resolve(undefined);
+            await allowCredentials.promise;
+          }
+          return {};
+        },
+      ),
+    );
+    let current = true;
+    const events = collectEvents(
+      backend.run(state('legacy-credentials'), { isRunCurrent: () => current }),
+    );
+    await credentialsEntered.promise;
+
+    current = false;
+    allowCredentials.resolve(undefined);
+    harness.finishFirstTurn.resolve(undefined);
+    await events;
+
+    expect(harness.session.prompt).not.toHaveBeenCalled();
+  });
+
+  it('rechecks typed admission after readiness and immediately before session.prompt', async () => {
+    const harness = makeSteeringHarness();
+    const backend = await mountSteeringBackend(harness);
+    let current = true;
+    const events = collectEvents(
+      backend.run(state('typed-readiness'), {
+        runId: RUN_ID,
+        onSteerConsumed: async () => {},
+        onRunReadyForSteering: async () => {
+          current = false;
+          return 'continue';
+        },
+        isRunCurrent: () => current,
+      }),
+    );
+    harness.finishFirstTurn.resolve(undefined);
+    await events;
+    await backend.sealSteering(RUN_ID);
+
+    expect(harness.session.prompt).not.toHaveBeenCalled();
+  });
+
   it('holds the provider behind an ordered durable Steer boundary', async () => {
     const harness = makeSteeringHarness();
     const backend = await mountSteeringBackend(harness);

@@ -33,6 +33,7 @@ import type {
   WrittenSkill,
 } from '@dash/agent';
 import type { SwarmCoordinator } from '@dash/swarm';
+import type { GatewayAdmissionController } from './admission-controller.js';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
 
 /**
@@ -76,6 +77,7 @@ export interface AgentChatCoordinatorOptions {
   registry: AgentRegistry;
   poolMaxSize: number;
   createBackend: BackendFactory;
+  admission?: Pick<GatewayAdmissionController, 'capture' | 'isCurrent'>;
   /** Resolve an agent's managed skills directory (for `listSkills`). */
   managedSkillsDir?: (config: GatewayAgentConfig) => string | undefined;
   /**
@@ -251,6 +253,8 @@ export interface AgentChatCoordinator {
    */
   removeMemory(agentId: string, name: string): Promise<boolean>;
   stats(): AgentChatCoordinatorStats;
+  /** Abort every active backend without retiring pool state. */
+  interruptAll(): void;
   stop(): Promise<void>;
 }
 
@@ -369,6 +373,7 @@ export function createAgentChatCoordinator(
 
   const pool = new ConversationPool({
     maxSize: options.poolMaxSize,
+    admission: options.admission,
     backendFactory: async (agentId, conversationId) => {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);
@@ -442,11 +447,13 @@ export function createAgentChatCoordinator(
     iteratorSettled: boolean;
     sealed: boolean;
     released: boolean;
+    controller: AbortController;
   }
   const runOwners = new Map<string, ConversationRunOwner>();
   const runOwnerKey = (agentId: string, conversationId: string) => `${agentId}/${conversationId}`;
   const releaseRunOwner = (owner: ConversationRunOwner) => {
     if (owner.released) return;
+    owner.controller.abort();
     owner.resolveBackendReady(false);
     owner.resolveSealCompleted();
     owner.released = true;
@@ -515,8 +522,21 @@ export function createAgentChatCoordinator(
         return;
       }
 
+      // Keep one authoritative host token for the entire run handoff. The
+      // pool has its own creation generation, but a warm entry can outlive an
+      // agent/process lifecycle transition while reconciliation or dynamic
+      // config is awaiting.
+      const admission = options.admission;
+      const runAdmissionToken = admission?.capture(request.agentId, request.conversationId);
+      const isRunAdmissionCurrent = () =>
+        admission === undefined ||
+        (runAdmissionToken !== undefined && admission.isCurrent(runAdmissionToken));
       const lease = await pool.acquire(request.agentId, request.conversationId);
       const poolEntry = lease.entry;
+      const internalRunController = new AbortController();
+      const runSignal = request.signal
+        ? AbortSignal.any([request.signal, internalRunController.signal])
+        : internalRunController.signal;
       let runOwner: ConversationRunOwner | undefined;
       const claimRunOwner = () => {
         const key = runOwnerKey(request.agentId, request.conversationId);
@@ -563,6 +583,7 @@ export function createAgentChatCoordinator(
           // lease through their first seal.
           sealed: request.runId === undefined,
           released: false,
+          controller: internalRunController,
         };
         runOwners.set(key, runOwner);
       };
@@ -581,9 +602,18 @@ export function createAgentChatCoordinator(
       };
       const markBackendReadyForSteering = async (): Promise<'continue' | 'sealed'> => {
         const owner = runOwner;
-        if (!owner || owner.released || runOwners.get(owner.key) !== owner) return 'sealed';
+        if (
+          !owner ||
+          owner.released ||
+          runOwners.get(owner.key) !== owner ||
+          !isRunAdmissionCurrent()
+        ) {
+          return 'sealed';
+        }
         owner.resolveBackendReady(true);
-        if (!owner.sealRequested) return 'continue';
+        if (!owner.sealRequested) {
+          return isRunAdmissionCurrent() ? 'continue' : 'sealed';
+        }
         await owner.sealCompleted;
         return 'sealed';
       };
@@ -597,6 +627,10 @@ export function createAgentChatCoordinator(
         } catch (error) {
           failRunStart();
           throw error;
+        }
+        if (!isRunAdmissionCurrent()) {
+          failRunStart();
+          return;
         }
         // A typed seal can race the awaited reconciliation above. In that
         // pre-run phase there is nothing valid for the backend to seal, so the
@@ -616,6 +650,10 @@ export function createAgentChatCoordinator(
           failRunStart();
           throw error;
         }
+        if (!isRunAdmissionCurrent()) {
+          failRunStart();
+          return;
+        }
 
         if (!swarmEnabled) {
           // The backend owns cancellation here (chat-ws aborts it directly).
@@ -624,11 +662,12 @@ export function createAgentChatCoordinator(
             request.conversationId,
             request.text,
             {
-              signal: request.signal,
+              signal: runSignal,
               images: request.images,
               location: request.location,
               runId: request.runId,
               onSteerConsumed: request.onSteerConsumed,
+              ...(admission ? { isRunCurrent: isRunAdmissionCurrent } : {}),
               ...(request.runId ? { onRunReadyForSteering: markBackendReadyForSteering } : {}),
             },
           );
@@ -683,7 +722,8 @@ export function createAgentChatCoordinator(
             agentId: request.agentId,
             agentName: entry.config.name,
             conversationId: request.conversationId,
-            messageId: request.messageId,
+            outerRunId: request.runId,
+            messageId: request.runId === undefined ? request.messageId : undefined,
             // Cooperative abort of the orchestrator (pool-entry backend.abort).
             orchestratorAbort: () => poolEntry.backend.abort(),
             // Live registry read of the agent's swarm-enabled + disabled gate so a
@@ -715,11 +755,12 @@ export function createAgentChatCoordinator(
           request.conversationId,
           request.text,
           {
-            signal: request.signal,
+            signal: runSignal,
             images: request.images,
             location: request.location,
             runId: request.runId,
             onSteerConsumed: request.onSteerConsumed,
+            ...(admission ? { isRunCurrent: isRunAdmissionCurrent } : {}),
             ...(request.runId ? { onRunReadyForSteering: markBackendReadyForSteering } : {}),
           },
         );
@@ -777,19 +818,17 @@ export function createAgentChatCoordinator(
 
           // A SINGLE abort promise for the whole turn (one `once` listener,
           // created outside the loop so a long turn never accumulates listeners).
-          const abortArm: Promise<{ src: 'abort' }> | null = request.signal
-            ? abortRace(request.signal).then(() => ({ src: 'abort' as const }))
-            : null;
+          const abortArm = abortRace(runSignal).then(() => ({ src: 'abort' as const }));
 
           // Already aborted before the first race: skip straight to finally.
-          if (!request.signal?.aborted) {
+          if (!runSignal.aborted) {
             while (genNext !== null) {
               const tagged = await Promise.race([
                 genNext.then((r) => ({ src: 'gen' as const, r })),
                 ...(chanNext ? [chanNext.then((r) => ({ src: 'chan' as const, r }))] : []),
-                ...(abortArm ? [abortArm] : []),
+                abortArm,
               ]);
-              if (request.signal?.aborted) break;
+              if (runSignal.aborted) break;
               if (tagged.src === 'abort') break;
               if (tagged.src === 'gen') {
                 if (tagged.r.done) {
@@ -954,7 +993,13 @@ export function createAgentChatCoordinator(
           const operation = (async () => {
             try {
               const ready = await owner.backendReady;
-              if (!ready || owner.released || runOwners.get(ownerKey) !== owner) return [];
+              if (!ready || owner.released || runOwners.get(ownerKey) !== owner) {
+                if (!owner.released && runOwners.get(ownerKey) === owner) {
+                  owner.sealed = true;
+                  maybeReleaseRunOwner(owner);
+                }
+                return [];
+              }
               const entry = pool.get(agentId, conversationId);
               const inputIds = entry?.backend.sealSteering
                 ? await entry.backend.sealSteering(runId)
@@ -1002,6 +1047,16 @@ export function createAgentChatCoordinator(
     },
 
     cancel(agentId, conversationId) {
+      const owner = runOwners.get(runOwnerKey(agentId, conversationId));
+      if (owner && !owner.released) {
+        // Lifecycle cancellation can arrive while DashAgent is still awaiting
+        // dynamic config or memory and before the backend readiness callback
+        // exists. Close that preparing generation and unblock its already-
+        // requested seal without ever calling an idle backend seal.
+        owner.preventStart = true;
+        owner.resolveBackendReady(false);
+        owner.controller.abort();
+      }
       const entry = pool.get(agentId, conversationId);
       if (!entry) return false;
       entry.backend.abort();
@@ -1026,6 +1081,16 @@ export function createAgentChatCoordinator(
 
     stats() {
       return pool.stats();
+    },
+
+    interruptAll() {
+      for (const owner of runOwners.values()) {
+        if (owner.released) continue;
+        owner.preventStart = true;
+        owner.resolveBackendReady(false);
+        owner.controller.abort();
+      }
+      pool.interruptAll();
     },
 
     async stop() {

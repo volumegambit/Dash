@@ -8,7 +8,7 @@ import {
   PiAgentBackend,
   type ProviderApiKeysSource,
 } from '@dash/agent';
-import type { WorkerBackend, WorkerFactory, WorkerSpec } from '@dash/swarm';
+import type { WorkerBackend, WorkerFactory, WorkerRunOptions, WorkerSpec } from '@dash/swarm';
 
 /**
  * Dependencies for the gateway's swarm worker factory. Mirrors the subset of
@@ -130,7 +130,8 @@ export function createGatewayWorkerFactory(deps: GatewayWorkerFactoryDeps): Work
     }));
 
     return {
-      chat: (message: string) => agent.chat('swarm', `${spec.runId}-${spec.workerId}`, message),
+      chat: (message: string, options?: WorkerRunOptions) =>
+        agent.chat('swarm', `${spec.runId}-${spec.workerId}`, message, options),
       abort: () => backend.abort(),
       stop: () => backend.stop(),
     };

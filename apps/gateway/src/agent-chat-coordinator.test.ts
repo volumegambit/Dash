@@ -198,15 +198,15 @@ function makeEventLogSink() {
   const appends: Array<{
     agentId: string;
     conversationId: string;
-    messageId: string;
+    identity: { kind: 'legacy'; messageId: string } | { kind: 'canonical'; outerRunId: string };
     payload: { type: 'event'; event: AgentEvent };
   }> = [];
   const sink: SwarmEventLogSink = {
-    append(agentId, conversationId, messageId, payload) {
+    append(agentId, conversationId, identity, payload) {
       appends.push({
         agentId,
         conversationId,
-        messageId,
+        identity,
         payload: payload as { type: 'event'; event: AgentEvent },
       });
       return Promise.resolve();
@@ -744,7 +744,8 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
   });
 
   it('forwards run identity, location, callback, and reconciliation through the swarm path', async () => {
-    const { id, controller, agents } = setup({ swarmEnabled: true });
+    const { id, coordinator, controller, agents } = setup({ swarmEnabled: true });
+    const attach = vi.spyOn(coordinator, 'attach');
     const callback = vi.fn(async () => {});
     const location = {
       timezone: 'Asia/Singapore',
@@ -774,6 +775,14 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     expect(controller.options()).toEqual([
       expect.objectContaining({ runId: 'run-1', location, onSteerConsumed: callback }),
     ]);
+    expect(attach).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: id,
+        conversationId: 'c1',
+        outerRunId: 'run-1',
+        messageId: undefined,
+      }),
+    );
     controller.end();
     await drain(stream);
     expect(agents.stats().pinned).toBe(1);
@@ -917,7 +926,7 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     expect(appends[0]).toMatchObject({
       agentId: id,
       conversationId: 'c1',
-      messageId: 'm-1',
+      identity: { kind: 'legacy', messageId: 'm-1' },
       payload: { type: 'event', event: { type: 'worker_done', status: 'cancelled' } },
     });
     // Prevent an unhandled-rejection from the abandoned scripted generator.
@@ -1395,7 +1404,7 @@ describe('AgentChatCoordinator typed run steering controls', () => {
     expect(controls.reconcileSteers).toHaveBeenCalledWith(deliveredSteers);
     expect(controls.options).toEqual([
       {
-        signal: controller.signal,
+        signal: expect.any(AbortSignal),
         images: undefined,
         location,
         runId: RUN_ID,
@@ -1403,6 +1412,8 @@ describe('AgentChatCoordinator typed run steering controls', () => {
         onRunReadyForSteering: expect.any(Function),
       },
     ]);
+    expect(controls.options[0]?.signal).not.toBe(controller.signal);
+    expect(controls.options[0]?.signal?.aborted).toBe(false);
     await expect(
       agents.steerRun(id, 'conversation-1', RUN_ID, INPUT_ID, { text: 'focus' }),
     ).resolves.toEqual({ accepted: true });

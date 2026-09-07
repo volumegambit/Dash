@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import type { ConversationSummary, MobileWsServerFrame } from '@dash/mobile-contract';
 import type { MobileV2WsClientFrame, MobileV2WsServerFrame } from '@dash/mobile-contract-v2';
+import { type AdmissionLifecycle, GatewayAdmissionController } from './admission-controller.js';
 import type { AgentChatCoordinator, ChatRequest } from './agent-chat-coordinator.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import { SqliteConversationService } from './conversation-service-sqlite.js';
@@ -199,6 +200,7 @@ describe('ResumableChatHub', () => {
   let swarmCancel: ReturnType<typeof vi.fn>;
   let isAgentEnabled: ReturnType<typeof vi.fn>;
   let hub: ReturnType<typeof createResumableChatHub>;
+  let admission: GatewayAdmissionController;
   let scripts: ScriptedStream[];
   let cleanupReleases: Array<() => void>;
   let uuidCounter: number;
@@ -231,6 +233,7 @@ describe('ResumableChatHub', () => {
     isAgentEnabled = vi.fn().mockReturnValue(true);
     scripts = [];
     cleanupReleases = [];
+    admission = new GatewayAdmissionController();
     hub = createResumableChatHub({
       conversations,
       agents: harness.agents,
@@ -240,6 +243,7 @@ describe('ResumableChatHub', () => {
       swarmCoordinator: { cancelTurn: swarmCancel },
       isAgentEnabled,
       onChanged,
+      admission,
     });
   });
 
@@ -707,6 +711,61 @@ describe('ResumableChatHub', () => {
 
       originalRun.finish();
       destinationRun.finish();
+    },
+  );
+
+  it.each([
+    { mode: 'resume' as const, scope: 'agent' as const },
+    { mode: 'resume' as const, scope: 'process' as const },
+    { mode: 'retry' as const, scope: 'agent' as const },
+    { mode: 'retry' as const, scope: 'process' as const },
+  ])(
+    'stops a v1 $mode replay and skips its live lookup when the sink closes $scope admission',
+    async ({ mode, scope }) => {
+      const conversation = createConversation();
+      const scripted = register(conversation.id);
+      const original = makeSink();
+      hub.start(sendFrame(conversation), original);
+      scripted.emit({ type: 'text_delta', text: 'Second replay frame' });
+      await waitForFrames(original, 2);
+      const getConversation = vi.spyOn(conversations, 'get');
+      getConversation.mockClear();
+      let lifecycle: AdmissionLifecycle | undefined;
+      const replaying = makeSink(() => {
+        if (lifecycle) return;
+        lifecycle =
+          scope === 'agent'
+            ? admission.beginAgentLifecycle(conversation.agentId)
+            : admission.beginProcessShutdown();
+      });
+
+      if (mode === 'resume') {
+        hub.resume(
+          {
+            type: 'resume',
+            id: 'turn-01',
+            agentId: conversation.agentId,
+            conversationId: conversation.id,
+            sinceSeq: 0,
+          },
+          replaying,
+        );
+      } else {
+        hub.start(sendFrame(conversation), replaying);
+      }
+
+      expect(lifecycle).toBeDefined();
+      expect(replaying.frames).toHaveLength(1);
+      expect(getConversation).toHaveBeenCalledTimes(mode === 'resume' ? 1 : 0);
+
+      const cleanup = lifecycle as AdmissionLifecycle;
+      await cleanup.drainPrior();
+      if (scope === 'agent') {
+        await hub.disableAgent(conversation.agentId, cleanup.cleanupToken);
+      } else {
+        await hub.suspend(cleanup.cleanupToken);
+      }
+      cleanup.finish();
     },
   );
 
@@ -1609,6 +1668,43 @@ describe('ResumableChatHub', () => {
     },
   );
 
+  it.each(['agent', 'process'] as const)(
+    'abandons a pending v2 replay when its sink closes %s admission',
+    (scope) => {
+      const conversation = createConversation();
+      const accepted = conversations.acceptRun({
+        protocol: 'v2',
+        agentId: conversation.agentId,
+        channelId: 'direct',
+        conversationId: conversation.id,
+        runId: 'turn-historical',
+        text: 'Historical',
+      });
+      conversations.finishRunAndClaimNext({
+        conversationId: conversation.id,
+        runId: accepted.runId,
+        segmentTurnId: accepted.segmentTurnId,
+        outcome: 'completed',
+      });
+      let lifecycle: AdmissionLifecycle | undefined;
+      const sink = makeV2Sink((frame) => {
+        if (lifecycle || !('v2Seq' in frame)) return;
+        lifecycle =
+          scope === 'agent'
+            ? admission.beginAgentLifecycle(conversation.agentId)
+            : admission.beginProcessShutdown();
+      });
+
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+
+      expect(lifecycle).toBeDefined();
+      expect(sink.frames).toEqual([expect.objectContaining({ type: 'accepted', v2Seq: 1 })]);
+      expect(sink.frames.some((frame) => frame.type === 'conversation_subscribed')).toBe(false);
+      expect(() => hub.startV2(v2SendFrame(conversation), sink)).toThrow();
+      (lifecycle as AdmissionLifecycle).finish();
+    },
+  );
+
   it('clamps a future v2 replay cursor to the atomic server watermark', () => {
     const conversation = createConversation();
     const accepted = conversations.acceptRun({
@@ -1891,6 +1987,70 @@ describe('ResumableChatHub', () => {
     ).toEqual(['1:accepted', '2:done']);
     expect(revisions).toEqual([conversation.revision + 1, conversation.revision + 2]);
     expect(harness.chat).not.toHaveBeenCalled();
+  });
+
+  it('keeps an initial accepted run dormant when its publication closes agent admission', async () => {
+    const conversation = createConversation();
+    register(conversation.id);
+    const sink = makeV2Sink();
+    let lifecycle: AdmissionLifecycle | undefined;
+    hub.subscribeConversation(subscriptionFrame(conversation), sink);
+    onChanged.mockImplementationOnce(() => {
+      lifecycle = admission.beginAgentLifecycle(conversation.agentId);
+    });
+
+    hub.startV2(v2SendFrame(conversation), sink);
+
+    expect(lifecycle).toBeDefined();
+    expect(harness.chat).not.toHaveBeenCalled();
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-01',
+    });
+
+    const cleanup = lifecycle as AdmissionLifecycle;
+    await cleanup.drainPrior();
+    await hub.disableAgent(conversation.agentId, cleanup.cleanupToken);
+    cleanup.finish();
+
+    expect(harness.chat).not.toHaveBeenCalled();
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'interrupted',
+      activeTurnId: null,
+    });
+    expect(sink.frames.filter((frame) => frame.type === 'accepted')).toHaveLength(1);
+    expect(sink.frames.filter((frame) => frame.type === 'done')).toHaveLength(1);
+  });
+
+  it('rechecks admission after a reentrant auto-title schedule before starting the provider', async () => {
+    const conversation = createConversation();
+    register(conversation.id);
+    const sink = makeV2Sink();
+    let shutdown: AdmissionLifecycle | undefined;
+    (autoTitle.schedule as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      shutdown = admission.beginProcessShutdown();
+    });
+    hub.subscribeConversation(subscriptionFrame(conversation), sink);
+
+    hub.startV2(v2SendFrame(conversation), sink);
+
+    expect(shutdown).toBeDefined();
+    expect(harness.chat).not.toHaveBeenCalled();
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'running',
+      activeTurnId: 'turn-01',
+    });
+
+    const cleanup = shutdown as AdmissionLifecycle;
+    await cleanup.drainPrior();
+    await hub.suspend(cleanup.cleanupToken);
+    cleanup.finish();
+
+    expect(harness.chat).not.toHaveBeenCalled();
+    expect(conversations.get(conversation.id)).toMatchObject({
+      status: 'interrupted',
+      activeTurnId: null,
+    });
   });
 
   it.each(['accepted', 'event'] as const)(
@@ -2630,6 +2790,43 @@ describe('ResumableChatHub', () => {
       scripted.finish();
     });
 
+    it('keeps an idle Follow Up claim dormant when its accepted sink closes process admission', async () => {
+      const conversation = createConversation();
+      register(conversation.id);
+      let shutdown: AdmissionLifecycle | undefined;
+      const sink = makeV2Sink((frame) => {
+        if (frame.type === 'accepted' && shutdown === undefined) {
+          shutdown = admission.beginProcessShutdown();
+        }
+      });
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+
+      expect(shutdown).toBeDefined();
+      expect(harness.chat).not.toHaveBeenCalled();
+      const claimedRunId = conversations.get(conversation.id)?.activeTurnId;
+      expect(claimedRunId).toBeTruthy();
+      expect(conversations.get(conversation.id)).toMatchObject({ status: 'running' });
+
+      const cleanup = shutdown as AdmissionLifecycle;
+      await cleanup.drainPrior();
+      await hub.suspend(cleanup.cleanupToken);
+      cleanup.finish();
+
+      expect(harness.chat).not.toHaveBeenCalled();
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'interrupted',
+        activeTurnId: null,
+      });
+      expect(
+        sink.frames.filter((frame) => frame.type === 'accepted' && frame.runId === claimedRunId),
+      ).toHaveLength(1);
+      expect(
+        sink.frames.filter((frame) => frame.type === 'done' && frame.runId === claimedRunId),
+      ).toHaveLength(1);
+    });
+
     it('promotes three Follow Ups exactly once in FIFO transaction order', async () => {
       const conversation = createConversation();
       const firstRun = register(conversation.id);
@@ -2754,6 +2951,52 @@ describe('ResumableChatHub', () => {
           .slice(-4)
           .map((frame) => frame.type),
       ).toEqual(['done', 'input_delivered', 'accepted', 'done']);
+    });
+
+    it('keeps an automatic terminal promotion dormant when its accepted sink closes process admission', async () => {
+      const conversation = createConversation();
+      const firstRun = register(conversation.id);
+      let fenceOnClaim = false;
+      let shutdown: AdmissionLifecycle | undefined;
+      const sink = makeV2Sink((frame) => {
+        if (
+          fenceOnClaim &&
+          frame.type === 'accepted' &&
+          frame.runId !== 'turn-01' &&
+          shutdown === undefined
+        ) {
+          shutdown = admission.beginProcessShutdown();
+        }
+      });
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+      register(conversation.id);
+      fenceOnClaim = true;
+
+      firstRun.finish();
+      await vi.waitFor(() => expect(shutdown).toBeDefined());
+
+      const claimedRunId = conversations.get(conversation.id)?.activeTurnId;
+      expect(claimedRunId).toBeTruthy();
+      expect(harness.chat).toHaveBeenCalledOnce();
+
+      const cleanup = shutdown as AdmissionLifecycle;
+      await cleanup.drainPrior();
+      await hub.suspend(cleanup.cleanupToken);
+      cleanup.finish();
+
+      expect(harness.chat).toHaveBeenCalledOnce();
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'interrupted',
+        activeTurnId: null,
+      });
+      expect(
+        sink.frames.filter((frame) => frame.type === 'accepted' && frame.runId === claimedRunId),
+      ).toHaveLength(1);
+      expect(
+        sink.frames.filter((frame) => frame.type === 'done' && frame.runId === claimedRunId),
+      ).toHaveLength(1);
     });
 
     it('broadcasts Follow Up edit/remove commits once and keeps conflicts nonterminal', async () => {
@@ -3063,6 +3306,60 @@ describe('ResumableChatHub', () => {
       secondRun.finish();
     });
 
+    it('keeps a resumed Follow Up claim dormant when its publication closes agent admission', async () => {
+      const conversation = createConversation();
+      const firstRun = register(conversation.id);
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+      firstRun.fail(new Error('Pause before resume'));
+      await vi.waitFor(() =>
+        expect(
+          conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+        ).toMatchObject({ queuePaused: true }),
+      );
+      register(conversation.id);
+      harness.chat.mockClear();
+      const paused = conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 });
+      let lifecycle: AdmissionLifecycle | undefined;
+      onChanged.mockImplementationOnce(() => {
+        lifecycle = admission.beginAgentLifecycle(conversation.agentId);
+      });
+
+      await hub.resumeFollowUps(
+        {
+          type: 'resume_follow_ups',
+          id: '20000000-0000-4000-8000-000000000002',
+          conversationId: conversation.id,
+          expectedQueueRevision: paused.queueRevision,
+        },
+        sink,
+      );
+
+      expect(lifecycle).toBeDefined();
+      expect(harness.chat).not.toHaveBeenCalled();
+      const claimedRunId = conversations.get(conversation.id)?.activeTurnId;
+      expect(claimedRunId).toBeTruthy();
+
+      const cleanup = lifecycle as AdmissionLifecycle;
+      await cleanup.drainPrior();
+      await hub.disableAgent(conversation.agentId, cleanup.cleanupToken);
+      cleanup.finish();
+
+      expect(harness.chat).not.toHaveBeenCalled();
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'interrupted',
+        activeTurnId: null,
+      });
+      expect(
+        sink.frames.filter((frame) => frame.type === 'accepted' && frame.runId === claimedRunId),
+      ).toHaveLength(1);
+      expect(
+        sink.frames.filter((frame) => frame.type === 'done' && frame.runId === claimedRunId),
+      ).toHaveLength(1);
+    });
+
     it('lets a v1 compatibility run finish while a Follow Up queue stays paused', async () => {
       const conversation = createConversation();
       const failedRun = register(conversation.id);
@@ -3288,6 +3585,60 @@ describe('ResumableChatHub', () => {
       expect(sink.frames.at(-1)).toMatchObject({ type: 'done', outcome: 'cancelled' });
     });
 
+    it.each(['agent', 'process'] as const)(
+      'does not dispatch a durably accepted Steer after its publication closes %s admission',
+      async (scope) => {
+        const conversation = createConversation();
+        register(conversation.id);
+        const sink = makeV2Sink();
+        let lifecycle: AdmissionLifecycle | undefined;
+        let armFence = false;
+        onChanged.mockImplementation(() => {
+          if (!armFence || lifecycle) return;
+          lifecycle =
+            scope === 'agent'
+              ? admission.beginAgentLifecycle(conversation.agentId)
+              : admission.beginProcessShutdown();
+        });
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        const command = enqueueInputFrame(conversation, { behavior: 'steer' });
+        armFence = true;
+
+        await hub.enqueueInput(command, sink);
+
+        expect(lifecycle).toBeDefined();
+        expect(sink.frames).toContainEqual(
+          expect.objectContaining({
+            type: 'input_accepted',
+            input: expect.objectContaining({ inputId: command.inputId }),
+          }),
+        );
+        expect(harness.steerRun).not.toHaveBeenCalled();
+
+        const cleanup = lifecycle as AdmissionLifecycle;
+        await cleanup.drainPrior();
+        if (scope === 'agent') {
+          await hub.disableAgent(conversation.agentId, cleanup.cleanupToken);
+        } else {
+          await hub.suspend(cleanup.cleanupToken);
+        }
+        cleanup.finish();
+
+        expect(sink.frames).toContainEqual(
+          expect.objectContaining({
+            type: 'input_failed',
+            input: expect.objectContaining({ inputId: command.inputId, state: 'failed' }),
+          }),
+        );
+        expect(
+          conversations
+            .bootstrapV2({ conversationId: conversation.id, limit: 100 })
+            .messages.find((message) => message.deliveryKind === 'steer'),
+        ).toMatchObject({ deliveryStatus: 'not_delivered', status: 'failed' });
+      },
+    );
+
     it('retains a backend-rejected Steer ID when persisting input_failed first fails', async () => {
       const conversation = createConversation();
       const scripted = register(conversation.id, makeScriptedStream(Promise.resolve(), true));
@@ -3355,6 +3706,119 @@ describe('ResumableChatHub', () => {
         conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }).pendingInputs,
       ).toEqual([]);
     });
+
+    it.each(['agent', 'process'] as const)(
+      'rejects late Steer consumption after a %s fence and terminalizes it as not delivered',
+      async (scope) => {
+        const conversation = createConversation();
+        const scripted = register(conversation.id, makeScriptedStream(Promise.resolve(), true));
+        const sink = makeV2Sink();
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        await vi.waitFor(() => expect(harness.chat).toHaveBeenCalledOnce());
+        const command = enqueueInputFrame(conversation, { behavior: 'steer' });
+        await hub.enqueueInput(command, sink);
+        const request = harness.chat.mock.calls[0]?.[0] as ChatRequest;
+        const deliverSteer = vi.spyOn(conversations, 'deliverSteer');
+        const lifecycle =
+          scope === 'agent'
+            ? admission.beginAgentLifecycle(conversation.agentId)
+            : admission.beginProcessShutdown();
+
+        await expect(request.onSteerConsumed?.(command.inputId)).rejects.toThrow(
+          'no longer accepting Steers',
+        );
+        expect(deliverSteer).not.toHaveBeenCalled();
+        expect(request.signal?.aborted).toBe(true);
+        expect(harness.cancel).toHaveBeenCalledWith(conversation.agentId, conversation.id);
+        expect(sink.frames.some((frame) => frame.type === 'input_delivered')).toBe(false);
+
+        const cleanup = lifecycle as AdmissionLifecycle;
+        await cleanup.drainPrior();
+        if (scope === 'agent') {
+          await hub.disableAgent(conversation.agentId, cleanup.cleanupToken);
+        } else {
+          await hub.suspend(cleanup.cleanupToken);
+        }
+        cleanup.finish();
+
+        expect(sink.frames).toContainEqual(
+          expect.objectContaining({
+            type: 'input_failed',
+            input: expect.objectContaining({
+              inputId: command.inputId,
+              state: 'failed',
+            }),
+          }),
+        );
+        expect(
+          conversations
+            .bootstrapV2({ conversationId: conversation.id, limit: 100 })
+            .messages.find((message) => message.deliveryKind === 'steer'),
+        ).toMatchObject({ deliveryStatus: 'not_delivered', status: 'failed' });
+        expect(
+          conversations
+            .readV2Since(conversation.agentId, conversation.id, 0)
+            .frames.some((frame) => frame.type === 'event' && frame.event.type === 'text_delta'),
+        ).toBe(false);
+      },
+    );
+
+    it.each(['agent', 'process'] as const)(
+      'aborts provider continuation when delivered Steer publication closes %s admission',
+      async (scope) => {
+        const conversation = createConversation();
+        register(conversation.id, makeScriptedStream(Promise.resolve(), true));
+        const sink = makeV2Sink();
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        await vi.waitFor(() => expect(harness.chat).toHaveBeenCalledOnce());
+        const command = enqueueInputFrame(conversation, { behavior: 'steer' });
+        await hub.enqueueInput(command, sink);
+        const request = harness.chat.mock.calls[0]?.[0] as ChatRequest;
+        let lifecycle: AdmissionLifecycle | undefined;
+        let armFence = true;
+        onChanged.mockImplementation(() => {
+          if (!armFence || lifecycle) return;
+          armFence = false;
+          lifecycle =
+            scope === 'agent'
+              ? admission.beginAgentLifecycle(conversation.agentId)
+              : admission.beginProcessShutdown();
+        });
+
+        await expect(request.onSteerConsumed?.(command.inputId)).rejects.toThrow(
+          'no longer accepting Steers',
+        );
+
+        expect(lifecycle).toBeDefined();
+        expect(request.signal?.aborted).toBe(true);
+        expect(
+          sink.frames.filter(
+            (frame) => frame.type === 'input_delivered' && frame.input.inputId === command.inputId,
+          ),
+        ).toHaveLength(1);
+        const cleanup = lifecycle as AdmissionLifecycle;
+        await cleanup.drainPrior();
+        if (scope === 'agent') {
+          await hub.disableAgent(conversation.agentId, cleanup.cleanupToken);
+        } else {
+          await hub.suspend(cleanup.cleanupToken);
+        }
+        cleanup.finish();
+
+        expect(
+          sink.frames.some(
+            (frame) => frame.type === 'input_failed' && frame.input.inputId === command.inputId,
+          ),
+        ).toBe(false);
+        expect(
+          conversations
+            .bootstrapV2({ conversationId: conversation.id, limit: 100 })
+            .messages.find((message) => message.deliveryKind === 'steer'),
+        ).toMatchObject({ deliveryStatus: 'delivered' });
+      },
+    );
 
     it('catches up settled out-of-band run journals before broadcasting terminal frames', async () => {
       const cleanup = cleanupGate();
@@ -3432,7 +3896,7 @@ describe('ResumableChatHub', () => {
       ]);
     });
 
-    it('claims each recovered Follow Up once and rejects missing or disabled recovery pumps', async () => {
+    it('claims each recovered Follow Up once and skips missing or disabled agents', async () => {
       const conversation = createConversation();
       const accepted = conversations.acceptRun({
         protocol: 'v2',
@@ -3506,14 +3970,708 @@ describe('ResumableChatHub', () => {
           agents: harness.agents,
           autoTitle,
           isAgentEnabled: () => false,
+          admission: new GatewayAdmissionController(),
         });
 
         await expect(
           blockedHub.resumeRecoveredQueues([blockedConversation.id]),
-        ).rejects.toMatchObject({ code: 'conversation_busy' });
+        ).resolves.toBeUndefined();
         expect(claim).not.toHaveBeenCalledWith(blockedConversation.id);
         await blockedHub.stop();
       }
+    });
+
+    it('rechecks process admission before terminal promotion and preserves the Follow Up', async () => {
+      const conversation = createConversation();
+      const firstRun = register(conversation.id);
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+
+      admission.beginProcessShutdown().finish();
+      firstRun.finish();
+      await vi.waitFor(() =>
+        expect(conversations.get(conversation.id)).toMatchObject({
+          status: 'idle',
+          activeTurnId: null,
+        }),
+      );
+
+      expect(harness.chat).toHaveBeenCalledOnce();
+      expect(
+        conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+      ).toMatchObject({ pendingInputs: [expect.objectContaining({ state: 'queued' })] });
+    });
+
+    it.each(['returned null', 'rejected'])(
+      'quarantines a live canonical journal failure that %s without a terminal or promotion',
+      async (failure) => {
+        const conversation = createConversation();
+        const cleanup = cleanupGate();
+        const scripted = register(conversation.id, makeScriptedStream(cleanup.promise, false));
+        const sink = makeV2Sink();
+        const markRecoveryRequired = vi.spyOn(admission, 'markRecoveryRequired');
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+
+        scripted.finish();
+        await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+        const journalFailure = new Error(`canonical swarm journal ${failure}`);
+        journalFailure.name = 'CanonicalSwarmJournalError';
+        cleanup.reject(journalFailure);
+        await vi.waitFor(() =>
+          expect(markRecoveryRequired).toHaveBeenCalledWith(conversation.agentId, conversation.id),
+        );
+
+        expect(conversations.get(conversation.id)).toMatchObject({
+          status: 'running',
+          activeTurnId: 'turn-01',
+        });
+        expect(sink.frames.some((frame) => frame.type === 'done' || frame.type === 'error')).toBe(
+          false,
+        );
+        expect(
+          conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+        ).toMatchObject({ pendingInputs: [expect.objectContaining({ state: 'queued' })] });
+        expect(harness.chat).toHaveBeenCalledOnce();
+        expect(admission.isOpen(conversation.agentId, conversation.id)).toBe(false);
+        expect(admission.isOpen(conversation.agentId, 'unrelated-conversation')).toBe(true);
+      },
+    );
+
+    it('quarantines a canonical failure raised by natural generator unwind before terminalization', async () => {
+      const conversation = createConversation();
+      const unwind = deferred<void>();
+      const journalFailure = new Error('canonical journal failed during generator finally');
+      journalFailure.name = 'CanonicalSwarmJournalError';
+      const stream = (async function* (): AsyncGenerator<AgentEvent> {
+        try {
+          await unwind.promise;
+          yield* [];
+        } finally {
+          await Promise.reject(journalFailure);
+        }
+      })();
+      harness.chat.mockReturnValueOnce(stream);
+      const sink = makeV2Sink();
+      const markRecoveryRequired = vi.spyOn(admission, 'markRecoveryRequired');
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+
+      unwind.resolve();
+      await vi.waitFor(() =>
+        expect(markRecoveryRequired).toHaveBeenCalledWith(conversation.agentId, conversation.id),
+      );
+
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'running',
+        activeTurnId: 'turn-01',
+      });
+      expect(sink.frames.some((frame) => frame.type === 'done' || frame.type === 'error')).toBe(
+        false,
+      );
+      expect(
+        conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+      ).toMatchObject({ pendingInputs: [expect.objectContaining({ state: 'queued' })] });
+      expect(admission.isOpen(conversation.agentId, conversation.id)).toBe(false);
+    });
+
+    it('quarantines a nested canonical failure when generator cleanup reports multiple errors', async () => {
+      const conversation = createConversation();
+      const scripted = register(conversation.id);
+      const sink = makeV2Sink();
+      const markRecoveryRequired = vi.spyOn(admission, 'markRecoveryRequired');
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+      const journalFailure = new Error('nested canonical journal failure');
+      journalFailure.name = 'CanonicalSwarmJournalError';
+
+      scripted.fail(
+        new AggregateError(
+          [
+            new Error('backend disposal failed'),
+            new Error('cleanup wrapper', { cause: journalFailure }),
+          ],
+          'generator cleanup failed',
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(markRecoveryRequired).toHaveBeenCalledWith(conversation.agentId, conversation.id),
+      );
+
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'running',
+        activeTurnId: 'turn-01',
+      });
+      expect(sink.frames.some((frame) => frame.type === 'done' || frame.type === 'error')).toBe(
+        false,
+      );
+      expect(
+        conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+      ).toMatchObject({ pendingInputs: [expect.objectContaining({ state: 'queued' })] });
+      expect(admission.isOpen(conversation.agentId, conversation.id)).toBe(false);
+    });
+
+    it('rejects agent lifecycle cleanup when the live run is already quarantined', async () => {
+      const conversation = createConversation();
+      const cleanup = cleanupGate();
+      const scripted = register(conversation.id, makeScriptedStream(cleanup.promise, false));
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      scripted.finish();
+      await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+      const journalFailure = new Error('canonical quarantine established');
+      journalFailure.name = 'CanonicalSwarmJournalError';
+      cleanup.reject(journalFailure);
+      await vi.waitFor(() =>
+        expect(admission.isOpen(conversation.agentId, conversation.id)).toBe(false),
+      );
+      const lifecycle = admission.beginAgentLifecycle(conversation.agentId);
+
+      await expect(hub.disableAgent(conversation.agentId, lifecycle.cleanupToken)).rejects.toThrow(
+        'requires recovery',
+      );
+
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'running',
+        activeTurnId: 'turn-01',
+      });
+      expect(sink.frames.some((frame) => frame.type === 'done' || frame.type === 'error')).toBe(
+        false,
+      );
+      lifecycle.finish();
+    });
+
+    it.each(['disable', 'delete', 'suspend'] as const)(
+      'stops %s lifecycle cleanup when generator teardown discovers a canonical failure',
+      async (operationKind) => {
+        const conversation = createConversation();
+        const cleanupGate = deferred<void>();
+        const scripted = register(conversation.id, makeScriptedStream(cleanupGate.promise, false));
+        const sink = makeV2Sink();
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+        const lifecycle =
+          operationKind === 'suspend'
+            ? admission.beginProcessShutdown()
+            : admission.beginAgentLifecycle(conversation.agentId);
+        const operation =
+          operationKind === 'disable'
+            ? hub.disableAgent(conversation.agentId, lifecycle.cleanupToken)
+            : operationKind === 'delete'
+              ? hub.deleteAgent(conversation.agentId, lifecycle.cleanupToken)
+              : hub.suspend(lifecycle.cleanupToken);
+
+        scripted.finish();
+        await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+        const journalFailure = new Error(`canonical failure during ${operationKind}`);
+        journalFailure.name = 'CanonicalSwarmJournalError';
+        cleanupGate.reject(journalFailure);
+
+        await expect(operation).rejects.toThrow('requires recovery');
+        expect(conversations.get(conversation.id)).toMatchObject({
+          status: 'running',
+          activeTurnId: 'turn-01',
+        });
+        expect(sink.frames.some((frame) => frame.type === 'done' || frame.type === 'error')).toBe(
+          false,
+        );
+        expect(
+          conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+        ).toMatchObject({ pendingInputs: [expect.objectContaining({ state: 'queued' })] });
+        expect(harness.chat).toHaveBeenCalledOnce();
+        expect(admission.isOpen(conversation.agentId, conversation.id)).toBe(false);
+        lifecycle.finish();
+      },
+    );
+
+    it.each(['disable', 'delete', 'suspend'] as const)(
+      'starts backend interruption before awaiting a pre-ready seal during %s',
+      async (operationKind) => {
+        const conversation = createConversation();
+        const scripted = register(conversation.id, makeScriptedStream(Promise.resolve(), false));
+        const sink = makeV2Sink();
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        const command = enqueueInputFrame(conversation, { behavior: 'steer' });
+        await hub.enqueueInput(command, sink);
+
+        const sealStarted = deferred<void>();
+        const cancellationSeen = deferred<void>();
+        harness.sealSteering.mockImplementationOnce(async () => {
+          sealStarted.resolve();
+          await cancellationSeen.promise;
+          // A coordinator cancelled before readiness cannot safely call an idle
+          // backend seal. The hub must recover this accepted ID from SQLite.
+          return [];
+        });
+        harness.cancel.mockImplementationOnce(() => {
+          cancellationSeen.resolve();
+          scripted.finish();
+          return true;
+        });
+        const lifecycle =
+          operationKind === 'suspend'
+            ? admission.beginProcessShutdown()
+            : admission.beginAgentLifecycle(conversation.agentId);
+        const operation =
+          operationKind === 'disable'
+            ? hub.disableAgent(conversation.agentId, lifecycle.cleanupToken)
+            : operationKind === 'delete'
+              ? hub.deleteAgent(conversation.agentId, lifecycle.cleanupToken)
+              : hub.suspend(lifecycle.cleanupToken);
+
+        await sealStarted.promise;
+        try {
+          await vi.waitFor(() => expect(harness.cancel).toHaveBeenCalledOnce());
+          await operation;
+        } finally {
+          cancellationSeen.resolve();
+          scripted.finish();
+          await Promise.allSettled([operation]);
+          lifecycle.finish();
+        }
+
+        expect(harness.sealSteering).toHaveBeenCalledOnce();
+        expect(
+          sink.frames.filter(
+            (frame) => frame.type === 'input_failed' && frame.input.inputId === command.inputId,
+          ),
+        ).toHaveLength(1);
+        expect(sink.frames).toContainEqual(
+          expect.objectContaining({ type: 'done', outcome: 'interrupted' }),
+        );
+      },
+    );
+
+    it('rejects queue mutations and replay before storage access after an agent fence', async () => {
+      const conversation = createConversation();
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      const read = vi.spyOn(conversations, 'readV2Since');
+      const enqueue = vi.spyOn(conversations, 'enqueueInput');
+      admission.beginAgentLifecycle(conversation.agentId).finish();
+
+      expect(() =>
+        hub.subscribeConversation(
+          subscriptionFrame(conversation, 0, '10000000-0000-4000-8000-000000000099'),
+          makeV2Sink(),
+        ),
+      ).toThrow('disabled');
+      await expect(hub.enqueueInput(enqueueInputFrame(conversation), sink)).rejects.toThrow(
+        'disabled',
+      );
+      expect(read).not.toHaveBeenCalled();
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it.each(['agent', 'process'] as const)(
+      'rechecks a pre-fence queue command after held catch-up before any storage mutation (%s fence)',
+      async (scope) => {
+        const conversation = createConversation();
+        register(conversation.id);
+        const sink = makeV2Sink();
+        hub.subscribeConversation(subscriptionFrame(conversation), sink);
+        hub.startV2(v2SendFrame(conversation), sink);
+        const existing = enqueueInputFrame(conversation, {
+          commandId: '20000000-0000-4000-8000-000000000061',
+          inputId: '30000000-0000-4000-8000-000000000061',
+        });
+        conversations.enqueueInput({
+          commandId: existing.id,
+          inputId: existing.inputId,
+          agentId: existing.agentId,
+          channelId: existing.channelId,
+          conversationId: existing.conversationId,
+          text: existing.text,
+          behavior: existing.behavior,
+          expectedActiveTurnId: existing.expectedActiveTurnId,
+        });
+        conversations.pauseFollowUpsForAgentDisable(conversation.agentId);
+        const queueRevision = conversations.bootstrapV2({
+          conversationId: conversation.id,
+          limit: 100,
+        }).queueRevision;
+        const gate = deferred<void>();
+        harness.answerQuestion.mockReturnValueOnce(gate.promise);
+        const lockHolder = hub.answerV2(
+          { type: 'answer', id: 'turn-01', questionId: 'question-held', answer: 'wait' },
+          sink,
+        );
+        await vi.waitFor(() => expect(harness.answerQuestion).toHaveBeenCalledOnce());
+        const enqueue = vi.spyOn(conversations, 'enqueueInput');
+        const edit = vi.spyOn(conversations, 'editFollowUp');
+        const remove = vi.spyOn(conversations, 'removeFollowUp');
+        const resume = vi.spyOn(conversations, 'resumeFollowUps');
+
+        const pending = [
+          hub.enqueueInput(
+            enqueueInputFrame(conversation, {
+              commandId: '20000000-0000-4000-8000-000000000062',
+              inputId: '30000000-0000-4000-8000-000000000062',
+            }),
+            sink,
+          ),
+          hub.editFollowUp(
+            {
+              type: 'edit_follow_up',
+              id: '20000000-0000-4000-8000-000000000063',
+              conversationId: conversation.id,
+              inputId: existing.inputId,
+              expectedRevision: 1,
+              text: 'must not persist',
+            },
+            sink,
+          ),
+          hub.removeFollowUp(
+            {
+              type: 'remove_follow_up',
+              id: '20000000-0000-4000-8000-000000000064',
+              conversationId: conversation.id,
+              inputId: existing.inputId,
+              expectedRevision: 1,
+            },
+            sink,
+          ),
+          hub.resumeFollowUps(
+            {
+              type: 'resume_follow_ups',
+              id: '20000000-0000-4000-8000-000000000065',
+              conversationId: conversation.id,
+              expectedQueueRevision: queueRevision,
+            },
+            sink,
+          ),
+        ];
+        if (scope === 'agent') admission.closeAgent(conversation.agentId);
+        else admission.beginProcessShutdown().finish();
+        gate.resolve();
+        await lockHolder;
+
+        const outcomes = await Promise.allSettled(pending);
+        expect(outcomes.every((outcome) => outcome.status === 'rejected')).toBe(true);
+        expect(enqueue).not.toHaveBeenCalled();
+        expect(edit).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        expect(resume).not.toHaveBeenCalled();
+        expect(conversations.get(conversation.id)).toMatchObject({
+          status: 'running',
+          activeTurnId: 'turn-01',
+        });
+      },
+    );
+
+    it('rejects v1 resume after a process fence before reading SQLite or attaching a sink', () => {
+      const conversation = createConversation();
+      const sink = makeSink();
+      const read = vi.spyOn(conversations.eventLog, 'readSince');
+      admission.beginProcessShutdown().finish();
+
+      expect(() =>
+        hub.resume(
+          {
+            type: 'resume',
+            id: 'turn-before-shutdown',
+            agentId: conversation.agentId,
+            conversationId: conversation.id,
+            sinceSeq: 0,
+          },
+          sink,
+        ),
+      ).toThrow('shutting down');
+      expect(read).not.toHaveBeenCalled();
+      expect(sink.frames).toEqual([]);
+    });
+
+    it('disables with an internal cleanup token, pausing the queue before interruption', async () => {
+      const conversation = createConversation();
+      const scripted = register(conversation.id);
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      await hub.enqueueInput(enqueueInputFrame(conversation), sink);
+      const lifecycle = admission.beginAgentLifecycle(conversation.agentId);
+
+      const disabling = hub.disableAgent(conversation.agentId, lifecycle.cleanupToken);
+      await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+      await disabling;
+
+      const durable = sink.frames.filter((frame) => 'v2Seq' in frame).map((frame) => frame.type);
+      expect(durable.slice(-2)).toEqual(['queue_paused', 'done']);
+      expect(sink.frames.at(-1)).toMatchObject({ type: 'done', outcome: 'interrupted' });
+      expect(
+        conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+      ).toMatchObject({
+        queuePaused: true,
+        pendingInputs: [expect.objectContaining({ state: 'queued' })],
+      });
+      lifecycle.finish();
+    });
+
+    it('rejects cleanup capability misuse before lifecycle storage work', async () => {
+      const conversation = createConversation('agent-target');
+      const pause = vi.spyOn(conversations, 'pauseFollowUpsForAgentDisable');
+      const wrongAgent = admission.beginAgentLifecycle('agent-other');
+
+      await expect(hub.disableAgent(conversation.agentId, wrongAgent.cleanupToken)).rejects.toThrow(
+        'cleanup token',
+      );
+      expect(pause).not.toHaveBeenCalled();
+      wrongAgent.finish();
+    });
+
+    it('deletes through privileged cleanup and broadcasts interrupted and archived queue frames', async () => {
+      const conversation = createConversation('agent-delete');
+      const scripted = register(conversation.id);
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+      hub.startV2(v2SendFrame(conversation), sink);
+      const queued = enqueueInputFrame(conversation, {
+        commandId: '20000000-0000-4000-8000-000000000071',
+        inputId: '30000000-0000-4000-8000-000000000071',
+      });
+      await hub.enqueueInput(queued, sink);
+      const lifecycle = admission.beginAgentLifecycle(conversation.agentId);
+
+      const deleting = hub.deleteAgent(conversation.agentId, lifecycle.cleanupToken);
+      await vi.waitFor(() => expect(scripted.return).toHaveBeenCalledOnce());
+      await deleting;
+
+      expect(sink.frames).toContainEqual(
+        expect.objectContaining({ type: 'done', outcome: 'interrupted' }),
+      );
+      expect(sink.frames).toContainEqual(
+        expect.objectContaining({
+          type: 'input_failed',
+          input: expect.objectContaining({
+            inputId: queued.inputId,
+            state: 'failed',
+            failureCode: 'not_found',
+          }),
+        }),
+      );
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'archived',
+        activeTurnId: null,
+      });
+      expect(
+        conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+      ).toMatchObject({ pendingInputs: [] });
+      expect(harness.chat).toHaveBeenCalledOnce();
+      lifecycle.finish();
+    });
+
+    it('snapshots every conversation watermark before deleting more than one list page', async () => {
+      const agentId = 'agent-delete-many';
+      const subscriptions: Array<{
+        conversation: ConversationSummary;
+        sink: V2TestSink;
+      }> = [];
+
+      for (let index = 0; index < 101; index += 1) {
+        const conversation = createConversation(agentId);
+        const accepted = conversations.acceptRun({
+          protocol: 'v2',
+          agentId,
+          channelId: 'direct',
+          conversationId: conversation.id,
+          runId: `historical-run-${index}`,
+          text: `Historical message ${index}`,
+        });
+        conversations.enqueueInput({
+          commandId: `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+          inputId: `30000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+          agentId,
+          channelId: 'direct',
+          conversationId: conversation.id,
+          text: `Queued Follow Up ${index}`,
+          behavior: 'followUp',
+        });
+        conversations.finishRunAndClaimNext({
+          conversationId: conversation.id,
+          runId: accepted.runId,
+          segmentTurnId: accepted.segmentTurnId,
+          outcome: 'completed',
+          suppressPromotion: true,
+        });
+        const current = conversations.getV2(conversation.id);
+        if (!current) throw new Error(`Conversation ${conversation.id} disappeared`);
+        const sink = makeV2Sink();
+        hub.subscribeConversation(
+          subscriptionFrame(
+            conversation,
+            current.v2LastSeq,
+            `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+          ),
+          sink,
+        );
+        sink.frames.length = 0;
+        subscriptions.push({ conversation, sink });
+      }
+
+      const readV2Since = vi.spyOn(conversations, 'readV2Since');
+      const lifecycle = admission.beginAgentLifecycle(agentId);
+      await hub.deleteAgent(agentId, lifecycle.cleanupToken);
+
+      expect(readV2Since).toHaveBeenCalledTimes(101);
+      expect(readV2Since.mock.calls.every(([, , sinceV2Seq]) => sinceV2Seq === 3)).toBe(true);
+      for (const { conversation, sink } of subscriptions) {
+        expect(
+          sink.frames.map((frame) =>
+            'v2Seq' in frame ? `${frame.v2Seq}:${frame.type}` : frame.type,
+          ),
+          `unexpected delete replay for ${conversation.id}`,
+        ).toEqual(['4:input_failed']);
+      }
+      lifecycle.finish();
+    });
+
+    it('hands concurrent repeated recovery pumps off once without waiting for provider completion', async () => {
+      const conversation = createConversation();
+      const active = conversations.acceptRun({
+        protocol: 'v2',
+        agentId: conversation.agentId,
+        channelId: 'direct',
+        conversationId: conversation.id,
+        runId: 'turn-before-concurrent-recovery',
+        text: 'Before restart',
+      });
+      const queued = enqueueInputFrame(conversation, {
+        commandId: '20000000-0000-4000-8000-000000000081',
+        inputId: '30000000-0000-4000-8000-000000000081',
+      });
+      conversations.enqueueInput({
+        commandId: queued.id,
+        inputId: queued.inputId,
+        agentId: queued.agentId,
+        channelId: queued.channelId,
+        conversationId: queued.conversationId,
+        text: queued.text,
+        behavior: queued.behavior,
+        expectedActiveTurnId: queued.expectedActiveTurnId,
+      });
+      const reservedRunId = conversations
+        .bootstrapV2({ conversationId: conversation.id, limit: 100 })
+        .pendingInputs.find((input) => input.inputId === queued.inputId)?.runId;
+      conversations.recoverV2State();
+      const scripted = register(conversation.id, makeScriptedStream(Promise.resolve(), false));
+      const sink = makeV2Sink();
+      hub.subscribeConversation(subscriptionFrame(conversation), sink);
+
+      const pumps = Promise.all([
+        hub.resumeRecoveredQueues([conversation.id, conversation.id]),
+        hub.resumeRecoveredQueues([conversation.id]),
+      ]);
+      await expect(
+        Promise.race([
+          pumps.then(() => 'handed-off'),
+          new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+        ]),
+      ).resolves.toBe('handed-off');
+
+      expect(active.runId).toBe('turn-before-concurrent-recovery');
+      expect(harness.chat).toHaveBeenCalledOnce();
+      expect(sink.frames.filter((frame) => frame.type === 'input_delivered')).toHaveLength(1);
+      expect(conversations.get(conversation.id)).toMatchObject({
+        status: 'running',
+        activeTurnId: reservedRunId,
+      });
+      expect(conversations.listRunMessages(conversation.id, reservedRunId as string)).toHaveLength(
+        2,
+      );
+      scripted.finish();
+    });
+
+    it('hands off unrelated recovered work before surfacing a sibling claim failure', async () => {
+      const bad = createConversation('agent-bad');
+      const good = createConversation('agent-good');
+      for (const [index, conversation] of [bad, good].entries()) {
+        conversations.acceptRun({
+          protocol: 'v2',
+          agentId: conversation.agentId,
+          channelId: 'direct',
+          conversationId: conversation.id,
+          runId: `turn-before-mixed-recovery-${index}`,
+          text: 'Before restart',
+        });
+        const queued = enqueueInputFrame(conversation, {
+          commandId: `20000000-0000-4000-8000-00000000009${index}`,
+          inputId: `30000000-0000-4000-8000-00000000009${index}`,
+        });
+        conversations.enqueueInput({
+          commandId: queued.id,
+          inputId: queued.inputId,
+          agentId: queued.agentId,
+          channelId: queued.channelId,
+          conversationId: queued.conversationId,
+          text: queued.text,
+          behavior: queued.behavior,
+          expectedActiveTurnId: queued.expectedActiveTurnId,
+        });
+      }
+      conversations.recoverV2State();
+      const claim = vi.spyOn(conversations, 'claimNextFollowUp');
+      claim.mockImplementationOnce(() => {
+        throw new Error('bad recovery claim');
+      });
+      const goodScript = register(good.id);
+
+      await expect(hub.resumeRecoveredQueues([bad.id, good.id])).rejects.toThrow(
+        'bad recovery claim',
+      );
+
+      expect(claim).toHaveBeenCalledWith(bad.id);
+      expect(claim).toHaveBeenCalledWith(good.id);
+      expect(harness.chat).toHaveBeenCalledOnce();
+      expect(harness.chat.mock.calls[0]?.[0]).toMatchObject({ conversationId: good.id });
+      goodScript.finish();
+    });
+
+    it('skips an explicitly paused recovered queue without claiming it', async () => {
+      const conversation = createConversation();
+      const active = conversations.acceptRun({
+        protocol: 'v2',
+        agentId: conversation.agentId,
+        channelId: 'direct',
+        conversationId: conversation.id,
+        runId: 'turn-before-paused-recovery',
+        text: 'Before restart',
+      });
+      const queued = enqueueInputFrame(conversation, {
+        commandId: '20000000-0000-4000-8000-000000000099',
+        inputId: '30000000-0000-4000-8000-000000000099',
+      });
+      conversations.enqueueInput({
+        commandId: queued.id,
+        inputId: queued.inputId,
+        agentId: queued.agentId,
+        channelId: queued.channelId,
+        conversationId: queued.conversationId,
+        text: queued.text,
+        behavior: queued.behavior,
+        expectedActiveTurnId: queued.expectedActiveTurnId,
+      });
+      conversations.pauseFollowUpsForAgentDisable(conversation.agentId);
+      conversations.recoverV2State();
+      const claim = vi.spyOn(conversations, 'claimNextFollowUp');
+
+      await hub.resumeRecoveredQueues([conversation.id]);
+
+      expect(active.runId).toBe('turn-before-paused-recovery');
+      expect(claim).not.toHaveBeenCalled();
+      expect(harness.chat).not.toHaveBeenCalled();
+      expect(
+        conversations.bootstrapV2({ conversationId: conversation.id, limit: 100 }),
+      ).toMatchObject({
+        queuePaused: true,
+        pendingInputs: [expect.objectContaining({ state: 'queued' })],
+      });
     });
   });
 });

@@ -1,8 +1,9 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-contract';
 import { CHAT_INPUT_QUEUE_CAPABILITY, type MobileV2WsServerFrame } from '@dash/mobile-contract-v2';
-import type { Hono } from 'hono';
+import type { Env, Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
+import { type AdmissionLease, GatewayAdmissionController } from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { parseMobileV2ClientFrame, summarizeMobileV2Inbound } from './chat-ws-v2.js';
 import { toClientLocation } from './client-location.js';
@@ -39,7 +40,11 @@ export interface ChatWsOptions {
    * network drop, and dropped consumers reconcile via the event log while
    * workers finish). Structural type so tests can pass a stub.
    */
-  swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
+  swarmCoordinator?: {
+    cancelTurn(agentId: string, conversationId: string): boolean | Promise<boolean>;
+  };
+  /** Shared process/agent/conversation generation fence. */
+  admission?: GatewayAdmissionController;
   /**
    * Single-use ticket store for browser WebSocket upgrades. Browsers cannot
    * set an `Authorization` header on a WebSocket handshake, so a caller that
@@ -49,6 +54,11 @@ export interface ChatWsOptions {
    * `Authorization` header is present — see the upgrade handler below.
    */
   wsTickets?: WsTicketStore;
+}
+
+export interface ChatWsLifecycle {
+  beginClosing(code: number, reason: string): void;
+  flushAndCloseAll(code: number, reason: string, timeoutMs: number): Promise<void>;
 }
 
 const KNOWN_CLIENT_FRAME_TYPES = new Set(['message', 'resume', 'answer', 'cancel']);
@@ -259,7 +269,11 @@ function conversationKey(agentId: string, conversationId: string): string {
   return `${agentId}/${conversationId}`;
 }
 
-export function mountChatWs(app: Hono, options: ChatWsOptions): void {
+interface MountedChatSocket {
+  close(code: number, reason: string): void;
+}
+
+export function mountChatWs<E extends Env>(app: Hono<E>, options: ChatWsOptions): ChatWsLifecycle {
   const {
     agents,
     resumableChatHub,
@@ -268,6 +282,36 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
     eventLogStore,
     wsTickets,
   } = options;
+  const admission = options.admission ?? new GatewayAdmissionController();
+  const sockets = new Set<MountedChatSocket>();
+  const emptyWaiters = new Set<() => void>();
+  const pendingSettlements = new Set<Promise<unknown>>();
+  let closing: { code: number; reason: string } | undefined;
+
+  const notifyIfSettled = (): void => {
+    if (sockets.size !== 0 || pendingSettlements.size !== 0) return;
+    for (const resolve of emptyWaiters) resolve();
+    emptyWaiters.clear();
+  };
+
+  const trackSettlement = <T>(promise: Promise<T>): Promise<T> => {
+    pendingSettlements.add(promise);
+    void promise.then(
+      () => {
+        pendingSettlements.delete(promise);
+        notifyIfSettled();
+      },
+      () => {
+        pendingSettlements.delete(promise);
+        notifyIfSettled();
+      },
+    );
+    return promise;
+  };
+
+  const beginClosing = (code: number, reason: string): void => {
+    closing ??= { code, reason };
+  };
 
   /**
    * Append a payload to the durable event log and return the assigned
@@ -387,15 +431,33 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
         }
       }
 
+      if (closing) {
+        const closeState = closing;
+        return {
+          onOpen(_event, ws) {
+            ws.close(closeState.code, closeState.reason);
+          },
+        };
+      }
+
       // Track active streams by message ID
       const activeStreams = new Map<
         string,
-        { controller: AbortController; agentId: string; conversationId: string }
+        {
+          controller: AbortController;
+          agentId: string;
+          conversationId: string;
+          lease: AdmissionLease;
+        }
       >();
       // Track active streams by conversation key for steer/followUp detection
       const conversationStreams = new Map<string, string>(); // convKey → messageId
+      const knownRunOwners = new Map<string, { agentId: string; conversationId: string }>();
+      const conversationOwners = new Map<string, string>();
       let mode: ConnectionMode = 'pending';
       let connectionSocket: { send(data: string): void } | undefined;
+      let mountedSocket: MountedChatSocket | undefined;
+      let cleaned = false;
       const connectionSink = {
         send(frame: MobileWsServerFrame | MobileV2WsServerFrame) {
           if (mode === 'closing' || !connectionSocket) {
@@ -406,6 +468,42 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       };
       const sink = connectionSink as TurnFrameSink;
       const v2Sink = connectionSink as V2ConversationFrameSink;
+
+      const cancelSwarm = (agentId: string, conversationId: string): Promise<void> => {
+        const result = options.swarmCoordinator?.cancelTurn(agentId, conversationId);
+        if (result === undefined) return Promise.resolve();
+        return Promise.resolve(result).then(() => undefined);
+      };
+
+      const cleanupConnection = (): void => {
+        if (cleaned) return;
+        cleaned = true;
+        mode = 'closing';
+        connectionSocket = undefined;
+        resumableChatHub.detach(connectionSink);
+        for (const { controller, agentId, conversationId } of activeStreams.values()) {
+          controller.abort();
+          agents.cancel(agentId, conversationId);
+          trackSettlement(cancelSwarm(agentId, conversationId).catch(() => undefined));
+        }
+        activeStreams.clear();
+        conversationStreams.clear();
+        knownRunOwners.clear();
+        conversationOwners.clear();
+      };
+
+      const assertFrameAdmitted = (agentId?: string, conversationId?: string): void => {
+        admission.capture(agentId, conversationId);
+      };
+
+      const runAdmitted = <T>(
+        agentId: string | undefined,
+        conversationId: string | undefined,
+        operation: () => T,
+      ): T => {
+        assertFrameAdmitted(agentId, conversationId);
+        return operation();
+      };
 
       const closeProtocol = (
         ws: { close(code?: number, reason?: string): void },
@@ -463,7 +561,20 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
       return {
         onOpen(_event, ws) {
-          if (mode !== 'closing') connectionSocket = ws;
+          if (closing) {
+            cleanupConnection();
+            ws.close(closing.code, closing.reason);
+            return;
+          }
+          if (mode === 'closing') return;
+          connectionSocket = ws;
+          mountedSocket = {
+            close(code, reason) {
+              cleanupConnection();
+              ws.close(code, reason);
+            },
+          };
+          sockets.add(mountedSocket);
         },
 
         onMessage(event, ws) {
@@ -561,42 +672,88 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
             const msg = result.frame;
             switch (msg.type) {
-              case 'subscribe_conversation':
+              case 'subscribe_conversation': {
+                conversationOwners.set(msg.conversationId, msg.agentId);
                 dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
-                  resumableChatHub.subscribeConversation(msg, v2Sink),
+                  runAdmitted(msg.agentId, msg.conversationId, () =>
+                    resumableChatHub.subscribeConversation(msg, v2Sink),
+                  ),
                 );
                 return;
-              case 'message':
+              }
+              case 'message': {
+                conversationOwners.set(msg.conversationId, msg.agentId);
+                knownRunOwners.set(msg.id, {
+                  agentId: msg.agentId,
+                  conversationId: msg.conversationId,
+                });
                 dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
-                  resumableChatHub.startV2(msg, v2Sink),
+                  runAdmitted(msg.agentId, msg.conversationId, () =>
+                    resumableChatHub.startV2(msg, v2Sink),
+                  ),
                 );
                 return;
-              case 'enqueue_input':
+              }
+              case 'enqueue_input': {
+                conversationOwners.set(msg.conversationId, msg.agentId);
+                if (msg.behavior === 'steer' && msg.expectedActiveTurnId !== undefined) {
+                  knownRunOwners.set(msg.expectedActiveTurnId, {
+                    agentId: msg.agentId,
+                    conversationId: msg.conversationId,
+                  });
+                }
                 dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
-                  resumableChatHub.enqueueInput(msg, v2Sink),
+                  runAdmitted(msg.agentId, msg.conversationId, () =>
+                    resumableChatHub.enqueueInput(msg, v2Sink),
+                  ),
                 );
                 return;
-              case 'edit_follow_up':
+              }
+              case 'edit_follow_up': {
+                const agentId = conversationOwners.get(msg.conversationId);
                 dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
-                  resumableChatHub.editFollowUp(msg, v2Sink),
+                  runAdmitted(agentId, msg.conversationId, () =>
+                    resumableChatHub.editFollowUp(msg, v2Sink),
+                  ),
                 );
                 return;
-              case 'remove_follow_up':
+              }
+              case 'remove_follow_up': {
+                const agentId = conversationOwners.get(msg.conversationId);
                 dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
-                  resumableChatHub.removeFollowUp(msg, v2Sink),
+                  runAdmitted(agentId, msg.conversationId, () =>
+                    resumableChatHub.removeFollowUp(msg, v2Sink),
+                  ),
                 );
                 return;
-              case 'resume_follow_ups':
+              }
+              case 'resume_follow_ups': {
+                const agentId = conversationOwners.get(msg.conversationId);
                 dispatchV2Hub(ws, msg.id, msg.conversationId, () =>
-                  resumableChatHub.resumeFollowUps(msg, v2Sink),
+                  runAdmitted(agentId, msg.conversationId, () =>
+                    resumableChatHub.resumeFollowUps(msg, v2Sink),
+                  ),
                 );
                 return;
-              case 'answer':
-                dispatchV2Hub(ws, msg.id, undefined, () => resumableChatHub.answerV2(msg, v2Sink));
+              }
+              case 'answer': {
+                const owner = knownRunOwners.get(msg.id);
+                dispatchV2Hub(ws, msg.id, undefined, () =>
+                  runAdmitted(owner?.agentId, owner?.conversationId, () =>
+                    resumableChatHub.answerV2(msg, v2Sink),
+                  ),
+                );
                 return;
-              case 'cancel':
-                dispatchV2Hub(ws, msg.id, undefined, () => resumableChatHub.cancelV2(msg, v2Sink));
+              }
+              case 'cancel': {
+                const owner = knownRunOwners.get(msg.id);
+                dispatchV2Hub(ws, msg.id, undefined, () =>
+                  runAdmitted(owner?.agentId, owner?.conversationId, () =>
+                    resumableChatHub.cancelV2(msg, v2Sink),
+                  ),
+                );
                 return;
+              }
               case 'hello':
                 closeProtocol(ws, 'unexpected_hello');
                 return;
@@ -626,11 +783,19 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           }
 
           if (msg.type === 'resume') {
+            conversationOwners.set(msg.conversationId, msg.agentId);
+            knownRunOwners.set(msg.id, {
+              agentId: msg.agentId,
+              conversationId: msg.conversationId,
+            });
             dispatchHub(
               ws,
               msg.id,
               msg.conversationId,
-              () => resumableChatHub.resume(msg, sink),
+              () =>
+                runAdmitted(msg.agentId, msg.conversationId, () =>
+                  resumableChatHub.resume(msg, sink),
+                ),
               canReply,
             );
             return;
@@ -643,21 +808,31 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 ws,
                 msg.id,
                 undefined,
-                () =>
-                  agents.answerQuestion(
-                    entry.agentId,
-                    entry.conversationId,
-                    msg.questionId,
-                    msg.answer,
-                  ),
+                async () => {
+                  const lease = admission.acquire(entry.agentId, entry.conversationId);
+                  try {
+                    await agents.answerQuestion(
+                      entry.agentId,
+                      entry.conversationId,
+                      msg.questionId,
+                      msg.answer,
+                    );
+                  } finally {
+                    lease.release();
+                  }
+                },
                 canReply,
               );
             } else {
+              const owner = knownRunOwners.get(msg.id);
               dispatchHub(
                 ws,
                 msg.id,
                 undefined,
-                () => resumableChatHub.answer(msg.id, msg.questionId, msg.answer, sink),
+                () =>
+                  runAdmitted(owner?.agentId, owner?.conversationId, () =>
+                    resumableChatHub.answer(msg.id, msg.questionId, msg.answer, sink),
+                  ),
                 canReply,
               );
             }
@@ -667,22 +842,40 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           if (msg.type === 'cancel') {
             const entry = activeStreams.get(msg.id);
             if (entry) {
-              entry.controller.abort();
-              activeStreams.delete(msg.id);
-              const key = conversationKey(entry.agentId, entry.conversationId);
-              if (conversationStreams.get(key) === msg.id) conversationStreams.delete(key);
-              agents.cancel(entry.agentId, entry.conversationId);
-              // A user cancel terminalizes the conversation's live swarm
-              // workers too — aborting the orchestrator alone would leave
-              // them running (and billing) headless.
-              options.swarmCoordinator?.cancelTurn(entry.agentId, entry.conversationId);
-              sendServerMessage(ws, { type: 'done', id: msg.id });
+              dispatchHub(
+                ws,
+                msg.id,
+                entry.conversationId,
+                () => {
+                  assertFrameAdmitted(entry.agentId, entry.conversationId);
+                  entry.controller.abort();
+                  activeStreams.delete(msg.id);
+                  const key = conversationKey(entry.agentId, entry.conversationId);
+                  if (conversationStreams.get(key) === msg.id) conversationStreams.delete(key);
+                  agents.cancel(entry.agentId, entry.conversationId);
+                  const cancellation = options.swarmCoordinator?.cancelTurn(
+                    entry.agentId,
+                    entry.conversationId,
+                  );
+                  if (cancellation && typeof cancellation === 'object' && 'then' in cancellation) {
+                    return Promise.resolve(cancellation).then(() => {
+                      if (canReply()) sendServerMessage(ws, { type: 'done', id: msg.id });
+                    });
+                  }
+                  if (canReply()) sendServerMessage(ws, { type: 'done', id: msg.id });
+                },
+                canReply,
+              );
             } else {
+              const owner = knownRunOwners.get(msg.id);
               dispatchHub(
                 ws,
                 msg.id,
                 undefined,
-                () => resumableChatHub.cancel(msg.id, sink),
+                () =>
+                  runAdmitted(owner?.agentId, owner?.conversationId, () =>
+                    resumableChatHub.cancel(msg.id, sink),
+                  ),
                 canReply,
               );
             }
@@ -690,12 +883,20 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           }
 
           if (msg.type === 'message') {
+            conversationOwners.set(msg.conversationId, msg.agentId);
+            knownRunOwners.set(msg.id, {
+              agentId: msg.agentId,
+              conversationId: msg.conversationId,
+            });
             if (msg.resumable === true) {
               dispatchHub(
                 ws,
                 msg.id,
                 msg.conversationId,
-                () => resumableChatHub.start(msg as ResumableSendFrame, sink),
+                () =>
+                  runAdmitted(msg.agentId, msg.conversationId, () =>
+                    resumableChatHub.start(msg as ResumableSendFrame, sink),
+                  ),
                 canReply,
               );
               return;
@@ -717,7 +918,10 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             if (existingMsgId && activeStreams.has(existingMsgId)) {
               const behavior = msg.streamingBehavior;
               if (behavior === 'steer') {
-                agents.steer(agentId, convId, text, images).catch((err) => {
+                const lease = admission.acquire(agentId, convId);
+                void trackSettlement(
+                  agents.steer(agentId, convId, text, images).finally(() => lease.release()),
+                ).catch((err) => {
                   sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
@@ -727,7 +931,10 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 return;
               }
               if (behavior === 'followUp') {
-                agents.followUp(agentId, convId, text, images).catch((err) => {
+                const lease = admission.acquire(agentId, convId);
+                void trackSettlement(
+                  agents.followUp(agentId, convId, text, images).finally(() => lease.release()),
+                ).catch((err) => {
                   sendServerMessage(ws, {
                     type: 'error',
                     id: msg.id,
@@ -740,10 +947,17 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
             // Start a new stream
             const controller = new AbortController();
-            activeStreams.set(msg.id, { controller, agentId, conversationId: convId });
+            let lease: AdmissionLease;
+            try {
+              lease = admission.acquire(agentId, convId);
+            } catch (error) {
+              sendHubError(ws, msg.id, convId, error);
+              return;
+            }
+            activeStreams.set(msg.id, { controller, agentId, conversationId: convId, lease });
             conversationStreams.set(convKey, msg.id);
 
-            (async () => {
+            const streamTask = (async () => {
               const stream = agents.chat({
                 agentId,
                 conversationId: convId,
@@ -793,25 +1007,55 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 if (conversationStreams.get(convKey) === msg.id) {
                   conversationStreams.delete(convKey);
                 }
-                await stream.return(undefined);
+                try {
+                  await stream.return(undefined);
+                } finally {
+                  lease.release();
+                }
               }
             })();
+            void trackSettlement(streamTask).catch(() => undefined);
           }
         },
 
         onClose() {
-          mode = 'closing';
-          connectionSocket = undefined;
-          resumableChatHub.detach(connectionSink);
-          for (const { controller, agentId, conversationId } of activeStreams.values()) {
-            controller.abort();
-            agents.cancel(agentId, conversationId);
-            options.swarmCoordinator?.cancelTurn(agentId, conversationId);
-          }
-          activeStreams.clear();
-          conversationStreams.clear();
+          cleanupConnection();
+          if (mountedSocket) sockets.delete(mountedSocket);
+          mountedSocket = undefined;
+          notifyIfSettled();
         },
       };
     }),
   );
+
+  return {
+    beginClosing,
+    async flushAndCloseAll(code, reason, timeoutMs) {
+      beginClosing(code, reason);
+      const closeState = closing;
+      if (!closeState) return;
+      for (const socket of sockets) {
+        try {
+          socket.close(closeState.code, closeState.reason);
+        } catch {
+          sockets.delete(socket);
+        }
+      }
+      notifyIfSettled();
+      if (sockets.size === 0 && pendingSettlements.size === 0) return;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          emptyWaiters.delete(done);
+          resolve();
+        };
+        const timeout = setTimeout(done, Math.max(0, timeoutMs));
+        emptyWaiters.add(done);
+        notifyIfSettled();
+      });
+    },
+  };
 }

@@ -37,6 +37,8 @@ export interface PromptInput {
   prompt: string;
   sessionId?: string;
   cwd?: string;
+  /** Cancels the active hook subprocess and prevents later hooks from starting. */
+  signal?: AbortSignal;
 }
 export interface PromptDecision {
   block: boolean;
@@ -199,7 +201,10 @@ export function createHookEngine(
     command: HookCommand,
     payload: StdinPayload,
     cwd: string,
+    signal?: AbortSignal,
   ): Promise<HookOutcome> {
+    if (signal?.aborted) return NEUTRAL;
+
     let cmdLine: string;
     let vars: Record<string, string>;
     try {
@@ -222,14 +227,31 @@ export function createHookEngine(
       // once, later) is intentional: it must be hoisted above `settle`.
       // biome-ignore lint/style/useConst: must be a hoisted `let` to avoid the TDZ described above.
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let child: ReturnType<typeof spawn> | undefined;
+      let onAbort: (() => void) | undefined;
+      // Kill the whole process group (negative pid). Falls back to a direct
+      // child.kill if the group signal throws (e.g. pid already reaped).
+      const killChild = () => {
+        if (!child) return;
+        try {
+          if (child.pid) process.kill(-child.pid, 'SIGKILL');
+          else child.kill('SIGKILL');
+        } catch {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // ignore — settling NEUTRAL regardless.
+          }
+        }
+      };
       const settle = (o: HookOutcome) => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener('abort', onAbort);
         resolveOutcome(o);
       };
 
-      let child: ReturnType<typeof spawn>;
       try {
         // detached: true puts the child in its own process group so a timeout /
         // output-cap kill can take down the whole group (sh + any descendants),
@@ -245,20 +267,16 @@ export function createHookEngine(
         return settle(NEUTRAL);
       }
 
-      // Kill the whole process group (negative pid). Falls back to a direct
-      // child.kill if the group signal throws (e.g. pid already reaped).
-      const killChild = () => {
-        try {
-          if (child.pid) process.kill(-child.pid, 'SIGKILL');
-          else child.kill('SIGKILL');
-        } catch {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // ignore — settling NEUTRAL regardless.
-          }
-        }
+      onAbort = () => {
+        killChild();
+        settle(NEUTRAL);
       };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      // Close the narrow race between the initial check and listener install.
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
 
       timer = setTimeout(() => {
         logger?.warn(
@@ -444,13 +462,15 @@ export function createHookEngine(
       const cwd = input.cwd ?? process.cwd();
       const contexts: string[] = [];
       for (const { entry, command } of selectHooks('UserPromptSubmit', undefined)) {
+        if (input.signal?.aborted) break;
         const payload: StdinPayload = {
           session_id: input.sessionId,
           cwd,
           hook_event_name: 'UserPromptSubmit',
           prompt: input.prompt,
         };
-        const outcome = await runOne(entry, command, payload, cwd);
+        const outcome = await runOne(entry, command, payload, cwd, input.signal);
+        if (input.signal?.aborted) break;
         if (outcome.additionalContext) contexts.push(outcome.additionalContext);
         if (outcome.blocked) {
           return {

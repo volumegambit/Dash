@@ -196,6 +196,13 @@ export interface AgentState {
 export interface RunOptions {
   signal?: AbortSignal;
   runId?: string;
+  /**
+   * Live host-admission predicate. Every async preparation layer rechecks it
+   * immediately before handing work to the next layer, and provider backends
+   * recheck it at their final provider-call boundary. False retires the run
+   * without starting new provider work.
+   */
+  isRunCurrent?(): boolean;
   onSteerConsumed?(inputId: string): Promise<void>;
   /**
    * Host readiness barrier. The backend awaits this only after it has claimed

@@ -1,11 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpsRequest } from 'node:https';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   ConversationMessagePage,
   ConversationSummary,
   MobileWsServerFrame,
   ReplayPage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ReplayPage,
+  MobileV2WsClientFrame,
+  MobileV2WsServerFrame,
+} from '@dash/mobile-contract-v2';
 import { WebSocket } from 'ws';
 import { type RunningMobileTestHarness, startMobileTestHarness } from './mobile-test-harness.js';
 
@@ -17,6 +26,16 @@ function mobileRequest(
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${harness.chatToken}`);
   return fetch(`${harness.managementBaseUrl}/mobile/v1${path}`, { ...init, headers });
+}
+
+function mobileV2Request(
+  harness: RunningMobileTestHarness,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('Authorization', `Bearer ${harness.chatToken}`);
+  return fetch(`${harness.managementBaseUrl}/mobile/v2${path}`, { ...init, headers });
 }
 
 function pinnedSurfaceRequest(
@@ -117,6 +136,56 @@ class FrameInbox {
   }
 }
 
+class V2FrameInbox {
+  readonly frames: MobileV2WsServerFrame[] = [];
+  private readonly listeners = new Set<() => void>();
+
+  constructor(readonly socket: WebSocket) {
+    socket.addEventListener('message', (event) => {
+      this.frames.push(JSON.parse(String(event.data)) as MobileV2WsServerFrame);
+      for (const listener of this.listeners) listener();
+    });
+  }
+
+  send(value: MobileV2WsClientFrame): void {
+    this.socket.send(JSON.stringify(value));
+  }
+
+  async waitFor(
+    predicate: (frame: MobileV2WsServerFrame) => boolean,
+    timeoutMs = 4_000,
+  ): Promise<MobileV2WsServerFrame> {
+    const find = (): MobileV2WsServerFrame | undefined => this.frames.find(predicate);
+    const existing = find();
+    if (existing) return existing;
+    return new Promise<MobileV2WsServerFrame>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.listeners.delete(check);
+        reject(
+          new Error(`Timed out waiting for v2 frame; received ${JSON.stringify(this.frames)}`),
+        );
+      }, timeoutMs);
+      const check = (): void => {
+        const frame = find();
+        if (!frame) return;
+        clearTimeout(timer);
+        this.listeners.delete(check);
+        resolve(frame);
+      };
+      this.listeners.add(check);
+    });
+  }
+
+  async close(): Promise<void> {
+    if (this.socket.readyState === WebSocket.CLOSED) return;
+    const closed = new Promise<void>((resolve) => {
+      this.socket.addEventListener('close', () => resolve(), { once: true });
+    });
+    this.socket.close();
+    await closed;
+  }
+}
+
 async function openChat(harness: RunningMobileTestHarness): Promise<FrameInbox> {
   const socket = new WebSocket(
     `${harness.chatWebSocketUrl}?token=${encodeURIComponent(harness.chatToken)}`,
@@ -126,6 +195,20 @@ async function openChat(harness: RunningMobileTestHarness): Promise<FrameInbox> 
     socket.addEventListener('error', (event) => reject(event.error), { once: true });
   });
   return new FrameInbox(socket);
+}
+
+async function openV2Chat(harness: RunningMobileTestHarness): Promise<V2FrameInbox> {
+  const socket = new WebSocket(
+    `${harness.chatWebSocketUrl}?token=${encodeURIComponent(harness.chatToken)}`,
+  );
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true });
+    socket.addEventListener('error', (event) => reject(event.error), { once: true });
+  });
+  const inbox = new V2FrameInbox(socket);
+  inbox.send({ type: 'hello', contractVersion: 2, capabilities: ['chat-input-queue-v1'] });
+  await inbox.waitFor((frame) => frame.type === 'hello_ack');
+  return inbox;
 }
 
 /**
@@ -512,27 +595,370 @@ describe('mobile test harness', () => {
     }
   });
 
-  it('stops promptly without client cancellation while an SSE response is open', async () => {
-    const harness = await startMobileTestHarness({ scenario: 'stream' });
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    try {
-      const eventsResponsePromise = fetch(`${harness.managementBaseUrl}/mobile/v1/events`, {
-        headers: { Authorization: `Bearer ${harness.chatToken}` },
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      await createConversation(harness);
-      const eventsResponse = await eventsResponsePromise;
-      expect(eventsResponse.status).toBe(200);
-      reader = eventsResponse.body?.getReader();
-      if (!reader) throw new Error('SSE response has no body reader');
-      expect((await reader.read()).done).toBe(false);
-      const clientClosed = reader.closed.catch(() => undefined);
+  it.each(['/events', '/mobile/v1/events', '/mobile/v2/events'])(
+    'stops promptly without client cancellation while an SSE response is open on %s',
+    async (path) => {
+      const harness = await startMobileTestHarness({ scenario: 'stream' });
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      try {
+        const token = path === '/events' ? harness.managementToken : harness.chatToken;
+        const eventsResponsePromise = fetch(`${harness.managementBaseUrl}${path}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await createConversation(harness);
+        const eventsResponse = await eventsResponsePromise;
+        expect(eventsResponse.status).toBe(200);
+        reader = eventsResponse.body?.getReader();
+        if (!reader) throw new Error('SSE response has no body reader');
+        expect((await reader.read()).done).toBe(false);
+        const clientClosed = reader.closed.catch(() => undefined);
 
-      await settlesWithin(harness.stop());
-      await settlesWithin(clientClosed);
+        await settlesWithin(harness.stop());
+        await settlesWithin(clientClosed);
+      } finally {
+        await reader?.cancel().catch(() => undefined);
+        await harness.stop();
+      }
+    },
+  );
+
+  it('flushes and closes direct and LAN chat sockets during gateway shutdown', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'stream' });
+    const direct = new WebSocket(
+      `${harness.chatWebSocketUrl}?token=${encodeURIComponent(harness.chatToken)}`,
+    );
+    const lan = new WebSocket(
+      `${harness.mobileChatWebSocketUrl}?token=${encodeURIComponent(harness.chatToken)}`,
+      { rejectUnauthorized: false },
+    );
+    let stopping: Promise<void> | undefined;
+    try {
+      await Promise.all(
+        [direct, lan].map(
+          (socket) =>
+            new Promise<void>((resolve, reject) => {
+              socket.addEventListener('open', () => resolve(), { once: true });
+              socket.addEventListener('error', (event) => reject(event.error), { once: true });
+            }),
+        ),
+      );
+      const directClosed = new Promise<{ code: number; reason: string }>((resolve) => {
+        direct.addEventListener(
+          'close',
+          (event) => resolve({ code: event.code, reason: event.reason }),
+          { once: true },
+        );
+      });
+      const lanClosed = new Promise<{ code: number; reason: string }>((resolve) => {
+        lan.addEventListener(
+          'close',
+          (event) => resolve({ code: event.code, reason: event.reason }),
+          { once: true },
+        );
+      });
+
+      stopping = harness.stop();
+      await settlesWithin(stopping);
+      await expect(directClosed).resolves.toEqual({ code: 1012, reason: 'gateway_shutdown' });
+      await expect(lanClosed).resolves.toEqual({ code: 1012, reason: 'gateway_shutdown' });
     } finally {
-      await reader?.cancel().catch(() => undefined);
+      direct.terminate();
+      lan.terminate();
+      await stopping?.catch(() => undefined);
       await harness.stop();
+    }
+  });
+
+  it('preserves a Follow Up across disable, requires resume, and fences deletion end to end', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'slow' });
+    let chat: V2FrameInbox | undefined;
+    try {
+      const conversation = await createConversation(harness);
+      chat = await openV2Chat(harness);
+      const subscriptionId = randomUUID();
+      chat.send({
+        type: 'subscribe_conversation',
+        id: subscriptionId,
+        agentId: harness.agentId,
+        conversationId: conversation.id,
+        sinceV2Seq: 0,
+      });
+      await chat.waitFor(
+        (frame) => frame.type === 'conversation_subscribed' && frame.id === subscriptionId,
+      );
+
+      const firstRunId = randomUUID();
+      chat.send({
+        type: 'message',
+        id: firstRunId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Work until disabled',
+        resumable: true,
+      });
+      await chat.waitFor(
+        (frame) =>
+          frame.type === 'event' && frame.runId === firstRunId && frame.event.type === 'text_delta',
+      );
+
+      const firstInputId = randomUUID();
+      const enqueueId = randomUUID();
+      chat.send({
+        type: 'enqueue_input',
+        id: enqueueId,
+        inputId: firstInputId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Run only after I resume',
+        behavior: 'followUp',
+      });
+      const queued = await chat.waitFor(
+        (frame) => frame.type === 'input_accepted' && frame.id === enqueueId,
+      );
+      if (queued.type !== 'input_accepted' || !queued.input.runId) {
+        throw new Error('Follow Up acknowledgement did not reserve a run');
+      }
+      const queuedRunId = queued.input.runId;
+
+      const disabled = await mobileV2Request(harness, `/agents/${harness.agentId}/disable`, {
+        method: 'POST',
+      });
+      expect(disabled.status).toBe(200);
+      await chat.waitFor(
+        (frame) =>
+          frame.type === 'done' && frame.runId === firstRunId && frame.outcome === 'interrupted',
+      );
+      await chat.waitFor((frame) => frame.type === 'queue_paused' && frame.queuePaused);
+
+      const lateCommandId = randomUUID();
+      chat.send({
+        type: 'enqueue_input',
+        id: lateCommandId,
+        inputId: randomUUID(),
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Must be rejected while disabled',
+        behavior: 'followUp',
+      });
+      const rejected = await chat.waitFor(
+        (frame) => frame.type === 'command_rejected' && frame.id === lateCommandId,
+      );
+      expect(rejected).toMatchObject({ type: 'command_rejected', code: 'gateway_offline' });
+
+      let bootstrap = (await (
+        await mobileV2Request(harness, `/conversations/${conversation.id}/bootstrap`)
+      ).json()) as MobileV2ConversationBootstrap;
+      expect(bootstrap).toMatchObject({
+        queuePaused: true,
+        pendingInputs: [expect.objectContaining({ inputId: firstInputId, state: 'queued' })],
+      });
+
+      const enabled = await mobileV2Request(harness, `/agents/${harness.agentId}/enable`, {
+        method: 'POST',
+      });
+      expect(enabled.status).toBe(200);
+      bootstrap = (await (
+        await mobileV2Request(harness, `/conversations/${conversation.id}/bootstrap`)
+      ).json()) as MobileV2ConversationBootstrap;
+      expect(bootstrap.queuePaused).toBe(true);
+      expect(chat.frames.some((frame) => frame.type === 'input_delivered')).toBe(false);
+
+      chat.send({
+        type: 'resume_follow_ups',
+        id: randomUUID(),
+        conversationId: conversation.id,
+        expectedQueueRevision: bootstrap.queueRevision,
+      });
+      await chat.waitFor(
+        (frame) => frame.type === 'input_delivered' && frame.input.inputId === firstInputId,
+      );
+      await chat.waitFor(
+        (frame) =>
+          frame.type === 'event' &&
+          frame.runId === queuedRunId &&
+          frame.event.type === 'text_delta',
+      );
+
+      const deleteInputId = randomUUID();
+      const deleteEnqueueId = randomUUID();
+      chat.send({
+        type: 'enqueue_input',
+        id: deleteEnqueueId,
+        inputId: deleteInputId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Must fail when the agent is deleted',
+        behavior: 'followUp',
+      });
+      await chat.waitFor(
+        (frame) => frame.type === 'input_accepted' && frame.id === deleteEnqueueId,
+      );
+
+      const deleted = await mobileV2Request(harness, `/agents/${harness.agentId}`, {
+        method: 'DELETE',
+      });
+      expect(deleted.status).toBe(200);
+      await chat.waitFor(
+        (frame) => frame.type === 'input_failed' && frame.input.inputId === deleteInputId,
+      );
+
+      const archived = (await (
+        await mobileV2Request(harness, `/conversations/${conversation.id}/bootstrap`)
+      ).json()) as MobileV2ConversationBootstrap;
+      expect(archived.conversation.status).toBe('archived');
+      expect(archived.pendingInputs).toEqual([]);
+
+      const afterDeleteId = randomUUID();
+      chat.send({
+        type: 'subscribe_conversation',
+        id: afterDeleteId,
+        agentId: harness.agentId,
+        conversationId: conversation.id,
+        sinceV2Seq: archived.v2ThroughSeq,
+      });
+      const afterDelete = await chat.waitFor(
+        (frame) => frame.type === 'command_rejected' && frame.id === afterDeleteId,
+      );
+      expect(afterDelete).toMatchObject({ type: 'command_rejected', code: 'gateway_offline' });
+    } finally {
+      await chat?.close();
+      await harness.stop();
+    }
+  });
+
+  it('recovers a gracefully interrupted run and hands its queued Follow Up off after restart', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'dash-mobile-recovery-'));
+    let first: RunningMobileTestHarness | undefined;
+    let second: RunningMobileTestHarness | undefined;
+    let chat: V2FrameInbox | undefined;
+    try {
+      first = await startMobileTestHarness({ dataDir, scenario: 'slow' });
+      const originalAgentId = first.agentId;
+      const conversation = await createConversation(first);
+      chat = await openV2Chat(first);
+      const subscriptionId = randomUUID();
+      chat.send({
+        type: 'subscribe_conversation',
+        id: subscriptionId,
+        agentId: first.agentId,
+        conversationId: conversation.id,
+        sinceV2Seq: 0,
+      });
+      await chat.waitFor(
+        (frame) => frame.type === 'conversation_subscribed' && frame.id === subscriptionId,
+      );
+      const runId = randomUUID();
+      chat.send({
+        type: 'message',
+        id: runId,
+        agentId: first.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Interrupt this during shutdown',
+        resumable: true,
+      });
+      await chat.waitFor(
+        (frame) =>
+          frame.type === 'event' && frame.runId === runId && frame.event.type === 'text_delta',
+      );
+      const queuedInputId = randomUUID();
+      const enqueueId = randomUUID();
+      chat.send({
+        type: 'enqueue_input',
+        id: enqueueId,
+        inputId: queuedInputId,
+        agentId: first.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Run after restart',
+        behavior: 'followUp',
+      });
+      const accepted = await chat.waitFor(
+        (frame) =>
+          frame.type === 'input_accepted' &&
+          frame.id === enqueueId &&
+          frame.input.inputId === queuedInputId,
+      );
+      if (accepted.type !== 'input_accepted' || !accepted.input.runId) {
+        throw new Error('Recovered Follow Up acknowledgement did not reserve a run');
+      }
+      const queuedRunId = accepted.input.runId;
+
+      await settlesWithin(first.stop());
+      first = undefined;
+      chat = undefined;
+
+      second = await startMobileTestHarness({ dataDir, scenario: 'stream' });
+      expect(second.agentId).toBe(originalAgentId);
+      await vi.waitFor(
+        async () => {
+          const response = await mobileV2Request(
+            second as RunningMobileTestHarness,
+            `/conversations/${conversation.id}/bootstrap`,
+          );
+          expect(response.status).toBe(200);
+          const bootstrap = (await response.json()) as MobileV2ConversationBootstrap;
+          expect(bootstrap.conversation).toMatchObject({ status: 'idle', activeTurnId: null });
+          expect(bootstrap.pendingInputs).toEqual([]);
+          const recoveredRunMessages = bootstrap.messages.filter(
+            (message) => message.runId === queuedRunId,
+          );
+          expect(recoveredRunMessages).toHaveLength(2);
+          expect(recoveredRunMessages).toEqual([
+            expect.objectContaining({
+              role: 'user',
+              status: 'accepted',
+              content: { type: 'user', text: 'Run after restart' },
+              runId: queuedRunId,
+              deliveryKind: 'follow_up',
+            }),
+            expect.objectContaining({
+              role: 'assistant',
+              status: 'completed',
+              runId: queuedRunId,
+              deliveryKind: 'follow_up',
+            }),
+          ]);
+        },
+        { timeout: 4_000 },
+      );
+
+      const replayResponse = await mobileV2Request(
+        second,
+        `/agents/${second.agentId}/conversations/${conversation.id}/events?sinceV2Seq=0`,
+      );
+      expect(replayResponse.status).toBe(200);
+      const replay = (await replayResponse.json()) as MobileV2ReplayPage;
+      expect(
+        replay.frames.filter(
+          (frame) => frame.type === 'input_accepted' && frame.input.inputId === queuedInputId,
+        ),
+      ).toHaveLength(1);
+      expect(
+        replay.frames.filter(
+          (frame) => frame.type === 'input_delivered' && frame.input.inputId === queuedInputId,
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          type: 'input_delivered',
+          input: expect.objectContaining({ inputId: queuedInputId, runId: queuedRunId }),
+        }),
+      ]);
+      expect(
+        replay.frames.filter((frame) => frame.type === 'done' && frame.runId === queuedRunId),
+      ).toEqual([
+        expect.objectContaining({ type: 'done', runId: queuedRunId, outcome: 'completed' }),
+      ]);
+    } finally {
+      await chat?.close().catch(() => undefined);
+      await first?.stop();
+      await second?.stop();
+      await rm(dataDir, { recursive: true, force: true });
     }
   });
 

@@ -246,6 +246,23 @@ describe('ConversationPool', () => {
     expect(pool.has('a', 'conv-1')).toBe(true);
   });
 
+  it('interrupts pinned streams synchronously without retiring or stopping their backends', async () => {
+    const backend = mockBackend('active');
+    const pool = new ConversationPool({
+      maxSize: 2,
+      backendFactory: vi.fn().mockResolvedValue({ backend, agent: mockAgent() }),
+    });
+    const lease = await pool.acquire('agent-a', 'conversation-a');
+
+    (pool as unknown as { interruptAll(): void }).interruptAll();
+
+    expect(backend.abort).toHaveBeenCalledOnce();
+    expect(backend.stop).not.toHaveBeenCalled();
+    expect(pool.get('agent-a', 'conversation-a')).toBe(lease.entry);
+    expect(pool.stats()).toMatchObject({ size: 1, pinned: 1 });
+    lease.release();
+  });
+
   it('forAgent iterates entries for a given agent', async () => {
     const pool = makePool();
     await pool.getOrCreate('agent-a', 'conv-1');
@@ -625,7 +642,7 @@ describe('ConversationPool', () => {
     expect(pool.size).toBe(0);
   });
 
-  it('evictAgent retires an old pending epoch without deleting its same-key replacement', async () => {
+  it('evictAgent keeps the agent retired until a same-key replacement can start safely', async () => {
     const pending = deferredFactory();
     const freshBackend = mockBackend('fresh');
     const factory = vi
@@ -640,12 +657,12 @@ describe('ConversationPool', () => {
     await Promise.resolve();
 
     const eviction = pool.evictAgent('a');
-    const freshPromise = pool.acquire('a', 'conversation');
+    await expect(pool.acquire('a', 'conversation')).rejects.toThrow(/retired/);
     const staleBackend = mockBackend('stale');
     pending.resolve({ backend: staleBackend, agent: mockAgent() });
 
     await eviction;
-    const fresh = await freshPromise;
+    const fresh = await pool.acquire('a', 'conversation');
     expect(await staleOutcome).toMatchObject({ message: expect.stringMatching(/retired/) });
     expect(staleBackend.stop).toHaveBeenCalledTimes(1);
     expect(pool.get('a', 'conversation')?.backend).toBe(freshBackend);
@@ -675,3 +692,174 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+describe('ConversationPool external admission handoff', () => {
+  it('stops a backend whose factory finishes after its external generation retires', async () => {
+    const gate = deferredFactory();
+    let generation = 0;
+    const pool = new ConversationPool({
+      maxSize: 2,
+      backendFactory: vi.fn(() => gate.promise),
+      admission: {
+        capture: (agentId, conversationId) => ({ agentId, conversationId, generation }),
+        isCurrent: (token) => (token as { generation: number }).generation === generation,
+      },
+    });
+    const acquiring = pool.acquire('stable-agent-id', 'conversation-a');
+    await Promise.resolve();
+
+    generation++;
+    const lateBackend = mockBackend('late');
+    gate.resolve({ backend: lateBackend, agent: mockAgent() });
+
+    await expect(acquiring).rejects.toThrow('retired');
+    expect(lateBackend.stop).toHaveBeenCalledTimes(1);
+    expect(pool.size).toBe(0);
+  });
+
+  it('does not return a ready entry evicted while acquire is yielding its microtask', async () => {
+    const backend = mockBackend('ready');
+    const pool = new ConversationPool({
+      maxSize: 2,
+      backendFactory: vi.fn().mockResolvedValue({ backend, agent: mockAgent() }),
+    });
+    await pool.getOrCreate('agent-a', 'conversation-a');
+
+    const acquiring = pool.acquire('agent-a', 'conversation-a');
+    const eviction = pool.evictAgent('agent-a');
+
+    await expect(acquiring).rejects.toThrow('retired');
+    await eviction;
+    expect(backend.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an agent retired until evictAgent has drained attempted replacement factories', async () => {
+    const stopGate = deferred<void>();
+    const first = mockBackend('first');
+    first.stop = vi.fn(() => stopGate.promise);
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: first, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: mockBackend('replacement'), agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 2, backendFactory: factory });
+    await pool.getOrCreate('agent-a', 'conversation-a');
+
+    const eviction = pool.evictAgent('agent-a');
+    await expect(pool.acquire('agent-a', 'conversation-b')).rejects.toThrow('retired');
+    stopGate.resolve();
+    await eviction;
+
+    const fresh = await pool.acquire('agent-a', 'conversation-b');
+    expect(fresh.entry.backend.name).toBe('replacement');
+    fresh.release();
+  });
+
+  it('keeps a pre-fence factory stale after re-enable while an unaffected sibling succeeds', async () => {
+    const pending = deferredFactory();
+    const generations = new Map<string, number>();
+    const admission = {
+      capture: (agentId: string, conversationId: string) => ({
+        agentId,
+        conversationId,
+        generation: generations.get(agentId) ?? 0,
+      }),
+      isCurrent: (token: unknown) => {
+        const captured = token as { agentId: string; generation: number };
+        return captured.generation === (generations.get(captured.agentId) ?? 0);
+      },
+    };
+    const stale = mockBackend('stale-a');
+    const sibling = mockBackend('sibling-b');
+    const fresh = mockBackend('fresh-a');
+    const factory = vi.fn((agentId: string) => {
+      if (agentId === 'agent-a' && factory.mock.calls.length === 1) return pending.promise;
+      return Promise.resolve({
+        backend: agentId === 'agent-b' ? sibling : fresh,
+        agent: mockAgent(),
+      });
+    });
+    const pool = new ConversationPool({ maxSize: 3, backendFactory: factory, admission });
+    const oldAcquire = pool.acquire('agent-a', 'conversation-a');
+    await Promise.resolve();
+
+    generations.set('agent-a', 1); // close
+    generations.set('agent-a', 2); // re-enable: the old token must stay stale
+    const siblingLease = await pool.acquire('agent-b', 'conversation-b');
+    pending.resolve({ backend: stale, agent: mockAgent() });
+
+    await expect(oldAcquire).rejects.toThrow('retired');
+    expect(stale.stop).toHaveBeenCalledOnce();
+    expect(siblingLease.entry.backend).toBe(sibling);
+    siblingLease.release();
+    const freshLease = await pool.acquire('agent-a', 'conversation-a');
+    expect(freshLease.entry.backend).toBe(fresh);
+    freshLease.release();
+  });
+
+  it('settles every late factory disposal after a process fence even when one stop fails', async () => {
+    const pendingA = deferredFactory();
+    const pendingB = deferredFactory();
+    let processGeneration = 0;
+    const pool = new ConversationPool({
+      maxSize: 2,
+      backendFactory: vi
+        .fn()
+        .mockImplementationOnce(() => pendingA.promise)
+        .mockImplementationOnce(() => pendingB.promise),
+      admission: {
+        capture: (agentId, conversationId) => ({ agentId, conversationId, processGeneration }),
+        isCurrent: (token) =>
+          (token as { processGeneration: number }).processGeneration === processGeneration,
+      },
+    });
+    const acquireA = pool.acquire('agent-a', 'conversation-a').catch((error) => error);
+    const acquireB = pool.acquire('agent-b', 'conversation-b').catch((error) => error);
+    await Promise.resolve();
+    processGeneration++;
+    const clearing = pool.clear();
+    const lateA = mockBackend('late-a');
+    const lateB = mockBackend('late-b');
+    lateA.stop = vi.fn(async () => {
+      throw new Error('late-a stop failed');
+    });
+    pendingA.resolve({ backend: lateA, agent: mockAgent() });
+    pendingB.resolve({ backend: lateB, agent: mockAgent() });
+
+    await expect(clearing).rejects.toThrow('late-a stop failed');
+    await Promise.all([acquireA, acquireB]);
+    expect(lateA.stop).toHaveBeenCalledOnce();
+    expect(lateB.stop).toHaveBeenCalledOnce();
+    expect(pool.size).toBe(0);
+  });
+
+  it('makes clear join an agent retirement already removed from the visible pool', async () => {
+    const agentStop = deferred<void>();
+    const retiring = mockBackend('retiring-agent');
+    retiring.stop = vi.fn(() => agentStop.promise);
+    const sibling = mockBackend('sibling');
+    const factory = vi
+      .fn()
+      .mockResolvedValueOnce({ backend: retiring, agent: mockAgent() })
+      .mockResolvedValueOnce({ backend: sibling, agent: mockAgent() });
+    const pool = new ConversationPool({ maxSize: 2, backendFactory: factory });
+    await pool.getOrCreate('agent-a', 'conversation-a');
+    await pool.getOrCreate('agent-b', 'conversation-b');
+
+    const eviction = pool.evictAgent('agent-a');
+    const evictionAssertion = expect(eviction).rejects.toThrow('agent retirement failed');
+    let clearSettled = false;
+    const clearing = pool.clear().finally(() => {
+      clearSettled = true;
+    });
+    const clearAssertion = expect(clearing).rejects.toThrow('agent retirement failed');
+
+    await Promise.resolve();
+    expect(clearSettled).toBe(false);
+    expect(sibling.stop).toHaveBeenCalledOnce();
+    agentStop.reject(new Error('agent retirement failed'));
+
+    await evictionAssertion;
+    await clearAssertion;
+    expect(pool.size).toBe(0);
+  });
+});

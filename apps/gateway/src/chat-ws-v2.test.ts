@@ -7,6 +7,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describe, expect, it, vi } from 'vitest';
+import { GatewayAdmissionController } from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { parseMobileV2ClientFrame, summarizeMobileV2Inbound } from './chat-ws-v2.js';
 import { mountChatWs } from './chat-ws.js';
@@ -200,8 +201,11 @@ function sentFrames(socket: TestSocket): MobileV2WsServerFrame[] {
   );
 }
 
-function makeWsHarness(options: { verbose?: boolean } = {}) {
+function makeWsHarness(
+  options: { verbose?: boolean; admission?: GatewayAdmissionController } = {},
+) {
   const hub = makeHubHarness();
+  const admission = options.admission ?? new GatewayAdmissionController();
   const agents = {
     chat: vi.fn(() =>
       (async function* emptyStream() {
@@ -226,23 +230,26 @@ function makeWsHarness(options: { verbose?: boolean } = {}) {
     return () => new Response(null, { status: 200 });
   }) as unknown as UpgradeWebSocket;
   const app = new Hono();
-  mountChatWs(app, {
+  const lifecycle = mountChatWs(app, {
     agents,
     resumableChatHub: hub.hub,
     upgradeWebSocket,
     verbose: options.verbose,
+    admission,
   });
 
   return {
     hub,
     agents,
-    connect() {
+    admission,
+    lifecycle,
+    connect(open = true) {
       if (!createEvents) throw new Error('WebSocket handler was not mounted');
       const handlers = createEvents({
         req: { query: () => undefined, header: () => undefined },
       });
       const socket = makeSocket();
-      handlers.onOpen?.({}, socket);
+      if (open) handlers.onOpen?.({}, socket);
       return { handlers, socket };
     },
   };
@@ -1225,6 +1232,94 @@ describe('mountChatWs v2 validation and dispatch', () => {
 });
 
 describe('mountChatWs v2 socket lifecycle', () => {
+  it.each(['process shutdown', 'agent disable', 'agent delete'] as const)(
+    'rejects every v2 command on an already-upgraded socket after %s admission closes',
+    async (fence) => {
+      const admission = new GatewayAdmissionController();
+      const harness = makeWsHarness({ admission });
+      const connection = harness.connect();
+      dispatch(connection, HELLO);
+
+      if (fence === 'process shutdown') {
+        admission.beginProcessShutdown().finish();
+      } else {
+        admission.beginAgentLifecycle('agent-01').finish();
+      }
+      connection.socket.send.mockClear();
+
+      const commands: MobileV2WsClientFrame[] = [
+        SUBSCRIBE,
+        MESSAGE,
+        ENQUEUE_STEER,
+        {
+          type: 'edit_follow_up',
+          id: '10000000-0000-4000-8000-000000000003',
+          conversationId: CONVERSATION_ID,
+          inputId: INPUT_ID,
+          expectedRevision: 1,
+          text: 'Edited after the fence',
+        },
+        {
+          type: 'remove_follow_up',
+          id: '10000000-0000-4000-8000-000000000004',
+          conversationId: CONVERSATION_ID,
+          inputId: INPUT_ID,
+          expectedRevision: 2,
+        },
+        {
+          type: 'resume_follow_ups',
+          id: '10000000-0000-4000-8000-000000000005',
+          conversationId: CONVERSATION_ID,
+          expectedQueueRevision: 3,
+        },
+        { type: 'answer', id: RUN_ID, questionId: 'question-01', answer: 'Too late' },
+        { type: 'cancel', id: RUN_ID },
+      ];
+      for (const command of commands) dispatch(connection, command);
+
+      await vi.waitFor(() => expect(sentFrames(connection.socket)).toHaveLength(commands.length));
+      expect(hubDispatchCount(harness.hub)).toBe(0);
+      for (const [index, frame] of sentFrames(connection.socket).entries()) {
+        expect(frame, commands[index]?.type).toMatchObject({
+          type: 'command_rejected',
+          id: commands[index]?.id,
+          code: 'gateway_offline',
+          retryable: true,
+        });
+        expectSchemaValid(frame);
+      }
+      expect(connection.socket.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it('closes a negotiated socket with the restart code and accepts no post-fence command', async () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+    dispatch(connection, HELLO);
+    connection.socket.send.mockClear();
+
+    const closing = harness.lifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000);
+    dispatch(connection, SUBSCRIBE);
+
+    expect(connection.socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(harness.hub.subscribeConversation).not.toHaveBeenCalled();
+    connection.handlers.onClose?.({}, connection.socket);
+    await closing;
+  });
+
+  it('closes an upgrade paused before onOpen and dispatches no hello', async () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect(false);
+
+    await harness.lifecycle.flushAndCloseAll(1012, 'gateway_shutdown', 1_000);
+    connection.handlers.onOpen?.({}, connection.socket);
+    dispatch(connection, HELLO);
+
+    expect(connection.socket.close).toHaveBeenCalledWith(1012, 'gateway_shutdown');
+    expect(sentFrames(connection.socket)).toEqual([]);
+    expect(hubDispatchCount(harness.hub)).toBe(0);
+  });
+
   it('keeps the subscription open across terminal frames and detaches only on socket close', () => {
     const harness = makeWsHarness();
     const connection = harness.connect();

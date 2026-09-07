@@ -1296,6 +1296,20 @@ export class PiAgentBackend implements AgentBackend {
         mimeType: img.mediaType,
       }));
 
+      // Credential refresh, model/session switching, skill loading, and the
+      // typed readiness barrier above can all yield. Recheck the shared host
+      // token at the last boundary before pi starts provider work. This also
+      // protects legacy runs, which have no steering-readiness callback.
+      try {
+        if (options.isRunCurrent?.() === false) {
+          unsubscribeAttempt();
+          return;
+        }
+      } catch (error) {
+        unsubscribeAttempt();
+        throw error;
+      }
+
       // Fire prompt (runs concurrently with event consumption). The prompt
       // promise settling is the authoritative end-of-turn signal: it resolves
       // only after retries, compaction continuations, and queued follow-ups

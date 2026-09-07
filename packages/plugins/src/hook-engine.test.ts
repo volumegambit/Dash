@@ -263,6 +263,34 @@ describe('runUserPromptSubmit', () => {
     expect(d.block).toBe(true);
     expect(d.reason).toBe('top-level block');
   });
+
+  it('kills a held hook on abort and does not launch a later hook', async () => {
+    const e = createHookEngine(
+      [
+        entry({
+          UserPromptSubmit: [{ hooks: [cmd('slow.js'), cmd('addctx.js', 'LATE')] }],
+        }),
+      ],
+      { defaultTimeoutMs: 350 },
+    );
+    const controller = new AbortController();
+    const running = e.runUserPromptSubmit({ prompt: 'hi', signal: controller.signal });
+    const timeout = new Promise<'timeout'>((resolveTimeout) => {
+      setTimeout(() => resolveTimeout('timeout'), 200);
+    });
+    setTimeout(() => controller.abort(), 25);
+
+    const result = await Promise.race([
+      running.then((decision) => ({ kind: 'settled' as const, decision })),
+      timeout,
+    ]);
+    expect(result).not.toBe('timeout');
+    if (result === 'timeout') {
+      await running;
+      return;
+    }
+    expect(result.decision).toEqual({ block: false, additionalContext: undefined });
+  });
 });
 
 describe('runSessionStart', () => {

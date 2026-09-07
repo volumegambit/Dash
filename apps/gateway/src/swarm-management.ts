@@ -42,10 +42,14 @@ export function mountSwarmRoutes(app: Hono, deps: SwarmManagementDeps): void {
 
   // POST /agents/:id/swarm/runs/:runId/workers/:workerId/cancel
   //   → {ok:true} | 409 {ok:false, reason}
-  app.post('/agents/:id/swarm/runs/:runId/workers/:workerId/cancel', (c) => {
+  app.post('/agents/:id/swarm/runs/:runId/workers/:workerId/cancel', async (c) => {
     const id = c.req.param('id');
     if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-    const result = swarmCoordinator.cancelWorker(id, c.req.param('runId'), c.req.param('workerId'));
+    const result = await swarmCoordinator.cancelWorker(
+      id,
+      c.req.param('runId'),
+      c.req.param('workerId'),
+    );
     if (!result.ok) return c.json({ ok: false, reason: result.reason }, 409);
     return c.json({ ok: true });
   });
@@ -59,10 +63,10 @@ export function mountSwarmRoutes(app: Hono, deps: SwarmManagementDeps): void {
   // NOT tied to the orchestrator's WS stream — workers keep running (by
   // design) after the stream ends, so a stream-scoped cancel can't reach
   // them. Idempotent: `cancelled:false` when there is no live turn.
-  app.post('/agents/:id/conversations/:conversationId/swarm/cancel', (c) => {
+  app.post('/agents/:id/conversations/:conversationId/swarm/cancel', async (c) => {
     const id = c.req.param('id');
     if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
-    const cancelled = swarmCoordinator.cancelTurn(id, c.req.param('conversationId'));
+    const cancelled = await swarmCoordinator.cancelTurn(id, c.req.param('conversationId'));
     return c.json({ cancelled });
   });
 

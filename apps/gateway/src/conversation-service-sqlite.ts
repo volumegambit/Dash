@@ -2102,12 +2102,7 @@ export class SqliteConversationService implements ConversationService {
     try {
       return this.db.transaction((value: AppendRunEventInput): PersistedRunFrames | null => {
         const current = this.requireConversationRow(value.conversationId, true);
-        if (
-          current.status !== 'running' ||
-          current.active_turn_id !== value.runId ||
-          current.status === 'archived' ||
-          current.status === 'deleted'
-        ) {
+        if (current.status !== 'running' || current.active_turn_id !== value.runId) {
           return null;
         }
         const assistant = this.db
@@ -2805,9 +2800,9 @@ export class SqliteConversationService implements ConversationService {
         );
       const existingV2 = this.readV2Rows(current.id, 0).findLast(
         (frame) =>
+          (frame.type === 'done' || frame.type === 'error') &&
           frame.runId === value.runId &&
-          frame.segmentTurnId === value.segmentTurnId &&
-          (frame.type === 'done' || frame.type === 'error'),
+          frame.segmentTurnId === value.segmentTurnId,
       );
       if (existingV1 && existingV2) {
         return {
@@ -3053,7 +3048,31 @@ export class SqliteConversationService implements ConversationService {
     })();
   }
 
-  recoverV2State(): V2RecoveryResult {
+  listActiveRunsForRecovery(): Array<{
+    agentId: string;
+    conversationId: string;
+    runId: string;
+  }> {
+    return this.db
+      .prepare(`
+        SELECT agent_id, id, active_turn_id
+        FROM conversations
+        WHERE status = 'running' AND active_turn_id IS NOT NULL AND deleted_at IS NULL
+        ORDER BY id ASC
+      `)
+      .all()
+      .map((row) => {
+        const active = row as { agent_id: string; id: string; active_turn_id: string };
+        return {
+          agentId: active.agent_id,
+          conversationId: active.id,
+          runId: active.active_turn_id,
+        };
+      });
+  }
+
+  recoverV2State(options: { excludeConversationIds?: ReadonlySet<string> } = {}): V2RecoveryResult {
+    const excluded = options.excludeConversationIds ?? new Set<string>();
     return this.db.transaction(() => {
       const activeRows = this.db
         .prepare(`
@@ -3067,6 +3086,7 @@ export class SqliteConversationService implements ConversationService {
       let terminalsAppended = 0;
 
       for (const conversation of activeRows) {
+        if (excluded.has(conversation.id)) continue;
         const runId = conversation.active_turn_id as string;
         const assistant = this.db
           .prepare(`
@@ -3189,6 +3209,7 @@ export class SqliteConversationService implements ConversationService {
         `)
         .all() as PendingInputRow[];
       for (const pending of deliveringRows) {
+        if (excluded.has(pending.conversation_id)) continue;
         const timestamp = this.now();
         const changed = this.db
           .prepare(`
@@ -3224,7 +3245,8 @@ export class SqliteConversationService implements ConversationService {
           ORDER BY id ASC
         `)
         .all()
-        .map((row) => (row as { id: string }).id);
+        .map((row) => (row as { id: string }).id)
+        .filter((conversationId) => !excluded.has(conversationId));
       return { conversationsInterrupted, terminalsAppended, eligibleConversationIds };
     })();
   }

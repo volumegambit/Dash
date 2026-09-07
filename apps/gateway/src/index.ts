@@ -18,7 +18,7 @@ import {
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
-import { mountProjectsWs } from '@dash/management';
+import { type ProjectsWsLifecycle, mountProjectsWs } from '@dash/management';
 import { FileTokenStore, McpManager } from '@dash/mcp';
 import type { McpAgentContext } from '@dash/mcp';
 import type { ConversationSummary, GatewayIdentity } from '@dash/mobile-contract';
@@ -30,11 +30,12 @@ import { SwarmCoordinator, createSwarmTools } from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { Hono } from 'hono';
+import { GatewayAdmissionController } from './admission-controller.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import { ensureCoreProvidersPlugin } from './bundled-plugin.js';
 import { ChannelRegistry } from './channel-registry.js';
-import { mountChatWs } from './chat-ws.js';
+import { type ChatWsLifecycle, mountChatWs } from './chat-ws.js';
 import {
   parseFlags,
   resolveSwarmConfig,
@@ -50,11 +51,11 @@ import { GatewayCredentialStore } from './credential-store.js';
 import { createDialTokenManager } from './dial-token-manager.js';
 import { EventBus } from './event-bus.js';
 import { loadOrCreateGatewayId, loadOrCreateGatewayIdentity } from './gateway-identity.js';
-import { recoverGatewayTurns } from './gateway-recovery.js';
+import { orchestrateGatewayStartup, recoverGatewayTurns } from './gateway-recovery.js';
 import { createDynamicGateway } from './gateway.js';
 import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
-import { createGatewayManagementApp } from './management-api.js';
+import { createGatewayManagementApp, resumePendingAgentDeletions } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
 import { extractMemoriesWithModel, shouldSweepModel } from './memory-sweep-extract.js';
 import { createMemorySweepService } from './memory-sweep.js';
@@ -70,7 +71,7 @@ import {
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { createResumableChatHub } from './resumable-chat-hub.js';
-import { safeFlush, safeStep } from './shutdown.js';
+import { type GatewayShutdownCoordinator, createGatewayShutdownCoordinator } from './shutdown.js';
 import {
   DEFAULT_MIN_TOOL_CALLS,
   extractLessonDeltas,
@@ -158,6 +159,10 @@ async function main() {
   // Initialize channel registry
   const channelRegistry = new ChannelRegistry(join(dataDir, 'channels.json'));
   await channelRegistry.load();
+
+  // One synchronous generation fence is shared by every ingress and every
+  // async factory. It exists before any runtime owner can accept work.
+  const admission = new GatewayAdmissionController();
 
   // Persistent model store. Lazily populated on first GET /models call;
   // invalidated automatically on credential changes by management-api.
@@ -288,6 +293,7 @@ async function main() {
   // the channel has been removed (adapter shutdown is a separate concern).
   const gateway = createDynamicGateway({
     dataDir,
+    admission,
     resolveRouting: (name) => {
       const entry = channelRegistry.get(name);
       if (!entry) return null;
@@ -311,6 +317,7 @@ async function main() {
         prompt: i.prompt,
         sessionId: i.conversationId,
         cwd: dataDir,
+        signal: i.signal,
       });
     },
   });
@@ -328,6 +335,9 @@ async function main() {
     defaultWorkspace: (id) => join(workspacesDir(), id),
   });
   await registry.load();
+  for (const entry of registry.list()) {
+    if (entry.status === 'disabled' || entry.deletionIntent) admission.closeAgent(entry.id);
+  }
   if (registry.list().length > 0) {
     console.log(`[agents] Restored ${registry.list().length} agent(s) from disk`);
   }
@@ -408,13 +418,27 @@ async function main() {
       // chat-path PiAgentBackend is likewise constructed with an undefined
       // logger — workers stay consistent with that.
     }),
-    // EventLogStore.append is synchronous (returns the assigned seq); the swarm
-    // sink expects a Promise. Wrap so the coordinator's fire-and-forget
-    // out-of-band append is type-correct and never throws into the loop.
+    // Canonical Follow Up runs append on the current run segment. Genuinely
+    // legacy runs retain their v1 message journal; the discriminated identity
+    // makes it impossible to silently fall back when a canonical append fails.
     eventLog: {
-      append: (agentId, conversationId, messageId, payload) =>
-        Promise.resolve(eventLogStore.append(agentId, conversationId, messageId, payload)),
+      append: (agentId, conversationId, identity, payload) => {
+        if (identity.kind === 'canonical') {
+          return Promise.resolve(
+            conversationService.appendCurrentRunEvent(
+              agentId,
+              conversationId,
+              identity.outerRunId,
+              payload.event,
+            ),
+          );
+        }
+        return Promise.resolve(
+          eventLogStore.append(agentId, conversationId, identity.messageId, payload),
+        );
+      },
     },
+    admission,
     globalMaxConcurrentWorkers: swarmConfig.maxConcurrentWorkersGlobal,
     defaultCaps: swarmConfig.defaults,
     onRunChanged: emitSwarmRunChanged,
@@ -451,21 +475,30 @@ async function main() {
   // event log (so MC's replay terminalizes instead of spinning forever) and
   // restore the interrupted runs into the panel history. Runs before any
   // server accepts traffic, so no live turn can exist yet.
-  const { conversations: conversationRecovery } = recoverGatewayTurns({
+  const gatewayRecovery = recoverGatewayTurns({
     eventLog: eventLogStore,
     conversations: conversationService,
+    admission,
+    isDeletionMarked: (agentId) => registry.get(agentId)?.deletionIntent === true,
     restoreRun: (snapshot) => swarmCoordinator.restoreFinalizedRun(snapshot),
     log: (message) => logger.info(message),
   });
+  const { conversations: conversationRecovery } = gatewayRecovery;
   if (conversationRecovery.conversationsInterrupted > 0) {
     logger.info(
       `[conversation-recovery] interrupted ${conversationRecovery.conversationsInterrupted} conversation(s), ` +
         `appended ${conversationRecovery.terminalsAppended} terminal(s)`,
     );
   }
+  for (const entry of registry.list()) {
+    if (entry.status === 'disabled') {
+      conversationService.pauseFollowUpsForAgentDisable(entry.id);
+    }
+  }
 
   const agents = createAgentChatCoordinator({
     registry,
+    admission,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
     // Per-agent memory dir, keyed by the REGISTRY id (immutable) rather than
@@ -793,6 +826,7 @@ async function main() {
     memorySweep,
     skillReview,
     swarmCoordinator,
+    admission,
     onChanged: emitConversationChanged,
   });
 
@@ -858,8 +892,14 @@ async function main() {
     if (entry.status !== 'disabled') {
       const agentId = entry.id;
       const bridgeClient: AgentClient = {
-        chat(channelId: string, conversationId: string, text: string) {
-          return agents.chat({ agentId, conversationId, channelId, text });
+        chat(channelId: string, conversationId: string, text: string, runOptions) {
+          return agents.chat({
+            agentId,
+            conversationId,
+            channelId,
+            text,
+            signal: runOptions?.signal,
+          });
         },
         listSkills() {
           return agents.listSkills(agentId);
@@ -870,6 +910,7 @@ async function main() {
   }
 
   // Restore persisted channels
+  const restoredChannelNames: string[] = [];
   for (const channel of channelRegistry.list()) {
     try {
       let adapter: ChannelAdapter;
@@ -896,23 +937,30 @@ async function main() {
         continue;
       }
 
-      await gateway.registerChannel(channel.name, adapter, {
-        globalDenyList: channel.globalDenyList,
-        routing: channel.routing,
-      });
+      await gateway.registerChannel(
+        channel.name,
+        adapter,
+        {
+          globalDenyList: channel.globalDenyList,
+          routing: channel.routing,
+        },
+        { start: false },
+      );
+      restoredChannelNames.push(channel.name);
 
       // Bridge agents for this channel's routing rules
       for (const rule of channel.routing) {
         const agentEntry = registry.get(rule.agentId);
-        if (agentEntry) {
+        if (agentEntry && agentEntry.status !== 'disabled' && !agentEntry.deletionIntent) {
           const ruleAgentId = rule.agentId;
           const bridgeClient: AgentClient = {
-            chat(channelId: string, conversationId: string, text: string) {
+            chat(channelId: string, conversationId: string, text: string, runOptions) {
               return agents.chat({
                 agentId: ruleAgentId,
                 conversationId,
                 channelId,
                 text,
+                signal: runOptions?.signal,
               });
             },
             listSkills() {
@@ -933,6 +981,7 @@ async function main() {
   }
 
   // Management API (HTTP + WebSocket for /projects/ws)
+  const shutdownCoordinator: { current?: GatewayShutdownCoordinator } = {};
   const managementApp = createGatewayManagementApp({
     gateway,
     agents,
@@ -959,9 +1008,19 @@ async function main() {
     // Same teardown as the SIGTERM/SIGINT handlers. `shutdown` is declared
     // after serve() below (it closes over the servers); this closure only
     // runs at request time, long after it exists.
-    onShutdown: () => shutdown('POST /lifecycle/shutdown'),
+    onShutdown: (ownerLease) => {
+      const coordinator = shutdownCoordinator.current;
+      if (!coordinator) throw new Error('Gateway shutdown is not ready');
+      const attempt = coordinator.shutdown(ownerLease);
+      void attempt.completion.then(
+        () => process.exit(0),
+        () => undefined,
+      );
+      return attempt;
+    },
     conversationService,
     resumableChatHub,
+    admission,
     // Mounts the swarm panel routes + threads the cancel cascade into the
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
@@ -996,19 +1055,13 @@ async function main() {
   // doubles as the /projects/ws ?token= credential.
   const { injectWebSocket: injectMgmtWs, upgradeWebSocket: mgmtUpgradeWebSocket } =
     createNodeWebSocket({ app: managementApp });
-  mountProjectsWs(managementApp, {
+  const projectsWsLifecycle: ProjectsWsLifecycle = mountProjectsWs(managementApp, {
     emitter: projectsDb.emitter,
     token: flags.token,
     upgradeWebSocket: mgmtUpgradeWebSocket,
   });
 
-  const managementServer = serve({
-    fetch: managementApp.fetch,
-    port: managementPort,
-    hostname: '127.0.0.1',
-  }) as Server;
-
-  injectMgmtWs(managementServer);
+  let managementServer: Server | undefined;
 
   // ONE ws-ticket store for the process, created before any listener and shared
   // by every `/ws/chat` mount below. Browsers can't set headers on a WebSocket
@@ -1026,7 +1079,7 @@ async function main() {
   // stdout/stderr, so an inherited development environment must never enable
   // chat-frame logging implicitly.
   const verboseWs = flags.verbose === true;
-  mountChatWs(channelApp, {
+  const directChatLifecycle: ChatWsLifecycle = mountChatWs(channelApp, {
     agents,
     resumableChatHub,
     token: flags.chatToken,
@@ -1034,6 +1087,7 @@ async function main() {
     eventLogStore,
     verbose: verboseWs,
     swarmCoordinator,
+    admission,
     // This is the listener the relay forwards browser `/ws/chat` traffic to.
     wsTickets,
   });
@@ -1041,161 +1095,205 @@ async function main() {
     console.log('[gateway] chat-ws verbose logging enabled');
   }
 
-  const channelServer = serve({
-    fetch: channelApp.fetch,
-    port: channelPort,
-    hostname: '127.0.0.1',
-  }) as Server;
-
-  injectWebSocket(channelServer);
+  let channelServer: Server | undefined;
 
   // One pinned HTTPS/WSS listener is the complete LAN-facing surface. It
   // forwards only `/mobile/v1` into the canonical management app and mounts
   // only `/ws/chat`; all administrative routes remain bound to loopback.
   let lanServer: Server | undefined;
+  let lanApp: ReturnType<typeof createLanMobileApp> | undefined;
+  let lanWsMount: ReturnType<typeof createNodeWebSocket> | undefined;
+  let lanChatLifecycle: ChatWsLifecycle | undefined;
   if (lanTls) {
-    const lanApp = createLanMobileApp(managementApp);
-    const { injectWebSocket: injectLanWebSocket, upgradeWebSocket: lanUpgradeWebSocket } =
-      createNodeWebSocket({ app: lanApp });
-    mountChatWs(lanApp, {
+    const mountedLanApp = createLanMobileApp(managementApp);
+    const mountedLanWs = createNodeWebSocket({ app: mountedLanApp });
+    lanApp = mountedLanApp;
+    lanWsMount = mountedLanWs;
+    lanChatLifecycle = mountChatWs(mountedLanApp, {
       agents,
       resumableChatHub,
       token: flags.chatToken,
-      upgradeWebSocket: lanUpgradeWebSocket,
+      upgradeWebSocket: mountedLanWs.upgradeWebSocket,
       eventLogStore,
       verbose: verboseWs,
       swarmCoordinator,
       wsTickets,
+      admission,
     });
-    lanServer = serve({
-      fetch: lanApp.fetch,
-      port: lanPort,
-      hostname: '0.0.0.0',
-      createServer: createHttpsServer,
-      serverOptions: { key: lanTls.privateKey, cert: lanTls.certificate },
-    }) as Server;
-    injectLanWebSocket(lanServer);
   }
-
-  console.log(`Gateway management API listening on port ${managementPort}`);
-  console.log(`Gateway channel server listening on port ${channelPort}`);
-  if (lanServer) console.log(`Gateway pinned mobile LAN server listening on port ${lanPort}`);
 
   // Relay mode: when --relay-url is set, dial OUT to the relay and replay phone
   // traffic against our own loopback servers. With --control-plane-url present
   // the gateway owns its dial-token lifecycle (autonomous mode); without it,
   // the legacy static-token path is used so a mixed-version fleet degrades.
-  let relayClient: RelayClient | undefined;
+  let activeRelayClient: RelayClient | undefined;
   let dialTokenManager: ReturnType<typeof createDialTokenManager> | undefined;
-  if (flags.relayUrl) {
-    if (flags.controlPlaneUrl) {
-      // Autonomous mode: the manager refreshes via the control plane (holder-of-
-      // key assertion) on boot, proactively before expiry, and reactively on a
-      // relay 4401. The seed token (--relay-token) is the MC-provided dial token,
-      // used only until the manager refreshes from its own persisted state.
-      const cpClient = createControlPlaneClient({
-        controlPlaneUrl: flags.controlPlaneUrl,
-        gatewayId,
-        identity: relayIdentity,
-      });
-      dialTokenManager = createDialTokenManager({
-        cpClient,
-        dataDir,
-        seedToken: flags.relayToken,
-        // `redial` no-ops on the boot refresh (relayClient is still undefined);
-        // the first connect() below dials with the refreshed token. See the
-        // load-bearing ordering note above.
-        redial: () => relayClient?.redialNow(),
-        logger: { info: (m) => logger.info(m), warn: (m) => logger.warn(m) },
-      });
-      await dialTokenManager.start();
-
-      relayClient = startRelayClient({
-        relayUrl: flags.relayUrl,
-        relayToken: flags.relayToken ?? '',
-        getRelayToken: () => dialTokenManager?.getToken() ?? '',
-        signProof: () => relayIdentity.signProof(gatewayId),
-        onAuthFailure: () => dialTokenManager?.onAuthFailure(),
-        gatewayId,
-        managementPort,
-        channelPort,
-        logger: {
-          info: (m) => logger.info(m),
-          warn: (m) => logger.warn(m),
-          error: (m) => logger.error(m),
-        },
-      });
-      console.log(
-        `[gateway] relay mode (autonomous): dialing ${flags.relayUrl} as gateway "${gatewayId}"`,
-      );
-    } else if (flags.relayToken) {
-      // Legacy single-token mode (no control plane): dial with the static token,
-      // no self-refresh. Kept so a mixed-version fleet degrades cleanly.
-      relayClient = startRelayClient({
-        relayUrl: flags.relayUrl,
-        relayToken: flags.relayToken,
-        gatewayId,
-        managementPort,
-        channelPort,
-        logger: {
-          info: (m) => logger.info(m),
-          warn: (m) => logger.warn(m),
-          error: (m) => logger.error(m),
-        },
-      });
-      console.log(`[gateway] relay mode: dialing ${flags.relayUrl} as gateway "${gatewayId}"`);
-    }
-  }
-
-  console.log('Server ready');
-
-  // Idempotency guard: MC's supervisor POSTs /lifecycle/shutdown and then
-  // SIGTERMs, so overlapping invocations are the normal case — the second
-  // must not re-run teardown against already-closed stores.
-  //
-  // Every step is best-effort (safeStep logs and continues): a channel
-  // adapter failing to stop — e.g. grammY's Bot.stop() rejecting on a
-  // Telegram network timeout — must not abort the rest of shutdown. The
-  // handler itself never rejects, so it can't become an unhandled rejection
-  // that hard-crashes the process before the DB closes below.
-  let shuttingDown = false;
-  const shutdown = async (signal: string) => {
-    if (shuttingDown) {
-      console.log(`\nReceived ${signal} while already shutting down; ignoring`);
-      return;
-    }
-    shuttingDown = true;
-    console.log(`\nReceived ${signal}, shutting down...`);
-    await safeStep('relayClient.stop', () => relayClient?.stop());
-    await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
-    await safeStep('mcpManager.stop', () => mcpManager.stop());
-    await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
-    // Both flushes wait on provider completions that carry no AbortSignal, so
-    // they are deadline-bounded: a hung provider socket must not keep the
-    // process alive until SIGKILL with its databases still open.
-    await safeFlush('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
-    await safeFlush('memorySweep.flush', () => memorySweep.flush());
-    await safeFlush('skillReview.flush', () => skillReview.flush());
-    // Finalize every live swarm run (cancels in-flight workers, aborts their
-    // orchestrators) BEFORE the chat coordinator tears down its warm backends,
-    // so no worker outlives the pool it borrowed its identity from.
-    await safeStep('swarmCoordinator.stop', () => swarmCoordinator.stop());
-    await safeStep('agents.stop', () => agents.stop());
-    await safeStep('gateway.stop', () => gateway.stop());
-    await safeStep('managementServer.close', () => managementServer.close());
-    await safeStep('channelServer.close', () => channelServer.close());
-    await safeStep('lanServer.close', () => lanServer?.close());
-    // Close the event-log DB last so any in-flight appends from the
-    // agents/gateway shutdown path land cleanly. WAL checkpoints are
-    // flushed on close, so the next gateway start sees a consistent
-    // database.
-    await safeStep('conversationService.close', () => conversationService.close());
-    await safeStep('projectsDb.close', () => projectsDb.db.close());
-    process.exit(0);
+  const relayClient = {
+    async start(): Promise<void> {
+      if (!flags.relayUrl) return;
+      if (flags.controlPlaneUrl) {
+        const cpClient = createControlPlaneClient({
+          controlPlaneUrl: flags.controlPlaneUrl,
+          gatewayId,
+          identity: relayIdentity,
+        });
+        dialTokenManager = createDialTokenManager({
+          cpClient,
+          dataDir,
+          seedToken: flags.relayToken,
+          redial: () => activeRelayClient?.redialNow(),
+          logger: { info: (m) => logger.info(m), warn: (m) => logger.warn(m) },
+        });
+        await dialTokenManager.start();
+        activeRelayClient = startRelayClient({
+          relayUrl: flags.relayUrl,
+          relayToken: flags.relayToken ?? '',
+          getRelayToken: () => dialTokenManager?.getToken() ?? '',
+          signProof: () => relayIdentity.signProof(gatewayId),
+          onAuthFailure: () => dialTokenManager?.onAuthFailure(),
+          gatewayId,
+          managementPort,
+          channelPort,
+          logger: {
+            info: (message) => logger.info(message),
+            warn: (message) => logger.warn(message),
+            error: (message) => logger.error(message),
+          },
+        });
+        console.log(
+          `[gateway] relay mode (autonomous): dialing ${flags.relayUrl} as gateway "${gatewayId}"`,
+        );
+      } else if (flags.relayToken) {
+        activeRelayClient = startRelayClient({
+          relayUrl: flags.relayUrl,
+          relayToken: flags.relayToken,
+          gatewayId,
+          managementPort,
+          channelPort,
+          logger: {
+            info: (message) => logger.info(message),
+            warn: (message) => logger.warn(message),
+            error: (message) => logger.error(message),
+          },
+        });
+        console.log(`[gateway] relay mode: dialing ${flags.relayUrl} as gateway "${gatewayId}"`);
+      }
+    },
+    stop(): void {
+      activeRelayClient?.stop();
+    },
   };
 
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  shutdownCoordinator.current = createGatewayShutdownCoordinator({
+    admission,
+    relayClient,
+    dialTokenManager: { stop: () => dialTokenManager?.stop() },
+    resumableChatHub,
+    getChatLifecycles: () =>
+      lanChatLifecycle ? [directChatLifecycle, lanChatLifecycle] : [directChatLifecycle],
+    getProjectsLifecycle: () => projectsWsLifecycle,
+    mcpManager,
+    swarmCoordinator,
+    agents,
+    gateway,
+    backgroundFlushes: [
+      { label: 'conversationAutoTitle.flush', flush: () => conversationAutoTitle.flush() },
+      { label: 'memorySweep.flush', flush: () => memorySweep.flush() },
+      { label: 'skillReview.flush', flush: () => skillReview.flush() },
+    ],
+    getManagementServer: () => managementServer,
+    getChannelServer: () => channelServer,
+    getLanServer: () => lanServer,
+    projectsDb: { close: () => projectsDb.db.close() },
+    conversationService,
+  });
+
+  await orchestrateGatewayStartup({
+    // These phases already completed before the coordinator/hub constructors,
+    // while every ingress source was still unstarted. Keeping them explicit in
+    // the orchestrator documents and behavior-tests the full boot barrier.
+    restoreDeletionFences: () => {},
+    repairCanonicalWorkers: () => {},
+    recoverV2State: () => {},
+    pauseDisabledAgentQueues: () => {},
+    createAgentCoordinator: () => {},
+    createResumableChatHub: () => {},
+    resumePendingAgentDeletions: () =>
+      resumePendingAgentDeletions(
+        {
+          gateway,
+          agents,
+          agentRegistry: registry,
+          channelRegistry,
+          conversationService,
+          resumableChatHub,
+          admission,
+          swarmCoordinator,
+          eventBus,
+        },
+        { excludeConversationIds: gatewayRecovery.excludedConversationIds },
+      ),
+    resumeRecoveredQueues: () => {
+      const eligible = gatewayRecovery.conversations.eligibleConversationIds.filter(
+        (conversationId) => {
+          const conversation = conversationService.get(conversationId);
+          if (!conversation) return false;
+          const entry = registry.get(conversation.agentId);
+          return entry !== undefined && entry.status !== 'disabled' && !entry.deletionIntent;
+        },
+      );
+      return resumableChatHub.resumeRecoveredQueues(eligible);
+    },
+    startRestoredChannelAdapters: async () => {
+      for (const channelName of restoredChannelNames) await gateway.startChannel(channelName);
+    },
+    startListeners: async () => {
+      managementServer = serve({
+        fetch: managementApp.fetch,
+        port: managementPort,
+        hostname: '127.0.0.1',
+      }) as Server;
+      injectMgmtWs(managementServer);
+
+      channelServer = serve({
+        fetch: channelApp.fetch,
+        port: channelPort,
+        hostname: '127.0.0.1',
+      }) as Server;
+      injectWebSocket(channelServer);
+
+      if (lanTls && lanApp && lanWsMount) {
+        lanServer = serve({
+          fetch: lanApp.fetch,
+          port: lanPort,
+          hostname: '0.0.0.0',
+          createServer: createHttpsServer,
+          serverOptions: { key: lanTls.privateKey, cert: lanTls.certificate },
+        }) as Server;
+        lanWsMount.injectWebSocket(lanServer);
+      }
+    },
+    startRelayDial: () => relayClient.start(),
+    ready: () => {
+      console.log(`Gateway management API listening on port ${managementPort}`);
+      console.log(`Gateway channel server listening on port ${channelPort}`);
+      if (lanServer) console.log(`Gateway pinned mobile LAN server listening on port ${lanPort}`);
+      console.log('Server ready');
+    },
+  });
+
+  const shutdownForSignal = (signal: string): void => {
+    console.log(`\nReceived ${signal}, shutting down...`);
+    const attempt = shutdownCoordinator.current?.shutdown();
+    if (attempt) {
+      void attempt.completion.then(
+        () => process.exit(0),
+        () => undefined,
+      );
+    }
+  };
+  process.on('SIGINT', () => shutdownForSignal('SIGINT'));
+  process.on('SIGTERM', () => shutdownForSignal('SIGTERM'));
 }
 
 main().catch((err) => {

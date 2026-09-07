@@ -1,5 +1,7 @@
+import makeWASocket from '@whiskeysockets/baileys';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageHandler } from '../types.js';
+import { makeBaileysAuthState } from './whatsapp-auth.js';
 import { WhatsAppAdapter } from './whatsapp.js';
 
 // Mock Baileys at module level
@@ -65,6 +67,132 @@ describe('WhatsAppAdapter', () => {
     expect(mockSock.sendMessage).toHaveBeenCalledWith('1234567890@s.whatsapp.net', {
       text: 'Hello!',
     });
+  });
+
+  it('ends the captured socket and settles a held send promptly when aborted', async () => {
+    await adapter.start();
+    const connectionUpdate = mockSock.ev.on.mock.calls.find(
+      (args: unknown[]) => args[0] === 'connection.update',
+    )?.[1] as ((update: { connection: string }) => void) | undefined;
+    mockSock.end.mockImplementationOnce(() => connectionUpdate?.({ connection: 'close' }));
+    const releaseSend = Promise.withResolvers<void>();
+    mockSock.sendMessage.mockReturnValueOnce(releaseSend.promise);
+    const controller = new AbortController();
+    const sending = adapter.send(
+      '1234567890@s.whatsapp.net',
+      { text: 'held reply' },
+      controller.signal,
+    );
+
+    try {
+      controller.abort();
+      expect(mockSock.end).toHaveBeenCalledOnce();
+      expect(mockSock.end).toHaveBeenCalledWith(undefined);
+      await expect(sending).rejects.toThrow('send aborted');
+      await Promise.resolve();
+      expect(makeWASocket).toHaveBeenCalledOnce();
+
+      releaseSend.resolve();
+      await Promise.resolve();
+      await expect(
+        adapter.send('1234567890@s.whatsapp.net', { text: 'late reply' }),
+      ).rejects.toThrow('not started');
+      expect(mockSock.sendMessage).toHaveBeenCalledOnce();
+    } finally {
+      releaseSend.resolve();
+      await Promise.allSettled([sending, adapter.stop()]);
+    }
+  });
+
+  it('keeps a shared socket live when one agent-scoped send aborts', async () => {
+    const replacementSock = {
+      ev: { on: vi.fn(), off: vi.fn() },
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      end: vi.fn(),
+    };
+    vi.mocked(makeWASocket)
+      .mockReturnValueOnce(mockSock as never)
+      .mockReturnValueOnce(replacementSock as never);
+    await adapter.start();
+    const releaseFirstSend = Promise.withResolvers<void>();
+    const lateSendSettled = Promise.withResolvers<void>();
+    let capturedSocketRetired = false;
+    let lateDelivery = false;
+    mockSock.end.mockImplementationOnce(() => {
+      capturedSocketRetired = true;
+    });
+    mockSock.sendMessage.mockImplementationOnce(async () => {
+      await releaseFirstSend.promise;
+      if (!capturedSocketRetired) lateDelivery = true;
+      lateSendSettled.resolve();
+    });
+    const controller = new AbortController();
+    const firstSend = adapter.send(
+      'agent-a@s.whatsapp.net',
+      { text: 'held agent A reply' },
+      controller.signal,
+    );
+
+    try {
+      controller.abort({
+        code: 'gateway_admission_aborted',
+        scope: 'agent',
+        agentId: 'agent-a',
+        message: "Agent 'agent-a' lifecycle started",
+      });
+      await expect(firstSend).rejects.toThrow('send aborted');
+      expect(mockSock.end).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(makeWASocket).toHaveBeenCalledTimes(2));
+
+      await expect(
+        adapter.send('agent-b@s.whatsapp.net', { text: 'unaffected agent B reply' }),
+      ).resolves.toBeUndefined();
+      expect(replacementSock.sendMessage).toHaveBeenCalledWith('agent-b@s.whatsapp.net', {
+        text: 'unaffected agent B reply',
+      });
+      releaseFirstSend.resolve();
+      await lateSendSettled.promise;
+      expect(lateDelivery).toBe(false);
+    } finally {
+      releaseFirstSend.resolve();
+      await Promise.allSettled([firstSend, adapter.stop()]);
+    }
+  });
+
+  it('does not install a deferred agent-abort replacement after stop', async () => {
+    await adapter.start();
+    const authHeld = Promise.withResolvers<Awaited<ReturnType<typeof makeBaileysAuthState>>>();
+    vi.mocked(makeBaileysAuthState).mockReturnValueOnce(authHeld.promise);
+    const releaseSend = Promise.withResolvers<void>();
+    mockSock.sendMessage.mockReturnValueOnce(releaseSend.promise);
+    const controller = new AbortController();
+    const sending = adapter.send('agent-a@s.whatsapp.net', { text: 'held' }, controller.signal);
+    controller.abort({
+      code: 'gateway_admission_aborted',
+      scope: 'agent',
+      agentId: 'agent-a',
+      message: "Agent 'agent-a' lifecycle started",
+    });
+
+    try {
+      await expect(sending).rejects.toThrow('send aborted');
+      await vi.waitFor(() => expect(makeBaileysAuthState).toHaveBeenCalledTimes(2));
+      await adapter.stop();
+      authHeld.resolve({
+        state: { creds: {}, keys: { get: vi.fn(), set: vi.fn() } } as never,
+        saveCreds: vi.fn(),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(makeWASocket).toHaveBeenCalledOnce();
+    } finally {
+      releaseSend.resolve();
+      authHeld.resolve({
+        state: { creds: {}, keys: { get: vi.fn(), set: vi.fn() } } as never,
+        saveCreds: vi.fn(),
+      });
+      await Promise.allSettled([sending, adapter.stop()]);
+    }
   });
 
   it('calls onMessage handlers for incoming DM text', async () => {

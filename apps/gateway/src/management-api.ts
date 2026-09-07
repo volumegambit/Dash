@@ -21,6 +21,11 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { BlankEnv } from 'hono/types';
 
+import {
+  type AdmissionLease,
+  GatewayAdmissionController,
+  type LifecycleCleanupToken,
+} from './admission-controller.js';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import type { AgentRegistry, GatewayAgentConfig, RegisteredAgent } from './agent-registry.js';
 import type { ChannelRegistry, ChannelRoutingRule } from './channel-registry.js';
@@ -42,6 +47,7 @@ import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import type { GatewayShutdownAttempt } from './shutdown.js';
 import { applyPendingLessons } from './skill-review.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
@@ -65,7 +71,12 @@ export interface GatewayManagementOptions {
   /** Canonical conversation metadata, messages, and the shared durable event journal. */
   conversationService: ConversationService;
   /** Process-wide resumable turn owner used to quiesce an agent before backend eviction. */
-  resumableChatHub: Pick<ResumableChatHub, 'allowAgent' | 'cancelAgent'>;
+  resumableChatHub: Pick<
+    ResumableChatHub,
+    'allowAgent' | 'cancelAgent' | 'disableAgent' | 'deleteAgent'
+  >;
+  /** Shared synchronous fence for HTTP, sockets, channels, pools, and workers. */
+  admission?: GatewayAdmissionController;
   /** Shared projects DB. When present, mounts /projects + /issues + /inbox. */
   projectsDb?: ProjectsDb;
   /**
@@ -148,12 +159,12 @@ export interface GatewayManagementOptions {
    * deferral — the sequence closes this very server and exits the process, so
    * running it inline would kill the in-flight response.
    */
-  onShutdown?: () => void | Promise<void>;
+  onShutdown?: (ownerLease: AdmissionLease) => GatewayShutdownAttempt;
 }
 
-/** Strip providerApiKeys from agent entries before returning to clients. */
+/** Strip providerApiKeys and lifecycle tombstones before returning to clients. */
 function stripSecrets(entry: RegisteredAgent): RegisteredAgent {
-  const { config, ...rest } = entry;
+  const { config, deletionIntent: _deletionIntent, ...rest } = entry;
   const { providerApiKeys: _, ...safeConfig } = config;
   return { ...rest, config: safeConfig as GatewayAgentConfig };
 }
@@ -406,10 +417,74 @@ function classifyRequestTarget(c: Context) {
   return classifyMobileRouteTarget(mobileRequestTarget(c.req.url, incomingUrl));
 }
 
+interface AgentDeletionRuntime {
+  gateway: Pick<DynamicGateway, 'deregisterAgent'>;
+  agents: Pick<AgentChatCoordinator, 'evict'>;
+  agentRegistry: AgentRegistry;
+  channelRegistry: ChannelRegistry;
+  conversationService: Pick<ConversationService, 'listActiveRunsForRecovery'>;
+  resumableChatHub: Pick<ResumableChatHub, 'deleteAgent'>;
+  admission: GatewayAdmissionController;
+  swarmCoordinator?: Pick<SwarmCoordinator, 'cancelRunsFor'>;
+  eventBus?: EventBus;
+}
+
+async function finishMarkedAgentDeletion(
+  runtime: AgentDeletionRuntime,
+  entry: RegisteredAgent,
+  cleanupToken: LifecycleCleanupToken,
+): Promise<void> {
+  const { id } = entry;
+  await runtime.resumableChatHub.deleteAgent(id, cleanupToken);
+  await runtime.swarmCoordinator?.cancelRunsFor(id);
+  await runtime.agents.evict(id);
+  const removedChannels = await runtime.gateway.deregisterAgent(id);
+  for (const name of removedChannels) runtime.channelRegistry.remove(name);
+  runtime.channelRegistry.removeRoutesForAgent(id);
+  await runtime.channelRegistry.save();
+  await runtime.agentRegistry.removeAndSave(id);
+  runtime.eventBus?.emit({
+    type: 'agent:config-changed',
+    agent: entry.name,
+    fields: ['removed'],
+  });
+}
+
+/**
+ * Resume durable deletion tombstones before public ingress. A failed canonical
+ * repair excludes the owning agent wholesale so no destructive phase can run
+ * while one of its conversation leases is still recoverable.
+ */
+export async function resumePendingAgentDeletions(
+  runtime: AgentDeletionRuntime,
+  options: { excludeConversationIds?: Iterable<string> } = {},
+): Promise<void> {
+  const excludedConversations = new Set(options.excludeConversationIds ?? []);
+  const excludedAgents = new Set(
+    runtime.conversationService
+      .listActiveRunsForRecovery()
+      .filter((run) => excludedConversations.has(run.conversationId))
+      .map((run) => run.agentId),
+  );
+
+  for (const entry of runtime.agentRegistry.listDeletionMarked()) {
+    runtime.admission.closeAgent(entry.id);
+    if (excludedAgents.has(entry.id)) continue;
+    const lifecycle = runtime.admission.beginAgentLifecycle(entry.id);
+    try {
+      await lifecycle.drainPrior();
+      await finishMarkedAgentDeletion(runtime, entry, lifecycle.cleanupToken);
+    } finally {
+      lifecycle.finish();
+    }
+  }
+}
+
 export function createGatewayManagementApp(options: GatewayManagementOptions): Hono {
   const { gateway, agents, agentRegistry, channelRegistry, credentialStore, token, eventBus } =
     options;
   const logger = options.logger ?? createConsoleLogger('info', 'text', 'gateway-api');
+  const admission = options.admission ?? new GatewayAdmissionController();
   const startedAt = options.startedAt ?? new Date().toISOString();
   const app = new Hono();
   const mobileV1 = new Hono();
@@ -474,8 +549,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
    */
   function buildBridgeClient(agentId: string): AgentClient {
     return {
-      chat(channelId, conversationId, text) {
-        return agents.chat({ agentId, conversationId, channelId, text });
+      chat(channelId, conversationId, text, runOptions) {
+        return agents.chat({
+          agentId,
+          conversationId,
+          channelId,
+          text,
+          signal: runOptions?.signal,
+        });
       },
       listSkills() {
         return agents.listSkills(agentId);
@@ -519,7 +600,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       // Re-bridge agents — registerAgent is idempotent (overwrites the
       // existing bridge client with one closing over the same agentId).
       for (const rule of entry.routing) {
-        if (agentRegistry.get(rule.agentId)) {
+        const agent = agentRegistry.get(rule.agentId);
+        if (agent && !agent.deletionIntent) {
           gateway.registerAgent(rule.agentId, buildBridgeClient(rule.agentId));
         }
       }
@@ -578,6 +660,227 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     await next();
   });
 
+  // Every authenticated mutation owns a lease from the same generation fence
+  // as sockets, channel adapters, the conversation pool, and swarm factories.
+  // Lifecycle routes use the special ingress form so disable/delete retry can
+  // enter an already-closed agent fence. The route transfers that exact lease
+  // to its cleanup lifecycle before draining the fixed pre-fence snapshot.
+  const ingressLeases = new WeakMap<Request, AdmissionLease[]>();
+  const transferredIngress = new WeakSet<Request>();
+
+  const normalizedManagementPath = (c: Context): string => {
+    const target = classifyRequestTarget(c);
+    if (target.kind === 'rejected') return c.req.path;
+    if (target.kind === 'mobile') {
+      return target.pathname.replace(/^\/mobile\/v[12](?=\/|$)/, '') || '/';
+    }
+    return target.pathname;
+  };
+
+  const requestAgentId = (c: Context): string | undefined => {
+    const match = normalizedManagementPath(c).match(/^\/agents\/([^/]+)(?:\/|$)/);
+    if (!match) return undefined;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  };
+
+  const isLifecycleMutation = (c: Context): boolean => {
+    const path = normalizedManagementPath(c);
+    if (path === '/lifecycle/shutdown') return true;
+    return (
+      /^\/agents\/[^/]+\/(?:disable|enable)$/.test(path) ||
+      (c.req.method === 'DELETE' && /^\/agents\/[^/]+$/.test(path))
+    );
+  };
+
+  class AgentPendingDeletionError extends Error {}
+
+  const readClonedJson = async (c: Context): Promise<unknown> => {
+    try {
+      return await c.req.raw.clone().json();
+    } catch {
+      return undefined;
+    }
+  };
+
+  const routingAgentIds = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((rule) => {
+      if (!rule || typeof rule !== 'object' || !('agentId' in rule)) return [];
+      return typeof rule.agentId === 'string' && rule.agentId.length > 0 ? [rule.agentId] : [];
+    });
+  };
+
+  const existingChannelAgentIds = (name: string): string[] =>
+    channelRegistry.get(name)?.routing.map((rule) => rule.agentId) ?? [];
+
+  const uniqueAgentIds = (agentIds: readonly string[]): string[] => [...new Set(agentIds)].sort();
+
+  const acquireMaintenanceLeases = (agentIds: readonly string[]): AdmissionLease[] => {
+    const leases: AdmissionLease[] = [];
+    try {
+      for (const agentId of uniqueAgentIds(agentIds)) {
+        if (agentRegistry.get(agentId)?.deletionIntent) {
+          throw new AgentPendingDeletionError(`Agent '${agentId}' is pending deletion`);
+        }
+        leases.push(admission.acquireAgentMaintenance(agentId));
+      }
+      if (leases.length === 0) leases.push(admission.acquire());
+      return leases;
+    } catch (error) {
+      for (const lease of leases) lease.release();
+      throw error;
+    }
+  };
+
+  const conversationOwner = (conversationId: string, useV2: boolean): string | undefined => {
+    const conversation = useV2
+      ? options.conversationService.getV2(conversationId, { includeDeleted: true })
+      : options.conversationService.get(conversationId, { includeDeleted: true });
+    return conversation?.agentId;
+  };
+
+  const acquireMutationLeases = async (c: Context): Promise<AdmissionLease[]> => {
+    const path = normalizedManagementPath(c);
+    const method = c.req.method;
+
+    if (isLifecycleMutation(c)) {
+      return [admission.acquireLifecycleIngress(requestAgentId(c))];
+    }
+
+    const agentId = requestAgentId(c);
+    if (agentId) {
+      const runAffecting = /^\/agents\/[^/]+\/(?:swarm(?:\/|$)|conversation-title$)/.test(path);
+      return runAffecting ? [admission.acquire(agentId)] : acquireMaintenanceLeases([agentId]);
+    }
+
+    if (path === '/conversations' && method === 'POST') {
+      const body = await readClonedJson(c);
+      const owner =
+        body && typeof body === 'object' && 'agentId' in body && typeof body.agentId === 'string'
+          ? body.agentId
+          : undefined;
+      return [admission.acquire(owner)];
+    }
+
+    const conversationMatch = path.match(/^\/conversations\/([^/]+)$/);
+    if (conversationMatch && (method === 'PATCH' || method === 'DELETE')) {
+      let conversationId = conversationMatch[1];
+      try {
+        conversationId = decodeURIComponent(conversationId);
+      } catch {
+        // The route owns malformed-path reporting; use the encoded lookup key.
+      }
+      const target = classifyRequestTarget(c);
+      const owner = conversationOwner(
+        conversationId,
+        target.kind === 'mobile' && target.version === 2,
+      );
+      return owner ? acquireMaintenanceLeases([owner]) : [admission.acquire()];
+    }
+
+    if (path === '/channels' && method === 'POST') {
+      const body = await readClonedJson(c);
+      const agentIds =
+        body && typeof body === 'object' && 'routing' in body ? routingAgentIds(body.routing) : [];
+      return acquireMaintenanceLeases(agentIds);
+    }
+
+    const channelMatch = path.match(/^\/channels\/([^/]+)$/);
+    if (channelMatch && (method === 'PUT' || method === 'DELETE')) {
+      let channelName = channelMatch[1];
+      try {
+        channelName = decodeURIComponent(channelName);
+      } catch {
+        // The route owns malformed-path reporting; use the encoded lookup key.
+      }
+      const agentIds = existingChannelAgentIds(channelName);
+      if (method === 'PUT') {
+        const body = await readClonedJson(c);
+        if (body && typeof body === 'object' && 'routing' in body) {
+          agentIds.push(...routingAgentIds(body.routing));
+        }
+      }
+      return acquireMaintenanceLeases(agentIds);
+    }
+
+    if (path === '/credentials' && method === 'POST') {
+      const body = await readClonedJson(c);
+      const key =
+        body && typeof body === 'object' && 'key' in body && typeof body.key === 'string'
+          ? body.key
+          : undefined;
+      const channelName = key?.match(/^channel:(.+):token$/)?.[1];
+      return acquireMaintenanceLeases(channelName ? existingChannelAgentIds(channelName) : []);
+    }
+
+    return [admission.acquire()];
+  };
+
+  app.use('*', async (c, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
+      await next();
+      return;
+    }
+
+    try {
+      // Reject a closed process before reading a request body or consulting
+      // agent/conversation/channel storage to resolve its narrower owner.
+      admission.capture();
+    } catch {
+      return c.json(
+        {
+          code: 'gateway_offline',
+          error: 'Gateway is shutting down',
+          retryable: true,
+        },
+        503,
+      );
+    }
+
+    let leases: AdmissionLease[];
+    try {
+      leases = await acquireMutationLeases(c);
+    } catch (error) {
+      if (error instanceof AgentPendingDeletionError) {
+        return c.json(
+          {
+            code: 'validation_failed',
+            error: 'Agent is pending deletion',
+            retryable: false,
+          },
+          409,
+        );
+      }
+      return c.json(
+        {
+          code: 'gateway_offline',
+          error: 'Gateway is shutting down',
+          retryable: true,
+        },
+        503,
+      );
+    }
+    ingressLeases.set(c.req.raw, leases);
+    try {
+      await next();
+    } finally {
+      if (!transferredIngress.has(c.req.raw)) {
+        for (const lease of leases) lease.release();
+      }
+    }
+  });
+
+  const beginAgentLifecycle = (c: Context, agentId: string) => {
+    const ownerLease = ingressLeases.get(c.req.raw)?.[0];
+    const lifecycle = admission.beginAgentLifecycle(agentId, ownerLease);
+    transferredIngress.add(c.req.raw);
+    return lifecycle;
+  };
+
   // --- Health ---
 
   const healthPayload = (apiVersion: 1 | 2, capabilities: string[]) => ({
@@ -629,11 +932,20 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
   if (options.onShutdown) {
     const onShutdown = options.onShutdown;
     app.post('/lifecycle/shutdown', (c) => {
-      setTimeout(() => {
-        Promise.resolve(onShutdown()).catch((err) => {
+      const ownerLease = ingressLeases.get(c.req.raw)?.[0];
+      if (!ownerLease) {
+        return c.json(mobileGatewayError(), 500);
+      }
+      try {
+        const attempt = onShutdown(ownerLease);
+        if (attempt.ownerLeaseTransferred) transferredIngress.add(c.req.raw);
+        attempt.completion.catch((err) => {
           logger.error('lifecycle shutdown failed', undefined, errorLogContext(err));
         });
-      }, 100);
+      } catch (err) {
+        logger.error('lifecycle shutdown failed', undefined, errorLogContext(err));
+        return c.json(mobileGatewayError(), 500);
+      }
       return c.json({ ok: true });
     });
   }
@@ -805,40 +1117,26 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return serializeAgentLifecycle(id, async () => {
         const entry = agentRegistry.get(id);
         if (!entry) return c.json(mobileAgentNotFound(), 404);
+        const lifecycle = beginAgentLifecycle(c, id);
         try {
-          await options.resumableChatHub.cancelAgent(id);
-          const removedChannels = await gateway.deregisterAgent(id);
-          for (const name of removedChannels) {
-            channelRegistry.remove(name);
-          }
-          channelRegistry.removeRoutesForAgent(id);
-          // Finalize any live swarm runs for this agent before eviction. cancelRunsFor
-          // cancels non-terminal workers + aborts the orchestrator synchronously, so
-          // the subsequent evict() tears down an already-quiesced backend.
-          options.swarmCoordinator?.cancelRunsFor(id);
-          // Evict warm backends before removing the registry entry so any
-          // in-flight streams are aborted and backend.stop() is called. The
-          // pool is keyed independently of the registry, so order doesn't
-          // affect correctness of the eviction itself — but doing it before
-          // the registry remove means races that race a delete with a chat
-          // get aborted rather than serving a deleted agent's state.
-          await agents.evict(id);
-          const archived = options.conversationService.archiveAgentConversations(id);
-          agentRegistry.remove(id);
+          agentRegistry.markDeletionIntent(id);
           await agentRegistry.save();
-          await channelRegistry.save();
-          for (const conversation of archived) {
-            eventBus?.emit({
-              type: 'conversation:changed',
-              conversationId: conversation.id,
-              revision: conversation.revision,
-            });
-          }
-          eventBus?.emit({
-            type: 'agent:config-changed',
-            agent: entry.name,
-            fields: ['removed'],
-          });
+          await lifecycle.drainPrior();
+          await finishMarkedAgentDeletion(
+            {
+              gateway,
+              agents,
+              agentRegistry,
+              channelRegistry,
+              conversationService: options.conversationService,
+              resumableChatHub: options.resumableChatHub,
+              admission,
+              swarmCoordinator: options.swarmCoordinator,
+              eventBus,
+            },
+            entry,
+            lifecycle.cleanupToken,
+          );
           return c.json({ ok: true });
         } catch (error) {
           logger.error(
@@ -847,6 +1145,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
             errorLogContext(error, { agentId: id }),
           );
           return c.json(mobileGatewayError(), 500);
+        } finally {
+          lifecycle.finish();
         }
       });
     });
@@ -856,15 +1156,13 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return serializeAgentLifecycle(id, async () => {
         const entry = agentRegistry.get(id);
         if (!entry) return c.json(mobileAgentNotFound(), 404);
+        const lifecycle = beginAgentLifecycle(c, id);
         try {
           agentRegistry.disable(id);
           await agentRegistry.save();
-          await options.resumableChatHub.cancelAgent(id);
-          // Disable must actually stop a running orchestrator: cancel its live swarm
-          // runs, then evict the warm backend (which aborts the pinned in-flight
-          // turn — intentional per the design, disable is a hard stop). Ordered so
-          // the swarm runs quiesce before the backend teardown.
-          options.swarmCoordinator?.cancelRunsFor(id);
+          await lifecycle.drainPrior();
+          await options.resumableChatHub.disableAgent(id, lifecycle.cleanupToken);
+          await options.swarmCoordinator?.cancelRunsFor(id);
           await agents.evict(id);
           eventBus?.emit({
             type: 'agent:config-changed',
@@ -879,6 +1177,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
             errorLogContext(error, { agentId: id }),
           );
           return c.json(mobileGatewayError(), 500);
+        } finally {
+          lifecycle.finish();
         }
       });
     });
@@ -888,9 +1188,23 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       return serializeAgentLifecycle(id, async () => {
         const entry = agentRegistry.get(id);
         if (!entry) return c.json(mobileAgentNotFound(), 404);
+        const lifecycle = beginAgentLifecycle(c, id);
         try {
-          agentRegistry.enable(id);
-          await agentRegistry.save();
+          await lifecycle.drainPrior();
+          if (entry.deletionIntent) {
+            return c.json(
+              {
+                code: 'validation_failed',
+                error: 'Agent is pending deletion',
+                retryable: false,
+              },
+              409,
+            );
+          }
+          options.conversationService.pauseFollowUpsForAgentDisable(id);
+          await agentRegistry.enableAndSave(id);
+          gateway.registerAgent(id, buildBridgeClient(id));
+          admission.allowAgent(id);
           options.resumableChatHub.allowAgent(id);
           eventBus?.emit({
             type: 'agent:config-changed',
@@ -905,6 +1219,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
             errorLogContext(error, { agentId: id }),
           );
           return c.json(mobileGatewayError(), 500);
+        } finally {
+          lifecycle.finish();
         }
       });
     });
@@ -1351,7 +1667,8 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       // to hit — the re-check stays as defense-in-depth against concurrent
       // agent removal between validation and registration.
       for (const rule of routing) {
-        if (agentRegistry.get(rule.agentId)) {
+        const agent = agentRegistry.get(rule.agentId);
+        if (agent && !agent.deletionIntent) {
           gateway.registerAgent(rule.agentId, buildBridgeClient(rule.agentId));
         }
       }

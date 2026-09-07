@@ -184,7 +184,7 @@ describe('createSwarmTools', () => {
       coord.getLiveRun(AGENT_ID, CONVO_ID); // ensure run exists
       // Wait then finalize concurrently.
       const waitP = tool(byName, 'wait_workers').execute('c2', {});
-      coord.stop();
+      await coord.stop();
       const res = await waitP;
       const details = res.details as {
         workers: Array<{ workerId: string; status: string }>;

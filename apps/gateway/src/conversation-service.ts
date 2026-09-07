@@ -150,7 +150,12 @@ export interface ConversationService {
   bootstrapV2(input: ListMessagesInput): MobileV2ConversationBootstrap;
   readV2Since(agentId: string, conversationId: string, sinceV2Seq: number): V2ReplayResult;
   listDeliveredSteers(conversationId: string): DeliveredSteerContext[];
-  recoverV2State(): V2RecoveryResult;
+  listActiveRunsForRecovery(): Array<{
+    agentId: string;
+    conversationId: string;
+    runId: string;
+  }>;
+  recoverV2State(options?: { excludeConversationIds?: ReadonlySet<string> }): V2RecoveryResult;
   listRunMessages(conversationId: string, runId: string): StoredConversationMessage[];
   close(): void;
 }

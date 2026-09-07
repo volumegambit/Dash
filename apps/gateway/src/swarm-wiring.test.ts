@@ -22,6 +22,7 @@ import {
  */
 const agentMock = vi.hoisted(() => ({
   resolvers: [] as Array<() => Promise<DashAgentConfig>>,
+  chatOptions: [] as Array<{ isRunCurrent?(): boolean } | undefined>,
 }));
 
 vi.mock('@dash/agent', async (importOriginal) => {
@@ -35,7 +36,15 @@ vi.mock('@dash/agent', async (importOriginal) => {
     constructor(_backend: unknown, resolver: () => Promise<DashAgentConfig>) {
       agentMock.resolvers.push(resolver);
     }
-    async *chat(): AsyncGenerator<never> {}
+    async *chat(
+      _channelId: string,
+      _conversationId: string,
+      _message: string,
+      options?: { isRunCurrent?(): boolean },
+    ): AsyncGenerator<never> {
+      agentMock.chatOptions.push(options);
+      yield* [];
+    }
   }
   return { ...actual, PiAgentBackend: FakePiAgentBackend, DashAgent: FakeDashAgent };
 });
@@ -242,6 +251,7 @@ describe('createGatewayWorkerFactory memory inheritance', () => {
   beforeEach(async () => {
     dataDir = await mkdtemp(join(tmpdir(), 'swarm-worker-mem-'));
     agentMock.resolvers.length = 0;
+    agentMock.chatOptions.length = 0;
   });
 
   afterEach(async () => {
@@ -301,5 +311,15 @@ describe('createGatewayWorkerFactory memory inheritance', () => {
       memoryDir: (agentId) => `/tmp/mem/${agentId}`,
     });
     expect(args[0].memory).toBeUndefined();
+  });
+
+  it('forwards the WorkerHandle admission predicate to the worker DashAgent', async () => {
+    const factory = createGatewayWorkerFactory({ ...deps, dataDir });
+    const backend = await factory(makeSpec());
+    const isRunCurrent = vi.fn(() => true);
+
+    await backend.chat('start', { isRunCurrent }).next();
+
+    expect(agentMock.chatOptions).toEqual([{ isRunCurrent }]);
   });
 });

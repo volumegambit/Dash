@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
-import { AgentRegistry } from './agent-registry.js';
+import { AgentRegistry, type RegisteredAgent } from './agent-registry.js';
 
 describe('AgentRegistry', () => {
   it('registers and retrieves an agent', () => {
@@ -138,6 +138,53 @@ describe('AgentRegistry', () => {
   it('enable throws for unknown agent', () => {
     const registry = new AgentRegistry();
     expect(() => registry.enable('nope')).toThrow(/not found/);
+  });
+});
+
+describe('AgentRegistry durable deletion intent', () => {
+  it('persists disabled deletion intent and rejects re-enable after restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agent-registry-deletion-'));
+    const filePath = join(dir, 'agents.json');
+    try {
+      const registry = new AgentRegistry(filePath);
+      const entry = registry.register({ name: 'doomed', model: 'm', systemPrompt: 's' });
+      registry.markDeletionIntent(entry.id);
+      await registry.save();
+
+      const restored = new AgentRegistry(filePath);
+      await restored.load();
+      expect(restored.get(entry.id)).toMatchObject({
+        status: 'disabled',
+        deletionIntent: true,
+      });
+      expect(restored.listDeletionMarked().map((agent) => agent.id)).toEqual([entry.id]);
+      expect(() => restored.enable(entry.id)).toThrow('pending deletion');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a marked record discoverable when final projected removal persistence fails', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agent-registry-removal-'));
+    const filePath = join(dir, 'agents.json');
+    try {
+      const registry = new AgentRegistry(filePath);
+      const entry = registry.register({ name: 'retry-me', model: 'm', systemPrompt: 's' });
+      registry.markDeletionIntent(entry.id);
+      await registry.save();
+      (registry as unknown as { filePath: string }).filePath = '/dev/null/agents.json';
+
+      await expect(registry.removeAndSave(entry.id)).rejects.toBeDefined();
+
+      expect(registry.get(entry.id)).toMatchObject({ deletionIntent: true, status: 'disabled' });
+      const disk = JSON.parse(await readFile(filePath, 'utf8')) as Array<{
+        id: string;
+        deletionIntent?: boolean;
+      }>;
+      expect(disk).toContainEqual(expect.objectContaining({ id: entry.id, deletionIntent: true }));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -607,6 +654,71 @@ describe('AgentRegistry (file-backed)', () => {
   });
 
   describe('concurrent saves (atomic-write race)', () => {
+    it('keeps a projected enable private from an earlier queued sibling save until durable', async () => {
+      const reg = new AgentRegistry(filePath);
+      const disabled = reg.register({ name: 'disabled', model: 'm', systemPrompt: 's' });
+      const sibling = reg.register({ name: 'sibling', model: 'm1', systemPrompt: 's' });
+      reg.disable(disabled.id);
+      await reg.save();
+      const internals = reg as unknown as {
+        writeSnapshot(entries?: RegisteredAgent[]): Promise<void>;
+      };
+      const originalWrite = internals.writeSnapshot.bind(reg);
+      let releaseFirstWrite!: () => void;
+      const firstWriteRelease = new Promise<void>((resolve) => {
+        releaseFirstWrite = resolve;
+      });
+      let markFirstWriteStarted!: () => void;
+      const firstWriteStarted = new Promise<void>((resolve) => {
+        markFirstWriteStarted = resolve;
+      });
+      let writeCount = 0;
+      vi.spyOn(internals, 'writeSnapshot').mockImplementation(async (entries) => {
+        writeCount += 1;
+        if (writeCount === 1) {
+          markFirstWriteStarted();
+          await firstWriteRelease;
+          await originalWrite(entries);
+          return;
+        }
+        throw new Error('projected enable failed');
+      });
+
+      reg.update(sibling.id, { model: 'm2' });
+      const siblingSave = reg.save();
+      await firstWriteStarted;
+      const enabling = Promise.resolve().then(() =>
+        (
+          reg as unknown as {
+            enableAndSave(id: string): Promise<void>;
+          }
+        ).enableAndSave(disabled.id),
+      );
+      const enableResult = enabling.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      try {
+        await Promise.resolve();
+        expect(reg.get(disabled.id)).toMatchObject({ status: 'disabled' });
+        releaseFirstWrite();
+        await siblingSave;
+        await expect(enableResult).resolves.toMatchObject({
+          message: expect.stringContaining('projected enable failed'),
+        });
+        expect(reg.get(disabled.id)).toMatchObject({ status: 'disabled' });
+        const disk = JSON.parse(await readFile(filePath, 'utf8')) as RegisteredAgent[];
+        expect(disk.find((entry) => entry.id === disabled.id)).toMatchObject({
+          status: 'disabled',
+        });
+        expect(disk.find((entry) => entry.id === sibling.id)?.config.model).toBe('m2');
+      } finally {
+        releaseFirstWrite();
+        await Promise.allSettled([siblingSave, enableResult]);
+      }
+    });
+
     it('many overlapping update+save calls all resolve and leave a valid, consistent file', async () => {
       // Regression for the fixed-`.tmp`-name race: the Config tab's
       // Providers/Plugins cards auto-persist on every chip change, so two
