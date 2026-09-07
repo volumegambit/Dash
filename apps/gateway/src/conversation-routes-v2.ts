@@ -32,6 +32,14 @@ function readJson(c: Parameters<Handler>[0]): Promise<unknown> {
   });
 }
 
+function requiredPathParam(c: Parameters<Handler>[0], name: string): string {
+  const value = c.req.param(name);
+  if (value === undefined) {
+    throw validationError(`Missing path parameter: ${name}`);
+  }
+  return value;
+}
+
 function messagesHandler(options: ConversationV2RoutesOptions): Handler {
   return (c) => {
     try {
@@ -39,7 +47,7 @@ function messagesHandler(options: ConversationV2RoutesOptions): Handler {
       assertOnlyQueryKeys(url, new Set(['limit', 'before']));
       const before = singleQueryValue(url, 'before');
       const page = options.conversations.listMessagesV2({
-        conversationId: c.req.param('id'),
+        conversationId: requiredPathParam(c, 'id'),
         limit: parseLimit(url, 100, 200),
         ...(before !== undefined ? { before } : {}),
       });
@@ -57,7 +65,7 @@ function bootstrapHandler(options: ConversationV2RoutesOptions): Handler {
       assertOnlyQueryKeys(url, new Set(['limit', 'before']));
       const before = singleQueryValue(url, 'before');
       const page = options.conversations.bootstrapV2({
-        conversationId: c.req.param('id'),
+        conversationId: requiredPathParam(c, 'id'),
         limit: parseLimit(url, 100, 200),
         ...(before !== undefined ? { before } : {}),
       });
@@ -82,8 +90,8 @@ function replayHandler(options: ConversationV2RoutesOptions): Handler {
         throw validationError('sinceV2Seq must be a non-negative safe integer');
       }
       const result = options.conversations.readV2Since(
-        c.req.param('agentId'),
-        c.req.param('conversationId'),
+        requiredPathParam(c, 'agentId'),
+        requiredPathParam(c, 'conversationId'),
         sinceV2Seq,
       );
       return c.json({

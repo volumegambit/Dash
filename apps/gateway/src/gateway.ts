@@ -318,6 +318,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
         logMessage({ ...baseLog, outcome: 'blocked', agentName, blockReason: 'lifecycle_fence' });
         return;
       }
+      const ingressSignal = ingress.signal;
 
       logMessage({ ...baseLog, outcome: 'routed', agentName });
 
@@ -331,7 +332,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
       //    text — see AgentSession._expandSkillCommand.)
       const slash = parseSlashCommand(msg.text);
       if (slash?.kind === 'help') {
-        await sendOutbound(adapter, msg.conversationId, { text: SLASH_HELP }, ingress.signal);
+        await sendOutbound(adapter, msg.conversationId, { text: SLASH_HELP }, ingressSignal);
         return;
       }
       if (slash?.kind === 'skills') {
@@ -340,13 +341,13 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           | ((signal?: AbortSignal) => SkillsPromise)
           | undefined;
         const skills = listSkills
-          ? await runWhileAdmitted(ingress.signal, () => listSkills.call(agent, ingress.signal))
+          ? await runWhileAdmitted(ingressSignal, () => listSkills.call(agent, ingressSignal))
           : [];
         await sendOutbound(
           adapter,
           msg.conversationId,
           { text: formatSkillList(skills) },
-          ingress.signal,
+          ingressSignal,
         );
         return;
       }
@@ -361,13 +362,13 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           : msg.text;
       if (messageHook) {
         try {
-          const decision = await runWhileAdmitted(ingress.signal, () =>
+          const decision = await runWhileAdmitted(ingressSignal, () =>
             messageHook({
               prompt: promptText,
               channel: channelName,
               conversationId: prefixedConvId,
               senderId: msg.senderId,
-              signal: ingress.signal,
+              signal: ingressSignal,
             }),
           );
           if (decision.block) {
@@ -377,7 +378,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
                 adapter,
                 msg.conversationId,
                 { text: decision.reason },
-                ingress.signal,
+                ingressSignal,
               );
             }
             return;
@@ -386,7 +387,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
             promptText = `${decision.additionalContext}\n\n${promptText}`;
           }
         } catch (err) {
-          if (ingress.signal.aborted) return;
+          if (ingressSignal.aborted) return;
           console.warn(
             `[gateway] messageHook error (failing open) channel=${channelName}:`,
             err instanceof Error ? err.message : err,
@@ -400,12 +401,12 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
       let iterator: AsyncIterator<AgentEvent> | undefined;
       try {
         const events = agent.chat(msg.channelId, prefixedConvId, promptText, {
-          signal: ingress.signal,
+          signal: ingressSignal,
         });
         const streamIterator = events[Symbol.asyncIterator]();
         iterator = streamIterator;
         while (true) {
-          const next = await runWhileAdmitted(ingress.signal, () => streamIterator.next());
+          const next = await runWhileAdmitted(ingressSignal, () => streamIterator.next());
           if (next.done) {
             streamCompleted = true;
             break;
@@ -429,7 +430,7 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
           }
         }
       } catch (err) {
-        if (ingress.signal.aborted) return;
+        if (ingressSignal.aborted) return;
         // Exception-from-generator path: the agent backend threw instead
         // of yielding. Treat as an internal error, record it, and send a
         // sanitized reply so the user isn't left hanging.
@@ -465,9 +466,9 @@ export function createDynamicGateway(options?: DynamicGatewayOptions): DynamicGa
 
       if (fullResponse) {
         try {
-          await sendOutbound(adapter, msg.conversationId, { text: fullResponse }, ingress.signal);
+          await sendOutbound(adapter, msg.conversationId, { text: fullResponse }, ingressSignal);
         } catch (err) {
-          if (ingress.signal.aborted) return;
+          if (ingressSignal.aborted) return;
           // Delivery failed — the routing bookkeeping said 'routed' but
           // the user will never see it. Record the discrepancy so the
           // audit log reflects reality.
