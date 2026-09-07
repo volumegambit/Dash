@@ -1873,7 +1873,7 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 ### 32.8 Chat chip after asking the agent to remember something
 1. With **Automatic memory** back on (32.5) for an agent, open a chat with it (Section 6).
 2. Send a message asking it to remember a new, distinct fact, e.g. `Remember that my dog's name is Biscuit.`
-3. **Verify:** a normal tool-use block for saving the memory appears in the transcript like any other tool call, and — separately — a small pill-shaped chip with a brain icon appears reading **"Remembered: <description>"**, where the description is the agent's own short summary of the fact (exact wording varies by model).
+3. **Verify:** a small pill-shaped chip with a brain icon appears reading **"Remembered: <description>"**, where the description is the agent's own short summary of the fact (exact wording varies by model). There is **no** separate raw tool-use block for the `save_memory` call — a successful memory save is represented by the chip alone, not a duplicate card dumping the memory's content/name/type. (An MCP or ordinary tool still shows its usual card; only the memory self-tools are folded into the chip.)
 4. Later in the same conversation, correct that same fact, e.g. `Actually, my dog's name is Waffles.`
 5. **Verify (best effort — depends on the model choosing to update rather than create a new memory):** a chip reading **"Updated memory: <description>"** appears instead of a second "Remembered" chip.
 6. Ask the agent to forget it, e.g. `Forget that fact about my dog.`

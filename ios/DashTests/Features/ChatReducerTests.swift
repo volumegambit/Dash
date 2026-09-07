@@ -475,6 +475,54 @@ struct ChatReducerTests {
     #expect(timeline[2] == .text("After"))
   }
 
+  @Test("a successful memory tool card is dropped from the timeline — its status row replaces it")
+  func successfulMemoryToolCardSuppressed() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Saving."), seq: 2, to: &state)
+    _ = apply(
+      .toolUseStart(id: "mem-1", name: "save_memory", input: .object(["name": .string("x")])),
+      seq: 3, to: &state)
+    // A running memory card is still on the timeline (no status row yet).
+    #expect((state.messages.last?.assistant?.timeline ?? []).contains { block in
+      if case .tool = block { return true }
+      return false
+    })
+    _ = apply(
+      .toolResult(
+        id: "mem-1", name: "save_memory", content: "Saved memory \"x\" (updated).",
+        isError: false,
+        details: .object(["memory": .object(["name": .string("x"), "action": .string("updated")])])
+      ), seq: 4, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    // The tool block is gone; only the prose remains on the timeline.
+    #expect(!timeline.contains { block in
+      if case .tool = block { return true }
+      return false
+    })
+    #expect(timeline == [.text("Saving.")])
+  }
+
+  @Test("a cap-hit memory save (non-error, no memory details) keeps its tool card")
+  func capHitMemoryToolCardKept() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .toolUseStart(id: "mem-1", name: "save_memory", input: .object(["name": .string("x")])),
+      seq: 2, to: &state)
+    _ = apply(
+      .toolResult(
+        id: "mem-1", name: "save_memory",
+        content: "Error: This agent already has 200 memories; update or forget one first",
+        isError: false, details: nil
+      ), seq: 3, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    #expect(timeline.contains { block in
+      if case let .tool(tool) = block { return tool.name == "save_memory" }
+      return false
+    })
+  }
+
   @Test("orphan tool results remain at their event position")
   func orphanToolResultChronology() {
     var state = acceptedState(cursor: 1)

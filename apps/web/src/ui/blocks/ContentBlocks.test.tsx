@@ -386,6 +386,65 @@ describe('ContentBlocks', () => {
     expect(screen.queryByTestId('unknown-block')).toBeNull();
   });
 
+  it('hides a successful save_memory tool card — the memory chip below replaces it', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        {
+          type: 'tool_use_start',
+          id: 'call-1',
+          name: 'save_memory',
+          input: { name: 'hyrox-interest', type: 'project', content: 'Gerry does HYROX…' },
+        },
+        {
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'save_memory',
+          content: 'Saved memory "hyrox-interest" (updated).',
+          details: {
+            memory: {
+              name: 'hyrox-interest',
+              description: "Gerry's HYROX racing plans",
+              memoryType: 'project',
+              action: 'updated',
+            },
+          },
+        },
+        {
+          type: 'memory_saved',
+          name: 'hyrox-interest',
+          description: "Gerry's HYROX racing plans",
+          memoryType: 'project',
+          action: 'updated',
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    // The raw tool card is gone; only the chip remains.
+    expect(screen.queryByTestId('tool-use-block')).toBeNull();
+    expect(screen.getByText("Updated memory: Gerry's HYROX racing plans")).toBeTruthy();
+  });
+
+  it('keeps a cap-hit save_memory card (non-error, no memory details) so the failure stays visible', () => {
+    const content: ConversationContent = {
+      type: 'assistant',
+      events: [
+        { type: 'tool_use_start', id: 'call-1', name: 'save_memory', input: { name: 'x' } },
+        {
+          // The 200-memory cap returns a NON-error result whose text is
+          // prefixed `Error:` and which carries NO memory details — so no
+          // chip fires and the card must remain.
+          type: 'tool_result',
+          id: 'call-1',
+          name: 'save_memory',
+          content: 'Error: This agent already has 200 memories; update or forget one first',
+        },
+      ],
+    };
+    render(<ContentBlocks content={content} />);
+    expect(screen.getByTestId('tool-use-block')).toBeTruthy();
+  });
+
   it('renders a fallback unknown-block for a malformed memory event', () => {
     const content: ConversationContent = {
       type: 'assistant',

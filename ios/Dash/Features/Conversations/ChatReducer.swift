@@ -664,7 +664,12 @@ enum ChatReducer {
             details: details
           )
         )
-        assistant.timeline.append(.tool(assistant.toolCards.last!))
+        // A result with no prior tool_use_start (e.g. replayed history): still
+        // suppress a successful memory card so it never lands on the timeline.
+        // Its memory status row is appended separately. See `replaceTool`.
+        if !ToolPresentation.hidesToolCard(name: name, details: details) {
+          assistant.timeline.append(.tool(assistant.toolCards.last!))
+        }
       }
 
     case let .response(content, usage):
@@ -826,7 +831,18 @@ enum ChatReducer {
       if case let .tool(existing) = $0 { return existing.id == tool.id }
       return false
     }) else { return }
-    assistant.timeline[index] = .tool(tool)
+    // A successful save_memory / forget_memory is rendered by its own memory
+    // status row (appended separately from the `memory_saved` event); its raw
+    // tool card would just repeat that. Drop the block once the result reveals
+    // a memory-details payload. Keyed off the details block, not an error
+    // flag, so a cap-hit save (non-error but detail-less, no status row) and a
+    // still-running call keep their card. Twin of the web/MC
+    // `isHiddenToolCard` guard.
+    if ToolPresentation.hidesToolCard(name: tool.name, details: tool.details) {
+      assistant.timeline.remove(at: index)
+    } else {
+      assistant.timeline[index] = .tool(tool)
+    }
   }
 
   private static func upsertWorker(

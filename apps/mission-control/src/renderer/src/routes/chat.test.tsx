@@ -742,6 +742,48 @@ describe('MessageBubble tool rows (tool-use UX 2026-09-05)', () => {
     );
     expect(container.textContent).toContain('command not found');
   });
+
+  it('hides a save_memory tool card whose result carried a memory block — the chip replaces it', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'tool_use_start',
+            id: 't1',
+            name: 'save_memory',
+            input: { name: 'hyrox-interest', content: 'Gerry does HYROX…' },
+          },
+          {
+            type: 'tool_result',
+            id: 't1',
+            name: 'save_memory',
+            content: 'Saved memory "hyrox-interest" (updated).',
+            details: { memory: { name: 'hyrox-interest', action: 'updated' } },
+          },
+        ])}
+      />,
+    );
+    expect(container.textContent).not.toContain('Save Memory');
+    expect(container.textContent).not.toContain('Saved memory');
+  });
+
+  it('keeps a cap-hit save_memory card (non-error, no memory details) so the failure stays visible', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'save_memory', input: { name: 'x' } },
+          {
+            // 200-memory cap: non-error result, no memory details, no chip.
+            type: 'tool_result',
+            id: 't1',
+            name: 'save_memory',
+            content: 'Error: This agent already has 200 memories; update or forget one first',
+          },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('Save Memory');
+  });
 });
 
 describe('MessageBubble auto-retry rendering', () => {

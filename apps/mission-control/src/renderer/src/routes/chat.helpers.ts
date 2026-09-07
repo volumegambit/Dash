@@ -16,6 +16,47 @@ function normalizeTool(name: string): string {
   }
 }
 
+/** Tools whose successful result is fully represented by a dedicated memory
+ * affordance (the `memory_saved` / `memory_forgotten` event, rendered as a
+ * "Remembered" / "Updated memory" / "Forgot memory" chip). Their raw
+ * tool-call card is pure duplication of what the chip already says.
+ *
+ * `recall_memory` is deliberately NOT here: it has no follow-up event and its
+ * result IS the content the reader wants, so its card stays. */
+const MEMORY_AFFORDANCE_TOOLS = new Set(['save_memory', 'forget_memory']);
+
+/** True when a tool result carried the `memory` details block that the
+ * backend uses to emit a `memory_saved` / `memory_forgotten` event
+ * (`piagent.ts` `normalizeEvents`). This — NOT the absence of an error — is
+ * the exact signal that a memory chip exists to replace the raw card.
+ *
+ * A `save_memory` that hits the 200-memory cap returns a NON-error result
+ * whose text is prefixed `Error:` and which carries NO `memory` details, so
+ * no chip fires. Keying off `isError` alone would wrongly hide that card and
+ * make the failure vanish; keying off the details block keeps it. */
+function hasMemoryDetails(details: unknown): boolean {
+  return (
+    typeof details === 'object' &&
+    details !== null &&
+    'memory' in details &&
+    typeof (details as { memory: unknown }).memory === 'object' &&
+    (details as { memory: unknown }).memory !== null
+  );
+}
+
+/** True when a tool-call card should be hidden because a dedicated memory
+ * affordance already shows the same outcome. Kept in sync across web, Mission
+ * Control, and iOS (`ToolPresentation.isHiddenToolCard`) and pinned by the
+ * shared rendering-parity fixtures.
+ *
+ * Hides only when the result actually produced a memory chip: the tool is a
+ * memory self-tool AND its result carried the `memory` details block. An
+ * errored save, a cap-hit save (non-error but detail-less), and a still
+ * running call all keep their card. */
+export function isHiddenToolCard(name: string, details?: unknown): boolean {
+  return MEMORY_AFFORDANCE_TOOLS.has(normalizeTool(name)) && hasMemoryDetails(details);
+}
+
 export interface TodoItem {
   id: string;
   content: string;

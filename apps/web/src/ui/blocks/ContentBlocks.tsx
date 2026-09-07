@@ -9,6 +9,7 @@ import {
   fitsInline,
   formatVisibleDetails,
   grepGroups,
+  isHiddenToolCard,
   isTodoWrite,
   normalizeTool,
   parseTodos,
@@ -540,6 +541,16 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
           pending?.tool ?? (typeof event.name === 'string' ? { name: event.name } : null);
         if (!tool) {
           pushUnknown();
+          break;
+        }
+        // A successful save_memory / forget_memory is rendered by its own
+        // memory chip (below); its raw tool card would just repeat that. Keyed
+        // off the memory details block (not isError) so a cap-hit save, which
+        // returns a detail-less non-error result with no chip, keeps its card.
+        // Clear any placeholder slot the tool_use_start reserved.
+        if (isHiddenToolCard(tool.name, event.details)) {
+          if (pending != null) nodes[pending.index] = null;
+          if (typeof event.id === 'string') pendingTools.delete(event.id);
           break;
         }
         const toolNode = (

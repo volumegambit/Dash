@@ -25,7 +25,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
@@ -58,6 +58,7 @@ import {
   composerKeyAction,
   formatVisibleDetails,
   insertNewlineAtSelection,
+  isHiddenToolCard,
   isTodoWrite,
   parseTodos,
   resultSummary,
@@ -210,26 +211,44 @@ function renderEvents(
       // its card at the event's actual position in the transcript.
       flushProse();
       const pending = pendingTools.get(event.id);
-      const inputJson = pending?.input ? JSON.stringify(pending.input) : '';
-      const toolElement = (
-        <ToolBlock
-          key={pending?.key || `tool-${blockCount++}`}
-          name={pending?.name || event.name}
-          input={inputJson}
-          result={event.content}
-          isError={event.isError}
-          toolDetails={event.details}
-        />
-      );
-      if (pending == null) {
-        elements.push(toolElement);
+      // A successful save_memory / forget_memory is rendered by its own memory
+      // chip; its raw tool card would just repeat that. Keyed off the memory
+      // details block (not isError) so a cap-hit save, which returns a
+      // detail-less non-error result with no chip, keeps its card. Drop any
+      // placeholder slot the tool_use_start reserved so nothing renders there.
+      if (isHiddenToolCard(pending?.name || event.name, event.details)) {
+        // The tool_use_start reserved a placeholder slot at pending.index.
+        // Overwrite it with an empty fragment (renders nothing) rather than
+        // splicing, so any other pending tool's recorded index stays valid.
+        if (pending != null) {
+          elements[pending.index] = <Fragment key={pending.key} />;
+        }
+        pendingTools.delete(event.id);
+        toolName = '';
+        toolInput = undefined;
+        toolOutputBuffer = '';
       } else {
-        elements[pending.index] = toolElement;
+        const inputJson = pending?.input ? JSON.stringify(pending.input) : '';
+        const toolElement = (
+          <ToolBlock
+            key={pending?.key || `tool-${blockCount++}`}
+            name={pending?.name || event.name}
+            input={inputJson}
+            result={event.content}
+            isError={event.isError}
+            toolDetails={event.details}
+          />
+        );
+        if (pending == null) {
+          elements.push(toolElement);
+        } else {
+          elements[pending.index] = toolElement;
+        }
+        pendingTools.delete(event.id);
+        toolName = '';
+        toolInput = undefined;
+        toolOutputBuffer = '';
       }
-      pendingTools.delete(event.id);
-      toolName = '';
-      toolInput = undefined;
-      toolOutputBuffer = '';
     } else if (event.type === 'question') {
       // Flush text before question
       if (textBuffer) {

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   formatVisibleDetails,
+  isHiddenToolCard,
   middleTruncate,
   resultSummary,
   summarize,
@@ -73,7 +74,23 @@ interface ResultSummaryCase {
   expectedResultSummary: string | null;
 }
 
-type FixtureCase = LabelCase | SummarizeCase | TruncateCase | DetailsCase | ResultSummaryCase;
+interface HiddenToolCardCase {
+  name: string;
+  kind: 'hiddenToolCard';
+  toolName: string;
+  /** The tool result's `details`. A `{ memory: {...} }` block is the signal
+   * that a memory chip fired; its absence (a cap-hit save) keeps the card. */
+  resultDetails?: unknown;
+  expectedHidden: boolean;
+}
+
+type FixtureCase =
+  | LabelCase
+  | SummarizeCase
+  | TruncateCase
+  | DetailsCase
+  | ResultSummaryCase
+  | HiddenToolCardCase;
 
 interface Fixture {
   cases: FixtureCase[];
@@ -97,15 +114,19 @@ const detailsCases = fixture.cases.filter((c): c is DetailsCase => c.kind === 'd
 const resultSummaryCases = fixture.cases.filter(
   (c): c is ResultSummaryCase => c.kind === 'resultSummary',
 );
+const hiddenToolCardCases = fixture.cases.filter(
+  (c): c is HiddenToolCardCase => c.kind === 'hiddenToolCard',
+);
 
 describe('rendering parity fixtures', () => {
-  it('loads a non-empty fixture with all five case kinds', () => {
+  it('loads a non-empty fixture with all six case kinds', () => {
     expect(fixture.cases.length).toBeGreaterThan(0);
     expect(labelCases.length).toBeGreaterThan(0);
     expect(summarizeCases.length).toBeGreaterThan(0);
     expect(truncateCases.length).toBeGreaterThan(0);
     expect(detailsCases.length).toBeGreaterThan(0);
     expect(resultSummaryCases.length).toBeGreaterThan(0);
+    expect(hiddenToolCardCases.length).toBeGreaterThan(0);
   });
 
   describe.each(labelCases)('label: $name', (c) => {
@@ -148,6 +169,12 @@ describe('rendering parity fixtures', () => {
       expect(sortedByKey(formatVisibleDetails(c.toolName, c.input))).toEqual(
         sortedByKey(c.expectedDetails),
       );
+    });
+  });
+
+  describe.each(hiddenToolCardCases)('hiddenToolCard: $name', (c) => {
+    it('matches isHiddenToolCard', () => {
+      expect(isHiddenToolCard(c.toolName, c.resultDetails)).toBe(c.expectedHidden);
     });
   });
 });

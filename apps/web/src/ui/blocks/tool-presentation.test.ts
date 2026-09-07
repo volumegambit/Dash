@@ -7,6 +7,7 @@ import {
   formatDetails,
   formatVisibleDetails,
   humanizeToolName,
+  isHiddenToolCard,
   isTodoWrite,
   middleTruncate,
   normalizeTool,
@@ -456,5 +457,31 @@ describe('per-type helpers', () => {
   it('extracts the content a write was asked to write', () => {
     expect(writtenContent({ path: 'a.md', content: '# Hi' })).toBe('# Hi');
     expect(writtenContent({ path: 'a.md' })).toBe('');
+  });
+});
+
+describe('isHiddenToolCard', () => {
+  const memory = { memory: { name: 'x', action: 'updated' } };
+
+  it('hides a memory card whose result carried a memory details block', () => {
+    expect(isHiddenToolCard('save_memory', memory)).toBe(true);
+    expect(isHiddenToolCard('forget_memory', { memory: { name: 'x', action: 'forgotten' } })).toBe(
+      true,
+    );
+  });
+
+  it('keeps a cap-hit save (non-error, no memory details) so the failure shows', () => {
+    // The 200-memory cap returns a detail-less non-error result — no chip.
+    expect(isHiddenToolCard('save_memory', undefined)).toBe(false);
+    expect(isHiddenToolCard('save_memory', { note: 'something else' })).toBe(false);
+  });
+
+  it('never hides recall_memory even with details — its result is the content', () => {
+    expect(isHiddenToolCard('recall_memory', memory)).toBe(false);
+  });
+
+  it('never hides an ordinary tool', () => {
+    expect(isHiddenToolCard('bash', memory)).toBe(false);
+    expect(isHiddenToolCard('read', memory)).toBe(false);
   });
 });

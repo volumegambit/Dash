@@ -7,6 +7,7 @@ import {
   formatDetails,
   formatVisibleDetails,
   insertNewlineAtSelection,
+  isHiddenToolCard,
   resultSummary,
   shortenCommand,
   summarize,
@@ -332,4 +333,25 @@ describe('composer key contract (mc column)', () => {
       }
     });
   }
+});
+
+describe('isHiddenToolCard', () => {
+  const memory = { memory: { name: 'x', action: 'updated' } };
+
+  it('hides a memory card whose result carried a memory details block', () => {
+    expect(isHiddenToolCard('save_memory', memory)).toBe(true);
+    expect(isHiddenToolCard('forget_memory', { memory: { name: 'x', action: 'forgotten' } })).toBe(
+      true,
+    );
+  });
+
+  it('keeps a cap-hit save (non-error, no memory details) so the failure shows', () => {
+    expect(isHiddenToolCard('save_memory', undefined)).toBe(false);
+    expect(isHiddenToolCard('save_memory', { note: 'something else' })).toBe(false);
+  });
+
+  it('never hides recall_memory or an ordinary tool, even with details', () => {
+    expect(isHiddenToolCard('recall_memory', memory)).toBe(false);
+    expect(isHiddenToolCard('bash', memory)).toBe(false);
+  });
 });

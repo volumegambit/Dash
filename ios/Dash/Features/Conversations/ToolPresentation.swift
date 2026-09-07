@@ -35,6 +35,59 @@ enum ToolPresentation {
     }
   }
 
+  // MARK: - Hidden tool cards
+
+  /// Tools whose successful result is fully represented by a dedicated memory
+  /// affordance — the `memory_saved` / `memory_forgotten` gateway event, which
+  /// `ChatReducer` turns into a "Remembered" / "Updated memory" /
+  /// "Forgot memory" status row. Their raw tool-call card is pure duplication:
+  /// the card dumps the whole memory body, description, name and type back out
+  /// under a "Save Memory" header that sits directly above the row saying the
+  /// same thing.
+  ///
+  /// `recall_memory` is deliberately absent: it has no follow-up event and its
+  /// result IS the content the reader wants, so its card stays.
+  private static let memoryAffordanceTools: Set<String> = ["save_memory", "forget_memory"]
+
+  /// True when a tool result carried the `memory` details block that the
+  /// backend uses to emit a `memory_saved` / `memory_forgotten` event
+  /// (`piagent.ts` `normalizeEvents`). This — NOT the absence of an error —
+  /// is the exact signal that a memory chip exists to replace the raw card.
+  ///
+  /// A `save_memory` that hits the 200-memory cap returns a NON-error result
+  /// whose text is prefixed `Error:` and which carries NO `memory` details, so
+  /// no status row fires. Keying suppression off an error flag alone would
+  /// wrongly hide that card and make the failure vanish; keying off the
+  /// details block keeps it.
+  static func hasMemoryDetails(_ details: JSONValue?) -> Bool {
+    guard case let .object(fields)? = details else { return false }
+    if case .object? = fields["memory"] { return true }
+    return false
+  }
+
+  /// True when a tool-call card should be hidden because a dedicated memory
+  /// affordance already shows the same outcome. Twin of tool-presentation.ts /
+  /// chat.helpers.ts `isHiddenToolCard`, pinned by the shared rendering-parity
+  /// fixtures.
+  ///
+  /// Hides only when the result actually produced a memory status row: the
+  /// tool is a memory self-tool AND its result carried the `memory` details
+  /// block. An errored save, a cap-hit save (non-error but detail-less), and a
+  /// still-running call (no details yet) all keep their card.
+  static func isHiddenToolCard(_ name: String, details: JSONValue? = nil) -> Bool {
+    memoryAffordanceTools.contains(normalizeTool(name)) && hasMemoryDetails(details)
+  }
+
+  /// True when a tool card should NOT be rendered in the transcript.
+  ///
+  /// A thin bridge for the view layer, which holds a whole `ToolCardState`:
+  /// reads the card's `name` and `details` and defers to `isHiddenToolCard`.
+  /// Extracted from `EventViews` so the suppression rule is unit-testable
+  /// without a SwiftUI host.
+  static func hidesToolCard(name: String, details: JSONValue?) -> Bool {
+    isHiddenToolCard(name, details: details)
+  }
+
   private static let toolLabels: [String: String] = [
     "bash": "Bash",
     "read": "Read",

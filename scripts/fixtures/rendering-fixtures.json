@@ -687,6 +687,49 @@
       "kind": "label",
       "toolName": "linear__search_issues",
       "expectedLabel": "Search Issues"
+    },
+    {
+      "name": "hidden: a save_memory result carrying a memory block is hidden (chip replaces it)",
+      "kind": "hiddenToolCard",
+      "toolName": "save_memory",
+      "resultDetails": {
+        "memory": { "name": "hyrox-interest", "description": "HYROX plans", "action": "updated" }
+      },
+      "expectedHidden": true
+    },
+    {
+      "name": "hidden: a forget_memory result carrying a memory block is hidden",
+      "kind": "hiddenToolCard",
+      "toolName": "forget_memory",
+      "resultDetails": { "memory": { "name": "old-fact", "action": "forgotten" } },
+      "expectedHidden": true
+    },
+    {
+      "name": "hidden: a cap-hit save_memory (no memory details) stays — its failure must show",
+      "kind": "hiddenToolCard",
+      "toolName": "save_memory",
+      "expectedHidden": false
+    },
+    {
+      "name": "hidden: a save_memory with unrelated details but no memory block stays",
+      "kind": "hiddenToolCard",
+      "toolName": "save_memory",
+      "resultDetails": { "note": "something else" },
+      "expectedHidden": false
+    },
+    {
+      "name": "hidden: recall_memory is never hidden even with details (its result is the content)",
+      "kind": "hiddenToolCard",
+      "toolName": "recall_memory",
+      "resultDetails": { "memory": { "name": "x" } },
+      "expectedHidden": false
+    },
+    {
+      "name": "hidden: an ordinary tool is never hidden",
+      "kind": "hiddenToolCard",
+      "toolName": "bash",
+      "resultDetails": { "memory": { "name": "x" } },
+      "expectedHidden": false
     }
   ]
 }

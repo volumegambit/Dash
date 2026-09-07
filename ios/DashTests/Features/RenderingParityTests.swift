@@ -47,6 +47,7 @@ struct RenderingParityTests {
     let isError: Bool?
     let resultDetails: JSONValue?
     let expectedResultSummary: String?
+    let expectedHidden: Bool?
   }
 
   struct DetailEntry: Decodable, Equatable, Sendable {
@@ -91,8 +92,11 @@ struct RenderingParityTests {
   static var resultSummaryCases: [FixtureCase] {
     fixture.cases.filter { $0.kind == "resultSummary" }
   }
+  static var hiddenToolCardCases: [FixtureCase] {
+    fixture.cases.filter { $0.kind == "hiddenToolCard" }
+  }
 
-  @Test("Fixture loads a non-empty set covering all five case kinds")
+  @Test("Fixture loads a non-empty set covering all six case kinds")
   func fixtureLoadsAllKinds() {
     #expect(!Self.fixture.cases.isEmpty)
     #expect(!Self.labelCases.isEmpty)
@@ -100,6 +104,7 @@ struct RenderingParityTests {
     #expect(!Self.truncateCases.isEmpty)
     #expect(!Self.detailsCases.isEmpty)
     #expect(!Self.resultSummaryCases.isEmpty)
+    #expect(!Self.hiddenToolCardCases.isEmpty)
   }
 
   // MARK: - label
@@ -165,5 +170,15 @@ struct RenderingParityTests {
       ToolPresentation.ToolDetail(key: $0.key, value: $0.value)
     }
     #expect(Self.sortedByKey(result) == Self.sortedByKey(expected), "\(c.name)")
+  }
+
+  // MARK: - hiddenToolCard
+
+  @Test(
+    "hiddenToolCard fixture case matches ToolPresentation.isHiddenToolCard",
+    arguments: Self.hiddenToolCardCases)
+  func hiddenToolCardMatches(_ c: FixtureCase) {
+    let result = ToolPresentation.isHiddenToolCard(c.toolName!, details: c.resultDetails)
+    #expect(result == c.expectedHidden, "\(c.name)")
   }
 }

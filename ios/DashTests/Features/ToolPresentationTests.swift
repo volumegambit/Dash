@@ -50,6 +50,43 @@ struct ToolPresentationTests {
     #expect(ToolPresentation.toolLabel("custom_thing") == "Custom Thing")
   }
 
+  // MARK: - isHiddenToolCard
+
+  /// A tool-result `details` carrying the `memory` block the backend attaches
+  /// on a successful save/forget — the signal that a memory status row fired.
+  private static let memoryDetails = JSONValue.object([
+    "memory": .object(["name": .string("x"), "action": .string("updated")])
+  ])
+
+  @Test("isHiddenToolCard hides a memory card whose result carried a memory block")
+  func isHiddenToolCardHidesMemory() {
+    #expect(ToolPresentation.isHiddenToolCard("save_memory", details: Self.memoryDetails))
+    #expect(ToolPresentation.isHiddenToolCard("forget_memory", details: Self.memoryDetails))
+  }
+
+  @Test("isHiddenToolCard keeps a cap-hit save (no memory details) so the failure shows")
+  func isHiddenToolCardKeepsCapHit() {
+    // The 200-memory cap returns a detail-less non-error result — no row.
+    #expect(ToolPresentation.isHiddenToolCard("save_memory", details: nil) == false)
+    #expect(
+      ToolPresentation.isHiddenToolCard(
+        "save_memory", details: .object(["note": .string("something else")])) == false)
+  }
+
+  @Test("isHiddenToolCard never hides recall_memory or an ordinary tool, even with details")
+  func isHiddenToolCardKeepsOthers() {
+    #expect(ToolPresentation.isHiddenToolCard("recall_memory", details: Self.memoryDetails) == false)
+    #expect(ToolPresentation.isHiddenToolCard("bash", details: Self.memoryDetails) == false)
+    #expect(ToolPresentation.isHiddenToolCard("read", details: Self.memoryDetails) == false)
+  }
+
+  @Test("hidesToolCard defers to isHiddenToolCard on the card's name and details")
+  func hidesToolCardBridge() {
+    #expect(ToolPresentation.hidesToolCard(name: "save_memory", details: Self.memoryDetails))
+    #expect(ToolPresentation.hidesToolCard(name: "save_memory", details: nil) == false)
+    #expect(ToolPresentation.hidesToolCard(name: "bash", details: Self.memoryDetails) == false)
+  }
+
   // MARK: - middleTruncate
 
   @Test("middleTruncate leaves short strings untouched")
