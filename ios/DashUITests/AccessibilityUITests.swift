@@ -74,6 +74,15 @@ final class AccessibilityUITests: DashUITestCase {
     send.tap()
 
     XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 5))
+    // Task D5: the sub-agent row's disclosure is state, not animation timing —
+    // it must open under reduce-motion exactly as it does without it
+    // (§8.6). `withAnimation(reduceMotion ? nil : .snappy)` is the mechanism;
+    // this is the assertion that it did not become "animate or nothing".
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+    XCTAssertTrue(element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists)
+    XCTAssertEqual(
+      element("chat.subagent.ui-subagent", in: app).label, "Agent researcher, Running")
+
     XCTAssertEqual(
       element("chat.final.response", in: app, timeout: 8).label, "Recovered exactly once.")
   }

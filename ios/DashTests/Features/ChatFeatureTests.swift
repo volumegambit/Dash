@@ -4737,6 +4737,154 @@ struct ChatFeatureTests {
     #expect(calls.contains { if case .subscribe = $0 { return true } else { return false } } == false)
   }
 
+  // MARK: - Sub-agent rows (task D5, sub-agents design 8.1-8.3)
+
+  @Test("expanding a row reads the child's transcript and its oneShot fact, and subscribes to it")
+  func expandingASubagentRowLoadsAndSubscribes() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(
+      .success(
+        SubagentTranscriptSnapshot(
+          messages: [childMessage(id: "c-1", text: "Check the logs")],
+          oneShot: true
+        )
+      )
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.setSubagentExpanded("child-1", true)
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == true)
+    #expect(feature.state.subagentUI["child-1"]?.childMessages?.map(\.id) == ["c-1"])
+    #expect(feature.state.subagentUI["child-1"]?.oneShot == true)
+    #expect(await sync.subagentTranscriptCalls == ["child-1"])
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1"))
+    )
+
+    await feature.setSubagentExpanded("child-1", false)
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == false)
+    #expect(
+      await chat.calls.contains(.unsubscribe(agentID: "agent-1", conversationID: "child-1"))
+    )
+    // Collapsing does not re-read.
+    #expect(await sync.subagentTranscriptCalls == ["child-1"])
+  }
+
+  @Test(
+    """
+    a child that cannot be opened reports on its own row and does NOT drive the     conversation into a failure state
+    """
+  )
+  func anUnopenableChildDoesNotTakeTheTranscriptDown() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(.failure(GatewayError.notFound))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.setSubagentExpanded("child-1", true)
+
+    #expect(feature.state.subagentUI["child-1"]?.lastError == "This agent is no longer available.")
+    #expect(feature.state.subagentUI["child-1"]?.childMessages == nil)
+    // The conversation itself is untouched — a 404 on a pruned child must not
+    // look like the OPEN conversation being deleted.
+    #expect(feature.state.errorBanner == nil)
+    #expect(feature.connection == .online)
+  }
+
+  @Test("typing into a child goes through the REST resume, never a message frame")
+  func sendingToASubagentUsesTheRestResume() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true)
+
+    let sent = await feature.sendToSubagent("child-1", text: "  keep going  ", optimistic: true)
+
+    #expect(sent)
+    #expect(
+      await sync.resumeCalls
+        == [SubagentResumeCall(id: "child-1", message: "keep going", requestID: "req-1")]
+    )
+    // A `message` frame would reach `hub.start` and never
+    // `ChildHandle.answerQuestion`. Nothing about a resume touches the socket.
+    #expect(await chat.calls.compactMap(\.sentPayload).isEmpty)
+    #expect(feature.state.subagentUI["child-1"]?.isSending == false)
+    #expect(feature.state.subagentUI["child-1"]?.lastError == nil)
+  }
+
+  @Test("a coordinator refusal surfaces verbatim and the optimistic row is withdrawn")
+  func aRefusedResumeSurfacesItsReason() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueResume(.failure(GatewayError.validation("One-shot agents cannot be resumed")))
+    let feature = makeFeature(sync: sync, ids: ["req-1", "unused"])
+    feature.setConnection(.online)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true)
+
+    let sent = await feature.sendToSubagent("child-1", text: "again", optimistic: true)
+
+    #expect(sent == false)
+    #expect(
+      feature.state.subagentUI["child-1"]?.lastError == "One-shot agents cannot be resumed"
+    )
+    #expect(feature.state.subagentUI["child-1"]?.childMessages?.isEmpty == true)
+  }
+
+  @Test("resendFromMessage refuses an orchestrator-authored row, not just a notification row")
+  func resendRefusesOrchestratorAuthoredRows() async {
+    // Seeded through the cache, which is the only writer of `state.messages`
+    // a test can drive — and it is also the realistic path: a child transcript
+    // reaches this client as ordinary `ConversationMessage` rows carrying
+    // `origin: "parent"`.
+    let parentAuthored = ConversationMessageDTO(
+      id: "p1",
+      conversationId: "conv-1",
+      turnId: "child-turn",
+      ordinal: 1,
+      role: .user,
+      status: .completed,
+      content: .user(text: "Check the logs", images: nil),
+      createdAt: Date(timeIntervalSince1970: 1),
+      updatedAt: Date(timeIntervalSince1970: 1),
+      origin: MessageOrigin.parent.rawValue
+    )
+    let persistence = FakeChatPersistence(messages: [parentAuthored])
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(messages: [parentAuthored], throughSeq: 1)))
+    let feature = makeFeature(persistence: persistence, sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+    #expect(feature.state.messages.map(\.origin) == [.parent])
+
+    let resent = await feature.resendFromMessage(id: "p1")
+
+    #expect(resent == false)
+    #expect(feature.state.messages.map(\.id) == ["p1"])
+  }
+
+  private func childMessage(id: String, text: String) -> ConversationMessageDTO {
+    ConversationMessageDTO(
+      id: id,
+      conversationId: "child-1",
+      turnId: "child-turn",
+      ordinal: 1,
+      role: .user,
+      status: .completed,
+      content: .user(text: text, images: nil),
+      createdAt: Date(timeIntervalSince1970: 1),
+      updatedAt: Date(timeIntervalSince1970: 1),
+      origin: MessageOrigin.parent.rawValue
+    )
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -5346,6 +5494,12 @@ private struct ChatReplayCall: Equatable, Sendable {
   let sinceSeq: Int
 }
 
+struct SubagentResumeCall: Equatable, Sendable {
+  let id: String
+  let message: String
+  let requestID: String
+}
+
 private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
   private struct QueuedRefresh: Sendable {
     let result: FakeChatResult<ChatCanonicalSnapshot>
@@ -5358,6 +5512,10 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
   private(set) var refreshCalls: [ChatRefreshCall] = []
   private(set) var replayCalls: [ChatReplayCall] = []
   private(set) var shutdownCount = 0
+  private var subagentTranscriptResults: [FakeChatResult<SubagentTranscriptSnapshot>] = []
+  private var resumeResults: [FakeChatResult<Void>] = []
+  private(set) var subagentTranscriptCalls: [String] = []
+  private(set) var resumeCalls: [SubagentResumeCall] = []
 
   init(recorder: ChatOperationRecorder? = nil) {
     self.recorder = recorder
@@ -5395,6 +5553,28 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
     )
     guard replayResults.isEmpty == false else { return [] }
     return try resolve(replayResults.removeFirst())
+  }
+
+  func enqueueSubagentTranscript(_ result: FakeChatResult<SubagentTranscriptSnapshot>) {
+    subagentTranscriptResults.append(result)
+  }
+
+  func enqueueResume(_ result: FakeChatResult<Void>) {
+    resumeResults.append(result)
+  }
+
+  func subagentTranscript(childID: String) throws -> SubagentTranscriptSnapshot {
+    subagentTranscriptCalls.append(childID)
+    guard subagentTranscriptResults.isEmpty == false else {
+      return SubagentTranscriptSnapshot(messages: [], oneShot: nil)
+    }
+    return try resolve(subagentTranscriptResults.removeFirst())
+  }
+
+  func resumeSubagent(id: String, message: String, requestID: String) throws {
+    resumeCalls.append(SubagentResumeCall(id: id, message: message, requestID: requestID))
+    guard resumeResults.isEmpty == false else { return }
+    _ = try resolve(resumeResults.removeFirst())
   }
 
   func shutdown() async {

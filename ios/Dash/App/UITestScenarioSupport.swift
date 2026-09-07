@@ -328,6 +328,72 @@ extension AppDependenciesFactory {
       )
     }
 
+    /// The id of the child `streaming-reconnect` spawns. Shared by the
+    /// scripted `worker_spawned`/`subagent_started` pair, by the row's
+    /// accessibility identifier, and by the child conversation this transcript
+    /// belongs to — because a worker id IS the child's conversation id.
+    static let subagentID = "ui-subagent"
+
+    /// The child's OWN transcript, served by `subagentTranscript(childID:)`
+    /// when a row is expanded (design 8.3).
+    ///
+    /// Two rows, both load-bearing:
+    ///
+    /// 1. A `origin: "parent"` user row — §8.5's muted "from orchestrator"
+    ///    line. It must keep its text (that text is the instruction the child
+    ///    is working from) and must offer neither Retry nor Edit & Resend.
+    /// 2. An assistant row whose `tool_use` id is `ui-tool` — the SAME id the
+    ///    parent's own tool card uses. That collision is deliberate: a
+    ///    `tool_use` id is only unique within its conversation, so the nested
+    ///    card answering to `chat.subagent.ui-subagent.tool.ui-tool` while the
+    ///    parent's answers to `chat.tool.ui-tool` is what proves §8.6's
+    ///    namespacing in the running app.
+    static func subagentMessages() -> [ConversationMessageDTO] {
+      [
+        ConversationMessageDTO(
+          id: "ui-subagent-brief",
+          conversationId: subagentID,
+          turnId: "ui-subagent-turn",
+          ordinal: 1,
+          role: .user,
+          status: .completed,
+          content: .user(text: "Check whether the launch checklist is complete", images: nil),
+          createdAt: now,
+          updatedAt: now,
+          origin: MessageOrigin.parent.rawValue
+        ),
+        ConversationMessageDTO(
+          id: "ui-subagent-reply",
+          conversationId: subagentID,
+          turnId: "ui-subagent-turn",
+          ordinal: 2,
+          role: .assistant,
+          status: .completed,
+          content: .assistant(events: [
+            .toolUseStart(id: "ui-tool", name: "search", input: .object(["query": .string("checklist")])),
+            .toolResult(
+              id: "ui-tool",
+              name: "search",
+              content: "Checklist is 4 of 5 done",
+              isError: false,
+              details: nil
+            ),
+            .response(
+              content: "Four of five items are done.",
+              usage: UsageDTO(
+                inputTokens: 3,
+                outputTokens: 5,
+                cacheReadTokens: nil,
+                cacheWriteTokens: nil
+              )
+            ),
+          ]),
+          createdAt: now.addingTimeInterval(1),
+          updatedAt: now.addingTimeInterval(1)
+        ),
+      ]
+    }
+
     static func message(
       id: String,
       turnID: String,
@@ -954,6 +1020,7 @@ extension AppDependenciesFactory {
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
     private var didFailSleepingAgentEnable = false
+    private var resumedSubagentMessages: [String] = []
 
     init(scenario: UITestScenario, dataIdentifier: String) {
       self.dataIdentifier = dataIdentifier
@@ -1443,6 +1510,23 @@ extension AppDependenciesFactory {
       _ = conversationID
       _ = sinceSeq
       return []
+    }
+
+    func subagentTranscript(childID: String) throws -> SubagentTranscriptSnapshot {
+      guard childID == UITestScenarioFixtures.subagentID else { throw GatewayError.notFound }
+      return SubagentTranscriptSnapshot(
+        messages: UITestScenarioFixtures.subagentMessages(),
+        // Not one-shot, so the body composer is offered. The waiting-input
+        // reply is enabled either way — a one-shot child parked on
+        // `ask_orchestrator` can still be answered.
+        oneShot: false
+      )
+    }
+
+    func resumeSubagent(id: String, message: String, requestID: String) throws {
+      guard id == UITestScenarioFixtures.subagentID else { throw GatewayError.notFound }
+      resumedSubagentMessages.append(message)
+      _ = requestID
     }
 
     func shutdown() {}

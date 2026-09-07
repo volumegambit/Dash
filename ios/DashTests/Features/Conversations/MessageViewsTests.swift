@@ -124,7 +124,11 @@ struct MessageEntranceSignatureTests {
 /// what a notification row reads.
 @Suite("Notification rows (task C7, sub-agents design 8.5)")
 struct NotificationRowTests {
-  @Test("a user row whose origin is not the user is a notification row")
+  @Test(
+    """
+    each non-user origin gets its OWN row, and both count as system-authored     (task D5 narrows C7's `origin != .user`)
+    """
+  )
   func originDrivesTheRow() {
     var notification = userMessage(id: "n1", turnID: "t1", text: "")
     notification.origin = .notification
@@ -134,11 +138,55 @@ struct NotificationRowTests {
     typed.origin = .user
 
     #expect(isNotificationRow(notification))
-    #expect(isNotificationRow(fromParent))
+    #expect(isOrchestratorRow(notification) == false)
+
+    // CHANGED IN D5, deliberately. C7's predicate was `origin != .user`, so a
+    // `.parent` row collapsed to the generic bell label and threw its text
+    // away. That was tolerable only while `.parent` was unreachable — D5's
+    // `loadSubagentTranscript` makes child transcripts openable, and the text
+    // it was discarding is the instruction the child is working from.
+    #expect(isNotificationRow(fromParent) == false)
+    #expect(isOrchestratorRow(fromParent))
+
     #expect(isNotificationRow(typed) == false)
+    #expect(isOrchestratorRow(typed) == false)
+
+    // Both are still system-authored, which is what keeps Retry/Edit away.
+    #expect(isSystemAuthoredRow(notification))
+    #expect(isSystemAuthoredRow(fromParent))
+    #expect(isSystemAuthoredRow(typed) == false)
+
     // Absent origin (an older gateway, or a replayed turn) stays a bubble.
     #expect(isNotificationRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
+    #expect(isOrchestratorRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
+    #expect(isSystemAuthoredRow(userMessage(id: "u2", turnID: "t1", text: "Hi")) == false)
     #expect(isNotificationRow(assistantMessage(id: "a1", turnID: "t1", status: .completed)) == false)
+    #expect(isOrchestratorRow(assistantMessage(id: "a1", turnID: "t1", status: .completed)) == false)
+  }
+
+  @Test(
+    """
+    a failed reply inside a CHILD transcript offers no Retry either — resending     a parent-origin row would submit the orchestrator's words as the user's
+    """
+  )
+  func orchestratorRowsAreNeverRetryTargets() {
+    var fromParent = userMessage(id: "p1", turnID: "child-turn", text: "Check the logs")
+    fromParent.origin = .parent
+    let failedReply = assistantMessage(id: "a1", turnID: "child-turn", status: .failed)
+    let messages = [fromParent, failedReply]
+
+    // This is the SECURITY half of D4's ruling 1, and it is why the narrowing
+    // and the new row had to land in the same commit: narrowing
+    // `isNotificationRow` alone would have dropped a `.parent` row through to
+    // `case .user:` — a full bubble with a context menu offering Retry and
+    // Edit & Resend on text the user never wrote.
+    #expect(retryTargetID(for: failedReply, in: messages) == nil)
+    #expect(retryTargetID(for: fromParent, in: messages) == nil)
+  }
+
+  @Test("the orchestrator row's attribution is byte-identical to web's")
+  func orchestratorLabelParity() {
+    #expect(orchestratorRowLabel == "from orchestrator")
   }
 
   @Test("a failed reply to a notification turn offers no inline Retry — its user row is not user input")

@@ -13,6 +13,25 @@ struct ChatState: Equatable, Sendable {
   var olderCursor: String?
   var composerBlock: ComposerBlockReason?
   var errorBanner: String?
+  /// Per-child UI state for the sub-agent rows (§8.1–§8.3), keyed by child
+  /// conversation id.
+  ///
+  /// This is the slice D4 deliberately did NOT put on `SubagentCardState`, and
+  /// the reason is the same one web hit as its D2 CRITICAL 1: `.cachedMessages
+  /// Loaded` and `.olderMessagesLoaded` re-project whole messages from scratch
+  /// (`:407`/`:415`), so expansion, a fetched child transcript or a REST fact
+  /// hung off a folded card is destroyed by the next transcript refresh — and
+  /// `ChatFeature` dispatches `cachedMessagesLoaded` from three sites,
+  /// including the post-reconnect canonical snapshot. Keyed here, it survives.
+  ///
+  /// Lifetime is the conversation's: one `ChatFeature`/`ChatState` exists per
+  /// open conversation, so this map is created and discarded with it and
+  /// cannot accumulate across switches the way web's `subagentInfo` did before
+  /// D3. It is deliberately NOT cleared on a transcript refresh — surviving
+  /// one is the entire point.
+  ///
+  /// The composer's TEXT is NOT here; see `SubagentUIState`.
+  var subagentUI: [String: SubagentUIState] = [:]
 
   /// The gateway's own default conversation title
   /// (`apps/gateway/src/conversation-service.ts`'s `DEFAULT_CONVERSATION_TITLE`,
@@ -40,6 +59,45 @@ struct ChatState: Equatable, Sendable {
   }
 }
 
+/// UI state for one sub-agent row, keyed by child conversation id in
+/// `ChatState.subagentUI`.
+///
+/// **The composer draft is deliberately absent.** `ChatFeature` is
+/// `@Observable` and `ChatView` reads `feature.state`, so a draft stored here
+/// would invalidate the WHOLE transcript on every keystroke — the fan-out web
+/// measured in its D3 I3 and deliberately kept its composers keyed away from.
+/// iOS keeps the text in the composer view's own `@State`, the same way
+/// `QuestionView` keeps `QuestionDraftState`. The cost is disclosed: collapsing
+/// a row discards its unsent body draft, where web preserves it.
+struct SubagentUIState: Equatable, Sendable {
+  /// §8.3's disclosure state. Rows start collapsed.
+  var isExpanded = false
+  /// The child's own transcript. `nil` means NEVER FETCHED — distinct from a
+  /// fetched-and-empty child, which renders "Nothing from this agent yet."
+  /// rather than a loading line.
+  var childMessages: [ChatMessageState]?
+  /// `SubagentInfoDTO.oneShot`, which rides REST and never an event, so it is
+  /// unknown until the first expansion reads the child's summary. `nil` leaves
+  /// the body composer ENABLED: refusing a send on a guess would be worse than
+  /// letting the coordinator's own 409 text land on the error line.
+  var oneShot: Bool?
+  /// A resume is in flight. Only ever set for a send this client made.
+  var isSending = false
+  /// The last refusal, verbatim from the gateway (`GatewayError.validation`
+  /// carries the coordinator's actionable text). Cleared on the next attempt,
+  /// never on success alone, so a refusal stays readable.
+  var lastError: String?
+  /// `requestId`s of optimistic rows still waiting for their `accepted` echo.
+  ///
+  /// An entry here is not a promise: a queued STEER produces an `accepted`
+  /// once the child's current turn ends, but an ANSWER to a parked
+  /// `ask_orchestrator` question resolves INSIDE the running turn and produces
+  /// none, ever — and `SubagentResumeResponse.mode` reports both as `queued`.
+  /// The row is written only when a subscription is held (i.e. the body is
+  /// open), which is precisely when an echo could reach us.
+  var pendingRequestIDs: Set<String> = []
+}
+
 enum ChatAction: Sendable {
   case cachedMessagesLoaded([ConversationMessageDTO], cursor: Int)
   case olderMessagesLoaded([ConversationMessageDTO], nextCursor: String?)
@@ -52,6 +110,21 @@ enum ChatAction: Sendable {
   case cancelRequested
   case authoritativeSummary(ConversationSummaryDTO)
   case failure(GatewayError)
+  /// §8.3's disclosure toggle. Collapsing keeps the fetched transcript: a
+  /// re-expansion re-reads anyway, and dropping it would blank the body for a
+  /// round trip every time.
+  case subagentExpanded(id: String, isExpanded: Bool)
+  /// The child's own messages, from `GET /conversations/{childId}/messages`.
+  case subagentTranscriptLoaded(id: String, messages: [ConversationMessageDTO])
+  /// `SubagentInfoDTO.oneShot` for a child, from its conversation summary.
+  case subagentInfoLoaded(id: String, oneShot: Bool)
+  /// A `POST /subagents/{id}/resume` was just issued. `optimistic` is the
+  /// caller's choice and must be true only when a subscription is held for
+  /// this child, because that is the only condition under which an `accepted`
+  /// can come back to reconcile the row.
+  case subagentReplyStarted(id: String, requestID: String, text: String, optimistic: Bool)
+  case subagentReplySucceeded(id: String, requestID: String)
+  case subagentReplyFailed(id: String, requestID: String, message: String)
 }
 
 enum ChatEffect: Equatable, Sendable {
@@ -448,6 +521,20 @@ enum ChatReducer {
       return []
 
     case let .frame(frame):
+      // Child frames reach this socket because the client SUBSCRIBED to the
+      // child conversation (design 7.6), and they must never touch the parent
+      // transcript: a child's `seq` is its own sequence space, so letting one
+      // through would advance `lastAppliedSeq`, corrupt the gap detector and
+      // hand `activeTurnID` to a turn on another conversation. Before D5 they
+      // were simply DROPPED by `frameBelongsToConversation`, which was safe
+      // and invisible; now they are routed.
+      if let childID = conversationID(of: frame),
+        childID != state.conversation.id,
+        state.subagentUI[childID] != nil
+      {
+        applyChildFrame(frame, childID: childID, state: &state)
+        return []
+      }
       return reduceFrame(frame, state: &state)
 
     case let .replayLoaded(entries):
@@ -491,6 +578,81 @@ enum ChatReducer {
       }
       return []
 
+    case let .subagentExpanded(id, isExpanded):
+      var ui = state.subagentUI[id] ?? SubagentUIState()
+      ui.isExpanded = isExpanded
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentTranscriptLoaded(id, messages):
+      var ui = state.subagentUI[id] ?? SubagentUIState()
+      let loaded = messages.sorted { ($0.ordinal) < ($1.ordinal) }.map(projectMessage)
+      // Optimistic rows and any live rows already materialised from a `child`
+      // frame are KEPT: the REST page is a snapshot taken before them, and
+      // replacing wholesale would blank a row the user is watching stream.
+      // Server ids win on collision, which is what adoption already produced.
+      let loadedIDs = Set(loaded.map(\.id))
+      let live = (ui.childMessages ?? []).filter { $0.ordinal == nil && !loadedIDs.contains($0.id) }
+      ui.childMessages = loaded + live
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentInfoLoaded(id, oneShot):
+      var ui = state.subagentUI[id] ?? SubagentUIState()
+      ui.oneShot = oneShot
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentReplyStarted(id, requestID, text, optimistic):
+      var ui = state.subagentUI[id] ?? SubagentUIState()
+      ui.isSending = true
+      // Cleared on the ATTEMPT, not on success: leaving the previous refusal
+      // up while a new send is in flight reads as though the new one failed.
+      ui.lastError = nil
+      if optimistic {
+        ui.pendingRequestIDs.insert(requestID)
+        var rows = ui.childMessages ?? []
+        // `origin: .parent` because that is what the gateway records and
+        // echoes for a parent-authored turn on a child conversation
+        // (`chat-accepted-subagent.json`) — so it renders as §8.5's muted
+        // "from orchestrator" row, not as a user bubble with Retry/Edit.
+        rows.append(
+          ChatMessageState(
+            id: requestID,
+            turnID: requestID,
+            ordinal: nil,
+            role: .user,
+            status: .accepted,
+            user: UserMessageProjection(text: text, images: []),
+            assistant: nil,
+            origin: .parent
+          )
+        )
+        ui.childMessages = rows
+      }
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentReplySucceeded(id, requestID):
+      guard var ui = state.subagentUI[id] else { return [] }
+      ui.isSending = false
+      _ = requestID
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentReplyFailed(id, requestID, message):
+      guard var ui = state.subagentUI[id] else { return [] }
+      ui.isSending = false
+      ui.lastError = message
+      // The turn never started, so no `accepted` is coming for this id: drop
+      // the optimistic row rather than leaving the user's sentence sitting in
+      // the child's transcript as though it had been delivered.
+      if ui.pendingRequestIDs.remove(requestID) != nil {
+        ui.childMessages?.removeAll { $0.id == requestID }
+      }
+      state.subagentUI[id] = ui
+      return []
+
     case let .failure(error):
       return reduceFailure(error, state: &state)
     }
@@ -527,6 +689,137 @@ enum ChatReducer {
     )
     effects.insert(.persistCursor(seq), at: 0)
     return effects
+  }
+
+  /// Fold one frame for a SUBSCRIBED child conversation into that child's own
+  /// transcript slice.
+  ///
+  /// Deliberately not `reduceFrame`: none of that function's parent-scoped
+  /// bookkeeping applies to a child. There is no `lastAppliedSeq` for a child
+  /// (its `seq` counts in its own conversation), so there is no gap detector
+  /// and no replay request; there is no `activeTurnID`, because the composer
+  /// being blocked is a property of the conversation the user has OPEN; and
+  /// there is no cursor to persist, because the child's messages are not
+  /// cached. What it does share is the event projector — `project(_:onto:)`
+  /// and `projectMessage` — so a child renders through exactly the same fold
+  /// as its parent (§8.3).
+  private static func applyChildFrame(
+    _ frame: MobileWSServerFrame,
+    childID: String,
+    state: inout ChatState
+  ) {
+    guard var ui = state.subagentUI[childID] else { return }
+    // A child whose transcript was never fetched has nothing to fold onto, and
+    // materialising rows here would produce a transcript with a hole in it —
+    // everything the child said before this frame would be missing. The next
+    // expansion re-reads from REST and gets the whole thing.
+    guard var rows = ui.childMessages else { return }
+    defer {
+      ui.childMessages = rows
+      state.subagentUI[childID] = ui
+    }
+
+    switch frame {
+    case let .accepted(turnID, _, userMessageID, assistantMessageID, _, _, origin, _, requestID):
+      // Adopt this client's own optimistic row rather than adding a second
+      // one. Keyed on `requestId`, which is the ONLY correlation available:
+      // the server picks the turn id for a resume, and the resume response
+      // carries none.
+      if let requestID, ui.pendingRequestIDs.remove(requestID) != nil,
+        let index = rows.firstIndex(where: { $0.id == requestID })
+      {
+        rows[index] = ChatMessageState(
+          id: userMessageID,
+          turnID: turnID,
+          ordinal: nil,
+          role: .user,
+          status: .accepted,
+          user: rows[index].user,
+          assistant: nil,
+          origin: origin ?? .parent
+        )
+      } else if rows.contains(where: { $0.id == userMessageID }) == false {
+        rows.append(
+          ChatMessageState(
+            id: userMessageID,
+            turnID: turnID,
+            ordinal: nil,
+            role: .user,
+            status: .accepted,
+            user: UserMessageProjection(text: "", images: []),
+            assistant: nil,
+            origin: origin
+          )
+        )
+      }
+      if rows.contains(where: { $0.id == assistantMessageID }) == false {
+        rows.append(
+          ChatMessageState(
+            id: assistantMessageID,
+            turnID: turnID,
+            ordinal: nil,
+            role: .assistant,
+            status: .streaming,
+            user: nil,
+            assistant: AssistantMessageProjection(),
+            origin: nil
+          )
+        )
+      }
+
+    case let .event(turnID, _, _, event):
+      let index = ensureChildAssistant(turnID: turnID, rows: &rows)
+      var assistant = rows[index].assistant ?? AssistantMessageProjection()
+      project(event, onto: &assistant)
+      rows[index].assistant = assistant
+      rows[index].status = .streaming
+
+    case let .done(turnID, _, _, outcome):
+      let index = ensureChildAssistant(turnID: turnID, rows: &rows)
+      var assistant = rows[index].assistant ?? AssistantMessageProjection()
+      switch outcome ?? .completed {
+      case .completed:
+        rows[index].status = .completed
+        assistant.terminal = .completed
+      case .cancelled:
+        rows[index].status = .cancelled
+        assistant.terminal = .cancelled
+      }
+      assistant.isThinkingCollapsed = true
+      assistant.pendingQuestion = nil
+      rows[index].assistant = assistant
+
+    case let .error(turnID, _, _, error, _, _, _):
+      let index = ensureChildAssistant(turnID: turnID, rows: &rows)
+      var assistant = rows[index].assistant ?? AssistantMessageProjection()
+      rows[index].status = .failed
+      assistant.terminal = .failed(error)
+      assistant.isThinkingCollapsed = true
+      assistant.pendingQuestion = nil
+      rows[index].assistant = assistant
+    }
+  }
+
+  private static func ensureChildAssistant(
+    turnID: String,
+    rows: inout [ChatMessageState]
+  ) -> Int {
+    if let index = rows.firstIndex(where: { $0.turnID == turnID && $0.role == .assistant }) {
+      return index
+    }
+    rows.append(
+      ChatMessageState(
+        id: turnID,
+        turnID: turnID,
+        ordinal: nil,
+        role: .assistant,
+        status: .streaming,
+        user: nil,
+        assistant: AssistantMessageProjection(),
+        origin: nil
+      )
+    )
+    return rows.count - 1
   }
 
   private static func consumePendingFrame(state: inout ChatState) -> [ChatEffect] {

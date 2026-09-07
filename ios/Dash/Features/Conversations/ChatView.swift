@@ -385,7 +385,21 @@ struct ChatView: View {
               guard let text = feature.state.messages.first(where: { $0.id == id })?.user?.text
               else { return }
               editingMessage = EditingMessage(id: id, text: text)
-            }
+            },
+            subagentInteraction: SubagentInteraction(
+              state: { feature.state.subagentUI[$0] ?? SubagentUIState() },
+              setExpanded: { childID, isExpanded in
+                Task { await feature.setSubagentExpanded(childID, isExpanded) }
+              },
+              send: { childID, text, optimistic in
+                await feature.sendToSubagent(childID, text: text, optimistic: optimistic)
+              },
+              // Gated on `unauthorized` ALONE, never on socket state: the send
+              // is REST, and a reconnect must not stop the user answering a
+              // child parked in `waiting_input`, whose `waitForQuestion` fails
+              // the child's tool call ten minutes later.
+              isEnabled: feature.connection != .repairRequired
+            )
           )
         }
 

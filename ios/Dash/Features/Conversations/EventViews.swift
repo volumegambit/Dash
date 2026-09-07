@@ -24,19 +24,35 @@ struct AssistantEventViews: View {
   let isAnsweringEnabled: Bool
   let onAnswer: (String, String) -> Void
   let exposesResponseToAccessibility: Bool
+  /// Namespace for this projection's accessibility identifiers (§8.6).
+  /// `"chat"` in the parent's transcript, `"chat.subagent.<childId>"` inside a
+  /// child's — without it a nested tool card would answer to the same
+  /// `chat.tool.<toolId>` as a card in the parent, and a `tool_use` id is only
+  /// unique within its own conversation.
+  let identifierPrefix: String
+  /// Whether a sub-agent row rendered from THIS projection may open a
+  /// transcript of its own (`maxSubagentDepth`). False inside a child.
+  let subagentNesting: Bool
+  let subagentInteraction: SubagentInteraction
 
   init(
     projection: AssistantMessageProjection,
     status: MessageStatus,
     isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
-    exposesResponseToAccessibility: Bool
+    exposesResponseToAccessibility: Bool,
+    identifierPrefix: String = "chat",
+    subagentNesting: Bool = true,
+    subagentInteraction: SubagentInteraction = .inert
   ) {
     self.projection = projection
     self.status = status
     self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     self.exposesResponseToAccessibility = exposesResponseToAccessibility
+    self.identifierPrefix = identifierPrefix
+    self.subagentNesting = subagentNesting
+    self.subagentInteraction = subagentInteraction
   }
 
   var body: some View {
@@ -81,11 +97,19 @@ struct AssistantEventViews: View {
       }
 
       ForEach(projection.toolCards) { tool in
-        ToolCardView(tool: tool)
+        ToolCardView(tool: tool, identifierPrefix: identifierPrefix)
       }
 
-      ForEach(projection.subagentCards) { card in
-        SubagentCardView(card: card)
+      // §8.2: children whose start events were adjacent in this message render
+      // inside one group container. `isAdjacentToPrevious` is computed in the
+      // fold, because adjacency needs the EVENT STREAM and the card list does
+      // not carry it; orphans never join a cluster.
+      ForEach(subagentClusters(projection.subagentCards), id: \.first!.id) { cluster in
+        SubagentGroupView(
+          cards: cluster,
+          nested: subagentNesting,
+          interaction: subagentInteraction
+        )
       }
 
       ForEach(projection.statusRows) { row in
@@ -113,6 +137,25 @@ struct AssistantEventViews: View {
       }
     }
   }
+}
+
+/// Split the folded rows into §8.2's parallel clusters: a run of rows whose
+/// start events were adjacent in the same message, with nothing but sub-agent
+/// chrome between them.
+///
+/// Internal, not `private`, so `DashTests` can exercise the split without
+/// rendering SwiftUI — the same pattern as `failedTurnIDs` and
+/// `shouldShowTypingIndicator`.
+func subagentClusters(_ cards: [SubagentCardState]) -> [[SubagentCardState]] {
+  var clusters: [[SubagentCardState]] = []
+  for card in cards {
+    if card.isAdjacentToPrevious, clusters.isEmpty == false {
+      clusters[clusters.count - 1].append(card)
+    } else {
+      clusters.append([card])
+    }
+  }
+  return clusters
 }
 
 /// 3-dot pulse (chat-ux Phase 2, audit #6). Hidden from accessibility like
@@ -236,6 +279,13 @@ struct ThinkingView: View {
 /// the result here only branches on error/empty/short/long.
 struct ToolCardView: View {
   let tool: ToolCardState
+  /// See `AssistantEventViews.identifierPrefix`.
+  let identifierPrefix: String
+
+  init(tool: ToolCardState, identifierPrefix: String = "chat") {
+    self.tool = tool
+    self.identifierPrefix = identifierPrefix
+  }
 
   @State private var isExpanded = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -262,7 +312,7 @@ struct ToolCardView: View {
     .background(cardBackground, in: RoundedRectangle(cornerRadius: DashTheme.Radius.small))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
-    .accessibilityIdentifier("chat.tool.\(tool.id)")
+    .accessibilityIdentifier("\(identifierPrefix).tool.\(tool.id)")
     // Haptics (chat-ux Phase 2, audit #7): matches `ThinkingView`'s
     // disclosure-toggle feedback.
     .sensoryFeedback(.selection, trigger: isExpanded)
@@ -373,61 +423,6 @@ struct ToolCardView: View {
 private func capitalizedFirstLetter(_ s: String) -> String {
   guard let first = s.first else { return s }
   return first.uppercased() + s.dropFirst()
-}
-
-/// Transitional collapsed sub-agent row. Task D5 replaces this with the real
-/// §8.1 chrome (status glyph, mono type, right-aligned `N tool uses · 1m 12s`,
-/// disclosure, nested transcript) in a new `SubagentViews.swift` and deletes
-/// this declaration — D5 must move the type, not add a second one with the
-/// same name.
-///
-/// The identifier is `chat.subagent.<id>` (§8.6), replacing D4's predecessor
-/// `chat.worker.<runId+workerId>`. It sits on the SAME `.contain` container
-/// that carries the label, because a container's accessibility identifier
-/// erases its children's — putting it anywhere else would leave the UI tests
-/// querying an element that no longer answers.
-struct SubagentCardView: View {
-  let card: SubagentCardState
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(card.status.title, systemImage: card.status.systemImage)
-        .font(.callout.weight(.semibold))
-
-      Text(card.type)
-        .font(.subheadline.weight(.medium))
-
-      if card.description.isEmpty == false {
-        Text(card.description)
-          .font(.callout)
-      }
-
-      if let detail = card.detail, detail.isEmpty == false, detail != card.description {
-        Text(detail)
-          .font(.callout)
-      }
-
-      if let question = card.question, question.isEmpty == false {
-        Label(question, systemImage: "questionmark.bubble")
-          .font(.callout)
-      }
-
-      if let report = card.report, report.isEmpty == false {
-        Text(report)
-          .font(.callout)
-          .textSelection(.enabled)
-      }
-
-      if let usage = card.usage {
-        UsageView(usage: usage)
-      }
-    }
-    .padding(10)
-    .background(Color.secondary.opacity(DashTheme.Opacity.fillSubtle), in: RoundedRectangle(cornerRadius: DashTheme.Radius.medium))
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Agent \(card.type), \(card.status.title)")
-    .accessibilityIdentifier("chat.subagent.\(card.id)")
-  }
 }
 
 struct QuestionView: View {
@@ -598,7 +593,9 @@ extension ToolCardStatus {
 }
 
 extension SubagentCardStatus {
-  fileprivate var title: String {
+  /// Internal, not `fileprivate`: `SubagentViews.swift` reads it for the row's
+  /// accessible name, and `DashTests` reads it to pin that name.
+  var title: String {
     switch self {
     case .running: "Running"
     case .waiting: "Waiting for input"

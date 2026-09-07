@@ -35,10 +35,44 @@ let notificationRowFallbackLabel = "Background task update"
 /// result, and the row's text is the `[SYSTEM NOTIFICATION - NOT USER INPUT]`
 /// block it was fed. `nil` origin is UNKNOWN — a replayed turn or an older
 /// gateway — and stays a normal bubble.
+///
+/// Narrowed in D5 from `origin != .user` to exactly `.notification`. That
+/// widening was safe only while `origin == .parent` was unreachable, which
+/// stopped being true the moment `loadSubagentTranscript` made child
+/// transcripts openable — and it collapsed the orchestrator's own instruction
+/// to the generic bell label, throwing away the text the child is working
+/// from. `.parent` now has `isOrchestratorRow`/`OrchestratorRowView`, and both
+/// predicates feed `isSystemAuthoredRow`, which is what keeps Retry/Edit off
+/// BOTH of them. Narrowing one without the other would have handed the user a
+/// Retry button on words the orchestrator wrote.
 func isNotificationRow(_ message: ChatMessageState) -> Bool {
-  guard message.role == .user, let origin = message.origin else { return false }
-  return origin != .user
+  message.role == .user && message.origin == .notification
 }
+
+/// `origin: 'parent'`: an orchestrator message inside a CHILD's transcript —
+/// the brief that kicked the child off, or a follow-up typed into it through
+/// `POST /subagents/{id}/resume` (sub-agents design 8.5). Web's twin is
+/// `isOrchestratorRow` in `apps/web/src/ui/blocks/OriginRows.tsx`.
+func isOrchestratorRow(_ message: ChatMessageState) -> Bool {
+  message.role == .user && message.origin == .parent
+}
+
+/// Either row the user did not type.
+///
+/// This is the predicate that gates message ACTIONS, and it must stay a union
+/// of both: a `.notification` row's text is the
+/// `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the gateway wrote, and a
+/// `.parent` row's text is the orchestrator's instruction to its child.
+/// Offering Retry or Edit & Resend on either would submit somebody else's
+/// words as the user's own — `ChatFeature.resendFromMessage` refuses both for
+/// the same reason.
+func isSystemAuthoredRow(_ message: ChatMessageState) -> Bool {
+  isNotificationRow(message) || isOrchestratorRow(message)
+}
+
+/// Exact muted attribution shown before an orchestrator message's own text.
+/// Byte-identical to web's `ORCHESTRATOR_ROW_LABEL`.
+let orchestratorRowLabel = "from orchestrator"
 
 /// Every `<open>…<close>` body in `text`, in document order.
 private func taggedValues(in text: String, open: String, close: String) -> [String] {
@@ -83,6 +117,7 @@ struct MessageListView: View {
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
+  let subagentInteraction: SubagentInteraction
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -91,13 +126,15 @@ struct MessageListView: View {
     isAnsweringEnabled: Bool = true,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
-    onEditAndResend: @escaping (String) -> Void = { _ in }
+    onEditAndResend: @escaping (String) -> Void = { _ in },
+    subagentInteraction: SubagentInteraction = .inert
   ) {
     self.messages = messages
     self.isAnsweringEnabled = isAnsweringEnabled
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
+    self.subagentInteraction = subagentInteraction
   }
 
   var body: some View {
@@ -111,7 +148,8 @@ struct MessageListView: View {
           retryTargetID: retryTargetID(for: message, in: messages),
           onAnswer: onAnswer,
           onRetry: onRetry,
-          onEditAndResend: onEditAndResend
+          onEditAndResend: onEditAndResend,
+          subagentInteraction: subagentInteraction
         )
         // Entrance animation (chat-ux Phase 3 Task 4, audit #18): a fresh
         // row (new `ChatMessageState.id`, `ForEach`'s identity) fades+rises
@@ -158,7 +196,7 @@ func retryTargetID(for message: ChatMessageState, in messages: [ChatMessageState
   guard message.role == .assistant, message.status == .failed else { return nil }
   guard let targetID = userMessageID(forTurnID: message.turnID, in: messages) else { return nil }
   guard let target = messages.first(where: { $0.id == targetID }) else { return nil }
-  return isNotificationRow(target) ? nil : targetID
+  return isSystemAuthoredRow(target) ? nil : targetID
 }
 
 /// The `.animation(value:)` signal for `MessageListView`'s entrance
@@ -210,6 +248,7 @@ struct ChatMessageView: View {
   let onAnswer: (String, String) -> Void
   let onRetry: (String) -> Void
   let onEditAndResend: (String) -> Void
+  let subagentInteraction: SubagentInteraction
 
   init(
     message: ChatMessageState,
@@ -218,7 +257,8 @@ struct ChatMessageView: View {
     retryTargetID: String? = nil,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     onRetry: @escaping (String) -> Void = { _ in },
-    onEditAndResend: @escaping (String) -> Void = { _ in }
+    onEditAndResend: @escaping (String) -> Void = { _ in },
+    subagentInteraction: SubagentInteraction = .inert
   ) {
     self.message = message
     self.isAnsweringEnabled = isAnsweringEnabled
@@ -227,11 +267,20 @@ struct ChatMessageView: View {
     self.onAnswer = onAnswer
     self.onRetry = onRetry
     self.onEditAndResend = onEditAndResend
+    self.subagentInteraction = subagentInteraction
   }
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
       switch message.role {
+      case .user where isOrchestratorRow(message):
+        // The orchestrator's own words inside a child's transcript (8.5).
+        // Muted, leading-aligned, KEEPS its text — that text is the
+        // instruction the child is working from — and, like the notification
+        // row, carries no context menu: `isSystemAuthoredRow` is what makes
+        // Retry and Edit & Resend unavailable on it.
+        OrchestratorRowView(message: message)
+
       case .user where isNotificationRow(message):
         // A row the user did not write (sub-agents design 8.5): the gateway
         // started this turn to wake the orchestrator with a background
@@ -268,7 +317,8 @@ struct ChatMessageView: View {
               status: message.status,
               isAnsweringEnabled: isAnsweringEnabled,
               onAnswer: onAnswer,
-              exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility
+              exposesResponseToAccessibility: message.exposesAssistantTextToAccessibility,
+              subagentInteraction: subagentInteraction
             )
 
             // Inline Retry (chat-ux Phase 2, Task 4 / audit #5): shown
@@ -394,7 +444,7 @@ extension ChatMessageState {
   }
 }
 
-private struct NotificationRowView: View {
+struct NotificationRowView: View {
   let message: ChatMessageState
 
   var body: some View {
@@ -407,6 +457,36 @@ private struct NotificationRowView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("chat.notification.\(message.id)")
+  }
+}
+
+/// §8.5's muted "from orchestrator" row. Deliberately beside
+/// `NotificationRowView` rather than in `SubagentViews.swift`: both are
+/// `role: .user` rows `ChatMessageView` selects between, they share
+/// `isSystemAuthoredRow`, and moving one away from the switch that renders it
+/// is how the two drift apart. Web keeps its twins together for the same
+/// reason (`OriginRows.tsx`).
+struct OrchestratorRowView: View {
+  let message: ChatMessageState
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Image(systemName: "arrow.down.to.line")
+        .font(.footnote)
+        .accessibilityHidden(true)
+      Text(orchestratorRowLabel)
+        .font(.footnote.weight(.medium))
+      // The text is KEPT, not summarized: unlike a notification row (whose
+      // body is a machine-written envelope), this is the instruction the child
+      // is acting on, and it is the most useful line in the transcript.
+      Text(message.user?.text ?? "")
+        .font(.footnote)
+      Spacer(minLength: 0)
+    }
+    .foregroundStyle(.secondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("chat.orchestrator.\(message.id)")
   }
 }
 

@@ -36,6 +36,49 @@ enum SubagentFormat {
     "\(count) tool \(count == 1 ? "use" : "uses")"
   }
 
+  /// §8.1's right-aligned meta. Elapsed is omitted entirely when it is
+  /// unknown — a terminal child with no `endedAt` has no honest duration to
+  /// show, and the row's own age is not one.
+  static func meta(toolCallCount: Int, elapsedMs: Int?) -> String {
+    guard let elapsedMs else { return toolCount(toolCallCount) }
+    return "\(toolCount(toolCallCount)) · \(elapsed(elapsedMs))"
+  }
+
+  /// §8.2's parallel-group summary line, e.g. `3 agents · 2 running · 1 done`.
+  /// Empty buckets are omitted and the order is fixed, so the line reads the
+  /// same way every render rather than following whichever status was seen
+  /// first.
+  ///
+  /// The web twin is `formatClusterSummary` in
+  /// `apps/web/src/ui/blocks/subagents.ts`. Unlike `elapsed`/`toolCount` this
+  /// pair is NOT locked by `scripts/fixtures/rendering-fixtures.json` — there
+  /// is no `clusterSummary` case kind — so the parity here is by construction
+  /// and by review, and a divergence would not fail `RenderingParityTests`.
+  static func clusterSummary(_ statuses: [SubagentCardStatus]) -> String {
+    var parts = ["\(statuses.count) \(statuses.count == 1 ? "agent" : "agents")"]
+    for status in statusOrder {
+      let count = statuses.count { $0 == status }
+      if count > 0 { parts.append("\(count) \(statusWord(status))") }
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  private static let statusOrder: [SubagentCardStatus] = [
+    .running, .waiting, .done, .failed, .cancelled, .interrupted, .maxTurns,
+  ]
+
+  private static func statusWord(_ status: SubagentCardStatus) -> String {
+    switch status {
+    case .running: "running"
+    case .waiting: "waiting"
+    case .done: "done"
+    case .failed: "failed"
+    case .cancelled: "cancelled"
+    case .interrupted: "interrupted"
+    case .maxTurns: "max turns"
+    }
+  }
+
   private static func padded(_ value: Int) -> String {
     value < 10 ? "0\(value)" : "\(value)"
   }

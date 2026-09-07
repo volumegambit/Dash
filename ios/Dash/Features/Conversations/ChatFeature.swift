@@ -173,7 +173,30 @@ protocol ChatFeatureSynchronizing: Actor {
     conversationID: String,
     sinceSeq: Int
   ) async throws -> [ReplayEntryDTO]
+  /// A child conversation's own messages and its `oneShot` fact, for an
+  /// expanded sub-agent row (design 8.3).
+  ///
+  /// Deliberately NOT `refresh(conversationID:)`, even though that method
+  /// accepts any id: `refresh` PERSISTS what it reads into the conversation
+  /// cache and reconciles a `notFound` into a deletion, both of which are
+  /// wrong for a child. A child is not in the user's conversation list
+  /// (`conversation-routes.ts` refuses a `kind` filter), so caching one would
+  /// put a row in the cache that nothing lists and nothing evicts, and a
+  /// pruned child would look like the OPEN conversation being deleted.
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot
+  /// Type into a child (design 7.7). See `SubagentResumeRequest` for why this
+  /// is REST and not a `message` frame.
+  func resumeSubagent(id: String, message: String, requestID: String) async throws
   func shutdown() async
+}
+
+/// One read of a child conversation for an expanded row.
+struct SubagentTranscriptSnapshot: Equatable, Sendable {
+  let messages: [ConversationMessageDTO]
+  /// `SubagentInfoDTO.oneShot`. `nil` when the summary carries no `subagent`
+  /// block at all — an older gateway, or a conversation that is not a child —
+  /// in which case the body composer stays enabled and the server decides.
+  let oneShot: Bool?
 }
 
 protocol ChatFeatureTransporting: Actor {
@@ -491,6 +514,28 @@ actor LiveChatSynchronizer: ChatFeatureSynchronizing {
     }
   }
 
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    let page = try await api.messages(conversationID: childID, limit: 100, before: nil)
+    try validate(lifecycle)
+    // Best-effort: a child whose summary cannot be read still renders its
+    // transcript, with `oneShot` unknown. Refusing the whole expansion because
+    // one FACT is missing would be a worse trade — §8.3's body is the point.
+    let oneShot = try? await api.conversation(id: childID).subagent?.oneShot
+    return SubagentTranscriptSnapshot(messages: page.items, oneShot: oneShot)
+  }
+
+  func resumeSubagent(id: String, message: String, requestID: String) async throws {
+    let lifecycle = try beginOperation()
+    defer { finishOperation() }
+    let api = try await resolvedAPI()
+    try validate(lifecycle)
+    _ = try await api.resumeSubagent(id: id, message: message, requestID: requestID)
+  }
+
   private func resolvedAPI() async throws -> GatewayAPI {
     if let api { return api }
     let created = try await makeAPI()
@@ -698,6 +743,10 @@ final class ChatFeature {
   /// (sub-agents design 7.6). Reset whenever the transport stops being
   /// connected, so the next appear/reconnect re-establishes it.
   @ObservationIgnored private var isSubscribed = false
+  /// Child conversations this socket is watching for §8.3's live nested
+  /// transcript. One entry per EXPANDED row; cleared with the socket, like
+  /// `isSubscribed`, because a reconnect drops the gateway's subscriptions.
+  @ObservationIgnored private var subscribedSubagentIDs: Set<String> = []
   @ObservationIgnored private var canonicalRefreshRevision: UInt64 = 0
   @ObservationIgnored private var recoveryClassificationRevision: UInt64?
   @ObservationIgnored private var recoveryClassificationTurnID: String?
@@ -1069,12 +1118,14 @@ final class ChatFeature {
       let index = state.messages.firstIndex(where: { $0.id == id && $0.role == .user }),
       let user = state.messages[index].user
     else { return false }
-    // A `.user` row the user did not write (sub-agents design 8.5): its text
-    // is the `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator
-    // was fed, so resending it would submit that block as user input.
-    // `MessageListView` withholds the affordance too; this guard holds
-    // regardless of caller.
-    guard isNotificationRow(state.messages[index]) == false else { return false }
+    // A `.user` row the user did not write (sub-agents design 8.5). Two of
+    // them now: a NOTIFICATION row's text is the
+    // `[SYSTEM NOTIFICATION - NOT USER INPUT]` block the orchestrator was fed,
+    // and a PARENT row's is the orchestrator's own instruction inside a
+    // child's transcript. Resending either would submit somebody else's words
+    // as the user's. `MessageListView` withholds the affordance too; this
+    // guard holds regardless of caller.
+    guard isSystemAuthoredRow(state.messages[index]) == false else { return false }
     guard composerMutationAllowed, sendAuthorityIsAvailable else { return false }
 
     let attachments: [PreparedAttachment] = user.images.compactMap { image in
@@ -1129,6 +1180,160 @@ final class ChatFeature {
     state.attachments = attachmentsSnapshot
     await persistDraft()
     return true
+  }
+
+  // MARK: - Sub-agent rows (design 8.1-8.3)
+
+  /// Toggle one row's expanded body.
+  ///
+  /// The reducer write happens FIRST and unconditionally, so the disclosure
+  /// animates immediately and never depends on the network; the fetch and the
+  /// subscription follow. Both are best-effort by design: an unopenable child
+  /// must not take the parent transcript down with it (web reached the same
+  /// rule in D2), so a failure lands on that row's own error line.
+  func setSubagentExpanded(_ childID: String, _ isExpanded: Bool) async {
+    guard rejectIfShutdown() == false else { return }
+    await applyReducerAction(.subagentExpanded(id: childID, isExpanded: isExpanded))
+    if isExpanded {
+      await loadSubagentTranscript(childID: childID)
+      await subscribeToSubagent(childID)
+    } else {
+      await unsubscribeFromSubagent(childID)
+    }
+  }
+
+  /// The child's own transcript (REST) plus its `oneShot` fact.
+  ///
+  /// Re-read on EVERY expansion rather than once: the row is collapsed most of
+  /// the time, and while it is collapsed no subscription is held, so anything
+  /// the child said in between reached nobody. A cached-once transcript would
+  /// silently be stale exactly when the user goes looking.
+  func loadSubagentTranscript(childID: String) async {
+    guard isShutdown == false else { return }
+    do {
+      let snapshot = try await synchronizer.subagentTranscript(childID: childID)
+      guard isShutdown == false, state.subagentUI[childID] != nil else { return }
+      await applyReducerAction(
+        .subagentTranscriptLoaded(id: childID, messages: snapshot.messages)
+      )
+      if let oneShot = snapshot.oneShot {
+        await applyReducerAction(.subagentInfoLoaded(id: childID, oneShot: oneShot))
+      }
+    } catch is CancellationError {
+      return
+    } catch {
+      guard isShutdown == false else { return }
+      // Reported on the row, NOT through `applyFailure`: a child that 404s
+      // (pruned, or on a gateway that does not know it) must not drive the
+      // whole conversation into a repair state. `unauthorized` is the one
+      // exception worth escalating, because every later request will fail too.
+      if case GatewayError.unauthorized = error {
+        await applyFailure(error)
+        return
+      }
+      await applyReducerAction(
+        .subagentReplyFailed(
+          id: childID,
+          requestID: "",
+          message: subagentFailureText(error, fallback: "Couldn't load this agent's transcript.")
+        )
+      )
+    }
+  }
+
+  /// Type into a child (design 8.3) through `POST /subagents/{id}/resume`.
+  ///
+  /// **Not a `message` WS frame.** That frame reaches `hub.start` →
+  /// `acceptTurn` and can never reach `ChildHandle.answerQuestion`, the only
+  /// thing that resolves a child parked on `ask_orchestrator`; against a busy
+  /// child it is refused as `conversation_busy`, against an idle one it opens
+  /// a second turn while the question stays blocked; and it bypasses the
+  /// coordinator's one-shot, steer-cap and grant checks entirely.
+  ///
+  /// Optimism is the CALLER's choice and is taken only when this client holds
+  /// a subscription for the child — which, on iOS, is exactly while its body
+  /// is expanded — because that is the only condition under which an
+  /// `accepted` can come back to reconcile the row. The collapsed
+  /// waiting-input reply therefore declines it.
+  @discardableResult
+  func sendToSubagent(_ childID: String, text: String, optimistic: Bool) async -> Bool {
+    guard rejectIfShutdown() == false else { return false }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.isEmpty == false else { return false }
+    let requestID = makeID()
+    await applyReducerAction(
+      .subagentReplyStarted(
+        id: childID,
+        requestID: requestID,
+        text: trimmed,
+        optimistic: optimistic
+      )
+    )
+    do {
+      try await synchronizer.resumeSubagent(id: childID, message: trimmed, requestID: requestID)
+      guard isShutdown == false else { return false }
+      await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      guard isShutdown == false else { return false }
+      if case GatewayError.unauthorized = error {
+        await applyFailure(error)
+      }
+      await applyReducerAction(
+        .subagentReplyFailed(
+          id: childID,
+          requestID: requestID,
+          // The coordinator's three refusals (one-shot type, steer cap,
+          // unrebuildable grant) arrive as 409 `validation_failed` with
+          // actionable text. Showing it verbatim is design 8.3's "shows the
+          // reason"; collapsing it to a generic line throws the only useful
+          // part away.
+          message: subagentFailureText(error, fallback: "Couldn't reach this agent.")
+        )
+      )
+      return false
+    }
+  }
+
+  private func subagentFailureText(_ error: Error, fallback: String) -> String {
+    switch error as? GatewayError {
+    case let .validation(message): message
+    case let .server(body, _): body.error
+    case .notFound: "This agent is no longer available."
+    case .unauthorized: "Sign in again to reach this agent."
+    default: fallback
+    }
+  }
+
+  private func subscribeToSubagent(_ childID: String) async {
+    guard isShutdown == false, connection == .online else { return }
+    do {
+      try await ensureConnected()
+      guard isShutdown == false else { return }
+      try await transport.subscribe(
+        agentID: state.conversation.agentId,
+        conversationID: childID
+      )
+      subscribedSubagentIDs.insert(childID)
+    } catch is CancellationError {
+      return
+    } catch {
+      // A missing subscription costs live streaming into the open body, not
+      // correctness: the REST read already populated it, and collapsing plus
+      // re-expanding re-reads. Not worth driving the conversation into a
+      // failure state for.
+      return
+    }
+  }
+
+  private func unsubscribeFromSubagent(_ childID: String) async {
+    guard subscribedSubagentIDs.remove(childID) != nil, isConnected else { return }
+    try? await transport.unsubscribe(
+      agentID: state.conversation.agentId,
+      conversationID: childID
+    )
   }
 
   func answer(questionID: String, answer: String) async {
@@ -1841,6 +2046,11 @@ final class ChatFeature {
     // clears its subscriptions with it — so nothing is watched until
     // `subscribeToOpenConversation` says so again.
     isSubscribed = false
+    // Same reason, for the expanded sub-agent rows (design 8.3): the gateway
+    // is no longer watching those children, so the set must not claim it is.
+    // A row already open re-subscribes on its next expansion; until then it
+    // keeps the transcript the REST read gave it.
+    subscribedSubagentIDs.removeAll()
     isConnected = true
     _ = ChatReducer.reduce(state: &state, action: .transportChanged(.connected))
   }
@@ -1883,6 +2093,7 @@ final class ChatFeature {
         guard isShutdown == false else { return }
         isConnected = false
         isSubscribed = false
+        subscribedSubagentIDs.removeAll()
         wasReconnecting = false
         if let pendingSendReconciliation {
           await reconcileAmbiguousSend(pendingSendReconciliation)
@@ -1912,7 +2123,9 @@ final class ChatFeature {
       // here would make the next `subscribeToOpenConversation` send a
       // duplicate frame for a conversation the gateway is already watching.
       switch transportState {
-      case .idle, .detached: isSubscribed = false
+      case .idle, .detached:
+        isSubscribed = false
+        subscribedSubagentIDs.removeAll()
       case .connecting, .connected, .reconnecting: break
       }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))

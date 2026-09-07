@@ -92,6 +92,74 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertEqual(message.label, "Assistant message, completed")
   }
 
+  /// Task D5 (sub-agents design 8.3): expanding a row fetches the child's own
+  /// transcript over REST and renders it through the SAME components as the
+  /// parent's, inside the nesting rail.
+  ///
+  /// Two things this pins that nothing else can:
+  ///
+  /// 1. The nested tool card answers to `chat.subagent.ui-subagent.tool.ui-tool`
+  ///    while the PARENT's own card answers to `chat.tool.ui-tool`. Both
+  ///    exist at once, on purpose — the scripted child reuses the parent's
+  ///    `tool_use` id, because a `tool_use` id is only unique within its own
+  ///    conversation. Without §8.6's namespacing one of these queries would
+  ///    match two elements.
+  /// 2. The orchestrator's brief renders as §8.5's muted "from orchestrator"
+  ///    row, and offers NEITHER Retry nor Edit & Resend. That is the security
+  ///    half of D4's ruling 1: without the row, narrowing `isNotificationRow`
+  ///    would have given the orchestrator's words a user bubble with a context
+  ///    menu that resends them as the user's own.
+  func testExpandingASubagentRowShowsItsNestedTranscript() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Prepare the launch plan",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    let row = element("chat.subagent.ui-subagent", in: app)
+    XCTAssertTrue(row.exists)
+    // Collapsed: no nested transcript, no body composer.
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.subagent.ui-subagent.tool.ui-tool"].exists)
+    XCTAssertFalse(app.descendants(matching: .any)["chat.subagent.ui-subagent.composer"].exists)
+
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+
+    let nestedTool = element("chat.subagent.ui-subagent.tool.ui-tool", in: app)
+    XCTAssertTrue(nestedTool.exists)
+    XCTAssertEqual(nestedTool.label, "Tool Search, Tool succeeded")
+    // The parent's own card is still there under its unnamespaced id, and
+    // each id matches exactly one element.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tool.ui-tool").count, 1)
+    XCTAssertEqual(
+      app.descendants(matching: .any)
+        .matching(identifier: "chat.subagent.ui-subagent.tool.ui-tool").count,
+      1
+    )
+
+    // The orchestrator row keeps its text (that text is the instruction the
+    // child is working from) and is not a resendable user bubble.
+    let orchestrator = element("chat.orchestrator.ui-subagent-brief", in: app)
+    XCTAssertTrue(orchestrator.label.contains("from orchestrator"))
+    XCTAssertTrue(orchestrator.label.contains("Check whether the launch checklist is complete"))
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.message.ui-subagent-brief"].exists,
+      "A parent-authored row must never render as a user bubble with Retry/Edit"
+    )
+
+    XCTAssertTrue(element("chat.subagent.ui-subagent.composer", in: app).exists)
+
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.subagent.ui-subagent.tool.ui-tool"].exists)
+  }
+
   /// Audit #4 / Task 3: minimal UI smoke test for the jump-to-bottom
   /// affordance. An earlier version of this test seeded extra filler history
   /// into the shared `streaming-reconnect` fixture so a real swipe-up
