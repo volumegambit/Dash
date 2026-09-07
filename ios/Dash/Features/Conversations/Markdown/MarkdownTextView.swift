@@ -111,6 +111,8 @@ private func accessibilityLines(for blocks: [MarkdownBlock]) -> [String] {
       return [code]
     case .horizontalRule:
       return []
+    case .image(_, let alt):
+      return [alt.map { "Image: \($0)" } ?? "Image"]
     case .table(let table):
       let header = table.header.map { String(attributedInlineMarkdown($0).characters) }
       let rows = table.rows.map { row in
@@ -191,6 +193,9 @@ private struct MarkdownBlockView: View {
 
     case .table(let table):
       MarkdownTableView(table: table)
+
+    case .image(let url, let alt):
+      MarkdownImageView(url: url, alt: alt)
     }
   }
 
@@ -309,6 +314,88 @@ private struct MarkdownTableView: View {
     case .center: return .center
     case .right: return .trailing
     case .left, .none: return .leading
+    }
+  }
+}
+
+/// A standalone markdown image (`![alt](url)` or a bare image-extension
+/// URL — see `MarkdownBlocks.parseStandaloneImage`). SwiftUI `Text` cannot
+/// render a remote image inline, so this is a dedicated view.
+///
+/// While loading: a muted placeholder sized like a thumbnail. On success:
+/// the image, capped to a readable height, rounded, and tappable to open
+/// the same full-screen `ImageViewerView` (pinch/zoom/Share/Save) that
+/// attached images use — so a generated image can be saved to Photos. On
+/// failure (network, or a URL that turns out not to be an image): fall back
+/// to a tappable link so nothing is lost, matching the pre-change behavior.
+private struct MarkdownImageView: View {
+  let url: URL
+  let alt: String?
+
+  @State private var loaded: UIImage?
+  @State private var failed = false
+  @State private var viewerImage: ViewerImage?
+
+  /// Cap so a tall image doesn't dominate the scroll view; the full image
+  /// is one tap away in the viewer.
+  private let maxHeight: CGFloat = 320
+
+  var body: some View {
+    content
+      .task(id: url) { await load() }
+      .fullScreenCover(item: $viewerImage) { item in
+        ImageViewerView(image: item.image) { viewerImage = nil }
+      }
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    if let loaded {
+      Button {
+        viewerImage = ViewerImage(id: 0, image: loaded)
+      } label: {
+        Image(uiImage: loaded)
+          .resizable()
+          .scaledToFit()
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(maxHeight: maxHeight)
+          .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(alt.map { "Image: \($0)" } ?? "Image")
+      .accessibilityIdentifier("chat.markdown.image")
+    } else if failed {
+      Link(destination: url) {
+        Text(alt?.isEmpty == false ? alt! : url.absoluteString)
+      }
+      .accessibilityIdentifier("chat.markdown.imageLinkFallback")
+    } else {
+      RoundedRectangle(cornerRadius: DashTheme.Radius.small)
+        .fill(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
+        .frame(height: 160)
+        .frame(maxWidth: .infinity)
+        .overlay(ProgressView())
+        .accessibilityLabel("Loading image")
+        .accessibilityIdentifier("chat.markdown.imageLoading")
+    }
+  }
+
+  private func load() async {
+    // Re-entry on `url` change: reset so a recycled view doesn't flash the
+    // previous image or a stale failure.
+    loaded = nil
+    failed = false
+    do {
+      let (data, response) = try await URLSession.shared.data(from: url)
+      guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+        let image = UIImage(data: data)
+      else {
+        failed = true
+        return
+      }
+      loaded = image
+    } catch {
+      failed = true
     }
   }
 }
