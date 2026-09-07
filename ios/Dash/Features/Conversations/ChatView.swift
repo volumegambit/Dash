@@ -388,8 +388,14 @@ struct ChatView: View {
             },
             subagentInteraction: SubagentInteraction(
               state: { feature.state.subagentUI[$0] ?? SubagentUIState() },
-              setExpanded: { childID, isExpanded in
-                Task { await feature.setSubagentExpanded(childID, isExpanded) }
+              setExpanded: { childID, isExpanded, loadsTranscript in
+                Task {
+                  await feature.setSubagentExpanded(
+                    childID,
+                    isExpanded,
+                    loadsTranscript: loadsTranscript
+                  )
+                }
               },
               send: { childID, text, optimistic in
                 await feature.sendToSubagent(childID, text: text, optimistic: optimistic)

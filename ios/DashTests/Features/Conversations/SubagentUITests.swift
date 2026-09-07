@@ -267,6 +267,71 @@ struct SubagentUISliceTests {
     #expect(state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
   }
 
+  @Test(
+    """
+    a failure that lands AFTER the accepted already adopted the row leaves the     adopted row alone — the turn really started
+    """
+  )
+  func aLateFailureCannotWithdrawAnAdoptedRow() {
+    var state = chatState()
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(&state, .subagentTranscriptLoaded(id: "child-1", messages: []))
+    apply(
+      &state,
+      .subagentReplyStarted(id: "child-1", requestID: "req-1", text: "keep going", optimistic: true)
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "child-turn",
+          conversationId: "child-1",
+          userMessageId: "server-user",
+          assistantMessageId: "server-assistant",
+          revision: 3,
+          seq: 1,
+          origin: .parent,
+          kind: .subagent,
+          requestId: "req-1"
+        )
+      )
+    )
+
+    // The server processed the resume and its response was lost. Withdrawal is
+    // keyed on the row still being PENDING, and adoption already cleared that,
+    // so the row survives — which is right, because the turn is real.
+    apply(
+      &state,
+      .subagentReplyFailed(id: "child-1", requestID: "req-1", message: "The request timed out")
+    )
+
+    #expect(state.subagentUI["child-1"]?.childMessages?.map(\.id)
+      == ["server-user", "server-assistant"])
+    #expect(state.subagentUI["child-1"]?.lastError == "The request timed out")
+  }
+
+  @Test(
+    """
+    a failed transcript READ reports on the row without disarming an in-flight     send — a different action from a failed reply, deliberately
+    """
+  )
+  func aFailedReadDoesNotDisarmASend() {
+    var state = chatState()
+    apply(&state, .subagentExpanded(id: "child-1", isExpanded: true))
+    apply(
+      &state,
+      .subagentReplyStarted(id: "child-1", requestID: "req-1", text: "keep going", optimistic: false)
+    )
+
+    apply(
+      &state,
+      .subagentTranscriptFailed(id: "child-1", message: "This agent is no longer available.")
+    )
+
+    #expect(state.subagentUI["child-1"]?.lastError == "This agent is no longer available.")
+    #expect(state.subagentUI["child-1"]?.isSending == true)
+  }
+
   @Test("a refused reply drops its optimistic row and keeps the gateway's own text")
   func refusalDropsTheRowAndKeepsTheReason() {
     var state = chatState()

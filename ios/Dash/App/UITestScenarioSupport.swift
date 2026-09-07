@@ -1020,7 +1020,6 @@ extension AppDependenciesFactory {
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
     private var didFailSleepingAgentEnable = false
-    private var resumedSubagentMessages: [String] = []
 
     init(scenario: UITestScenario, dataIdentifier: String) {
       self.dataIdentifier = dataIdentifier
@@ -1525,7 +1524,10 @@ extension AppDependenciesFactory {
 
     func resumeSubagent(id: String, message: String, requestID: String) throws {
       guard id == UITestScenarioFixtures.subagentID else { throw GatewayError.notFound }
-      resumedSubagentMessages.append(message)
+      // The scripted gateway accepts it; the assertion that matters is in the
+      // app, where the optimistic row must render as an orchestrator row
+      // carrying the user's own text.
+      _ = message
       _ = requestID
     }
 

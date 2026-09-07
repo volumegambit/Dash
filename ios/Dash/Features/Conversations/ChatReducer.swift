@@ -118,6 +118,11 @@ enum ChatAction: Sendable {
   case subagentTranscriptLoaded(id: String, messages: [ConversationMessageDTO])
   /// `SubagentInfoDTO.oneShot` for a child, from its conversation summary.
   case subagentInfoLoaded(id: String, oneShot: Bool)
+  /// The child's transcript could not be read. A separate action from
+  /// `.subagentReplyFailed` on purpose: that one also clears `isSending` and
+  /// withdraws a pending row, and a failed READ must not do either — a load
+  /// racing an in-flight send would otherwise disarm the send's own spinner.
+  case subagentTranscriptFailed(id: String, message: String)
   /// A `POST /subagents/{id}/resume` was just issued. `optimistic` is the
   /// caller's choice and must be true only when a subscription is held for
   /// this child, because that is the only condition under which an `accepted`
@@ -594,6 +599,12 @@ enum ChatReducer {
       let loadedIDs = Set(loaded.map(\.id))
       let live = (ui.childMessages ?? []).filter { $0.ordinal == nil && !loadedIDs.contains($0.id) }
       ui.childMessages = loaded + live
+      state.subagentUI[id] = ui
+      return []
+
+    case let .subagentTranscriptFailed(id, message):
+      var ui = state.subagentUI[id] ?? SubagentUIState()
+      ui.lastError = message
       state.subagentUI[id] = ui
       return []
 

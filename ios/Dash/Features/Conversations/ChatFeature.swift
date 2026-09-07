@@ -1191,9 +1191,17 @@ final class ChatFeature {
   /// subscription follow. Both are best-effort by design: an unopenable child
   /// must not take the parent transcript down with it (web reached the same
   /// rule in D2), so a failure lands on that row's own error line.
-  func setSubagentExpanded(_ childID: String, _ isExpanded: Bool) async {
+  /// `loadsTranscript` is false for a row at `maxSubagentDepth`, whose body
+  /// opens no transcript: fetching and subscribing there would hold a live
+  /// subscription nothing renders.
+  func setSubagentExpanded(
+    _ childID: String,
+    _ isExpanded: Bool,
+    loadsTranscript: Bool = true
+  ) async {
     guard rejectIfShutdown() == false else { return }
     await applyReducerAction(.subagentExpanded(id: childID, isExpanded: isExpanded))
+    guard loadsTranscript else { return }
     if isExpanded {
       await loadSubagentTranscript(childID: childID)
       await subscribeToSubagent(childID)
@@ -1232,9 +1240,8 @@ final class ChatFeature {
         return
       }
       await applyReducerAction(
-        .subagentReplyFailed(
+        .subagentTranscriptFailed(
           id: childID,
-          requestID: "",
           message: subagentFailureText(error, fallback: "Couldn't load this agent's transcript.")
         )
       )
@@ -1312,6 +1319,12 @@ final class ChatFeature {
     do {
       try await ensureConnected()
       guard isShutdown == false else { return }
+      // The user can collapse the row while the REST read or the connect is in
+      // flight. `unsubscribeFromSubagent` would have found nothing in the set
+      // and returned, so without this the late subscribe would leak a live
+      // subscription on a COLLAPSED row that nothing releases until the socket
+      // resets — the refcount class D2 and D3 both paid for.
+      guard state.subagentUI[childID]?.isExpanded == true else { return }
       try await transport.subscribe(
         agentID: state.conversation.agentId,
         conversationID: childID

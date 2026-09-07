@@ -67,7 +67,10 @@ struct SubagentInteraction {
   /// Current UI state for one child. Never `nil` — an unvisited child reads as
   /// a default `SubagentUIState`, which is "collapsed, never fetched".
   var state: (String) -> SubagentUIState
-  var setExpanded: (String, Bool) -> Void
+  /// `loadsTranscript` is the row's `nested`: a row at `maxSubagentDepth`
+  /// toggles open but must not fetch or subscribe, because its body renders no
+  /// transcript to put the result in.
+  var setExpanded: (_ childID: String, _ isExpanded: Bool, _ loadsTranscript: Bool) -> Void
   /// `optimistic` is the CALLER's choice, taken only where a subscription is
   /// held for that child — see `SubagentCardView`'s two call sites. Returns
   /// whether the gateway accepted it, which is the ONLY thing that clears the
@@ -83,7 +86,7 @@ struct SubagentInteraction {
   /// composer is offered, because nothing would carry the text anywhere.
   static let inert = SubagentInteraction(
     state: { _ in SubagentUIState() },
-    setExpanded: { _, _ in },
+    setExpanded: { _, _, _ in },
     send: { _, _, _ in false },
     isEnabled: false
   )
@@ -109,19 +112,21 @@ struct SubagentGroupView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    if cards.count <= 1 {
-      ForEach(cards) { card in
-        SubagentCardView(card: card, nested: nested, depth: depth, interaction: interaction)
-      }
-    } else {
-      VStack(alignment: .leading, spacing: 8) {
+    // The `VStack` and the row container are rendered UNCONDITIONALLY, and the
+    // rows always sit at the same position inside them. A lone row whose
+    // neighbour spawns a moment later therefore keeps its place in the view
+    // tree rather than being re-identified — swapping the wrapper would reset
+    // every `@State` inside, including each composer's unsent text. Web
+    // renders its `<section>` unconditionally for the same reason.
+    VStack(alignment: .leading, spacing: 8) {
+      if multi {
         Button {
           withAnimation(reduceMotion ? nil : .snappy) {
             isExpanded.toggle()
           }
         } label: {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(SubagentFormat.clusterSummary(cards.map(\.status)))
+            Text(summary)
               .font(.caption.weight(.medium))
               .foregroundStyle(.secondary)
             HStack(spacing: 4) {
@@ -139,18 +144,33 @@ struct SubagentGroupView: View {
           }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(summary)
+        .accessibilityIdentifier("chat.subagentGroup.\(cards[0].id)")
+      }
 
-        if isExpanded {
-          ForEach(cards) { card in
-            SubagentCardView(card: card, nested: nested, depth: depth, interaction: interaction)
-          }
+      // A cluster of one is never collapsible: there is no group header to
+      // reopen it with.
+      if isExpanded || multi == false {
+        ForEach(cards) { card in
+          SubagentCardView(card: card, nested: nested, depth: depth, interaction: interaction)
         }
       }
-      .accessibilityElement(children: .contain)
-      .accessibilityLabel(SubagentFormat.clusterSummary(cards.map(\.status)))
-      .accessibilityIdentifier("chat.subagentGroup.\(cards[0].id)")
-      .sensoryFeedback(.selection, trigger: isExpanded)
     }
+    // NO `.accessibilityElement(children: .contain)` on this container, and
+    // the group identifier rides the header BUTTON instead. Measured, not
+    // assumed: wrapping the rows in an identified `.contain` container made
+    // `chat.subagent.<id>` stop existing in the accessibility tree and
+    // reddened three UI tests — a container's identifier erases its
+    // children's, the same trap D4 documented for the row itself. The header
+    // only exists when `multi`, which is also where the group identifier
+    // belongs: it names the thing you tap.
+    .sensoryFeedback(.selection, trigger: isExpanded)
+  }
+
+  private var multi: Bool { cards.count > 1 }
+
+  private var summary: String {
+    SubagentFormat.clusterSummary(cards.map(\.status))
   }
 }
 
@@ -189,7 +209,7 @@ struct SubagentCardView: View {
         // to the reducer, not to `@State`: this row is rebuilt from scratch by
         // every transcript refresh.
         withAnimation(reduceMotion ? nil : .snappy) {
-          interaction.setExpanded(card.id, !isExpanded)
+          interaction.setExpanded(card.id, !isExpanded, nested)
         }
       } label: {
         header
@@ -336,10 +356,12 @@ struct SubagentCardView: View {
           isEnabled: interaction.isEnabled && ui.oneShot != true,
           isSending: ui.isSending
         ) { text in
-          // Optimistic: the body is open, which on iOS is exactly the
-          // condition under which a child subscription is held, so an
-          // `accepted` can come back to reconcile the row.
-          await interaction.send(card.id, text, true)
+          // Same expression as the reply composer above, and it is `true` by
+          // construction here — this composer only renders inside
+          // `if isExpanded` and `if nested`. Written out rather than hardcoded
+          // so the two call sites cannot drift into disagreeing about what the
+          // subscription condition is.
+          await interaction.send(card.id, text, isExpanded && nested)
         }
       }
     }

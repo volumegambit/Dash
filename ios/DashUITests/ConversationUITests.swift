@@ -153,7 +153,18 @@ final class ConversationUITests: DashUITestCase {
       "A parent-authored row must never render as a user bubble with Retry/Edit"
     )
 
-    XCTAssertTrue(element("chat.subagent.ui-subagent.composer", in: app).exists)
+    // The body composer sends through `POST /subagents/:id/resume` (design
+    // 8.3) and the optimistic row it writes must render as an ORCHESTRATOR
+    // row carrying the user's own sentence — not a user bubble, and not the
+    // blank "from orchestrator" line an unreconciled row produces.
+    let composer = element("chat.subagent.ui-subagent.composer", in: app)
+    replaceText(in: composer, with: "keep going", clearExisting: false)
+    element("chat.subagent.ui-subagent.composer.send", in: app).tap()
+    let optimistic = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label CONTAINS[c] %@", "keep going"))
+      .firstMatch
+    XCTAssertTrue(optimistic.waitForExistence(timeout: 5))
+    XCTAssertTrue(optimistic.label.contains("from orchestrator"))
 
     element("chat.subagent.ui-subagent.header", in: app).tap()
     XCTAssertFalse(

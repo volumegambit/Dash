@@ -4797,6 +4797,55 @@ struct ChatFeatureTests {
     #expect(feature.connection == .online)
   }
 
+  @Test(
+    """
+    a row collapsed while its transcript is still loading does not end up with     a live subscription nothing releases
+    """
+  )
+  func collapsingDuringTheLoadLeaksNoSubscription() async {
+    let sync = FakeChatSynchronizer()
+    let gate = TestGate()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: nil)),
+      waitingOn: gate
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // The expansion parks inside the REST read; the user collapses the row;
+    // only then does the read return and the late `subscribeToSubagent` run.
+    let expanding = Task { await feature.setSubagentExpanded("child-1", true) }
+    await gate.waitUntilWaiting()
+    await feature.setSubagentExpanded("child-1", false)
+    await gate.release()
+    await expanding.value
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == false)
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1")) == false
+    )
+  }
+
+  @Test("a row at the depth cap toggles open without fetching or subscribing")
+  func aCappedRowNeitherFetchesNorSubscribes() async {
+    let sync = FakeChatSynchronizer()
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.setSubagentExpanded("grandchild-1", true, loadsTranscript: false)
+
+    #expect(feature.state.subagentUI["grandchild-1"]?.isExpanded == true)
+    #expect(await sync.subagentTranscriptCalls.isEmpty)
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "grandchild-1"))
+        == false
+    )
+  }
+
   @Test("typing into a child goes through the REST resume, never a message frame")
   func sendingToASubagentUsesTheRestResume() async {
     let sync = FakeChatSynchronizer()
@@ -5513,6 +5562,7 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
   private(set) var replayCalls: [ChatReplayCall] = []
   private(set) var shutdownCount = 0
   private var subagentTranscriptResults: [FakeChatResult<SubagentTranscriptSnapshot>] = []
+  private var subagentTranscriptGates: [TestGate?] = []
   private var resumeResults: [FakeChatResult<Void>] = []
   private(set) var subagentTranscriptCalls: [String] = []
   private(set) var resumeCalls: [SubagentResumeCall] = []
@@ -5555,19 +5605,24 @@ private actor FakeChatSynchronizer: ChatFeatureSynchronizing {
     return try resolve(replayResults.removeFirst())
   }
 
-  func enqueueSubagentTranscript(_ result: FakeChatResult<SubagentTranscriptSnapshot>) {
+  func enqueueSubagentTranscript(
+    _ result: FakeChatResult<SubagentTranscriptSnapshot>,
+    waitingOn gate: TestGate? = nil
+  ) {
     subagentTranscriptResults.append(result)
+    subagentTranscriptGates.append(gate)
   }
 
   func enqueueResume(_ result: FakeChatResult<Void>) {
     resumeResults.append(result)
   }
 
-  func subagentTranscript(childID: String) throws -> SubagentTranscriptSnapshot {
+  func subagentTranscript(childID: String) async throws -> SubagentTranscriptSnapshot {
     subagentTranscriptCalls.append(childID)
     guard subagentTranscriptResults.isEmpty == false else {
       return SubagentTranscriptSnapshot(messages: [], oneShot: nil)
     }
+    if let gate = subagentTranscriptGates.removeFirst() { await gate.wait() }
     return try resolve(subagentTranscriptResults.removeFirst())
   }
 
