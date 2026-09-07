@@ -210,6 +210,23 @@ struct SubagentListResponseDTO: Codable, Hashable, Sendable {
   let subagents: [SubagentListEntryDTO]
 }
 
+/// Response of `POST /subagents/{id}/stop`.
+///
+/// `status` is a plain `String` for the same forward-compatibility reason as
+/// `SubagentListEntryDTO.status`, and it is ALWAYS terminal. It is also
+/// authoritative rather than guessable: when the depth-first cascade reaches a
+/// child this gateway process no longer holds a handle for (after a restart),
+/// the route terminalizes the row itself and answers `cancelled`, which is not
+/// the status a client tracking the child's own events would have predicted
+/// (`apps/gateway/src/subagent-management.ts:421-459`).
+///
+/// A child that is ALREADY terminal is a 409 rather than a silent success, so
+/// a client that raced the child's own finish learns which of the two won.
+struct SubagentStopResponseDTO: Codable, Hashable, Sendable {
+  let ok: Bool
+  let status: String
+}
+
 /// Body of `POST /subagents/{id}/resume` (sub-agents design 7.7) — the ONLY
 /// way to type into a child.
 ///

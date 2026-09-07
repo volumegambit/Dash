@@ -14,6 +14,83 @@ import Testing
 @Suite("Sub-agent rows: slice, child frames, chrome")
 struct SubagentSliceTests {
 
+  // MARK: - Task D6: the tasks-sheet row (§8.4)
+
+  @Test("a wire status this build has never heard of counts as LIVE, exactly as it does on web")
+  func unknownWireStatusReadsAsLive() {
+    #expect(SubagentCardStatus(wire: "running") == .running)
+    #expect(SubagentCardStatus(wire: "waiting_input") == .waiting)
+    #expect(SubagentCardStatus(wire: "max_turns") == .maxTurns)
+    #expect(SubagentCardStatus(wire: "cancelled") == .cancelled)
+    // Web's `rowStatusOf` passes an unrecognised string straight through and
+    // `isTerminalSubagentStatus` answers false for it. Reading it as terminal
+    // instead would hide a still-running child from §8.4's badge and from Stop,
+    // which is the worse of the two failures.
+    #expect(SubagentCardStatus(wire: "hibernating") == .running)
+    #expect(SubagentCardStatus(wire: "hibernating").isTerminal == false)
+  }
+
+  @Test("a terminal child with no endedAt shows no elapsed at all, never its own age")
+  func terminalRowWithNoEndedAtHasNoElapsed() {
+    let started = Date(timeIntervalSince1970: 1_000)
+    #expect(subagentFrozenElapsedMs(startedAt: started, endedAt: nil) == nil)
+    #expect(subagentFrozenElapsedMs(startedAt: nil, endedAt: started) == nil)
+    #expect(
+      subagentFrozenElapsedMs(startedAt: started, endedAt: started.addingTimeInterval(72)) == 72_000
+    )
+    // A clock that went backwards clamps rather than rendering a negative run.
+    #expect(
+      subagentFrozenElapsedMs(startedAt: started, endedAt: started.addingTimeInterval(-5)) == 0
+    )
+    // And the meta line omits elapsed entirely rather than leaving a separator.
+    #expect(SubagentFormat.meta(toolCallCount: 3, elapsedMs: nil) == "3 tool uses")
+  }
+
+  @Test("a sheet row offers Stop only while the child is live, and Resume unless it is a spent one-shot")
+  func sheetRowAffordances() {
+    let running = SubagentTaskRow(listEntry(status: "running"))
+    #expect(running.canStop)
+    #expect(running.canResume)
+    #expect(running.accessibilityName == "Agent researcher, Running")
+
+    // The route answers 409 for a terminal child, deliberately, so offering
+    // Stop there would be offering a refusal.
+    let done = SubagentTaskRow(listEntry(status: "done"))
+    #expect(done.canStop == false)
+    #expect(done.accessibilityName == "Agent researcher, Completed")
+
+    // A one-shot child can be ANSWERED but not steered: `coordinator.sendToChild`
+    // exempts a live child parked on a question and refuses everything else.
+    #expect(SubagentTaskRow(listEntry(status: "running", oneShot: true)).canResume == false)
+    #expect(SubagentTaskRow(listEntry(status: "waiting_input", oneShot: true)).canResume)
+
+    // An empty `subagentType` reads as `agent`, the same fallback the
+    // transcript row's header applies.
+    #expect(SubagentTaskRow(listEntry(status: "running", type: "")).type == "agent")
+  }
+
+  private func listEntry(
+    status: String,
+    type: String = "researcher",
+    oneShot: Bool = false
+  ) -> SubagentListEntryDTO {
+    SubagentListEntryDTO(
+      id: "child-1",
+      name: nil,
+      type: type,
+      description: "Look around",
+      status: status,
+      background: true,
+      depth: 1,
+      startedAt: Date(timeIntervalSince1970: 1_000),
+      endedAt: nil,
+      usage: nil,
+      toolCallCount: 3,
+      report: nil,
+      oneShot: oneShot
+    )
+  }
+
   // MARK: - Ruling 2: the slice survives what the card could not
 
   @Test(

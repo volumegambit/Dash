@@ -190,16 +190,186 @@ final class ConversationUITests: DashUITestCase {
       with: "half a sentence I have not sent",
       clearExisting: false
     )
-    element("chat.subagent.ui-subagent.header", in: app).tap()
-    XCTAssertFalse(
-      app.descendants(matching: .any)["chat.subagent.ui-subagent.composer"].exists)
-    element("chat.subagent.ui-subagent.header", in: app).tap()
+    // D6 hardening, and it is not cosmetic: a second scripted child made this
+    // transcript taller, and the three header taps below then depended on the
+    // row still being on screen and on the disclosure animation having
+    // finished before `.exists` was sampled. It passed on one run of the suite
+    // and failed on the next, at the first `XCTAssertFalse`. Scrolling the
+    // header into reach before each tap and WAITING for the absence rather
+    // than sampling it makes the sequence deterministic; nothing about what is
+    // asserted changed.
+    scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
+    XCTAssertTrue(waitForNoElement("chat.subagent.ui-subagent.composer", in: app))
+    scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
     let reopened = element("chat.subagent.ui-subagent.composer", in: app)
     XCTAssertEqual(reopened.value as? String, "half a sentence I have not sent")
 
-    element("chat.subagent.ui-subagent.header", in: app).tap()
+    scrollUntilHittable(element("chat.subagent.ui-subagent.header", in: app), in: app).tap()
+    XCTAssertTrue(waitForNoElement("chat.subagent.ui-subagent.tool.ui-tool", in: app))
+  }
+
+  /// Task D6 (sub-agents design §8.4): the tasks sheet, the toolbar badge and
+  /// the pinned strip, and the stop that drives all three.
+  ///
+  /// All of it reads `GET /conversations/:id/subagents` and NOTHING from the
+  /// transcript fold — which is why it works before a turn has ever been sent.
+  /// Both scripted children are `background: true`, and a background child's
+  /// finish never reaches the parent's event stream at all, so the list is the
+  /// only surface that can say what is still running.
+  ///
+  /// The identifier layout is load-bearing and has cost this branch time twice:
+  /// a container's accessibility identifier ERASES its children's, so the row's
+  /// tap target and its Stop button are siblings with their own identifiers.
+  /// Tapping Stop must not fire the row, which would dismiss the sheet — that
+  /// is what the "sheet is still up" assertion after each stop is for.
+  func testTasksSheetListsLiveChildrenAndStoppingThemCountsTheBadgeDown() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    // Through `app.buttons`, not `element(_:in:)`, and for a reason worth
+    // stating: a SwiftUI `ToolbarItem` publishes its content as BOTH an `Other`
+    // container and a `Button` carrying the same identifier at the same frame,
+    // so a `descendants(matching: .any)` lookup matches two and the tap fails
+    // with "Multiple matching elements found". Measured from the tree, and
+    // `chat.options` has behaved this way since it was written — which is why
+    // the three existing toolbar tests already reach it this way. As a BUTTON
+    // the identifier resolves to exactly one element, which is the R6 property.
+    let tasks = app.buttons.matching(identifier: "chat.tasks").firstMatch
+    XCTAssertTrue(tasks.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.buttons.matching(identifier: "chat.tasks").count, 1)
+    XCTAssertEqual(tasks.value as? String, "2 running")
+    XCTAssertEqual(
+      element("chat.tasks.strip", in: app).label,
+      "2 agents · 1 running · 1 waiting"
+    )
+    // The strip is NOT in a toolbar, so it resolves to one element under the
+    // ordinary lookup — the duplication above is the toolbar's, not this
+    // feature's.
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.tasks.strip").count, 1)
+
+    tasks.tap()
+    XCTAssertTrue(element("chat.tasks.sheet", in: app).exists)
+    for identifier in [
+      "chat.tasks.sheet",
+      "chat.tasks.row.ui-subagent",
+      "chat.tasks.row.ui-subagent-2",
+      "chat.tasks.stop.ui-subagent",
+      "chat.tasks.stop.ui-subagent-2",
+    ] {
+      XCTAssertEqual(
+        app.descendants(matching: .any).matching(identifier: identifier).count,
+        1,
+        "\(identifier) must resolve to exactly one element"
+      )
+    }
+    XCTAssertEqual(
+      element("chat.tasks.row.ui-subagent", in: app).label,
+      "Agent researcher, Running"
+    )
+    // The wire's `waiting_input` reads as `waiting` here exactly as it does in
+    // the transcript row, because both go through `SubagentCardStatus`.
+    XCTAssertEqual(
+      element("chat.tasks.row.ui-subagent-2", in: app).label,
+      "Agent reviewer, Waiting for input"
+    )
+
+    element("chat.tasks.stop.ui-subagent", in: app).tap()
+    XCTAssertTrue(
+      app.descendants(matching: .any)["chat.tasks.sheet"].exists,
+      "Stop must not also fire the row, which would dismiss the sheet"
+    )
+    // The route's own status is applied before the re-read, and Stop stops
+    // being offered for a child that has finished — the route 409s one.
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.row.ui-subagent", in: app),
+        "Agent researcher, Cancelled"
+      )
+    )
+    XCTAssertFalse(app.descendants(matching: .any)["chat.tasks.stop.ui-subagent"].exists)
+
+    element("chat.tasks.stop.ui-subagent-2", in: app).tap()
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.row.ui-subagent-2", in: app),
+        "Agent reviewer, Cancelled"
+      )
+    )
+
+    // Also a `ToolbarItem`, so also two matches under a bare identifier lookup
+    // — see the note on `chat.tasks` above.
+    app.buttons.matching(identifier: "chat.tasks.done").firstMatch.tap()
+    XCTAssertTrue(
+      waitForValue(app.buttons.matching(identifier: "chat.tasks").firstMatch, "No agents running"),
+      "The badge must count down from what the server says, not from the fold"
+    )
     XCTAssertFalse(
-      app.descendants(matching: .any)["chat.subagent.ui-subagent.tool.ui-tool"].exists)
+      app.descendants(matching: .any)["chat.tasks.strip"].exists,
+      "The strip is pinned only while a child is live"
+    )
+  }
+
+  /// Task D6 (§8.2, §8.1): two children spawned back to back render inside ONE
+  /// parallel group with its summary line, and a child parked on a question
+  /// renders its inline reply composer.
+  ///
+  /// Both are firsts. Every earlier sub-agent UI test ran against a cluster of
+  /// one, where the group header does not exist at all; and D5 closed with its
+  /// reply composer never having been RENDERED by any test — only what it sends
+  /// was pinned, at feature level. The tap on a tasks row is the third thing
+  /// here: §8.4's "clicking a row expands the row in the transcript".
+  func testAParallelGroupRendersItsChromeAndAWaitingChildRepliesFromTheRow() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Prepare the launch plan",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    // §8.2's group chrome. The identifier rides the header BUTTON, not a
+    // container around the rows: wrapping them in an identified `.contain`
+    // container made `chat.subagent.<id>` stop existing when D5 tried it.
+    let group = element("chat.subagentGroup.ui-subagent", in: app)
+    XCTAssertEqual(group.label, "2 agents · 1 running · 1 waiting")
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.subagent.ui-subagent").count, 1)
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "chat.subagent.ui-subagent-2").count, 1)
+
+    // §8.1's second line and its inline reply, on a row that is still
+    // COLLAPSED — the affordance does not wait for an expansion.
+    XCTAssertTrue(app.staticTexts["Should the rollback step come first?"].exists)
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.subagent.ui-subagent-2.composer"].exists,
+      "The body composer belongs to the expanded body; only the reply is inline"
+    )
+    let reply = scrollUntilHittable(
+      element("chat.subagent.ui-subagent-2.reply", in: app),
+      in: app
+    )
+    replaceText(in: reply, with: "Yes, roll back first", clearExisting: false)
+    element("chat.subagent.ui-subagent-2.reply.send", in: app).tap()
+    // Cleared only because the scripted gateway ACCEPTED it. A refusal keeps
+    // the sentence where the user can edit it, which is the whole point of not
+    // clearing on submit.
+    XCTAssertTrue(
+      waitForClearedValue(element("chat.subagent.ui-subagent-2.reply", in: app), "Yes, roll back first")
+    )
+
+    // §8.4: a tap on a sheet row opens that child's row in the transcript, and
+    // dismisses the sheet on the way.
+    app.buttons.matching(identifier: "chat.tasks").firstMatch.tap()
+    element("chat.tasks.row.ui-subagent", in: app).tap()
+    XCTAssertTrue(
+      element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists,
+      "Revealing a row from the sheet must expand it in the transcript"
+    )
   }
 
   /// Audit #4 / Task 3: minimal UI smoke test for the jump-to-bottom

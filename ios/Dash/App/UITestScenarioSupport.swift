@@ -426,6 +426,60 @@ extension AppDependenciesFactory {
       ]
     }
 
+    /// The id of the SECOND child `streaming-reconnect` spawns, adjacent to
+    /// the first so the two render as one parallel group (§8.2), and parked on
+    /// a question so its inline reply composer renders (§8.1).
+    static let secondSubagentID = "ui-subagent-2"
+
+    /// What `GET /conversations/{id}/subagents` serves for the shared
+    /// conversation — the tasks sheet's WHOLE model (§8.4).
+    ///
+    /// Both children are `background: true` and both are LIVE, deliberately:
+    /// that is the case the sheet exists for. A background child's finish
+    /// never reaches the parent's event stream, so the fold can only ever read
+    /// it as running, and the list is the only surface that can tell the
+    /// truth. It is also served BEFORE any turn is sent, which is honest —
+    /// these children outlive the turn that spawned them, so a client opening
+    /// the conversation later must still see them.
+    static func subagentListEntries() -> [SubagentListEntryDTO] {
+      [
+        SubagentListEntryDTO(
+          id: subagentID,
+          name: "scout",
+          type: "researcher",
+          description: "Check launch readiness",
+          status: "running",
+          background: true,
+          depth: 1,
+          startedAt: subagentStartedAt,
+          endedAt: nil,
+          usage: nil,
+          toolCallCount: 3,
+          report: nil,
+          oneShot: false
+        ),
+        SubagentListEntryDTO(
+          id: secondSubagentID,
+          name: nil,
+          type: "reviewer",
+          description: "Double-check the rollout steps",
+          status: "waiting_input",
+          background: true,
+          depth: 1,
+          startedAt: subagentStartedAt.addingTimeInterval(2),
+          endedAt: nil,
+          usage: nil,
+          toolCallCount: 1,
+          report: nil,
+          oneShot: false
+        ),
+      ]
+    }
+
+    /// Shared by the scripted `subagent_started` and by the REST list, so the
+    /// row and the sheet cannot disagree about when a child began.
+    static let subagentStartedAt = Date(timeIntervalSince1970: 1_788_480_000)
+
     static func message(
       id: String,
       turnID: String,
@@ -1054,6 +1108,9 @@ extension AppDependenciesFactory {
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
     private var didFailSleepingAgentEnable = false
+    /// Mutable, because `stopSubagent` really terminalizes a row here the way
+    /// the route does — that is what lets a UI test watch the badge count down.
+    private var subagentEntries: [SubagentListEntryDTO] = []
 
     init(scenario: UITestScenario, dataIdentifier: String) {
       self.dataIdentifier = dataIdentifier
@@ -1074,6 +1131,9 @@ extension AppDependenciesFactory {
       if scenario == .pendingRecovery || scenario == .activeRecovery {
         pendingSends[conversationValues[0].id] = UITestScenarioFixtures.recoveredPendingSend
         drafts[conversationValues[0].id] = UITestScenarioFixtures.recoveredNewerDraft
+      }
+      if scenario == .streamingReconnect {
+        subagentEntries = UITestScenarioFixtures.subagentListEntries()
       }
     }
 
@@ -1546,9 +1606,13 @@ extension AppDependenciesFactory {
     }
 
     func subagentTranscript(childID: String) throws -> SubagentTranscriptSnapshot {
-      guard childID == UITestScenarioFixtures.subagentID else { throw GatewayError.notFound }
+      guard subagentEntries.contains(where: { $0.id == childID }) else {
+        throw GatewayError.notFound
+      }
       return SubagentTranscriptSnapshot(
-        messages: UITestScenarioFixtures.subagentMessages(),
+        messages: childID == UITestScenarioFixtures.subagentID
+          ? UITestScenarioFixtures.subagentMessages()
+          : [],
         // Not one-shot, so the body composer is offered. The waiting-input
         // reply is enabled either way — a one-shot child parked on
         // `ask_orchestrator` can still be answered.
@@ -1556,8 +1620,43 @@ extension AppDependenciesFactory {
       )
     }
 
+    func subagents(conversationID: String) -> [SubagentListEntryDTO] {
+      guard conversationID == UITestScenarioFixtures.sharedConversation.id else { return [] }
+      return subagentEntries
+    }
+
+    func stopSubagent(id: String) throws -> String {
+      guard let index = subagentEntries.firstIndex(where: { $0.id == id }) else {
+        throw GatewayError.notFound
+      }
+      let entry = subagentEntries[index]
+      // The route 409s a child that is ALREADY terminal rather than silently
+      // succeeding, so a client that raced the child's own finish learns which
+      // of the two won. Reproduced here verbatim
+      // (`apps/gateway/src/subagent-management.ts:424-431`).
+      guard SubagentCardStatus(wire: entry.status).isTerminal == false else {
+        throw GatewayError.validation("Sub-agent \(id) is already \(entry.status)")
+      }
+      subagentEntries[index] = SubagentListEntryDTO(
+        id: entry.id,
+        name: entry.name,
+        type: entry.type,
+        description: entry.description,
+        status: "cancelled",
+        background: entry.background,
+        depth: entry.depth,
+        startedAt: entry.startedAt,
+        endedAt: UITestScenarioFixtures.now,
+        usage: entry.usage,
+        toolCallCount: entry.toolCallCount,
+        report: entry.report,
+        oneShot: entry.oneShot
+      )
+      return "cancelled"
+    }
+
     func resumeSubagent(id: String, message: String, requestID: String) throws {
-      guard id == UITestScenarioFixtures.subagentID else { throw GatewayError.notFound }
+      guard subagentEntries.contains(where: { $0.id == id }) else { throw GatewayError.notFound }
       // The scripted gateway accepts it; the assertion that matters is in the
       // app, where the optimistic row must render as an orchestrator row
       // carrying the user's own text.
@@ -1804,6 +1903,51 @@ extension AppDependenciesFactory {
           elapsedMs: 7200,
           detail: "Reviewing the checklist",
           question: nil
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        // A SECOND child spawned inside the same message with nothing but
+        // sub-agent chrome in between, which is exactly §8.2's adjacency rule
+        // (`SubagentDraft.chromeRank`) — so the two render inside one parallel
+        // group with a summary line and a dot strip. Nothing had ever rendered
+        // that chrome in a UI test before; every existing sub-agent test ran
+        // against a cluster of ONE, where the group header does not exist.
+        //
+        // `background: true` for the same reason the first child is: this
+        // scenario's children never report a terminal event and the parent turn
+        // does end, so a foreground child would be end-of-stream terminalized
+        // to `cancelled` mid-test — and D1's rule that a question never
+        // survives onto a terminal row would then clear the reply below.
+        .subagentStarted(
+          subagentId: "ui-subagent-2",
+          name: nil,
+          subagentType: "reviewer",
+          description: "Double-check the rollout steps",
+          prompt: "Double-check the rollout steps",
+          model: "openai/gpt-5",
+          background: true,
+          depth: 1,
+          startedAt: Date(timeIntervalSince1970: 1_788_480_002),
+          isolation: nil,
+          parentTurnId: turnID
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        // Parks the second child on a question, so §8.1's inline reply
+        // composer RENDERS. D5 closed with that composer never having been
+        // rendered by any test — only what it sends was pinned, at feature
+        // level — and this is the cheapest thing that closes it.
+        .subagentProgress(
+          subagentId: "ui-subagent-2",
+          status: .waitingInput,
+          toolCallCount: 1,
+          elapsedMs: 3000,
+          detail: nil,
+          question: "Should the rollback step come first?"
         )
       )
       yieldEvent(

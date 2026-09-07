@@ -300,6 +300,26 @@ enum SubagentCardStatus: Equatable, Hashable, Sendable {
     case .waitingInput: self = .waiting
     }
   }
+
+  /// The REST list's plain-string status (`SubagentListEntryDTO.status`), which
+  /// is deliberately not an enum on the wire so a newer gateway's value cannot
+  /// fail the decode of the whole page.
+  ///
+  /// An unrecognised value reads as `.running`, which is web's behaviour rather
+  /// than a choice made here: `rowStatusOf` passes an unknown string straight
+  /// through and `isTerminalSubagentStatus` answers false for it, so both
+  /// clients count an unknown status as LIVE. The alternative is worse in the
+  /// direction that matters — an unknown status read as terminal would hide a
+  /// still-running child from the badge, from the strip and from Stop.
+  init(wire: String) {
+    if let live = SubagentLiveStatus(rawValue: wire) {
+      self = SubagentCardStatus(live)
+    } else if let terminal = SubagentTerminalStatus(rawValue: wire) {
+      self = SubagentCardStatus(terminal)
+    } else {
+      self = .running
+    }
+  }
 }
 
 /// Everything the collapsed row (§8.1) needs for one child, folded from every

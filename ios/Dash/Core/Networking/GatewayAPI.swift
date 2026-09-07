@@ -201,6 +201,20 @@ actor GatewayAPI {
     )
   }
 
+  /// Cancel a child and, depth-first, every descendant this gateway still
+  /// holds a handle for (sub-agents design 7.7).
+  ///
+  /// No body, and no `resourceID`/`requestID` on the descriptor: the route is
+  /// idempotent in effect but not in reporting — a second call against a child
+  /// the first one terminalized is a 409 `validation_failed`, which is
+  /// deliberate (it tells a caller that raced the child's own finish which of
+  /// the two won) and is exactly why a blind retry would be wrong.
+  func stopSubagent(id: String) async throws -> SubagentStopResponseDTO {
+    try await transport.send(
+      GatewayRequest(method: .post, path: mobilePath("subagents", id, "stop"))
+    )
+  }
+
   /// Type into a child (sub-agents design 7.7). See `SubagentResumeRequest`
   /// for why this is a REST call and not a `message` frame.
   ///

@@ -293,7 +293,12 @@ struct SubagentCardView: View {
         .lineLimit(1)
         .truncationMode(.tail)
       Spacer(minLength: 4)
-      SubagentMetaView(card: card)
+      SubagentMetaView(
+        isTerminal: card.status.isTerminal,
+        toolCallCount: card.toolCallCount,
+        startedAt: card.startedAt,
+        endedAt: card.endedAt
+      )
     }
   }
 
@@ -477,29 +482,51 @@ private struct SubagentTranscriptRow: View {
   }
 }
 
+/// Elapsed for a FINISHED child, or `nil` when it has no honest duration.
+///
+/// A terminal run with no `endedAt` — a legacy-only `worker_done` child, or one
+/// end-of-stream-terminalized to `cancelled`, or one the stop route cancelled
+/// before the list caught up — renders NO time at all, never the row's own age,
+/// because the row's age keeps growing while the child has been dead for an
+/// hour. The fold discards `subagent_progress.elapsedMs` for the same reason:
+/// one source, not two that can disagree.
+///
+/// A free function rather than a computed property on the view so `DashTests`
+/// can pin it without rendering SwiftUI.
+func subagentFrozenElapsedMs(startedAt: Date?, endedAt: Date?) -> Int? {
+  guard let startedAt, let endedAt else { return nil }
+  return Int(max(0, endedAt.timeIntervalSince(startedAt)) * 1000)
+}
+
 /// §8.1's right-aligned meta, `12 tool uses · 1m 12s`.
 ///
-/// Elapsed derives from `startedAt`/`endedAt` and NOTHING else. A terminal row
-/// with no `endedAt` — a legacy-only `worker_done` child, or one
-/// end-of-stream-terminalized to `cancelled` — renders no time at all, never
-/// the row's own age, because the row's age keeps growing while the child has
-/// been dead for an hour. The fold discards `subagent_progress.elapsedMs` for
-/// the same reason: one source, not two that disagree.
-private struct SubagentMetaView: View {
-  let card: SubagentCardState
+/// Takes the four facts rather than a `SubagentCardState` so the tasks sheet
+/// (§8.4), whose rows come from REST and never from the fold, renders elapsed
+/// through THIS view rather than a second formatter — the divergence D3's
+/// ruling 2 called a defect rather than a convenience.
+struct SubagentMetaView: View {
+  let isTerminal: Bool
+  let toolCallCount: Int
+  let startedAt: Date?
+  let endedAt: Date?
 
   var body: some View {
-    if card.status.isTerminal {
-      Text(SubagentFormat.meta(toolCallCount: card.toolCallCount, elapsedMs: frozenElapsedMs))
-        .font(.caption.monospacedDigit())
-        .foregroundStyle(.secondary)
-    } else if let startedAt = card.startedAt {
+    if isTerminal {
+      Text(
+        SubagentFormat.meta(
+          toolCallCount: toolCallCount,
+          elapsedMs: subagentFrozenElapsedMs(startedAt: startedAt, endedAt: endedAt)
+        )
+      )
+      .font(.caption.monospacedDigit())
+      .foregroundStyle(.secondary)
+    } else if let startedAt {
       // Ticks while the child is live (§8.1). `TimelineView` re-evaluates the
       // text, it does not animate anything, so it needs no reduce-motion gate.
       TimelineView(.periodic(from: startedAt, by: 1)) { context in
         Text(
           SubagentFormat.meta(
-            toolCallCount: card.toolCallCount,
+            toolCallCount: toolCallCount,
             elapsedMs: Int(max(0, context.date.timeIntervalSince(startedAt)) * 1000)
           )
         )
@@ -507,19 +534,14 @@ private struct SubagentMetaView: View {
         .foregroundStyle(.secondary)
       }
     } else {
-      Text(SubagentFormat.toolCount(card.toolCallCount))
+      Text(SubagentFormat.toolCount(toolCallCount))
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
     }
   }
-
-  private var frozenElapsedMs: Int? {
-    guard let startedAt = card.startedAt, let endedAt = card.endedAt else { return nil }
-    return Int(max(0, endedAt.timeIntervalSince(startedAt)) * 1000)
-  }
 }
 
-private struct SubagentStatusGlyph: View {
+struct SubagentStatusGlyph: View {
   let status: SubagentCardStatus
 
   var body: some View {

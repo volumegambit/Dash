@@ -63,6 +63,12 @@ struct ChatView: View {
   @State private var isAgentPickerPresented = false
   @State private var isSwitchingAgent = false
 
+  /// §8.4's tasks sheet. `ChatView` owns the presentation flag but deliberately
+  /// never reads the live COUNT: `TasksToolbarButton` and `TasksStrip` read it
+  /// from inside their own bodies, so a list re-read on every parent turn's
+  /// `done` invalidates those two views and not this whole screen.
+  @State private var isTasksPresented = false
+
   var body: some View {
     VStack(spacing: 0) {
       if showsAgentChip {
@@ -80,11 +86,21 @@ struct ChatView: View {
       transcript
     }
     .safeAreaInset(edge: .bottom, spacing: 0) {
-      ComposerView()
+      VStack(spacing: 0) {
+        // §8.4's pinned strip. It renders nothing while no child is live, so
+        // placing it costs no read of the count here.
+        TasksStrip { isTasksPresented = true }
+        ComposerView()
+      }
     }
     .navigationTitle(feature.state.conversation.title)
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
+      // §8.4: "a toolbar item beside `chat.options` that shows a badge with the
+      // live count".
+      ToolbarItem(placement: .topBarTrailing) {
+        TasksToolbarButton { isTasksPresented = true }
+      }
       ToolbarItem(placement: .topBarTrailing) {
         conversationOptionsMenu
       }
@@ -197,6 +213,12 @@ struct ChatView: View {
         onResendSucceeded: { editingMessage = nil },
         onCancel: { editingMessage = nil }
       )
+    }
+    .sheet(isPresented: $isTasksPresented) {
+      TasksSheet { childID in
+        feature.revealSubagent(childID)
+      }
+      .environment(feature)
     }
     .sheet(isPresented: $isAgentPickerPresented) {
       AgentPickerSheet(

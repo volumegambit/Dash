@@ -241,6 +241,42 @@ struct GatewayAPITests {
     #expect(uncorrelatedBody["message"] as? String == "keep going")
   }
 
+  @Test("stopping a sub-agent posts an empty body and reports the terminal status")
+  func subagentStopRequestShape() async throws {
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(#"{"ok":true,"status":"cancelled"}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let stopped = try await api.stopSubagent(id: "sub/1 ?")
+
+    // The route's own status is authoritative: it falls back to writing
+    // `cancelled` itself when the cascade reached a child this gateway process
+    // no longer holds a handle for, so it is not always guessable.
+    #expect(stopped.status == "cancelled")
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "POST")
+    #expect(try encodedPath(request) == "/mobile/v1/subagents/sub%2F1%20%3F/stop")
+    #expect(request.httpBody == nil)
+  }
+
+  @Test("stopping a child that already finished surfaces the gateway's own refusal")
+  func subagentStopAlreadyTerminal() async {
+    URLProtocolStub.enqueue(
+      status: 409,
+      data: Data(
+        #"{"code":"validation_failed","error":"Sub-agent sub-1 is already done","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { _ = try await api.stopSubagent(id: "sub-1") }
+
+    #expect(error == .validation("Sub-agent sub-1 is already done"))
+  }
+
   @Test("a coordinator refusal to resume surfaces its own text, not a generic error")
   func subagentResumeRefusal() async {
     URLProtocolStub.enqueue(

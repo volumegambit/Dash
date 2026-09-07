@@ -210,6 +210,52 @@ class DashUITestCase: XCTestCase {
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
   }
 
+  /// Wait for an element's accessible LABEL to settle on a value.
+  ///
+  /// Needed wherever the value a test asserts arrives from a round trip the
+  /// app made after the tap — a stopped row's status comes back from the stop
+  /// route and then again from the list re-read, so reading the label straight
+  /// after the tap is a race the test would lose intermittently.
+  func waitForLabel(
+    _ element: XCUIElement,
+    _ expected: String,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label == %@", expected),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// The same, for an element's `value`.
+  func waitForValue(
+    _ element: XCUIElement,
+    _ expected: String,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", expected),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Wait until a text field no longer carries `text` — an empty `TextField`
+  /// reports its PLACEHOLDER as its value, so "cleared" cannot be asserted as
+  /// an empty string.
+  func waitForClearedValue(
+    _ element: XCUIElement,
+    _ text: String,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value != %@", text),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
   func waitUntilEnabled(
     _ element: XCUIElement,
     timeout: TimeInterval = 5,
@@ -536,6 +582,72 @@ class DashUITestCase: XCTestCase {
     let frame = element.frame
     XCTAssertGreaterThanOrEqual(frame.minX, appFrame.minX - 1, file: file, line: line)
     XCTAssertLessThanOrEqual(frame.maxX, appFrame.maxX + 1, file: file, line: line)
+  }
+
+  /// Wait for an element to STOP existing.
+  ///
+  /// `XCTAssertFalse(element.exists)` straight after a tap is a race with the
+  /// disclosure animation and with whatever relayout the tap caused; it passed
+  /// on one run of this suite and failed on the next once a second scripted
+  /// child made the transcript taller. Asserting the absence rather than
+  /// sampling it is the fix.
+  func waitForNoElement(
+    _ identifier: String,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"),
+      object: app.descendants(matching: .any)[identifier]
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Swipe the transcript until an element that ALREADY EXISTS becomes
+  /// hittable.
+  ///
+  /// `scrollToElement` swipes only while the element does not exist, which is
+  /// the wrong condition for a row that is mounted but sits below the visible
+  /// viewport: XCUITest then reports "Activation point invalid and no suggested
+  /// hit points based on element frame" rather than "does not exist". A second
+  /// scripted child pushed the transcript past one screen, so this is the
+  /// difference between a deterministic test and one whose result depends on
+  /// how much text had streamed when it looked.
+  @discardableResult
+  func scrollUntilHittable(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    maxSwipes: Int = 6,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    XCTAssertTrue(element.waitForExistence(timeout: 8), file: file, line: line)
+    // Swipe the TRANSCRIPT, not the app. `app.swipeUp()` starts its gesture in
+    // the middle of the screen, which is inside the keyboard whenever the
+    // composer has focus — the swipe then scrolls nothing at all, and the loop
+    // below burns all its attempts without moving. That is not hypothetical:
+    // this test passed in isolation and failed inside the full suite, where the
+    // keyboard is up from `openFirstConversation`, with "not hittable after
+    // scrolling both ways".
+    let scroller = app.descendants(matching: .any)["chat.transcript"]
+    let surface = scroller.exists ? scroller : app
+    // Both directions, because the caller cannot know which one it needs: a
+    // row can sit BELOW the viewport (the transcript grew) or ABOVE it (the
+    // view scrolled past it), and swiping the wrong way pins it harder against
+    // the far edge.
+    for _ in 0..<maxSwipes where element.isHittable == false {
+      surface.swipeUp()
+    }
+    for _ in 0..<(maxSwipes * 2) where element.isHittable == false {
+      surface.swipeDown()
+    }
+    XCTAssertTrue(
+      element.isHittable,
+      "Expected \(element.identifier) to be hittable after scrolling both ways",
+      file: file,
+      line: line
+    )
+    return element
   }
 
   func scrollToElement(
