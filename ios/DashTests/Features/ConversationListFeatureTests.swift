@@ -1578,6 +1578,32 @@ struct ConversationListFeatureTests {
     #expect(feature.conversations.map(\.summary) == [active])
   }
 
+  @Test("a brand-new conversation arriving only via snapshot appears in the list")
+  func newConversationArrivesViaSnapshot() async {
+    let existing = summary(id: "existing", title: "Existing", updatedAt: 100)
+    let service = FakeConversationListService(
+      cachedConversations: [cachedConversation(existing)]
+    )
+    let feature = makeFeature(service: service)
+    feature.consume(
+      snapshot(connection: .online, conversations: [cachedConversation(existing)])
+    )
+    await feature.start()
+
+    // A new conversation created elsewhere (another device / the agent)
+    // arrives purely through the sync snapshot, newest-first per the
+    // gateway's `ORDER BY updated_at DESC` list order.
+    let created = summary(id: "created", title: "Created", updatedAt: 200)
+    feature.consume(
+      snapshot(
+        connection: .online,
+        conversations: [cachedConversation(created), cachedConversation(existing)]
+      )
+    )
+
+    #expect(feature.conversations.map(\.id) == [created.id, existing.id])
+  }
+
   @Test("a deleted canonical snapshot row suppresses the visible row without a removal ID")
   func deletedCanonicalSnapshotSuppressesVisibleRow() async {
     let local = summary(id: "deleted", title: "Delete me", revision: 2)
@@ -1814,6 +1840,37 @@ struct ConversationListFeatureTests {
     )
 
     #expect(feature.conversations.map(\.id) == [canonical.id, older.id])
+  }
+
+  @Test("a newer conversation trailing the snapshot order still sorts to the top")
+  func snapshotOrdersMergedByUpdatedAtDescending() async {
+    // Reproduces the "new conversations don't show up" bug: the sync engine
+    // appends a freshly-created/invalidated conversation to the END of its
+    // conversationOrder, so it arrives LAST in snapshot.conversations even
+    // though it's the newest by updatedAt. consume() must sort the merged
+    // list by updatedAt-desc rather than trusting the snapshot's arrival
+    // order, otherwise the new row lands at the bottom (off-screen).
+    let existing = (0..<3).map { summary(id: "existing-\($0)", updatedAt: 100 - $0) }
+    let brandNew = summary(id: "brand-new", title: "Brand New", updatedAt: 500)
+    let feature = makeFeature(service: FakeConversationListService())
+
+    feature.consume(
+      snapshot(connection: .online, conversations: existing.map(cachedConversation))
+    )
+
+    // Engine appends the new conversation to the tail of conversationOrder.
+    feature.consume(
+      snapshot(
+        connection: .online,
+        conversations: (existing + [brandNew]).map(cachedConversation)
+      )
+    )
+
+    #expect(feature.conversations.first?.id == brandNew.id)
+    #expect(
+      feature.conversations.map(\.id)
+        == ["brand-new", "existing-0", "existing-1", "existing-2"]
+    )
   }
 
   @Test("an explicit sync removal wins over an active row in the same snapshot")

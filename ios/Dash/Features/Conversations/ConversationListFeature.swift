@@ -858,6 +858,16 @@ final class ConversationListFeature {
         }
       }
     }
+    // The snapshot's arrival order follows the sync engine's
+    // `conversationOrder`, which appends freshly-created/invalidated
+    // conversations to the TAIL — so a brand-new conversation lands last even
+    // though it's the newest by `updatedAt`, leaving it off-screen at the
+    // bottom of the list (the "new conversations don't show up" bug). Sort the
+    // canonical rows by `updatedAt`-desc so recency, not arrival order, drives
+    // placement; this also matches the invariant the retained-item insertion
+    // below already assumes (it binary-scans `merged` for the first row older
+    // than each retained value).
+    merged.sort { $0.summary.updatedAt > $1.summary.updatedAt }
     let incomingIDs = Set(scopedCanonical.map(\.id))
     let retained = allConversations.filter {
       incomingIDs.contains($0.id) == false
