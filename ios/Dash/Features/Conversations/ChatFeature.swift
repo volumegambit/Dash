@@ -1410,9 +1410,14 @@ final class ChatFeature {
   /// back. A transient reconnect was already covered (`ChatConnection`'s
   /// `replayTurnSubscriptions` re-sends every conversation subscribe on
   /// `.reconnecting` → `.connected`); **backgrounding the app was not**, and
-  /// that is the most routine lifecycle event on a phone. `suspendForDetachment`
-  /// → `.detached` → `clearAllTurns()` empties the transport's own map, so it
-  /// is a genuine drop, and the open body went on looking live while every
+  /// that is the most routine lifecycle event on a phone. The mechanism, stated
+  /// exactly: `suspendForDetachment` calls `ChatConnection.suspend()`, which
+  /// cancels the socket, `clearAllTurns()`s the transport's own map and only
+  /// then transitions to **`.idle`** — so the drop is genuine, but this set is
+  /// cleared *asynchronously*, when the event task drains that `.idle` in
+  /// `consume(.state)`'s `.idle`/`.detached` branch below. (`.detached` is
+  /// what the FEATURE reduces into `state.transport`; the transport never
+  /// emits it here.) Meanwhile the open body went on looking live while every
   /// send from it was optimistic against a subscription no longer held.
   ///
   /// The REST re-read is as load-bearing as the subscribe: everything the

@@ -4964,8 +4964,9 @@ struct ChatFeatureTests {
     await feature.setSubagentExpanded("child-1", true).value
 
     // `suspendForDetachment` drops the socket and `ChatConnection.clearAllTurns`
-    // empties the gateway-side map with it. The body stays open and still
-    // looks live.
+    // empties the gateway-side map with it, and the transport's `.idle` clears
+    // `subscribedSubagentIDs` when `consume(.state)` drains it. The body stays
+    // open and still looks live.
     await feature.sceneDidEnterBackground()
     await feature.sceneWillEnterForeground()
 
@@ -5003,6 +5004,57 @@ struct ChatFeatureTests {
       await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "grandchild-1"))
         == false
     )
+  }
+
+  @Test(
+    """
+    a row whose subscribe never landed self-heals on the next appear(), because     the resubscribe filter reads the UI slice and not a record of what was     subscribed
+    """
+  )
+  func aRowThatNeverSubscribedSelfHealsOnTheNextAppear() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    await sync.enqueueSubagentTranscript(
+      .success(SubagentTranscriptSnapshot(messages: [], oneShot: false))
+    )
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
+
+    // Expanding while `.offline` reproduces the STATE a swallowed subscribe
+    // failure leaves behind, without needing a failure hook on the double:
+    // `subscribeToSubagent` returns at its `connection == .online` guard,
+    // before the insert, so the row is `isExpanded && opensTranscript` and
+    // absent from `subscribedSubagentIDs` — the whole of what
+    // `resubscribeExpandedSubagents`'s filter reads. What this does NOT
+    // reproduce is a throw inside the `do` block; the swallow itself is still
+    // only reasoned about.
+    feature.setConnection(.offline)
+    await feature.appear()
+    await feature.setSubagentExpanded("child-1", true).value
+
+    #expect(feature.state.subagentUI["child-1"]?.isExpanded == true)
+    #expect(await sync.subagentTranscriptCalls == ["child-1"])
+    #expect(
+      await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1")) == false
+    )
+
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(await sync.subagentTranscriptCalls == ["child-1", "child-1"])
+    #expect(
+      await chat.calls.filter { $0 == .subscribe(agentID: "agent-1", conversationID: "child-1") }
+        .count == 1
+    )
+
+    // And the row is genuinely subscribed again, so a send from it is
+    // optimistic — the property the self-heal exists to restore. A filter keyed
+    // on a REMEMBERED subscription set rather than on the UI slice would leave
+    // this row out and redden all three assertions above and this one.
+    #expect(await feature.sendToSubagent("child-1", text: "keep going"))
+    #expect(feature.state.subagentUI["child-1"]?.pendingRequestIDs == ["req-1"])
   }
 
   @Test(
@@ -5983,6 +6035,15 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
 
   func suspendForDetachment() async {
     calls.append(.suspendForDetachment)
+    // What `ChatConnection.suspend()` really does (`ChatConnection.swift:249-257`):
+    // cancel the socket, `clearAllTurns()`, then `transition(to: .idle)`. Yielding
+    // that `.idle` matters because the feature-side clear of
+    // `subscribedSubagentIDs` lives in `consume(.state)`, not in
+    // `suspendForDetachment` — without this the lifecycle tests only ever
+    // reached `ensureConnected`'s clear and the production path was unexercised.
+    // `.idle` and not `.detached`: `.detached` is what the FEATURE reduces into
+    // `state.transport`, and what the UI-test fake yields.
+    continuation.yield(.state(.idle))
   }
 
   func shutdown() async {
