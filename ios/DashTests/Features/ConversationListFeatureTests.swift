@@ -1842,6 +1842,37 @@ struct ConversationListFeatureTests {
     #expect(feature.conversations.map(\.id) == [canonical.id, older.id])
   }
 
+  @Test("a newer conversation trailing the snapshot order still sorts to the top")
+  func snapshotOrdersMergedByUpdatedAtDescending() async {
+    // Reproduces the "new conversations don't show up" bug: the sync engine
+    // appends a freshly-created/invalidated conversation to the END of its
+    // conversationOrder, so it arrives LAST in snapshot.conversations even
+    // though it's the newest by updatedAt. consume() must sort the merged
+    // list by updatedAt-desc rather than trusting the snapshot's arrival
+    // order, otherwise the new row lands at the bottom (off-screen).
+    let existing = (0..<3).map { summary(id: "existing-\($0)", updatedAt: 100 - $0) }
+    let brandNew = summary(id: "brand-new", title: "Brand New", updatedAt: 500)
+    let feature = makeFeature(service: FakeConversationListService())
+
+    feature.consume(
+      snapshot(connection: .online, conversations: existing.map(cachedConversation))
+    )
+
+    // Engine appends the new conversation to the tail of conversationOrder.
+    feature.consume(
+      snapshot(
+        connection: .online,
+        conversations: (existing + [brandNew]).map(cachedConversation)
+      )
+    )
+
+    #expect(feature.conversations.first?.id == brandNew.id)
+    #expect(
+      feature.conversations.map(\.id)
+        == ["brand-new", "existing-0", "existing-1", "existing-2"]
+    )
+  }
+
   @Test("an explicit sync removal wins over an active row in the same snapshot")
   func explicitSyncRemovalWinsOverSameSnapshotRow() async {
     let local = summary(id: "removed", revision: 2)
