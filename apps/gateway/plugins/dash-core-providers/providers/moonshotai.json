@@ -38,23 +38,6 @@
         "cacheRead": 0.19,
         "cacheWrite": 0
       }
-    },
-    {
-      "id": "kimi-k2.5",
-      "contextWindow": 262144,
-      "maxTokens": 262144,
-      "name": "Kimi K2.5",
-      "reasoning": true,
-      "input": [
-        "text",
-        "image"
-      ],
-      "cost": {
-        "input": 0.6,
-        "output": 3,
-        "cacheRead": 0.1,
-        "cacheWrite": 0
-      }
     }
   ],
   "modelsFetch": {
@@ -98,7 +81,7 @@
       "tier": 5
     }
   ],
-  "reviewedAt": "2026-08-30",
+  "reviewedAt": "2026-09-07",
   "ui": {
     "keyConsoleUrl": "https://platform.moonshot.ai/console/api-keys",
     "keyPlaceholder": "sk-...",
