@@ -229,11 +229,12 @@ struct ChatView: View {
         // detents above only apply at compact width, so without this the
         // model picker is a full-height iPad card holding a short list.
         // Kept ALONGSIDE the regular-width `.large` above (merge with main,
-        // 2026-09-07): the two solve different halves of the same picture —
-        // `presentationSizing(.form)` sets the sheet's WIDTH on iPad, the
-        // `.large` detent its HEIGHT. Main's change without this leaves a
-        // full-bleed sheet; this without main's change leaves a form-width
-        // sheet that is still only `.medium` tall.
+        // 2026-09-07). They are independent controls rather than two
+        // spellings of one fix: `presentationSizing(.form)` chooses the
+        // sheet's iPad SIZE CLASS, `presentationDetents` its height within
+        // that. Neither subsumes the other, so both sides are kept.
+        // Verified together by `testChatToolbarModelPickerChangesTheAgentModel`
+        // on iPad 26.5 and iPad 18.4.
         .modifier(FormSheetSizing())
       }
     }
