@@ -1,5 +1,9 @@
 import type { ConversationRef, McConversationView } from '@dash/mc';
-import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
+import type {
+  ConversationMessage,
+  MobileWsServerFrame,
+  SubagentListEntry,
+} from '@dash/mobile-contract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
 import { conversationKey, initChatListeners, useChatStore } from './chat.js';
@@ -70,6 +74,14 @@ beforeEach(() => {
   mockApi.chatSend.mockReset();
   mockApi.chatRenameConversation.mockReset();
   mockApi.chatDeleteConversation.mockReset();
+  mockApi.subagentsList.mockReset();
+  mockApi.subagentsList.mockResolvedValue([]);
+  mockApi.subagentStop.mockReset();
+  mockApi.subagentStop.mockResolvedValue({ ok: true, status: 'cancelled' });
+  mockApi.subagentResume.mockReset();
+  mockApi.subagentResume.mockResolvedValue({ ok: true, status: 'running', mode: 'queued' });
+  mockApi.conversationMessages.mockReset();
+  mockApi.conversationMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
   useChatStore.setState({
     conversations: [],
     nextConversationCursor: null,
@@ -87,6 +99,8 @@ beforeEach(() => {
     unreadConversations: new Set(),
     conversationError: null,
     connectionIssue: null,
+    subagents: [],
+    subagentUi: {},
   });
 });
 
@@ -671,5 +685,332 @@ describe('canonical chat store', () => {
 
     expect(rejected).toHaveBeenCalledOnce();
     useChatStore.setState({ invalidateConversation: original });
+  });
+});
+
+// --- Sub-agents (design §7.7, §8.1, §8.4) ------------------------------------
+
+function subagentEntry(over: Partial<SubagentListEntry> = {}): SubagentListEntry {
+  return {
+    id: 'sub_a',
+    type: 'code-reviewer',
+    description: 'Review the diff',
+    status: 'running',
+    background: false,
+    depth: 1,
+    startedAt: '2026-09-04T00:00:00.000Z',
+    toolCallCount: 4,
+    oneShot: false,
+    ...over,
+  };
+}
+
+const parentRef: ConversationRef = { id: 'shared-id', origin: 'gateway' };
+
+async function selectParent(): Promise<void> {
+  useChatStore.setState({ selectedConversationRef: parentRef });
+}
+
+describe('sub-agent list reads', () => {
+  it("reads the selected conversation's children", async () => {
+    await selectParent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
+
+    await useChatStore.getState().refreshSubagents();
+
+    expect(mockApi.subagentsList).toHaveBeenCalledWith('shared-id');
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry()]);
+  });
+
+  it('empties the list when nothing is selected', async () => {
+    useChatStore.setState({ subagents: [subagentEntry()], selectedConversationRef: null });
+
+    await useChatStore.getState().refreshSubagents();
+
+    expect(useChatStore.getState().subagents).toEqual([]);
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+  });
+
+  // Guard 1 of the two the read carries (ported from the web port's D3 round).
+  it('drops a response for the conversation the user has already left', async () => {
+    await selectParent();
+    const pending = deferred<SubagentListEntry[]>();
+    mockApi.subagentsList.mockReturnValue(pending.promise);
+
+    const read = useChatStore.getState().refreshSubagents();
+    useChatStore.setState({ selectedConversationRef: { id: 'other', origin: 'gateway' } });
+    pending.resolve([subagentEntry()]);
+    await read;
+
+    expect(useChatStore.getState().subagents).toEqual([]);
+  });
+
+  // Guard 2: a monotonic applied cursor, so the NEWEST read wins whichever
+  // order the two responses come back in.
+  it('does not let a stale read overwrite a newer one that landed first', async () => {
+    await selectParent();
+    const first = deferred<SubagentListEntry[]>();
+    const second = deferred<SubagentListEntry[]>();
+    mockApi.subagentsList.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    const readA = useChatStore.getState().refreshSubagents();
+    const readB = useChatStore.getState().refreshSubagents();
+    second.resolve([subagentEntry({ status: 'done' })]);
+    await readB;
+    first.resolve([subagentEntry({ status: 'running' })]);
+    await readA;
+
+    expect(useChatStore.getState().subagents[0].status).toBe('done');
+  });
+
+  it('clears both the children and their card state on a conversation switch', async () => {
+    mockApi.chatGetConversation.mockResolvedValue(gatewayConversation);
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
+    useChatStore.setState({
+      subagents: [subagentEntry()],
+      subagentUi: {
+        sub_a: {
+          expanded: true,
+          draft: 'half a sentence',
+          notice: null,
+          sending: false,
+          transcriptLoaded: true,
+        },
+      },
+    });
+
+    await useChatStore.getState().selectConversation(parentRef);
+
+    expect(useChatStore.getState().subagents).toEqual([]);
+    expect(useChatStore.getState().subagentUi).toEqual({});
+  });
+
+  it('reads the children on every conversation selection, live turn or not', async () => {
+    mockApi.chatGetConversation.mockResolvedValue(gatewayConversation);
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ background: true })]);
+
+    await useChatStore.getState().selectConversation(parentRef);
+
+    expect(mockApi.subagentsList).toHaveBeenCalledWith('shared-id');
+    expect(useChatStore.getState().subagents).toHaveLength(1);
+  });
+
+  it('makes an in-flight read of the previous conversation inert', async () => {
+    await selectParent();
+    mockApi.chatGetConversation.mockResolvedValue(gatewayConversation);
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
+    const pending = deferred<SubagentListEntry[]>();
+    // Only the FIRST read hangs; the selection's own read answers empty, which
+    // is what the stale response must not be able to overwrite.
+    mockApi.subagentsList.mockReturnValueOnce(pending.promise).mockResolvedValue([]);
+
+    const read = useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().selectConversation(parentRef);
+    pending.resolve([subagentEntry()]);
+    await read;
+
+    expect(useChatStore.getState().subagents).toEqual([]);
+  });
+});
+
+describe('sub-agent list triggers', () => {
+  function eventFrame(type: string): MobileWsServerFrame {
+    return {
+      type: 'event',
+      id: 'turn-1',
+      conversationId: 'shared-id',
+      seq: 1,
+      event: { type, subagentId: 'sub_a' },
+    } as unknown as MobileWsServerFrame;
+  }
+
+  it('re-reads the list when a child starts or finishes on the open conversation', async () => {
+    await selectParent();
+    await useChatStore.getState().applyFrame(eventFrame('subagent_started'));
+    await useChatStore.getState().applyFrame(eventFrame('worker_done'));
+    await Promise.resolve();
+
+    expect(mockApi.subagentsList).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not re-read on every progress event', async () => {
+    await selectParent();
+    await useChatStore.getState().applyFrame(eventFrame('subagent_progress'));
+    await Promise.resolve();
+
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+  });
+
+  it('does not re-read for a conversation that is not the open one', async () => {
+    useChatStore.setState({ selectedConversationRef: { id: 'other', origin: 'gateway' } });
+    await useChatStore.getState().applyFrame(eventFrame('subagent_started'));
+    await Promise.resolve();
+
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+  });
+});
+
+describe('sub-agent card state', () => {
+  it('keeps the card facts and the card UI in separate records', async () => {
+    await selectParent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'done' })]);
+    useChatStore.getState().toggleSubagent('sub_a');
+    useChatStore.getState().setSubagentDraft('sub_a', 'half a sentence');
+
+    await useChatStore.getState().refreshSubagents();
+
+    // A list read REPLACES the facts wholesale. It cannot lose a card's
+    // expansion or its half-typed reply, because it does not write that record
+    // at all — which is why there is no merge to get wrong.
+    expect(useChatStore.getState().subagents[0].status).toBe('done');
+    expect(useChatStore.getState().subagentUi.sub_a).toMatchObject({
+      expanded: true,
+      draft: 'half a sentence',
+    });
+  });
+
+  it('fetches a child transcript once, and again only when forced', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [message('m1', { id: 'sub_a', origin: 'gateway' }, 'assistant')],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+
+    expect(mockApi.conversationMessages).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
+
+    await useChatStore.getState().loadSubagentTranscript('sub_a', true);
+    expect(mockApi.conversationMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('puts a failed transcript fetch on the card rather than throwing', async () => {
+    mockApi.conversationMessages.mockRejectedValue(new Error('gateway offline'));
+
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+
+    expect(useChatStore.getState().subagentUi.sub_a.notice).toContain('gateway offline');
+  });
+});
+
+describe('sub-agent stop', () => {
+  it('re-reads the list after a stop', async () => {
+    await selectParent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'cancelled' })]);
+
+    await useChatStore.getState().stopSubagent('sub_a');
+
+    expect(mockApi.subagentStop).toHaveBeenCalledWith('sub_a');
+    expect(useChatStore.getState().subagents[0].status).toBe('cancelled');
+  });
+
+  it('puts a refused stop on the card and still re-reads', async () => {
+    await selectParent();
+    mockApi.subagentStop.mockResolvedValue({
+      ok: false,
+      reason: 'Sub-agent sub_a is already done',
+    });
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'done' })]);
+
+    await useChatStore.getState().stopSubagent('sub_a');
+
+    expect(useChatStore.getState().subagentUi.sub_a.notice).toBe('Sub-agent sub_a is already done');
+    expect(useChatStore.getState().subagents[0].status).toBe('done');
+  });
+});
+
+describe('sub-agent resume', () => {
+  it('carries a client requestId and clears the draft on success', async () => {
+    await selectParent();
+    useChatStore.getState().setSubagentDraft('sub_a', 'keep going');
+
+    const ok = await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+
+    expect(ok).toBe(true);
+    const [id, message_, requestId] = mockApi.subagentResume.mock.calls[0];
+    expect(id).toBe('sub_a');
+    expect(message_).toBe('keep going');
+    expect(typeof requestId).toBe('string');
+    expect((requestId as string).length).toBeGreaterThan(0);
+    expect(useChatStore.getState().subagentUi.sub_a.draft).toBe('');
+    expect(useChatStore.getState().subagentUi.sub_a.sending).toBe(false);
+  });
+
+  // Ruling 3: without this, every surface holds the child's PRE-resume status
+  // for the whole new run — outside a live parent turn no child event reaches
+  // the parent at all.
+  it('re-reads the list after a resume, so the row describes the new run', async () => {
+    await selectParent();
+    mockApi.subagentsList.mockResolvedValue([
+      subagentEntry({ status: 'running', toolCallCount: 0 }),
+    ]);
+    useChatStore.setState({ subagents: [subagentEntry({ status: 'done', toolCallCount: 12 })] });
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+
+    expect(mockApi.subagentsList).toHaveBeenCalled();
+    expect(useChatStore.getState().subagents[0]).toMatchObject({
+      status: 'running',
+      toolCallCount: 0,
+    });
+  });
+
+  it('re-fetches an OPEN child transcript after a resume, and leaves a closed one alone', async () => {
+    await selectParent();
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+    expect(mockApi.conversationMessages).toHaveBeenCalledTimes(1);
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+    expect(mockApi.conversationMessages).toHaveBeenCalledTimes(2);
+
+    await useChatStore.getState().resumeSubagent('sub_b', 'keep going');
+    expect(mockApi.conversationMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the draft and surfaces the reason when the gateway refuses', async () => {
+    await selectParent();
+    useChatStore.getState().setSubagentDraft('sub_a', 'keep going');
+    mockApi.subagentResume.mockResolvedValue({
+      ok: false,
+      reason: 'sub-agent type Explore is one-shot and cannot be resumed',
+    });
+
+    const ok = await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+
+    expect(ok).toBe(false);
+    expect(useChatStore.getState().subagentUi.sub_a).toMatchObject({
+      draft: 'keep going',
+      sending: false,
+      notice: 'sub-agent type Explore is one-shot and cannot be resumed',
+    });
+  });
+
+  it('surfaces a thrown resume as a notice rather than an unhandled rejection', async () => {
+    await selectParent();
+    mockApi.subagentResume.mockRejectedValue(new Error('Management API error 404: nope'));
+
+    const ok = await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+
+    expect(ok).toBe(false);
+    expect(useChatStore.getState().subagentUi.sub_a.notice).toContain('404');
+  });
+
+  it('dismisses a notice on request', async () => {
+    await selectParent();
+    mockApi.subagentStop.mockResolvedValue({ ok: false, reason: 'already done' });
+    await useChatStore.getState().stopSubagent('sub_a');
+    expect(useChatStore.getState().subagentUi.sub_a.notice).toBe('already done');
+
+    useChatStore.getState().dismissSubagentNotice('sub_a');
+
+    expect(useChatStore.getState().subagentUi.sub_a.notice).toBeNull();
   });
 });

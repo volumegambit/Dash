@@ -1,6 +1,10 @@
 import '@testing-library/jest-dom/vitest';
 import type { ConversationRef, McConversationView } from '@dash/mc';
-import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
+import type {
+  ConversationMessage,
+  MobileWsServerFrame,
+  SubagentListEntry,
+} from '@dash/mobile-contract';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../vitest.setup.js';
@@ -660,5 +664,318 @@ describe('MessageBubble auto-retry rendering', () => {
     expect(container.textContent).toContain('Retrying (attempt 1)');
     expect(container.textContent).toContain('Recovered fine.');
     expect(container.querySelector('.text-red')).toBeNull();
+  });
+});
+
+// --- Sub-agent cards (design §8.1, §8.3) ------------------------------------
+
+describe('MessageBubble sub-agent cards', () => {
+  const START = '2026-09-04T00:00:00.000Z';
+  const END = '2026-09-04T00:00:45.000Z';
+
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  const started = {
+    type: 'subagent_started' as const,
+    subagentId: 'sub_a',
+    name: 'reviewer',
+    subagentType: 'code-reviewer',
+    description: 'Review the diff',
+    prompt: 'Review it',
+    model: 'anthropic/claude-opus-4',
+    background: false,
+    depth: 1,
+    startedAt: START,
+  };
+  const finishedEvent = {
+    type: 'subagent_finished' as const,
+    subagentId: 'sub_a',
+    name: 'reviewer',
+    subagentType: 'code-reviewer',
+    description: 'Review the diff',
+    status: 'done',
+    report: 'Two findings, both minor.',
+    toolCallCount: 12,
+    startedAt: START,
+    endedAt: END,
+  };
+
+  function entry(over: Record<string, unknown> = {}): SubagentListEntry {
+    return {
+      id: 'sub_a',
+      type: 'code-reviewer',
+      description: 'Review the diff',
+      status: 'running',
+      background: false,
+      depth: 1,
+      startedAt: START,
+      toolCallCount: 12,
+      oneShot: false,
+      ...over,
+    } as SubagentListEntry;
+  }
+
+  beforeEach(() => {
+    // A card only ever renders inside a selected conversation, and the list
+    // re-read is addressed to that conversation.
+    useChatStore.setState({
+      subagents: [],
+      subagentUi: {},
+      selectedConversationRef: { id: 'parent-1', origin: 'gateway' },
+    });
+    mockApi.subagentsList.mockReset();
+    mockApi.subagentsList.mockResolvedValue([]);
+    mockApi.conversationMessages.mockReset();
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    mockApi.subagentResume.mockReset();
+    mockApi.subagentResume.mockResolvedValue({ ok: true, status: 'running', mode: 'queued' });
+  });
+
+  it('renders one card with the type, description and "12 tool uses · 45s"', () => {
+    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+
+    const card = screen.getByTestId('subagent-card-sub_a');
+    expect(card).toHaveTextContent('code-reviewer');
+    expect(card).toHaveTextContent('Review the diff');
+    expect(within(card).getByTestId('subagent-card-meta')).toHaveTextContent('12 tool uses · 45s');
+  });
+
+  it('no longer draws a child as activity from a newer Dash version', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'worker_spawned',
+            workerId: 'sub_a',
+            runId: 'r',
+            role: 'reviewer',
+            brief: 'b',
+            model: 'm',
+          },
+          { type: 'agent_spawned', name: 'reviewer' },
+          started,
+        ])}
+      />,
+    );
+
+    expect(screen.queryByText('Activity from a newer Dash version')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('subagent-card-sub_a')).toHaveLength(1);
+  });
+
+  it('renders no elapsed segment for a terminal child with no endedAt', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'worker_spawned',
+            workerId: 'sub_a',
+            runId: 'r',
+            role: 'reviewer',
+            brief: 'b',
+            model: 'm',
+          },
+          {
+            type: 'worker_done',
+            workerId: 'sub_a',
+            runId: 'r',
+            role: 'reviewer',
+            status: 'done',
+            report: 'ok',
+          },
+        ])}
+      />,
+    );
+
+    const meta = screen.getByTestId('subagent-card-meta');
+    expect(meta).toHaveTextContent('0 tool uses');
+    expect(meta.textContent).not.toContain('·');
+  });
+
+  it('reads the server status over its own fold', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
+
+    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'running');
+  });
+
+  it('falls back to the fold for a child the list does not carry', () => {
+    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'done');
+  });
+
+  // Ruling 2: the fold is still holding a live question because no child event
+  // reaches a parent whose turn is over; only the server knows the child was
+  // stopped. The one-line detail keeps the question text — it IS the last thing
+  // the child said — but the reply affordance must be gone.
+  it('offers no reply on a row the server says is finished', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'cancelled' })] });
+    const waiting = {
+      type: 'subagent_progress' as const,
+      subagentId: 'sub_a',
+      status: 'waiting_input' as const,
+      question: 'Which branch?',
+      toolCallCount: 1,
+      elapsedMs: 10,
+    };
+
+    render(
+      <MessageBubble
+        message={assistantMessage([started, waiting])}
+        streamingEvents={[started, waiting]}
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'cancelled');
+    expect(screen.queryByTestId('subagent-reply-input-sub_a')).not.toBeInTheDocument();
+  });
+
+  it('fetches the child transcript on first expansion and renders it nested', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'completed',
+          content: { type: 'assistant', events: [{ type: 'text_delta', text: 'child says hi' }] },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    await waitFor(() => expect(mockApi.conversationMessages).toHaveBeenCalledWith('sub_a'));
+    expect(await screen.findByText('child says hi')).toBeInTheDocument();
+    expect(screen.getByText('Two findings, both minor.')).toBeInTheDocument();
+  });
+
+  // Ruling 7: both other clients cap nesting at one level, and an expandable
+  // grandchild would fetch a new transcript on every expansion, without bound.
+  it('renders a grandchild inside an expanded card without a toggle', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'completed',
+          content: {
+            type: 'assistant',
+            events: [{ ...started, subagentId: 'sub_b', depth: 2, description: 'Grandchild work' }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    expect(await screen.findByTestId('subagent-card-sub_b')).toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-card-toggle-sub_b')).not.toBeInTheDocument();
+  });
+
+  // A BACKGROUND child parked on a question in a message whose turn is long
+  // over — the case the whole panel exists for, and the one where the fold's
+  // end-of-stream terminalization is exempted.
+  const waitingBackground = [
+    { ...started, background: true },
+    {
+      type: 'subagent_progress' as const,
+      subagentId: 'sub_a',
+      status: 'waiting_input' as const,
+      question: 'Which branch?',
+      toolCallCount: 1,
+      elapsedMs: 10,
+    },
+  ];
+
+  it('replies to a waiting child from the card, and re-reads afterwards', async () => {
+    useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
+
+    render(<MessageBubble message={assistantMessage(waitingBackground)} />);
+
+    expect(screen.getByTestId('subagent-question-sub_a')).toHaveTextContent('Which branch?');
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-reply-button-sub_a'));
+
+    await waitFor(() =>
+      expect(mockApi.subagentResume).toHaveBeenCalledWith('sub_a', 'main', expect.any(String)),
+    );
+    await waitFor(() => expect(mockApi.subagentsList).toHaveBeenCalled());
+  });
+
+  // Ruling 5: a refusal with no render site is a refusal nobody sees. The card
+  // is one of the two action sites; the panel is the other.
+  it('shows the gateway reason on the card when a reply is refused', async () => {
+    useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
+    mockApi.subagentResume.mockResolvedValue({
+      ok: false,
+      reason: 'sub-agent type Explore is one-shot and cannot be resumed',
+    });
+
+    render(<MessageBubble message={assistantMessage(waitingBackground)} />);
+
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-reply-button-sub_a'));
+
+    expect(
+      await screen.findByText('sub-agent type Explore is one-shot and cannot be resumed'),
+    ).toBeInTheDocument();
+    // The sentence the user typed survives the refusal.
+    expect(screen.getByTestId('subagent-reply-input-sub_a')).toHaveValue('main');
+  });
+
+  // D2 fix round 2 (`10cacdc2`): a one-shot child PARKED ON A QUESTION can be
+  // answered. Only a one-shot child that is not waiting refuses.
+  it('lets a one-shot child parked on a question be answered', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'waiting_input', oneShot: true })] });
+
+    render(<MessageBubble message={assistantMessage(waitingBackground)} />);
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+
+    expect(screen.getByTestId('subagent-reply-input-sub_a')).not.toBeDisabled();
+    expect(screen.getByTestId('subagent-reply-button-sub_a')).not.toBeDisabled();
+  });
+
+  it('disables the composer of a running one-shot child and says why', async () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running', oneShot: true })] });
+
+    render(<MessageBubble message={assistantMessage([started])} streamingEvents={[started]} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    expect(await screen.findByTestId('subagent-compose-button-sub_a')).toBeDisabled();
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveTextContent('one-shot');
   });
 });
