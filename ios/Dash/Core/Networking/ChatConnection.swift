@@ -668,7 +668,7 @@ actor ChatConnection {
 extension MobileWSServerFrame {
   fileprivate var id: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _):
@@ -684,13 +684,15 @@ extension MobileWSServerFrame {
   /// Only an `accepted` frame carries a non-optional conversation id, which is
   /// exactly the frame a conversation subscription can register a turn from.
   fileprivate var acceptedConversationID: String? {
-    if case .accepted(_, let conversationId, _, _, _, _, _, _) = self { return conversationId }
+    if case .accepted(_, let conversationId, _, _, _, _, _, _, _) = self {
+      return conversationId
+    }
     return nil
   }
 
   fileprivate var seq: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq, _, _):
+    case .accepted(_, _, _, _, _, let seq, _, _, _):
       return seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _),

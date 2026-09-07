@@ -177,7 +177,21 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     revision: Int,
     seq: Int,
     origin: MessageOrigin?,
-    kind: ConversationKind?
+    kind: ConversationKind?,
+    /// Echo of `SubagentResumeRequest.requestId` on the turn a
+    /// `POST /subagents/:id/resume` became (sub-agents design 7.7) — the
+    /// client's only way to pair one of its own in-flight follow-ups with the
+    /// `accepted` it produced, because the SERVER picks the turn id for a
+    /// resume.
+    ///
+    /// LIVE-ONLY and optional on both sides: it is deliberately absent from
+    /// the replay payload (the durable event log stores server state, not a
+    /// client's correlation id), an older gateway never echoes it, and an
+    /// ANSWER to a parked `ask_orchestrator` question resolves inside the
+    /// child's running turn and so produces no `accepted` at all. A client
+    /// that sent one and gets an `accepted` back without one must treat that
+    /// turn as UNCORRELATED rather than assuming it is its own.
+    requestId: String?
   )
   case event(id: String, conversationId: String?, seq: Int?, event: AgentEvent)
   case done(id: String, conversationId: String?, seq: Int?, outcome: TurnOutcome?)
@@ -201,6 +215,7 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
     case seq
     case origin
     case kind
+    case requestId
     case event
     case outcome
     case error
@@ -222,7 +237,15 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
         revision: try container.decode(Int.self, forKey: .revision),
         seq: try container.decode(Int.self, forKey: .seq),
         origin: try? container.decodeIfPresent(MessageOrigin.self, forKey: .origin),
-        kind: try? container.decodeIfPresent(ConversationKind.self, forKey: .kind)
+        kind: try? container.decodeIfPresent(ConversationKind.self, forKey: .kind),
+        // `try?`, like `origin`/`kind` above and unlike the required fields:
+        // the contract already DEFINES the absent case as "this turn is
+        // uncorrelated, do not guess", so degrading a malformed echo to that
+        // costs one duplicate optimistic row, while throwing would map to
+        // `GatewayError.updateRequired` and tear the socket down
+        // (`ChatConnection.decodedFrame`). Leniency is only defensible where a
+        // safe fallback is specified; this is such a field.
+        requestId: try? container.decodeIfPresent(String.self, forKey: .requestId)
       )
     case "event":
       self = .event(
@@ -268,7 +291,8 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       revision,
       seq,
       origin,
-      kind
+      kind,
+      requestId
     ):
       try container.encode("accepted", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -279,6 +303,7 @@ enum MobileWSServerFrame: Codable, Hashable, Sendable {
       try container.encode(seq, forKey: .seq)
       try container.encodeIfPresent(origin, forKey: .origin)
       try container.encodeIfPresent(kind, forKey: .kind)
+      try container.encodeIfPresent(requestId, forKey: .requestId)
     case let .event(id, conversationId, seq, event):
       try container.encode("event", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -331,7 +356,9 @@ enum CapableServerFrame: Hashable, Sendable {
 
   static func validating(_ frame: MobileWSServerFrame) throws -> CapableServerFrame {
     switch frame {
-    case let .accepted(id, conversationId, userMessageId, assistantMessageId, revision, seq, _, _):
+    case let .accepted(
+      id, conversationId, userMessageId, assistantMessageId, revision, seq, _, _, _
+    ):
       return .accepted(
         id: id,
         conversationId: conversationId,

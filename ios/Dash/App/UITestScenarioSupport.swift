@@ -1596,7 +1596,8 @@ extension AppDependenciesFactory {
           revision: 2,
           seq: takeSequence(),
           origin: nil,
-          kind: nil
+          kind: nil,
+          requestId: nil
         )
       )
       guard await pause(.milliseconds(100)) else { return }

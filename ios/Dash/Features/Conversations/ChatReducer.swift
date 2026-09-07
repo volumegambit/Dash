@@ -545,7 +545,7 @@ enum ChatReducer {
     state: inout ChatState
   ) -> [ChatEffect] {
     switch frame {
-    case let .accepted(id, _, userMessageID, assistantMessageID, revision, seq, origin, _):
+    case let .accepted(id, _, userMessageID, assistantMessageID, revision, seq, origin, _, _):
       reconcileAccepted(
         turnID: id,
         userMessageID: userMessageID,
@@ -1089,7 +1089,7 @@ enum ChatReducer {
 
   private static func sequence(of frame: MobileWSServerFrame) -> Int? {
     switch frame {
-    case let .accepted(_, _, _, _, _, seq, _, _): seq
+    case let .accepted(_, _, _, _, _, seq, _, _, _): seq
     case let .event(_, _, seq, _): seq
     case let .done(_, _, seq, _): seq
     case let .error(_, _, seq, _, _, _, _): seq
@@ -1098,7 +1098,7 @@ enum ChatReducer {
 
   private static func conversationID(of frame: MobileWSServerFrame) -> String? {
     switch frame {
-    case let .accepted(_, conversationID, _, _, _, _, _, _): conversationID
+    case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
@@ -1118,7 +1118,7 @@ enum ChatReducer {
 
   private static func turnID(of frame: MobileWSServerFrame) -> String {
     switch frame {
-    case let .accepted(id, _, _, _, _, _, _, _): id
+    case let .accepted(id, _, _, _, _, _, _, _, _): id
     case let .event(id, _, _, _): id
     case let .done(id, _, _, _): id
     case let .error(id, _, _, _, _, _, _): id
@@ -1139,7 +1139,8 @@ enum ChatReducer {
         // UNKNOWN, not `.user` (sub-agents design 7.6). `reconcileAccepted`
         // must therefore never overwrite an origin the REST row already knows.
         origin: nil,
-        kind: nil
+        kind: nil,
+        requestId: nil
       )
     case let .event(event):
       .event(

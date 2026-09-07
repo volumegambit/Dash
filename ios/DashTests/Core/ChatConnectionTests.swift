@@ -356,7 +356,8 @@ struct ChatConnectionTests {
             revision: 2,
             seq: 1,
             origin: nil,
-            kind: nil
+            kind: nil,
+            requestId: nil
           ))))
     let expected = try canonicalFrames()
     for frame in expected {
@@ -1246,7 +1247,8 @@ struct ChatConnectionTests {
       revision: 4,
       seq: 7,
       origin: .notification,
-      kind: .user
+      kind: .user,
+      requestId: nil
     )
     // The event proves the turn was REGISTERED, not merely let through once:
     // a frame for an unregistered turn id is dropped by the receive loop.
@@ -1283,7 +1285,8 @@ struct ChatConnectionTests {
       revision: 4,
       seq: 7,
       origin: .notification,
-      kind: .user
+      kind: .user,
+      requestId: nil
     )
     await task.enqueue(.string(serverJSON(unrelated)))
     try await connection.resume(
@@ -1320,7 +1323,8 @@ struct ChatConnectionTests {
       revision: 4,
       seq: 7,
       origin: .notification,
-      kind: .user
+      kind: .user,
+      requestId: nil
     )
     await task.enqueue(.string(serverJSON(dropped)))
     try await connection.resume(
@@ -1381,7 +1385,8 @@ struct ChatConnectionTests {
       revision: 4,
       seq: 7,
       origin: .notification,
-      kind: .user
+      kind: .user,
+      requestId: nil
     )
     await second.enqueue(.string(serverJSON(afterSuspend)))
     try await connection.resume(

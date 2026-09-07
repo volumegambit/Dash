@@ -24,7 +24,8 @@ struct ChatReducerTests {
           revision: 2,
           seq: 1,
           origin: nil,
-          kind: nil
+          kind: nil,
+          requestId: nil
         )
       )
     )
@@ -110,7 +111,8 @@ struct ChatReducerTests {
           revision: 2,
           seq: 1,
           origin: nil,
-          kind: nil
+          kind: nil,
+          requestId: nil
         )
       )
     )
@@ -1506,7 +1508,8 @@ struct ChatReducerTests {
           revision: 4,
           seq: 1,
           origin: .notification,
-          kind: .user
+          kind: .user,
+          requestId: nil
         )
       )
     )
@@ -1539,7 +1542,8 @@ struct ChatReducerTests {
           revision: 2,
           seq: 1,
           origin: nil,
-          kind: nil
+          kind: nil,
+          requestId: nil
         )
       )
     )
@@ -1581,7 +1585,8 @@ struct ChatReducerTests {
           revision: 4,
           seq: 1,
           origin: nil,
-          kind: nil
+          kind: nil,
+          requestId: nil
         )
       )
     )
@@ -1640,7 +1645,8 @@ struct ChatReducerTests {
           revision: 2,
           seq: 1,
           origin: nil,
-          kind: nil
+          kind: nil,
+          requestId: nil
         )
       )
     )

@@ -369,7 +369,7 @@ struct ContractFixtureTests {
       MobileWSServerFrame.self,
       "chat-accepted-notification.json"
     )
-    guard case let .accepted(_, _, _, _, _, _, origin, kind) = notification else {
+    guard case let .accepted(_, _, _, _, _, _, origin, kind, _) = notification else {
       Issue.record("expected an accepted frame")
       return
     }
@@ -377,16 +377,48 @@ struct ContractFixtureTests {
     #expect(kind == .user)
 
     let child = try FixtureLoader.decode(MobileWSServerFrame.self, "chat-accepted-subagent.json")
-    guard case let .accepted(_, _, _, _, _, _, childOrigin, childKind) = child else {
+    guard case let .accepted(_, _, _, _, _, _, childOrigin, childKind, childRequestID) = child
+    else {
       Issue.record("expected an accepted frame")
       return
     }
     #expect(childOrigin == .parent)
     #expect(childKind == .subagent)
+    // Task D5: this fixture IS the frame a `POST /subagents/:id/resume`
+    // produces, and `requestId` is the client's only way to pair its own
+    // optimistic row with it (`SubagentResumeRequest.requestId`, contract
+    // `types.ts:209`). Two assertions, because either alone is passable by a
+    // build that ignores the field: the decoded value, and a canonical
+    // re-encode of the WHOLE frame — the second is what D4 learned to add,
+    // since decoding alone silently drops an unmodelled key.
+    #expect(childRequestID == "req_01JQ8Z3K7M2N4P6R8T0V2W4X6Y")
+    let childRoundTrip = try canonicalJSON(ContractCoding.encoder().encode(child))
+    let childSource = try canonicalJSON(try FixtureLoader.data("chat-accepted-subagent.json"))
+    #expect(childRoundTrip == childSource)
+
+    // The correlation id is LIVE-ONLY and optional on both sides: an older
+    // gateway never echoes one, and a client that sent one must then treat the
+    // turn as UNCORRELATED rather than guessing. Built from the real fixture
+    // with the key removed so it stays a genuine older-gateway payload.
+    var withoutRequestID = try #require(
+      JSONSerialization.jsonObject(
+        with: try FixtureLoader.data("chat-accepted-subagent.json")
+      ) as? [String: Any]
+    )
+    withoutRequestID["requestId"] = nil
+    let uncorrelated = try ContractCoding.decoder().decode(
+      MobileWSServerFrame.self,
+      from: try JSONSerialization.data(withJSONObject: withoutRequestID)
+    )
+    guard case let .accepted(_, _, _, _, _, _, _, _, absentRequestID) = uncorrelated else {
+      Issue.record("expected an accepted frame")
+      return
+    }
+    #expect(absentRequestID == nil)
 
     // An ordinary turn carries neither, and absent means `.user` on the wire.
     let ordinary = try FixtureLoader.decode(MobileWSServerFrame.self, "chat-accepted.json")
-    guard case let .accepted(_, _, _, _, _, _, plainOrigin, plainKind) = ordinary else {
+    guard case let .accepted(_, _, _, _, _, _, plainOrigin, plainKind, _) = ordinary else {
       Issue.record("expected an accepted frame")
       return
     }
@@ -424,7 +456,7 @@ struct ContractFixtureTests {
         .utf8
     )
     guard
-      case let .accepted(_, _, _, _, _, _, unknownOrigin, _) = try ContractCoding.decoder()
+      case let .accepted(_, _, _, _, _, _, unknownOrigin, _, _) = try ContractCoding.decoder()
         .decode(MobileWSServerFrame.self, from: futureOrigin)
     else {
       Issue.record("expected an accepted frame")

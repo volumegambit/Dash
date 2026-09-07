@@ -188,6 +188,80 @@ struct GatewayAPITests {
     #expect(json["owningIssueId"] is NSNull)
   }
 
+  @Test("sub-agent reads and resumes use the mobile namespace and a minimal body")
+  func subagentRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "subagents-list.json")
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(#"{"ok":true,"status":"running","mode":"queued"}"#.utf8)
+    )
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(#"{"ok":true,"status":"running","mode":"resumed"}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let list = try await api.subagents(conversationID: "conv/1 ?")
+    let correlated = try await api.resumeSubagent(
+      id: "sub/1 ?",
+      message: "keep going",
+      requestID: "req-1"
+    )
+    let uncorrelated = try await api.resumeSubagent(
+      id: "sub-2",
+      message: "keep going",
+      requestID: nil
+    )
+
+    #expect(list.subagents.count == 3)
+    #expect(correlated.mode == "queued")
+    #expect(uncorrelated.mode == "resumed")
+
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "POST", "POST"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/conversations/conv%2F1%20%3F/subagents")
+    #expect(requests[0].httpBody == nil)
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/subagents/sub%2F1%20%3F/resume")
+
+    let correlatedData = try #require(requests[1].httpBody)
+    let correlatedBody = try #require(
+      JSONSerialization.jsonObject(with: correlatedData) as? [String: Any]
+    )
+    #expect(correlatedBody.count == 2)
+    #expect(correlatedBody["message"] as? String == "keep going")
+    #expect(correlatedBody["requestId"] as? String == "req-1")
+
+    // Omitted, not null: the gateway 400s a blank/malformed `requestId`, and a
+    // client that never sent one must look exactly like an older client.
+    let uncorrelatedData = try #require(requests[2].httpBody)
+    let uncorrelatedBody = try #require(
+      JSONSerialization.jsonObject(with: uncorrelatedData) as? [String: Any]
+    )
+    #expect(uncorrelatedBody.count == 1)
+    #expect(uncorrelatedBody["message"] as? String == "keep going")
+  }
+
+  @Test("a coordinator refusal to resume surfaces its own text, not a generic error")
+  func subagentResumeRefusal() async {
+    URLProtocolStub.enqueue(
+      status: 409,
+      data: Data(
+        #"{"code":"validation_failed","error":"One-shot agents cannot be resumed","retryable":false}"#
+          .utf8
+      )
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError {
+      _ = try await api.resumeSubagent(id: "sub-1", message: "again", requestID: "req-1")
+    }
+
+    // The composer shows this string verbatim (design 8.3: "disabled for
+    // one-shot types and shows the reason"), so a mapping that collapsed it to
+    // `.server` would leave the user with a status code.
+    #expect(error == .validation("One-shot agents cannot be resumed"))
+  }
+
   @Test("page limits are validated before a request is sent")
   func pageLimitValidation() async {
     let api = makeAPI()

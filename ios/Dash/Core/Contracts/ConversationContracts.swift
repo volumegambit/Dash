@@ -210,6 +210,56 @@ struct SubagentListResponseDTO: Codable, Hashable, Sendable {
   let subagents: [SubagentListEntryDTO]
 }
 
+/// Body of `POST /subagents/{id}/resume` (sub-agents design 7.7) — the ONLY
+/// way to type into a child.
+///
+/// It is not interchangeable with a `message` WS frame, and the difference is
+/// not stylistic: a `message` frame reaches `hub.start` → `acceptTurn` and can
+/// never reach `ChildHandle.answerQuestion`, which is the only thing that
+/// resolves a child parked on `ask_orchestrator`. Against a busy child it is
+/// refused as `conversation_busy`; against an idle one it opens a SECOND turn
+/// while the question stays blocked until `waitForQuestion` times out ten
+/// minutes later. It also bypasses the coordinator's one-shot, steer-cap and
+/// grant checks, all of which live behind `sendToChild`
+/// (`apps/gateway/src/subagent-management.ts:462-530`).
+struct SubagentResumeRequest: Codable, Hashable, Sendable {
+  let message: String
+  /// Client-chosen correlation id, echoed on `MobileWSServerFrame.accepted`.
+  ///
+  /// Nothing else can do this job: the SERVER picks the turn id for a resume,
+  /// and `SubagentResumeResponse` carries none — for `mode: "queued"` no turn
+  /// has started yet, so there is genuinely nothing to return. Encoded only
+  /// when present, because the gateway rejects a blank one with a 400.
+  ///
+  /// NOT `CreateConversationRequest.requestId`, despite the shared name: that
+  /// one is an idempotency key the gateway persists and de-duplicates against.
+  /// This one is never stored and de-duplicates nothing — re-sending it starts
+  /// a second turn.
+  let requestId: String?
+
+  init(message: String, requestId: String? = nil) {
+    self.message = message
+    self.requestId = requestId
+  }
+}
+
+/// Response of `POST /subagents/{id}/resume`.
+///
+/// `status` and `mode` are plain strings for the same forward-compatibility
+/// reason as `SubagentListEntryDTO.status`: a newer gateway's value must not
+/// fail the decode and strand the composer with an unexplained error.
+///
+/// **`mode` does not tell an answer from a steer.** A queued STEER produces an
+/// `accepted` once the child's current turn ends; an ANSWER to a parked
+/// question resolves inside the running turn and produces none, ever. Both
+/// come back as `mode: "queued"`, `status: "running"`. A client that treats
+/// `queued` as "an accepted is coming" leaves a permanent optimistic row.
+struct SubagentResumeResponseDTO: Codable, Hashable, Sendable {
+  let ok: Bool
+  let status: String
+  let mode: String
+}
+
 struct CreateConversationRequest: Codable, Hashable, Sendable {
   let agentId: String
   let requestId: String
