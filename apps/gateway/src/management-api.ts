@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentClient } from '@dash/agent';
+import type { AgentClient, MemoryType } from '@dash/agent';
+import { MemoryOpError, readBook } from '@dash/agent';
 import type { ChannelAdapter } from '@dash/channels';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import { type StructuredLogger, createConsoleLogger } from '@dash/logging';
@@ -30,6 +31,7 @@ import { createModelsController, createModelsRoute } from './models-route.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
+import { retireLesson } from './skill-review.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -61,6 +63,12 @@ export interface GatewayManagementOptions {
    * swarms still construct the app; the swarm routes simply aren't mounted.
    */
   swarmCoordinator?: SwarmCoordinator;
+  /**
+   * Resolves an agent's managed skills directory. Supplying it mounts the
+   * lesson-level routes for learned skills; without it they are absent, so
+   * tests and embedders that do not run learning still construct the app.
+   */
+  managedSkillsDir?: (agentId: string) => string | null;
   /** Capability bearer accepted only by the `/mobile/v1` namespace. */
   mobileToken?: string;
   /** Administrative bearer accepted by every non-mobile management route. */
@@ -207,12 +215,25 @@ function requireAgentStringArray(value: unknown, field: string): void {
   }
 }
 
+const AGENT_SKILLS_KEYS = ['paths', 'urls', 'learning', 'minToolCalls'];
+
 function validateAgentSkills(value: unknown): void {
-  if (!isPlainRecord(value) || Object.keys(value).some((key) => !['paths', 'urls'].includes(key))) {
-    throw new Error('skills must contain only paths and urls');
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !AGENT_SKILLS_KEYS.includes(key))) {
+    throw new Error(`skills must contain only ${AGENT_SKILLS_KEYS.join(', ')}`);
   }
   if (value.paths !== undefined) requireAgentStringArray(value.paths, 'skills.paths');
   if (value.urls !== undefined) requireAgentStringArray(value.urls, 'skills.urls');
+  if (value.learning !== undefined && !['auto', 'on', 'off'].includes(value.learning as string)) {
+    throw new Error('skills.learning must be auto, on or off');
+  }
+  if (
+    value.minToolCalls !== undefined &&
+    (typeof value.minToolCalls !== 'number' ||
+      !Number.isInteger(value.minToolCalls) ||
+      value.minToolCalls < 0)
+  ) {
+    throw new Error('skills.minToolCalls must be a non-negative integer');
+  }
 }
 
 function validateAgentSwarm(value: unknown): void {
@@ -823,9 +844,193 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
         }
       });
     });
+
+    // --- Memory: reads + delete ---
+    // Mounted on `target`, so these exist on the loopback administrative API
+    // *and* under `/mobile/v1` — the iOS client browses and deletes memories.
+    // The write (PUT) and config routes are deliberately loopback-only and are
+    // registered directly on `app` just below this function's call sites.
+    target.get('/agents/:id/memory', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      // Reads never throw: the coordinator's management path still lists what
+      // is on disk for a memory-disabled agent (so the Memory tab stays
+      // honest), and degrades to empty for an unknown agent or an embedding
+      // with no memory directory.
+      return c.json(await agents.listMemories(id));
+    });
+
+    target.get('/agents/:id/memory/:name', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const record = await agents.getMemory(id, c.req.param('name'));
+      if (!record) return c.json({ error: 'not found' }, 404);
+      return c.json(record);
+    });
+
+    target.delete('/agents/:id/memory/:name', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const name = c.req.param('name');
+      try {
+        const removed = await agents.removeMemory(id, name);
+        if (!removed) return c.json({ error: 'not found' }, 404);
+        return c.json({ name });
+      } catch (err) {
+        const m = mapMemoryError(err);
+        return c.json(m.body, m.status);
+      }
+    });
   }
 
+  // --- Memory routes: mapper + the loopback-only half ---
+
+  /**
+   * Status mapping for the memory routes, mirroring `mapSkillError` but keyed
+   * on the `code` carried by `MemoryOpError`: `invalid` -> 400 (bad name/type/
+   * oversized content), `not_found` -> 404, `limit` -> 409 (per-agent cap).
+   * The coordinator's save path throws a plain Error when memory is disabled
+   * for the agent, and every memory path throws when the embedding has no
+   * memory directory at all; those are configuration states, not client
+   * mistakes, so they surface as 503.
+   */
+  const mapMemoryError = (
+    err: unknown,
+  ): { status: 400 | 404 | 409 | 500 | 503; body: { error: string } } => {
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof MemoryOpError) {
+      const status: 400 | 404 | 409 =
+        err.code === 'invalid' ? 400 : err.code === 'not_found' ? 404 : 409;
+      return { status, body: { error: message } };
+    }
+    if (message.includes('Memory is disabled') || message.includes('Memory is not configured')) {
+      return { status: 503, body: { error: message } };
+    }
+    return { status: 500, body: { error: message } };
+  };
+
+  /** `memory` absent means enabled with sweep 'auto' (legacy agents). */
+  const resolveMemoryConfig = (
+    memory: GatewayAgentConfig['memory'],
+  ): { enabled: boolean; sweep: 'auto' | 'on' | 'off' } => ({
+    enabled: memory?.enabled !== false,
+    sweep: memory?.sweep ?? 'auto',
+  });
+
+  // ROUTE ORDER IS LOAD-BEARING. Hono runs *every* handler whose pattern
+  // matches, in registration order, stopping at the first that returns a
+  // Response. `mountAgentRoutes` registers `GET /agents/:id/memory/:name` on
+  // `app`, so these `/agents/:id/memory/config` routes MUST be registered
+  // BEFORE that call — otherwise `:name` wins and `/memory/config` 404s as
+  // "no memory named config". Covered by the route-order test in
+  // management-api-server.test.ts.
+  //
+  // These three routes are loopback-only (never mounted on `mobileV1`):
+  // Mission Control is the only client that edits or configures memory.
+  app.get('/agents/:id/memory/config', (c) => {
+    const entry = agentRegistry.get(c.req.param('id'));
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json(resolveMemoryConfig(entry.config.memory));
+  });
+
+  app.patch('/agents/:id/memory/config', async (c) => {
+    const id = c.req.param('id');
+    const entry = agentRegistry.get(id);
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{ enabled?: boolean; sweep?: 'auto' | 'on' | 'off' }>(c);
+    if (!parsed.ok) return parsed.response;
+    // `parseJsonBody` only rejects UNPARSEABLE JSON: `null`, `[]` and `"str"`
+    // all parse fine. Reading a property off them below would throw outside any
+    // try (and the app registers no onError), so Hono would answer 500 for what
+    // is a client mistake. Check the shape before touching a single key.
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
+    if (parsed.body.enabled !== undefined && typeof parsed.body.enabled !== 'boolean') {
+      return c.json({ error: 'enabled must be a boolean' }, 400);
+    }
+    if (parsed.body.sweep !== undefined && !['auto', 'on', 'off'].includes(parsed.body.sweep)) {
+      return c.json({ error: 'sweep must be auto, on or off' }, 400);
+    }
+    // Merge, don't replace: a patch that only carries `sweep` must not drop a
+    // previously stored `enabled` (and vice versa). Keys are copied one by one
+    // rather than spreading the raw body so unknown fields never reach disk.
+    const memory: NonNullable<GatewayAgentConfig['memory']> = { ...entry.config.memory };
+    if (parsed.body.enabled !== undefined) memory.enabled = parsed.body.enabled;
+    if (parsed.body.sweep !== undefined) memory.sweep = parsed.body.sweep;
+    const wasEnabled = resolveMemoryConfig(entry.config.memory).enabled;
+    agentRegistry.update(id, { memory });
+    await agentRegistry.save();
+    // Same reason `PUT /agents/:id` evicts on a swarm change: the memory TOOLS
+    // (save_memory/recall_memory/forget_memory) are registered when the backend
+    // is built, not per turn, so a warm conversation would keep them live after
+    // a disable unless evicted. Eviction forces the next turn to rebuild them
+    // against the new config. `sweep` needs no eviction: it is read from the
+    // registry per turn.
+    if (resolveMemoryConfig(memory).enabled !== wasEnabled) {
+      await agents.evict(id);
+    }
+    return c.json(resolveMemoryConfig(memory));
+  });
+
+  app.put('/agents/:id/memory/:name', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const parsed = await parseJsonBody<{
+      description: string;
+      type: MemoryType;
+      content: string;
+    }>(c);
+    if (!parsed.ok) return parsed.response;
+    // See the PATCH handler: `null`, `[]` and `"str"` are all valid JSON, and
+    // destructuring `null` below throws a TypeError outside the try -> 500.
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
+    const { description, type, content } = parsed.body;
+    // The store reaches for `.trim()` on these two, so a non-string would
+    // surface as a TypeError -> 500. Reject it as the client error it is. An
+    // invalid `type` needs no guard here: the store's own check raises
+    // MemoryOpError('invalid'), which the mapper already turns into a 400.
+    if (typeof description !== 'string' || typeof content !== 'string') {
+      return c.json({ error: 'description and content must be strings' }, 400);
+    }
+    try {
+      // Fields are passed explicitly rather than spread: the memory name comes
+      // from the path, and a `name` in the body must not be able to redirect
+      // the write to a different memory. The store validates the rest and the
+      // per-agent cap; failures arrive as MemoryOpError. Writes are always
+      // `source: 'user'` — the coordinator stamps that.
+      return c.json(
+        await agents.saveMemory(id, { name: c.req.param('name'), description, type, content }),
+      );
+    } catch (err) {
+      const m = mapMemoryError(err);
+      return c.json(m.body, m.status);
+    }
+  });
+
   mountAgentRoutes(app, AGENT_CREATE_KEYS, AGENT_UPDATE_KEYS);
+  // Read-only skills for mobile and web clients. Only the GET is exposed: the
+  // create/install/edit/remove routes stay on the loopback namespace, so a
+  // remote client can see what an agent knows but never change it. `location`
+  // and `editable` are dropped — a gateway filesystem path is of no use to a
+  // remote client, and nothing here is editable.
+  mobileV1.get('/agents/:id/skills', async (c) => {
+    const id = c.req.param('id');
+    if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+    const skills = await agents.listSkills(id);
+    return c.json(
+      skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        ...(skill.trigger !== undefined ? { trigger: skill.trigger } : {}),
+        source: skill.source,
+        ...(skill.content !== undefined ? { content: skill.content } : {}),
+      })),
+    );
+  });
+
   mountAgentRoutes(mobileV1, MOBILE_AGENT_CREATE_KEYS, MOBILE_AGENT_UPDATE_KEYS);
 
   // --- Skill routes ---
@@ -868,8 +1073,27 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     const parsed = await parseJsonBody<{
       paths?: string[];
       urls?: string[];
+      learning?: 'auto' | 'on' | 'off';
+      minToolCalls?: number;
     }>(c);
     if (!parsed.ok) return parsed.response;
+    if (!parsed.body || typeof parsed.body !== 'object' || Array.isArray(parsed.body)) {
+      return c.json({ error: 'Request body must be a JSON object' }, 400);
+    }
+    if (
+      parsed.body.learning !== undefined &&
+      !['auto', 'on', 'off'].includes(parsed.body.learning)
+    ) {
+      return c.json({ error: 'learning must be auto, on or off' }, 400);
+    }
+    if (
+      parsed.body.minToolCalls !== undefined &&
+      (typeof parsed.body.minToolCalls !== 'number' ||
+        !Number.isInteger(parsed.body.minToolCalls) ||
+        parsed.body.minToolCalls < 0)
+    ) {
+      return c.json({ error: 'minToolCalls must be a non-negative integer' }, 400);
+    }
     const skills = { ...entry.config.skills, ...parsed.body };
     agentRegistry.update(id, { skills });
     await agentRegistry.save();
@@ -883,6 +1107,33 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     if (!skill) return c.json({ error: 'not found' }, 404);
     return c.json(skill);
   });
+
+  // Lesson-level view of a learned skill. Registered before the mutation
+  // routes below purely for locality; the extra path segment means it cannot
+  // be shadowed by `/skills/:name`.
+  if (options.managedSkillsDir) {
+    const resolveManagedDir = options.managedSkillsDir;
+
+    app.get('/agents/:id/skills/:name/lessons', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+      const book = await readBook(join(dir, c.req.param('name')));
+      if (!book) return c.json({ error: 'not found' }, 404);
+      return c.json(book);
+    });
+
+    app.delete('/agents/:id/skills/:name/lessons/:lessonId', async (c) => {
+      const id = c.req.param('id');
+      if (!agentRegistry.get(id)) return c.json({ error: 'not found' }, 404);
+      const dir = resolveManagedDir(id);
+      if (!dir) return c.json({ error: 'not found' }, 404);
+      const book = await retireLesson(dir, c.req.param('name'), c.req.param('lessonId'));
+      if (!book) return c.json({ error: 'not found' }, 404);
+      return c.json(book);
+    });
+  }
 
   app.post('/agents/:id/skills', async (c) => {
     const id = c.req.param('id');

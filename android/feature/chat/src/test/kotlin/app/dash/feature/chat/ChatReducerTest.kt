@@ -50,6 +50,35 @@ class ChatReducerTest {
         assertTrue(!call.isError)
     }
 
+    @Test fun preservesTextToolTextChronology() {
+        val assistant = lastAssistant(
+            reduce(
+                withPendingAssistant(),
+                AgentEvent.TextDelta("Before"),
+                AgentEvent.ToolUseStart("t1", "bash"),
+                AgentEvent.ToolResult("t1", "bash", "done", isError = false),
+                AgentEvent.TextDelta("After"),
+            ),
+        )
+        assertEquals(3, assistant.blocks.size)
+        assertEquals(AssistantBlock.Text("Before"), assistant.blocks[0])
+        assertTrue(assistant.blocks[1] is AssistantBlock.Tool)
+        assertEquals(AssistantBlock.Text("After"), assistant.blocks[2])
+    }
+
+    @Test fun insertsOrphanToolResultAtItsEventPosition() {
+        val assistant = lastAssistant(
+            reduce(
+                withPendingAssistant(),
+                AgentEvent.TextDelta("Before"),
+                AgentEvent.ToolResult("t1", "bash", "done", isError = false),
+                AgentEvent.TextDelta("After"),
+            ),
+        )
+        assertEquals(3, assistant.blocks.size)
+        assertTrue(assistant.blocks[1] is AssistantBlock.Tool)
+    }
+
     @Test fun attachesQuestion() {
         val s = reduce(
             withPendingAssistant(),
@@ -68,10 +97,13 @@ class ChatReducerTest {
         assertEquals("final", lastAssistant(s).text)
     }
 
-    @Test fun unknownEventIsNoOp() {
+    @Test fun unknownEventRendersAnOrderedCompatibilityStatus() {
         val before = withPendingAssistant()
         val after = ChatReducer.reduce(before, AgentEvent.Unknown("brand_new"))
-        assertEquals(before, after)
+        assertEquals(
+            AssistantBlock.Status("Gateway event: brand_new"),
+            lastAssistant(after).blocks.single(),
+        )
         assertNull(after.error)
     }
 }

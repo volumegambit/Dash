@@ -170,7 +170,20 @@ struct RootView: View {
   }
 
   /// Settings is a sheet on the two-column layout, not a third column or a
-  /// pushed route — presented whenever `selectedTab == .settings`, and
+  /// pushed route.
+  ///
+  /// MERGE NOTE (2026-09-07): main's `edd5a29f` ("Settings is two columns on
+  /// iPad, not three with a dead middle pane") fixed the SAME defect inside
+  /// the three-column `NavigationSplitView` this branch replaced — the
+  /// content column had no middle pane to fill for Settings, so the word
+  /// "Settings" appeared three times around a dead column. That fix is
+  /// SUBSUMED here rather than dropped: this layout has no tab-sidebar
+  /// column and no content column at all, so Settings is never a column,
+  /// never has a dead pane beside it, and appears exactly once. Main's
+  /// `tabSidebar(selection:)` helper came with that fix and has no caller in
+  /// this structure, so it is deliberately not carried over.
+  ///
+  /// Presented whenever `selectedTab == .settings`, and
   /// dismissing it (swipe-down or the sheet's own dismiss) sends the tab
   /// back to Conversations rather than leaving `selectedTab` stuck on a tab
   /// with no on-screen representation.
@@ -209,6 +222,7 @@ struct RootView: View {
                 }
             }
           }
+
       }
       .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
     } detail: {
@@ -297,6 +311,7 @@ struct RootView: View {
       let id = await feature.composeConversation()
     else { return }
     appModel.openConversation(id, presentation: .regular)
+
   }
 
   @ViewBuilder

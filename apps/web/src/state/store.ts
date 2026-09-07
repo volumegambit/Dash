@@ -11,8 +11,15 @@ import type { StoreApi, UseBoundStore } from 'zustand';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
 import { type Transcript, applyServerFrame } from './assemble';
+import { readClientLocation } from './location.js';
 
 export interface WebAppState {
+  /**
+   * The REST client this store was built with, exposed so read-only screens
+   * (the skills browser) can call the mobile API without a second client and
+   * a second set of credentials.
+   */
+  rest: MobileRestClient;
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
   /**
@@ -685,6 +692,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     }
 
     return {
+      rest,
       conversations: [],
       transcripts: {},
       connection: 'idle',
@@ -843,6 +851,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           messages: [...t.messages, optimistic],
         }));
 
+        // Spread-omitted (never `location: undefined`) so a send from a
+        // platform that reports nothing stays byte-identical to today's frame.
+        const location = readClientLocation();
+
         const frame: MobileWsClientFrame = {
           type: 'message',
           id: turnId,
@@ -850,6 +862,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           channelId: CHANNEL_ID,
           conversationId,
           text,
+          ...(location ? { location } : {}),
           ...(images && images.length > 0 ? { images } : {}),
           resumable: true,
         };

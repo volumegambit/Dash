@@ -26,6 +26,7 @@ import Testing
           "account-picker-error",
           "account-not-enrolled",
           "approve-device",
+          "long-transcript",
         ]
       )
     }

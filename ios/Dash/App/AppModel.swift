@@ -102,8 +102,54 @@ final class AppModel {
     let chatRetirementTasks: [Task<Void, Never>]
   }
 
+  /// The tab to land on once a profile is active — `.conversations`,
+  /// unless a debug build was launched with an initial-tab override.
+  ///
+  /// The override has to be re-applied here rather than only in `init`:
+  /// profile activation is the last thing to write `selectedTab` during
+  /// launch, so an init-time assignment is always overwritten before the
+  /// first frame renders.
+  private var defaultTabAfterActivation: AppTab {
+    #if DEBUG
+      if let tab = UITestLaunchOptions.initialTab { return tab }
+    #endif
+    return .conversations
+  }
+
+  #if DEBUG
+    /// Opens a conversation named by a launch option, so the chat surface can
+    /// be captured without a test runner.
+    ///
+    /// Sets BOTH navigation states rather than routing through
+    /// `openConversation(_:presentation:)`: that needs a
+    /// `NavigationPresentation`, which only the view knows, and the whole
+    /// point here is to work before any view has laid out. `conversationPath`
+    /// drives compact, `splitConversationSelection` drives regular — writing
+    /// both means the same launch works on iPhone and iPad.
+    private func applyUITestInitialRoute() {
+      if let id = UITestLaunchOptions.initialAgentID {
+        let destination = AgentRoute.detail(id)
+        selectedTab = .agents
+        agentPath = [destination]
+        splitAgentSelection = destination
+        return
+      }
+      guard let id = UITestLaunchOptions.initialConversationID else { return }
+      let destination = ConversationRoute.transcript(id)
+      selectedTab = .conversations
+      conversationPath = [destination]
+      splitConversationSelection = destination
+    }
+  #endif
+
   init(dependencies: AppDependencies) {
     self.dependencies = dependencies
+    #if DEBUG
+      // Debug-only: lets `simctl launch` open straight onto a given tab so a
+      // surface can be captured without a test runner. See
+      // `UITestLaunchOptions`.
+      if let tab = UITestLaunchOptions.initialTab { selectedTab = tab }
+    #endif
   }
 
   func start() async {
@@ -911,7 +957,14 @@ final class AppModel {
       }
     )
     self.settingsFeature = settingsFeature
-    selectedTab = .conversations
+    // Not a bare `.conversations`: activating a profile is the last thing
+    // to touch `selectedTab` on launch, so it is what overwrote the
+    // debug-only initial-tab override set in `init`. See
+    // `defaultTabAfterActivation`.
+    selectedTab = defaultTabAfterActivation
+    #if DEBUG
+      applyUITestInitialRoute()
+    #endif
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
       conversationPath.removeAll()
       agentPath.removeAll()

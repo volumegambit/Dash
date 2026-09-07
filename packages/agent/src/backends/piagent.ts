@@ -18,6 +18,13 @@ import {
 } from '@dash/mcp';
 
 import type { Logger } from '../logger.js';
+import { MemoryStore } from '../memory/store.js';
+import {
+  createForgetMemoryTool,
+  createRecallMemoryTool,
+  createSaveMemoryTool,
+} from '../memory/tools.js';
+import type { MemoryType } from '../memory/types.js';
 import {
   createCreateSkillTool,
   createInstallSkillTool,
@@ -37,6 +44,7 @@ import type {
   AgentBackend,
   AgentEvent,
   AgentState,
+  ClientLocation,
   DashAgentConfig,
   ExtraTool,
   HookRunner,
@@ -274,6 +282,14 @@ export class PiAgentBackend implements AgentBackend {
    */
   private currentSessionId: string | null = null;
 
+  /**
+   * Location the client reported for the in-flight run, exposed to injected
+   * tools via getCurrentLocation(). Set at the top of run(); null when idle —
+   * exactly like currentSessionId, and for the same reason: the backend is
+   * warm across turns but this value changes every turn.
+   */
+  private currentLocation: ClientLocation | null = null;
+
   /** Accumulated full text during a response, for the `response` event */
   private fullText = '';
 
@@ -339,6 +355,11 @@ export class PiAgentBackend implements AgentBackend {
   /** Current conversation/session id for the in-flight run, or null when idle. */
   getCurrentSessionId(): string | null {
     return this.currentSessionId;
+  }
+
+  /** Location the client reported for the in-flight run, or null when idle. */
+  getCurrentLocation(): ClientLocation | null {
+    return this.currentLocation;
   }
 
   /** Test/host hook to set the current session id outside run(). */
@@ -563,9 +584,36 @@ export class PiAgentBackend implements AgentBackend {
     // regardless of the operator's tool selection.
     customs.push(wrap(createTodoWriteTool())); // task tracking
 
+    // ── Memory tools ──────────────────────────────────────────────────
+    // Always on when the agent has a memory directory — deliberately NOT
+    // gated by `allowedNames`, since automated memory is a property of the
+    // agent, not an operator-selected tool. `memory.tools === false` is the
+    // one opt-out (swarm workers inherit memory read-only).
+    if (this.config.memory?.dir && this.config.memory.tools !== false) {
+      const store = new MemoryStore(this.config.memory.dir);
+      customs.push(wrap(createSaveMemoryTool(store)));
+      customs.push(wrap(createRecallMemoryTool(store)));
+      customs.push(wrap(createForgetMemoryTool(store)));
+    }
+
     const hasSkillPaths = this.config.skills?.paths && this.config.skills.paths.length > 0;
     if (hasSkillPaths || this.managedSkillsDir) {
-      customs.push(wrap(createLoadSkillTool(() => this.listSkills()))); // skill loading
+      // Learned lessons ride along with the skill they augment; without a
+      // managed directory there are none, so the collector is omitted.
+      const managedDir = this.managedSkillsDir;
+      customs.push(
+        wrap(
+          createLoadSkillTool(
+            () => this.listSkills(),
+            managedDir
+              ? async (skillName) => {
+                  const { collectAugments } = await import('../skills/learning/augment.js');
+                  return collectAugments(managedDir, skillName);
+                }
+              : undefined,
+          ),
+        ),
+      ); // skill loading
     }
 
     // ── User-configurable tools (gated by allowedNames) ──────────────
@@ -833,6 +881,7 @@ export class PiAgentBackend implements AgentBackend {
     this.fullText = '';
     this.lastCompactionReason = 'threshold';
     this.currentSessionId = state.conversationId;
+    this.currentLocation = state.location ?? null;
 
     const hookCwd = state.workspace ?? this.workspace ?? undefined;
 
@@ -892,6 +941,7 @@ export class PiAgentBackend implements AgentBackend {
       // during async teardown after run() returns don't observe a stale id. Only
       // resets the field — does not affect the generator's return/throw semantics.
       this.currentSessionId = null;
+      this.currentLocation = null;
     }
   }
 
@@ -1061,8 +1111,7 @@ export class PiAgentBackend implements AgentBackend {
               break;
             }
 
-            const normalized = this.normalizeEvent(event as AgentSessionEvent);
-            if (normalized !== null) {
+            for (const normalized of this.normalizeEvents(event as AgentSessionEvent)) {
               yield normalized;
               committed = true;
             }
@@ -1087,6 +1136,38 @@ export class PiAgentBackend implements AgentBackend {
         `[PiAgent] Model "${modelStr}" failed before output (${attemptError.message}), falling back to "${modelChain[attempt + 1]}"`,
       );
     }
+  }
+
+  /**
+   * Normalize one pi event into zero or more Dash events. Most events map 1:1
+   * via `normalizeEvent()`; a successful `save_memory` / `forget_memory` tool
+   * result is additionally followed by a `memory_saved` / `memory_forgotten`
+   * event built from the tool's `details`, so clients can render a
+   * "Remembered" chip without parsing tool text.
+   *
+   * The follow-up requires the tool NAME to match as well as the payload
+   * shape — an unrelated tool whose details happen to carry a `memory` key
+   * cannot fake a memory event.
+   */
+  private normalizeEvents(event: AgentSessionEvent): AgentEvent[] {
+    const first = this.normalizeEvent(event);
+    if (!first) return [];
+    const out: AgentEvent[] = [first];
+    if (first.type === 'tool_result' && !first.isError) {
+      const memory = (first.details as { memory?: Record<string, unknown> } | undefined)?.memory;
+      if (memory && first.name === 'save_memory' && memory.action !== 'forgotten') {
+        out.push({
+          type: 'memory_saved',
+          name: String(memory.name),
+          description: String(memory.description ?? ''),
+          memoryType: memory.memoryType as MemoryType,
+          action: memory.action === 'updated' ? 'updated' : 'created',
+        });
+      } else if (memory && first.name === 'forget_memory' && memory.action === 'forgotten') {
+        out.push({ type: 'memory_forgotten', name: String(memory.name) });
+      }
+    }
+    return out;
   }
 
   /**

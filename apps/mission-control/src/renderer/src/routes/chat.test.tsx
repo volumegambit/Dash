@@ -1,4 +1,6 @@
 import '@testing-library/jest-dom/vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ConversationRef, McConversationView } from '@dash/mc';
 import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -23,6 +25,45 @@ vi.mock('@tanstack/react-router', () => ({
 }));
 
 const { Chat, MessageBubble } = await import('./chat.js');
+
+type ChatOrderExpected = {
+  kind: 'text' | 'thinking' | 'tool' | 'question';
+  label?: string;
+  text?: string;
+};
+
+type ChatOrderFixture = {
+  version: number;
+  cases: Array<{
+    name: string;
+    events: Record<string, unknown>[];
+    expected: ChatOrderExpected[];
+  }>;
+};
+
+const chatOrderFixture = JSON.parse(
+  readFileSync(
+    join(import.meta.dirname, '../../../../../../scripts/fixtures/chat-event-order.json'),
+    'utf8',
+  ),
+) as ChatOrderFixture;
+
+function orderedFixtureElements(expected: ChatOrderExpected[]): HTMLElement[] {
+  return expected.map((entry) => {
+    if (entry.kind === 'tool') {
+      return screen.getByRole('button', { name: new RegExp(entry.label ?? '') });
+    }
+    if (entry.kind === 'thinking') {
+      return screen.getByRole('button', { name: 'Show thinking' });
+    }
+    if (entry.kind === 'question') {
+      return screen.getByText((_, element) =>
+        Boolean(element?.tagName === 'P' && element.textContent?.includes(entry.text ?? '')),
+      );
+    }
+    return screen.getByText(entry.text ?? '');
+  });
+}
 
 const agent1 = {
   id: 'agent-1',
@@ -609,6 +650,100 @@ describe('MessageBubble unresolved tool calls', () => {
   });
 });
 
+describe('MessageBubble tool rows (tool-use UX 2026-09-05)', () => {
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  it.each(chatOrderFixture.cases)(
+    'matches shared assistant event order: $name',
+    ({ events, expected }) => {
+      render(<MessageBubble message={assistantMessage(events)} />);
+      const elements = orderedFixtureElements(expected);
+      for (let index = 1; index < elements.length; index++) {
+        expect(
+          elements[index - 1].compareDocumentPosition(elements[index]) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    },
+  );
+
+  it('shows what a tool call returned in the collapsed header', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'grep', input: { pattern: 'foo' } },
+          { type: 'tool_result', id: 't1', name: 'grep', content: 'a.ts:1: foo\nb.ts:2: foo' },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('2 matches');
+  });
+
+  it("shows a failed call's error once, not in the header too", () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'bash', input: { command: 'nope' } },
+          {
+            type: 'tool_result',
+            id: 't1',
+            name: 'bash',
+            content: 'command not found',
+            isError: true,
+          },
+        ])}
+      />,
+    );
+    // Expanded by default, so the outcome is hidden and only the body shows it.
+    const occurrences = (container.textContent ?? '').split('command not found').length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('shows an MCP tool as its server plus a readable name', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'tool_use_start',
+            id: 't1',
+            name: 'linear__search_issues',
+            input: { query: 'x' },
+          },
+          { type: 'tool_result', id: 't1', name: 'linear__search_issues', content: 'DASH-1' },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('Linear');
+    expect(container.textContent).toContain('Search Issues');
+    expect(container.textContent).not.toContain('linear__search_issues');
+  });
+
+  it('opens a failed tool call without a click', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'tool_use_start', id: 't1', name: 'bash', input: { command: 'nope' } },
+          {
+            type: 'tool_result',
+            id: 't1',
+            name: 'bash',
+            content: 'command not found',
+            isError: true,
+          },
+        ])}
+      />,
+    );
+    expect(container.textContent).toContain('command not found');
+  });
+});
+
 describe('MessageBubble auto-retry rendering', () => {
   function assistantMessage(events: Record<string, unknown>[]) {
     return {
@@ -659,5 +794,102 @@ describe('MessageBubble auto-retry rendering', () => {
     expect(container.textContent).toContain('Retrying (attempt 1)');
     expect(container.textContent).toContain('Recovered fine.');
     expect(container.querySelector('.text-red')).toBeNull();
+  });
+});
+
+describe('MessageBubble memory chips', () => {
+  function assistantMessage(events: Record<string, unknown>[]) {
+    return {
+      id: 'm1',
+      role: 'assistant' as const,
+      content: { type: 'assistant' as const, events },
+      timestamp: '2026-07-06T00:00:00Z',
+    };
+  }
+
+  it('renders a Remembered chip for memory_saved and a Forgot chip for memory_forgotten', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          {
+            type: 'memory_saved',
+            name: 'user-timezone',
+            description: 'Gerry is in Singapore',
+            memoryType: 'user',
+            action: 'created',
+          },
+          {
+            type: 'memory_saved',
+            name: 'user-timezone',
+            description: 'Gerry is in Singapore (UTC+8)',
+            memoryType: 'user',
+            action: 'updated',
+          },
+          { type: 'memory_forgotten', name: 'old-fact' },
+        ])}
+      />,
+    );
+
+    expect(screen.getByText('Remembered: Gerry is in Singapore')).toBeInTheDocument();
+    expect(screen.getByText('Updated memory: Gerry is in Singapore (UTC+8)')).toBeInTheDocument();
+    expect(screen.getByText('Forgot: old-fact')).toBeInTheDocument();
+    expect(screen.queryByText('Activity from a newer Dash version')).not.toBeInTheDocument();
+  });
+
+  it('keeps flushing buffered prose before a memory chip', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          { type: 'text_delta', text: 'Noted.' },
+          {
+            type: 'memory_saved',
+            name: 'units',
+            description: 'Gerry prefers metric units',
+            memoryType: 'user',
+            action: 'created',
+          },
+        ])}
+      />,
+    );
+
+    expect(container.textContent).toContain('Noted.');
+    expect(screen.getByText('Remembered: Gerry prefers metric units')).toBeInTheDocument();
+  });
+});
+
+describe('MessageBubble notice chips', () => {
+  function noticeMessage(kind: 'skill_learned' | 'memory_saved', text: string) {
+    return {
+      id: 'n1',
+      role: 'assistant' as const,
+      content: { type: 'notice' as const, kind, text },
+      timestamp: '2026-09-06T00:00:00Z',
+    };
+  }
+
+  it('renders a learned skill as a chip', () => {
+    render(<MessageBubble message={noticeMessage('skill_learned', 'Learned: write-files')} />);
+
+    const chip = screen.getByTestId('notice-chip');
+    expect(chip).toHaveTextContent('Learned: write-files');
+    expect(chip).toHaveAttribute('data-notice-kind', 'skill_learned');
+  });
+
+  it('renders a swept memory as a chip', () => {
+    render(<MessageBubble message={noticeMessage('memory_saved', 'Remembered: prefers printf')} />);
+
+    const chip = screen.getByTestId('notice-chip');
+    expect(chip).toHaveTextContent('Remembered: prefers printf');
+    expect(chip).toHaveAttribute('data-notice-kind', 'memory_saved');
+  });
+
+  it('does not render the assistant event pipeline for a notice', () => {
+    // A notice carries no events; rendering it through renderEvents would throw
+    // or produce an empty assistant bubble instead of a chip.
+    const { container } = render(
+      <MessageBubble message={noticeMessage('skill_learned', 'Learned: x')} />,
+    );
+    expect(container.querySelector('[data-testid="notice-chip"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('interrupted');
   });
 });

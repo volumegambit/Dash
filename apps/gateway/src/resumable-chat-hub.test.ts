@@ -156,6 +156,8 @@ describe('ResumableChatHub', () => {
   let conversations: SqliteConversationService;
   let harness: ReturnType<typeof makeAgentHarness>;
   let autoTitle: ConversationAutoTitleService;
+  let memorySweep: { schedule: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
+  let skillReview: { schedule: ReturnType<typeof vi.fn>; flush: ReturnType<typeof vi.fn> };
   let onChanged: ReturnType<typeof vi.fn>;
   let swarmCancel: ReturnType<typeof vi.fn>;
   let hub: ReturnType<typeof createResumableChatHub>;
@@ -177,6 +179,14 @@ describe('ResumableChatHub', () => {
       schedule: vi.fn(),
       flush: vi.fn().mockResolvedValue(undefined),
     };
+    memorySweep = {
+      schedule: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
+    skillReview = {
+      schedule: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
     onChanged = vi.fn();
     swarmCancel = vi.fn().mockReturnValue(true);
     scripts = [];
@@ -184,6 +194,8 @@ describe('ResumableChatHub', () => {
       conversations,
       agents: harness.agents,
       autoTitle,
+      memorySweep,
+      skillReview,
       swarmCoordinator: { cancelTurn: swarmCancel },
       onChanged,
     });
@@ -225,6 +237,50 @@ describe('ResumableChatHub', () => {
       resumable: true,
     };
   }
+
+  it('threads a client location through to the chat request', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(
+      {
+        ...sendFrame(conversation),
+        location: { timezone: 'Asia/Singapore', utcOffsetMinutes: 480, locale: 'en-SG' },
+      },
+      sink,
+    );
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].location).toEqual({
+      timezone: 'Asia/Singapore',
+      utcOffsetMinutes: 480,
+      locale: 'en-SG',
+    });
+  });
+
+  it('drops a malformed location but still runs the turn', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(
+      {
+        ...sendFrame(conversation, 'turn-01', 'still here'),
+        // Every coarse field is bad: empty strings and an impossible offset.
+        location: { timezone: '', utcOffsetMinutes: 9999, locale: '' },
+      },
+      sink,
+    );
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    // The turn still ran -- the message was NOT dropped.
+    expect(harness.chat).toHaveBeenCalledTimes(1);
+    expect(harness.chat.mock.calls[0][0].text).toBe('still here');
+    expect(harness.chat.mock.calls[0][0].location).toBeUndefined();
+  });
 
   async function waitForFrames(sink: TestSink, count: number): Promise<void> {
     await vi.waitFor(() => expect(sink.frames).toHaveLength(count));
@@ -938,6 +994,53 @@ describe('ResumableChatHub', () => {
       status: 'idle',
       activeTurnId: null,
     });
+  });
+
+  it('schedules a memory sweep after a completed turn but not a failed or cancelled one', async () => {
+    const completed = createConversation();
+    const completedStream = register(completed.id);
+    const completedSink = makeSink();
+    hub.start(sendFrame(completed, 'turn-completed'), completedSink);
+    completedStream.finish();
+    await waitForFrames(completedSink, 2);
+
+    await vi.waitFor(() =>
+      expect(memorySweep.schedule).toHaveBeenCalledWith({
+        agentId: completed.agentId,
+        conversationId: completed.id,
+        turnId: 'turn-completed',
+      }),
+    );
+    expect(memorySweep.schedule).toHaveBeenCalledOnce();
+    // A review is scheduled on exactly the same signal: turn completed.
+    expect(skillReview.schedule).toHaveBeenCalledWith({
+      agentId: completed.agentId,
+      conversationId: completed.id,
+      turnId: 'turn-completed',
+    });
+    expect(skillReview.schedule).toHaveBeenCalledOnce();
+    memorySweep.schedule.mockClear();
+    skillReview.schedule.mockClear();
+
+    const failed = createConversation();
+    const failedStream = register(failed.id);
+    const failedSink = makeSink();
+    hub.start(sendFrame(failed, 'turn-failed'), failedSink);
+    failedStream.fail(new Error('Provider exploded'));
+    await waitForFrames(failedSink, 2);
+    await vi.waitFor(() => expect(failedStream.return).toHaveBeenCalledOnce());
+    expect(memorySweep.schedule).not.toHaveBeenCalled();
+    expect(skillReview.schedule).not.toHaveBeenCalled();
+
+    const cancelled = createConversation();
+    const cancelledStream = register(cancelled.id);
+    const cancelledSink = makeSink();
+    hub.start(sendFrame(cancelled, 'turn-cancelled'), cancelledSink);
+    await hub.cancel('turn-cancelled', cancelledSink);
+    cancelledStream.finish();
+    await vi.waitFor(() => expect(cancelledStream.return).toHaveBeenCalledOnce());
+    expect(memorySweep.schedule).not.toHaveBeenCalled();
+    expect(skillReview.schedule).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -28,6 +28,33 @@ The fastest way to talk to your agent. Open the **Chat** tab in Mission Control 
 
 The empty chat panel shows your recent conversations and deployed agents for quick access. Every conversation is automatically saved. Come back later and pick up where you left off.
 
+## Reading tool activity
+
+When your agent uses a tool, it shows up as a card in the transcript. Cards look and behave the same way in Mission Control, the web client, and Dash for iOS.
+
+**Collapsed by default.** Each card shows a single line: the tool's name, a short summary of what it was asked to do, and what came back. A `bash` card reads its command, a `read` card names the file and says how many lines it returned, a `grep` card says how many matches it found. Tap or click a card to expand it and see the full inputs and result.
+
+**Two cards open on their own:**
+
+- **Task lists** expand automatically — a to-do list is the agent's plan for the turn, rendered as a checklist with a done/total count in the header. Completed items are ticked, the current item is marked in progress.
+- **Failures** expand automatically and stay open, so the error is in front of you without a tap. Collapse it yourself and it stays collapsed.
+
+**Tool-specific bodies.** Expanded cards render the result in a form that fits the tool: file edits show a colored diff with a `+added -removed` count, directory listings show entries with folder markers, web searches show titled results with their host, and grep results group matches under each file. Everything else falls back to the raw text.
+
+## Composer keys
+
+The message box uses the same keys across Mission Control, the web client, and iOS, with one deliberate difference on iOS:
+
+| Key | Mission Control & web | iOS |
+|-----|--------------------------|-----|
+| **Return** | Send | Insert a line break |
+| **Shift+Return** | Insert a line break | Insert a line break |
+| **Cmd+Return** | Send | Send |
+| **Shift+Tab** | Insert a line break | Insert a line break |
+| **Tab** | Move focus out of the box | Move focus out of the box |
+
+On iOS a hardware keyboard's Return is the natural newline and **Cmd+Return** sends — matching the send button. Plain **Tab** is always left to focus navigation so keyboard and screen-reader users can move out of the composer.
+
 ## Telegram and WhatsApp
 
 Connect your agent to a messaging app and chat with it just like you would with a friend. Send a message to your bot on Telegram and the agent responds in the same thread.
@@ -103,8 +130,8 @@ Sessions are scoped by agent and conversation ID. A chat in Mission Control and 
 Responses arrive in real time as the agent works. You don't wait for the full response to be generated — you see progress as it happens:
 
 - **Text chunks** appear word by word as the model generates them
-- **Tool use** shows up when the agent decides to call a tool, with the tool name and input
-- **Tool results** appear when the tool finishes, showing what the agent learned
+- **Tool use** shows up when the agent decides to call a tool, as a collapsed card with the tool name and a short summary of its input
+- **Tool results** update the same card when the tool finishes, showing what came back (see [Reading tool activity](#reading-tool-activity))
 - **Thinking** (when enabled) lets you see the agent's internal reasoning process
 
 This streaming experience works across all three chat methods — Mission Control, messaging apps, and the WebSocket API.

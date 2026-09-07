@@ -28,13 +28,23 @@ func userMessageID(forTurnID turnID: String, in messages: [ChatMessageState]) ->
 
 struct MessageListView: View {
   let messages: [ChatMessageState]
+  /// When set, the FIRST row reports its frame in this named coordinate
+  /// space through `FirstMessageRowFrameKey` — `ChatView`'s "Load earlier"
+  /// hold needs to know where the row the user is reading sits in the
+  /// viewport before a page prepends above it.
+  let firstRowFrameCoordinateSpace: String?
   let isAnsweringEnabled: Bool
   /// Scroll anchor (iPad goal Phase A, Task 4 review fix, Important 1):
-  /// tags THIS view's `LazyVStack` — the one that actually holds
+  /// tags THIS view's stack — the one that actually holds
   /// `ForEach(messages)` — as the enclosing `ScrollView`'s scroll-target
   /// layout, so `ChatView`'s `.scrollPosition(id:anchor:)` binding resolves
-  /// real `ChatMessageState.id`s. It previously sat on `ChatView`'s OUTER
-  /// `LazyVStack`, whose direct arranged children are only
+  /// real row identities. NOTE (merge with main, 2026-09-07): that identity
+  /// is now `ChatMessageState.rowID`, not `.id` — main re-keyed the `ForEach`
+  /// so the gateway ack rewriting `id` stops removing and re-inserting the
+  /// row — so everything `scrollPosition` reports and everything
+  /// `scrollTo` matches is a `rowID`. `ChatView.anchorBinding` and
+  /// `ChatScrollRestoration.decide` were repointed to match. It previously
+  /// sat on `ChatView`'s OUTER stack, whose direct arranged children are only
   /// `olderMessagesControl` / this whole view as one opaque box / the bottom
   /// sentinel; `scrollTargetLayout()` does not descend into a nested
   /// `LazyVStack` inside a custom `View` struct. Measured consequence (see
@@ -55,6 +65,7 @@ struct MessageListView: View {
 
   init(
     messages: [ChatMessageState],
+    firstRowFrameCoordinateSpace: String? = nil,
     isAnsweringEnabled: Bool = true,
     isScrollTarget: Bool = false,
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
@@ -62,6 +73,7 @@ struct MessageListView: View {
     onEditAndResend: @escaping (String) -> Void = { _ in }
   ) {
     self.messages = messages
+    self.firstRowFrameCoordinateSpace = firstRowFrameCoordinateSpace
     self.isAnsweringEnabled = isAnsweringEnabled
     self.isScrollTarget = isScrollTarget
     self.onAnswer = onAnswer
@@ -71,8 +83,23 @@ struct MessageListView: View {
 
   var body: some View {
     let failedTurns = failedTurnIDs(in: messages)
-    LazyVStack(spacing: 16) {
-      ForEach(messages) { message in
+    // A plain VStack, not LazyVStack (transcript scroll fix, 2026-09-05): a
+    // lazy stack's content size is an estimate until rows realize, and every
+    // scroll mechanism above this view — the bottom anchor that follows a
+    // stream, the initial-offset anchor that opens on the newest message,
+    // `scrollTo` for jump-to-latest and for holding position across "Load
+    // earlier" — computes against that size. With the estimate they landed
+    // a turn short on open and, on send, scrolled past the end into blank
+    // space (both seen on the iOS 26.5 sim). A page is at most 50 messages
+    // (`ChatFeature`'s `limit: 50`) and grows only by explicit "Load
+    // earlier", so exact geometry is affordable.
+    VStack(spacing: 16) {
+      // Keyed on `rowID`, not `id` (transcript scroll fix, 2026-09-05): the
+      // gateway's `accepted` frame rewrites `id` from the local uuid to the
+      // server's, and keying on it made SwiftUI remove + re-insert the row
+      // the user just sent — replaying the entrance transition below and
+      // resetting the row's `@State`. See `ChatMessageState.rowID`.
+      ForEach(messages, id: \.rowID) { message in
         ChatMessageView(
           message: message,
           isAnsweringEnabled: isAnsweringEnabled,
@@ -84,7 +111,7 @@ struct MessageListView: View {
           onEditAndResend: onEditAndResend
         )
         // Entrance animation (chat-ux Phase 3 Task 4, audit #18): a fresh
-        // row (new `ChatMessageState.id`, `ForEach`'s identity) fades+rises
+        // row (new `ChatMessageState.rowID`, `ForEach`'s identity) fades+rises
         // in rather than popping in place — never re-triggered by an
         // in-place content update to an EXISTING row (streamed
         // text/tool-card deltas mutate that row's own properties, they
@@ -101,6 +128,7 @@ struct MessageListView: View {
             ? .identity
             : .opacity.combined(with: .move(edge: .bottom))
         )
+        .background(firstRowFrameReporter(for: message))
       }
     }
     .modifier(ScrollTargetLayoutIfNeeded(isEnabled: isScrollTarget))
@@ -120,10 +148,24 @@ struct MessageListView: View {
   }
 }
 
+extension MessageListView {
+  @ViewBuilder
+  fileprivate func firstRowFrameReporter(for message: ChatMessageState) -> some View {
+    if let space = firstRowFrameCoordinateSpace, message.rowID == messages.first?.rowID {
+      GeometryReader { proxy in
+        Color.clear.preference(
+          key: FirstMessageRowFrameKey.self,
+          value: proxy.frame(in: .named(space))
+        )
+      }
+    }
+  }
+}
+
 /// Applies `scrollTargetLayout()` only when the caller is inside a
 /// `ScrollView` that uses `.scrollPosition(id:)` (iPad goal Phase A, Task 4
 /// review fix, Important 1). A `ViewModifier` rather than an inline `if` in
-/// the `ViewBuilder` so the `LazyVStack`'s view identity — and therefore the
+/// the `ViewBuilder` so the stack's view identity — and therefore the
 /// `ForEach` rows' `@State`/transition bookkeeping — is unaffected by the
 /// flag.
 private struct ScrollTargetLayoutIfNeeded: ViewModifier {
@@ -172,7 +214,9 @@ private struct ScrollTargetLayoutIfNeeded: ViewModifier {
 /// initial-load distinction directly, same pattern as `failedTurnIDs`/
 /// `userMessageID` above and `ChatTranscriptSignature` in `ChatView.swift`.
 func messageEntranceSignature(for messages: [ChatMessageState]) -> String? {
-  messages.last?.id
+  // `rowID`, not `id`: the ack rewriting the last row's id is the same row
+  // (see `ChatMessageState.rowID`), so it must not read as an append.
+  messages.last?.rowID
 }
 
 extension View {
@@ -225,6 +269,25 @@ struct ChatMessageView: View {
   }
 
   var body: some View {
+    // A notice is bookkeeping, not conversation: it renders as a single quiet
+    // chip regardless of the role it was stored under (the gateway's message
+    // table allows only 'user' and 'assistant', so notices arrive as
+    // 'assistant').
+    if let notice = message.notice {
+      return AnyView(
+        HStack {
+          NoticeChipView(notice: notice)
+          Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.notice.\(message.id)")
+      )
+    }
+
+    return AnyView(bubble)
+  }
+
+  private var bubble: some View {
     HStack(alignment: .top, spacing: 0) {
       switch message.role {
       case .user:
@@ -514,5 +577,31 @@ struct DraggableMessageImage: Transferable, Sendable {
       .exportingCondition { $0.mediaType == .gif }
     DataRepresentation(exportedContentType: .webP) { $0.data }
       .exportingCondition { $0.mediaType == .webp }
+  }
+}
+
+/// The chip a `notice` message renders as — a skill the agent learned, or a
+/// memory it saved, after the turn had already finished.
+struct NoticeChipView: View {
+  let notice: NoticeProjection
+
+  private var systemImage: String {
+    switch notice.kind {
+    case .skillLearned: return "graduationcap"
+    case .memorySaved: return "brain"
+    case .unknown: return "sparkles"
+    }
+  }
+
+  var body: some View {
+    Label(notice.text, systemImage: systemImage)
+      .font(.footnote)
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .overlay(
+        Capsule().stroke(Color.secondary.opacity(DashTheme.Opacity.fillEmphasis))
+      )
+      .accessibilityIdentifier("chat.notice.chip")
   }
 }

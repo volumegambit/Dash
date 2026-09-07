@@ -57,8 +57,8 @@ final class IPadUITests: DashUITestCase {
   /// writes the topmost visible id back into the binding for touch-driven
   /// scrolling, so no unit test can reach it; this swipes for real and reads
   /// the DEBUG `chat.scrollAnchor` probe. Asserting the probe begins with
-  /// `filler-` is asserting the tracked value is a genuine
-  /// `ChatMessageState.id` rather than `"none"` — which is all the
+  /// `long-` is asserting the tracked value is a genuine transcript row
+  /// identity (`ChatMessageState.rowID`) rather than `"none"` — which is all the
   /// OUTER-stack `.scrollTargetLayout()` placement ever produced (verified:
   /// reverting the placement fails this test with `got "none"`).
   ///
@@ -85,7 +85,7 @@ final class IPadUITests: DashUITestCase {
     transcript.swipeDown()
     transcript.swipeDown()
 
-    let anchored = waitForTrackedScrollAnchor(prefix: "filler-", in: app)
+    let anchored = waitForTrackedScrollAnchor(prefix: "long-", in: app)
     let anchoredRow = app.descendants(matching: .any)["chat.message.\(anchored)"]
     XCTAssertTrue(anchoredRow.waitForExistence(timeout: 5))
 

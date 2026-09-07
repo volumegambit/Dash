@@ -29,6 +29,13 @@ actor GatewayAPI {
     )
   }
 
+  /// Read-only: the mobile namespace exposes no skill mutation.
+  func listSkills(agentId: String) async throws -> [SkillDTO] {
+    try await transport.send(
+      GatewayRequest(method: .get, path: mobilePath("agents", agentId, "skills"))
+    )
+  }
+
   func agent(id: String) async throws -> RegisteredAgentDTO {
     try await transport.send(
       GatewayRequest(method: .get, path: mobilePath("agents", id))
@@ -73,6 +80,24 @@ actor GatewayAPI {
         method: .delete,
         path: mobilePath("agents", id),
         resourceID: id
+      )
+    )
+  }
+
+  /// Read + delete only: the memory PUT and config routes are loopback-only
+  /// by design, so the phone can browse and forget but never write.
+  func listMemories(agentID: String) async throws -> [MemoryInfoDTO] {
+    try await transport.send(
+      GatewayRequest(method: .get, path: mobilePath("agents", agentID, "memory"))
+    )
+  }
+
+  func deleteMemory(agentID: String, name: String) async throws {
+    let _: MemoryDeleteResponseDTO = try await transport.send(
+      GatewayRequest(
+        method: .delete,
+        path: mobilePath("agents", agentID, "memory", name),
+        resourceID: agentID
       )
     )
   }

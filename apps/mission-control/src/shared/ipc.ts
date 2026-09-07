@@ -1,4 +1,9 @@
 import type {
+  LessonBookInfo,
+  MemoryConfig,
+  MemoryContent,
+  MemoryInfo,
+  MemoryType,
   PluginInstallRequest,
   PluginInstallResponse,
   PluginRecord,
@@ -46,6 +51,7 @@ import type {
 // can import them from this single IPC facade module.
 export type { CreateAgentRequest, GatewayAgent, GatewayChannel } from '@dash/mc';
 export type { ChannelHealthEntry } from '@dash/management';
+export type { MemoryConfig, MemoryContent, MemoryInfo, MemoryType } from '@dash/management';
 export type { GatewayConnectionSettings } from '@dash/mc';
 
 // Top-level setup/onboarding status. Distinguishes a genuine first run
@@ -76,6 +82,14 @@ export type McAgentEvent =
   | { type: 'response'; content: string; usage: Record<string, number> }
   | { type: 'question'; id: string; question: string; options: string[] }
   | { type: 'skill_created'; name: string; description: string }
+  | {
+      type: 'memory_saved';
+      name: string;
+      description: string;
+      memoryType: 'user' | 'feedback' | 'project' | 'reference';
+      action: 'created' | 'updated';
+    }
+  | { type: 'memory_forgotten'; name: string }
   | { type: 'context_compacted'; overflow: boolean }
   | {
       type: 'worker_spawned';
@@ -487,6 +501,9 @@ export interface MissionControlAPI {
 
   // Skills (gateway passthrough)
   skillsList(agentId: string): Promise<SkillInfo[]>;
+  /** Null when the skill is not a learned lesson book. */
+  skillsLessons(agentId: string, skillName: string): Promise<LessonBookInfo | null>;
+  skillsRetireLesson(agentId: string, skillName: string, lessonId: string): Promise<LessonBookInfo>;
   skillsGet(agentId: string, skillName: string): Promise<SkillContent | null>;
   skillsUpdateContent(agentId: string, skillName: string, content: string): Promise<void>;
   skillsCreate(
@@ -499,6 +516,19 @@ export interface MissionControlAPI {
   skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<SkillsConfig>;
   skillsInstall(agentId: string, source: string, name?: string): Promise<SkillInfo>;
   skillsRemove(agentId: string, skillName: string): Promise<void>;
+
+  // Agent memory (gateway passthrough). `memoryGet` resolves to `null` when the
+  // gateway answers 404, mirroring `skillsGet`.
+  memoryList(agentId: string): Promise<MemoryInfo[]>;
+  memoryGet(agentId: string, name: string): Promise<MemoryContent | null>;
+  memoryPut(
+    agentId: string,
+    name: string,
+    input: { description: string; type: MemoryType; content: string },
+  ): Promise<void>;
+  memoryRemove(agentId: string, name: string): Promise<void>;
+  memoryGetConfig(agentId: string): Promise<MemoryConfig>;
+  memoryUpdateConfig(agentId: string, patch: Partial<MemoryConfig>): Promise<MemoryConfig>;
 
   // Swarm panel (gateway passthrough). `cancelWorker`/`swarmSend` resolve to
   // `{ok, reason?}`: the underlying client surfaces the gateway's 409

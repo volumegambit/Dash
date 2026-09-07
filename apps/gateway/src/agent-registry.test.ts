@@ -375,6 +375,49 @@ describe('AgentRegistry (file-backed)', () => {
     });
   });
 
+  describe('memory field (per-agent automated memory)', () => {
+    it('a config without memory loads as undefined (= enabled, legacy agents)', async () => {
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({ name: 'legacy', model: 'm', systemPrompt: 's' });
+      await reg.save();
+
+      const reg2 = new AgentRegistry(filePath);
+      await reg2.load();
+      const loaded = reg2.get(entry.id);
+      expect(loaded?.config.memory).toBeUndefined();
+      expect('memory' in (loaded?.config ?? {})).toBe(false);
+    });
+
+    it('round-trips a memory config through register + save + load', async () => {
+      const reg = new AgentRegistry(filePath);
+      const entry = reg.register({
+        name: 'scoped',
+        model: 'm',
+        systemPrompt: 's',
+        memory: { enabled: false, sweep: 'off' },
+      });
+      await reg.save();
+
+      const reg2 = new AgentRegistry(filePath);
+      await reg2.load();
+      expect(reg2.get(entry.id)?.config.memory).toEqual({ enabled: false, sweep: 'off' });
+    });
+
+    it('update() replaces the memory object wholesale (same semantics as swarm)', () => {
+      const reg = new AgentRegistry();
+      const entry = reg.register({
+        name: 'a',
+        model: 'm',
+        systemPrompt: 's',
+        memory: { enabled: false, sweep: 'off' },
+      });
+      reg.update(entry.id, { memory: { sweep: 'on' } });
+      // A patch is NOT deep-merged: the whole object is replaced, so `enabled`
+      // is gone (= back to the default, enabled).
+      expect(reg.get(entry.id)?.config.memory).toEqual({ sweep: 'on' });
+    });
+  });
+
   describe('patchMcpServers', () => {
     it('adds a new server, starting from no mcpServers', () => {
       const reg = new AgentRegistry();

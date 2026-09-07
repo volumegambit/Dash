@@ -25,6 +25,13 @@ export interface GatewayWorkerFactoryDeps {
   dataDir: string;
   /** Optional gateway logger, forwarded to the backend. */
   logger?: Logger;
+  /**
+   * Parent agent's memory dir, keyed by REGISTRY agent id. Workers inherit it
+   * READ-ONLY: it reaches the `DashAgent` resolver (prompt) but never the
+   * backend constructor config, so no memory tools are registered. Undefined
+   * (or an unset resolver) = no memory for that agent.
+   */
+  memoryDir?: (agentId: string) => string | undefined;
 }
 
 /**
@@ -114,10 +121,12 @@ export function createGatewayWorkerFactory(deps: GatewayWorkerFactoryDeps): Work
     await backend.start(spec.workspace);
 
     const preamble = buildWorkerPreamble(spec);
+    const memoryDir = deps.memoryDir?.(spec.agentId);
     const agent = new DashAgent(backend, async () => ({
       model: spec.model,
       systemPrompt: preamble,
       tools: spec.tools,
+      ...(memoryDir ? { memory: { dir: memoryDir, tools: false as const } } : {}),
     }));
 
     return {

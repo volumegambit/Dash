@@ -87,6 +87,35 @@ struct ChatConnectionTests {
     await connection.detach()
   }
 
+  @Test("a new turn carries the location the provider reports")
+  func locationIsAttachedToANewTurn() async throws {
+    let task = FakeWebSocketTask()
+    let location = ClientLocation(
+      timezone: "Asia/Singapore",
+      utcOffsetMinutes: 480,
+      locale: "en-SG",
+      region: "SG",
+      precise: nil
+    )
+    let connection = makeChatConnection(task: task, location: location)
+    try await connection.connect()
+
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "where am I?",
+      images: []
+    )
+
+    guard case let .message(_, _, _, _, _, sent, _, _, _) = await task.sentFrames.first else {
+      Issue.record("expected a message frame")
+      return
+    }
+    #expect(sent == location)
+    await connection.detach()
+  }
+
   @Test("relay request keeps chat credentials out of the URL")
   func relayRequest() async throws {
     let task = FakeWebSocketTask()
@@ -1210,16 +1239,29 @@ struct ChatConnectionTests {
 
   private func makeChatConnection(
     task: FakeWebSocketTask,
-    clock: any AppClock = SystemAppClock()
+    clock: any AppClock = SystemAppClock(),
+    location: ClientLocation? = nil
   ) -> ChatConnection {
-    makeChatConnection(session: FakeWebSocketSession(tasks: [task]), clock: clock)
+    makeChatConnection(
+      session: FakeWebSocketSession(tasks: [task]), clock: clock, location: location)
   }
 
+  /// Defaults to reporting NO location so frame assertions are deterministic.
+  /// The real provider reads this device's time zone and locale, which differ
+  /// between a dev machine and a CI simulator — a frozen-frame assertion that
+  /// depends on them passes wherever it was written and fails everywhere else.
+  /// `locationIsAttachedToANewTurn` covers the populated case explicitly.
   private func makeChatConnection(
     session: FakeWebSocketSession,
-    clock: any AppClock = SystemAppClock()
+    clock: any AppClock = SystemAppClock(),
+    location: ClientLocation? = nil
   ) -> ChatConnection {
-    ChatConnection(endpoint: lanEndpoint(), session: session, clock: clock)
+    ChatConnection(
+      endpoint: lanEndpoint(),
+      session: session,
+      clock: clock,
+      locationProvider: { location }
+    )
   }
 
   private func lanEndpoint() -> ConnectionEndpoint {

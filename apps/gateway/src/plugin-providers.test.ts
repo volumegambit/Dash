@@ -106,6 +106,122 @@ describe('createPluginModelCatalog', () => {
     expect(model?.contextWindow).toBe(8000);
     expect(model?.maxTokens).toBe(2000);
     expect(model?.provider).toBe('myllm');
+    expect(model?.input).toEqual(['text']);
+  });
+
+  it('inherits image input support for a dynamic model known to pi-ai', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        credentialPrefix: 'openrouter-api-key',
+        baseUrl: 'https://catalog.example/v1',
+        api: 'openai-completions',
+        models: [],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 2000 },
+      }),
+    ]);
+
+    const model = catalog.resolve('openrouter', 'anthropic/claude-opus-4.8') as Model<Api> | null;
+
+    expect(model?.input).toEqual(['text', 'image']);
+    expect(model?.name).toBe('anthropic/claude-opus-4.8');
+    expect(model?.api).toBe('openai-completions');
+    expect(model?.provider).toBe('openrouter');
+    expect(model?.baseUrl).toBe('https://catalog.example/v1');
+    expect(model?.reasoning).toBe(false);
+    expect(model?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(model?.contextWindow).toBe(8000);
+    expect(model?.maxTokens).toBe(2000);
+  });
+
+  it('keeps a dynamic model text-only when pi-ai declares it text-only', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        credentialPrefix: 'openrouter-api-key',
+        baseUrl: 'https://catalog.example/v1',
+        api: 'openai-completions',
+        models: [],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 2000 },
+      }),
+    ]);
+
+    const model = catalog.resolve(
+      'openrouter',
+      'meta-llama/llama-3.1-70b-instruct',
+    ) as Model<Api> | null;
+
+    expect(model?.input).toEqual(['text']);
+  });
+
+  it('keeps an unregistered OpenRouter dynamic model text-only', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        credentialPrefix: 'openrouter-api-key',
+        baseUrl: 'https://catalog.example/v1',
+        api: 'openai-completions',
+        models: [],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 2000 },
+      }),
+    ]);
+
+    const model = catalog.resolve('openrouter', 'vendor/future-model') as Model<Api> | null;
+
+    expect(model?.input).toEqual(['text']);
+  });
+
+  it('does not inherit capabilities from the same model id under another provider', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'myllm',
+        label: 'My LLM',
+        credentialPrefix: 'myllm-api-key',
+        baseUrl: 'https://catalog.example/v1',
+        api: 'openai-completions',
+        models: [],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 2000 },
+      }),
+    ]);
+
+    const model = catalog.resolve('myllm', 'anthropic/claude-opus-4.8') as Model<Api> | null;
+
+    expect(model?.input).toEqual(['text']);
+  });
+
+  it('prefers explicit catalog capabilities over pi-ai for a static model', () => {
+    const catalog = createPluginModelCatalog([
+      entry({
+        id: 'openrouter',
+        label: 'OpenRouter',
+        credentialPrefix: 'openrouter-api-key',
+        baseUrl: 'https://catalog.example/v1',
+        api: 'openai-completions',
+        models: [
+          {
+            id: 'anthropic/claude-opus-4.8',
+            contextWindow: 4000,
+            maxTokens: 1000,
+            input: ['text'],
+          },
+        ],
+        dynamicModels: true,
+        dynamicModelDefaults: { contextWindow: 8000, maxTokens: 2000 },
+      }),
+    ]);
+
+    const model = catalog.resolve('openrouter', 'anthropic/claude-opus-4.8') as Model<Api> | null;
+
+    expect(model?.input).toEqual(['text']);
+    expect(model?.contextWindow).toBe(4000);
+    expect(model?.maxTokens).toBe(1000);
   });
 
   it('returns null for dynamicModels with no defaults (cannot size the model)', () => {

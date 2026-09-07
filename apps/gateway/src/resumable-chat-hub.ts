@@ -4,6 +4,7 @@ import type {
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { toClientLocation } from './client-location.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import {
   type AcceptedTurn,
@@ -12,6 +13,8 @@ import {
   type PersistedTurnFrame,
 } from './conversation-service.js';
 import type { EventLogEntry } from './event-log-store.js';
+import type { MemorySweepService } from './memory-sweep.js';
+import type { SkillReviewService } from './skill-review.js';
 
 export type ResumableSendFrame = Extract<MobileWsClientFrame, { type: 'message' }> & {
   resumable: true;
@@ -26,6 +29,9 @@ export interface ResumableChatHubOptions {
   conversations: ConversationService;
   agents: AgentChatCoordinator;
   autoTitle: ConversationAutoTitleService;
+  /** Optional post-turn memory sweep; scheduled only for turns that complete. */
+  memorySweep?: Pick<MemorySweepService, 'schedule'>;
+  skillReview?: Pick<SkillReviewService, 'schedule'>;
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
   onChanged?(summary: ConversationSummary): void;
 }
@@ -191,6 +197,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         images: frame.images?.length
           ? frame.images.map((image) => ({ type: 'image' as const, ...image }))
           : undefined,
+        location: toClientLocation(frame.location),
         messageId: frame.id,
         signal: live.controller.signal,
       });
@@ -202,7 +209,21 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         const persisted = conversations.appendTurnEvent(live.conversationId, live.turnId, event);
         if (persisted) broadcast(live, frameFromPersisted(live, persisted));
       }
-      if (!live.cancelled) finish(live, 'completed');
+      if (!live.cancelled) {
+        finish(live, 'completed');
+        options.memorySweep?.schedule({
+          agentId: live.agentId,
+          conversationId: live.conversationId,
+          turnId: live.turnId,
+        });
+        // Only completed turns are reviewed: a failed or cancelled turn has no
+        // outcome to learn from, and half of one is worse than none.
+        options.skillReview?.schedule({
+          agentId: live.agentId,
+          conversationId: live.conversationId,
+          turnId: live.turnId,
+        });
+      }
     } catch (error) {
       if (!live.cancelled) {
         const persisted = conversations.finishTurn({

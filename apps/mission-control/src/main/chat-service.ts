@@ -15,6 +15,7 @@ import type {
 import type {
   ConversationMessagePage,
   ConversationSummary,
+  MobileClientLocation,
   MobileImage,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
@@ -114,6 +115,18 @@ export class ChatService {
     private conversations?: ConversationController,
     private resumable?: ResumableChatTransport,
   ) {}
+
+  /**
+   * Supplies the coarse client location for outgoing turns. A settable hook
+   * rather than a constructor arg (matching `setSessionStatusListener`) so
+   * ChatService needs no knowledge of Electron -- the main process wires it to
+   * `readCoarseLocation(app)`, and tests leave it unset.
+   */
+  private locationProvider?: () => MobileClientLocation | undefined;
+
+  setLocationProvider(provider: (() => MobileClientLocation | undefined) | undefined): void {
+    this.locationProvider = provider;
+  }
 
   setResumableTransport(transport: ResumableChatTransport | undefined): void {
     if (this.resumable !== transport) this.resumable?.closeAll();
@@ -453,7 +466,13 @@ export class ChatService {
     if (conversation.offline || conversation.readOnly) {
       throw new ConversationRepositoryOfflineError();
     }
-    const accepted = await this.resumable.send(conversation, turnId, text, images);
+    const accepted = await this.resumable.send(
+      conversation,
+      turnId,
+      text,
+      images,
+      this.locationProvider?.(),
+    );
     if (conversation.title === 'New Conversation') {
       this.runInBackground(this.titleAndFileTask(conversation, text));
     }
@@ -570,6 +589,10 @@ export class ChatService {
           channelId: 'mission-control',
           conversationId,
           text,
+          ...(() => {
+            const location = this.locationProvider?.();
+            return location ? { location } : {};
+          })(),
           ...(images?.length ? { images } : {}),
         }),
       );

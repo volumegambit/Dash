@@ -87,6 +87,32 @@ struct GatewayAPITests {
     #expect(requests[5].httpBody == nil)
   }
 
+  @Test("memory reads and delete ride the mobile namespace with percent-encoded names")
+  func memoryRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "memory-list.json")
+    URLProtocolStub.enqueue(status: 200, data: Data(#"{"name":"user-timezone"}"#.utf8))
+    URLProtocolStub.enqueue(status: 404, data: Data(#"{"error":"not found"}"#.utf8))
+    let api = makeAPI()
+
+    let memories = try await api.listMemories(agentID: "a")
+    try await api.deleteMemory(agentID: "a", name: "user-timezone")
+    await #expect(throws: GatewayError.notFound) {
+      // The gateway answers the memory routes with a bare `{ error }` body
+      // instead of the `MobileApiError` envelope; status mapping wins, so it
+      // still surfaces as `.notFound`.
+      try await api.deleteMemory(agentID: "a", name: "gone/1")
+    }
+
+    #expect(memories.map(\.name) == ["user-timezone", "repo-pnpm"])
+    #expect(memories.map(\.type) == [.user, .project])
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "DELETE", "DELETE"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/agents/a/memory")
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/agents/a/memory/user-timezone")
+    #expect(try encodedPath(requests[2]) == "/mobile/v1/agents/a/memory/gone%2F1")
+    #expect(requests[1].httpBody == nil)
+  }
+
   @Test("relay auth is present on HTTP")
   func relayHeaders() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "agents-list.json")
@@ -540,5 +566,88 @@ private func gatewayError<Value: Sendable>(
   } catch {
     Issue.record("Expected GatewayError, received \(error)")
     return nil
+  }
+}
+
+@Suite("Notice content decoding")
+struct MessageContentNoticeTests {
+  private func decode(_ json: String) throws -> MessageContent {
+    try JSONDecoder().decode(MessageContent.self, from: Data(json.utf8))
+  }
+
+  @Test("decodes a learned-skill notice")
+  func decodesSkillNotice() throws {
+    let content = try decode(
+      #"{"type":"notice","kind":"skill_learned","text":"Learned: write-files"}"#
+    )
+
+    guard case let .notice(kind, text) = content else {
+      Issue.record("expected a notice, got \(content)")
+      return
+    }
+    #expect(kind == .skillLearned)
+    #expect(text == "Learned: write-files")
+  }
+
+  @Test("decodes a swept-memory notice")
+  func decodesMemoryNotice() throws {
+    let content = try decode(
+      #"{"type":"notice","kind":"memory_saved","text":"Remembered: prefers printf"}"#
+    )
+
+    guard case let .notice(kind, _) = content else {
+      Issue.record("expected a notice")
+      return
+    }
+    #expect(kind == .memorySaved)
+  }
+
+  @Test("an unknown notice kind degrades instead of throwing")
+  func unknownKindDegrades() throws {
+    // A gateway that adds a notice kind must not break decoding on this build.
+    let content = try decode(#"{"type":"notice","kind":"quantum_insight","text":"hi"}"#)
+
+    guard case let .notice(kind, _) = content else {
+      Issue.record("expected a notice")
+      return
+    }
+    #expect(kind == .unknown)
+  }
+
+  @Test("an unknown content type degrades instead of failing the page")
+  func unknownContentDegrades() throws {
+    // Messages decode as a page; one unrecognised message must not blank the
+    // whole transcript. Same rule as AgentEvent.unknown.
+    let content = try decode(#"{"type":"hologram","payload":{}}"#)
+
+    guard case let .unknown(type) = content else {
+      Issue.record("expected unknown, got \(content)")
+      return
+    }
+    #expect(type == "hologram")
+  }
+
+  @Test("a notice round-trips through encode and decode")
+  func roundTrips() throws {
+    let original = MessageContent.notice(kind: .skillLearned, text: "Learned: x")
+    let data = try JSONEncoder().encode(original)
+    let decoded = try JSONDecoder().decode(MessageContent.self, from: data)
+
+    #expect(decoded == original)
+  }
+
+  @Test("user and assistant content still decode")
+  func existingShapesUnaffected() throws {
+    guard case let .user(text, _) = try decode(#"{"type":"user","text":"hi"}"#) else {
+      Issue.record("expected user content")
+      return
+    }
+    #expect(text == "hi")
+
+    guard case let .assistant(events) = try decode(#"{"type":"assistant","events":[]}"#) else {
+      Issue.record("expected assistant content")
+      return
+    }
+    #expect(events.isEmpty)
   }
 }

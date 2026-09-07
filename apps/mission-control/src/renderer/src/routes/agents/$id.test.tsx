@@ -97,4 +97,48 @@ describe('AgentDetail', () => {
       search: { agentId: 'Developer' },
     });
   });
+
+  describe('Tools card', () => {
+    function renderWithTools(tools: string[]): void {
+      const agent = { ...activeAgent, config: { ...activeAgent.config, tools } };
+      mockApi.agentsList.mockResolvedValue([agent]);
+      useAgentsStore.setState({ agents: [agent], loading: false, error: null });
+      render(<AgentDetail />);
+    }
+
+    it('renders enabled tools grouped with friendly labels', async () => {
+      renderWithTools(['read', 'grep', 'bash', 'web_search']);
+      // Group headers the deploy wizard uses.
+      expect(await screen.findByText('Read & Search')).toBeInTheDocument();
+      expect(screen.getByText('Shell')).toBeInTheDocument();
+      expect(screen.getByText('Web')).toBeInTheDocument();
+      // Friendly labels, not raw ids.
+      expect(screen.getByText('Grep')).toBeInTheDocument();
+      expect(screen.getByText('Web Search')).toBeInTheDocument();
+      // A group with no enabled tools is omitted.
+      expect(screen.queryByText('Modify Files')).not.toBeInTheDocument();
+    });
+
+    it('shows a plain-language description on each group', async () => {
+      renderWithTools(['read']);
+      expect(await screen.findByText('Browse and search the project')).toBeInTheDocument();
+    });
+
+    it('surfaces the enabled tool count in the card header', async () => {
+      renderWithTools(['read', 'grep', 'bash']);
+      await screen.findByText('Read & Search');
+      expect(screen.getByText('3')).toBeInTheDocument();
+    });
+
+    it('collects unknown tool ids under an Other group with a humanized label', async () => {
+      renderWithTools(['read', 'linear_search_issues']);
+      expect(await screen.findByText('Other')).toBeInTheDocument();
+      expect(screen.getByText('Linear Search Issues')).toBeInTheDocument();
+    });
+
+    it('shows an empty state when no tools are enabled', async () => {
+      renderWithTools([]);
+      expect(await screen.findByText('No tools enabled')).toBeInTheDocument();
+    });
+  });
 });

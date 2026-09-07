@@ -1,29 +1,67 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
   @Environment(SettingsFeature.self) private var feature
   @Environment(AppModel.self) private var appModel
   @State private var showForgetConfirmation = false
   @State private var approveDeviceViewModel: ApproveDeviceViewModel?
+  @State private var didCopyPublicKey = false
 
   var body: some View {
-    Form {
+    // `@Environment` hands back a plain reference; `@Bindable` is what turns an
+    // @Observable into something `$`-bindable for the location Toggle.
+    @Bindable var feature = feature
+    return Form {
       Section("Gateway") {
-        LabeledContent("Name", value: feature.gatewayLabel)
+        LabeledContent("Name") {
+          // `LabeledContent(_:value:)` wraps a long value onto its own line
+          // below the label, which is why a gateway hostname broke the
+          // label-left/value-right rhythm every other row keeps. Middle
+          // truncation because both ends of a hostname carry meaning — the
+          // machine name and the domain — while the middle rarely does.
+          Text(feature.gatewayLabel)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+        }
         LabeledContent("Gateway ID") {
           Text(feature.identity.gatewayId)
             .textSelection(.enabled)
-            .multilineTextAlignment(.trailing)
+            .lineLimit(1)
+            .truncationMode(.middle)
         }
-        LabeledContent("Public key", value: feature.publicKeyFingerprint)
+        publicKeyRow
       }
 
       Section("Connection") {
         LabeledContent("Type", value: feature.modeText)
-        LabeledContent("Status", value: feature.connectionText)
+        LabeledContent("Status") {
+          // Deliberately NOT `StatusBadge`, which is a SwiftUI `Label`.
+          // A `Label` in `LabeledContent`'s value slot is laid out as a
+          // form-row label rather than sized to its content: it reserved
+          // ~200pt of empty vertical space below "Status", pushing the rest
+          // of the Connection card down (captured on the iPad simulator via
+          // the Phase B launch option, and originally reported from a photo
+          // of a physical iPad). `.fixedSize()` is not the fix either — it
+          // collapses the title away and leaves only the glyph.
+          //
+          // `StatusBadge` stays correct in its own context: `OfflineBanner`
+          // puts it in a plain `HStack`, where `Label` behaves.
+          HStack(spacing: 4) {
+            Image(systemName: feature.connectionSystemImage)
+            Text(feature.connectionText)
+          }
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(statusColor)
+          .accessibilityElement(children: .combine)
+        }
         LabeledContent("Last sync") {
           if let lastSync = feature.lastSuccessfulSyncAt {
-            Text(lastSync, format: .dateTime.year().month().day().hour().minute())
+            // Was an absolute "5 Sep 2026 at 9:06 AM" — the longest value on
+            // the screen, answering "when exactly" when the question being
+            // asked is "is this current?".
+            Text(RelativeTimestamp.label(for: lastSync))
           } else {
             Text("Never")
           }
@@ -45,6 +83,22 @@ struct SettingsView: View {
         }
         .disabled(feature.canReconnect == false)
         .accessibilityLabel(feature.reconnectButtonTitle)
+      }
+
+      Section {
+        Toggle("Share precise location", isOn: $feature.sharePreciseLocation)
+          .frame(minHeight: 44)
+          .accessibilityIdentifier("settings.share-precise-location")
+      } header: {
+        Text("Location")
+      } footer: {
+        Text(
+          """
+          Your agent already knows your time zone and region. Turning this on \
+          also shares your approximate coordinates, which are stored with the \
+          conversation.
+          """
+        )
       }
 
       Section {
@@ -119,6 +173,56 @@ struct SettingsView: View {
       if let approveDeviceViewModel {
         ApproveDeviceView(viewModel: approveDeviceViewModel)
       }
+    }
+  }
+
+  /// Tap to copy the full key (settings clarity 2026-09-05).
+  ///
+  /// The fingerprint is a verification affordance — you compare it against
+  /// what the gateway reports — but it was truncated with no way to see or
+  /// copy the whole value, and the row had no `textSelection` even though
+  /// the Gateway ID row beside it did. Monospaced because comparing base64
+  /// by eye in a proportional face is materially harder: `l`/`I`/`1` and
+  /// `O`/`0` do not line up in columns.
+  @ViewBuilder
+  private var publicKeyRow: some View {
+    LabeledContent("Public key") {
+      if let key = feature.copyablePublicKey {
+        Button {
+          UIPasteboard.general.string = key
+          withAnimation { didCopyPublicKey = true }
+          Task {
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation { didCopyPublicKey = false }
+          }
+        } label: {
+          HStack(spacing: 6) {
+            Text(didCopyPublicKey ? "Copied" : feature.publicKeyFingerprint)
+              .font(.body.monospaced())
+            Image(systemName: didCopyPublicKey ? "checkmark" : "doc.on.doc")
+              .font(.footnote)
+          }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(didCopyPublicKey ? DashTheme.success : Color.secondary)
+        .accessibilityLabel("Public key \(feature.publicKeyFingerprint)")
+        .accessibilityHint("Copies the full public key")
+        .accessibilityIdentifier("settings.publicKey")
+      } else {
+        Text(feature.publicKeyFingerprint)
+          .font(.body.monospaced())
+      }
+    }
+  }
+
+  private var statusColor: Color {
+    switch feature.connectionSeverity {
+    case .ok: DashTheme.success
+    // `.orange` rather than a token: `OfflineBanner` already uses it for
+    // exactly these states, and inventing `DashTheme.warning` for one of
+    // the two call sites would fragment the scale rather than fix it.
+    case .warning: .orange
+    case .error: DashTheme.danger
     }
   }
 

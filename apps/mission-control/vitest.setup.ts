@@ -126,6 +126,8 @@ function createMockApi(): MockApi {
 
     // Skills (gateway passthrough)
     skillsList: vi.fn().mockResolvedValue([]),
+    skillsLessons: vi.fn().mockResolvedValue(null),
+    skillsRetireLesson: vi.fn().mockResolvedValue(null),
     skillsGet: vi.fn().mockResolvedValue(null),
     skillsUpdateContent: vi.fn().mockResolvedValue(undefined),
     skillsInstall: vi.fn().mockResolvedValue(null),
@@ -133,6 +135,14 @@ function createMockApi(): MockApi {
     skillsCreate: vi.fn().mockResolvedValue(null),
     skillsGetConfig: vi.fn().mockResolvedValue({ paths: [], urls: [] }),
     skillsUpdateConfig: vi.fn().mockResolvedValue({ requiresRestart: false }),
+
+    // Agent memory (gateway passthrough)
+    memoryList: vi.fn().mockResolvedValue([]),
+    memoryGet: vi.fn().mockResolvedValue(null),
+    memoryPut: vi.fn().mockResolvedValue(undefined),
+    memoryRemove: vi.fn().mockResolvedValue(undefined),
+    memoryGetConfig: vi.fn().mockResolvedValue({ enabled: true, sweep: 'auto' }),
+    memoryUpdateConfig: vi.fn().mockResolvedValue({ enabled: true, sweep: 'auto' }),
 
     // Swarm panel (gateway passthrough)
     swarmListRuns: vi.fn().mockResolvedValue([]),

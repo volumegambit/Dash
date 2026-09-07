@@ -1,0 +1,14 @@
+[
+  {
+    "name": "write-files",
+    "description": "Use when writing files in this project",
+    "source": "agent",
+    "content": "---\nname: write-files\ndescription: Use when writing files in this project\n---\nThese lessons were learned automatically from previous sessions.\n\n## Lessons\n\n- Always use printf instead of echo when writing files.\n"
+  },
+  {
+    "name": "deep-research",
+    "description": "Use for multi-source research tasks",
+    "trigger": "research",
+    "source": "plugin"
+  }
+]

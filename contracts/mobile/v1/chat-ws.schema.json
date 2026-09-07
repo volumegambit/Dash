@@ -7,8 +7,76 @@
       "additionalProperties": false,
       "required": ["mediaType", "data"],
       "properties": {
-        "mediaType": { "enum": ["image/jpeg", "image/png", "image/gif", "image/webp"] },
-        "data": { "type": "string", "minLength": 1 }
+        "mediaType": {
+          "enum": ["image/jpeg", "image/png", "image/gif", "image/webp"]
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "MobilePreciseLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latitude", "longitude", "accuracyMeters", "capturedAt"],
+      "properties": {
+        "latitude": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "longitude": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "accuracyMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339. May predate the message - clients may send a cached fix."
+        },
+        "place": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "MobileClientLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timezone", "utcOffsetMinutes", "locale"],
+      "properties": {
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "IANA time zone id, e.g. \"Asia/Singapore\"."
+        },
+        "utcOffsetMinutes": {
+          "type": "integer",
+          "minimum": -840,
+          "maximum": 840,
+          "description": "Minutes EAST of UTC at send time (Singapore = 480). JS getTimezoneOffset() is west-positive and must be negated; Swift secondsFromGMT() is already east-positive."
+        },
+        "locale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "region": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "description": "ISO 3166-1 alpha-2."
+        },
+        "precise": {
+          "$ref": "#/$defs/MobilePreciseLocation"
+        }
       }
     },
     "MobileApiErrorCode": {
@@ -28,18 +96,43 @@
       "additionalProperties": false,
       "required": ["type", "id", "agentId", "channelId", "conversationId", "text", "resumable"],
       "properties": {
-        "type": { "const": "message" },
-        "id": { "type": "string", "format": "uuid" },
-        "agentId": { "type": "string", "minLength": 1 },
-        "channelId": { "type": "string", "minLength": 1 },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "text": { "type": "string" },
+        "type": {
+          "const": "message"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/MobileClientLocation"
+        },
         "images": {
           "type": "array",
-          "items": { "$ref": "#/$defs/MobileImage" }
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
         },
-        "streamingBehavior": { "enum": ["steer", "followUp"] },
-        "resumable": { "const": true }
+        "streamingBehavior": {
+          "enum": ["steer", "followUp"]
+        },
+        "resumable": {
+          "const": true
+        }
       }
     },
     "ChatResume": {
@@ -47,11 +140,25 @@
       "additionalProperties": false,
       "required": ["type", "id", "agentId", "conversationId", "sinceSeq"],
       "properties": {
-        "type": { "const": "resume" },
-        "id": { "type": "string", "format": "uuid" },
-        "agentId": { "type": "string", "minLength": 1 },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "sinceSeq": { "type": "integer", "minimum": 0 }
+        "type": {
+          "const": "resume"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sinceSeq": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "ChatAnswer": {
@@ -59,10 +166,20 @@
       "additionalProperties": false,
       "required": ["type", "id", "questionId", "answer"],
       "properties": {
-        "type": { "const": "answer" },
-        "id": { "type": "string", "format": "uuid" },
-        "questionId": { "type": "string", "minLength": 1 },
-        "answer": { "type": "string" }
+        "type": {
+          "const": "answer"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "questionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer": {
+          "type": "string"
+        }
       }
     },
     "ChatCancel": {
@@ -70,8 +187,13 @@
       "additionalProperties": false,
       "required": ["type", "id"],
       "properties": {
-        "type": { "const": "cancel" },
-        "id": { "type": "string", "format": "uuid" }
+        "type": {
+          "const": "cancel"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
       }
     },
     "ChatAccepted": {
@@ -87,13 +209,33 @@
         "seq"
       ],
       "properties": {
-        "type": { "const": "accepted" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "userMessageId": { "type": "string", "format": "uuid" },
-        "assistantMessageId": { "type": "string", "format": "uuid" },
-        "revision": { "type": "integer", "minimum": 1 },
-        "seq": { "type": "integer", "minimum": 1 }
+        "type": {
+          "const": "accepted"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "userMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "assistantMessageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "ChatEvent": {
@@ -101,15 +243,29 @@
       "additionalProperties": false,
       "required": ["type", "id", "conversationId", "seq", "event"],
       "properties": {
-        "type": { "const": "event" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "seq": { "type": "integer", "minimum": 1 },
+        "type": {
+          "const": "event"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
         "event": {
           "type": "object",
           "required": ["type"],
           "properties": {
-            "type": { "type": "string", "minLength": 1 }
+            "type": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "additionalProperties": true
         }
@@ -120,11 +276,24 @@
       "additionalProperties": false,
       "required": ["type", "id", "conversationId", "seq", "outcome"],
       "properties": {
-        "type": { "const": "done" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "seq": { "type": "integer", "minimum": 1 },
-        "outcome": { "enum": ["completed", "cancelled"] }
+        "type": {
+          "const": "done"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outcome": {
+          "enum": ["completed", "cancelled"]
+        }
       }
     },
     "ChatError": {
@@ -132,14 +301,35 @@
       "additionalProperties": false,
       "required": ["type", "id", "conversationId", "seq", "error"],
       "properties": {
-        "type": { "const": "error" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "seq": { "type": "integer", "minimum": 1 },
-        "error": { "type": "string", "minLength": 1 },
-        "code": { "$ref": "#/$defs/MobileApiErrorCode" },
-        "retryable": { "type": "boolean" },
-        "activeTurnId": { "type": "string", "minLength": 1 }
+        "type": {
+          "const": "error"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "$ref": "#/$defs/MobileApiErrorCode"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "activeTurnId": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "MobileWsMessageFrame": {
@@ -147,18 +337,43 @@
       "additionalProperties": false,
       "required": ["type", "id", "agentId", "channelId", "conversationId", "text"],
       "properties": {
-        "type": { "const": "message" },
-        "id": { "type": "string", "format": "uuid" },
-        "agentId": { "type": "string", "minLength": 1 },
-        "channelId": { "type": "string", "minLength": 1 },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "text": { "type": "string" },
+        "type": {
+          "const": "message"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "channelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "text": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/MobileClientLocation"
+        },
         "images": {
           "type": "array",
-          "items": { "$ref": "#/$defs/MobileImage" }
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
         },
-        "streamingBehavior": { "enum": ["steer", "followUp"] },
-        "resumable": { "type": "boolean" }
+        "streamingBehavior": {
+          "enum": ["steer", "followUp"]
+        },
+        "resumable": {
+          "type": "boolean"
+        }
       }
     },
     "MobileWsEventFrame": {
@@ -166,15 +381,29 @@
       "additionalProperties": false,
       "required": ["type", "id", "event"],
       "properties": {
-        "type": { "const": "event" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "seq": { "type": "integer", "minimum": 1 },
+        "type": {
+          "const": "event"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
         "event": {
           "type": "object",
           "required": ["type"],
           "properties": {
-            "type": { "type": "string", "minLength": 1 }
+            "type": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "additionalProperties": true
         }
@@ -185,11 +414,24 @@
       "additionalProperties": false,
       "required": ["type", "id"],
       "properties": {
-        "type": { "const": "done" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "seq": { "type": "integer", "minimum": 1 },
-        "outcome": { "enum": ["completed", "cancelled"] }
+        "type": {
+          "const": "done"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outcome": {
+          "enum": ["completed", "cancelled"]
+        }
       }
     },
     "MobileWsErrorFrame": {
@@ -197,36 +439,77 @@
       "additionalProperties": false,
       "required": ["type", "id", "error"],
       "properties": {
-        "type": { "const": "error" },
-        "id": { "type": "string", "format": "uuid" },
-        "conversationId": { "type": "string", "format": "uuid" },
-        "seq": { "type": "integer", "minimum": 1 },
-        "error": { "type": "string", "minLength": 1 },
-        "code": { "$ref": "#/$defs/MobileApiErrorCode" },
-        "retryable": { "type": "boolean" },
-        "activeTurnId": { "type": "string", "minLength": 1 }
+        "type": {
+          "const": "error"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "$ref": "#/$defs/MobileApiErrorCode"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "activeTurnId": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "MobileWsClientFrame": {
       "oneOf": [
-        { "$ref": "#/$defs/MobileWsMessageFrame" },
-        { "$ref": "#/$defs/ChatResume" },
-        { "$ref": "#/$defs/ChatAnswer" },
-        { "$ref": "#/$defs/ChatCancel" }
+        {
+          "$ref": "#/$defs/MobileWsMessageFrame"
+        },
+        {
+          "$ref": "#/$defs/ChatResume"
+        },
+        {
+          "$ref": "#/$defs/ChatAnswer"
+        },
+        {
+          "$ref": "#/$defs/ChatCancel"
+        }
       ]
     },
     "MobileWsServerFrame": {
       "oneOf": [
-        { "$ref": "#/$defs/ChatAccepted" },
-        { "$ref": "#/$defs/MobileWsEventFrame" },
-        { "$ref": "#/$defs/MobileWsDoneFrame" },
-        { "$ref": "#/$defs/MobileWsErrorFrame" }
+        {
+          "$ref": "#/$defs/ChatAccepted"
+        },
+        {
+          "$ref": "#/$defs/MobileWsEventFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileWsDoneFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileWsErrorFrame"
+        }
       ]
     },
     "MobileWsFrame": {
       "oneOf": [
-        { "$ref": "#/$defs/MobileWsClientFrame" },
-        { "$ref": "#/$defs/MobileWsServerFrame" }
+        {
+          "$ref": "#/$defs/MobileWsClientFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileWsServerFrame"
+        }
       ]
     }
   },

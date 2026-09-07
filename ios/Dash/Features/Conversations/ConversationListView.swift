@@ -176,34 +176,13 @@ struct ConversationListView: View {
         emptyState
           .listRowBackground(Color.clear)
       } else if feature.conversations.isEmpty == false {
-        Section("Conversations") {
-          ForEach(filteredConversations) { conversation in
-            decoratedConversationRow(conversation)
-          }
-
-          if filteredConversations.isEmpty {
-            ContentUnavailableView.search(text: searchText)
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
-              // Review fix (audit #9): with zero locally-matching rows
-              // there's no row left to hang the usual near-the-tail
-              // pagination trigger off, so eagerly keep loading older pages
-              // while this empty-results state is showing — an unloaded
-              // page might still contain a match. Keyed on `nextCursor` so
-              // it re-fires after each successful page load and stops on
-              // its own once a match appears (this view disappears) or
-              // pages run out (`nextCursor` settles at `nil`).
-              .task(id: feature.nextCursor) {
-                await feature.loadOlderForEmptySearchResults()
-              }
-          } else if feature.isLoadingOlder {
-            HStack {
-              Spacer()
-              ProgressView("Loading older conversations")
-              Spacer()
-            }
-            .listRowSeparator(.hidden)
-          }
+        // The nav title already says "Conversations"; a section header
+        // repeating it only earns its place when "Needs Recovery" is also
+        // on screen and the two need telling apart.
+        if feature.recoverablePendingSends.isEmpty {
+          Section { conversationSectionContent }
+        } else {
+          Section("Conversations") { conversationSectionContent }
         }
       }
     }
@@ -502,13 +481,47 @@ struct ConversationListView: View {
     }
   }
 
+  /// The `Conversations` section's rows plus the search/pagination tail,
+  /// extracted from the `List` body so the section can be built with or
+  /// without a header without duplicating its contents.
+  @ViewBuilder
+  private var conversationSectionContent: some View {
+    ForEach(filteredConversations) { conversation in
+      decoratedConversationRow(conversation)
+    }
+
+    if filteredConversations.isEmpty {
+      ContentUnavailableView.search(text: searchText)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        // Review fix (audit #9): with zero locally-matching rows
+        // there's no row left to hang the usual near-the-tail
+        // pagination trigger off, so eagerly keep loading older pages
+        // while this empty-results state is showing — an unloaded
+        // page might still contain a match. Keyed on `nextCursor` so
+        // it re-fires after each successful page load and stops on
+        // its own once a match appears (this view disappears) or
+        // pages run out (`nextCursor` settles at `nil`).
+        .task(id: feature.nextCursor) {
+          await feature.loadOlderForEmptySearchResults()
+        }
+    } else if feature.isLoadingOlder {
+      HStack {
+        Spacer()
+        ProgressView("Loading older conversations")
+        Spacer()
+      }
+      .listRowSeparator(.hidden)
+    }
+  }
+
   /// The conversation row plus every per-row modifier, extracted from the
-  /// `List` body as one unit: with Task 10's "Open in New Window" item and
-  /// `.draggable` added inline, the `ForEach` closure tipped the type
-  /// checker over its budget ("unable to type-check this expression in
-  /// reasonable time"). Keeping the whole chain in ONE function preserves
-  /// the co-location of `.contextMenu` and `.draggable` that Task 8's review
-  /// fix (aeda641d) established, rather than scattering them across views.
+  /// `ForEach` closure as one unit: with Task 10's "Open in New Window" item
+  /// and `.draggable` added inline, the closure tipped the type checker over
+  /// its budget ("unable to type-check this expression in reasonable time").
+  /// Keeping the whole chain in ONE function preserves the co-location of
+  /// `.contextMenu` and `.draggable` that Task 8's review fix (aeda641d)
+  /// established, rather than scattering them across views.
   @ViewBuilder
   private func decoratedConversationRow(_ conversation: CachedConversation) -> some View {
     conversationRow(conversation)
@@ -622,35 +635,68 @@ struct ConversationListView: View {
         presentation: presentation
       )
     } label: {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .firstTextBaseline) {
+      // Two lines, Mail-style (list density 2026-09-05). This was four —
+      // an unbounded-height title, the agent, the preview, and a status
+      // badge — which fit about four and a half conversations on a phone.
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          // `lineLimit(1)`: titles are generated from the conversation and
+          // run long ("I can't check your emails — I don't have access to
+          // your"), so an unbounded title silently doubled a row's height.
           Text(conversation.summary.title)
             .font(.headline)
             .foregroundStyle(.primary)
-          Spacer()
-          Text(conversation.summary.updatedAt, style: .relative)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          Text(RelativeTimestamp.label(for: conversation.summary.updatedAt))
             .font(.caption)
             .foregroundStyle(.secondary)
+            .layoutPriority(1)
         }
-        Text(conversation.summary.agentName)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-        if let preview = conversation.summary.lastMessagePreview, preview.isEmpty == false {
-          Text(preview)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-        }
-        HStack {
-          StatusBadge(
-            title: LocalizedStringKey(conversation.summary.status.displayName),
-            systemImage: conversation.summary.status.systemImage,
-            color: conversation.summary.status.color
-          )
-          if feature.isAuthoritative == false {
-            Label("Cached", systemImage: "internaldrive")
-              .font(.caption)
+
+        // Agent and preview shared one style (`.subheadline`/`.secondary`),
+        // so four grey lines of equal weight stacked up with nothing to
+        // scan by. One line, with the agent carrying the emphasis: it is
+        // the stable identifier you look for, the preview is the detail.
+        // The agent takes the emphasis (Messages puts the sender here) and
+        // the preview stays `.secondary`. Demoting the preview to
+        // `.tertiary` would have read as cleaner hierarchy but is roughly
+        // 3.6:1 against this app's black ground — under the 4.5:1 body-text
+        // floor. Weight and colour carry the hierarchy instead of dimming.
+        HStack(spacing: 0) {
+          Text(conversation.summary.agentName)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
+          if let preview = conversation.summary.lastMessagePreview, preview.isEmpty == false {
+            Text(verbatim: " · ")
+              .font(.subheadline)
               .foregroundStyle(.secondary)
+            Text(preview)
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .lineLimit(1)
+        .truncationMode(.tail)
+
+        // Only states that change what you would do next. `idle` was
+        // rendered on every row, and a badge that is always present
+        // carries no information while costing every row a line.
+        if conversation.summary.status != .idle || feature.isAuthoritative == false {
+          HStack {
+            if conversation.summary.status != .idle {
+              StatusBadge(
+                title: LocalizedStringKey(conversation.summary.status.displayName),
+                systemImage: conversation.summary.status.systemImage,
+                color: conversation.summary.status.color
+              )
+            }
+            if feature.isAuthoritative == false {
+              Label("Cached", systemImage: "internaldrive")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
           }
         }
       }
@@ -665,6 +711,9 @@ struct ConversationListView: View {
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
     .accessibilityIdentifier("conversation.row.\(conversation.id)")
+    // Left the separator starting a third of the way across the row,
+    // aligned under the status badge rather than under the text column.
+    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
   }
 
   private func recoveryRow(_ recovery: RecoverablePendingSend) -> some View {

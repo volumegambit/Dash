@@ -3,6 +3,62 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// What a key does in the composer on iOS (UI-quality goal, Phase D).
+///
+/// A declaration, not a description: `ComposerView` routes its Shift+Tab
+/// branch through `action(key:shift:command:)`, and
+/// `ComposerKeyContractTests` cross-checks every case against the `ios`
+/// column of `scripts/fixtures/composer-key-contract.json` — the same file
+/// the web suite generates its tests from. Changing the behaviour on one side
+/// without the other fails the build's tests.
+///
+/// Why it exists: Shift+Return inserted a newline on web and Mission Control
+/// and was silently impossible here, because SwiftUI's `onSubmit` fires on
+/// every Return with no modifier awareness. Every test on every client
+/// passed. Nothing named the intended behaviour in one place, so nothing
+/// could notice one client drifting from it.
+enum ComposerKeyContract {
+  enum Action: String, Equatable, Sendable {
+    /// Submits the draft.
+    case send
+    /// Inserts a line break; does not submit.
+    case newline
+    /// Left to the platform's focus traversal; does not touch the draft.
+    case focus
+  }
+
+  /// How the newline arrives, for cases that produce one.
+  enum Mechanism: String, Equatable, Sendable {
+    /// This app's own handler inserts it.
+    case handler
+    /// The platform's text input inserts it; the handler's job is to decline
+    /// the key. Declining is exactly what `onSubmit` could not do.
+    case native
+  }
+
+  static func action(key: String, shift: Bool, command: Bool) -> Action {
+    switch (key, shift, command) {
+    // ⌘Return sends — the send button carries this shortcut.
+    case ("Enter", _, true): .send
+    // Return and Shift+Return both insert a newline. `TextField` does it
+    // natively once `.onSubmit` is gone; the composer must not intercept.
+    case ("Enter", _, false): .newline
+    // Shift+Tab is a deliberate override of reverse focus traversal.
+    case ("Tab", true, _): .newline
+    // Plain Tab is deliberately NOT overridden: taking both directions would
+    // leave keyboard and screen-reader users no way out of the composer.
+    case ("Tab", false, _): .focus
+    default: .focus
+    }
+  }
+
+  static func mechanism(key: String, shift: Bool, command: Bool) -> Mechanism? {
+    guard action(key: key, shift: shift, command: command) == .newline else { return nil }
+    // Only Shift+Tab is spliced by this app; Return relies on `TextField`.
+    return key == "Tab" ? .handler : .native
+  }
+}
+
 struct ComposerView: View {
   @Environment(ChatFeature.self) private var feature
 
@@ -70,11 +126,34 @@ struct ComposerView: View {
           .focused($isDraftFocused)
           .accessibilityIdentifier("chat.composer")
           .keyboardShortcut("l", modifiers: .command)
-          .submitLabel(.send)
-          .onSubmit {
-            guard feature.canSend else { return }
-            actionFeedbackTick += 1
-            Task { await feature.send() }
+          // Return inserts a newline; ⌘Return sends (the send button already
+          // carries that shortcut). Previously `.onSubmit` fired on every
+          // Return, and SwiftUI's `onSubmit` has no modifier awareness — so
+          // with a hardware keyboard there was NO way to type a newline in
+          // the composer at all. `.submitLabel(.send)` goes with it, so the
+          // software keyboard's return key stops advertising a send it no
+          // longer performs.
+          .onKeyPress(keys: [.tab], phases: .down) { press in
+            // Through the contract, so the declaration is load-bearing rather
+            // than decorative: if the table changes, this branch changes with
+            // it and `ComposerKeyContractTests` checks both against the shared
+            // fixture.
+            let shift = press.modifiers.contains(.shift)
+            let action = ComposerKeyContract.action(
+              key: "Tab", shift: shift, command: press.modifiers.contains(.command))
+            guard action == .newline else { return .ignored }
+            guard feature.draftEditingAllowed else { return .ignored }
+            // Appends rather than splitting at the caret: SwiftUI's
+            // `TextField` does not expose a selection, and reaching one
+            // would mean replacing the whole input with a `UITextView`
+            // wrapper. Return already gives a caret-correct newline here,
+            // so this is the redundant convenience path.
+            //
+            // Through `updateDraft`, not `state.draft` directly — that is
+            // the path `draftBinding` uses, and the one that persists the
+            // per-conversation draft.
+            Task { await feature.updateDraft(feature.state.draft + "\n") }
+            return .handled
           }
 
         primaryAction
@@ -150,6 +229,13 @@ struct ComposerView: View {
       guard allowed else { return }
       attemptAutoFocus()
     }
+    // The cached transcript has landed, so `isFreshConversation` can finally
+    // be answered truthfully — retry the one-shot auto-focus that was
+    // correctly declined while `messages` was empty-because-unloaded.
+    .onChange(of: feature.hasLoadedCache) { _, loaded in
+      guard loaded else { return }
+      attemptAutoFocus()
+    }
     // ⌘L. Unlike `attemptAutoFocus()` this is NOT one-shot and is NOT gated
     // on `isFreshConversation`: the user asked for the field explicitly, so
     // honour it every time in any conversation. `focusRequest`'s initial 0
@@ -160,8 +246,12 @@ struct ComposerView: View {
     }
   }
 
+  /// "Never had a message" is only knowable once the cached transcript has
+  /// been read — `messages` is empty for every conversation before that, and
+  /// deciding on the empty placeholder made existing threads open with the
+  /// keyboard up (transcript scroll fix, 2026-09-05).
   private var isFreshConversation: Bool {
-    feature.state.messages.isEmpty && feature.state.activeTurnID == nil
+    feature.hasLoadedCache && feature.state.messages.isEmpty && feature.state.activeTurnID == nil
   }
 
   private func attemptAutoFocus() {

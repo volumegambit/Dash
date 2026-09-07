@@ -34,6 +34,10 @@ private struct AppLaunchView: View {
       RootView()
         .environment(appModel)
         .task { await appModel.start() }
+        // Restart location updates if the user opted in on a previous launch.
+        // Runs on the main actor, which is also where CLLocationManager must
+        // first be created.
+        .task { PreciseLocationProvider.shared.resumeIfEnabled() }
         .handlesSceneLifecycle(with: appModel)
     } else {
       ContentUnavailableView {

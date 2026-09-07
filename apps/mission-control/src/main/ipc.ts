@@ -6,6 +6,8 @@ import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type {
+  MemoryConfig,
+  MemoryType,
   PluginInstallRequest,
   PluginInstallResponse,
   PluginRecord,
@@ -67,6 +69,7 @@ import type {
 import { captureChatIpcResult } from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
+import { readCoarseLocation } from './client-location.js';
 import { startCodexOAuth } from './codex-auth.js';
 import {
   createCompanionWindow,
@@ -758,7 +761,9 @@ function legacyWireMessages(page: ConversationMessagePage): McMessage[] {
             text: message.content.text,
             ...(message.content.images?.length ? { images: message.content.images } : {}),
           }
-        : { type: 'assistant', events: message.content.events },
+        : message.content.type === 'notice'
+          ? { type: 'notice', kind: message.content.kind, text: message.content.text }
+          : { type: 'assistant', events: message.content.events },
     timestamp: message.createdAt,
   }));
 }
@@ -878,6 +883,11 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
       conversationController,
       pendingConversationRuntime?.transport ?? undefined,
     );
+    // Coarse location only -- Mission Control is coarse-only by decision (see
+    // docs/plans/specs/2026-09-06-client-location-awareness-design.md). Read
+    // per turn rather than cached so a laptop that crosses a time zone reports
+    // the new one on the next message.
+    chatService.setLocationProvider(() => readCoarseLocation(app));
   }
   return chatService;
 }
@@ -1937,6 +1947,21 @@ export async function registerIpcHandlers(
     (await getSkillsClient()).skills(agentId),
   );
 
+  ipcMain.handle('skills:lessons', async (_e, agentId: string, skillName: string) => {
+    try {
+      return await (await getSkillsClient()).lessons(agentId, skillName);
+    } catch {
+      // A skill with no lesson book is the common case, not an error.
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'skills:retireLesson',
+    async (_e, agentId: string, skillName: string, lessonId: string) =>
+      (await getSkillsClient()).retireLesson(agentId, skillName, lessonId),
+  );
+
   ipcMain.handle('skills:get', async (_e, agentId: string, skillName: string) => {
     try {
       return await (await getSkillsClient()).skill(agentId, skillName);
@@ -1972,6 +1997,47 @@ export async function registerIpcHandlers(
 
   ipcMain.handle('skills:updateConfig', async (_e, agentId: string, config: SkillsConfig) =>
     (await getSkillsClient()).updateSkillsConfig(agentId, config),
+  );
+
+  // -----------------------------------------------------------------------
+  // Agent memory (gateway passthrough)
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle('memory:list', async (_e, agentId: string) =>
+    (await getSkillsClient()).memories(agentId),
+  );
+
+  ipcMain.handle('memory:get', async (_e, agentId: string, name: string) => {
+    try {
+      return await (await getSkillsClient()).memory(agentId, name);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('404')) return null;
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'memory:put',
+    async (
+      _e,
+      agentId: string,
+      name: string,
+      input: { description: string; type: MemoryType; content: string },
+    ) => {
+      await (await getSkillsClient()).putMemory(agentId, name, input);
+    },
+  );
+
+  ipcMain.handle('memory:remove', async (_e, agentId: string, name: string) =>
+    (await getSkillsClient()).removeMemory(agentId, name),
+  );
+
+  ipcMain.handle('memory:getConfig', async (_e, agentId: string) =>
+    (await getSkillsClient()).memoryConfig(agentId),
+  );
+
+  ipcMain.handle('memory:updateConfig', async (_e, agentId: string, patch: Partial<MemoryConfig>) =>
+    (await getSkillsClient()).updateMemoryConfig(agentId, patch),
   );
 
   // -----------------------------------------------------------------------

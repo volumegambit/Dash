@@ -27,6 +27,26 @@ export interface LogsResponse {
   lines: string[];
 }
 
+/** One automatically learned lesson, with how often it has proved out. */
+export interface LessonInfo {
+  id: string;
+  text: string;
+  helpful: number;
+  harmful: number;
+  createdAt: string;
+  lastTouchedAt: string;
+}
+
+/** The lessons behind a learned skill. */
+export interface LessonBookInfo {
+  version: 1;
+  skill: string;
+  description: string;
+  augments: string[];
+  bullets: LessonInfo[];
+  retired: LessonInfo[];
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -44,6 +64,31 @@ export interface SkillContent extends SkillInfo {
 export interface SkillsConfig {
   paths?: string[];
   urls?: string[];
+}
+
+// --- Agent memory ---
+
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference';
+
+export type MemorySource = 'agent' | 'sweep' | 'user' | 'import';
+
+export interface MemoryInfo {
+  name: string;
+  description: string;
+  type: MemoryType;
+  source: MemorySource;
+  createdAt: string;
+  updatedAt: string;
+  size: number;
+}
+
+export interface MemoryContent extends Omit<MemoryInfo, 'size'> {
+  content: string;
+}
+
+export interface MemoryConfig {
+  enabled: boolean;
+  sweep: 'auto' | 'on' | 'off';
 }
 
 export interface ChannelHealthEntry {

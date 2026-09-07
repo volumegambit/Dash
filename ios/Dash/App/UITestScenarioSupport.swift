@@ -31,6 +31,87 @@ extension AppDependenciesFactory {
 }
 
 #if DEBUG
+  /// Debug-only launch options that put a specific screen on-screen without a
+  /// test runner (UI-quality goal, Phase B).
+  ///
+  /// Most of this app's surfaces could not be looked at. `simctl` has no tap
+  /// command, `devicectl` has no screenshot subcommand, the `dash://` scheme
+  /// only handles `oauth-callback`, and `AppModel.selectedTab` is plain
+  /// in-memory state — so the only reachable screen was whatever the app
+  /// happened to launch into. Three redesigned screens shipped on 2026-09-05
+  /// verified by assertions alone because of it.
+  ///
+  /// With this, `simctl launch` plus `simctl io <udid> screenshot` captures
+  /// any tab:
+  ///
+  ///     SIMCTL_CHILD_DASH_UI_TEST_SCENARIO=paired-online \
+  ///     SIMCTL_CHILD_DASH_UI_TEST_TAB=settings \
+  ///     xcrun simctl launch <udid> app.dash.ios
+  ///
+  /// `#if DEBUG` like the scenario support it sits beside, so it cannot
+  /// affect a Release build.
+  enum UITestLaunchOptions {
+    /// A conversation to open on launch, so the chat surface — the one that
+    /// needs a tap to reach and therefore could not be captured at all — is
+    /// reachable from `simctl`. Takes precedence over `initialTab`, since
+    /// opening a conversation implies the Conversations tab.
+    static var initialConversationID: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_CONVERSATION"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-conversation")
+    }
+
+    /// An agent to open on launch, so agent detail — reachable only by
+    /// selecting a row — can be captured.
+    static var initialAgentID: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_AGENT"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-agent")
+    }
+
+    /// A sheet to present on launch. Sheets are view state, not `AppModel`
+    /// state, so the presenting view reads this itself — see `ChatView`.
+    /// Values: `model-picker`.
+    static var initialSheet: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_SHEET"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-sheet")
+    }
+
+    static var initialTab: AppTab? {
+      let environment = ProcessInfo.processInfo.environment
+      guard
+        let raw = environment["DASH_UI_TEST_TAB"]
+          ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
+      else { return nil }
+      return AppTab(rawValue: raw)
+    }
+
+    /// Start every tool card expanded, so a capture can show the tool BODIES.
+    ///
+    /// The same gap `initialConversationID` closed one level down: a tool
+    /// card's body is behind a tap, `simctl` has no tap, and so the per-tool
+    /// result rendering — the thing the 2026-09-05 tool-use goal is about —
+    /// could not be looked at on any iOS screen. Collapsed rows were
+    /// auditable; the bodies were not.
+    /// Which batch of the tool gallery to render in the chat fixture, or nil
+    /// for the ordinary fixture. Four batches, because a phone screen fits
+    /// about four EXPANDED tool cards and the point is to see the bodies.
+    static var toolGallery: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_TOOL_GALLERY"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tool-gallery")
+    }
+
+    static var expandTools: Bool {
+      let environment = ProcessInfo.processInfo.environment
+      if let raw = environment["DASH_UI_TEST_EXPAND_TOOLS"] {
+        return raw == "1" || raw.lowercased() == "true"
+      }
+      return ProcessInfo.processInfo.arguments.contains("--dash-ui-test-expand-tools")
+    }
+  }
+
   extension Array where Element == String {
     fileprivate func uiTestValue(after option: String) -> String? {
       guard let index = firstIndex(of: option) else { return nil }
@@ -106,16 +187,6 @@ extension AppDependenciesFactory {
     /// silently reopening a pre-existing, already-populated thread.
     case composeNewChat = "compose-new-chat"
     case settingsForget = "settings-forget"
-    /// Scroll anchor (iPad goal Phase A, Task 4 review fix, Important 3): the
-    /// same paired/online world as `.pairedOnline`, but with a transcript
-    /// long enough to actually scroll. Its own case rather than filler added
-    /// to `.pairedOnline` because that was tried once and broke every test
-    /// built on the shared fixture — see
-    /// `ConversationUITests.testJumpToBottomStaysHiddenThroughoutANormalPinnedStreamingTurn`'s
-    /// doc comment. This is also the only scenario that renders the
-    /// `chat.scrollAnchor` probe (`ChatView.scrollAnchorProbe`), so no other
-    /// suite sees an extra accessibility element.
-    case longTranscript = "long-transcript"
     /// Signed-out entry point (`SignInView`) — functionally identical to
     /// `.unpaired`, kept as its own case so `AccountUITests` reads
     /// independently of the older pairing-flow suite.
@@ -136,6 +207,28 @@ extension AppDependenciesFactory {
     /// `dash-approve:v1:` payload instead of requiring a camera — see
     /// `AccountUITests`.
     case approveDevice = "approve-device"
+    /// Transcript-scrolling scenarios (2026-09-05): `sharedConversation` seeded
+    /// with 40 cached messages (ordinals 11–50, enough to overflow any
+    /// supported viewport, iPad landscape included), a further 10-message
+    /// page (ordinals 1–10) behind `longTranscriptOlderCursor` for "Load
+    /// earlier", and a send that streams 90 text deltas over ~11s so a UI test
+    /// can scroll mid-stream. Every other scenario keeps its 2-message thread.
+    ///
+    /// MERGE NOTE (2026-09-07): two sessions independently created a
+    /// `long-transcript` scenario for the same reason — `.pairedOnline`'s
+    /// two-message fixture cannot overflow a viewport, so there is nothing to
+    /// scroll away from, and adding filler to `.pairedOnline` was tried once
+    /// and broke every test built on the shared fixture. They are now ONE
+    /// case backed by main's fixture, which is a strict superset of the iPad
+    /// branch's 40 all-`user` `filler-` rows: it has the same 40 visible
+    /// messages plus a second page for "Load earlier" and an ~11s streamed
+    /// reply. `IPadUITests.testScrollingAwayFromTheBottomSurvivesRotation`
+    /// was repointed from the `filler-` id prefix to `long-` accordingly.
+    ///
+    /// It is also the only scenario that renders the `chat.scrollAnchor`
+    /// probe (`ChatView.scrollAnchorProbe`), so no other suite sees an extra
+    /// accessibility element.
+    case longTranscript = "long-transcript"
 
     /// Explicit enumeration (rather than `self != .unpaired`) so adding a new
     /// signed-out-first case can't silently start it paired by omission.
@@ -143,7 +236,7 @@ extension AppDependenciesFactory {
       switch self {
       case .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
         .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
-        .longTranscript, .approveDevice:
+        .approveDevice, .longTranscript:
         return true
       case .unpaired, .signedOut, .accountPicker, .accountPickerError, .accountNotEnrolled:
         return false
@@ -278,6 +371,64 @@ extension AppDependenciesFactory {
       ),
     ]
 
+    /// Agent memory (Task 19): seeded per agent so the detail screen's
+    /// Memory section has both a `user` and a `project` bucket to group.
+    static let skills: [String: [SkillDTO]] = [
+      "research-agent": [
+        SkillDTO(
+          name: "write-files",
+          description: "Use when writing files in this project",
+          trigger: nil,
+          source: .agent,
+          content: "- Always use printf instead of echo when writing files."
+        ),
+        SkillDTO(
+          name: "deep-research",
+          description: "Use for multi-source research tasks",
+          trigger: "research",
+          source: .plugin,
+          content: nil
+        ),
+      ]
+    ]
+
+    static let memories: [String: [MemoryInfoDTO]] = [
+      "research-agent": [
+        memory(
+          name: "user-timezone",
+          description: "Gerry is in Singapore (UTC+8)",
+          type: .user,
+          source: "agent",
+          size: 24
+        ),
+        memory(
+          name: "repo-pnpm",
+          description: "The repo uses pnpm",
+          type: .project,
+          source: "sweep",
+          size: 18
+        ),
+      ]
+    ]
+
+    static func memory(
+      name: String,
+      description: String,
+      type: MemoryTypeDTO,
+      source: String,
+      size: Int
+    ) -> MemoryInfoDTO {
+      MemoryInfoDTO(
+        name: name,
+        description: description,
+        type: type,
+        source: source,
+        createdAt: "2026-09-05",
+        updatedAt: "2026-09-05",
+        size: size
+      )
+    }
+
     static let models: [ModelDTO] = [
       ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "OpenAI"),
       ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI"),
@@ -303,7 +454,220 @@ extension AppDependenciesFactory {
     static let onePixelPNG =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
 
+    /// `.longTranscript` paging: the cursor the canonical refresh hands back
+    /// for the 40-message recent page; `refresh(before: thisCursor)` serves
+    /// `longTranscriptOlderMessages` with no further cursor.
+    static let longTranscriptOlderCursor = "long-transcript-older"
+    static let longTranscriptOldestVisibleOrdinal = 11
+    static let longTranscriptNewestOrdinal = 50
+
+    /// Ordinals 11–50: 20 turns. Assistant replies rotate through a short
+    /// paragraph, a bulleted list, a fenced code block and a two-paragraph
+    /// answer so row heights vary the way a real thread's do (that is what
+    /// makes a lazy stack's scroll landing inexact).
+    static let longTranscriptMessages: [ConversationMessageDTO] = longTranscriptTurns(
+      ordinals: longTranscriptOldestVisibleOrdinal...longTranscriptNewestOrdinal
+    )
+
+    /// Ordinals 1–10: the page behind `longTranscriptOlderCursor`.
+    static let longTranscriptOlderMessages: [ConversationMessageDTO] = longTranscriptTurns(
+      ordinals: 1...(longTranscriptOldestVisibleOrdinal - 1)
+    )
+
+    private static func longTranscriptTurns(ordinals: ClosedRange<Int>) -> [ConversationMessageDTO] {
+      ordinals.map { ordinal in
+        let turn = (ordinal + 1) / 2
+        if ordinal.isMultiple(of: 2) == false {
+          return message(
+            id: "long-user-\(ordinal)",
+            turnID: "long-turn-\(turn)",
+            role: .user,
+            status: .completed,
+            text: "Question \(turn): what should we check before the launch?",
+            ordinal: ordinal
+          )
+        }
+        let body: String
+        switch turn % 4 {
+        case 0:
+          body = "Reply \(turn). Verify the rollout checklist and confirm the on-call rota."
+        case 1:
+          body = "Reply \(turn).\n\n- Confirm the rollout checklist\n- Page the on-call engineer\n- Freeze deploys for the window\n- Re-run the smoke suite"
+        case 2:
+          body = "Reply \(turn). Run this first:\n\n```bash\nnpm run build\nnpm test -- --run\nnpm run smoke -- --env=staging\n```\n\nThen watch the error budget for ten minutes."
+        default:
+          body = "Reply \(turn). The launch plan holds as long as the error budget stays above the floor and the on-call engineer has acknowledged the page.\n\nIf either slips, hold the rollout and re-run the smoke suite before trying again."
+        }
+        return message(
+          id: "long-assistant-\(ordinal)",
+          turnID: "long-turn-\(turn)",
+          role: .assistant,
+          status: .completed,
+          events: [
+            .response(
+              content: body,
+              usage: UsageDTO(inputTokens: 8, outputTokens: 40, cacheReadTokens: nil, cacheWriteTokens: nil)
+            )
+          ],
+          ordinal: ordinal
+        )
+      }
+    }
+
+    /// The `.longTranscript` send's reply, streamed as 90 deltas ~120ms apart
+    /// (≈11s): long enough that a UI test — with XCUITest's several seconds
+    /// of idle-waiting after the send, more on the iOS 18.4 CI runtime —
+    /// still drags AND taps jump-to-latest while the reply is streaming. (At
+    /// 7s the tap coincided with completion on 18.4, and the composer
+    /// re-enabling brought the keyboard back under the tap.)
+    static let longTranscriptStreamedReply: String = {
+      (1...90).map { "Streamed chunk \($0) of the reply." }.joined(separator: " ")
+    }()
+
+    /// One assistant message per gallery batch, so `capture-surfaces.sh` can
+    /// render every tool type's BODY and the per-type result treatment can be
+    /// audited from pixels rather than from reading `resultView`.
+    ///
+    /// Single-line string literals with escapes throughout, deliberately: a
+    /// Swift `"""` block would be re-indented by the formatter and the
+    /// leading whitespace of a numbered-source fixture is load-bearing.
+    static func toolGalleryMessages(_ batch: String) -> [ConversationMessageDTO] {
+      let events: [AgentEvent]
+      switch batch {
+      case "files":
+        events = [
+          .toolUseStart(
+            id: "g-read", name: "read",
+            input: .object(["path": .string("apps/web/src/ui/blocks/tool-presentation.ts")])),
+          .toolResult(
+            id: "g-read", name: "read",
+            content:
+              "<path>apps/web/src/ui/blocks/tool-presentation.ts</path>\n<content>\n   1\texport function normalizeTool(name: string): string {\n   2\t  switch (name) {\n   3\t    case 'read_file':\n   4\t      return 'read';\n   5\t    default:\n   6\t      return name;\n   7\t  }\n   8\t}\n</content>",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-write", name: "write",
+            input: .object([
+              "path": .string("docs/notes.md"),
+              "content": .string("# Notes\n\nFirst line.\nSecond line.\n"),
+            ])),
+          .toolResult(
+            id: "g-write", name: "write", content: "Wrote 4 lines to docs/notes.md",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-edit", name: "edit",
+            input: .object(["path": .string("apps/web/src/ui/blocks/ContentBlocks.tsx")])),
+          .toolResult(
+            id: "g-edit", name: "edit", content: "ok", isError: false,
+            details: .object([
+              "diff": .string(
+                "--- a/apps/web/src/ui/blocks/ContentBlocks.tsx\n+++ b/apps/web/src/ui/blocks/ContentBlocks.tsx\n@@ -12,7 +12,8 @@\n   const summary = summarize(tool.name, tool.input);\n-  const details = formatVisibleDetails(tool.name, tool.input);\n+  const outcome = resultSummary(tool.name, result?.content);\n+  const details = formatVisibleDetails(tool.name, tool.input);")
+            ])),
+        ]
+      case "shell":
+        events = [
+          .toolUseStart(
+            id: "g-bash", name: "bash",
+            input: .object(["command": .string("/opt/homebrew/bin/npm run lint")])),
+          .toolResult(
+            id: "g-bash", name: "bash",
+            content:
+              "> dash@0.2.0 lint\n> biome check .\n\nChecked 942 files in 609ms. No fixes applied.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-quiet", name: "bash",
+            input: .object(["command": .string("mkdir -p build/captures")])),
+          .toolResult(id: "g-quiet", name: "bash", content: "", isError: false, details: nil),
+          .toolUseStart(id: "g-ls", name: "ls", input: .object(["path": .string("apps/web/src")])),
+          .toolResult(
+            id: "g-ls", name: "ls",
+            content: "(5 entries)\nui/\nintegration/\nmain.tsx\nstyles.css\nvite-env.d.ts",
+            isError: false, details: nil),
+        ]
+      case "search":
+        events = [
+          .toolUseStart(
+            id: "g-grep", name: "grep", input: .object(["pattern": .string("resultSummary")])),
+          .toolResult(
+            id: "g-grep", name: "grep",
+            content:
+              "apps/web/src/ui/blocks/tool-presentation.ts:214: export function resultSummary(\napps/web/src/ui/blocks/ContentBlocks.tsx:191:  const outcome = resultSummary(\nios/Dash/Features/Conversations/ToolPresentation.swift:318:  static func resultSummary(",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-search", name: "web_search",
+            input: .object(["query": .string("swiftui observable macro")])),
+          .toolResult(
+            id: "g-search", name: "web_search",
+            content:
+              "1. [Observation | Apple Developer](https://developer.apple.com/documentation/observation)\n   The Observation framework provides a robust, type-safe model.\n\n2. [Migrating to the Observable macro](https://developer.apple.com/videos/wwdc)\n   Replace ObservableObject with the @Observable macro.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-fetch", name: "web_fetch",
+            input: .object([
+              "url": .string("https://developer.apple.com/documentation/observation")
+            ])),
+          .toolResult(
+            id: "g-fetch", name: "web_fetch",
+            content: String(repeating: "Observation framework documentation body. ", count: 40),
+            isError: false, details: nil),
+        ]
+      default:
+        events = [
+          .toolUseStart(
+            id: "g-todo", name: "TodoWrite",
+            input: .object([
+              "todos": .array([
+                .object([
+                  "content": .string("Port resultSummary to iOS"), "status": .string("completed"),
+                ]),
+                .object([
+                  "content": .string("Audit each tool type from a rendered screen"),
+                  "status": .string("in_progress"),
+                ]),
+                .object([
+                  "content": .string("Write the per-type design"), "status": .string("pending"),
+                ]),
+              ])
+            ])),
+          .toolResult(id: "g-todo", name: "TodoWrite", content: "ok", isError: false, details: nil),
+          .toolUseStart(
+            id: "g-skill", name: "load_skill",
+            input: .object(["name": .string("frontend-design")])),
+          .toolResult(
+            id: "g-skill", name: "load_skill", content: "Loaded skill 'frontend-design'.",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-mcp", name: "linear__search_issues",
+            input: .object([
+              "query": .string("tool card"), "limit": .number(5),
+              "filter": .object(["state": .string("open")]),
+            ])),
+          .toolResult(
+            id: "g-mcp", name: "linear__search_issues",
+            content: "DASH-412  Tool rows unreadable\nDASH-418  Diff not rendered on iOS",
+            isError: false, details: nil),
+          .toolUseStart(
+            id: "g-fail", name: "read",
+            input: .object(["path": .string("/Users/gerry/missing.swift")])),
+          .toolResult(
+            id: "g-fail", name: "read", content: "ENOENT: no such file or directory",
+            isError: true, details: nil),
+          .toolUseStart(
+            id: "g-run", name: "bash", input: .object(["command": .string("npm test")])),
+        ]
+      }
+      return [
+        message(
+          id: "gallery-assistant", turnID: "gallery-turn", role: .assistant, status: .completed,
+          events: events, ordinal: 1)
+      ]
+    }
+
     static func cachedMessages(for scenario: UITestScenario) -> [ConversationMessageDTO] {
+      #if DEBUG
+        if let batch = UITestLaunchOptions.toolGallery {
+          return toolGalleryMessages(batch)
+        }
+      #endif
       if scenario == .streamingReconnect || scenario == .pendingRecovery { return [] }
       if scenario == .longTranscript { return longTranscriptMessages }
       if scenario == .remoteBusy {
@@ -336,6 +700,34 @@ extension AppDependenciesFactory {
           role: .assistant,
           status: .completed,
           events: [
+            // Tool-use UX (2026-09-05): a run of four calls — a plain
+            // success, a grep with a countable result, an edit carrying a
+            // diff, and a failure — so `capture-surfaces.sh`'s `chat` shot
+            // actually shows the tool rows. Before this the only reachable
+            // chat capture had no tool calls in it at all, which is how three
+            // screens shipped in the first place without being looked at.
+            .toolUseStart(
+              id: "cap-1", name: "bash",
+              input: .object(["command": .string("/opt/homebrew/bin/npm run build")])),
+            .toolResult(
+              id: "cap-1", name: "bash", content: "built in 4.2s", isError: false, details: nil),
+            .toolUseStart(
+              id: "cap-2", name: "grep", input: .object(["pattern": .string("resultSummary")])),
+            .toolResult(
+              id: "cap-2", name: "grep",
+              content: "a.ts:1: hit\nb.ts:9: hit\nc.ts:14: hit", isError: false, details: nil),
+            .toolUseStart(
+              id: "cap-3", name: "edit",
+              input: .object(["path": .string("apps/web/src/ui/blocks/ContentBlocks.tsx")])),
+            .toolResult(
+              id: "cap-3", name: "edit", content: "ok", isError: false,
+              details: .object(["diff": .string("--- a/x\n+++ b/x\n-old\n+new\n+more")])),
+            .toolUseStart(
+              id: "cap-4", name: "read",
+              input: .object(["path": .string("/Users/gerry/missing.swift")])),
+            .toolResult(
+              id: "cap-4", name: "read", content: "ENOENT: no such file or directory",
+              isError: true, details: nil),
             .response(
               // iOS markdown parity (2026-09-04): a GFM table rides along so
               // the table renderer is exercised by DashUI; the sentence other
@@ -352,23 +744,6 @@ extension AppDependenciesFactory {
           ordinal: 2
         ),
       ]
-    }
-
-    /// A transcript tall enough that the viewport shows only a fraction of
-    /// it, so a UI test can genuinely scroll away from the bottom (Task 4
-    /// review fix, Important 3). All-`user` rows on purpose: an assistant row
-    /// carries the `chat.final.response` identifier, and a transcript full of
-    /// those would make "the" final response ambiguous the same way filler in
-    /// `.pairedOnline` once did.
-    static let longTranscriptMessages: [ConversationMessageDTO] = (1...40).map { index in
-      message(
-        id: "filler-\(index)",
-        turnID: "filler-turn-\(index)",
-        role: .user,
-        status: .completed,
-        text: "Filler message number \(index)",
-        ordinal: index
-      )
     }
 
     static func agent(
@@ -552,7 +927,7 @@ extension AppDependenciesFactory {
 
       case .unpaired, .pairedOnline, .pairedOffline, .streamingReconnect, .remoteBusy,
         .pendingRecovery, .activeRecovery, .agents, .composeNewChat, .settingsForget,
-        .longTranscript, .approveDevice:
+        .approveDevice, .longTranscript:
         // `.approveDevice` never reaches here — `uiTesting`'s ternary routes
         // it to `approveDeviceAccountFactory` first. Listed for exhaustiveness.
         return .unavailable
@@ -704,7 +1079,7 @@ extension AppDependenciesFactory {
             conversation: conversation,
             persistence: store,
             synchronizer: store,
-            transport: UITestChatTransport(),
+            transport: UITestChatTransport(scenario: scenario),
             clock: clock,
             announcer: UITestAccessibilityAnnouncer(),
             recoveryChanges: recoveryChanges,
@@ -1025,6 +1400,8 @@ extension AppDependenciesFactory {
     private var pendingSends: [String: PendingChatSend] = [:]
     private var cursors: [String: Int] = [:]
     private var retainedRequests: [String: String] = [:]
+    private var memoryValues: [String: [MemoryInfoDTO]] = UITestScenarioFixtures.memories
+    private var skillValues: [String: [SkillDTO]] = UITestScenarioFixtures.skills
     private var didFailSleepingAgentEnable = false
 
     init(scenario: UITestScenario, dataIdentifier: String) {
@@ -1070,6 +1447,8 @@ extension AppDependenciesFactory {
       pendingSends.removeAll()
       cursors.removeAll()
       retainedRequests.removeAll()
+      memoryValues.removeAll()
+      skillValues.removeAll()
       _ = dataIdentifier
     }
 
@@ -1358,6 +1737,25 @@ extension AppDependenciesFactory {
         throw GatewayError.notFound
       }
       agentValues.removeAll { $0.id == id }
+      memoryValues[id] = nil
+    }
+
+    func memories(for agentID: String) -> [MemoryInfoDTO] {
+      memoryValues[agentID] ?? []
+    }
+
+    func skills(for agentID: String) -> [SkillDTO] {
+      skillValues[agentID] ?? []
+    }
+
+    func deleteMemory(agentID: String, name: String) throws {
+      guard var values = memoryValues[agentID],
+        values.contains(where: { $0.name == name })
+      else {
+        throw GatewayError.notFound
+      }
+      values.removeAll { $0.name == name }
+      memoryValues[agentID] = values
     }
 
     func startConversation(agentID: String) throws -> ConversationSummaryDTO {
@@ -1494,10 +1892,29 @@ extension AppDependenciesFactory {
     }
 
     func refresh(conversationID: String, before: String?) throws -> ChatCanonicalSnapshot {
-      _ = before
       guard let summary = conversationValues.first(where: { $0.id == conversationID }) else {
         throw GatewayError.notFound
       }
+      // `.longTranscript` is the only scenario with a second page: the
+      // canonical refresh (`before == nil`) advertises it, and asking for it
+      // returns the 10 oldest messages with nothing behind them.
+      if scenario == .longTranscript, conversationID == UITestScenarioFixtures.sharedConversation.id {
+        if before == UITestScenarioFixtures.longTranscriptOlderCursor {
+          return ChatCanonicalSnapshot(
+            summary: summary,
+            messages: UITestScenarioFixtures.longTranscriptOlderMessages,
+            nextCursor: nil,
+            throughSeq: summary.lastSeq
+          )
+        }
+        return ChatCanonicalSnapshot(
+          summary: summary,
+          messages: messages[conversationID] ?? [],
+          nextCursor: UITestScenarioFixtures.longTranscriptOlderCursor,
+          throughSeq: summary.lastSeq
+        )
+      }
+      _ = before
       return ChatCanonicalSnapshot(
         summary: summary,
         messages: messages[conversationID] ?? [],
@@ -1567,6 +1984,7 @@ extension AppDependenciesFactory {
   }
 
   private actor UITestChatTransport: ChatFeatureTransporting {
+    private let scenario: UITestScenario
     private var stream: AsyncThrowingStream<ChatConnectionEvent, Error>
     private var continuation: AsyncThrowingStream<ChatConnectionEvent, Error>.Continuation
     private var scriptTask: Task<Void, Never>?
@@ -1574,7 +1992,8 @@ extension AppDependenciesFactory {
     private var nextSequence = 1
     private var isTerminal = false
 
-    init() {
+    init(scenario: UITestScenario) {
+      self.scenario = scenario
       let pair = AsyncThrowingStream<ChatConnectionEvent, Error>.makeStream()
       stream = pair.stream
       continuation = pair.continuation
@@ -1652,6 +2071,10 @@ extension AppDependenciesFactory {
     }
 
     private func runScript(turnID: String, conversationID: String) async {
+      if scenario == .longTranscript {
+        await runLongStreamScript(turnID: turnID, conversationID: conversationID)
+        return
+      }
       guard await pause(.milliseconds(150)) else { return }
       yield(
         .accepted(
@@ -1690,6 +2113,35 @@ extension AppDependenciesFactory {
           id: "ui-tool",
           name: "search",
           content: "Found the rollout checklist",
+          isError: false,
+          details: nil
+        )
+      )
+      // A TodoWrite call, so the task-card checklist has UI-test coverage
+      // (task cards 2026-09-05). Additive: the `ui-tool` search card above
+      // is untouched, so assertions on it are unaffected.
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .toolUseStart(
+          id: "ui-todo",
+          name: "todowrite",
+          input: .object([
+            "todos": .array([
+              .object(["content": .string("Draft the plan"), "status": .string("completed")]),
+              .object(["content": .string("Check launch readiness"), "status": .string("in_progress")]),
+              .object(["content": .string("Ship it"), "status": .string("pending")]),
+            ])
+          ])
+        )
+      )
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .toolResult(
+          id: "ui-todo",
+          name: "todowrite",
+          content: "Updated task list",
           isError: false,
           details: nil
         )
@@ -1741,6 +2193,48 @@ extension AppDependenciesFactory {
             cacheReadTokens: 4,
             cacheWriteTokens: nil
           )
+        )
+      )
+      yield(
+        .done(
+          id: turnID,
+          conversationId: conversationID,
+          seq: takeSequence(),
+          outcome: .completed
+        )
+      )
+      isTerminal = true
+      activeTurnID = nil
+    }
+
+    /// `.longTranscript`'s send: the same ack shape as the default script,
+    /// then `longTranscriptStreamedReply` in 90 word-group deltas ~120ms
+    /// apart (≈11s), so a UI test has time to scroll while the reply streams.
+    private func runLongStreamScript(turnID: String, conversationID: String) async {
+      guard await pause(.milliseconds(150)) else { return }
+      yield(
+        .accepted(
+          id: turnID,
+          conversationId: conversationID,
+          userMessageId: "user-ui-turn",
+          assistantMessageId: "assistant-ui-turn",
+          revision: 2,
+          seq: takeSequence()
+        )
+      )
+      let reply = UITestScenarioFixtures.longTranscriptStreamedReply
+      let chunks = reply.components(separatedBy: "Streamed").dropFirst().map { "Streamed" + $0 }
+      for chunk in chunks {
+        guard await pause(.milliseconds(120)) else { return }
+        yieldEvent(turnID: turnID, conversationID: conversationID, .textDelta(text: chunk))
+      }
+      guard await pause(.milliseconds(120)) else { return }
+      yieldEvent(
+        turnID: turnID,
+        conversationID: conversationID,
+        .response(
+          content: reply,
+          usage: UsageDTO(inputTokens: 12, outputTokens: 180, cacheReadTokens: nil, cacheWriteTokens: nil)
         )
       )
       yield(

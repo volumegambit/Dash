@@ -745,14 +745,21 @@ final class ChatFeature {
   @ObservationIgnored private var activeRecoveryChangeOperations = 0
   @ObservationIgnored private var recoveryChangeOperationWaiters:
     [CheckedContinuation<Void, Never>] = []
-  @ObservationIgnored private var hasLoadedCache = false
+  /// True once the cached transcript has been read at least once (set in
+  /// `appear()`). Observable, not `@ObservationIgnored`, because
+  /// `ComposerView`'s keyboard-ready auto-focus must wait for it: before the
+  /// cache loads `state.messages` is empty for EVERY conversation, so an
+  /// existing thread looked "fresh" and stole focus (keyboard up on open —
+  /// seen in the 2026-09-05 transcript-scroll test videos).
+  private(set) var hasLoadedCache = false
   /// How many hosts currently have this feature on screen (whole-branch
   /// final review, blocking 1). Task 10 made one `ChatFeature` serve TWO
   /// hosts at once — the main window's detail column and the chat-only
   /// scene `ConversationWindowView` opens — and this used to be a single
-  /// `Bool`, so the first host to tear down suspended the transport out
-  /// from under a host that was still visible. Incremented by `appear()`,
-  /// decremented by `disappear()`; only the transition to zero detaches.
+  /// `Bool` (`isVisible`), so the first host to tear down suspended the
+  /// transport out from under a host that was still visible. Incremented by
+  /// `appear()`, decremented by `disappear()`; only the transition to zero
+  /// detaches.
   @ObservationIgnored private var visibleHostCount = 0
   @ObservationIgnored private var isConnected = false
   @ObservationIgnored private var wasReconnecting = false

@@ -1,7 +1,7 @@
 import type { PluginModelCatalog } from '@dash/agent';
 import type { CatalogModel, FilteredModel, ProviderCatalog } from '@dash/plugin-sdk';
 import { type ProviderConfigEntry, catalogSortKey } from '@dash/plugins';
-import type { Api, Model } from '@earendil-works/pi-ai';
+import { type Api, type Model, getModel } from '@earendil-works/pi-ai';
 import type { ModelsRouteResponse } from './models-route.js';
 
 /**
@@ -88,10 +88,16 @@ export function createPluginModelCatalog(
       if (known) return buildModel(catalog, known);
 
       if (catalog.dynamicModels && catalog.dynamicModelDefaults) {
+        // Preserve capabilities from pi-ai's exact model entry when available.
+        // The catalog still owns routing and sizing; truly unknown dynamic ids
+        // stay conservatively text-only through buildModel's default.
+        // biome-ignore lint/suspicious/noExplicitAny: dynamic provider/model ids are not statically known
+        const registered = getModel(catalog.id as any, modelId as any);
         const synthesized: CatalogModel = {
           id: modelId,
           contextWindow: catalog.dynamicModelDefaults.contextWindow,
           maxTokens: catalog.dynamicModelDefaults.maxTokens,
+          input: registered ? [...registered.input] : undefined,
         };
         return buildModel(catalog, synthesized);
       }

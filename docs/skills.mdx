@@ -22,8 +22,8 @@ This two-phase approach keeps token usage low: the agent always sees *what's ava
 
 When an agent processes a message, its system prompt is assembled from multiple sources in this order:
 
-1. **Memory preamble** — if the agent has a workspace, any memory files (like `CLAUDE.md`) are loaded and prepended
-2. **Your system prompt** — the prompt you configured when deploying the agent
+1. **Your system prompt** — the prompt you configured when deploying the agent
+2. **Memory** — the agent's memory index and any recalled memories (see [Memory](/memory))
 3. **Skill index** — a compact listing of available skills with names, descriptions, and triggers
 
 The skill index looks like this in the system prompt:
@@ -114,6 +114,61 @@ Agent-created skills:
 <Warning>
 The `create_skill` tool lets the agent write persistent instructions that affect its own future behavior. Only enable it for agents you trust to self-modify responsibly.
 </Warning>
+
+## Learning from experience
+
+Agents also pick up skills on their own. After a turn where the agent did real work, Dash runs a short review that asks the agent's own model one question: did this session teach anything worth keeping? Anything it finds is written into a skill the agent owns, so the next conversation starts already knowing it.
+
+You don't have to do anything to switch this on — it is on by default.
+
+### What gets learned
+
+A lesson is one short, self-contained instruction: a technique that worked, a correction you made, a dead end worth avoiding next time. Corrections are the richest source — telling the agent "always use X here, never Y" is what turns into a lasting rule. Lessons are grouped into skills named for a **kind of task** rather than for one job, so a handful of useful skills build up instead of a long list of near-duplicates.
+
+The review is told not to record a few things that look like lessons but age badly:
+
+- **Problems with your setup** — a missing program, an unset key, a path that only breaks on this machine. Those get fixed; they aren't lasting rules.
+- **"This tool is broken."** A claim like that would be repeated back to the agent for months after the real cause was fixed. If something failed because of setup, the lesson is the fix, not the failure.
+- **Errors that went away on their own.** If retrying worked, the lesson is to retry.
+- **One-off jobs.** Summarising a single document isn't a kind of work worth a skill.
+
+Nothing sensitive should ever be recorded. As with memory, that is an instruction the agent is given, not a filter Dash enforces — so don't paste passwords or keys into chat.
+
+### Seeing it happen
+
+When the review records something, a small chip appears in the conversation where it happened — "Learned: write-files", or "Remembered: …" for a memory. It is part of the conversation, so it is still there when you scroll back or reopen it later. The same chip shows in Mission Control, on iPhone, and on the web.
+
+### Where it lives
+
+Learned skills sit in the same managed directory as any other agent skill, are labelled **Agent** in Mission Control, and can be read, edited, or deleted there like the rest. Beside each one is a `lessons.json` file holding the individual lessons.
+
+Open a learned skill in Mission Control and you see its lessons one by one, each with how often the agent has judged it helpful or harmful, and a **Retire** button. On iPhone and on the web the list is read-only — you can see what an agent knows and read the lessons, but changing them is done from Mission Control.
+
+Learning only ever writes to skills the agent created itself. A skill you wrote, one installed from the ecosystem, and anything in the bundled library are never modified. When the agent learns something about one of those, it records it in a companion skill that is loaded alongside the original, so the lesson still arrives when it is relevant.
+
+### Correcting a lesson
+
+Each lesson carries a count of how often the review judged it right and how often it judged it wrong. A lesson that keeps proving wrong and never proves useful retires itself, and retired lessons are kept in the file rather than deleted, so you can see what happened and put one back by hand.
+
+To correct something immediately, open the skill in Mission Control and **Retire** the lesson. Retiring keeps it in the file and stops the agent proposing it again. To stop Dash managing a learned skill altogether, delete its `lessons.json` — the skill stays as an ordinary one that learning no longer touches.
+
+### Settings
+
+From the agent's **Skills** tab, or via the API:
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `learning` | `auto` | `auto` and `on` both enable learning; `off` disables it. |
+| `minToolCalls` | `3` | How much work a turn must involve before it is reviewed. A turn that was just conversation is never reviewed and costs nothing. |
+
+A turn where you **correct** the agent is always reviewed, however little work it involved — "stop doing that", "use X instead", "always do it this way" is the most useful thing a session can teach, and those turns are usually short.
+
+Each review that runs costs one extra model call, on the agent's own model.
+
+<Note>
+Learning applies to turns that complete normally. A turn that fails or is cancelled is not reviewed — there is no finished outcome to learn from.
+</Note>
+
 
 ## Installing skills from the ecosystem
 

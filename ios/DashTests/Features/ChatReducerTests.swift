@@ -35,6 +35,87 @@ struct ChatReducerTests {
     #expect(effects == [.persistCursor(1)])
   }
 
+  @Test(
+    "accepted keeps the optimistic user row's identity (rowID) stable while adopting the server id — the row the user just sent must not be torn down and re-inserted by SwiftUI"
+  )
+  func acceptedPreservesRowIdentity() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(turnID: "turn-1", localUserID: "local-u", text: "Hello", images: [])
+    )
+    #expect(state.messages.map(\.rowID) == ["local-u"])
+
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-1",
+          conversationId: "conv-1",
+          userMessageId: "user-1",
+          assistantMessageId: "assistant-1",
+          revision: 2,
+          seq: 1
+        )
+      )
+    )
+
+    #expect(state.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(state.messages.map(\.rowID) == ["local-u", "assistant-1"])
+  }
+
+  @Test(
+    "a canonical reload (cachedMessagesLoaded) and a Load Earlier page (olderMessagesLoaded) keep the row identity of messages already on screen"
+  )
+  func canonicalReloadsPreserveRowIdentity() {
+    var state = chatState()
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(turnID: "turn-1", localUserID: "local-u", text: "Hello", images: [])
+    )
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .frame(
+        .accepted(
+          id: "turn-1",
+          conversationId: "conv-1",
+          userMessageId: "user-1",
+          assistantMessageId: "assistant-1",
+          revision: 2,
+          seq: 1
+        )
+      )
+    )
+    let canonical = [
+      message(
+        id: "user-1",
+        turnID: "turn-1",
+        ordinal: 1,
+        role: .user,
+        status: .completed,
+        content: .user(text: "Hello", images: nil)
+      ),
+      message(
+        id: "assistant-1",
+        turnID: "turn-1",
+        ordinal: 2,
+        role: .assistant,
+        status: .completed,
+        content: .assistant(events: [.textDelta(text: "Hi")])
+      ),
+    ]
+
+    var reloaded = state
+    _ = ChatReducer.reduce(state: &reloaded, action: .cachedMessagesLoaded(canonical, cursor: 4))
+    #expect(reloaded.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(reloaded.messages.map(\.rowID) == ["local-u", "assistant-1"])
+
+    var paged = state
+    _ = ChatReducer.reduce(state: &paged, action: .olderMessagesLoaded(canonical, nextCursor: nil))
+    #expect(paged.messages.map(\.id) == ["user-1", "assistant-1"])
+    #expect(paged.messages.map(\.rowID) == ["local-u", "assistant-1"])
+  }
+
   @Test("canonical cached messages replace optimistic identities without duplicates")
   func canonicalCacheReconcilesOptimisticMessages() {
     var state = chatState()
@@ -369,6 +450,48 @@ struct ChatReducerTests {
     #expect(cards[0].content == "contents")
   }
 
+  @Test("assistant timeline preserves prose and tool chronology")
+  func assistantTimelineChronology() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Before"), seq: 2, to: &state)
+    _ = apply(.toolUseStart(id: "tool-1", name: "bash", input: nil), seq: 3, to: &state)
+    _ = apply(
+      .toolResult(id: "tool-1", name: "bash", content: "done", isError: false, details: nil),
+      seq: 4,
+      to: &state
+    )
+    _ = apply(.textDelta(text: "After"), seq: 5, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    #expect(timeline.count == 3)
+    guard timeline.count == 3 else { return }
+    #expect(timeline[0] == .text("Before"))
+    if case let .tool(tool) = timeline[1] {
+      #expect(tool.name == "bash")
+      #expect(tool.status == .succeeded)
+    } else {
+      Issue.record("Expected a tool in the middle of the timeline")
+    }
+    #expect(timeline[2] == .text("After"))
+  }
+
+  @Test("orphan tool results remain at their event position")
+  func orphanToolResultChronology() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Before"), seq: 2, to: &state)
+    _ = apply(
+      .toolResult(id: "tool-1", name: "bash", content: "done", isError: false, details: nil),
+      seq: 3,
+      to: &state
+    )
+    _ = apply(.textDelta(text: "After"), seq: 4, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    #expect(timeline.count == 3)
+    #expect(timeline.first == .text("Before"))
+    #expect(timeline.last == .text("After"))
+  }
+
   @Test("tool error preserves text and an icon-addressable failure state")
   func toolErrorProjection() {
     var state = acceptedState(cursor: 1)
@@ -564,6 +687,35 @@ struct ChatReducerTests {
       ])
     #expect(rows[1].detail == "README.md")
     #expect(rows[4].detail?.contains("overflow") == true)
+  }
+
+  @Test("memory events project remembered/updated/forgotten status rows")
+  func memoryStatusRows() {
+    var state = acceptedState(cursor: 1)
+    let events: [AgentEvent] = [
+      .memorySaved(
+        name: "user-timezone",
+        description: "Gerry is in Singapore",
+        memoryType: .user,
+        action: .created
+      ),
+      .memorySaved(
+        name: "user-timezone",
+        description: "Gerry moved to Tokyo",
+        memoryType: .user,
+        action: .updated
+      ),
+      .memoryForgotten(name: "old-fact"),
+    ]
+
+    for (offset, event) in events.enumerated() {
+      _ = apply(event, seq: offset + 2, to: &state)
+    }
+
+    let rows = state.messages.last?.assistant?.statusRows ?? []
+    #expect(rows.map(\.kind) == [.memorySaved, .memorySaved, .memoryForgotten])
+    #expect(rows.map(\.title) == ["Remembered", "Updated memory", "Forgot memory"])
+    #expect(rows.map(\.detail) == ["Gerry is in Singapore", "Gerry moved to Tokyo", "old-fact"])
   }
 
   @Test("unknown events expose only their discriminator")

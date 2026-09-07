@@ -1,7 +1,25 @@
 import type { ConversationContent, MobileAgentEvent } from '@dash/mobile-contract';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { Markdown } from './Markdown.js';
-import { formatVisibleDetails, normalizeTool, summarize, toolLabel } from './tool-presentation.js';
+import {
+  type TodoItem,
+  bodyIsRedundant,
+  diffLines,
+  directoryEntries,
+  fitsInline,
+  formatVisibleDetails,
+  grepGroups,
+  isTodoWrite,
+  normalizeTool,
+  parseTodos,
+  resultSummary,
+  searchResults,
+  stripResultChrome,
+  summarize,
+  toolLabel,
+  toolNamespace,
+  writtenContent,
+} from './tool-presentation.js';
 
 export interface ContentBlocksProps {
   content: ConversationContent;
@@ -93,14 +111,26 @@ function ToolStatusGlyph({ status }: { status: ToolStatus }): ReactNode {
   return <span className="tool-status-dot" aria-hidden="true" />;
 }
 
-/** Tool result branching (spec appendix §3, ToolResult): error → red
- * pre-wrap text; empty → muted italic "No output"; ≤3 lines → green
- * pre-wrap text; longer → 256px-capped scrollable block on the dark code
- * surface. Diff rendering, directory-listing/numbered-source detection, and
- * TodoWrite's checklist body are out of scope here — same reduced scope as
- * the iOS twin's `resultView` (design doc "Out of scope" + iOS Task 2
- * precedent: brief authoritative over MC's fuller ToolResult.tsx). */
-function ToolResultView({ content, isError }: { content: string; isError?: boolean }): ReactNode {
+/** Per-tool-type body (2026-09-05 per-type goal), replacing a branch that
+ * keyed only on how many NEWLINES the result contained.
+ *
+ * Two defects that branch caused, both seen in the gallery: a 1.6 KB
+ * single-line `web_fetch` body has no newlines, so it took the "short" path —
+ * no height cap, no scroll — and consumed the viewport; and the protocol
+ * chrome (`<path>`, `<content>`, `(N entries)`) was printed verbatim. */
+function ToolResultView({
+  name,
+  input,
+  content,
+  isError,
+  details,
+}: {
+  name: string;
+  input?: Record<string, unknown>;
+  content: string;
+  isError?: boolean;
+  details?: unknown;
+}): ReactNode {
   if (isError) {
     return (
       <p data-testid="tool-result" className="tool-result tool-result-error">
@@ -108,25 +138,147 @@ function ToolResultView({ content, isError }: { content: string; isError?: boole
       </p>
     );
   }
-  if (!content.trim()) {
+
+  const diff = diffLines(details);
+  if (diff.length > 0) {
+    // `edit`: the diff IS the result. It rode along in `details.diff` and was
+    // thrown away — the body used to read "ok".
+    return (
+      <div data-testid="tool-diff" className="tool-diff">
+        {diff.map((line, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: diff lines are positional by nature and this list is immutable once rendered
+            key={`${index}-${line.text}`}
+            className={`tool-diff-line tool-diff-${line.kind}`}
+          >
+            {line.text || ' '}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  const normalized = normalizeTool(name);
+
+  if (normalized === 'write') {
+    const written = writtenContent(input);
+    if (written) {
+      return (
+        <pre data-testid="tool-result" className="tool-result tool-result-long">
+          {written}
+        </pre>
+      );
+    }
+  }
+
+  if (normalized === 'ls') {
+    const entries = directoryEntries(content);
+    if (entries.length > 0) {
+      return (
+        <ul data-testid="tool-entries" className="tool-entries">
+          {entries.map((entry) => (
+            <li
+              key={entry.name}
+              className={entry.isDirectory ? 'tool-entry tool-entry-dir' : 'tool-entry'}
+            >
+              <span aria-hidden="true" className="tool-entry-glyph">
+                {entry.isDirectory ? '▸' : '·'}
+              </span>
+              {entry.name}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+  }
+
+  if (normalized === 'grep' || normalized === 'find') {
+    const groups = grepGroups(content);
+    if (groups.length > 0) {
+      return (
+        <div data-testid="tool-grep" className="tool-grep">
+          {groups.map((group) => (
+            <div key={group.path} className="tool-grep-group">
+              <p className="tool-grep-path">{group.path}</p>
+              {group.matches.map((m) => (
+                <p key={`${m.line}-${m.text}`} className="tool-grep-match">
+                  <span className="tool-grep-line">{m.line}</span>
+                  {m.text}
+                </p>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    }
+  }
+
+  if (normalized === 'web_search') {
+    const hits = searchResults(content);
+    if (hits.length > 0) {
+      return (
+        <ul data-testid="tool-search-results" className="tool-search-results">
+          {hits.map((hit) => (
+            <li key={`${hit.host}-${hit.title}`} className="tool-search-result">
+              <span className="tool-search-title">{hit.title}</span>
+              <span className="tool-search-host">{hit.host}</span>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+  }
+
+  if (bodyIsRedundant(name, content)) return null;
+
+  const body = stripResultChrome(content);
+  if (!body) {
     return (
       <p data-testid="tool-result" className="tool-result tool-result-empty">
         No output
       </p>
     );
   }
-  const lineCount = content.split('\n').length;
-  if (lineCount <= 3) {
+  if (fitsInline(body)) {
     return (
       <p data-testid="tool-result" className="tool-result tool-result-short">
-        {content}
+        {body}
       </p>
     );
   }
   return (
     <pre data-testid="tool-result" className="tool-result tool-result-long">
-      {content}
+      {body}
     </pre>
+  );
+}
+
+/** A TodoWrite call's checklist.
+ *
+ * Glyph vocabulary matches Mission Control's `STATUS_INDICATOR` and the iOS
+ * `TodoListView`, so the same plan reads identically on all three clients.
+ * `data-status` carries the state for styling and for tests, rather than
+ * relying on a glyph character. */
+function TodoList({ todos }: { todos: TodoItem[] }): ReactNode {
+  return (
+    // No count row: the collapsed header already reads "1/3 done" and the
+    // expanded header keeps its summary, so a second "1/3 completed" directly
+    // beneath it was the same fact twice.
+    <div className="tool-todos" data-testid="tool-todos">
+      {todos.map((todo) => (
+        <div
+          key={todo.id ?? todo.content}
+          className="tool-todo"
+          data-testid="tool-todo-item"
+          data-status={todo.status}
+        >
+          <span className="tool-todo-glyph" aria-hidden="true">
+            {todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'}
+          </span>
+          <span className="tool-todo-content">{todo.content}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -139,11 +291,31 @@ function ToolUseBlock({
   result,
 }: {
   tool: PendingTool;
-  result?: { content: string; isError?: boolean };
+  result?: { content: string; isError?: boolean; details?: unknown };
 }): ReactNode {
-  const [open, setOpen] = useState(false);
+  const todos = isTodoWrite(tool.name) ? parseTodos(tool.input) : null;
   const status: ToolStatus = !result ? 'running' : result.isError ? 'failed' : 'succeeded';
+  // Two cards open without being asked. Task cards, because a task list is
+  // the agent's plan for the turn — the one tool body read at a glance, and
+  // the only one whose contents were not shown at all (`formatDetails`
+  // rendered the `todos` array as the literal string "[3 items]"). And
+  // failures, because a failure is the one case where the detail is
+  // necessary and it was the one case that took a tap to reach. Everything
+  // else hides diagnostic detail you want on demand — a command's arguments,
+  // a file's contents. Matches iOS `ToolCardView`.
+  const [open, setOpen] = useState(todos !== null || status === 'failed');
+  // `useState`'s initial value is only read on the FIRST render of this
+  // component instance, and a tool card is first rendered while the call is
+  // still running — status 'running', so open false. Without this, "failures
+  // open by default" would hold for a reloaded transcript and silently not
+  // hold live, which is the case that matters. Re-runs only when `status`
+  // changes, so a user who collapses a failed card keeps it collapsed.
+  useEffect(() => {
+    if (status === 'failed') setOpen(true);
+  }, [status]);
   const summary = summarize(tool.name, tool.input);
+  const outcome = resultSummary(tool.name, result?.content, result?.isError, result?.details);
+  const namespace = toolNamespace(tool.name);
   const details = formatVisibleDetails(tool.name, tool.input);
   const isBash = normalizeTool(tool.name) === 'bash';
 
@@ -160,25 +332,51 @@ function ToolUseBlock({
         aria-expanded={open}
       >
         <ToolStatusGlyph status={status} />
+        {namespace && <span className="tool-card-namespace">{namespace}</span>}
         <span className="tool-card-label">{toolLabel(tool.name)}</span>
         {summary && (
           <span className={`tool-card-summary${isBash ? ' tool-card-summary-mono' : ''}`}>
             {summary}
           </span>
         )}
+        {/* Only while collapsed, matching iOS. Expanded, the body below shows
+            the result itself, so a failed card printed its error twice —
+            right-aligned in the header and again underneath. */}
+        {outcome && !open && (
+          <span className="tool-card-outcome" data-testid="tool-card-outcome">
+            {outcome}
+          </span>
+        )}
       </button>
       {open && (
         <div className="tool-card-body">
-          {details.length > 0 && (
-            <div className="tool-card-details">
-              {details.map(({ key, value }) => (
-                <p key={key} className="tool-card-detail">
-                  <span className="tool-card-detail-key">{key}</span>: {value}
-                </p>
-              ))}
-            </div>
+          {todos ? (
+            <TodoList todos={todos} />
+          ) : (
+            details.length > 0 && (
+              <div className="tool-card-details">
+                {details.map(({ key, value }) => (
+                  <p key={key} className="tool-card-detail">
+                    <span className="tool-card-detail-key">{key}</span>: {value}
+                  </p>
+                ))}
+              </div>
+            )
           )}
-          {result && <ToolResultView content={result.content} isError={result.isError} />}
+          {/* A task card's body IS the checklist. TodoWrite's own result is the
+              string "ok", which rendered as a stray line under the list —
+              iOS never showed it, so this was also a client divergence. An
+              error still renders, because a failed TodoWrite has something to
+              say. */}
+          {result && (!todos || result.isError) && (
+            <ToolResultView
+              name={tool.name}
+              input={tool.input}
+              content={result.content}
+              isError={result.isError}
+              details={result.details}
+            />
+          )}
         </div>
       )}
     </div>
@@ -229,7 +427,7 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
   let key = 0;
   let textBuffer = '';
   let thinkingBuffer = '';
-  let pendingTool: PendingTool | null = null;
+  const pendingTools = new Map<string, { tool: PendingTool; index: number; key: string }>();
 
   const flushText = (): void => {
     if (!textBuffer) return;
@@ -240,14 +438,6 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
     if (!thinkingBuffer) return;
     nodes.push(<ThinkingBlock key={`think-${key++}`} text={thinkingBuffer} />);
     thinkingBuffer = '';
-  };
-  /** Flushes an unresolved `pendingTool` (no `tool_result` arrived for it)
-   * as an in-progress block — used both when a *new* `tool_use_start`
-   * supersedes it and at the end of the event list. */
-  const flushPendingToolInProgress = (): void => {
-    if (!pendingTool) return;
-    nodes.push(<ToolUseBlock key={`tool-${key++}`} tool={pendingTool} />);
-    pendingTool = null;
   };
   const pushUnknown = (): void => {
     flushText();
@@ -283,17 +473,24 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
       }
 
       case 'tool_use_start': {
-        if (typeof event.name !== 'string') {
+        if (typeof event.id !== 'string' || typeof event.name !== 'string') {
           pushUnknown();
           break;
         }
         flushText();
         flushThinking();
-        flushPendingToolInProgress();
-        pendingTool = {
+        const pendingTool = {
           name: event.name,
           input: isRecord(event.input) ? (event.input as Record<string, unknown>) : undefined,
         };
+        const pendingToolKey = `tool-${key++}`;
+        const pendingToolIndex = nodes.length;
+        nodes.push(<ToolUseBlock key={pendingToolKey} tool={pendingTool} />);
+        pendingTools.set(event.id, {
+          tool: pendingTool,
+          index: pendingToolIndex,
+          key: pendingToolKey,
+        });
         break;
       }
 
@@ -338,19 +535,54 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
         }
         flushText();
         flushThinking();
-        const tool = pendingTool ?? (typeof event.name === 'string' ? { name: event.name } : null);
+        const pending = typeof event.id === 'string' ? pendingTools.get(event.id) : undefined;
+        const tool =
+          pending?.tool ?? (typeof event.name === 'string' ? { name: event.name } : null);
         if (!tool) {
           pushUnknown();
           break;
         }
-        nodes.push(
+        const toolNode = (
           <ToolUseBlock
-            key={`tool-${key++}`}
+            key={pending?.key || `tool-${key++}`}
             tool={tool}
-            result={{ content, isError: event.isError === true }}
-          />,
+            result={{ content, isError: event.isError === true, details: event.details }}
+          />
         );
-        pendingTool = null;
+        if (pending == null) nodes.push(toolNode);
+        else nodes[pending.index] = toolNode;
+        if (typeof event.id === 'string') pendingTools.delete(event.id);
+        break;
+      }
+
+      case 'memory_saved':
+      case 'memory_forgotten': {
+        // Agent memory bookkeeping (MC parity, chat.tsx's memory chip): a
+        // compact chip so the user can see what the agent remembered or
+        // forgot. Validated the same way as every other event here — a
+        // malformed one degrades to `UnknownBlock` rather than rendering
+        // "undefined". Rendered as `<output>` rather than a
+        // `<span role="status">` — same implicit status live region, and the
+        // form biome's `useSemanticElements` requires.
+        const label =
+          event.type === 'memory_forgotten'
+            ? typeof event.name === 'string'
+              ? `Forgot: ${event.name}`
+              : null
+            : typeof event.description === 'string'
+              ? `${event.action === 'updated' ? 'Updated memory' : 'Remembered'}: ${event.description}`
+              : null;
+        if (label === null) {
+          pushUnknown();
+          break;
+        }
+        flushThinking();
+        flushText();
+        nodes.push(
+          <output key={`memory-${key++}`} className="chat-memory-chip">
+            {label}
+          </output>,
+        );
         break;
       }
 
@@ -361,7 +593,6 @@ function renderAssistantEvents(events: MobileAgentEvent[]): ReactNode[] {
 
   flushText();
   flushThinking();
-  flushPendingToolInProgress();
 
   return nodes;
 }
@@ -386,6 +617,9 @@ export function getMessageCopyText(content: ConversationContent): string {
     }
     return text;
   }
+  if (content.type === 'notice') {
+    return typeof content.text === 'string' ? content.text : '';
+  }
   return '';
 }
 
@@ -398,6 +632,18 @@ export function getMessageCopyText(content: ConversationContent): string {
  * throwing.
  */
 export function ContentBlocks({ content }: ContentBlocksProps): ReactNode {
+  // A notice is what the post-turn review left behind — a skill learned or a
+  // memory saved. It is a message rather than a turn event because it is
+  // produced after the turn is finalised.
+  if (isRecord(content) && content.type === 'notice') {
+    const kind = content.kind === 'memory_saved' ? 'memory_saved' : 'skill_learned';
+    return (
+      <div className="notice-chip" data-testid="notice-chip" data-notice-kind={kind}>
+        {typeof content.text === 'string' ? content.text : ''}
+      </div>
+    );
+  }
+
   if (!isRecord(content) || (content.type !== 'user' && content.type !== 'assistant')) {
     return <UnknownBlock />;
   }
