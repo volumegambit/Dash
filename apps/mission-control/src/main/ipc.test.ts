@@ -245,6 +245,11 @@ describe('conversation sync lifecycle selection', () => {
     const client = {
       health: vi.fn().mockResolvedValue(health),
       getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockResolvedValue({
+        agents: [],
+        conversationApiVersions: [1, 2],
+        chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      }),
     };
 
     await expect(verifiedConversationContext(client)).resolves.toEqual({
@@ -254,6 +259,9 @@ describe('conversation sync lifecycle selection', () => {
     });
     expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
       client.getIdentity.mock.invocationCallOrder[0],
+    );
+    expect(client.getIdentity.mock.invocationCallOrder[0]).toBeLessThan(
+      client.info.mock.invocationCallOrder[0],
     );
   });
 
@@ -827,10 +835,23 @@ describe('remote gateway capability verification wiring', () => {
         capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
       }),
       getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockResolvedValue({
+        agents: [],
+        conversationApiVersions: [1, 2],
+        chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      }),
     };
 
-    await expect(verifyConversationGateway(client)).resolves.toMatchObject({ identity });
+    await expect(verifyConversationGateway(client)).resolves.toEqual({
+      identity,
+      apiVersion: 1,
+      capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      queueInputCapable: true,
+    });
     expect(client.getIdentity).toHaveBeenCalledOnce();
+    expect(client.info).toHaveBeenCalledOnce();
   });
 
   it('does not probe identity on an explicitly old gateway', async () => {
@@ -842,14 +863,19 @@ describe('remote gateway capability verification wiring', () => {
         channels: 1,
       }),
       getIdentity: vi.fn(),
+      info: vi.fn(),
     };
 
     await expect(verifyConversationGateway(client)).resolves.toEqual({
       identity: null,
       apiVersion: 0,
       capabilities: [],
+      conversationApiVersions: [1],
+      chatCapabilities: [],
+      queueInputCapable: false,
     });
     expect(client.getIdentity).not.toHaveBeenCalled();
+    expect(client.info).not.toHaveBeenCalled();
   });
 });
 

@@ -8,6 +8,10 @@ import type {
   MobileApiError,
   ReplayPage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { FixtureGatewayConversationRepository } from './fixture-gateway-conversation-repository.js';
 
@@ -15,6 +19,14 @@ async function fixture<T>(name: string): Promise<T> {
   const root = resolve(
     dirname(fileURLToPath(import.meta.url)),
     '../../../../../contracts/mobile/v1/fixtures',
+  );
+  return JSON.parse(await readFile(resolve(root, name), 'utf8')) as T;
+}
+
+async function fixtureV2<T>(name: string): Promise<T> {
+  const root = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../../contracts/mobile/v2/fixtures',
   );
   return JSON.parse(await readFile(resolve(root, name), 'utf8')) as T;
 }
@@ -45,6 +57,73 @@ describe('FixtureGatewayConversationRepository', () => {
       { method: 'messages', args: [id] },
       { method: 'replay', args: ['agent-01', id, 0] },
       { method: 'replay', args: ['agent-01', id, 2] },
+    ]);
+  });
+
+  it('serves configured v2 bootstrap and exact cursor-addressed message pages', async () => {
+    const bootstrap = await fixtureV2<MobileV2ConversationBootstrap>('conversation-bootstrap.json');
+    const page = await fixtureV2<MobileV2ConversationMessagePage>('conversation-message-page.json');
+    const configuredConversationId = bootstrap.conversation.id;
+    repository = await FixtureGatewayConversationRepository.load({
+      bootstraps: { [configuredConversationId]: bootstrap },
+      messagePagesV2: [
+        {
+          conversationId: configuredConversationId,
+          params: { limit: 100, before: 'opaque-cursor' },
+          page,
+        },
+      ],
+    });
+
+    await expect(repository.bootstrap(configuredConversationId)).resolves.toEqual(bootstrap);
+    await expect(
+      repository.messagesV2(configuredConversationId, {
+        limit: 100,
+        before: 'opaque-cursor',
+      }),
+    ).resolves.toEqual(page);
+    await expect(
+      repository.messagesV2(configuredConversationId, {
+        limit: 99,
+        before: 'opaque-cursor',
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      repository.messagesV2(configuredConversationId, {
+        limit: 100,
+        before: 'different-cursor',
+      }),
+    ).resolves.toBeNull();
+    await expect(repository.messagesV2(configuredConversationId)).resolves.toBeNull();
+    await expect(repository.bootstrap('unconfigured-conversation')).resolves.toBeNull();
+
+    expect(repository.calls).toEqual([
+      { method: 'bootstrap', args: [configuredConversationId] },
+      {
+        method: 'messagesV2',
+        args: [configuredConversationId, { limit: 100, before: 'opaque-cursor' }],
+      },
+      {
+        method: 'messagesV2',
+        args: [configuredConversationId, { limit: 99, before: 'opaque-cursor' }],
+      },
+      {
+        method: 'messagesV2',
+        args: [configuredConversationId, { limit: 100, before: 'different-cursor' }],
+      },
+      { method: 'messagesV2', args: [configuredConversationId, undefined] },
+      { method: 'bootstrap', args: ['unconfigured-conversation'] },
+    ]);
+  });
+
+  it('keeps no-argument load compatible with null v2 fixture defaults', async () => {
+    repository = await FixtureGatewayConversationRepository.load();
+
+    await expect(repository.bootstrap('conversation-1')).resolves.toBeNull();
+    await expect(repository.messagesV2('conversation-1', { limit: 100 })).resolves.toBeNull();
+    expect(repository.calls).toEqual([
+      { method: 'bootstrap', args: ['conversation-1'] },
+      { method: 'messagesV2', args: ['conversation-1', { limit: 100 }] },
     ]);
   });
 

@@ -5,8 +5,13 @@ import type {
   ConversationSummary,
   GatewayIdentity,
   MobileApiError,
+  MobileApiErrorCode,
   ReplayPage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   CreateAgentRequest,
@@ -27,6 +32,11 @@ const AUTH_HEADER = { Authorization: `Bearer ${TOKEN}` };
 
 async function fixture<T>(name: string): Promise<T> {
   const url = new URL(`../../../../contracts/mobile/v1/fixtures/${name}`, import.meta.url);
+  return JSON.parse(await readFile(url, 'utf8')) as T;
+}
+
+async function fixtureV2<T>(name: string): Promise<T> {
+  const url = new URL(`../../../../contracts/mobile/v2/fixtures/${name}`, import.meta.url);
   return JSON.parse(await readFile(url, 'utf8')) as T;
 }
 
@@ -849,6 +859,158 @@ describe('GatewayManagementClient', () => {
       );
       expect(malformed).toBeInstanceOf(GatewayHttpError);
       expect((malformed as GatewayHttpError).apiError).toBeUndefined();
+    });
+  });
+
+  describe('conversation v2 management contract', () => {
+    it('reads v2 conversation metadata from management /info', async () => {
+      const info = {
+        agents: [],
+        conversationApiVersions: [1, 2],
+        chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      };
+      mockOk(info);
+
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.info()).resolves.toEqual(info);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/info`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+    });
+
+    it('fetches the atomic bootstrap from the unprefixed management route', async () => {
+      const bootstrap = await fixtureV2<MobileV2ConversationBootstrap>(
+        'conversation-bootstrap.json',
+      );
+      mockOk(bootstrap);
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(client.getConversationBootstrap('conversation/1')).resolves.toEqual(bootstrap);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/conversations/conversation%2F1/bootstrap`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+    });
+
+    it('fetches metadata-preserving v2 message pages from the unprefixed route', async () => {
+      const page = await fixtureV2<MobileV2ConversationMessagePage>(
+        'conversation-message-page.json',
+      );
+      mockOk(page);
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await expect(
+        client.getConversationMessagesV2('conversation/1', {
+          limit: 100,
+          before: 'opaque/+cursor==',
+        }),
+      ).resolves.toEqual(page);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/conversations/conversation%2F1/messages-v2?limit=100&before=opaque%2F%2Bcursor%3D%3D`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+    });
+
+    it('omits absent v2 message-page query values', async () => {
+      const page = await fixtureV2<MobileV2ConversationMessagePage>(
+        'conversation-message-page.json',
+      );
+      mockOk(page);
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      await client.getConversationMessagesV2('conversation-1');
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `${BASE_URL}/conversations/conversation-1/messages-v2`,
+        expect.objectContaining({ headers: expect.objectContaining(AUTH_HEADER) }),
+      );
+    });
+
+    it.each<MobileApiErrorCode>([
+      'unauthorized',
+      'not_found',
+      'validation_failed',
+      'revision_conflict',
+      'conversation_busy',
+      'rate_limited',
+      'gateway_offline',
+      'capability_required',
+    ])('accepts the frozen %s error code only in a complete typed body', async (code) => {
+      const apiError: MobileApiError = {
+        code,
+        error: 'Exact typed failure',
+        retryable: false,
+        details: { retryAfterMs: 10 },
+      };
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify(apiError), {
+          status: 426,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      const failure = await client.info().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(GatewayHttpError);
+      expect((failure as GatewayHttpError).apiError).toEqual(apiError);
+      expect((failure as GatewayHttpError).body).toBe(JSON.stringify(apiError));
+    });
+
+    it.each([
+      ['whitespace-only error', { code: 'capability_required', error: ' \t\n ', retryable: false }],
+      ['missing error', { code: 'capability_required', retryable: false }],
+      ['missing retryable', { code: 'capability_required', error: 'Upgrade required' }],
+      [
+        'null details',
+        { code: 'capability_required', error: 'Upgrade required', retryable: false, details: null },
+      ],
+      [
+        'array details',
+        { code: 'capability_required', error: 'Upgrade required', retryable: false, details: [] },
+      ],
+      [
+        'extra top-level key',
+        {
+          code: 'capability_required',
+          error: 'Upgrade required',
+          retryable: false,
+          extra: true,
+        },
+      ],
+      ['unknown code', { code: 'future_code', error: 'Upgrade required', retryable: false }],
+    ])('keeps a JSON body with %s untyped', async (_label, body) => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify(body), {
+          status: 426,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      const failure = await client.info().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(GatewayHttpError);
+      expect((failure as GatewayHttpError).apiError).toBeUndefined();
+      expect((failure as GatewayHttpError).body).toBe(JSON.stringify(body));
+    });
+
+    it('keeps a non-JSON error body raw and untyped', async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response('not json', {
+          status: 426,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const client = new GatewayManagementClient(BASE_URL, TOKEN);
+
+      const failure = await client.info().catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(GatewayHttpError);
+      expect((failure as GatewayHttpError).apiError).toBeUndefined();
+      expect((failure as GatewayHttpError).body).toBe('not json');
     });
   });
 });

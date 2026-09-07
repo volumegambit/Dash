@@ -8,6 +8,10 @@ import type {
   MobileApiError,
   ReplayPage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConversationRepositoryOfflineError } from './conversation-repository.js';
 import { GatewayConversationCache } from './gateway-conversation-cache.js';
@@ -19,12 +23,19 @@ async function fixture<T>(name: string): Promise<T> {
   return JSON.parse(await readFile(url, 'utf8')) as T;
 }
 
+async function fixtureV2<T>(name: string): Promise<T> {
+  const url = new URL(`../../../contracts/mobile/v2/fixtures/${name}`, import.meta.url);
+  return JSON.parse(await readFile(url, 'utf8')) as T;
+}
+
 function makeClient() {
   return {
     listConversations: vi.fn(),
     getConversation: vi.fn(),
     createConversation: vi.fn(),
     getConversationMessages: vi.fn(),
+    getConversationBootstrap: vi.fn(),
+    getConversationMessagesV2: vi.fn(),
     patchConversation: vi.fn(),
     deleteConversation: vi.fn(),
     replayConversationEvents: vi.fn(),
@@ -367,6 +378,129 @@ describe('GatewayConversationRepository', () => {
     await expect(repository.messages(id, { limit: 100 })).resolves.toEqual(messages);
     expect(repository.offline).toBe(true);
     await expect(repository.replay('agent-1', id, 2)).resolves.toEqual(replay.entries);
+    expect(repository.offline).toBe(false);
+  });
+
+  it.each(['bootstrap', 'messagesV2'] as const)(
+    'retries an authoritative %s read while offline and clears offline after recovery',
+    async (method) => {
+      const bootstrap = await fixtureV2<MobileV2ConversationBootstrap>(
+        'conversation-bootstrap.json',
+      );
+      const page = await fixtureV2<MobileV2ConversationMessagePage>(
+        'conversation-message-page.json',
+      );
+      const client = makeClient();
+      const clientMethod =
+        method === 'bootstrap' ? client.getConversationBootstrap : client.getConversationMessagesV2;
+      clientMethod.mockRejectedValueOnce(new TypeError('fetch failed'));
+      clientMethod.mockResolvedValueOnce(method === 'bootstrap' ? bootstrap : page);
+      const repository = new GatewayConversationRepository('gateway-1', client, cache);
+      const cacheSpies = [
+        vi.spyOn(cache, 'putConversationPage'),
+        vi.spyOn(cache, 'getConversationPage'),
+        vi.spyOn(cache, 'putConversation'),
+        vi.spyOn(cache, 'putCreatedConversation'),
+        vi.spyOn(cache, 'getConversation'),
+        vi.spyOn(cache, 'getConversationIds'),
+        vi.spyOn(cache, 'putMessagePage'),
+        vi.spyOn(cache, 'getMessagePage'),
+        vi.spyOn(cache, 'removeConversation'),
+      ];
+
+      if (method === 'bootstrap') {
+        await expect(repository.bootstrap('conversation-1')).rejects.toBeInstanceOf(
+          ConversationRepositoryOfflineError,
+        );
+        expect(repository.offline).toBe(true);
+        await expect(repository.bootstrap('conversation-1')).resolves.toEqual(bootstrap);
+        expect(client.getConversationBootstrap).toHaveBeenCalledTimes(2);
+        expect(client.getConversationBootstrap).toHaveBeenNthCalledWith(1, 'conversation-1');
+        expect(client.getConversationBootstrap).toHaveBeenNthCalledWith(2, 'conversation-1');
+      } else {
+        const params = { limit: 100, before: 'opaque-cursor' };
+        await expect(repository.messagesV2('conversation-1', params)).rejects.toBeInstanceOf(
+          ConversationRepositoryOfflineError,
+        );
+        expect(repository.offline).toBe(true);
+        await expect(repository.messagesV2('conversation-1', params)).resolves.toEqual(page);
+        expect(client.getConversationMessagesV2).toHaveBeenCalledTimes(2);
+        expect(client.getConversationMessagesV2).toHaveBeenNthCalledWith(
+          1,
+          'conversation-1',
+          params,
+        );
+        expect(client.getConversationMessagesV2).toHaveBeenNthCalledWith(
+          2,
+          'conversation-1',
+          params,
+        );
+      }
+
+      expect(repository.offline).toBe(false);
+      for (const spy of cacheSpies) expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['TypeError', () => new TypeError('fetch failed')],
+    ['AbortError', () => new DOMException('aborted', 'AbortError')],
+    ['TimeoutError', () => new DOMException('timed out', 'TimeoutError')],
+    ['HTTP 502', () => new GatewayHttpError(502, 'getConversationBootstrap', 'bad gateway')],
+    [
+      'typed gateway_offline',
+      () => {
+        const apiError: MobileApiError = {
+          code: 'gateway_offline',
+          error: 'Gateway offline',
+          retryable: true,
+        };
+        return new GatewayHttpError(
+          503,
+          'getConversationBootstrap',
+          JSON.stringify(apiError),
+          apiError,
+        );
+      },
+    ],
+  ])('maps an authoritative v2 %s failure to repository offline', async (_label, makeFailure) => {
+    const client = makeClient();
+    client.getConversationBootstrap.mockRejectedValueOnce(makeFailure());
+    const repository = new GatewayConversationRepository('gateway-1', client, cache);
+
+    await expect(repository.bootstrap('conversation-1')).rejects.toBeInstanceOf(
+      ConversationRepositoryOfflineError,
+    );
+    expect(repository.offline).toBe(true);
+  });
+
+  it.each([
+    ['SyntaxError', () => new SyntaxError('invalid JSON')],
+    ['HTTP 401', () => new GatewayHttpError(401, 'getConversationBootstrap', 'Unauthorized')],
+    ['HTTP 409', () => new GatewayHttpError(409, 'getConversationBootstrap', 'Conflict')],
+    [
+      'typed capability_required',
+      () => {
+        const apiError: MobileApiError = {
+          code: 'capability_required',
+          error: 'Upgrade required',
+          retryable: false,
+        };
+        return new GatewayHttpError(
+          426,
+          'getConversationBootstrap',
+          JSON.stringify(apiError),
+          apiError,
+        );
+      },
+    ],
+  ])('retains the original %s identity for authoritative v2 reads', async (_label, makeFailure) => {
+    const failure = makeFailure();
+    const client = makeClient();
+    client.getConversationBootstrap.mockRejectedValueOnce(failure);
+    const repository = new GatewayConversationRepository('gateway-1', client, cache);
+
+    await expect(repository.bootstrap('conversation-1')).rejects.toBe(failure);
     expect(repository.offline).toBe(false);
   });
 

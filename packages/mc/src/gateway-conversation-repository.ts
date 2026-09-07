@@ -4,6 +4,10 @@ import type {
   ConversationSummary,
   ReplayEntry,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 import type { ConversationRef, ConversationRepository } from './conversation-repository.js';
 import { ConversationRepositoryOfflineError } from './conversation-repository.js';
 import type { GatewayConversationCache } from './gateway-conversation-cache.js';
@@ -15,6 +19,8 @@ type ConversationClient = Pick<
   | 'getConversation'
   | 'createConversation'
   | 'getConversationMessages'
+  | 'getConversationBootstrap'
+  | 'getConversationMessagesV2'
   | 'patchConversation'
   | 'deleteConversation'
   | 'replayConversationEvents'
@@ -125,6 +131,18 @@ export class GatewayConversationRepository implements ConversationRepository {
     }
   }
 
+  private async onlineRead<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      const value = await operation();
+      this.offline = false;
+      return value;
+    } catch (error) {
+      if (!isNetworkFailure(error)) throw error;
+      this.markOffline();
+      throw new ConversationRepositoryOfflineError();
+    }
+  }
+
   async list(
     params: { agentId?: string; limit?: number; cursor?: string } = {},
   ): Promise<ConversationPage> {
@@ -194,6 +212,17 @@ export class GatewayConversationRepository implements ConversationRepository {
       },
       () => this.cache.getMessagePage(id, params),
     );
+  }
+
+  async bootstrap(id: string): Promise<MobileV2ConversationBootstrap | null> {
+    return this.onlineRead(() => this.client.getConversationBootstrap(id));
+  }
+
+  async messagesV2(
+    id: string,
+    params?: { limit?: number; before?: string },
+  ): Promise<MobileV2ConversationMessagePage> {
+    return this.onlineRead(() => this.client.getConversationMessagesV2(id, params));
   }
 
   async rename(id: string, revision: number, title: string): Promise<ConversationSummary> {

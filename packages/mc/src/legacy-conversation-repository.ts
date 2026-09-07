@@ -9,6 +9,10 @@ import type {
   MobileImageMediaType,
   ReplayEntry,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 import type { ConversationRepository } from './conversation-repository.js';
 import type { ConversationStore, McConversation, McMessage } from './conversations.js';
 
@@ -113,6 +117,17 @@ export class LegacyConversationRepository implements ConversationRepository {
       nextCursor: null,
       throughSeq: 0,
     };
+  }
+
+  async bootstrap(_id: string): Promise<MobileV2ConversationBootstrap | null> {
+    return null;
+  }
+
+  async messagesV2(
+    _id: string,
+    _params?: { limit?: number; before?: string },
+  ): Promise<MobileV2ConversationMessagePage | null> {
+    return null;
   }
 
   async patch(

@@ -186,6 +186,15 @@ describe('LegacyConversationRepository', () => {
     await expect(repository.replay('agent-1', created.id, 0)).resolves.toEqual([]);
   });
 
+  it('returns no authoritative v2 bootstrap or message page for local conversations', async () => {
+    const created = await repository.create('agent-1', 'request-v2');
+
+    await expect(repository.bootstrap(created.id)).resolves.toBeNull();
+    await expect(
+      repository.messagesV2(created.id, { limit: 100, before: 'opaque-cursor' }),
+    ).resolves.toBeNull();
+  });
+
   it('throws when a legacy patch targets a missing conversation', async () => {
     await expect(repository.patch('missing', 0, { title: 'Does not exist' })).rejects.toThrow(
       'Conversation "missing" not found',

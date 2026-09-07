@@ -1,7 +1,22 @@
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ConversationPage, MobileCapability } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 import { describe, expect, it, vi } from 'vitest';
 import { ConversationController } from './conversation-controller.js';
 import { FixtureGatewayConversationRepository } from './test-support/fixture-gateway-conversation-repository.js';
+
+async function fixtureV2<T>(name: string): Promise<T> {
+  const root = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../contracts/mobile/v2/fixtures',
+  );
+  return JSON.parse(await readFile(resolve(root, name), 'utf8')) as T;
+}
 
 function legacyRepository(id = 'local-1') {
   const localPage: ConversationPage = {
@@ -33,6 +48,8 @@ function legacyRepository(id = 'local-1') {
     ),
     create: vi.fn().mockResolvedValue(localPage.items[0]),
     messages: vi.fn().mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 }),
+    bootstrap: vi.fn().mockResolvedValue(null),
+    messagesV2: vi.fn().mockResolvedValue(null),
     patch: vi.fn().mockResolvedValue(localPage.items[0]),
     rename: vi.fn().mockResolvedValue(localPage.items[0]),
     setLinkage: vi.fn().mockResolvedValue(localPage.items[0]),
@@ -185,5 +202,90 @@ describe('ConversationController', () => {
 
     expect(result.items.some((item) => item.origin === 'local')).toBe(false);
     expect(legacy.list).not.toHaveBeenCalled();
+  });
+
+  it('routes authoritative v2 reads only when both queue capability signals are present', async () => {
+    const bootstrap = await fixtureV2<MobileV2ConversationBootstrap>('conversation-bootstrap.json');
+    const messagePage = await fixtureV2<MobileV2ConversationMessagePage>(
+      'conversation-message-page.json',
+    );
+    const gateway = await FixtureGatewayConversationRepository.load({
+      bootstraps: { [bootstrap.conversation.id]: bootstrap },
+      messagePagesV2: [
+        {
+          conversationId: bootstrap.conversation.id,
+          params: { limit: 100, before: 'opaque-cursor' },
+          page: messagePage,
+        },
+      ],
+    });
+    const legacy = legacyRepository();
+    const controller = new ConversationController(legacy);
+    controller.configure({
+      gatewayId: 'gateway-1',
+      online: true,
+      capabilities: ['conversation-sync-v1'],
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      repository: gateway,
+    });
+    const ref = { id: bootstrap.conversation.id, origin: 'gateway' as const };
+
+    expect(controller.queueInputCapable).toBe(true);
+    await expect(controller.bootstrap(ref)).resolves.toEqual(bootstrap);
+    await expect(
+      controller.messagesV2(ref, { limit: 100, before: 'opaque-cursor' }),
+    ).resolves.toEqual(messagePage);
+    expect(gateway.calls).toEqual([
+      { method: 'bootstrap', args: [ref.id] },
+      {
+        method: 'messagesV2',
+        args: [ref.id, { limit: 100, before: 'opaque-cursor' }],
+      },
+    ]);
+  });
+
+  it('keeps v2 reads disabled for local origins or either missing queue signal', async () => {
+    const gateway = await FixtureGatewayConversationRepository.load();
+    const legacy = legacyRepository();
+    const controller = new ConversationController(legacy);
+    const gatewayRef = { id: 'gateway-1', origin: 'gateway' as const };
+
+    controller.configure({
+      gatewayId: 'gateway-1',
+      online: true,
+      capabilities: ['conversation-sync-v1'],
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['future-capability'],
+      repository: gateway,
+    });
+    expect(controller.queueInputCapable).toBe(false);
+    await expect(controller.bootstrap(gatewayRef)).resolves.toBeNull();
+    await expect(controller.messagesV2(gatewayRef)).resolves.toBeNull();
+
+    controller.configure({
+      gatewayId: 'gateway-1',
+      online: true,
+      capabilities: ['conversation-sync-v1'],
+      conversationApiVersions: [1],
+      chatCapabilities: ['chat-input-queue-v1'],
+      repository: gateway,
+    });
+    expect(controller.queueInputCapable).toBe(false);
+    await expect(controller.bootstrap(gatewayRef)).resolves.toBeNull();
+
+    controller.configure({
+      gatewayId: 'gateway-1',
+      online: true,
+      capabilities: ['conversation-sync-v1'],
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['chat-input-queue-v1'],
+      repository: gateway,
+    });
+    await expect(controller.bootstrap({ id: 'local-1', origin: 'local' })).resolves.toBeNull();
+    await expect(controller.messagesV2({ id: 'local-1', origin: 'local' })).resolves.toBeNull();
+    expect(gateway.calls).toEqual([]);
+    expect(legacy.bootstrap).not.toHaveBeenCalled();
+    expect(legacy.messagesV2).not.toHaveBeenCalled();
   });
 });

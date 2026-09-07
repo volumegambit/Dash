@@ -18,6 +18,7 @@
     "@dash/management": "*",
     "@dash/mc": "*",
     "@dash/mobile-contract": "*",
+    "@dash/mobile-contract-v2": "*",
     "@dash/paths": "*",
     "bufferutil": "^4.1.0",
     "electron-updater": "^6.8.3",

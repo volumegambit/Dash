@@ -24,6 +24,9 @@ const verifiedGateway = {
   identity: { gatewayId: 'gateway-01', publicKey: 'dash-test-public-key' },
   apiVersion: 1,
   capabilities: ['conversation-sync-v1', 'chat-resume-v1'] as const,
+  conversationApiVersions: [1, 2],
+  chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+  queueInputCapable: true,
 };
 
 const validInput: GatewayRelayConnectionInput = {
@@ -67,15 +70,26 @@ describe('gateway connection helpers', () => {
     const client = {
       health: vi.fn().mockResolvedValue(health),
       getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockResolvedValue({
+        agents: [],
+        conversationApiVersions: [1, 2],
+        chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      }),
     };
 
     await expect(verifyConversationGateway(client)).resolves.toEqual({
       identity,
       apiVersion: 1,
       capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      queueInputCapable: true,
     });
     expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
       client.getIdentity.mock.invocationCallOrder[0],
+    );
+    expect(client.getIdentity.mock.invocationCallOrder[0]).toBeLessThan(
+      client.info.mock.invocationCallOrder[0],
     );
   });
 
@@ -88,14 +102,19 @@ describe('gateway connection helpers', () => {
         channels: 1,
       }),
       getIdentity: vi.fn(),
+      info: vi.fn(),
     };
 
     await expect(verifyConversationGateway(client)).resolves.toEqual({
       identity: null,
       apiVersion: 0,
       capabilities: [],
+      conversationApiVersions: [1],
+      chatCapabilities: [],
+      queueInputCapable: false,
     });
     expect(client.getIdentity).not.toHaveBeenCalled();
+    expect(client.info).not.toHaveBeenCalled();
   });
 
   it('rejects a capable gateway when authenticated identity fails', async () => {
@@ -103,9 +122,183 @@ describe('gateway connection helpers', () => {
     const client = {
       health: vi.fn().mockResolvedValue(health),
       getIdentity: vi.fn().mockRejectedValue(new Error('401 Unauthorized')),
+      info: vi.fn(),
     };
 
     await expect(verifyConversationGateway(client)).rejects.toThrow('401 Unauthorized');
+    expect(client.info).not.toHaveBeenCalled();
+  });
+
+  it('keeps an older /info response on the v1 path', async () => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockResolvedValue({ agents: [] }),
+    };
+
+    await expect(verifyConversationGateway(client)).resolves.toMatchObject({
+      conversationApiVersions: [1],
+      chatCapabilities: [],
+      queueInputCapable: false,
+    });
+  });
+
+  it.each([
+    new GatewayHttpError(404, 'info', 'Not Found'),
+    new GatewayHttpError(426, 'info', '', {
+      code: 'capability_required',
+      error: 'Conversation v2 is unavailable',
+      retryable: false,
+    }),
+  ])('falls back only for an unsupported /info probe', async (failure) => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockRejectedValue(failure),
+    };
+
+    await expect(verifyConversationGateway(client)).resolves.toMatchObject({
+      conversationApiVersions: [1],
+      chatCapabilities: [],
+      queueInputCapable: false,
+    });
+  });
+
+  it('does not downgrade an authenticated /info failure', async () => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const failure = new GatewayHttpError(401, 'info', 'Unauthorized');
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockRejectedValue(failure),
+    };
+
+    await expect(verifyConversationGateway(client)).rejects.toBe(failure);
+  });
+
+  it.each([
+    ['whitespace-only error', { code: 'capability_required', error: '   ', retryable: false }],
+    [
+      'null details',
+      { code: 'capability_required', error: 'Upgrade', retryable: false, details: null },
+    ],
+    [
+      'array details',
+      { code: 'capability_required', error: 'Upgrade', retryable: false, details: [] },
+    ],
+    ['unknown code', { code: 'future_code', error: 'Upgrade', retryable: false }],
+    [
+      'extra top-level key',
+      { code: 'capability_required', error: 'Upgrade', retryable: false, extra: true },
+    ],
+  ])('does not downgrade a 426 body with %s', async (_label, body) => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const failure = new GatewayHttpError(426, 'info', JSON.stringify(body));
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockRejectedValue(failure),
+    };
+
+    await expect(verifyConversationGateway(client)).rejects.toBe(failure);
+  });
+
+  it.each([
+    [
+      'conversation versions are not an array',
+      { conversationApiVersions: 2, chatCapabilities: [] },
+    ],
+    [
+      'conversation versions contain an unsafe integer',
+      { conversationApiVersions: [1, Number.MAX_SAFE_INTEGER + 1], chatCapabilities: [] },
+    ],
+    [
+      'conversation versions contain a fractional number',
+      { conversationApiVersions: [1, 2.5], chatCapabilities: [] },
+    ],
+    [
+      'chat capabilities are not an array',
+      { conversationApiVersions: [1, 2], chatCapabilities: null },
+    ],
+    [
+      'chat capabilities contain a non-string',
+      { conversationApiVersions: [1, 2], chatCapabilities: ['chat-input-queue-v1', 2] },
+    ],
+  ])('rejects /info when %s', async (_label, metadata) => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockResolvedValue({ agents: [], ...metadata }),
+    };
+
+    await expect(verifyConversationGateway(client)).rejects.toThrow(
+      'Update Dash: the gateway returned malformed conversation capabilities',
+    );
+  });
+
+  it('preserves unknown future capabilities but requires both v2 queue signals', async () => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const clients = [
+      {
+        health: vi.fn().mockResolvedValue(health),
+        getIdentity: vi.fn().mockResolvedValue(identity),
+        info: vi.fn().mockResolvedValue({
+          agents: [],
+          conversationApiVersions: [1, 2],
+          chatCapabilities: ['future-capability'],
+        }),
+      },
+      {
+        health: vi.fn().mockResolvedValue(health),
+        getIdentity: vi.fn().mockResolvedValue(identity),
+        info: vi.fn().mockResolvedValue({
+          agents: [],
+          conversationApiVersions: [1],
+          chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+        }),
+      },
+    ];
+
+    const [missingCapability, missingVersion] = await Promise.all(
+      clients.map((client) => verifyConversationGateway(client)),
+    );
+
+    expect(missingCapability).toMatchObject({
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['future-capability'],
+      queueInputCapable: false,
+    });
+    expect(missingVersion).toMatchObject({
+      conversationApiVersions: [1],
+      chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      queueInputCapable: false,
+    });
+  });
+
+  it.each([
+    new TypeError('fetch failed'),
+    new SyntaxError('invalid JSON'),
+    new GatewayHttpError(500, 'info', 'Internal Error'),
+    new GatewayHttpError(426, 'info', '{"code":"capability_required"}'),
+  ])('rethrows non-unsupported /info failures unchanged', async (failure) => {
+    const health = await fixture<MobileHealth>('health-capabilities.json');
+    const identity = await fixture<GatewayIdentity>('identity.json');
+    const client = {
+      health: vi.fn().mockResolvedValue(health),
+      getIdentity: vi.fn().mockResolvedValue(identity),
+      info: vi.fn().mockRejectedValue(failure),
+    };
+
+    await expect(verifyConversationGateway(client)).rejects.toBe(failure);
   });
 
   it.each([

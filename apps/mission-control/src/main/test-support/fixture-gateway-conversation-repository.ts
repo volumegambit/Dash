@@ -11,6 +11,21 @@ import type {
   ReplayEntry,
   ReplayPage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
+
+export interface ConfiguredV2Page {
+  conversationId: string;
+  params?: { limit?: number; before?: string };
+  page: MobileV2ConversationMessagePage;
+}
+
+export interface FixtureGatewayConversationRepositoryOptions {
+  bootstraps?: Readonly<Record<string, MobileV2ConversationBootstrap>>;
+  messagePagesV2?: readonly ConfiguredV2Page[];
+}
 
 async function json<T>(name: string): Promise<T> {
   const root = resolve(
@@ -42,13 +57,19 @@ export class FixtureGatewayConversationRepository implements ConversationReposit
     private page: ConversationPage,
     private messagePage: ConversationMessagePage,
     private replayEntries: ReplayEntry[],
+    private bootstraps: Readonly<Record<string, MobileV2ConversationBootstrap>>,
+    private messagePagesV2: readonly ConfiguredV2Page[],
   ) {}
 
-  static async load(): Promise<FixtureGatewayConversationRepository> {
+  static async load(
+    options: FixtureGatewayConversationRepositoryOptions = {},
+  ): Promise<FixtureGatewayConversationRepository> {
     return new FixtureGatewayConversationRepository(
       await json<ConversationPage>('conversations-page.json'),
       await json<ConversationMessagePage>('conversation-messages-page.json'),
       (await json<ReplayPage>('replay.json')).entries,
+      options.bootstraps ?? {},
+      options.messagePagesV2 ?? [],
     );
   }
 
@@ -91,6 +112,26 @@ export class FixtureGatewayConversationRepository implements ConversationReposit
   async messages(id: string): Promise<ConversationMessagePage> {
     this.calls.push({ method: 'messages', args: [id] });
     return this.messagePage;
+  }
+
+  async bootstrap(id: string): Promise<MobileV2ConversationBootstrap | null> {
+    this.calls.push({ method: 'bootstrap', args: [id] });
+    return Object.hasOwn(this.bootstraps, id) ? this.bootstraps[id] : null;
+  }
+
+  async messagesV2(
+    id: string,
+    params?: { limit?: number; before?: string },
+  ): Promise<MobileV2ConversationMessagePage | null> {
+    this.calls.push({ method: 'messagesV2', args: [id, params] });
+    return (
+      this.messagePagesV2.find(
+        (configured) =>
+          configured.conversationId === id &&
+          configured.params?.limit === params?.limit &&
+          configured.params?.before === params?.before,
+      )?.page ?? null
+    );
   }
 
   async patch(

@@ -4,6 +4,10 @@ import type {
   ConversationSummary,
   ReplayEntry,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 
 export type ConversationOrigin = 'gateway' | 'local';
 
@@ -40,6 +44,11 @@ export interface ConversationRepository {
     id: string,
     params?: { limit?: number; before?: string },
   ): Promise<ConversationMessagePage>;
+  bootstrap(id: string): Promise<MobileV2ConversationBootstrap | null>;
+  messagesV2(
+    id: string,
+    params?: { limit?: number; before?: string },
+  ): Promise<MobileV2ConversationMessagePage | null>;
   patch(
     id: string,
     revision: number,

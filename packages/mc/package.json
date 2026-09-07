@@ -22,6 +22,7 @@
     "@dash/agent": "*",
     "@dash/management": "*",
     "@dash/mobile-contract": "*",
+    "@dash/mobile-contract-v2": "*",
     "@dash/paths": "*",
     "@napi-rs/keyring": "^1.2.0"
   }

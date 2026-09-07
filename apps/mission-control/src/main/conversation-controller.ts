@@ -12,11 +12,17 @@ import type {
   MobileCapability,
   ReplayEntry,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 
 export interface VerifiedGatewayContext {
   gatewayId: string | null;
   online: boolean;
   capabilities: MobileCapability[] | null;
+  conversationApiVersions?: number[];
+  chatCapabilities?: string[];
   repository: ConversationRepository | null;
 }
 
@@ -51,6 +57,13 @@ export class ConversationController {
   get authority(): ConversationAuthorityMode {
     if (this.context.capabilities === null) return 'unresolved';
     return this.context.capabilities.includes('conversation-sync-v1') ? 'gateway' : 'legacy';
+  }
+
+  get queueInputCapable(): boolean {
+    return (
+      (this.context.conversationApiVersions ?? [1]).includes(2) &&
+      (this.context.chatCapabilities ?? []).includes('chat-input-queue-v1')
+    );
   }
 
   async list(
@@ -119,6 +132,19 @@ export class ConversationController {
     params: { limit?: number; before?: string } = {},
   ): Promise<ConversationMessagePage> {
     return this.repository(ref.origin).messages(ref.id, params);
+  }
+
+  async bootstrap(ref: ConversationRef): Promise<MobileV2ConversationBootstrap | null> {
+    if (ref.origin !== 'gateway' || !this.queueInputCapable) return null;
+    return this.requiredGateway().bootstrap(ref.id);
+  }
+
+  async messagesV2(
+    ref: ConversationRef,
+    params?: { limit?: number; before?: string },
+  ): Promise<MobileV2ConversationMessagePage | null> {
+    if (ref.origin !== 'gateway' || !this.queueInputCapable) return null;
+    return this.requiredGateway().messagesV2(ref.id, params);
   }
 
   async patch(

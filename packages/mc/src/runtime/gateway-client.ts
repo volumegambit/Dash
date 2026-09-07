@@ -1,12 +1,18 @@
+import type { InfoResponse } from '@dash/management';
 import type {
   ConversationMessagePage,
   ConversationPage,
   ConversationSummary,
   GatewayIdentity,
   MobileApiError,
+  MobileApiErrorCode,
   MobileCapability,
   ReplayPage,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+} from '@dash/mobile-contract-v2';
 
 /**
  * Per-agent swarm caps + gating. Mirror of the gateway's `AgentSwarmConfig`
@@ -228,6 +234,46 @@ const HOT_PATH_TIMEOUT_MS = 2_000;
 // phone-scoped capability token carried by pairing payloads.
 const CANONICAL_API_PREFIX = '';
 
+const MOBILE_API_ERROR_CODES: Record<MobileApiErrorCode, true> = {
+  unauthorized: true,
+  not_found: true,
+  validation_failed: true,
+  revision_conflict: true,
+  conversation_busy: true,
+  rate_limited: true,
+  gateway_offline: true,
+  capability_required: true,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isMobileApiError(value: unknown): value is MobileApiError {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (
+    keys.length < 3 ||
+    keys.length > 4 ||
+    !keys.every((key) => ['code', 'error', 'retryable', 'details'].includes(key))
+  ) {
+    return false;
+  }
+  if (
+    !Object.hasOwn(value, 'code') ||
+    !Object.hasOwn(value, 'error') ||
+    !Object.hasOwn(value, 'retryable') ||
+    typeof value.code !== 'string' ||
+    !Object.hasOwn(MOBILE_API_ERROR_CODES, value.code) ||
+    typeof value.error !== 'string' ||
+    value.error.trim().length === 0 ||
+    typeof value.retryable !== 'boolean'
+  ) {
+    return false;
+  }
+  return !Object.hasOwn(value, 'details') || isRecord(value.details);
+}
+
 export class GatewayManagementClient {
   constructor(
     private baseUrl: string,
@@ -249,7 +295,8 @@ export class GatewayManagementClient {
     let apiError: MobileApiError | undefined;
     if (body && res.headers.get('content-type')?.includes('application/json')) {
       try {
-        apiError = JSON.parse(body) as MobileApiError;
+        const decoded: unknown = JSON.parse(body);
+        apiError = isMobileApiError(decoded) ? decoded : undefined;
       } catch {
         apiError = undefined;
       }
@@ -265,6 +312,12 @@ export class GatewayManagementClient {
     });
     await this.throwIfNotOk(res, 'health');
     return res.json() as Promise<GatewayHealthResponse>;
+  }
+
+  async info(): Promise<InfoResponse> {
+    const res = await fetch(`${this.baseUrl}/info`, { headers: this.headers() });
+    await this.throwIfNotOk(res, 'info');
+    return res.json() as Promise<InfoResponse>;
   }
 
   async getIdentity(): Promise<GatewayIdentity> {
@@ -537,6 +590,27 @@ export class GatewayManagementClient {
     const res = await fetch(url, { headers: this.headers() });
     await this.throwIfNotOk(res, 'getConversationMessages');
     return res.json() as Promise<ConversationMessagePage>;
+  }
+
+  async getConversationBootstrap(id: string): Promise<MobileV2ConversationBootstrap> {
+    const path = `${CANONICAL_API_PREFIX}/conversations/${encodeURIComponent(id)}/bootstrap`;
+    const res = await fetch(`${this.baseUrl}${path}`, { headers: this.headers() });
+    await this.throwIfNotOk(res, 'getConversationBootstrap');
+    return res.json() as Promise<MobileV2ConversationBootstrap>;
+  }
+
+  async getConversationMessagesV2(
+    id: string,
+    params: { limit?: number; before?: string } = {},
+  ): Promise<MobileV2ConversationMessagePage> {
+    const search = new URLSearchParams();
+    if (params.limit !== undefined) search.set('limit', String(params.limit));
+    if (params.before !== undefined) search.set('before', params.before);
+    const suffix = search.size > 0 ? `?${search}` : '';
+    const path = `${CANONICAL_API_PREFIX}/conversations/${encodeURIComponent(id)}/messages-v2${suffix}`;
+    const res = await fetch(`${this.baseUrl}${path}`, { headers: this.headers() });
+    await this.throwIfNotOk(res, 'getConversationMessagesV2');
+    return res.json() as Promise<MobileV2ConversationMessagePage>;
   }
 
   async replayConversationEvents(

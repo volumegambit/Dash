@@ -26,6 +26,9 @@ export interface VerifiedGatewayMetadata {
   identity: GatewayIdentity | null;
   apiVersion: number;
   capabilities: MobileCapability[];
+  conversationApiVersions: number[];
+  chatCapabilities: string[];
+  queueInputCapable: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,16 +142,59 @@ export function publicGatewayConnectionStatus(
 }
 
 export async function verifyConversationGateway(
-  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'>,
+  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'> &
+    Partial<Pick<GatewayManagementClient, 'info'>>,
 ): Promise<VerifiedGatewayMetadata> {
   const health = await client.health();
   const apiVersion = health.apiVersion ?? 0;
   const capabilities = health.capabilities ?? [];
   if (!capabilities.includes('conversation-sync-v1')) {
-    return { identity: null, apiVersion, capabilities };
+    return {
+      identity: null,
+      apiVersion,
+      capabilities,
+      conversationApiVersions: [1],
+      chatCapabilities: [],
+      queueInputCapable: false,
+    };
   }
   const identity = await client.getIdentity();
-  return { identity, apiVersion, capabilities };
+  if (!client.info) {
+    throw new Error('Update Dash: the gateway returned malformed conversation capabilities');
+  }
+  let conversationApiVersions = [1];
+  let chatCapabilities: string[] = [];
+  try {
+    const info = await client.info();
+    if (
+      !isRecord(info) ||
+      (info.conversationApiVersions !== undefined &&
+        (!Array.isArray(info.conversationApiVersions) ||
+          !info.conversationApiVersions.every((version) => Number.isSafeInteger(version)))) ||
+      (info.chatCapabilities !== undefined &&
+        (!Array.isArray(info.chatCapabilities) ||
+          !info.chatCapabilities.every((capability) => typeof capability === 'string')))
+    ) {
+      throw new Error('Update Dash: the gateway returned malformed conversation capabilities');
+    }
+    conversationApiVersions = info.conversationApiVersions ?? [1];
+    chatCapabilities = info.chatCapabilities ?? [];
+  } catch (error) {
+    const unsupported =
+      error instanceof GatewayHttpError &&
+      (error.status === 404 ||
+        (error.status === 426 && error.apiError?.code === 'capability_required'));
+    if (!unsupported) throw error;
+  }
+  return {
+    identity,
+    apiVersion,
+    capabilities,
+    conversationApiVersions,
+    chatCapabilities,
+    queueInputCapable:
+      conversationApiVersions.includes(2) && chatCapabilities.includes('chat-input-queue-v1'),
+  };
 }
 
 export function normalizeGatewayRelayInput(
