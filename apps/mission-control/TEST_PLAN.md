@@ -222,8 +222,10 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 
 ### 5.1 Overview Tab
 1. Navigate to the agent detail page (click on `test-agent` in agents list)
-2. **Verify:** Header shows agent name, status dot (green), Chat/Disable/Remove buttons
-3. **Verify:** Overview tab shows: status, model name, system prompt, tools list
+2. **Verify:** Header shows agent name, status badge (green "active"), Tasks/Chat/Disable buttons
+3. **Verify:** Overview tab shows three cards side by side (wrapping to fewer columns in a narrow window): Agent Info (model, registered date), Tools (grouped with friendly labels and a count), Connected Channels
+4. **Verify:** Status appears exactly once — in the header badge. The Agent Info card has no Status row, and there is no "Recent Activity" card
+5. Disable the agent (header button). **Verify:** The header badge turns red "disabled", the Chat button is gone, and the Overview cards are otherwise unchanged
 
 ### 5.2 Inline Rename
 1. Click the pencil icon next to the agent name
