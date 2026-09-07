@@ -161,6 +161,12 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('swarm:cancelWorker', agentId, runId, workerId),
   swarmSend: (agentId, runId, workerId, message) =>
     ipcRenderer.invoke('swarm:send', agentId, runId, workerId, message),
+  subagentsList: (conversationId) => ipcRenderer.invoke('subagents:list', conversationId),
+  subagentStop: (subagentId) => ipcRenderer.invoke('subagents:stop', subagentId),
+  subagentResume: (subagentId, message, requestId) =>
+    ipcRenderer.invoke('subagents:resume', subagentId, message, requestId),
+  conversationMessages: (conversationId, before) =>
+    ipcRenderer.invoke('conversations:messages', conversationId, before),
 
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),

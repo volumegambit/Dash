@@ -2004,6 +2004,37 @@ export async function registerIpcHandlers(
   );
 
   // -----------------------------------------------------------------------
+  // Sub-agents (gateway passthrough, design §7.7)
+  // -----------------------------------------------------------------------
+  //
+  // stop/resume return {ok, …}: the gateway's actionable refusals are 409s and
+  // the client turns those into `{ok:false, reason}` rather than throwing, so
+  // the renderer can put the gateway's own sentence in front of a human. A
+  // rejection would arrive there as an Error the IPC bridge has rewritten.
+
+  ipcMain.handle('subagents:list', async (_e, conversationId: string) =>
+    (await getSwarmClient()).listSubagents(conversationId),
+  );
+
+  ipcMain.handle('subagents:stop', async (_e, subagentId: string) =>
+    (await getSwarmClient()).stopSubagent(subagentId),
+  );
+
+  ipcMain.handle(
+    'subagents:resume',
+    async (_e, subagentId: string, message: string, requestId?: string) =>
+      (await getSwarmClient()).resumeSubagent(subagentId, message, requestId),
+  );
+
+  // The child transcript a sub-agent card expands into. Deliberately NOT
+  // `chat:getMessages`: that path resolves the conversation through the
+  // renderer-facing repository and subscribes the resumable transport to a
+  // running turn, neither of which a read-only peek at a child wants.
+  ipcMain.handle('conversations:messages', async (_e, conversationId: string, before?: string) =>
+    (await getSwarmClient()).conversationMessages(conversationId, before),
+  );
+
+  // -----------------------------------------------------------------------
   // Settings
   // -----------------------------------------------------------------------
 

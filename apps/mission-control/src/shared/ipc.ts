@@ -7,6 +7,8 @@ import type {
   SkillContent,
   SkillInfo,
   SkillsConfig,
+  SubagentResumeResult,
+  SubagentStopResult,
   SwarmRunSnapshot,
   SwarmRunSummary,
   SwarmWorkerActionResult,
@@ -28,6 +30,7 @@ import type {
   MobileApiError,
   MobileImage,
   MobileWsServerFrame,
+  SubagentListEntry,
 } from '@dash/mobile-contract';
 import type {
   CreateIssueInput,
@@ -103,6 +106,53 @@ export type McAgentEvent =
       report: string;
       usage?: { inputTokens: number; outputTokens: number };
     }
+  // The canonical sub-agent family (design §7.2), mirroring @dash/agent's
+  // AgentEvent exactly. The gateway emits these ALONGSIDE the `worker_*`
+  // variants above for every child until task D8 retires the mirrors; the
+  // child's conversation id IS its worker id, so both families name the same
+  // string and `chat.swarm.ts` folds them onto ONE card.
+  | {
+      type: 'subagent_started';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      prompt: string;
+      model: string;
+      background: boolean;
+      depth: number;
+      startedAt: string;
+      isolation?: 'worktree';
+      parentTurnId?: string;
+    }
+  | {
+      type: 'subagent_progress';
+      subagentId: string;
+      status: 'running' | 'waiting_input';
+      toolCallCount: number;
+      elapsedMs: number;
+      detail?: string;
+      question?: string;
+    }
+  | {
+      type: 'subagent_finished';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
+      report: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      toolCallCount: number;
+      startedAt: string;
+      endedAt: string;
+    }
+  // The coordinator's name-only spawn announcement, pushed between a child's
+  // `worker_spawned` and its `subagent_started`. It renders nothing of its own
+  // — the sub-agent card is the announcement — but it has to be MODELLED, or
+  // the transcript draws "Activity from a newer Dash version" beside every
+  // child this gateway spawns.
+  | { type: 'agent_spawned'; name: string }
   | { type: 'error'; error: string; timestamp: string }
   // Transient provider failure the backend is auto-retrying (pi auto-retry).
   // Rendered as a "Retrying…" notice, not a terminal error.
@@ -517,6 +567,32 @@ export interface MissionControlAPI {
     workerId: string,
     message: string,
   ): Promise<SwarmWorkerActionResult>;
+
+  // Sub-agents (gateway passthrough, design §7.7). The children-of-conversation
+  // family that replaces the run-scoped calls above.
+  //
+  // `subagentStop`/`subagentResume` resolve to `{ok:true, …}` or
+  // `{ok:false, reason}`: the gateway's three actionable refusals (one-shot
+  // type, unrebuildable grant, steer cap) are 409s, and a rejected
+  // `ipcMain.handle` reaches the renderer as an Error the bridge has rewritten,
+  // so a refusal a human has to read must be a VALUE. Everything else (a 404,
+  // a malformed request) still rejects.
+  /** This conversation's DEPTH-0 children. A grandchild is not in the list. */
+  subagentsList(conversationId: string): Promise<SubagentListEntry[]>;
+  subagentStop(subagentId: string): Promise<SubagentStopResult>;
+  /**
+   * Send a message to a child from its parent. `requestId` is echoed on the
+   * `accepted` frame of the turn this becomes — for a client subscribed to the
+   * CHILD's stream, which Mission Control is not; it is sent because the
+   * correlation is the server's to offer and cannot be claimed later.
+   */
+  subagentResume(
+    subagentId: string,
+    message: string,
+    requestId?: string,
+  ): Promise<SubagentResumeResult>;
+  /** One page of any conversation's messages — the child transcript a card expands into. */
+  conversationMessages(conversationId: string, before?: string): Promise<ConversationMessagePage>;
 
   // Settings
   settingsGet(): Promise<AppSettings>;
