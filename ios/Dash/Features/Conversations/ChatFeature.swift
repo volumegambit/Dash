@@ -1402,11 +1402,31 @@ final class ChatFeature {
   /// cap) were rendered by no view anywhere: the spinner stopped, the sentence
   /// stayed in the field, and nothing said why.
   ///
-  /// **Precedence is "whichever action was taken last", and it is maintained by
-  /// the two writers rather than by this reader.** `stopSubagent` clears BOTH
-  /// slots on its attempt and `sendToSubagent` clears both on its, so at most
-  /// one of them is non-nil for a child that has an action in flight, and a
-  /// stale refusal from the other action can never mask the fresh one.
+  /// **Precedence is fixed — the stop's slot first — and the two writers are
+  /// what make that "whichever action was taken last".** `stopSubagent` clears
+  /// BOTH slots on its attempt and `sendToSubagent` clears both on its, so a
+  /// row acted on ONE ACTION AT A TIME shows the refusal of the action the user
+  /// just took and never an older one.
+  ///
+  /// **That guarantee is sequential only, and the sheet permits both actions at
+  /// once.** Stop is disabled on `stoppingSubagentIDs` (`TasksSheet.swift:283`)
+  /// and the resume composer's Send on its own `isSending`
+  /// (`TasksSheet.swift:317`) — two independent gates on one row. With both
+  /// requests out, both attempts have cleared both slots, and then the fixed
+  /// precedence decides: if the STOP's answer lands first the row shows its
+  /// line and the resume's, which landed later, is silent. Which action was
+  /// STARTED first is irrelevant; only which answer arrives first is. Not fixed
+  /// here, because the cure is a gate on one of the two buttons and a reader is
+  /// the wrong place for it — stated so that nothing rests on the stronger
+  /// claim that used to stand in this comment.
+  ///
+  /// **`lastError` has a second writer, so this line is not only about
+  /// actions.** `.subagentTranscriptFailed` puts a failed EXPANSION in the same
+  /// slot (`ChatReducer.swift:648-652`), so "Couldn't load this agent's
+  /// transcript" renders on the sheet's row as well as on the card, and a stop
+  /// taken from the sheet clears a transcript error the user may never have
+  /// seen. Accepted: one line per child was already the model, and a failed
+  /// expansion re-reports itself on the next attempt.
   func subagentRowError(_ childID: String) -> String? {
     subagentStopErrors[childID] ?? state.subagentUI[childID]?.lastError
   }
@@ -1615,8 +1635,16 @@ final class ChatFeature {
     )
   }
 
-  /// Open this child's row in the transcript, for a tap on a tasks-sheet row
-  /// (§8.4: "clicking scrolls to and expands the row").
+  /// Open this child's row in the transcript, for a tap on a tasks-sheet row.
+  ///
+  /// **§8.4 asks no scrolling of this client.** "Clicking scrolls to and
+  /// expands the row" is §8.4's **Web** bullet
+  /// (`docs/plans/2026-09-04-subagents-design.md:340`); the **iOS** bullet
+  /// (`:341`) asks for the sheet, the toolbar badge and the pinned strip and
+  /// says nothing about what a row tap does. Expanding is what this surface can
+  /// honestly offer — a `List` inside a sheet has no handle on the transcript's
+  /// `ScrollView` behind it — and `ChatView` does not dismiss the sheet on a
+  /// reveal (`ChatView.swift:217-221`), so the row is opened behind it.
   ///
   /// **Guarded on the row existing.** The sheet's model is REST and the
   /// transcript's is the fold, and the two do not always overlap — a background

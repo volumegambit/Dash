@@ -639,7 +639,14 @@ class DashUITestCase: XCTestCase {
     // frame loop was in place: `Expected chat.subagent.ui-subagent.header to be
     // hittable once inside (0.0, 0.0, 402.0, 874.0)`. The band below is the
     // scroller minus whatever is actually on top of it.
-    let visible = visibleBand(of: surface, in: app)
+    //
+    // **Re-sampled inside the loop below, because a swipe can change it.** The
+    // keyboard is the occluder that moves — a swipe on the transcript dismisses
+    // it and a later tap raises it again — and a band measured once before the
+    // loop is one the loop goes on steering into after it has stopped matching
+    // the screen. Costs one extra `visibleBand` per swipe actually taken, and
+    // nothing at all for a row that is already in view.
+    var visible = visibleBand(of: surface, in: app)
 
     // **`isHittable` is not a predicate on an off-screen row — it RAISES.**
     // Measured, not inferred: on a fresh iOS 26.5 simulator this helper failed
@@ -668,15 +675,24 @@ class DashUITestCase: XCTestCase {
       } else {
         surface.swipeDown()
       }
+      visible = visibleBand(of: surface, in: app)
     }
 
     let frame = element.frame
-    // `isHittable` is only SAFE to ask once the row is inside the scroller —
-    // outside it, it raises rather than answering.
-    guard frame.height > 0, surface.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) else {
+    // `isHittable` is only SAFE to ask once the row is where a tap can reach it
+    // — anywhere else it raises rather than answering.
+    //
+    // The BAND, not `surface.frame`: the whole point of the loop above is that
+    // a midpoint inside the scroller can still be behind the keyboard, and a
+    // guard on the frame lets exactly that case through to `isHittable`, which
+    // is the call this helper exists to protect. It fails either way — false,
+    // or a raise with no explanation — so this is the diagnostic, not a
+    // strengthening: the loop's own break condition and this guard now ask the
+    // same question.
+    guard frame.height > 0, visible.contains(CGPoint(x: frame.midX, y: frame.midY)) else {
       XCTFail(
         """
-        Expected \(element.identifier) to be scrolled into \(surface.frame);         its frame is \(frame) and the visible band is \(visible)
+        Expected \(element.identifier) to be scrolled into the visible band \(visible);         its frame is \(frame) and the scroller's is \(surface.frame)
         """,
         file: file,
         line: line
