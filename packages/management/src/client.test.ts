@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SubagentListEntry } from '@dash/mobile-contract';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagementClient } from './client.js';
 import { startManagementServer } from './server.js';
@@ -900,6 +901,148 @@ describe('ManagementClient', () => {
       nextResponse = { ok: true };
       await swarmClient.cancelSwarmWorker('a 1', 'r/1', 'w#1');
       expect(recording[0].url).toBe('/agents/a%201/swarm/runs/r%2F1/workers/w%231/cancel');
+    });
+
+    // The children-of-conversation family (design §7.7) that replaces the
+    // run-scoped calls above in Mission Control. Shares the raw-server harness
+    // because it is the same gateway and the same 409-as-a-value contract;
+    // these routes differ in returning the typed `MobileApiError` envelope
+    // rather than `{ok:false, reason}`, so the reason has to be lifted out of
+    // `error` before the panel can render it.
+    describe('sub-agent runtime methods', () => {
+      it('listSubagents() GETs /conversations/:id/subagents and unwraps { subagents }', async () => {
+        const entry: SubagentListEntry = {
+          id: 'sub_a',
+          type: 'Explore',
+          description: 'map the gateway',
+          status: 'running',
+          background: false,
+          depth: 1,
+          startedAt: '2026-09-08T00:00:00.000Z',
+          toolCallCount: 3,
+          oneShot: true,
+        };
+        nextResponse = { subagents: [entry] };
+        const res = await swarmClient.listSubagents('conv-1');
+        expect(recording[0].method).toBe('GET');
+        expect(recording[0].url).toBe('/conversations/conv-1/subagents');
+        expect(res).toEqual([entry]);
+      });
+
+      it('listSubagents() URL-encodes the conversation id', async () => {
+        nextResponse = { subagents: [] };
+        await swarmClient.listSubagents('c/1 #2');
+        expect(recording[0].url).toBe('/conversations/c%2F1%20%232/subagents');
+      });
+
+      it('listSubagents() throws on a non-ok response', async () => {
+        nextStatus = 404;
+        nextResponse = { code: 'not_found', error: 'Conversation not found', retryable: false };
+        await expect(swarmClient.listSubagents('nope')).rejects.toThrow('Management API error 404');
+      });
+
+      it('conversationMessages() GETs the child transcript page', async () => {
+        nextResponse = { items: [], nextCursor: null, throughSeq: 0 };
+        const res = await swarmClient.conversationMessages('sub_a');
+        expect(recording[0].method).toBe('GET');
+        expect(recording[0].url).toBe('/conversations/sub_a/messages');
+        expect(res).toEqual({ items: [], nextCursor: null, throughSeq: 0 });
+      });
+
+      it('conversationMessages() passes `before` as a query parameter', async () => {
+        nextResponse = { items: [], nextCursor: null, throughSeq: 0 };
+        await swarmClient.conversationMessages('sub_a', 'msg 9');
+        expect(recording[0].url).toBe('/conversations/sub_a/messages?before=msg+9');
+      });
+
+      it('stopSubagent() POSTs /subagents/:id/stop and returns the terminal status', async () => {
+        nextResponse = { ok: true, status: 'cancelled' };
+        const res = await swarmClient.stopSubagent('sub_a');
+        expect(recording[0].method).toBe('POST');
+        expect(recording[0].url).toBe('/subagents/sub_a/stop');
+        expect(res).toEqual({ ok: true, status: 'cancelled' });
+      });
+
+      it('stopSubagent() surfaces a 409 as {ok:false, reason} lifted from the error envelope', async () => {
+        nextStatus = 409;
+        nextResponse = {
+          code: 'validation_failed',
+          error: 'Sub-agent sub_a is already done',
+          retryable: false,
+        };
+        const res = await swarmClient.stopSubagent('sub_a');
+        expect(res).toEqual({ ok: false, reason: 'Sub-agent sub_a is already done' });
+      });
+
+      it('stopSubagent() surfaces a non-JSON 409 body as {ok:false, reason} without throwing', async () => {
+        nextStatus = 409;
+        nextRawBody = 'gateway said no';
+        const res = await swarmClient.stopSubagent('sub_a');
+        expect(res).toEqual({ ok: false, reason: 'gateway said no' });
+      });
+
+      it('stopSubagent() still throws on a non-409 error (404 unknown sub-agent)', async () => {
+        nextStatus = 404;
+        nextResponse = {
+          code: 'not_found',
+          error: 'Sub-agent nope was not found',
+          retryable: false,
+        };
+        await expect(swarmClient.stopSubagent('nope')).rejects.toThrow('Management API error 404');
+      });
+
+      it('resumeSubagent() POSTs the message and the client requestId', async () => {
+        nextResponse = { ok: true, status: 'running', mode: 'queued' };
+        const res = await swarmClient.resumeSubagent('sub_a', 'keep going', 'req-1');
+        expect(recording[0].method).toBe('POST');
+        expect(recording[0].url).toBe('/subagents/sub_a/resume');
+        expect(recording[0].body).toEqual({ message: 'keep going', requestId: 'req-1' });
+        expect(res).toEqual({ ok: true, status: 'running', mode: 'queued' });
+      });
+
+      it('resumeSubagent() omits requestId entirely when none is given', async () => {
+        nextResponse = { ok: true, status: 'running', mode: 'resumed' };
+        await swarmClient.resumeSubagent('sub_a', 'keep going');
+        expect(recording[0].body).toEqual({ message: 'keep going' });
+      });
+
+      it('resumeSubagent() surfaces each actionable 409 as a readable reason', async () => {
+        for (const reason of [
+          'sub-agent type Explore is one-shot and cannot be resumed',
+          'the tool grant for this sub-agent can no longer be rebuilt',
+          'steer cap reached (3) for this sub-agent',
+        ]) {
+          recording = [];
+          nextStatus = 409;
+          nextResponse = { code: 'validation_failed', error: reason, retryable: false };
+          expect(await swarmClient.resumeSubagent('sub_a', 'go', 'r')).toEqual({
+            ok: false,
+            reason,
+          });
+        }
+      });
+
+      it('resumeSubagent() still throws on a 400 (a client-side contract bug)', async () => {
+        nextStatus = 400;
+        nextResponse = {
+          code: 'validation_failed',
+          error: 'message must be a nonblank string',
+          retryable: false,
+        };
+        await expect(swarmClient.resumeSubagent('sub_a', '   ')).rejects.toThrow(
+          'Management API error 400',
+        );
+      });
+
+      it('URL-encodes the sub-agent id on both actions', async () => {
+        nextResponse = { ok: true, status: 'cancelled' };
+        await swarmClient.stopSubagent('sub a/1');
+        expect(recording[0].url).toBe('/subagents/sub%20a%2F1/stop');
+        recording = [];
+        nextResponse = { ok: true, status: 'running', mode: 'queued' };
+        await swarmClient.resumeSubagent('sub a/1', 'go');
+        expect(recording[0].url).toBe('/subagents/sub%20a%2F1/resume');
+      });
     });
   });
 });
