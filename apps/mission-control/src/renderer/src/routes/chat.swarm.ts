@@ -516,6 +516,20 @@ export function formatToolCount(n: number): string {
   return `${n} tool ${n === 1 ? 'use' : 'uses'}`;
 }
 
+/**
+ * Human label for a card status, in ONE place: the transcript card and the
+ * panel row must not drift into two vocabularies for the same seven values.
+ */
+export const SUBAGENT_STATUS_LABEL: Record<SubagentStatus, string> = {
+  running: 'Running',
+  waiting: 'Waiting for input',
+  done: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+  interrupted: 'Interrupted',
+  max_turns: 'Max turns reached',
+};
+
 /** Summary counts for the pinned swarm strip. */
 export interface SwarmStripSummary {
   total: number;

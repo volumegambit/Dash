@@ -9,9 +9,6 @@ import type {
   SkillsConfig,
   SubagentResumeResult,
   SubagentStopResult,
-  SwarmRunSnapshot,
-  SwarmRunSummary,
-  SwarmWorkerActionResult,
 } from '@dash/management';
 import type {
   ConversationRef,
@@ -549,24 +546,6 @@ export interface MissionControlAPI {
   skillsUpdateConfig(agentId: string, config: SkillsConfig): Promise<SkillsConfig>;
   skillsInstall(agentId: string, source: string, name?: string): Promise<SkillInfo>;
   skillsRemove(agentId: string, skillName: string): Promise<void>;
-
-  // Swarm panel (gateway passthrough). `cancelWorker`/`swarmSend` resolve to
-  // `{ok, reason?}`: the underlying client surfaces the gateway's 409
-  // (run finalized / worker terminal) as `{ok:false, reason}` rather than a
-  // rejection, so the panel can render the reason.
-  swarmListRuns(agentId: string): Promise<SwarmRunSummary[]>;
-  swarmGetRun(agentId: string, runId: string): Promise<SwarmRunSnapshot>;
-  swarmCancelWorker(
-    agentId: string,
-    runId: string,
-    workerId: string,
-  ): Promise<SwarmWorkerActionResult>;
-  swarmSend(
-    agentId: string,
-    runId: string,
-    workerId: string,
-    message: string,
-  ): Promise<SwarmWorkerActionResult>;
 
   // Sub-agents (gateway passthrough, design §7.7). The children-of-conversation
   // family that replaces the run-scoped calls above.

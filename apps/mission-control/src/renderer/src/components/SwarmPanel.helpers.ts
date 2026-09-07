@@ -1,116 +1,31 @@
 /**
- * Pure, framework-free helpers for the swarm supervision panel
- * (`SwarmPanel.tsx`). Kept in a separate module so they can be unit-tested
- * under the app's vitest config without a DOM — mirrors the `chat.swarm.ts`
- * precedent. The presentational component lives in `SwarmPanel.tsx`.
+ * Pure, framework-free helpers for the sub-agent panel (`SwarmPanel.tsx`).
+ * Kept in a separate module so they can be unit-tested under the app's vitest
+ * config without a DOM.
+ *
+ * The run-scoped helpers this file used to carry (`isRunTerminal`, `isRunLive`,
+ * `sortRuns`, `workerElapsedMs`, `workerStatusLabel`, `isWorkerTerminal`,
+ * `workerTotalTokens`) went with the run-scoped panel. Their replacements are
+ * in `routes/chat.swarm.ts`, where the transcript card reads them too — one
+ * status vocabulary and one terminal predicate for both surfaces. In
+ * particular `workerElapsedMs` reported `now - startedAt` for a terminal worker
+ * with no `endedAt`, which is the row's own AGE rather than the run's duration;
+ * `subagentElapsedMs` reports nothing at all in that case.
+ *
+ * What is left is used by two callers that have nothing to do with sub-agent
+ * lifecycles: the panel's token column, and the agent configuration tab's
+ * numeric/CSV fields.
  */
-
-import type { SwarmRunSummary, SwarmRunWorkerSnapshot, SwarmWorkerStatus } from '@dash/management';
-
-/** A run is terminal once the coordinator has finalized it. */
-export function isRunTerminal(run: Pick<SwarmRunSummary, 'finalized'>): boolean {
-  return run.finalized === true;
-}
-
-/** A worker status is terminal when the worker has finished (any outcome). */
-export function isWorkerTerminal(status: SwarmWorkerStatus): boolean {
-  return (
-    status === 'done' ||
-    status === 'failed' ||
-    status === 'cancelled' ||
-    status === 'interrupted' ||
-    status === 'max_turns'
-  );
-}
-
-/**
- * True when the panel should keep the 20s interval poll running: a run is
- * "live" while it has not been finalized. The panel only polls when the open
- * run is non-terminal, so a finalized run stops the timer.
- */
-export function isRunLive(run: Pick<SwarmRunSummary, 'finalized'> | null | undefined): boolean {
-  return run != null && !isRunTerminal(run);
-}
-
-/**
- * Sort runs for the run list: active (non-finalized) runs first, then by most
- * recent `startedAt` descending. Returns a new array — never mutates the input.
- */
-export function sortRuns(runs: readonly SwarmRunSummary[]): SwarmRunSummary[] {
-  return [...runs].sort((a, b) => {
-    const aTerminal = isRunTerminal(a);
-    const bTerminal = isRunTerminal(b);
-    if (aTerminal !== bTerminal) return aTerminal ? 1 : -1;
-    return b.startedAt - a.startedAt;
-  });
-}
-
-/**
- * Elapsed milliseconds for a worker: `endedAt - startedAt` when both are known,
- * else `now - startedAt` for a still-running worker. Returns undefined when the
- * worker has not started (no `startedAt`). Clamped at zero so clock skew never
- * yields a negative duration.
- */
-export function workerElapsedMs(
-  worker: Pick<SwarmRunWorkerSnapshot, 'startedAt' | 'endedAt'>,
-  now: number,
-): number | undefined {
-  if (worker.startedAt == null) return undefined;
-  const end = worker.endedAt ?? now;
-  return Math.max(0, end - worker.startedAt);
-}
-
-/**
- * Format a millisecond duration as a compact human string: `12s`, `3m 04s`,
- * `1h 02m`. Undefined input renders as an em dash.
- */
-export function formatElapsed(ms: number | undefined): string {
-  if (ms == null) return '—';
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
-  return `${seconds}s`;
-}
-
-/** Total tokens (input + output) for a worker, for the compact table column. */
-export function workerTotalTokens(
-  usage: Pick<SwarmRunWorkerSnapshot['usage'], 'inputTokens' | 'outputTokens'>,
-): number {
-  return usage.inputTokens + usage.outputTokens;
-}
 
 /**
  * Format a token count compactly: `842`, `12.3k`, `1.2M`. Thousands/millions
  * are shown with one decimal so a busy worker's usage stays readable in a
- * narrow table column.
+ * narrow column.
  */
 export function formatTokens(count: number): string {
   if (count < 1000) return String(count);
   if (count < 1_000_000) return `${(count / 1000).toFixed(1)}k`;
   return `${(count / 1_000_000).toFixed(1)}M`;
-}
-
-/** Human label for a worker lifecycle status (title-case, spaced). */
-export function workerStatusLabel(status: SwarmWorkerStatus): string {
-  switch (status) {
-    case 'spawning':
-      return 'Spawning';
-    case 'running':
-      return 'Running';
-    case 'waiting_input':
-      return 'Waiting';
-    case 'done':
-      return 'Done';
-    case 'failed':
-      return 'Failed';
-    case 'cancelled':
-      return 'Cancelled';
-    default:
-      return status;
-  }
 }
 
 /**

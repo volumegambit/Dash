@@ -155,12 +155,6 @@ const api: MissionControlAPI = {
   skillsRemove: (agentId, skillName) => ipcRenderer.invoke('skills:remove', agentId, skillName),
 
   // Swarm panel
-  swarmListRuns: (agentId) => ipcRenderer.invoke('swarm:listRuns', agentId),
-  swarmGetRun: (agentId, runId) => ipcRenderer.invoke('swarm:getRun', agentId, runId),
-  swarmCancelWorker: (agentId, runId, workerId) =>
-    ipcRenderer.invoke('swarm:cancelWorker', agentId, runId, workerId),
-  swarmSend: (agentId, runId, workerId, message) =>
-    ipcRenderer.invoke('swarm:send', agentId, runId, workerId, message),
   subagentsList: (conversationId) => ipcRenderer.invoke('subagents:list', conversationId),
   subagentStop: (subagentId) => ipcRenderer.invoke('subagents:stop', subagentId),
   subagentResume: (subagentId, message, requestId) =>

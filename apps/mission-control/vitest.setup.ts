@@ -135,10 +135,6 @@ function createMockApi(): MockApi {
     skillsUpdateConfig: vi.fn().mockResolvedValue({ requiresRestart: false }),
 
     // Swarm panel (gateway passthrough)
-    swarmListRuns: vi.fn().mockResolvedValue([]),
-    swarmGetRun: vi.fn().mockResolvedValue(null),
-    swarmCancelWorker: vi.fn().mockResolvedValue({ ok: true }),
-    swarmSend: vi.fn().mockResolvedValue({ ok: true }),
     subagentsList: vi.fn().mockResolvedValue([]),
     subagentStop: vi.fn().mockResolvedValue({ ok: true, status: 'cancelled' }),
     subagentResume: vi.fn().mockResolvedValue({ ok: true, status: 'running', mode: 'queued' }),

@@ -63,6 +63,7 @@ import {
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
 import {
+  SUBAGENT_STATUS_LABEL,
   type SubagentGroup,
   type SubagentStatus,
   formatElapsed as formatSubagentElapsed,
@@ -732,16 +733,6 @@ function SubagentStatusIcon({ status }: { status: SubagentStatus }): JSX.Element
       return <Ban size={10} className="inline text-muted mr-1.5" />;
   }
 }
-
-const SUBAGENT_STATUS_LABEL: Record<SubagentStatus, string> = {
-  running: 'Running',
-  waiting: 'Waiting for input',
-  done: 'Done',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  interrupted: 'Interrupted',
-  max_turns: 'Max turns reached',
-};
 
 /**
  * Wall-clock age of a child run, in milliseconds, ticking once a second while
@@ -1836,6 +1827,8 @@ export function Chat(): JSX.Element {
     deleteConversation,
     sendMessage,
     cancelMessage,
+    subagents,
+    refreshSubagents,
   } = useChatStore();
 
   const connectors = useConnectorsStore((s) => s.connectors);
@@ -1850,14 +1843,9 @@ export function Chat(): JSX.Element {
   const [imageError, setImageError] = useState<string | null>(null);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
-  // Swarm supervision panel (right drawer). `swarmPanelOpen` toggles it;
-  // `swarmRefreshToken` is bumped to force the panel to refetch — on a
-  // `swarm:run-changed` poke for the open agent and on gateway SSE (re)connect.
+  // Sub-agent panel (right drawer). The list it renders lives in the store,
+  // which owns the reads and their guards; this flag only opens the drawer.
   const [swarmPanelOpen, setSwarmPanelOpen] = useState(false);
-  const [swarmRefreshToken, setSwarmRefreshToken] = useState(0);
-  // True once we've observed at least one run for the selected agent, so the
-  // affordance shows even when swarm.enabled is off but historical runs exist.
-  const [swarmHasRuns, setSwarmHasRuns] = useState(false);
   const [renamingTitle, setRenamingTitle] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [inlineRenameTabId, setInlineRenameTabId] = useState<string | null>(null);
@@ -2236,34 +2224,24 @@ export function Chat(): JSX.Element {
   const activeModel = selectedAgent?.config.model;
   const activeWorkspace = selectedAgent?.config.workspace;
 
-  // Swarm affordance: visible when the agent has swarm enabled OR has runs.
+  // Panel affordance: visible when the agent has sub-agents enabled OR this
+  // conversation already has children. The second half is what makes the
+  // drawer reachable on a conversation whose agent has since had the feature
+  // turned off — the children are still there and still stoppable.
   const swarmEnabled = selectedAgent?.config.swarm?.enabled === true;
-  const showSwarmAffordance = Boolean(selectedAgentId) && (swarmEnabled || swarmHasRuns);
+  const showSwarmAffordance =
+    Boolean(selectedConversationRef) && (swarmEnabled || subagents.length > 0);
 
-  // Probe whether the selected agent has any swarm runs (so the affordance can
-  // show even when swarm.enabled is off but historical runs exist). Re-probes
-  // when the agent changes; cheap listing call, guarded against races.
-  useEffect(() => {
-    let cancelled = false;
-    setSwarmHasRuns(false);
-    if (!selectedAgentId) return;
-    window.api
-      .swarmListRuns(selectedAgentId)
-      .then((list) => {
-        if (!cancelled) setSwarmHasRuns(list.length > 0);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedAgentId]);
-
-  // Close the panel when switching to an agent that has no swarm affordance.
+  // Close the panel when the affordance goes away (a different agent, or no
+  // conversation at all).
   useEffect(() => {
     if (swarmPanelOpen && !showSwarmAffordance) setSwarmPanelOpen(false);
   }, [swarmPanelOpen, showSwarmAffordance]);
 
-  // Refresh (a): a `swarm:run-changed` poke for the OPEN agent bumps the token.
+  // Re-read on the coordinator's own poke for the open agent. The poke is
+  // throttled to one per run per second with no trailing emit, so it is a HINT,
+  // not a guarantee — the panel's own 20s poll and the store's frame trigger
+  // are what make a missed poke recoverable.
   useEffect(() => {
     if (!selectedAgentId) return;
     const unsub = window.api.onGatewayEvent((eventType, data) => {
@@ -2274,23 +2252,19 @@ export function Chat(): JSX.Element {
       } catch {
         return;
       }
-      if (agentIdInEvent === selectedAgentId) {
-        // The affordance may need to appear on the first-ever run.
-        setSwarmHasRuns(true);
-        setSwarmRefreshToken((t) => t + 1);
-      }
+      if (agentIdInEvent === selectedAgentId) void refreshSubagents();
     });
     return unsub;
-  }, [selectedAgentId]);
+  }, [selectedAgentId, refreshSubagents]);
 
-  // Refresh (b): gateway SSE (re)connect. The main process re-opens the event
-  // stream on every 'healthy' poll tick, so a 'healthy' status is our
-  // reconnect signal — bump the token to resync after any dropped stream.
+  // Gateway SSE (re)connect. The main process re-opens the event stream on
+  // every 'healthy' poll tick, so a 'healthy' status is our reconnect signal —
+  // re-read to resync after any dropped stream.
   useEffect(() => {
     return window.api.gatewayOnStatus((status) => {
-      if (status === 'healthy') setSwarmRefreshToken((t) => t + 1);
+      if (status === 'healthy') void refreshSubagents();
     });
-  }, []);
+  }, [refreshSubagents]);
 
   const latestTodos = useMemo(
     () => extractLatestTodos(selectedMessages, liveEvents),
@@ -2604,8 +2578,8 @@ export function Chat(): JSX.Element {
                     className={`flex items-center gap-1 rounded p-1 transition-colors ${
                       swarmPanelOpen ? 'text-accent' : 'text-muted hover:text-foreground'
                     }`}
-                    title="Swarm supervision"
-                    aria-label="Toggle swarm supervision panel"
+                    title="Sub-agents"
+                    aria-label="Toggle sub-agent panel"
                     aria-pressed={swarmPanelOpen}
                     data-testid="swarm-panel-toggle"
                   >
@@ -2888,13 +2862,8 @@ export function Chat(): JSX.Element {
           </div>
         </div>
         {/* Swarm supervision panel (right drawer) */}
-        {swarmPanelOpen && selectedAgentId && showSwarmAffordance && (
-          <SwarmPanel
-            key={selectedAgentId}
-            agentId={selectedAgentId}
-            refreshToken={swarmRefreshToken}
-            onClose={() => setSwarmPanelOpen(false)}
-          />
+        {swarmPanelOpen && showSwarmAffordance && (
+          <SwarmPanel onClose={() => setSwarmPanelOpen(false)} />
         )}
       </div>
     </div>
