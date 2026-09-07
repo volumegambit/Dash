@@ -258,30 +258,92 @@ struct DashCommands: Commands {
 /// entirely while the actions compare equal, so the `focusedSceneValue`
 /// modifier is never re-applied and the focus system is never disturbed. See
 /// `ChatCommandActions` for why that matters.
+///
+/// ### Why identity is stored a second time, in `identity`
+///
+/// Conforming to `View` infers `@MainActor` onto the whole type, so the
+/// stored `actions` is a main-actor-isolated property, while `Equatable`'s
+/// `==` is a NONISOLATED requirement. Reading `actions` from `==` is
+/// therefore illegal — which is exactly what the synthesized `==` did, and
+/// what failed the Release build under Xcode 16.3 / Swift 6.1 with "main
+/// actor-isolated property 'actions' can not be referenced from a nonisolated
+/// context" (Debug passed; `SWIFT_COMPILATION_MODE = wholemodule` in Release
+/// is what surfaced it, and Swift 6.3 no longer reports it at all, so a
+/// modern local toolchain will not reproduce it).
+///
+/// The fix keeps the comparison exactly as cheap and exactly as
+/// identity-based as before — `ObjectIdentifier(feature)` compared with `==`
+/// IS `feature === feature` — by caching that identity at `init` in a
+/// `nonisolated let`, which is legal because `ObjectIdentifier` is `Sendable`
+/// (`ChatCommandActions` is not: it holds `() -> Void` closures). Do not
+/// "simplify" this back to a synthesized conformance, and do not make `==`
+/// touch anything else: both the `Equatable`-on-identity design and the
+/// nonisolated `==` are load-bearing.
 struct ChatCommandPublisher: View, Equatable {
   let actions: ChatCommandActions
+  private nonisolated let identity: ObjectIdentifier
+
+  init(actions: ChatCommandActions) {
+    self.actions = actions
+    identity = ObjectIdentifier(actions.feature)
+  }
 
   var body: some View {
     Color.clear.allowsHitTesting(false).focusedSceneValue(\.chatCommands, actions)
   }
+
+  nonisolated static func == (lhs: ChatCommandPublisher, rhs: ChatCommandPublisher) -> Bool {
+    lhs.identity == rhs.identity
+  }
 }
 
-/// `ConversationListView`'s counterpart to `ChatCommandPublisher`.
+/// `ConversationListView`'s counterpart to `ChatCommandPublisher` — same
+/// cached-identity shape and the same reason, see there.
 struct ListCommandPublisher: View, Equatable {
   let actions: ListCommandActions
+  private nonisolated let identity: ObjectIdentifier
+
+  init(actions: ListCommandActions) {
+    self.actions = actions
+    identity = ObjectIdentifier(actions.feature)
+  }
 
   var body: some View {
     Color.clear.allowsHitTesting(false).focusedSceneValue(\.listCommands, actions)
   }
+
+  nonisolated static func == (lhs: ListCommandPublisher, rhs: ListCommandPublisher) -> Bool {
+    lhs.identity == rhs.identity
+  }
 }
 
 /// `RootView`'s counterpart to `ChatCommandPublisher`. `actions` is `nil`
-/// while signed out, which disables ⌘, ⌘1 ⌘2.
+/// while signed out, which disables ⌘, ⌘1 ⌘2 — so `identity` is optional too,
+/// and `nil` compares unequal to any signed-in value, which is what makes the
+/// publisher re-apply across sign-in and sign-out.
+///
+/// This one was NOT in the Release failure, and genuinely compiled: unlike
+/// its two siblings, `AppCommandActions` holds only `let appModel: AppModel`
+/// — a `@MainActor` class, hence implicitly `Sendable` — so the struct is
+/// itself `Sendable`, and a `Sendable` stored property of an isolated value
+/// type IS readable from nonisolated code. It carries the same explicit shape
+/// anyway, because that exemption is one added closure away from
+/// disappearing and taking the Release build with it.
 struct AppCommandPublisher: View, Equatable {
   let actions: AppCommandActions?
+  private nonisolated let identity: ObjectIdentifier?
+
+  init(actions: AppCommandActions?) {
+    self.actions = actions
+    identity = actions.map { ObjectIdentifier($0.appModel) }
+  }
 
   var body: some View {
     Color.clear.allowsHitTesting(false).focusedSceneValue(\.appCommands, actions)
+  }
+
+  nonisolated static func == (lhs: AppCommandPublisher, rhs: AppCommandPublisher) -> Bool {
+    lhs.identity == rhs.identity
   }
 }
 
