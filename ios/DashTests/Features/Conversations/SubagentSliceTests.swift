@@ -6,11 +6,13 @@ import Testing
 /// Task D5 — the keyed `ChatState.subagentUI` slice and its writers, the child
 /// frame route, and the §8.1–§8.3 view helpers.
 ///
-/// Named `SubagentUITests` for the SLICE, not for XCUITest: these are unit
-/// tests in `DashTests`, and the UI-level cover lives in
+/// A `DashTests` unit suite. It was called `SubagentUITests.swift` and the
+/// name was defended in this comment — in a repo where `DashUITests` is a real
+/// target in a different scheme (`DashUI`), that is a name a reader has to be
+/// talked out of. The UI-level cover really does live in
 /// `DashUITests/ConversationUITests.swift`.
 @Suite("Sub-agent rows: slice, child frames, chrome")
-struct SubagentUISliceTests {
+struct SubagentSliceTests {
 
   // MARK: - Ruling 2: the slice survives what the card could not
 
