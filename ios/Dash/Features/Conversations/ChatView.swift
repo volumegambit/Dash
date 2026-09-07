@@ -434,7 +434,12 @@ struct ChatView: View {
               // is REST, and a reconnect must not stop the user answering a
               // child parked in `waiting_input`, whose `waitForQuestion` fails
               // the child's tool call ten minutes later.
-              isEnabled: feature.connection != .repairRequired
+              isEnabled: feature.connection != .repairRequired,
+              // Read inside `SubagentCardView.body`, never here, for the same
+              // reason as `draft`: constructing a closure is not an access, so
+              // a list re-read invalidates the sub-agent ROWS and not
+              // `ChatView.body`'s whole transcript.
+              restStatus: { feature.restSubagentStatus($0) }
             )
           )
         }

@@ -89,6 +89,47 @@ struct SubagentInteraction {
   /// in `waiting_input`, whose `waitForQuestion` fails the child's tool call
   /// after ten minutes.
   var isEnabled: Bool
+  /// This child's status as the SERVER most recently reported it
+  /// (`GET /conversations/{id}/subagents`), or `nil` when the list has no entry
+  /// for it — which is the normal case for a row rendered inside a child's
+  /// transcript, because the route returns only the open conversation's DIRECT
+  /// children.
+  ///
+  /// **Why the row reads this at all.** The fold exempts a background child
+  /// from end-of-stream terminalization, correctly — it was spawned to outlive
+  /// the turn — and that child's real finish never reaches the parent's event
+  /// stream, so the fold reads `Running` for it forever. D5 filed exactly that
+  /// and R2 asked D6 to fix it.
+  ///
+  /// **Why this is not the merge D3 rejected.** D3 rejected fold ∪ REST
+  /// terminal-wins for a LIST, and its bug was the fold's PERSISTED `done`
+  /// beating REST's fresh `running` for a resumed child. Reading REST
+  /// when-present is the other rule: the resumed child reads `running` and the
+  /// finished background child reads `done`, both fresher. See
+  /// `ChatFeature.restSubagentStatus` for the two costs this does carry.
+  ///
+  /// Default `nil`, so `.inert` and any caller with no feature behind it keep
+  /// the fold's own answer and nothing else has to change.
+  var restStatus: (String) -> SubagentCardStatus? = { _ in nil }
+
+  /// The status a ROW shows: the server's when it has one, the fold's
+  /// otherwise.
+  func resolvedStatus(_ card: SubagentCardState) -> SubagentCardStatus {
+    restStatus(card.id) ?? card.status
+  }
+
+  /// §8.1's inline reply, gated on the RESOLVED status rather than on the
+  /// presence of a terminal event.
+  ///
+  /// D1's rule is that a question never survives onto a terminal row, and it
+  /// has cost this branch a fix round by two separate paths already. The fold
+  /// clears `question` when THE FOLD goes terminal — which a background child's
+  /// fold never does — so a REST `done` laid over a fold still holding a live
+  /// question would render a dead child carrying a reply affordance. This is
+  /// the third path, closed before it could be found.
+  func resolvedQuestion(_ card: SubagentCardState) -> String? {
+    resolvedStatus(card).isTerminal ? nil : card.question
+  }
 
   /// For previews, `DashTests` and any caller with no feature behind it. No
   /// composer is offered, because nothing would carry the text anywhere.
@@ -142,7 +183,7 @@ struct SubagentGroupView: View {
             HStack(spacing: 4) {
               ForEach(cards) { card in
                 Circle()
-                  .fill(card.status.dotColor)
+                  .fill(interaction.resolvedStatus(card).dotColor)
                   .frame(width: 6, height: 6)
               }
             }
@@ -180,7 +221,9 @@ struct SubagentGroupView: View {
   private var multi: Bool { cards.count > 1 }
 
   private var summary: String {
-    SubagentFormat.clusterSummary(cards.map(\.status))
+    // The RESOLVED statuses, so the group's summary line and the rows under it
+    // can never disagree about how many children are still running.
+    SubagentFormat.clusterSummary(cards.map { interaction.resolvedStatus($0) })
   }
 }
 
@@ -211,6 +254,11 @@ struct SubagentCardView: View {
 
   private var ui: SubagentUIState { interaction.state(card.id) }
   private var isExpanded: Bool { ui.isExpanded }
+  /// Read INSIDE this view's body, never in `ChatView.body`: Observation
+  /// invalidates the view that performed the access, so a list re-read costs
+  /// the sub-agent rows and not the transcript — the same scoping that keeps
+  /// `subagentComposerDrafts` cheap.
+  private var status: SubagentCardStatus { interaction.resolvedStatus(card) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -244,11 +292,12 @@ struct SubagentCardView: View {
           .truncationMode(.tail)
       }
 
-      // §8.1's second line. Gated on the card's `question`, which the fold
-      // already clears the moment the row goes terminal by EITHER path — an
-      // explicit terminal event or end-of-stream cancellation — so a dead
-      // child can never carry a live reply affordance.
-      if let question = card.question, question.isEmpty == false {
+      // §8.1's second line. Gated on the RESOLVED status, not on the presence
+      // of a terminal event: the fold clears `question` the moment the row goes
+      // terminal by either of its own paths, but a background child's fold
+      // never goes terminal at all, so a server `done` has to clear it too. A
+      // dead child can never carry a live reply affordance.
+      if let question = interaction.resolvedQuestion(card), question.isEmpty == false {
         waitingReply(question: question)
       }
 
@@ -269,7 +318,7 @@ struct SubagentCardView: View {
       in: RoundedRectangle(cornerRadius: DashTheme.Radius.medium)
     )
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Agent \(card.type), \(card.status.title)")
+    .accessibilityLabel("Agent \(card.type), \(status.title)")
     .accessibilityIdentifier("chat.subagent.\(card.id)")
     .sensoryFeedback(.selection, trigger: isExpanded)
   }
@@ -278,7 +327,7 @@ struct SubagentCardView: View {
 
   private var header: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
-      SubagentStatusGlyph(status: card.status)
+      SubagentStatusGlyph(status: status)
       Text(card.type.isEmpty ? "agent" : card.type)
         .font(.callout.monospaced())
         .foregroundStyle(.primary)
@@ -294,7 +343,7 @@ struct SubagentCardView: View {
         .truncationMode(.tail)
       Spacer(minLength: 4)
       SubagentMetaView(
-        isTerminal: card.status.isTerminal,
+        isTerminal: status.isTerminal,
         toolCallCount: card.toolCallCount,
         startedAt: card.startedAt,
         endedAt: card.endedAt
@@ -304,7 +353,7 @@ struct SubagentCardView: View {
 
   /// The report's first line, shown on a COLLAPSED terminal row (§8.3).
   private var collapsedReport: String? {
-    guard card.status.isTerminal, let report = card.report else { return nil }
+    guard status.isTerminal, let report = card.report else { return nil }
     let first = report.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init)
     guard let first, first.trimmingCharacters(in: .whitespaces).isEmpty == false else { return nil }
     return first

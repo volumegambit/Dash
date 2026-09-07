@@ -412,10 +412,32 @@ final class ConversationUITests: DashUITestCase {
     // §8.4: a tap on a sheet row opens that child's row in the transcript, and
     // dismisses the sheet on the way.
     app.buttons.matching(identifier: "chat.tasks").firstMatch.tap()
+
+    // R2, closed in fix round 1: the transcript ROW follows the server. Stop
+    // this child from the sheet and the fold learns NOTHING — a background
+    // child's finish reaches no event this conversation's stream carries — so
+    // before the row read `restSubagentStatus` it kept saying `Running` for the
+    // rest of the session while the sheet, the strip and the badge all said
+    // otherwise. That is D5's filed finding, rendered.
+    element("chat.tasks.stop.ui-subagent", in: app).tap()
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.tasks.row.ui-subagent", in: app),
+        "Agent researcher, Cancelled"
+      )
+    )
+
     element("chat.tasks.row.ui-subagent", in: app).tap()
     XCTAssertTrue(
       element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists,
       "Revealing a row from the sheet must expand it in the transcript"
+    )
+    XCTAssertTrue(
+      waitForLabel(
+        element("chat.subagent.ui-subagent", in: app),
+        "Agent researcher, Cancelled"
+      ),
+      "The transcript row must read the server's status, not the fold's Running"
     )
   }
 

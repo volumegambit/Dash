@@ -1346,16 +1346,22 @@ final class ChatFeature {
   /// This conversation's sub-agent children, from `GET
   /// /conversations/{id}/subagents` and from NOTHING ELSE (§8.4, ruling R1).
   ///
-  /// **Why this is not merged with the transcript fold.** Web tried the merge
-  /// (terminal-wins) in its D3 and rejected it over a bug that never goes
-  /// away: a resume restarts a `done` child, but the fold's `done` comes from a
-  /// PERSISTED event that never changes, so the list would read `done` for the
-  /// whole of the child's second run. The fold has three more limits on top of
-  /// that — it sees only children anchored in a message this client has
-  /// loaded, it exempts a background child from end-of-stream terminalization
-  /// (which is correct for the ROW and wrong for a list that claims to say
-  /// what is live), and after a gateway restart the recovered child rows are
-  /// all there is.
+  /// **Why this LIST is not merged with the transcript fold.** Web tried the
+  /// merge (fold ∪ REST, terminal-wins) in its D3 and rejected it over a bug
+  /// that never goes away: a resume restarts a `done` child, but the fold's
+  /// `done` comes from a PERSISTED event that never changes, so the merged list
+  /// would read `done` for the whole of the child's second run. The fold has
+  /// three more limits on top of that — it sees only children anchored in a
+  /// message this client has loaded, it exempts a background child from
+  /// end-of-stream terminalization (which is correct for the ROW and wrong for
+  /// a list that claims to say what is live), and after a gateway restart the
+  /// recovered child rows are all there is.
+  ///
+  /// **A transcript ROW is not this list and does not follow that rule.** It
+  /// reads `restSubagentStatus` when the server has an entry for it and its own
+  /// fold otherwise — when-present, not terminal-wins, which is why D3's bug
+  /// cannot occur in it. See `restSubagentStatus` for the two costs that does
+  /// carry and the one it cannot fix.
   ///
   /// **Why a property on the feature and not a `ChatState` field.** Swift
   /// Observation tracks access per STORED property, and `ChatState` is one
@@ -1467,6 +1473,40 @@ final class ChatFeature {
     // have protected is real and IS pinned, by
     // `anIdenticalListReadInvalidatesNothing`, which owns a positive control.
     subagents = entries
+  }
+
+  /// The server's status for one child, for a transcript ROW to lay over the
+  /// fold's (R2, fix round 1).
+  ///
+  /// **What this fixes.** The fold exempts a background child from
+  /// end-of-stream terminalization and that child's finish never reaches the
+  /// parent's event stream, so a collapsed row read `Running` for it forever —
+  /// D5's filed finding, and what R2 asked for.
+  ///
+  /// **Two costs, both real, both handled rather than hidden.**
+  ///
+  /// 1. **Depth.** `listSubagents(parentConversationId)` returns only the open
+  ///    conversation's DIRECT children, so a row rendered inside a child's
+  ///    transcript has no entry here and keeps folding. Same for a child older
+  ///    than the route's newest-100 page. The fold is the FALLBACK, not the
+  ///    loser of a merge — `nil` means "the server said nothing about this
+  ///    row", never "the server says it is not running".
+  /// 2. **A REST terminal over a live fold question.** Handled at the render
+  ///    site: `SubagentInteraction.resolvedQuestion` gates §8.1's inline reply
+  ///    on the RESOLVED status, so a server `done` clears a question the fold
+  ///    is still holding. Without that this would have broken D1's rule that a
+  ///    question never survives onto a terminal row, by a third path.
+  ///
+  /// **And one this cannot fix, so it is stated instead.** REST is at most one
+  /// round trip stale behind a live `subagent_finished`, which terminalizes the
+  /// fold immediately and only then triggers a read — so a foreground child
+  /// finishing mid-turn can read `running` from here for the length of that
+  /// read. Patching this list from a live event to close it would be the
+  /// fold ∪ REST merge D3 rejected, for a window bounded by a request already
+  /// in flight.
+  func restSubagentStatus(_ childID: String) -> SubagentCardStatus? {
+    guard let entry = subagents.first(where: { $0.id == childID }) else { return nil }
+    return SubagentCardStatus(wire: entry.status)
   }
 
   /// Cancel a child and, depth-first, its descendants (§8.4's Stop).

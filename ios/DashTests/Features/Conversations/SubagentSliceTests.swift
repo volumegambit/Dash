@@ -30,6 +30,50 @@ struct SubagentSliceTests {
     #expect(SubagentCardStatus(wire: "hibernating").isTerminal == false)
   }
 
+  // MARK: - Task D6 fix round 1: a ROW reads the server's status (R2)
+
+  @MainActor
+  @Test("a row reads the server's status when there is one, and its own fold when there is not")
+  func aRowReadsTheServersStatusWhenThereIsOne() {
+    let child = card(id: "child-1", adjacent: false)
+    let nested = card(id: "grandchild-1", adjacent: false)
+    var interaction = SubagentInteraction.inert
+    interaction.restStatus = { $0 == "child-1" ? .done : nil }
+
+    // The fold reads `running` forever for a background child: it exempts one
+    // from end-of-stream terminalization, correctly, and the child's real
+    // finish never reaches the parent's event stream.
+    #expect(child.status == .running)
+    #expect(interaction.resolvedStatus(child) == .done)
+
+    // `listSubagents` returns only the open conversation's DIRECT children, so
+    // a row inside a child transcript has no entry — and `nil` means "the
+    // server said nothing about this row", never "the server says it is not
+    // running". The fold stays the fallback.
+    #expect(interaction.resolvedStatus(nested) == .running)
+  }
+
+  @MainActor
+  @Test("a server terminal clears a question the fold is still holding")
+  func aServerTerminalClearsTheFoldsQuestion() {
+    var waiting = card(id: "child-1", adjacent: false)
+    waiting.status = .waiting
+    waiting.question = "Should the rollback step come first?"
+    var interaction = SubagentInteraction.inert
+
+    interaction.restStatus = { _ in nil }
+    #expect(interaction.resolvedQuestion(waiting) == "Should the rollback step come first?")
+    interaction.restStatus = { _ in .running }
+    #expect(interaction.resolvedQuestion(waiting) == "Should the rollback step come first?")
+
+    // D1's rule — a question never survives onto a terminal row — by a THIRD
+    // path. The fold clears `question` when THE FOLD goes terminal, which a
+    // background child's fold never does, so a server `done` laid over it
+    // would otherwise render a dead child carrying a live reply affordance.
+    interaction.restStatus = { _ in .done }
+    #expect(interaction.resolvedQuestion(waiting) == nil)
+  }
+
   @Test("a terminal child with no endedAt shows no elapsed at all, never its own age")
   func terminalRowWithNoEndedAtHasNoElapsed() {
     let started = Date(timeIntervalSince1970: 1_000)

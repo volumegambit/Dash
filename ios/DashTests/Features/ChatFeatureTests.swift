@@ -5541,6 +5541,21 @@ struct ChatFeatureTests {
     #expect(await stop.value)
   }
 
+  @Test("the server's status for a row is nil for a child the list does not carry")
+  func theServersRowStatusIsNilForAChildTheListDoesNotCarry() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.restSubagentStatus("child-1") == .done)
+    // Not a direct child of the OPEN conversation, so the route never returned
+    // it and the row keeps reading its own fold. Answering `.running` here
+    // instead would be the merge D3 rejected, wearing a different hat.
+    #expect(feature.restSubagentStatus("grandchild-1") == nil)
+  }
+
   @Test("revealing a child the transcript has no row for expands nothing and fetches nothing")
   func revealingAChildWithNoCardExpandsNothing() async {
     let sync = FakeChatSynchronizer()

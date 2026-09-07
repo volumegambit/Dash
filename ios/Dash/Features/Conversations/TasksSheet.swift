@@ -8,14 +8,18 @@ import SwiftUI
 ///
 /// **The model is `ChatFeature.subagents` — REST, and nothing else.** The
 /// transcript's own rows are folded from events and are a different thing on
-/// purpose; see `ChatFeature.subagents` for why merging the two is a bug rather
-/// than a saving. The consequence worth stating plainly: a background child's
-/// collapsed ROW keeps reading `Running` after the parent turn ends, because
-/// the fold exempts a background child from end-of-stream terminalization and
-/// its real finish never reaches the parent's event stream at all. This sheet,
-/// this strip and this badge are the surfaces that tell the truth; web's
-/// `SubagentBlock` reads the fold's status too, and changing that on either
-/// client is the merge D3 rejected.
+/// purpose; see `ChatFeature.subagents` for why this list is never merged with
+/// the fold.
+///
+/// A transcript ROW is a different question from this list, and since fix round
+/// 1 it answers it differently: it lays the server's status over the fold's
+/// when the server has one (`ChatFeature.restSubagentStatus`,
+/// `SubagentInteraction.resolvedStatus`), because the fold reads `Running`
+/// forever for a background child. That is not the merge D3 rejected — D3's bug
+/// was the fold's PERSISTED `done` beating REST's fresh `running`, and reading
+/// REST when-present shows the fresher value in both directions. Web has not
+/// made the same change: `SubagentBlock` still reads everything but `oneShot`
+/// from its fold, so this is a divergence, and a deliberate one.
 ///
 /// Three structural rules, all easy to regress:
 ///
