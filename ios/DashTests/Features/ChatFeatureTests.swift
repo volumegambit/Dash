@@ -5590,6 +5590,43 @@ struct ChatFeatureTests {
     #expect(feature.liveSubagentCount == 1)
   }
 
+  @Test(
+    """
+    a send is not reported done until its re-read lands, so the composer cannot     re-arm on a sentence the gateway has already accepted
+    """
+  )
+  func aSendIsNotDoneUntilItsReReadLands() async {
+    let gate = TestGate()
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueSubagentList(.success([listEntry(id: "child-1", status: "done")]))
+    await sync.enqueueResume(.success(()))
+    await sync.enqueueSubagentList(
+      .success([listEntry(id: "child-1", status: "running")]),
+      waitingOn: gate
+    )
+    let feature = makeFeature(sync: sync, ids: ["turn-1", "local-1", "req-1"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    let sending = Task { await feature.sendToSubagent("child-1", text: "one more pass") }
+    await gate.waitUntilWaiting()
+
+    // `SubagentComposer.canSend` is `isEnabled && isSending == false && text
+    // non-empty`, and the field is emptied only when `onSend` returns `true`
+    // (`SubagentViews.swift:667-687`). So clearing `isSending` before the
+    // re-read would light the Send button back up with the user's sentence
+    // still sitting in it, for the length of a GET, on a resume the gateway has
+    // already accepted — one tap from a duplicate steer. `stopSubagent` holds
+    // its own gate across its re-read for the same reason: its
+    // `defer { stoppingSubagentIDs.remove(...) }` fires after the read.
+    #expect(feature.state.subagentUI["child-1"]?.isSending == true)
+
+    await gate.release()
+    #expect(await sending.value)
+    #expect(feature.state.subagentUI["child-1"]?.isSending == false)
+    #expect(feature.restSubagentStatus("child-1") == .running)
+  }
+
   @Test("revealing a child the transcript has no row for expands nothing and fetches nothing")
   func revealingAChildWithNoCardExpandsNothing() async {
     let sync = FakeChatSynchronizer()

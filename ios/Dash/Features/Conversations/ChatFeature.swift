@@ -1415,10 +1415,12 @@ final class ChatFeature {
   /// requests out, both attempts have cleared both slots, and then the fixed
   /// precedence decides: if the STOP's answer lands first the row shows its
   /// line and the resume's, which landed later, is silent. Which action was
-  /// STARTED first is irrelevant; only which answer arrives first is. Not fixed
-  /// here, because the cure is a gate on one of the two buttons and a reader is
-  /// the wrong place for it — stated so that nothing rests on the stronger
-  /// claim that used to stand in this comment.
+  /// STARTED first is irrelevant; only which answer arrives first is — so the
+  /// cure is gates on BOTH buttons (Send disabled while a stop is in flight AND
+  /// Stop disabled while a send is), because one gate closes only one of the
+  /// two initiation orders. Not fixed here: a reader is the wrong place for a
+  /// gate, and this comment is restated rather than left standing so that
+  /// nothing rests on the stronger claim it used to make.
   ///
   /// **`lastError` has a second writer, so this line is not only about
   /// actions.** `.subagentTranscriptFailed` puts a failed EXPANSION in the same
@@ -1721,7 +1723,15 @@ final class ChatFeature {
     do {
       try await synchronizer.resumeSubagent(id: childID, message: trimmed, requestID: requestID)
       guard isShutdown == false else { return false }
-      await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))
+      // BEFORE `.subagentReplySucceeded`, which is what clears `isSending`.
+      // `SubagentComposer.canSend` is `isEnabled && isSending == false && text
+      // non-empty` and the field empties only when `onSend` returns `true`, so
+      // reporting the send done first would re-arm the Send button with the
+      // user's sentence still in it for the length of this GET — on a resume
+      // the gateway has already accepted. `stopSubagent` spans its own re-read
+      // the same way: its `defer { stoppingSubagentIDs.remove(...) }` fires
+      // after the read, not before it.
+      //
       // A resume RESTARTS a child, so the list that every surface reads is now
       // wrong about it, and this is the only thing that can say so. Outside a
       // live parent turn `Coordinator.emitToParent` has no turn to emit into
@@ -1742,6 +1752,8 @@ final class ChatFeature {
       // so plumbing `SubagentResumeResponseDTO.status` back through
       // `ChatSynchronizing` would widen a protocol for the least of it.
       await refreshSubagents()
+      guard isShutdown == false else { return false }
+      await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))
       return true
     } catch is CancellationError {
       return false
