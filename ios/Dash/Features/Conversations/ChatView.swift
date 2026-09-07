@@ -388,14 +388,16 @@ struct ChatView: View {
             },
             subagentInteraction: SubagentInteraction(
               state: { feature.state.subagentUI[$0] ?? SubagentUIState() },
+              // Called synchronously, INSIDE the row's `withAnimation` — the
+              // state write has to land in that transaction or the disclosure
+              // does not animate. `setSubagentExpanded` writes the reducer
+              // straight through and returns its network follow-up.
               setExpanded: { childID, isExpanded, loadsTranscript in
-                Task {
-                  await feature.setSubagentExpanded(
-                    childID,
-                    isExpanded,
-                    loadsTranscript: loadsTranscript
-                  )
-                }
+                feature.setSubagentExpanded(
+                  childID,
+                  isExpanded,
+                  loadsTranscript: loadsTranscript
+                )
               },
               send: { childID, text, optimistic in
                 await feature.sendToSubagent(childID, text: text, optimistic: optimistic)

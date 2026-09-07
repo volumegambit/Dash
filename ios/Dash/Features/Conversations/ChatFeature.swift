@@ -1194,19 +1194,34 @@ final class ChatFeature {
   /// `loadsTranscript` is false for a row at `maxSubagentDepth`, whose body
   /// opens no transcript: fetching and subscribing there would hold a live
   /// subscription nothing renders.
+  ///
+  /// **Synchronous on purpose, returning its follow-up rather than awaiting
+  /// it.** The caller runs this inside `withAnimation`, and a `Task` there
+  /// would put the state write outside the transaction — SwiftUI would commit
+  /// an empty animation and the row would pop open. The expansion write is
+  /// effect-free, so it goes straight through `ChatReducer.reduce` the way
+  /// `answer(questionID:answer:)` already does for `.answerSubmitted`; only
+  /// the network follow-up is deferred. The returned `Task` is what tests
+  /// await; callers in the view ignore it.
+  @discardableResult
   func setSubagentExpanded(
     _ childID: String,
     _ isExpanded: Bool,
     loadsTranscript: Bool = true
-  ) async {
-    guard rejectIfShutdown() == false else { return }
-    await applyReducerAction(.subagentExpanded(id: childID, isExpanded: isExpanded))
-    guard loadsTranscript else { return }
-    if isExpanded {
-      await loadSubagentTranscript(childID: childID)
-      await subscribeToSubagent(childID)
-    } else {
-      await unsubscribeFromSubagent(childID)
+  ) -> Task<Void, Never> {
+    guard rejectIfShutdown() == false else { return Task {} }
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .subagentExpanded(id: childID, isExpanded: isExpanded)
+    )
+    guard loadsTranscript else { return Task {} }
+    return Task { [self] in
+      if isExpanded {
+        await loadSubagentTranscript(childID: childID)
+        await subscribeToSubagent(childID)
+      } else {
+        await unsubscribeFromSubagent(childID)
+      }
     }
   }
 

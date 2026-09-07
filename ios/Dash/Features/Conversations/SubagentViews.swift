@@ -205,9 +205,18 @@ struct SubagentCardView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Button {
-        // Same gating and idiom as `ToolCardView`'s disclosure. The write goes
-        // to the reducer, not to `@State`: this row is rebuilt from scratch by
-        // every transcript refresh.
+        // Same gating and idiom as `ToolCardView`'s disclosure. Two things
+        // are load-bearing here and both are easy to undo:
+        //
+        // 1. The write goes to the REDUCER, not to `@State`, because this row
+        //    is rebuilt from scratch by every transcript refresh.
+        // 2. `setExpanded` must be SYNCHRONOUS. A `Task { }` inside
+        //    `withAnimation` runs after the transaction closes, so SwiftUI
+        //    would commit an empty animation and the row would pop open
+        //    instead of disclosing. `ChatFeature.setSubagentExpanded` writes
+        //    the reducer inline and returns its network follow-up for that
+        //    reason. No test can see this — there is no ViewInspector here —
+        //    so this comment is the pin.
         withAnimation(reduceMotion ? nil : .snappy) {
           interaction.setExpanded(card.id, !isExpanded, nested)
         }

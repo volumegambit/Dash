@@ -4755,7 +4755,7 @@ struct ChatFeatureTests {
     feature.setConnection(.online)
     await feature.appear()
 
-    await feature.setSubagentExpanded("child-1", true)
+    await feature.setSubagentExpanded("child-1", true).value
 
     #expect(feature.state.subagentUI["child-1"]?.isExpanded == true)
     #expect(feature.state.subagentUI["child-1"]?.childMessages?.map(\.id) == ["c-1"])
@@ -4765,7 +4765,7 @@ struct ChatFeatureTests {
       await chat.calls.contains(.subscribe(agentID: "agent-1", conversationID: "child-1"))
     )
 
-    await feature.setSubagentExpanded("child-1", false)
+    await feature.setSubagentExpanded("child-1", false).value
 
     #expect(feature.state.subagentUI["child-1"]?.isExpanded == false)
     #expect(
@@ -4787,7 +4787,7 @@ struct ChatFeatureTests {
     feature.setConnection(.online)
     await feature.appear()
 
-    await feature.setSubagentExpanded("child-1", true)
+    await feature.setSubagentExpanded("child-1", true).value
 
     #expect(feature.state.subagentUI["child-1"]?.lastError == "This agent is no longer available.")
     #expect(feature.state.subagentUI["child-1"]?.childMessages == nil)
@@ -4816,9 +4816,9 @@ struct ChatFeatureTests {
 
     // The expansion parks inside the REST read; the user collapses the row;
     // only then does the read return and the late `subscribeToSubagent` run.
-    let expanding = Task { await feature.setSubagentExpanded("child-1", true) }
+    let expanding = feature.setSubagentExpanded("child-1", true)
     await gate.waitUntilWaiting()
-    await feature.setSubagentExpanded("child-1", false)
+    await feature.setSubagentExpanded("child-1", false).value
     await gate.release()
     await expanding.value
 
@@ -4836,7 +4836,7 @@ struct ChatFeatureTests {
     feature.setConnection(.online)
     await feature.appear()
 
-    await feature.setSubagentExpanded("grandchild-1", true, loadsTranscript: false)
+    await feature.setSubagentExpanded("grandchild-1", true, loadsTranscript: false).value
 
     #expect(feature.state.subagentUI["grandchild-1"]?.isExpanded == true)
     #expect(await sync.subagentTranscriptCalls.isEmpty)
@@ -4853,7 +4853,7 @@ struct ChatFeatureTests {
     let feature = makeFeature(sync: sync, chat: chat, ids: ["req-1", "unused"])
     feature.setConnection(.online)
     await feature.appear()
-    await feature.setSubagentExpanded("child-1", true)
+    await feature.setSubagentExpanded("child-1", true).value
 
     let sent = await feature.sendToSubagent("child-1", text: "  keep going  ", optimistic: true)
 
@@ -4876,7 +4876,7 @@ struct ChatFeatureTests {
     let feature = makeFeature(sync: sync, ids: ["req-1", "unused"])
     feature.setConnection(.online)
     await feature.appear()
-    await feature.setSubagentExpanded("child-1", true)
+    await feature.setSubagentExpanded("child-1", true).value
 
     let sent = await feature.sendToSubagent("child-1", text: "again", optimistic: true)
 
