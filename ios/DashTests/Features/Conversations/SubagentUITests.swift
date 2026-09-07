@@ -353,6 +353,27 @@ struct SubagentUISliceTests {
     #expect(subagentClusters([card(id: "a", adjacent: true)]).map { $0.map(\.id) } == [["a"]])
   }
 
+  // MARK: - Ruling 4: nesting depth
+
+  @Test(
+    """
+    a row in the orchestrator's transcript opens its child; a row INSIDE a     child does not — depth 1, matching web's MAX_SUBAGENT_DEPTH
+    """
+  )
+  func nestingStopsAtDepthOne() {
+    #expect(maxSubagentDepth == 1)
+    #expect(subagentRowIsNested(depth: 0))
+    #expect(subagentRowIsNested(depth: 1) == false)
+    #expect(subagentRowIsNested(depth: 2) == false)
+    // A recorded divergence from §8.3's "unlimited by the renderer": every
+    // level costs a live subscription and a REST read, an unbounded renderer
+    // recurses on server-controlled data, and a doubly-indented transcript is
+    // unreadable on a phone. The row is still drawn at the cap — only its body
+    // is replaced, with copy byte-identical to web's.
+    #expect(subagentDeadEndCopy == "Nested agents this deep are not opened here.")
+    #expect(oneShotComposerTitle == "One-shot agents cannot be resumed")
+  }
+
   // MARK: - §8.1/§8.2 formatting
 
   @Test("the meta line joins tool count and elapsed, and omits elapsed when it is unknown")

@@ -30,9 +30,12 @@ struct AssistantEventViews: View {
   /// `chat.tool.<toolId>` as a card in the parent, and a `tool_use` id is only
   /// unique within its own conversation.
   let identifierPrefix: String
-  /// Whether a sub-agent row rendered from THIS projection may open a
-  /// transcript of its own (`maxSubagentDepth`). False inside a child.
-  let subagentNesting: Bool
+  /// How deep in the sub-agent tree this projection sits: 0 in the
+  /// orchestrator's own transcript, 1 inside a child's. Compared against
+  /// `maxSubagentDepth` to decide whether a row rendered here may open a
+  /// transcript of its own — mirroring web's
+  /// `nested={options.depth < MAX_SUBAGENT_DEPTH}`.
+  let subagentDepth: Int
   let subagentInteraction: SubagentInteraction
 
   init(
@@ -42,7 +45,7 @@ struct AssistantEventViews: View {
     onAnswer: @escaping (String, String) -> Void = { _, _ in },
     exposesResponseToAccessibility: Bool,
     identifierPrefix: String = "chat",
-    subagentNesting: Bool = true,
+    subagentDepth: Int = 0,
     subagentInteraction: SubagentInteraction = .inert
   ) {
     self.projection = projection
@@ -51,7 +54,7 @@ struct AssistantEventViews: View {
     self.onAnswer = onAnswer
     self.exposesResponseToAccessibility = exposesResponseToAccessibility
     self.identifierPrefix = identifierPrefix
-    self.subagentNesting = subagentNesting
+    self.subagentDepth = subagentDepth
     self.subagentInteraction = subagentInteraction
   }
 
@@ -107,7 +110,8 @@ struct AssistantEventViews: View {
       ForEach(subagentClusters(projection.subagentCards), id: \.first!.id) { cluster in
         SubagentGroupView(
           cards: cluster,
-          nested: subagentNesting,
+          nested: subagentRowIsNested(depth: subagentDepth),
+          depth: subagentDepth,
           interaction: subagentInteraction
         )
       }

@@ -37,6 +37,16 @@ import SwiftUI
 /// unreadable anyway. Recorded as a divergence rather than silently applied.
 let maxSubagentDepth = 1
 
+/// Whether a row at `depth` may open a transcript of its own.
+///
+/// Web's `nested={options.depth < MAX_SUBAGENT_DEPTH}`, named so `DashTests`
+/// can pin the cap without rendering SwiftUI. A row at or past the cap still
+/// RENDERS — a grandchild must never vanish or degrade to nothing — it just
+/// shows `subagentDeadEndCopy` where its body would be.
+func subagentRowIsNested(depth: Int) -> Bool {
+  depth < maxSubagentDepth
+}
+
 /// Exact copy shown where a grandchild's transcript would be. Byte-identical
 /// to web's dead-end line.
 let subagentDeadEndCopy = "Nested agents this deep are not opened here."
@@ -90,6 +100,9 @@ struct SubagentInteraction {
 struct SubagentGroupView: View {
   let cards: [SubagentCardState]
   let nested: Bool
+  /// This cluster's own depth; a row it opens renders its child transcript one
+  /// deeper.
+  let depth: Int
   let interaction: SubagentInteraction
 
   @State private var isExpanded = true
@@ -98,7 +111,7 @@ struct SubagentGroupView: View {
   var body: some View {
     if cards.count <= 1 {
       ForEach(cards) { card in
-        SubagentCardView(card: card, nested: nested, interaction: interaction)
+        SubagentCardView(card: card, nested: nested, depth: depth, interaction: interaction)
       }
     } else {
       VStack(alignment: .leading, spacing: 8) {
@@ -129,7 +142,7 @@ struct SubagentGroupView: View {
 
         if isExpanded {
           ForEach(cards) { card in
-            SubagentCardView(card: card, nested: nested, interaction: interaction)
+            SubagentCardView(card: card, nested: nested, depth: depth, interaction: interaction)
           }
         }
       }
@@ -147,6 +160,9 @@ struct SubagentCardView: View {
   /// False inside a child transcript: the row renders, but its body opens no
   /// transcript of its own (`maxSubagentDepth`).
   let nested: Bool
+  /// This row's own depth. Its child transcript renders at `depth + 1`, which
+  /// is what makes `maxSubagentDepth` the single place the cap is expressed.
+  let depth: Int
   let interaction: SubagentInteraction
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -154,10 +170,12 @@ struct SubagentCardView: View {
   init(
     card: SubagentCardState,
     nested: Bool = true,
+    depth: Int = 0,
     interaction: SubagentInteraction = .inert
   ) {
     self.card = card
     self.nested = nested
+    self.depth = depth
     self.interaction = interaction
   }
 
@@ -287,6 +305,7 @@ struct SubagentCardView: View {
         SubagentTranscriptView(
           childID: card.id,
           messages: ui.childMessages,
+          depth: depth + 1,
           interaction: interaction
         )
       } else if card.report == nil {
@@ -341,6 +360,7 @@ struct SubagentCardView: View {
 private struct SubagentTranscriptView: View {
   let childID: String
   let messages: [ChatMessageState]?
+  let depth: Int
   let interaction: SubagentInteraction
 
   var body: some View {
@@ -355,6 +375,7 @@ private struct SubagentTranscriptView: View {
             SubagentTranscriptRow(
               childID: childID,
               message: message,
+              depth: depth,
               interaction: interaction
             )
           }
@@ -372,6 +393,7 @@ private struct SubagentTranscriptView: View {
 private struct SubagentTranscriptRow: View {
   let childID: String
   let message: ChatMessageState
+  let depth: Int
   let interaction: SubagentInteraction
 
   var body: some View {
@@ -406,8 +428,9 @@ private struct SubagentTranscriptRow: View {
           // Namespaced so a nested tool card cannot collide with a
           // same-id card in the parent's transcript (§8.6).
           identifierPrefix: "chat.subagent.\(childID)",
-          // Depth guard: a grandchild row renders, but opens nothing.
-          subagentNesting: false,
+          // Depth guard: at `maxSubagentDepth` a grandchild row still renders
+          // — it must never vanish — but opens nothing.
+          subagentDepth: depth,
           subagentInteraction: interaction
         )
       }
