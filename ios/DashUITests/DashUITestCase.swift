@@ -844,9 +844,23 @@ class DashUITestCase: XCTestCase {
 /// settled control fully overlaps the window too, so `isHittable` is still
 /// consulted and still decides.
 ///
-/// Free function rather than a `DashUITestCase` member because
-/// `DashUITestCase` is `@MainActor` and the `NSPredicate` block that needs
-/// this is not actor-isolated.
+/// A free function purely for locality — it is `@MainActor` all the same, and
+/// must be. `XCUIElement`'s `exists` / `frame` / `isHittable` and
+/// `XCUIApplication.windows` are main-actor-isolated under the iOS 18 SDK, so
+/// a nonisolated version of this cannot read any of them: Xcode 16.3 / Swift
+/// 6.1 rejected exactly that with "main actor-isolated property 'exists' can
+/// not be referenced from a nonisolated context" (and the same for `frame`,
+/// `windows`, `firstMatch`, `isHittable`), failing the whole `DashUITests`
+/// target before a single test could run.
+///
+/// Being `@MainActor` costs the callers nothing, which is the part worth
+/// recording: `NSPredicate(block:)` does NOT take a `@Sendable` closure, so
+/// the blocks in `waitUntilExposed` and `waitUntilVisible` INHERIT the
+/// isolation of the `@MainActor` method that builds them. That is why those
+/// blocks already read `app.buttons…firstMatch` and `element.frame` directly
+/// without complaint. Every call site here is likewise already isolated, so
+/// no `MainActor.assumeIsolated` is needed anywhere.
+@MainActor
 private func isSafelyHittable(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
   guard element.exists else { return false }
   let frame = element.frame
