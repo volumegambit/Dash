@@ -1363,9 +1363,14 @@ final class ChatFeature {
   /// fresher value ONLY while this list is fresh, so a resume that leaves it
   /// unread reproduces D3's bug from the other side: same trigger, same
   /// symptom, same duration, with the stale value coming from REST instead of
-  /// the fold. `sendToSubagent` therefore re-reads on a successful resume, the
-  /// way `stopSubagent` always has. See `restSubagentStatus` for the two costs
-  /// this does carry and the one it cannot fix.
+  /// the fold. `sendToSubagent` therefore re-reads on every ACCEPTED SEND, the
+  /// way `stopSubagent` always has — not only on a resume. `POST
+  /// /subagents/:id/resume` is also how a LIVE child is steered or answered,
+  /// which `coordinator.sendToChild` serves as `mode: 'queued'`
+  /// (`packages/swarm/src/coordinator.ts:676-682`), and all three composers —
+  /// the row's inline reply, the row's body, the sheet's — go through the one
+  /// path. See `restSubagentStatus` for the two costs this does carry and the
+  /// one it cannot fix.
   ///
   /// **Why a property on the feature and not a `ChatState` field.** Swift
   /// Observation tracks access per STORED property, and `ChatState` is one
@@ -1409,9 +1414,13 @@ final class ChatFeature {
   /// just took and never an older one.
   ///
   /// **That guarantee is sequential only, and the sheet permits both actions at
-  /// once.** Stop is disabled on `stoppingSubagentIDs` (`TasksSheet.swift:283`)
-  /// and the resume composer's Send on its own `isSending`
-  /// (`TasksSheet.swift:317`) — two independent gates on one row. With both
+  /// once.** Stop is disabled on `stoppingSubagentIDs`
+  /// (`TasksSheet.swift:286`, the `.disabled` on the row's Stop button) and the
+  /// resume composer's Send on its own `isSending` (`TasksSheet.swift:320`, the
+  /// `isSending:` argument to `SubagentComposer`) — two independent gates on
+  /// one row. The symbols are named beside the numbers because `4dc6f3a6` cited
+  /// these two lines while moving them and this round moved them again, so a
+  /// bare number here has been wrong twice in three commits. With both
   /// requests out, both attempts have cleared both slots, and then the fixed
   /// precedence decides: if the STOP's answer lands first the row shows its
   /// line and the resume's, which landed later, is silent. Which action was
@@ -1535,13 +1544,17 @@ final class ChatFeature {
   /// fold ∪ REST merge D3 rejected, for a window bounded by a request already
   /// in flight.
   ///
-  /// **And one that is closed only for THIS client's own resume.**
-  /// `sendToSubagent` re-reads the list after a successful resume, so a resume
-  /// taken here can no longer leave a terminal status laid over a running
-  /// child. A resume taken somewhere else — web, Mission Control, another
-  /// device — reaches this client through nothing at all while its parent has
-  /// no live turn (`packages/swarm/src/coordinator.ts:1549-1554`), so this list
-  /// keeps the terminal status for the whole of that second run. For a
+  /// **And one that is closed only for THIS client's own send.**
+  /// `sendToSubagent` re-reads the list after every ACCEPTED SEND — a resume,
+  /// a steer or an answer alike — so a resume taken here can no longer leave a
+  /// terminal status laid over a running child. A resume taken somewhere else
+  /// — web, Mission Control, another device — reaches this client through
+  /// nothing at all while its parent has no live turn
+  /// (`packages/swarm/src/coordinator.ts:1549-1554`), so this list keeps the
+  /// terminal status until the next `appear`, foreground, reconnect or parent
+  /// turn corrects it (`appear()`, a reconnect, a foreground, any parent
+  /// `done`) — worst case, for a user who stays in a foregrounded conversation
+  /// with no parent turn running, the whole of that second run. For a
   /// FOREGROUND child that is exactly what the fold said before this accessor
   /// existed, because its terminal event is persisted and never changes; for a
   /// BACKGROUND child the fold said `running` and was accidentally right, so
@@ -1744,13 +1757,33 @@ final class ChatFeature {
       // fold that was right. `stopSubagent` has had the mirror-image read from
       // the start; this is the same asymmetry, closed.
       //
-      // The whole ENTRY rather than the route's `status`: `endedAt`, `report`,
-      // `toolCallCount` and `usage` all belong to the previous run too, and
-      // only the list corrects them. The status is also the one field the
-      // client could have guessed — `ChildHandle.start()` persists `running`
-      // before the route answers (`packages/swarm/src/child-handle.ts:291`) —
-      // so plumbing `SubagentResumeResponseDTO.status` back through
-      // `ChatSynchronizing` would widen a protocol for the least of it.
+      // The whole ENTRY rather than the route's `status`: `startedAt`,
+      // `endedAt`, `report`, `toolCallCount` and `usage` are RUN-scoped, so a
+      // resume changes all five of them beside the status, and the list is the
+      // only thing that carries them.
+      //
+      // **That reason was FALSE when `b9a2e979` wrote it, and is struck here
+      // rather than quietly repaired.** The gateway rewrote NOTHING but the
+      // status on a resume: `ChildHandle.start()` persisted
+      // `{ status: 'running' }` alone, `createSubagent` early-returns an
+      // existing row untouched, and `updateSubagent` merges over the stored
+      // meta — so the entry this read returns was `running` beside the
+      // PREVIOUS run's numbers. A non-terminal `SubagentTaskRow` takes
+      // `SubagentMetaView`'s live `TimelineView(.periodic(from: startedAt,
+      // by: 1))` branch, so the row read the old tool count next to an elapsed
+      // ticking upward from the old start, for the whole second run. That is
+      // the exact state `b9a2e979`'s message claimed the REJECTED alternative
+      // would cause, and it was what shipped. `0da16410` made the reason true,
+      // gateway-side, for every client that reads this list — web's
+      // `TasksPanel` had the identical defect. The resume persist now writes
+      // run 2's `startedAt` and clears the other four. The reason holds from
+      // that commit forward and not before it.
+      //
+      // The status is also the one field the client could have guessed —
+      // `ChildHandle.start()` persists `running` before the route answers
+      // (`packages/swarm/src/child-handle.ts:316-327`) — so plumbing
+      // `SubagentResumeResponseDTO.status` back through `ChatSynchronizing`
+      // would widen a protocol for the least of it.
       await refreshSubagents()
       guard isShutdown == false else { return false }
       await applyReducerAction(.subagentReplySucceeded(id: childID, requestID: requestID))

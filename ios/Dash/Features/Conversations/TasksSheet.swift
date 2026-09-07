@@ -18,10 +18,11 @@ import SwiftUI
 /// forever for a background child. That is not the merge D3 rejected — D3's bug
 /// was the fold's PERSISTED `done` beating REST's fresh `running`, and reading
 /// REST when-present shows the fresher value in both directions **for as long
-/// as this list is kept fresh**, which is why a successful resume re-reads it
-/// (`ChatFeature.sendToSubagent`). Web has not made the same change:
-/// `SubagentBlock` still reads everything but `oneShot` from its fold, so this
-/// is a divergence, and a deliberate one.
+/// as this list is kept fresh**, which is why every ACCEPTED SEND re-reads it
+/// (`ChatFeature.sendToSubagent`) — a resume, a steer and an answer alike, all
+/// three going out through the one `POST /subagents/:id/resume`. Web has not
+/// made the same change: `SubagentBlock` still reads everything but `oneShot`
+/// from its fold, so this is a divergence, and a deliberate one.
 ///
 /// Three structural rules, all easy to regress:
 ///
