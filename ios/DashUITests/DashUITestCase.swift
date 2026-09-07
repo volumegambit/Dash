@@ -695,11 +695,14 @@ class DashUITestCase: XCTestCase {
   /// The part of `surface` a tap can actually reach: its own frame, minus the
   /// chrome that overlays it.
   ///
-  /// Every occluder here is one that has actually cost a run: the software
-  /// KEYBOARD (up whenever the composer has focus, which `openFirstConversation`
-  /// leaves it with), the COMPOSER and §8.4's tasks STRIP in the bottom safe
-  /// area, and the NAVIGATION BAR at the top. Each is looked up by existence, so
-  /// a screen without one is unaffected.
+  /// Every occluder here overlays the transcript rather than sitting outside
+  /// it: the software KEYBOARD (up whenever the composer has focus, which
+  /// `openFirstConversation` leaves it with), the COMPOSER and §8.4's tasks
+  /// STRIP in the bottom safe area, and the NAVIGATION BAR at the top. The
+  /// keyboard and the composer are the two that have actually cost a run; the
+  /// strip and the bar are here because they are the same shape of thing and
+  /// cost nothing to exclude. Each is looked up by existence, so a screen
+  /// without one is unaffected.
   private func visibleBand(of surface: XCUIElement, in app: XCUIApplication) -> CGRect {
     let bounds = surface.frame
     var top = bounds.minY

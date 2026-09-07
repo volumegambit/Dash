@@ -1368,9 +1368,13 @@ final class ChatFeature {
   /// stored property that `ChatView`'s whole transcript reads. A list that
   /// re-reads on every parent `done` would therefore invalidate the transcript
   /// once per assistant turn — web measured exactly this fan-out as its D3 I3a
-  /// and paid a fix round for it. Here the badge, the strip and the sheet are
-  /// the only readers, and `feature.state` is untouched by a list write. Same
-  /// reasoning, and the same precedent, as `subagentComposerDrafts`.
+  /// and paid a fix round for it. Here the readers are the badge, the strip,
+  /// the sheet and — since `restSubagentStatus` — each depth-0 sub-agent ROW,
+  /// every one of them reading INSIDE its own body, so a list write invalidates
+  /// those views and nothing else. `feature.state` is untouched by it, which is
+  /// what keeps the transcript out of the fan-out and is pinned by
+  /// `aListWriteDoesNotInvalidateTheTranscript`. Same reasoning, and the same
+  /// precedent, as `subagentComposerDrafts`.
   private(set) var subagents: [SubagentListEntryDTO] = []
 
   /// Children with a `POST /subagents/{id}/stop` in flight. Held here rather
@@ -1519,7 +1523,7 @@ final class ChatFeature {
     // refusal up while a stop is in flight reads as though the stop had failed
     // for a reason that has nothing to do with it, and a stop that then
     // succeeds would leave it there for good.
-    await applyReducerAction(.subagentActionRetried(id: childID))
+    await applyReducerAction(.subagentRowErrorCleared(id: childID))
     defer { stoppingSubagentIDs.remove(childID) }
     do {
       let status = try await synchronizer.stopSubagent(id: childID)
