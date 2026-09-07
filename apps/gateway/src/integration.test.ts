@@ -1,12 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import type { ConversationSummary, MobileWsServerFrame } from '@dash/mobile-contract';
 import { describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
 import { GatewayCredentialStore } from './credential-store.js';
+import { type RunningMobileTestHarness, startMobileTestHarness } from './mobile-test-harness.js';
 
 describe('Gateway integration', () => {
   it('registers an agent and handles a chat message end-to-end', async () => {
@@ -395,6 +399,197 @@ describe('Pull-based credential propagation (end-to-end)', () => {
       expect(['sk-ant-default', 'sk-ant-work']).toContain(keys.anthropic);
     } finally {
       await cleanup();
+    }
+  });
+});
+
+class V1IntegrationInbox {
+  readonly frames: MobileWsServerFrame[] = [];
+
+  constructor(readonly socket: WebSocket) {
+    socket.addEventListener('message', (event) => {
+      this.frames.push(JSON.parse(String(event.data)) as MobileWsServerFrame);
+    });
+  }
+
+  send(frame: object): void {
+    this.socket.send(JSON.stringify(frame));
+  }
+
+  async waitFor(predicate: (frame: MobileWsServerFrame) => boolean): Promise<MobileWsServerFrame> {
+    await vi.waitFor(() => expect(this.frames.some(predicate)).toBe(true));
+    const frame = this.frames.find(predicate);
+    if (!frame) throw new Error('Expected v1 frame disappeared');
+    return frame;
+  }
+
+  async close(): Promise<void> {
+    if (this.socket.readyState === WebSocket.CLOSED) return;
+    const closed = new Promise<void>((resolve) => {
+      this.socket.addEventListener('close', () => resolve(), { once: true });
+    });
+    this.socket.close();
+    await closed;
+  }
+}
+
+async function openV1IntegrationChat(
+  harness: RunningMobileTestHarness,
+): Promise<V1IntegrationInbox> {
+  const socket = new WebSocket(
+    `${harness.chatWebSocketUrl}?token=${encodeURIComponent(harness.chatToken)}`,
+  );
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true });
+    socket.addEventListener('error', (event) => reject(event.error), { once: true });
+  });
+  return new V1IntegrationInbox(socket);
+}
+
+async function createHarnessConversation(
+  harness: RunningMobileTestHarness,
+  version: 1 | 2,
+): Promise<ConversationSummary> {
+  const response = await fetch(`${harness.managementBaseUrl}/mobile/v${version}/conversations`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${harness.chatToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ agentId: harness.agentId, requestId: randomUUID() }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()) as ConversationSummary;
+}
+
+describe('Follow Up v2 harness integration', () => {
+  it('prevents a post-Steer provider call when SQLite delivery fails', async () => {
+    const harness = await startMobileTestHarness({
+      scenario: 'follow-up-v2',
+      failSteerDeliveryOnce: true,
+    });
+    let client: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      const conversation = await createHarnessConversation(harness, 2);
+      client = await harness.connectV2();
+      await harness.subscribeConversation(client, {
+        conversationId: conversation.id,
+        sinceV2Seq: 0,
+      });
+      const runId = randomUUID();
+      harness.holdProviderGate(runId, 'beforeSafeBoundary');
+      client.send({
+        type: 'message',
+        id: runId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Start before the storage barrier',
+        resumable: true,
+      });
+      await harness.waitForProviderGate(runId, 'beforeSafeBoundary');
+      const steer = await harness.enqueueInput(client, {
+        conversationId: conversation.id,
+        text: 'This Steer must not reach provider call two',
+        behavior: 'steer',
+        expectedActiveTurnId: runId,
+      });
+      harness.releaseProviderGate(runId, 'beforeSafeBoundary');
+      await client.waitFor(
+        (frame) => frame.type === 'input_failed' && frame.input.inputId === steer.input.inputId,
+      );
+
+      expect(await harness.providerExecutionCount({ conversationId: conversation.id, runId })).toBe(
+        1,
+      );
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: steer.input.inputId,
+        }),
+      ).toBe(0);
+      expect(
+        client.frames.some(
+          (frame) =>
+            frame.type === 'event' &&
+            frame.runId === runId &&
+            frame.event.type === 'text_delta' &&
+            frame.event.text.includes('Steered'),
+        ),
+      ).toBe(false);
+    } finally {
+      await client?.close().catch(() => undefined);
+      await harness.stop();
+    }
+  });
+
+  it('keeps v1 cursor replay dense across Follow Up v2-only queue mutations', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2' });
+    let firstV1: V1IntegrationInbox | undefined;
+    let resumedV1: V1IntegrationInbox | undefined;
+    let v2: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      const conversation = await createHarnessConversation(harness, 1);
+      const runId = randomUUID();
+      harness.holdProviderGate(runId, 'beforeSafeBoundary');
+      firstV1 = await openV1IntegrationChat(harness);
+      v2 = await harness.connectV2();
+      await harness.subscribeConversation(v2, { conversationId: conversation.id, sinceV2Seq: 0 });
+      firstV1.send({
+        type: 'message',
+        id: runId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Keep the v1 cursor dense',
+        resumable: true,
+      });
+      await firstV1.waitFor(
+        (frame) => frame.type === 'event' && frame.id === runId && frame.seq === 2,
+      );
+      const firstFrames = firstV1.frames.filter((frame) => frame.id === runId);
+      await firstV1.close();
+      firstV1 = undefined;
+
+      const queued = await harness.enqueueInput(v2, {
+        conversationId: conversation.id,
+        text: 'Queue-only v2 input',
+        behavior: 'followUp',
+      });
+      const edited = await harness.editFollowUp(v2, {
+        conversationId: conversation.id,
+        inputId: queued.input.inputId,
+        expectedRevision: queued.input.revision,
+        text: 'Edited queue-only v2 input',
+      });
+      await harness.removeFollowUp(v2, {
+        conversationId: conversation.id,
+        inputId: edited.input.inputId,
+        expectedRevision: edited.input.revision,
+      });
+
+      resumedV1 = await openV1IntegrationChat(harness);
+      resumedV1.send({
+        type: 'resume',
+        id: runId,
+        agentId: harness.agentId,
+        conversationId: conversation.id,
+        sinceSeq: 2,
+      });
+      await harness.cancelRun(v2, runId);
+      await resumedV1.waitFor(
+        (frame) => frame.type === 'done' && frame.id === runId && frame.seq === 3,
+      );
+      const sequences = [...firstFrames, ...resumedV1.frames]
+        .filter((frame) => frame.id === runId)
+        .map((frame) => frame.seq);
+      expect(sequences).toEqual([1, 2, 3]);
+      expect(new Set(sequences).size).toBe(sequences.length);
+    } finally {
+      await firstV1?.close().catch(() => undefined);
+      await resumedV1?.close().catch(() => undefined);
+      await v2?.close().catch(() => undefined);
+      await harness.stop();
     }
   });
 });

@@ -30,6 +30,7 @@ let relayPort: number;
 /** Records what the stub gateway observed, for asserting end-to-end forwarding. */
 const seen = {
   agentsAuth: undefined as string | undefined,
+  mobileV2Auth: undefined as string | undefined,
   chatToken: undefined as string | undefined,
   chatAuthorization: undefined as string | undefined,
   chatRelayCredential: undefined as string | undefined,
@@ -51,6 +52,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 
 beforeEach(async () => {
   seen.agentsAuth = undefined;
+  seen.mobileV2Auth = undefined;
   seen.chatToken = undefined;
   seen.chatAuthorization = undefined;
   seen.chatRelayCredential = undefined;
@@ -75,6 +77,19 @@ beforeEach(async () => {
       res.write('data: {"type":"first"}\n\n');
       const t = setTimeout(() => res.write('data: {"type":"second"}\n\n'), 1000);
       res.on('close', () => clearTimeout(t));
+      return;
+    }
+    if (req.url === '/mobile/v2/health') {
+      seen.mobileV2Auth = req.headers.authorization;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: 'healthy',
+          version: '0.2.0',
+          apiVersion: 2,
+          capabilities: ['conversation-sync-v1', 'chat-resume-v1', 'chat-input-queue-v1'],
+        }),
+      );
       return;
     }
     res.writeHead(404).end();
@@ -105,7 +120,53 @@ beforeEach(async () => {
       }
       ws.on('message', (raw: Buffer) => {
         seen.chatMessages.push(raw.toString());
-        const msg = JSON.parse(raw.toString()) as { id: string };
+        const msg = JSON.parse(raw.toString()) as { type?: string; id?: string; inputId?: string };
+        if (msg.type === 'hello') {
+          ws.send(
+            JSON.stringify({
+              type: 'hello_ack',
+              contractVersion: 2,
+              capabilities: ['chat-input-queue-v1'],
+            }),
+          );
+          return;
+        }
+        if (msg.type === 'subscribe_conversation') {
+          ws.send(
+            JSON.stringify({
+              type: 'conversation_subscribed',
+              id: msg.id,
+              conversationId: 'conversation-v2',
+              v2ThroughSeq: 0,
+            }),
+          );
+          return;
+        }
+        if (msg.type === 'enqueue_input') {
+          ws.send(
+            JSON.stringify({
+              type: 'input_accepted',
+              id: msg.id,
+              conversationId: 'conversation-v2',
+              v2Seq: 1,
+              queueRevision: 1,
+              input: {
+                inputId: msg.inputId,
+                kind: 'follow_up',
+                text: 'relayed follow up',
+                state: 'queued',
+                revision: 1,
+                enqueueOrder: 1,
+                runId: '00000000-0000-4000-8000-000000000204',
+                userMessageId: '00000000-0000-4000-8000-000000000205',
+                assistantMessageId: '00000000-0000-4000-8000-000000000206',
+                createdAt: '2026-09-07T00:00:00.000Z',
+                updatedAt: '2026-09-07T00:00:00.000Z',
+              },
+            }),
+          );
+          return;
+        }
         // Mirror the live chat contract: event frames then a done frame.
         ws.send(JSON.stringify({ type: 'event', id: msg.id, event: { type: 'text', text: 'hi' } }));
         ws.send(JSON.stringify({ type: 'event', id: msg.id, event: { type: 'text', text: '!' } }));
@@ -178,6 +239,85 @@ describe('relay end-to-end (real server + real client)', () => {
     expect(JSON.parse(body)).toEqual([{ id: 'a1', name: 'demo' }]);
     // The phone's auth reached the gateway untouched — auth is end-to-end.
     expect(seen.agentsAuth).toBe('Bearer apptoken');
+  });
+
+  it('forwards Follow Up v2 health and negotiated queue frames without rewriting them', async () => {
+    const { status, body } = await phoneGet('/mobile/v2/health', {
+      authorization: 'Bearer mobile-v2-token',
+    });
+    expect(status).toBe(200);
+    expect(JSON.parse(body)).toMatchObject({
+      apiVersion: 2,
+      capabilities: expect.arrayContaining(['chat-input-queue-v1']),
+    });
+    expect(seen.mobileV2Auth).toBe('Bearer mobile-v2-token');
+
+    const phone = new WebSocket(`ws://127.0.0.1:${relayPort}/ws/chat?token=chattok`, {
+      headers: { host: PHONE_HOST },
+    });
+    const frames: Array<Record<string, unknown>> = [];
+    phone.on('message', (data: Buffer) => frames.push(JSON.parse(data.toString())));
+    await new Promise<void>((resolve, reject) => {
+      phone.on('open', () => resolve());
+      phone.on('error', reject);
+    });
+    phone.send(
+      JSON.stringify({
+        type: 'hello',
+        contractVersion: 2,
+        capabilities: ['chat-input-queue-v1'],
+      }),
+    );
+    await waitFor(() => frames.some((frame) => frame.type === 'hello_ack'));
+    phone.send(
+      JSON.stringify({
+        type: 'subscribe_conversation',
+        id: '00000000-0000-4000-8000-000000000201',
+        agentId: 'agent-v2',
+        conversationId: 'conversation-v2',
+        sinceV2Seq: 0,
+      }),
+    );
+    await waitFor(() => frames.some((frame) => frame.type === 'conversation_subscribed'));
+    phone.send(
+      JSON.stringify({
+        type: 'enqueue_input',
+        id: '00000000-0000-4000-8000-000000000202',
+        inputId: '00000000-0000-4000-8000-000000000203',
+        agentId: 'agent-v2',
+        channelId: 'mobile-ios',
+        conversationId: 'conversation-v2',
+        text: 'relayed follow up',
+        behavior: 'followUp',
+      }),
+    );
+    await waitFor(() => frames.some((frame) => frame.type === 'input_accepted'));
+    expect(frames.find((frame) => frame.type === 'input_accepted')).toEqual({
+      type: 'input_accepted',
+      id: '00000000-0000-4000-8000-000000000202',
+      conversationId: 'conversation-v2',
+      v2Seq: 1,
+      queueRevision: 1,
+      input: {
+        inputId: '00000000-0000-4000-8000-000000000203',
+        kind: 'follow_up',
+        text: 'relayed follow up',
+        state: 'queued',
+        revision: 1,
+        enqueueOrder: 1,
+        runId: '00000000-0000-4000-8000-000000000204',
+        userMessageId: '00000000-0000-4000-8000-000000000205',
+        assistantMessageId: '00000000-0000-4000-8000-000000000206',
+        createdAt: '2026-09-07T00:00:00.000Z',
+        updatedAt: '2026-09-07T00:00:00.000Z',
+      },
+    });
+    expect(seen.chatMessages.map((message) => JSON.parse(message).type)).toEqual([
+      'hello',
+      'subscribe_conversation',
+      'enqueue_input',
+    ]);
+    phone.close();
   });
 
   it('returns 502 when the host has no connected gateway', async () => {

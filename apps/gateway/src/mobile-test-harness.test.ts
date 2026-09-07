@@ -11,11 +11,12 @@ import type {
 } from '@dash/mobile-contract';
 import type {
   MobileV2ConversationBootstrap,
+  MobileV2ConversationSummary,
   MobileV2ReplayPage,
   MobileV2WsClientFrame,
   MobileV2WsServerFrame,
 } from '@dash/mobile-contract-v2';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { type RunningMobileTestHarness, startMobileTestHarness } from './mobile-test-harness.js';
 
 function mobileRequest(
@@ -75,6 +76,51 @@ function pinnedSurfaceRequest(
   });
 }
 
+function pinnedJsonRequest(
+  harness: RunningMobileTestHarness,
+  path: string,
+  options: { method?: 'GET' | 'POST'; body?: unknown } = {},
+): Promise<{ status: number; value: unknown }> {
+  const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest(
+      `${harness.mobileBaseUrl}${path}`,
+      {
+        method: options.method ?? 'GET',
+        rejectUnauthorized: false,
+        headers: {
+          Authorization: `Bearer ${harness.chatToken}`,
+          ...(payload === undefined
+            ? {}
+            : {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+              }),
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.once('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let value: unknown = null;
+          if (text) {
+            try {
+              value = JSON.parse(text) as unknown;
+            } catch {
+              value = text;
+            }
+          }
+          resolve({ status: response.statusCode ?? 0, value });
+        });
+      },
+    );
+    request.once('error', reject);
+    if (payload !== undefined) request.write(payload);
+    request.end();
+  });
+}
+
 async function createConversation(
   harness: RunningMobileTestHarness,
   agentId = harness.agentId,
@@ -86,6 +132,23 @@ async function createConversation(
   });
   expect(response.status).toBe(201);
   return (await response.json()) as ConversationSummary;
+}
+
+async function createV2Conversation(
+  harness: RunningMobileTestHarness,
+  requestId = randomUUID(),
+): Promise<MobileV2ConversationSummary> {
+  const response = await mobileV2Request(harness, '/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId: harness.agentId, requestId }),
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()) as MobileV2ConversationSummary;
+}
+
+function testUuid(value: number): string {
+  return `00000000-0000-4000-8000-${value.toString().padStart(12, '0')}`;
 }
 
 class FrameInbox {
@@ -827,6 +890,529 @@ describe('mobile test harness', () => {
       expect(afterDelete).toMatchObject({ type: 'command_rejected', code: 'gateway_offline' });
     } finally {
       await chat?.close();
+      await harness.stop();
+    }
+  });
+
+  it('proves Follow Up v2 cross-client mutation and exact-once restart promotion', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2-restart' });
+    let firstClient: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    let secondClient: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    let restartedClient: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      const stableEnvironment = {
+        managementBaseUrl: harness.managementBaseUrl,
+        chatWebSocketUrl: harness.chatWebSocketUrl,
+        mobileBaseUrl: harness.mobileBaseUrl,
+        mobileChatWebSocketUrl: harness.mobileChatWebSocketUrl,
+        tlsCertificateSha256: harness.tlsCertificateSha256,
+        managementToken: harness.managementToken,
+        chatToken: harness.chatToken,
+        gatewayId: harness.gatewayId,
+        agentId: harness.agentId,
+        dataDir: harness.dataDir,
+      };
+      const conversation = await createV2Conversation(harness, testUuid(101));
+      firstClient = await harness.connectV2();
+      secondClient = await harness.connectV2();
+      await harness.subscribeConversation(firstClient, {
+        commandId: testUuid(102),
+        conversationId: conversation.id,
+        sinceV2Seq: conversation.v2LastSeq,
+      });
+      await harness.subscribeConversation(secondClient, {
+        commandId: testUuid(103),
+        conversationId: conversation.id,
+        sinceV2Seq: conversation.v2LastSeq,
+      });
+
+      const outerRunId = testUuid(104);
+      harness.holdProviderGate(outerRunId, 'beforeSafeBoundary');
+      harness.holdProviderGate(outerRunId, 'beforeRunTerminal');
+      firstClient.send({
+        type: 'message',
+        id: outerRunId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Hold the active response',
+        resumable: true,
+      });
+      await firstClient.waitFor((frame) => frame.type === 'event' && frame.runId === outerRunId);
+      await harness.waitForProviderGate(outerRunId, 'beforeSafeBoundary');
+
+      const steer = await harness.enqueueInput(firstClient, {
+        commandId: testUuid(105),
+        inputId: testUuid(106),
+        conversationId: conversation.id,
+        text: 'Use the durable boundary',
+        behavior: 'steer',
+        expectedActiveTurnId: outerRunId,
+      });
+      const queued = await Promise.all(
+        [
+          { commandId: testUuid(107), inputId: testUuid(108), text: 'one' },
+          { commandId: testUuid(109), inputId: testUuid(110), text: 'two' },
+          { commandId: testUuid(111), inputId: testUuid(112), text: 'three' },
+        ].map((input) =>
+          harness.enqueueInput(firstClient as NonNullable<typeof firstClient>, {
+            ...input,
+            conversationId: conversation.id,
+            behavior: 'followUp',
+          }),
+        ),
+      );
+      const queuedRunIds = queued.map((frame) => {
+        if (!frame.input.runId) throw new Error('Follow Up did not reserve a run ID');
+        return frame.input.runId;
+      });
+
+      harness.releaseProviderGate(outerRunId, 'beforeSafeBoundary');
+      await firstClient.waitFor(
+        (frame) => frame.type === 'input_delivered' && frame.input.inputId === steer.input.inputId,
+      );
+      await harness.waitForProviderGate(outerRunId, 'beforeRunTerminal');
+
+      const firstBeforeEdit = firstClient.lastV2Seq;
+      const edited = await harness.editFollowUp(secondClient, {
+        commandId: testUuid(113),
+        conversationId: conversation.id,
+        inputId: queued[1].input.inputId,
+        expectedRevision: queued[1].input.revision,
+        text: 'two edited by client B',
+      });
+      await firstClient.waitFor(
+        (frame) => frame.type === 'input_updated' && frame.input.inputId === edited.input.inputId,
+        { afterV2Seq: firstBeforeEdit },
+      );
+      const secondBeforeRemove = secondClient.lastV2Seq;
+      const removed = await harness.removeFollowUp(firstClient, {
+        commandId: testUuid(114),
+        conversationId: conversation.id,
+        inputId: queued[2].input.inputId,
+        expectedRevision: queued[2].input.revision,
+      });
+      await secondClient.waitFor(
+        (frame) => frame.type === 'input_removed' && frame.inputId === removed.inputId,
+        { afterV2Seq: secondBeforeRemove },
+      );
+      const converged = await harness.bootstrapV2(conversation.id);
+      expect(converged.pendingInputs.map((input) => input.inputId)).toEqual([
+        queued[0].input.inputId,
+        queued[1].input.inputId,
+      ]);
+      expect(converged.pendingInputs[1]?.text).toBe('two edited by client B');
+      await secondClient.close();
+      secondClient = undefined;
+
+      harness.holdProviderGate(queuedRunIds[0], 'beforeRunTerminal');
+      harness.holdProviderGate(queuedRunIds[1], 'beforeRunTerminal');
+      const cancelled = await harness.cancelRun(firstClient, outerRunId);
+      expect(cancelled).toMatchObject({ type: 'done', outcome: 'cancelled' });
+      await firstClient.waitFor(
+        (frame) =>
+          frame.type === 'input_delivered' && frame.input.inputId === queued[0].input.inputId,
+      );
+      await harness.waitForProviderGate(queuedRunIds[0], 'beforeRunTerminal');
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: queued[0].input.inputId,
+        }),
+      ).toBe(1);
+
+      const restartCursor = firstClient.lastV2Seq;
+      await harness.restartGateway();
+      expect({
+        managementBaseUrl: harness.managementBaseUrl,
+        chatWebSocketUrl: harness.chatWebSocketUrl,
+        mobileBaseUrl: harness.mobileBaseUrl,
+        mobileChatWebSocketUrl: harness.mobileChatWebSocketUrl,
+        tlsCertificateSha256: harness.tlsCertificateSha256,
+        managementToken: harness.managementToken,
+        chatToken: harness.chatToken,
+        gatewayId: harness.gatewayId,
+        agentId: harness.agentId,
+        dataDir: harness.dataDir,
+      }).toEqual(stableEnvironment);
+
+      restartedClient = await harness.connectV2();
+      await harness.subscribeConversation(restartedClient, {
+        commandId: testUuid(115),
+        conversationId: conversation.id,
+        sinceV2Seq: restartCursor,
+      });
+      await harness.waitForProviderGate(queuedRunIds[1], 'beforeRunTerminal');
+      expect(edited.input.text).toBe('two edited by client B');
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: queued[0].input.inputId,
+        }),
+      ).toBe(1);
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: queued[1].input.inputId,
+        }),
+      ).toBe(1);
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: queued[2].input.inputId,
+        }),
+      ).toBe(0);
+
+      harness.releaseProviderGate(queuedRunIds[1], 'beforeRunTerminal');
+      await restartedClient.waitFor(
+        (frame) => frame.type === 'done' && frame.runId === queuedRunIds[1],
+      );
+      const bootstrap = await harness.bootstrapV2(conversation.id);
+      const messageIds = bootstrap.messages.map((message) => message.id);
+      expect(new Set(messageIds).size).toBe(messageIds.length);
+      expect(bootstrap.pendingInputs).toEqual([]);
+    } finally {
+      await firstClient?.close().catch(() => undefined);
+      await secondClient?.close().catch(() => undefined);
+      await restartedClient?.close().catch(() => undefined);
+      await harness.stop();
+    }
+  });
+
+  it('keeps an ordinary failure pause durable across restart until explicit resume Follow Ups', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2-restart' });
+    let firstClient: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    let restartedClient: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      const conversation = await createV2Conversation(harness, testUuid(121));
+      firstClient = await harness.connectV2();
+      await harness.subscribeConversation(firstClient, {
+        commandId: testUuid(122),
+        conversationId: conversation.id,
+        sinceV2Seq: 0,
+      });
+      const failingRunId = testUuid(123);
+      harness.holdProviderGate(failingRunId, 'beforeSafeBoundary');
+      harness.failRun(failingRunId);
+      firstClient.send({
+        type: 'message',
+        id: failingRunId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Fail this ordinary run',
+        resumable: true,
+      });
+      await harness.waitForProviderGate(failingRunId, 'beforeSafeBoundary');
+      const first = await harness.enqueueInput(firstClient, {
+        commandId: testUuid(124),
+        inputId: testUuid(125),
+        conversationId: conversation.id,
+        text: 'first queued after failure',
+        behavior: 'followUp',
+      });
+      const second = await harness.enqueueInput(firstClient, {
+        commandId: testUuid(126),
+        inputId: testUuid(127),
+        conversationId: conversation.id,
+        text: 'second queued after failure',
+        behavior: 'followUp',
+      });
+      if (!first.input.runId || !second.input.runId) {
+        throw new Error('Failure-pause Follow Ups did not reserve run IDs');
+      }
+      harness.holdProviderGate(first.input.runId, 'beforeRunTerminal');
+      harness.holdProviderGate(second.input.runId, 'beforeRunTerminal');
+      harness.releaseProviderGate(failingRunId, 'beforeSafeBoundary');
+      await firstClient.waitFor(
+        (frame) => frame.type === 'queue_paused' && frame.conversationId === conversation.id,
+      );
+
+      await harness.restartGateway();
+      let bootstrap = await harness.bootstrapV2(conversation.id);
+      expect(bootstrap.queuePaused).toBe(true);
+      expect(bootstrap.pendingInputs.map((input) => input.inputId)).toEqual([
+        first.input.inputId,
+        second.input.inputId,
+      ]);
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: first.input.inputId,
+        }),
+      ).toBe(0);
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: second.input.inputId,
+        }),
+      ).toBe(0);
+
+      restartedClient = await harness.connectV2();
+      await harness.subscribeConversation(restartedClient, {
+        commandId: testUuid(128),
+        conversationId: conversation.id,
+        sinceV2Seq: bootstrap.v2ThroughSeq,
+      });
+      await harness.resumeFollowUps(restartedClient, {
+        commandId: testUuid(129),
+        conversationId: conversation.id,
+        expectedQueueRevision: bootstrap.queueRevision,
+      });
+      await harness.waitForProviderGate(first.input.runId, 'beforeRunTerminal');
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: second.input.inputId,
+        }),
+      ).toBe(0);
+      harness.releaseProviderGate(first.input.runId, 'beforeRunTerminal');
+      await harness.waitForProviderGate(second.input.runId, 'beforeRunTerminal');
+      bootstrap = await harness.bootstrapV2(conversation.id);
+      expect(bootstrap.queuePaused).toBe(false);
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: first.input.inputId,
+        }),
+      ).toBe(1);
+      expect(
+        await harness.providerExecutionCount({
+          conversationId: conversation.id,
+          inputId: second.input.inputId,
+        }),
+      ).toBe(1);
+    } finally {
+      await firstClient?.close().catch(() => undefined);
+      await restartedClient?.close().catch(() => undefined);
+      await harness.stop();
+    }
+  });
+
+  it('exposes exact v1 fallback while the Follow Up v2 health probe returns 404', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v1-fallback' });
+    let chat: FrameInbox | undefined;
+    try {
+      const v2Health = await fetch(`${harness.managementBaseUrl}/mobile/v2/health`);
+      expect(v2Health.status).toBe(404);
+      const v1Health = await fetch(`${harness.managementBaseUrl}/mobile/v1/health`);
+      expect(v1Health.status).toBe(200);
+
+      const conversation = await createConversation(harness);
+      chat = await openChat(harness);
+      const runId = testUuid(131);
+      chat.send({
+        type: 'message',
+        id: runId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Use the frozen v1 path',
+        resumable: true,
+      });
+      await chat.waitFor((frame) => frame.type === 'done' && frame.id === runId);
+      expect(turnFrames(chat, runId).every((frame) => !('v2Seq' in frame))).toBe(true);
+    } finally {
+      await chat?.close();
+      await harness.stop();
+    }
+  });
+
+  it('cleans partial listeners after an injected restart failure and safely retries', async () => {
+    const harness = await startMobileTestHarness({
+      scenario: 'follow-up-v2-restart',
+      failRestartOnceAfterManagementListen: true,
+    });
+    try {
+      const stableManagementUrl = harness.managementBaseUrl;
+      await expect(harness.restartGateway()).rejects.toThrow('Injected harness restart failure');
+      await expect(fetch(`${stableManagementUrl}/mobile/v2/health`)).rejects.toThrow();
+
+      await harness.restartGateway();
+      expect(harness.managementBaseUrl).toBe(stableManagementUrl);
+      const health = await fetch(`${stableManagementUrl}/mobile/v2/health`);
+      expect(health.status).toBe(200);
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('closes initialization resources after a pre-listener restart failure and safely retries', async () => {
+    const harness = await startMobileTestHarness({
+      scenario: 'follow-up-v2-restart',
+      failRestartOnceDuringInitialization: true,
+    });
+    try {
+      expect(harness.runtimeResourceCounts()).toEqual({ created: 1, closed: 0 });
+      await expect(harness.restartGateway()).rejects.toThrow(
+        'Injected harness initialization failure',
+      );
+      expect(harness.runtimeResourceCounts()).toEqual({ created: 2, closed: 2 });
+
+      await harness.restartGateway();
+      expect(harness.runtimeResourceCounts()).toEqual({ created: 3, closed: 2 });
+      expect((await fetch(`${harness.managementBaseUrl}/mobile/v2/health`)).status).toBe(200);
+    } finally {
+      await harness.stop();
+    }
+  });
+
+  it('keeps an invalid v2 socket frame fatal even when a later frame matches the waiter', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2' });
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    let client: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+      server.on('connection', (socket) => {
+        socket.on('message', () => {
+          socket.send(
+            JSON.stringify({
+              type: 'hello_ack',
+              contractVersion: 2,
+              capabilities: ['chat-input-queue-v1'],
+            }),
+          );
+        });
+      });
+      const address = server.address() as { port: number };
+      client = await harness.connectV2({
+        webSocketUrl: `ws://127.0.0.1:${address.port}`,
+        token: 'ignored-by-test-server',
+      });
+      const socket = [...server.clients][0];
+      if (!socket) throw new Error('Review regression server did not accept a client');
+      const replyId = testUuid(151);
+      const conversationId = testUuid(152);
+      const runId = testUuid(153);
+      socket.send(
+        JSON.stringify({
+          type: 'done',
+          id: runId,
+          conversationId,
+          runId,
+          segmentTurnId: runId,
+          v2Seq: 1,
+          outcome: 'completed',
+        }),
+      );
+      await vi.waitFor(() => expect(client?.lastV2Seq).toBe(1));
+      socket.send('{"type":"not_a_v2_frame"}');
+      socket.send(
+        JSON.stringify({
+          type: 'conversation_subscribed',
+          id: replyId,
+          conversationId,
+          v2ThroughSeq: 1,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(
+          client?.frames.some(
+            (frame) => frame.type === 'conversation_subscribed' && frame.id === replyId,
+          ),
+        ).toBe(true),
+      );
+
+      await expect(client.waitForV2Seq(1)).rejects.toThrow(/schema validation/);
+      await expect(
+        client.waitFor((frame) => frame.type === 'conversation_subscribed' && frame.id === replyId),
+      ).rejects.toThrow(/schema validation/);
+    } finally {
+      await client?.close().catch(() => undefined);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await harness.stop();
+    }
+  });
+
+  it('rejects provider execution envelopes containing anything beyond IDs and counts', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2' });
+    const realFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn(async () =>
+        Response.json({ executions: [], prompt: 'must never cross the harness boundary' }),
+      );
+      await expect(harness.providerExecutions('review-conversation')).rejects.toThrow(
+        'provider execution response is invalid',
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      await harness.stop();
+    }
+  });
+
+  it('exposes sanitized failure, release, and execution controls on the pinned mobile surface', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2' });
+    let client: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      const conversation = await createV2Conversation(harness, testUuid(161));
+      client = await harness.connectV2();
+      await harness.subscribeConversation(client, {
+        commandId: testUuid(162),
+        conversationId: conversation.id,
+      });
+      const runId = testUuid(163);
+      client.send({
+        type: 'message',
+        id: runId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId: conversation.id,
+        text: 'Fail through the public test control',
+        resumable: true,
+      });
+      await harness.waitForProviderGate(runId, 'beforeSafeBoundary');
+
+      const failed = await pinnedJsonRequest(
+        harness,
+        '/mobile/v2/__mobile-test/provider-runs/fail',
+        { method: 'POST', body: { runId } },
+      );
+      expect(failed).toEqual({ status: 200, value: { ok: true } });
+      const released = await pinnedJsonRequest(
+        harness,
+        '/mobile/v2/__mobile-test/provider-gates/release',
+        { method: 'POST', body: { runId, gate: 'beforeSafeBoundary' } },
+      );
+      expect(released).toEqual({ status: 200, value: { ok: true } });
+      await client.waitFor((frame) => frame.type === 'error' && frame.runId === runId);
+
+      const observed = await pinnedJsonRequest(
+        harness,
+        `/mobile/v2/__mobile-test/provider-executions?conversationId=${encodeURIComponent(
+          conversation.id,
+        )}`,
+      );
+      expect(observed.status).toBe(200);
+      expect(Object.keys(observed.value as object)).toEqual(['executions']);
+      expect(observed.value).toEqual({ executions: [{ runId, inputId: null, count: 1 }] });
+    } finally {
+      await client?.close().catch(() => undefined);
+      await harness.stop();
+    }
+  });
+
+  it('stops gateway services without deleting state and restarts them on the same URLs', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2-restart' });
+    try {
+      const conversation = await createV2Conversation(harness, testUuid(141));
+      const urls = {
+        managementBaseUrl: harness.managementBaseUrl,
+        chatWebSocketUrl: harness.chatWebSocketUrl,
+        mobileBaseUrl: harness.mobileBaseUrl,
+        mobileChatWebSocketUrl: harness.mobileChatWebSocketUrl,
+      };
+      await harness.stopGateway();
+      await expect(fetch(`${harness.managementBaseUrl}/mobile/v2/health`)).rejects.toThrow();
+
+      await harness.restartGateway();
+      expect({
+        managementBaseUrl: harness.managementBaseUrl,
+        chatWebSocketUrl: harness.chatWebSocketUrl,
+        mobileBaseUrl: harness.mobileBaseUrl,
+        mobileChatWebSocketUrl: harness.mobileChatWebSocketUrl,
+      }).toEqual(urls);
+      expect((await harness.bootstrapV2(conversation.id)).conversation.id).toBe(conversation.id);
+    } finally {
       await harness.stop();
     }
   });

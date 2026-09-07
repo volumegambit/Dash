@@ -330,6 +330,105 @@ describe('mobile harness emitted contract output', () => {
     }
   });
 
+  it('schema-validates Follow Up v2 helpers, restart replay, and sanitized execution output', async () => {
+    const harness = await startMobileTestHarness({ scenario: 'follow-up-v2-restart' });
+    let first: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    let restarted: Awaited<ReturnType<typeof harness.connectV2>> | undefined;
+    try {
+      const createResponse = await mobileV2Request(harness, '/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: harness.agentId, requestId: randomUUID() }),
+      });
+      expect(createResponse.status).toBe(201);
+      const conversation = firstObject(await createResponse.json());
+      expectV2Schema('openapi', 'MobileV2ConversationSummary', conversation);
+      const conversationId = conversation.id as string;
+
+      first = await harness.connectV2();
+      const subscribed = await harness.subscribeConversation(first, {
+        conversationId,
+        sinceV2Seq: conversation.v2LastSeq as number,
+      });
+      expectV2Schema('chat-ws', 'ChatConversationSubscribed', subscribed);
+
+      const runId = randomUUID();
+      harness.holdProviderGate(runId, 'beforeSafeBoundary');
+      first.send({
+        type: 'message',
+        id: runId,
+        agentId: harness.agentId,
+        channelId: 'mobile-ios',
+        conversationId,
+        text: 'Validate every helper frame',
+        resumable: true,
+      });
+      await harness.waitForProviderGate(runId, 'beforeSafeBoundary');
+      const accepted = await harness.enqueueInput(first, {
+        conversationId,
+        text: 'schema checked Follow Up',
+        behavior: 'followUp',
+      });
+      expectV2Schema('chat-ws', 'InputAccepted', accepted);
+      const updated = await harness.editFollowUp(first, {
+        conversationId,
+        inputId: accepted.input.inputId,
+        expectedRevision: accepted.input.revision,
+        text: 'schema checked Follow Up edited',
+      });
+      expectV2Schema('chat-ws', 'InputUpdated', updated);
+      const removed = await harness.removeFollowUp(first, {
+        conversationId,
+        inputId: updated.input.inputId,
+        expectedRevision: updated.input.revision,
+      });
+      expectV2Schema('chat-ws', 'InputRemoved', removed);
+
+      const beforeRestart = await harness.bootstrapV2(conversationId);
+      expectV2Schema('openapi', 'MobileV2ConversationBootstrap', beforeRestart);
+      const replayFrom = first.lastV2Seq;
+      await harness.restartGateway();
+
+      restarted = await harness.connectV2();
+      const resubscribed = await harness.subscribeConversation(restarted, {
+        conversationId,
+        sinceV2Seq: replayFrom,
+      });
+      expectV2Schema('chat-ws', 'ChatConversationSubscribed', resubscribed);
+      await restarted.waitFor(
+        (frame) =>
+          frame.type === 'done' && frame.runId === runId && frame.outcome === 'interrupted',
+      );
+      for (const frame of [...first.frames, ...restarted.frames]) {
+        expectV2Schema('chat-ws', 'MobileV2WsServerFrame', frame);
+      }
+
+      const afterRestart = await harness.bootstrapV2(conversationId);
+      expectV2Schema('openapi', 'MobileV2ConversationBootstrap', afterRestart);
+      const executionOutput = await harness.providerExecutions(conversationId);
+      expect(Object.keys(executionOutput)).toEqual(['executions']);
+      expect(executionOutput.executions).toEqual([
+        expect.objectContaining({ runId, inputId: null, count: 1 }),
+      ]);
+      for (const execution of executionOutput.executions) {
+        expect(Object.keys(execution).sort()).toEqual(['count', 'inputId', 'runId']);
+        expect(typeof execution.runId).toBe('string');
+        expect(execution.inputId === null || typeof execution.inputId === 'string').toBe(true);
+        expect(Number.isSafeInteger(execution.count)).toBe(true);
+      }
+      const serialized = JSON.stringify(executionOutput);
+      expect(serialized).not.toContain('Validate every helper frame');
+      expect(serialized).not.toContain('schema checked Follow Up');
+      expect(serialized).not.toContain(harness.managementToken);
+      expect(serialized).not.toContain(harness.chatToken);
+      expect(serialized).not.toContain('error');
+    } finally {
+      await first?.close().catch(() => undefined);
+      await restarted?.close().catch(() => undefined);
+      await harness.stop();
+    }
+  });
+
   it('redeems tickets minted by either namespace on either chat socket exactly once', async () => {
     const harness = await startMobileTestHarness({ scenario: 'stream' });
     try {
