@@ -1736,7 +1736,7 @@ Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the
 1. With swarm enabled, send the swarm prompt.
 2. **Verify:** as the run proceeds, one **worker card** appears per spawned worker, anchored at its spawn point in the assistant message. Each card header shows the worker's **role** (monospace), a status icon, and a one-line latest detail.
 3. **Verify:** while running, a card shows **Running** with a spinning loader; a worker that pauses to ask shows **Waiting for input** with a spinner.
-4. **Verify:** when a worker finishes, its card shows **Done** (green check). Expand it. **Verify:** the expanded card shows the brief, the status trail, and the worker's **Report** rendered as Markdown, plus its model and token usage.
+4. **Verify:** when a worker finishes, its card shows **Done** (green check). Expand it. **Verify:** the expanded card shows the status, the description, the child's own transcript, and its **Report** rendered as Markdown, plus its model and token usage. (The card is the sub-agent card — see Section 32 for its meta line, its composer, and the nesting rule. The per-status trail the old worker card listed is gone; the child's transcript replaced it.)
 5. **Verify:** the orchestrator's final synthesized answer appears after the worker cards (one answer built from the workers' reports).
 
 ### 31.3 Cards render identically from history after app restart
@@ -1764,20 +1764,11 @@ When the gateway process is killed hard mid-run, nothing gets to write the turn'
 2. **Verify:** a row of small status dots follows, one per non-orphan worker, colored by state (running=accent, waiting=yellow, done=green, failed=red, cancelled=muted). Hovering a dot shows **"{role}: {status}"**.
 3. **Verify:** once **every** worker reaches a terminal state, the pinned strip disappears (it only renders while there is non-terminal live work).
 
-### 31.6 Swarm panel — run list, worker detail, cancel, send
-The panel is the right-side **swarm supervision** drawer. Its affordance is a **people icon** in the chat header (`title="Swarm supervision"`), shown when the agent has swarm enabled **or** has historical runs.
-1. Click the swarm-supervision icon. **Verify:** a right drawer opens headed **"Swarm runs"**. With no runs yet it reads **"No swarm runs yet. When this agent spawns workers, runs appear here."**
-2. Run a swarm turn (30.2), then open/refresh the panel. **Verify:** the run list shows the run — a live run has a green pulsing dot; a finalized run shows **" · finished"** and a muted dot. Active runs sort above finalized ones, newest first.
-3. Click a run. **Verify:** the header becomes **"Workers"** and a worker table lists each worker with columns Role, Status (colored dot + label: Spawning / Running / Waiting for input / Done / Failed / Cancelled), Tokens, and Elapsed.
-4. Click a worker. **Verify:** the header becomes the worker's role and the detail view shows a status/model/tokens/elapsed meta row, the **Brief**, and (once present) the **Report** as Markdown.
-5. **Cancel a running worker:** while a worker is still running, click **Cancel worker** (button briefly reads **Cancelling…**). **Verify:** the worker transitions to **Cancelled** in the table and its chat card also reaches a **Cancelled** terminal state.
-6. **Send to a waiting worker:** drive a worker into **Waiting for input** (a worker that calls `ask_orchestrator`; steer the prompt to make one ask a question if needed). In its detail view, type into the **"Send a message to steer this worker…"** box and click **Send** (button reads **Sending…**). **Verify:** the message is delivered (200), the box clears, and the worker resumes — no error notice appears.
-7. **Verify:** for a worker that has already finished, the detail view shows **"This worker has finished — no further actions available."** with no Send/Cancel controls.
+### 31.6 Supervision panel → moved
+The right drawer is no longer a run list. It lists the open **conversation's children** and its actions go through the sub-agent routes. See **Section 32.4–32.6**.
 
-### 31.7 409 handling (cancel an already-finished worker → visible notice, no crash)
-1. Open the panel on a run whose workers have finished, or cancel a worker and then immediately try to act on it again.
-2. Attempt to **Cancel** (or **Send** to) a worker that is already terminal, or a worker in a run that has been finalized.
-3. **Verify:** the gateway returns **409** and the panel shows a dismissable red **action notice** (`data-testid="swarm-action-notice"`) with the coordinator's reason — **"worker terminal"** (already-finished worker) or **"run finalized"** (dead run) — falling back to **"Could not cancel this worker."** / **"Could not send to this worker."** The app does **not** crash or throw; the notice can be dismissed with its X.
+### 31.7 409 handling → moved
+Stop/resume refusals and the `swarm-action-notice` element are covered by **Section 32.6**.
 
 ### 31.8 Caps error rendering in chat (spawn beyond cap → isError tool result)
 1. Set a tight cap to force the error quickly: on the agent's **Swarm** card, set **max workers per run** to **1** (or **max concurrent workers** to **1**) and **Save**.
@@ -1790,6 +1781,80 @@ The panel is the right-side **swarm supervision** drawer. Its affordance is a **
 2. **Verify:** as the stream ends, every worker card that had not already reached a terminal event is terminalized to **Cancelled** (ban icon, muted) — no card is left stuck spinning on **Running**/**Waiting**.
 3. **Verify:** the pinned strip disappears once all cards are terminal.
 4. Re-open the conversation from history. **Verify:** those cards still read **Cancelled** (the end-of-stream terminalization is stable across replay).
+
+## Section 32: Sub-agents
+
+Covers the **sub-agent** model that replaced the run-scoped worker model in the
+chat transcript and in the right drawer: the **sub-agent card** (collapsed row,
+meta line, expanded body with the child's own transcript and an inline
+composer), the **sub-agent panel** (children of the open conversation, stop,
+resume), refusal handling, and the re-read behaviour that keeps every surface
+describing the run the child is actually on.
+
+**Preconditions:** Gateway running and MC connected (Sections 1–2), a provider
+connected with a **cheap** model (Section 3), and an agent with sub-agents
+enabled (Section 31.1 — the same **Swarm** card). These tests make real, small
+LLM calls.
+
+**Bootstrap:** open a chat with that agent and use the prompt
+`spawn two sub-agents, have each list files in a subdirectory, then summarize`.
+
+### 32.1 The card, its meta line, and its glyphs
+1. Send the bootstrap prompt.
+2. **Verify:** one card appears per child, anchored where the child started in the assistant message. The header reads: status glyph, the child's **type** in monospace, its newest one-line detail, and — right-aligned, monospace — `N tool uses · 45s`.
+3. **Verify:** the elapsed segment **ticks once a second while the child is running** and freezes when it finishes.
+4. **Verify:** the glyphs are: spinner (running and waiting), green check (done), red X (failed and max turns), ban (cancelled and interrupted).
+5. **Verify:** no card renders **"Activity from a newer Dash version"** anywhere in the turn. That string is the regression this section exists to catch: before this work every child drew one.
+6. **Verify:** the pinned strip above the composer reads `N agents · R running · W waiting` while any child is live, and disappears when they are all terminal.
+
+### 32.2 A finished child with no end timestamp shows no elapsed
+1. Send the bootstrap prompt and cancel the turn while a child is still running (chat stop control).
+2. **Verify:** the child's card terminalizes to **Cancelled** and its meta line shows **only** the tool count — no elapsed, and no trailing `·` separator.
+3. Re-open the conversation an hour later. **Verify:** the meta line is unchanged. It must never show the card's own age (that number would grow every time the conversation is reopened).
+
+### 32.3 Expanding a card: the child's transcript, its report, its composer
+1. After a completed run, click a card header. **Verify:** `aria-expanded` flips and the body opens.
+2. **Verify:** the body fetches the child's conversation **once** and renders its transcript with the same components as the parent's — text, thinking, tool cards — inside a nesting rail. Collapse and re-expand: it is **not** re-fetched.
+3. **Verify:** the child's final **report** renders as Markdown at the bottom of the body.
+4. **Verify:** a message the orchestrator sent to the child renders as a muted **"from orchestrator:"** row, not as one of your own bubbles.
+5. **Nesting depth is 1.** If a child spawned a grandchild, **verify:** the grandchild renders as a card inside the child's transcript but has **no toggle** — it cannot be expanded, and clicking it does nothing. (Web and iOS cap nesting the same way; the design doc's "unlimited by the renderer" is a deliberate, matched divergence on all three clients.)
+6. **Verify:** a **finished** child's body shows no composer, and says *"This sub-agent has finished — no further messages."*
+
+### 32.4 The panel lists the conversation's children
+1. Click the sub-agent toolbar icon. **Verify:** a right drawer opens headed **"Sub-agents"**. With no children it reads *"No sub-agents in this conversation yet…"*.
+2. Run the bootstrap prompt. **Verify:** one row per child, each showing the child's type, description, `N tool uses · 45s`, a status dot, and the status label (Running / Waiting for input / Done / Failed / Cancelled / Interrupted / Max turns reached).
+3. **Verify:** the panel is scoped to the **conversation**, not the agent: switch to another conversation with the same agent and the list changes to that conversation's children (empty if it has none).
+4. **Verify:** a terminal child with no end timestamp shows only its tool count here too (same rule as 32.2).
+5. Click a row. **Verify:** that child's card expands in the transcript.
+6. **Verify:** the affordance is present when the agent has sub-agents enabled **or** the conversation already has children — turn the agent's toggle off and re-open the conversation, and the drawer is still reachable so the children can still be stopped.
+
+### 32.5 Stop, and the re-read that follows it
+1. With a child **Running**, click **Stop** on its panel row.
+2. **Verify:** the child (and every descendant) stops, and the row re-reads to **Cancelled** without any manual refresh.
+3. **Verify:** the child's card in the transcript also reads **Cancelled**, and its inline reply box is gone — even though no new event reached the parent (its turn is over). This is the server's status winning over the card's own fold.
+4. **Verify:** a child that has already finished shows **no Stop button** at all.
+
+### 32.6 Resume, and the three refusals
+1. Drive a child into **Waiting for input**. **Verify:** its card shows the question with an inline reply box, and the panel row offers **Resume**.
+2. Reply from the card. **Verify:** the box clears, the child resumes, and the row's **elapsed and tool count reset to the new run** — not the previous one's totals. (Without the re-read this step exists for, every surface would keep the pre-resume numbers for the whole new run.)
+3. Resume from the panel instead (**Resume** → type → **Send**). **Verify:** the same thing happens. Both paths go through `POST /subagents/:id/resume`; there is no second client-side path.
+4. **Refusal 1 — one-shot type.** Use an `Explore` or `Plan` child, which is one-shot. **Verify:** its **Resume** button is disabled and the row says *"one-shot — cannot be resumed"*; in the card's expanded body the composer is disabled and says *"This sub-agent type is one-shot and cannot be resumed."*
+5. **Refusal 1B — the exception.** A one-shot child **parked on a question** can still be answered: **verify** its reply box is enabled and the answer is delivered.
+6. **Refusal 2 — steer cap.** Set **max steers per worker** to 1 (Section 31.1), then send a child two steers. **Verify:** the second is refused and the gateway's own sentence appears in a dismissable red notice (`data-testid="swarm-action-notice"`) **on the row you clicked**, and in the card's own notice when sent from the card.
+7. **Refusal 3 — unrebuildable grant.** Remove a tool the child was granted (agent Configuration → tools) and then resume it. **Verify:** the refusal appears in the same place with the gateway's reason.
+8. **Verify:** in every refusal case the sentence you typed is **still in the box** — a refused message is not thrown away — and the notice dismisses with its X.
+
+### 32.7 The list stays correct without you touching it
+1. Spawn a **background** child (one that outlives the turn). **Verify:** when the parent turn ends, that child's card does **not** flip to **Cancelled** — a background child is exempt from end-of-stream terminalization.
+2. Let the background child finish while you are on a different conversation. Switch back. **Verify:** the panel and the card both show its true final status. (Reading the list on conversation selection is the only trigger that fires here — no live turn means no event ever reaches the parent.)
+3. With a child live, leave the panel open and do nothing for a minute. **Verify:** the row's status keeps up (a 20s poll runs while any child is non-terminal). Once every child is terminal, **verify** the polling stops — no further `GET /conversations/:id/subagents` requests in the gateway log.
+4. Switch conversations rapidly back and forth while a list read is in flight. **Verify:** the panel never shows another conversation's children, and never briefly flashes them.
+
+### 32.8 Legacy `worker_*` events still fold onto the same card
+Until the legacy mirrors are removed, the gateway emits **both** families for every child.
+1. Run any sub-agent turn and re-open the conversation from history.
+2. **Verify:** each child renders as **exactly one** card — never two, and never a card plus an "Activity from a newer Dash version" block.
+3. **Verify:** a conversation recorded before this change (legacy `worker_*` only) still renders one card per worker, with its role as the type, its brief as the description, and no elapsed segment (the legacy events carry no timestamps).
 
 ## Appendix: Test Run Log
 
