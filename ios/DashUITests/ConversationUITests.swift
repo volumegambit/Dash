@@ -112,6 +112,7 @@ final class ConversationUITests: DashUITestCase {
   func testExpandingASubagentRowShowsItsNestedTranscript() {
     let app = launch(scenario: "streaming-reconnect")
     openFirstConversation(in: app)
+
     replaceText(
       in: element("chat.composer", in: app),
       with: "Prepare the launch plan",
@@ -165,6 +166,21 @@ final class ConversationUITests: DashUITestCase {
       .firstMatch
     XCTAssertTrue(optimistic.waitForExistence(timeout: 5))
     XCTAssertTrue(optimistic.label.contains("from orchestrator"))
+
+    // The unsent draft survives a collapse (web's `body:<childId>` keying).
+    // `@State` in the composer could not do this — collapsing unmounts the
+    // view — and `ChatState` would re-render the transcript per keystroke.
+    replaceText(
+      in: element("chat.subagent.ui-subagent.composer", in: app),
+      with: "half a sentence I have not sent",
+      clearExisting: false
+    )
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+    XCTAssertFalse(
+      app.descendants(matching: .any)["chat.subagent.ui-subagent.composer"].exists)
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+    let reopened = element("chat.subagent.ui-subagent.composer", in: app)
+    XCTAssertEqual(reopened.value as? String, "half a sentence I have not sent")
 
     element("chat.subagent.ui-subagent.header", in: app).tap()
     XCTAssertFalse(

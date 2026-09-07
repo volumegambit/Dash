@@ -402,6 +402,12 @@ struct ChatView: View {
               send: { childID, text in
                 await feature.sendToSubagent(childID, text: text)
               },
+              // Read INSIDE `SubagentComposer.body`, never here: constructing a
+              // closure is not an access, so `ChatView.body` never subscribes
+              // to `subagentDrafts` and the per-keystroke fan-out stays at one
+              // composer.
+              draft: { feature.subagentDraft($0) },
+              setDraft: { feature.setSubagentDraft($0, $1) },
               // Gated on `unauthorized` ALONE, never on socket state: the send
               // is REST, and a reconnect must not stop the user answering a
               // child parked in `waiting_input`, whose `waitForQuestion` fails

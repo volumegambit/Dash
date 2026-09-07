@@ -79,6 +79,11 @@ struct SubagentInteraction {
   /// the ONLY thing that clears the composer: a refused sentence stays where
   /// the user can edit it.
   var send: (_ childID: String, _ text: String) async -> Bool
+  /// Unsent composer text, keyed `reply:<childId>`/`body:<childId>`. Read
+  /// through a closure so `SubagentComposer` — and only `SubagentComposer` —
+  /// is the view Observation invalidates when it changes.
+  var draft: (_ key: String) -> String
+  var setDraft: (_ key: String, _ text: String) -> Void
   /// False only for a dead credential. **Not** gated on socket state: the send
   /// is REST, and a reconnect must not stop the user answering a child parked
   /// in `waiting_input`, whose `waitForQuestion` fails the child's tool call
@@ -91,6 +96,8 @@ struct SubagentInteraction {
     state: { _ in SubagentUIState() },
     setExpanded: { _, _, _ in },
     send: { _, _ in false },
+    draft: { _ in "" },
+    setDraft: { _, _ in },
     isEnabled: false
   )
 }
@@ -313,9 +320,12 @@ struct SubagentCardView: View {
         .font(.callout)
       SubagentComposer(
         identifier: "chat.subagent.\(card.id).reply",
+        draftKey: "reply:\(card.id)",
         placeholder: "Reply…",
         isEnabled: interaction.isEnabled,
-        isSending: ui.isSending
+        isSending: ui.isSending,
+        draft: interaction.draft,
+        setDraft: interaction.setDraft
       ) { text in
         // Optimism is not decided here. This composer renders whether or not
         // the row is expanded, and expansion is not the subscription — see
@@ -357,13 +367,16 @@ struct SubagentCardView: View {
       if nested {
         SubagentComposer(
           identifier: "chat.subagent.\(card.id).composer",
+          draftKey: "body:\(card.id)",
           placeholder: ui.oneShot == true ? oneShotComposerTitle : "Type into this agent…",
           // `oneShot == nil` means NOT YET KNOWN (it rides REST, never an
           // event). Enabled on unknown, deliberately: refusing on a guess is
           // worse than letting the coordinator's own 409 text land on the
           // error line, which is what §8.3's "shows the reason" asks for.
           isEnabled: interaction.isEnabled && ui.oneShot != true,
-          isSending: ui.isSending
+          isSending: ui.isSending,
+          draft: interaction.draft,
+          setDraft: interaction.setDraft
         ) { text in
           await interaction.send(card.id, text)
         }
@@ -543,10 +556,12 @@ private struct SubagentStatusGlyph: View {
 
 /// One-line composer for a child.
 ///
-/// The text is `@State` here rather than in `ChatState.subagentUI`: routing it
-/// through the reducer would invalidate the whole transcript on every
-/// keystroke, which is the fan-out web measured and deliberately keyed away
-/// from. The cost is that collapsing a row discards its unsent text.
+/// The text lives in `ChatFeature.subagentDrafts` under `draftKey`, NOT in
+/// `@State` and NOT in `ChatState.subagentUI`. `@State` dies with the view, so
+/// collapsing a row threw the draft away where web keeps it; `ChatState` would
+/// invalidate the whole transcript per keystroke. A separate `@Observable`
+/// property is neither: Observation tracks access per stored property, so the
+/// read below invalidates this composer alone. See `ChatFeature.subagentDrafts`.
 ///
 /// It is NOT cleared on submit and NOT cleared on failure — only on a send the
 /// caller reports as successful, by way of the row's `isSending` returning to
@@ -555,12 +570,21 @@ private struct SubagentStatusGlyph: View {
 /// all things the user might rephrase around.
 struct SubagentComposer: View {
   let identifier: String
+  /// `reply:<childId>` or `body:<childId>`. One child renders both composers,
+  /// and they must not share a buffer.
+  let draftKey: String
   let placeholder: String
   let isEnabled: Bool
   let isSending: Bool
+  let draft: (String) -> String
+  let setDraft: (String, String) -> Void
   let onSend: (String) async -> Bool
 
-  @State private var text = ""
+  private var text: String { draft(draftKey) }
+
+  private var binding: Binding<String> {
+    Binding(get: { draft(draftKey) }, set: { setDraft(draftKey, $0) })
+  }
 
   private var canSend: Bool {
     isEnabled && isSending == false
@@ -569,7 +593,7 @@ struct SubagentComposer: View {
 
   var body: some View {
     HStack(alignment: .bottom, spacing: 8) {
-      TextField(placeholder, text: $text, axis: .vertical)
+      TextField(placeholder, text: binding, axis: .vertical)
         .textFieldStyle(.plain)
         .font(.callout)
         .lineLimit(1...4)
@@ -582,7 +606,7 @@ struct SubagentComposer: View {
         // sentence the user is most likely to want to rephrase. Only a send
         // the gateway accepted empties the field.
         let outgoing = text
-        Task { if await onSend(outgoing) { text = "" } }
+        Task { if await onSend(outgoing) { setDraft(draftKey, "") } }
       } label: {
         Image(systemName: "arrow.up.circle.fill")
           .font(.title3)

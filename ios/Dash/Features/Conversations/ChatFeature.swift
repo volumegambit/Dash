@@ -1268,6 +1268,36 @@ final class ChatFeature {
     }
   }
 
+  /// Unsent composer text for sub-agent rows, keyed `reply:<childId>` and
+  /// `body:<childId>` — web's keying verbatim
+  /// (`apps/web/src/ui/blocks/SubagentBlock.tsx:674`, `:689`). One child can
+  /// render BOTH a `waiting_input` reply and a body composer at once, so a
+  /// bare child id would make them share one buffer.
+  ///
+  /// **Why it is a property here and not in `ChatState.subagentUI`.** `ChatView`
+  /// reads `feature.state`, so a draft routed through the reducer invalidates
+  /// every reader of `state` — the whole transcript — on each keystroke. That
+  /// is the fan-out web measured (six Markdown re-renders per keystroke) and
+  /// it is a real reason to keep the draft out of `ChatState`. It is not a
+  /// reason to drop the draft: Swift Observation tracks access **per stored
+  /// property**, so reading this one from inside `SubagentComposer.body`
+  /// invalidates that composer and nothing else. The first round ruled out
+  /// `ChatState` correctly and then stopped looking, and the cost was a
+  /// divergence from web that the goal's parity requirement does not allow.
+  var subagentDrafts: [String: String] = [:]
+
+  func subagentDraft(_ key: String) -> String { subagentDrafts[key] ?? "" }
+
+  /// Empty text REMOVES the key rather than storing `""`, so a session that
+  /// visits many rows does not accumulate one entry per composer it rendered.
+  func setSubagentDraft(_ key: String, _ text: String) {
+    if text.isEmpty {
+      subagentDrafts.removeValue(forKey: key)
+    } else {
+      subagentDrafts[key] = text
+    }
+  }
+
   /// Type into a child (design 8.3) through `POST /subagents/{id}/resume`.
   ///
   /// **Not a `message` WS frame.** That frame reaches `hub.start` →
