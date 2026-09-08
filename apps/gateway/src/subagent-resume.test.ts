@@ -330,6 +330,26 @@ describe('reconstructChildSpec', () => {
     expect(reconstructChildSpec('sub_MISSING', deps())).toBeUndefined();
     expect(reconstructChildSpec('sub_A', deps({ agentConfig: () => undefined }))).toBeUndefined();
   });
+
+  it('REFUSES a grandchild whose MIDDLE ancestor has no grant — the level is not skipped', () => {
+    const parent = parentConversation();
+    // A middle child narrowed to `read`, and a grandchild under it that was
+    // granted `read` and `bash` while the middle child still held both.
+    persistChild(parent.id, 'sub_MID', { tools: ['read'], mcpTools: [] });
+    persistChild('sub_MID', 'sub_LEAF', { tools: ['read', 'bash'], depth: 2 });
+    // The middle row loses its grant. This state is reachable, not hypothetical.
+    conversations.putSubagentGrant('sub_MID', undefined);
+
+    // `undefined` means "cannot be established", which is a REFUSAL and not an
+    // empty grant. The natural wrong implementation — walk on to the
+    // grandparent when a level has no grant — passed the whole suite, and in
+    // production it intersects this leaf against the ROOT agent instead of
+    // against the child that spawned it, so the leaf keeps `bash`: a tool its
+    // own parent did not hold. That is the invariant this branch exists for.
+    expect(reconstructChildSpec('sub_LEAF', deps())).toBeUndefined();
+    // The sibling case: the same refusal one level down is already pinned.
+    expect(reconstructChildSpec('sub_MID', deps())).toBeUndefined();
+  });
 });
 
 describe('childAttachOverrides', () => {
