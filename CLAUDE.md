@@ -90,8 +90,12 @@ report), **parallel** children (two `subagent_started` before any `subagent_fini
 `accepted.requestId`), **nesting** to depth 2 plus the `depth limit reached` refusal at
 `subagents.maxDepth: 0`, the **cancel cascade** (`POST /subagents/:id/stop` → a
 `subagent_finished { status: 'cancelled' }` notification), **worktree isolation** (a clean child's
-worktree is removed; one holding a gitignored deliverable is kept), and the **legacy swarm
-facades** (`spawn_worker` / `wait_workers` / `check_workers`, asserted on their results).
+worktree is removed; one holding a gitignored deliverable is kept), the **legacy swarm
+facades** (`spawn_worker` / `wait_workers` / `check_workers`, asserted on their results), and a
+**parked one-shot child answered with the `send_message` tool** (a background `Explore` child
+calls `ask_orchestrator`, and the parent answers it inside the same turn — a question is bounded
+by the parent's turn, since `SwarmRun.finalize` fires the run's `closed` and a pending
+`ask_orchestrator` then rejects with `ask_orchestrator aborted`).
 
 Two things it exists to catch that the unit tests cannot: (1) it collects **every** frame type
 seen on every socket and asserts no retired `worker_*` event appears anywhere in the run — a

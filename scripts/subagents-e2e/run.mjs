@@ -837,6 +837,155 @@ async function assertion8(ctx) {
   }
 }
 
+/**
+ * 9. A parked ONE-SHOT child, answered with the `send_message` TOOL.
+ *
+ * `coordinator.startChild` hands `ask_orchestrator` to EVERY child, the
+ * one-shot built-ins `Explore` and `Plan` included, so a one-shot child can
+ * park itself in `waiting_input`. `sendToChild` exempts an ANSWER from its
+ * one-shot refusal; the `send_message` tool used to throw its own refusal
+ * FIRST, so the orchestrator could not answer a question its own child had
+ * asked — while the legacy `send_to_worker` facade, which calls `sendToChild`
+ * directly, could.
+ *
+ * ONE TURN, and that is the whole shape of the case. A parked child's question
+ * is bounded by the parent's turn: `SwarmRun.finalize` fires `closed` for
+ * in-flight tool settlement (`run.ts:307`), which aborts a pending
+ * `ask_orchestrator` with `ask_orchestrator aborted` — measured here before
+ * this assertion was written. So a background child cannot still be parked in
+ * a LATER turn, and a foreground `agent` call never returns while its child is
+ * parked (`returnOnWaitingInput: false`). The parent must therefore answer
+ * inside the same turn, which is exactly what the legacy
+ * `spawn_worker` → `wait_workers` → `send_to_worker` loop does.
+ *
+ * Three observations, none of which can pass on absence: the child really
+ * parks (polled from REST while the turn is still open, because
+ * `subagent_progress` is transient), the tool call really is not a refusal,
+ * and the child really reaches a terminal status afterwards.
+ */
+async function assertion9(ctx) {
+  const w = await openWatcher(ctx.gw);
+  try {
+    const conv = await newConversation(ctx.gw, ctx.agent.id, 'e1 parked one-shot');
+    w.subscribe(ctx.agent.id, conv);
+    const childPrompt = [
+      'There are two files in the workspace, alpha.txt and beta.txt. Only the',
+      'orchestrator knows which one matters, and the answer is NOT in the',
+      'workspace, so you cannot work it out by reading anything. Your FIRST',
+      'action must be to call the ask_orchestrator tool with the question:',
+      'which file should I read, alpha.txt or beta.txt? Do not guess and do not',
+      'read any file until you have the answer. Then read exactly the file the',
+      'answer names and report its contents.',
+    ].join(' ');
+    const prompt = [
+      'Do ALL of the following in this one turn, in order, and do not end your',
+      'turn until every step is done. (1) Use the agent tool with subagent_type',
+      '"Explore", run_in_background true and name "asker", passing EXACTLY this',
+      `text as its prompt: "${childPrompt}" (2) Then run this bash command and`,
+      'wait for it: sleep 25 (3) Then use send_message to send "asker" exactly',
+      'this message: alpha.txt (4) Then tell me, in one sentence, what',
+      'send_message returned.',
+    ].join(' ');
+
+    // The drive runs while we poll: the child is only parked WHILE this turn is
+    // open, so a check after the turn would always be too late.
+    const driving = w.drive(ctx.agent.id, conv, prompt);
+    let parked;
+    const deadline = Date.now() + NOTIFY_MS;
+    let settled = false;
+    void driving.then(() => {
+      settled = true;
+    });
+    while (Date.now() < deadline && !settled && !parked) {
+      const roster = await api(ctx.gw, `/conversations/${conv}/subagents`);
+      parked = roster.ok
+        ? roster.body.subagents?.find((s) => s.status === 'waiting_input')
+        : undefined;
+      if (parked) break;
+      await sleep(400);
+    }
+    const turn = await driving;
+    trace(turn.events);
+
+    const started = turn.events.filter((e) => e.type === 'subagent_started');
+    const child = started[0];
+    check(
+      child !== undefined && child.background === true && child.subagentType === 'Explore',
+      '9: a BACKGROUND one-shot Explore child was started',
+      started.map((s) => `${s.subagentId} type=${s.subagentType} bg=${s.background}`).join(', ') ||
+        'none',
+    );
+    check(
+      parked !== undefined && parked.oneShot === true,
+      '9: the ONE-SHOT child parked itself in waiting_input on an ask_orchestrator question',
+      parked ? `id=${parked.id} status=${parked.status} oneShot=${parked.oneShot}` : 'never parked',
+    );
+
+    const sent = resultsOf(turn.events, 'send_message');
+    check(
+      sent.length >= 1 && !sent[0].isError && !/one-shot/i.test(sent[0].content),
+      '9: send_message ANSWERED the parked one-shot child — no one-shot refusal',
+      sent.map((r) => `${r.isError ? 'ERROR ' : ''}${oneLine(r.content, 120)}`).join(' | ') ||
+        'no send_message call',
+    );
+
+    // The ANSWER has to have reached the child's own tool call. Leaving
+    // `waiting_input` is not enough on its own: the parent's turn ending fires
+    // the run's `closed`, which aborts a pending ask with
+    // `ask_orchestrator aborted` and also leaves the child running.
+    const childId = child?.subagentId ?? parked?.id;
+    let askResult;
+    const askBy = Date.now() + 20_000;
+    while (Date.now() < askBy) {
+      const replay = await api(ctx.gw, `/agents/${ctx.agent.id}/conversations/${childId}/events`);
+      const events = (replay.ok ? (replay.body.entries ?? []) : [])
+        .filter((e) => e.payload?.type === 'event')
+        .map((e) => e.payload.event);
+      askResult = events.find(
+        (e) => e?.type === 'tool_result' && /alpha|abort/i.test(String(e.content ?? '')),
+      );
+      if (askResult) break;
+      await sleep(500);
+    }
+    check(
+      askResult !== undefined &&
+        askResult.isError !== true &&
+        /alpha/i.test(String(askResult.content ?? '')),
+      "9: the answer reached the child's own ask_orchestrator call (not an abort)",
+      askResult
+        ? `isError=${askResult.isError === true} ${oneLine(String(askResult.content ?? ''), 80)}`
+        : 'no ask_orchestrator result in the child transcript',
+    );
+    if (!sent.length || sent[0]?.isError || !parked) {
+      const replay = await api(
+        ctx.gw,
+        `/agents/${ctx.agent.id}/conversations/${child?.subagentId}/events`,
+      );
+      const childEvents = (replay.ok ? (replay.body.entries ?? []) : [])
+        .filter((e) => e.payload?.type === 'event')
+        .map((e) => e.payload.event);
+      console.log(
+        `       child tool calls: ${
+          childEvents
+            .filter((e) => e?.type === 'tool_use_start')
+            .map((e) => e.name)
+            .join(', ') || 'none'
+        }`,
+      );
+      for (const e of childEvents.filter((e) => e?.type === 'tool_result')) {
+        console.log(
+          `       child tool_result isError=${e.isError === true}: ${oneLine(
+            typeof e.content === 'string' ? e.content : JSON.stringify(e.content),
+            200,
+          )}`,
+        );
+      }
+    }
+  } finally {
+    w.close();
+  }
+}
+
 /** The positive-absence check, run last so it sees every frame of the run. */
 function assertionWorkerAbsence() {
   const types = [...seenEventTypes].sort();
@@ -858,6 +1007,7 @@ const ASSERTIONS = [
   [7, 'Worktree isolation (clean removed / ignored kept)', assertion7],
   [6, 'Cancel cascade', assertion6],
   [5, 'Nesting + the depth ceiling', assertion5],
+  [9, 'Parked one-shot answered with the send_message TOOL', assertion9],
 ];
 
 // --- Main ------------------------------------------------------------------
