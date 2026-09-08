@@ -915,6 +915,90 @@ describe('MessageBubble sub-agent cards', () => {
     },
   ];
 
+  // A message the child is still streaming must render as LIVE: the walk's
+  // tail-flush draws an unresolved `tool_use_start` as "interrupted" and the
+  // fold terminalizes a grandchild to `cancelled` when it is told the stream
+  // has ended.
+  it('renders a still-streaming child message as live, not as interrupted', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'streaming',
+          content: {
+            type: 'assistant',
+            events: [{ type: 'tool_use_start', id: 'x1', name: 'bash', input: {} }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(<MessageBubble message={assistantMessage([started])} streamingEvents={[started]} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    const transcript = await screen.findByTestId('subagent-transcript');
+    expect(transcript.textContent).not.toContain('interrupted');
+  });
+
+  // The other half of the same claim: with `isStreaming=false` the fold
+  // terminalizes a grandchild that has no `subagent_finished` to `cancelled`.
+  it('keeps a grandchild of a still-streaming child message running, not cancelled', async () => {
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'streaming',
+          content: {
+            type: 'assistant',
+            events: [{ ...started, subagentId: 'sub_b', depth: 2, description: 'Grandchild work' }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(<MessageBubble message={assistantMessage([started])} streamingEvents={[started]} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    const grandchild = await screen.findByTestId('subagent-card-sub_b');
+    expect(grandchild).toHaveAttribute('data-status', 'running');
+  });
+
+  it('uses the pause and hourglass glyphs the spec names', () => {
+    const { container } = render(
+      <MessageBubble
+        message={assistantMessage([
+          started,
+          { ...finishedEvent, status: 'interrupted', report: '' },
+        ])}
+      />,
+    );
+    expect(container.querySelector('.lucide-pause')).not.toBeNull();
+
+    cleanup();
+    const second = render(
+      <MessageBubble
+        message={assistantMessage([started, { ...finishedEvent, status: 'max_turns', report: '' }])}
+      />,
+    );
+    expect(second.container.querySelector('.lucide-hourglass')).not.toBeNull();
+  });
+
   it('replies to a waiting child from the card, and re-reads afterwards', async () => {
     useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
 

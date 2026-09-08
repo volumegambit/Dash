@@ -11,9 +11,11 @@ import {
   Circle,
   Copy,
   FolderOpen,
+  Hourglass,
   List,
   Loader,
   Paperclip,
+  Pause,
   Pencil,
   Plus,
   Search,
@@ -727,8 +729,14 @@ function SubagentStatusIcon({ status }: { status: SubagentStatus }): JSX.Element
     case 'done':
       return <Check size={10} className="inline text-green mr-1.5" />;
     case 'failed':
-    case 'max_turns':
       return <XCircle size={10} className="inline text-red mr-1.5" />;
+    // §8.1 names a distinct glyph for each of these two, and both other clients
+    // draw them: an interrupted child was paused by something outside itself,
+    // and a max-turns child ran out of budget. Neither is a cancellation.
+    case 'interrupted':
+      return <Pause size={10} className="inline text-muted mr-1.5" />;
+    case 'max_turns':
+      return <Hourglass size={10} className="inline text-muted mr-1.5" />;
     default:
       return <Ban size={10} className="inline text-muted mr-1.5" />;
   }
@@ -967,6 +975,12 @@ function SubagentTranscript({
             <div key={message.id}>
               {renderEventsToElements(message.content.events as Record<string, unknown>[], {
                 depth: depth + 1,
+                // A message the child has not finished is LIVE. Without this
+                // the walk's tail-flush draws its in-flight tool call as
+                // "interrupted" and the fold terminalizes a grandchild to
+                // `cancelled` — both because the walk was told the stream had
+                // ended when it had not.
+                isStreaming: message.status === 'streaming',
               })}
             </div>
           );
