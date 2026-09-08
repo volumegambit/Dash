@@ -1817,33 +1817,4 @@ export class SwarmCoordinator {
     this.notificationEvents.delete(turnId);
     return events;
   }
-
-  /**
-   * Queue a message from a child to be delivered to the parent conversation.
-   * The message is scanned and enqueued as a subagent_message notification.
-   */
-  notifyMain(childId: string, message: string): void {
-    if (!this.notifications) return;
-
-    const handle = this.children.get(childId);
-    if (!handle) return;
-
-    try {
-      this.notifications.enqueue({
-        conversationId: handle.parentConversationId,
-        kind: 'subagent_message',
-        payload: {
-          from: handle.name ?? childId,
-          message,
-        },
-      });
-    } catch (err) {
-      this.notifications?.warn(`Failed to enqueue subagent_message: ${String(err)}`);
-      return;
-    }
-
-    // Try to deliver immediately (ruling 2).
-    // Fire-and-forget; failures are bounded.
-    void this.deliverPending(handle.agentId, handle.parentConversationId).catch(() => {});
-  }
 }

@@ -115,6 +115,13 @@ export function composeNotificationText(items: PendingNotification[]): string {
       const block = `<task-notification>\n<task-id>${escapeAttribute(String(subagentId))}</task-id>\n<agent-name>${escapeAttribute(String(agentName))}</agent-name>\n<status>${escapeAttribute(statusValue)}</status>\n<summary>Agent "${escapeAttribute(String(description))}" finished</summary>\n<result>\n${resultText}\n</result>\n</task-notification>`;
       blocks.push(block);
     } else if (item.kind === 'subagent_message') {
+      // §7.3's child→parent message envelope. The kind is part of the driver
+      // contract and the store's CHECK constraint, but NOTHING enqueues one
+      // today: the only producer, `SwarmCoordinator.notifyMain`, had no
+      // production caller and was removed, and the child-side tool §7.3 would
+      // need is not built (a child gets `ask_orchestrator`, which blocks).
+      // Composition is kept and tested so the envelope does not rot before
+      // that tool lands.
       const payload = item.payload as Record<string, unknown>;
       const { from = '', message = '' } = payload;
 
