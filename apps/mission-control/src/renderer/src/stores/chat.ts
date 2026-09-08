@@ -552,9 +552,18 @@ export const useChatStore = create<ChatState>((set, get) => {
         // this client sent and the turn it became. Pairing here gives the local
         // row the server's own id, so the next REST page supersedes it instead
         // of landing beside it.
+        //
+        // Matched on the OPTIMISTIC row's own id shape, which is the same
+        // hardening `apps/web` took (`store.ts`'s `m.turnId === m.id`): a
+        // `requestId` is a value the CLIENT chose and the `accepted` echoing it
+        // reaches every sink subscribed to this child, so a co-authorised peer
+        // can name any id it likes. `pending:<requestId>` is a shape only this
+        // client mints — a persisted server row can never satisfy it — while
+        // this store's own row always does. Not a `localChildRows` lookup: that
+        // set's bookkeeping is asymmetric, and the check does not need it.
         const paired = frame.requestId
           ? transcript.map((row) =>
-              row.role === 'user' && row.turnId === frame.requestId
+              row.role === 'user' && row.id === `pending:${frame.requestId}`
                 ? { ...row, id: frame.userMessageId, turnId: frame.id }
                 : row,
             )

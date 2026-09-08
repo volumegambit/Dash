@@ -2019,6 +2019,96 @@ describe('sub-agent optimistic rows', () => {
     expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
   });
 
+  /**
+   * T3/S4, the analogue of web's two crafted-`requestId` cases
+   * (`apps/web/src/state/store.test.ts`). `requestId` is a value the CLIENT
+   * chose, and the `accepted` echoing it reaches every sink subscribed to this
+   * child — so a co-authorised peer can `POST /subagents/:id/resume` with a
+   * genuine server `turnId` and the gateway will echo it verbatim. Matching on
+   * `turnId === requestId` therefore selected a row this client never minted.
+   */
+  it('never relabels a SERVER row named by a crafted requestId', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          ...message('server-user-1', childRef, 'user'),
+          turnId: 'server-turn-0',
+          ordinal: 1,
+          content: { type: 'user', text: 'the sentence a peer wants moved' },
+        },
+        {
+          ...message('server-user-9', childRef, 'user'),
+          turnId: 'server-turn-9',
+          ordinal: 2,
+          content: { type: 'user', text: 'the turn actually being accepted' },
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().loadSubagentTranscript('sub_a', true);
+
+    // Both ids belong to the server. `requestId` names the victim's turn.
+    await useChatStore.getState().applyFrame(
+      accepted({
+        id: 'server-turn-9',
+        userMessageId: 'server-user-9',
+        requestId: 'server-turn-0',
+      }),
+    );
+
+    const users = (useChatStore.getState().subagentUi.sub_a.transcript ?? []).filter(
+      (row) => row.role === 'user',
+    );
+    expect(users.map((row) => row.id)).toEqual(['server-user-1', 'server-user-9']);
+    expect(users[0]).toMatchObject({ turnId: 'server-turn-0' });
+    expect(users[0].content).toMatchObject({ text: 'the sentence a peer wants moved' });
+  });
+
+  /**
+   * The other half, with no companion row: the victim is the only user row, so
+   * nothing else could be mistaken for it. Without the id-shape check the
+   * crafted `requestId` displaces it onto the new turn's ids and the user's
+   * sentence is re-attributed in every MC window watching this child.
+   */
+  it('never adopts a SERVER row named by a crafted requestId, even as the only user row', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          ...message('server-user-1', childRef, 'user'),
+          turnId: 'server-turn-0',
+          ordinal: 1,
+          content: { type: 'user', text: 'the only sentence there is' },
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().loadSubagentTranscript('sub_a', true);
+
+    await useChatStore.getState().applyFrame(
+      accepted({
+        id: 'server-turn-9',
+        userMessageId: 'server-user-9',
+        requestId: 'server-turn-0',
+      }),
+    );
+
+    const users = (useChatStore.getState().subagentUi.sub_a.transcript ?? []).filter(
+      (row) => row.role === 'user',
+    );
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ id: 'server-user-1', turnId: 'server-turn-0' });
+  });
+
   it('adds no row when nothing holds a subscription, because no accepted will arrive', async () => {
     await selectParentWithAgent();
     mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
