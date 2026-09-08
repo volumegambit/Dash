@@ -1,0 +1,41 @@
+name: Terraform
+
+# Validation only — nothing here has AWS credentials and nothing is applied.
+# `terraform apply` for the production host is a human step (deploy/aws/README.md).
+on:
+  pull_request:
+    paths:
+      - deploy/aws/**
+      - .github/workflows/terraform.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/aws/**
+      - .github/workflows/terraform.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.16.1'
+
+      - run: terraform fmt -check -recursive -diff
+
+      - run: terraform init -backend=false -input=false
+
+      - run: terraform validate -no-color
+
+      # The raw template is valid cloud-config on its own (placeholders sit
+      # inside quoted strings), so the schema check runs on it unrendered.
+      - name: cloud-init schema
+        run: sudo cloud-init schema --config-file cloud-init.yaml
