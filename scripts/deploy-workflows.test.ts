@@ -42,7 +42,7 @@ describe('deploy-staging.yml', () => {
   it('builds the image through the reusable workflow and deploys to the staging environment', async () => {
     const wf = await load('deploy-staging.yml');
     expect(wf.jobs.image.uses).toBe('./.github/workflows/server-image.yml');
-    for (const name of ['server', 'web', 'waitlist']) {
+    for (const name of ['server', 'web', 'website', 'waitlist']) {
       expect(needsOf(wf.jobs[name])).toContain('gate');
       expectGuardedDeployJob(wf.jobs[name], 'staging');
     }
@@ -66,7 +66,7 @@ describe('release.yml', () => {
       if (name === 'verify') continue;
       expect(needsOf(wf.jobs[name]), `${name} must depend on verify`).toContain('verify');
     }
-    for (const name of ['image', 'desktop', 'web', 'waitlist', 'ios', 'android']) {
+    for (const name of ['image', 'desktop', 'web', 'website', 'waitlist', 'ios', 'android']) {
       expect(needsOf(wf.jobs[name]), `${name} must depend on gates`).toContain('gates');
     }
     expect(needsOf(wf.jobs.server)).toContain('image');
@@ -74,7 +74,7 @@ describe('release.yml', () => {
 
   it('protects every live target with the production environment', async () => {
     const wf = await load('release.yml');
-    for (const name of ['web', 'waitlist', 'server', 'ios', 'android']) {
+    for (const name of ['web', 'website', 'waitlist', 'server', 'ios', 'android']) {
       expectGuardedDeployJob(wf.jobs[name], 'production');
     }
     // Desktop only fills a DRAFT release; publishing it is the human gate.

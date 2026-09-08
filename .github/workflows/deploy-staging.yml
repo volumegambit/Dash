@@ -145,6 +145,49 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy apps/web/dist --project-name=${{ vars.CF_PAGES_PROJECT_WEB }} --branch=staging
 
+  website:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          PROJECT: ${{ vars.CF_PAGES_PROJECT }}
+        run: |
+          if [ -n "$PROJECT" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: website not configured (CF_PAGES_PROJECT)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          ref: ${{ needs.gate.outputs.ref }}
+
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+
+      - name: Build static site
+        if: steps.cfg.outputs.configured == 'true'
+        run: npm run website:build
+
+      - name: Deploy to Cloudflare Pages (staging branch)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/website/out --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=staging
+
   waitlist:
     needs: gate
     runs-on: ubuntu-latest

@@ -5,7 +5,7 @@ name: Release
 #   gates   → build, lint, test on the tagged commit
 #   image   → ghcr.io/…/dash-server:vX.Y.Z (+ latest)
 #   desktop → Mission Control DMG/zip uploaded to the draft release
-#   web / waitlist / server → production (environment "production": reviewer approval)
+#   web / website / waitlist / server → production (environment "production": reviewer approval)
 #   ios / android → TestFlight upload / signed AAB, when store credentials exist
 # Publishing the draft release is the human go-live for desktop: install.sh
 # follows releases/latest, which ignores drafts. Setup: deploy/README.md.
@@ -158,6 +158,42 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy apps/web/dist --project-name=${{ vars.CF_PAGES_PROJECT_WEB }} --branch=main
+
+  website:
+    needs: [verify, gates]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check configuration
+        id: cfg
+        env:
+          PROJECT: ${{ vars.CF_PAGES_PROJECT }}
+        run: |
+          if [ -n "$PROJECT" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::skipped: website not configured (CF_PAGES_PROJECT)"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.cfg.outputs.configured == 'true'
+      - uses: actions/setup-node@v6
+        if: steps.cfg.outputs.configured == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.cfg.outputs.configured == 'true'
+        run: npm ci
+      - name: Build static site
+        if: steps.cfg.outputs.configured == 'true'
+        run: npm run website:build
+      - name: Deploy to Cloudflare Pages (production branch)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy apps/website/out --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=main
 
   waitlist:
     needs: [verify, gates]
