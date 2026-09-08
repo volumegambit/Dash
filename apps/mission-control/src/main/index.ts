@@ -39,9 +39,17 @@ function createWindow(): void {
   // `isSameDocument` is the guard that matters: the router's pushState
   // navigations fire this event too, and releasing on those would drop every
   // child socket on every route change.
-  mainWindow.webContents.on('did-start-navigation', (details) => {
+  //
+  // The id is CAPTURED, not read off the module-level `mainWindow` binding
+  // that `closed` nulls: `releaseRendererConversationWatches(undefined)` takes
+  // the window-close branch and drops EVERY holder's bucket, not this
+  // renderer's. Not reachable today (the webContents is destroyed before
+  // `closed` nulls it), and capturing removes the branch rather than reasoning
+  // about it. (D7b M3 review, Minor 1.)
+  const watchedContents = mainWindow.webContents;
+  watchedContents.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return;
-    releaseRendererConversationWatches(mainWindow?.webContents.id);
+    releaseRendererConversationWatches(watchedContents.id);
   });
 
   mainWindow.on('closed', () => {

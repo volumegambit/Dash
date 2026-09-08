@@ -209,6 +209,13 @@ export class ChatService {
       // socket's open, which is what owes the asker its re-read.
       if (this.resumable && !this.resumable.watchedConversations().includes(conversationId)) {
         this.resumable.watchConversation(held.agentId, conversationId, { reopened: true });
+      } else if (!this.resumable) {
+        // A bucket that outlived the TRANSPORT owes the asker the same answer
+        // the first-hold path below gives: nothing is watching. Without it the
+        // asker's optimistic `live: true` stands uncontradicted, and a resume
+        // typed against it writes a `pending:<requestId>` row no `accepted`
+        // can ever pair. (D7b M3 review, Minor 2.)
+        this.subscriptionLostListener?.(conversationId);
       }
       return;
     }

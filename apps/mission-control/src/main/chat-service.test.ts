@@ -1322,6 +1322,23 @@ describe('ChatService gateway conversations', () => {
       expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
     });
 
+    // D7b M3 review, Minor 2. A SECOND hold on a bucket that outlived the
+    // transport used to return in silence, so the asker's optimistic
+    // `live: true` stood with nothing watching — while the FIRST-hold path
+    // two lines below had always fired `lost` for exactly that condition.
+    it('says the watch is lost for a SECOND hold taken with no transport', () => {
+      const lost = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.setResumableTransport(undefined);
+      service.subscribeConversation('agent-1', childId);
+      lost.mockClear();
+
+      // The bucket now exists with a count of 1 and no transport under it.
+      service.subscribeConversation('agent-1', childId);
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
     // C2 path 4b, the mirror of the re-watch loop above: going OFFLINE
     // `closeAll`s every child socket and the replacement is `undefined`, so
     // nothing fires the transport's own lost signal for them.

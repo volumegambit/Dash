@@ -686,6 +686,51 @@ describe('canonical chat store', () => {
     expect(rejected).toHaveBeenCalledOnce();
     useChatStore.setState({ invalidateConversation: original });
   });
+
+  /**
+   * D7b M3. `onSubagentResubscribed` and `onSubagentWatchLost` are both
+   * `(id: string) => void`, so a SWAP between them typechecks and ships green
+   * while inverting the whole C2 fix: a drop would turn optimism ON and force
+   * a re-read, a recovery would turn it OFF. The IPC seam covers main→preload
+   * only; this is the renderer half, driven through the callbacks
+   * `initChatListeners` actually registered.
+   *
+   * `initialized` is module-level, so the `initChatListeners()` call above is
+   * this file's only registration and `mock.calls[0]` is it.
+   */
+  it('wires the two child-watch callbacks to the right store actions', async () => {
+    // The module-level `initialized` flag means only the FIRST call in a
+    // module instance registers, and `beforeEach`'s `restoreAllMocks` has
+    // already cleared whatever an earlier test registered. A fresh module is
+    // the only way to observe the registration itself.
+    vi.resetModules();
+    const fresh = await import('./chat.js');
+    fresh.initChatListeners();
+
+    const onRestored = mockApi.onSubagentResubscribed.mock.calls.at(-1)?.[0];
+    const onLost = mockApi.onSubagentWatchLost.mock.calls.at(-1)?.[0];
+    expect(typeof onRestored).toBe('function');
+    expect(typeof onLost).toBe('function');
+
+    fresh.useChatStore.setState({
+      conversations: [gatewayConversation],
+      selectedConversationRef: { id: gatewayConversation.id, origin: 'gateway' },
+    });
+    fresh.useChatStore.getState().subscribeSubagent('sub_a');
+    expect(fresh.useChatStore.getState().isSubagentSubscribed('sub_a')).toBe(true);
+
+    // LOST stops optimism and reads nothing.
+    mockApi.subagentsList.mockClear();
+    onLost?.('sub_a');
+    expect(fresh.useChatStore.getState().isSubagentSubscribed('sub_a')).toBe(false);
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+
+    // RESTORED puts optimism back AND goes to the server for what it missed.
+    onRestored?.('sub_a');
+    await Promise.resolve();
+    expect(fresh.useChatStore.getState().isSubagentSubscribed('sub_a')).toBe(true);
+    expect(mockApi.subagentsList).toHaveBeenCalled();
+  });
 });
 
 // --- Sub-agents (design §7.7, §8.1, §8.4) ------------------------------------

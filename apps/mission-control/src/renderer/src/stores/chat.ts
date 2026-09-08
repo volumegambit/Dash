@@ -1014,8 +1014,17 @@ export const useChatStore = create<ChatState>((set, get) => {
       // conversation that got into `conversations` by an upsert rather than by
       // page 1 — a project session's — is EVICTED by any first page that does
       // not carry it, and mid-turn that would strip it of the recovery that
-      // clears `sending`. `messages` never gains a child key (children go to
-      // `subagentUi`), so leading with it cannot reopen the stampede.
+      // clears `sending`.
+      //
+      // `messages` is not structurally child-free — the `accepted` branch
+      // below writes `messages[key]` for whatever conversation the frame names.
+      // What bounds it is REACHABILITY: that write is past
+      // `applySequencedFrame`, which drops anything but `seq === lastSeq + 1`,
+      // and an unknown conversation's `lastSeq` is 0. So a child key can only
+      // enter `messages` through an unrouted `accepted` at `seq === 1` — a
+      // child's very first frame ever — which an inherited MID-STREAM socket
+      // cannot deliver. (D7b M3 review, Minor 4, correcting the blanket
+      // sentence that stood here and in `96c86f8a`'s message.)
       const recoverable =
         keyOrNull(get().selectedConversationRef) === key ||
         Object.hasOwn(get().messages, key) ||
