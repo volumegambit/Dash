@@ -1,24 +1,30 @@
-# Dependencies and build output (reinstalled / recompiled inside the image)
+# Build context is the repository root; deploy/server/Dockerfile only needs the
+# Node workspaces. Everything below is reinstalled, recompiled, or irrelevant.
 node_modules
 **/node_modules
 dist
 **/dist
 out
 **/out
+**/release
+**/.turbo
+.tools
+**/.tools
 
-# Apps that are not part of the gateway runtime image
-apps/mission-control
-apps/website
-apps/waitlist
-
-# Local data, secrets, and logs
-data
-.env
-*.log
-
-# VCS, CI, tooling, docs, and designs
-.git
-.github
-.claude
+# Not part of the server image
+ios
+android
 docs
 designs
+.worktrees
+.claude
+.codex
+.superpowers
+.github
+deploy
+
+# Local data, secrets, logs
+data
+.env
+.env.*
+*.log
