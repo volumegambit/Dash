@@ -219,7 +219,7 @@ Sub-agents are **on by default** for every agent. The `agent` and `send_message`
 
     Returns immediately. A **running** agent receives the message after its current turn finishes, not between its tool calls — unless it is **paused on an `ask_orchestrator` question**, in which case the message arrives at once as the answer and does not count against the message cap. A **finished** agent is resumed with its context intact and picks up from where it stopped. Either way, its next completion comes back as a notification.
 
-    Refuses a one-shot type (`Explore`, `Plan`), an unknown name, and a message past the per-agent steer cap. The one-shot refusal is unconditional here: it applies even to a one-shot sub-agent that is paused on an `ask_orchestrator` question.
+    Refuses an unknown name, a message past the per-agent steer cap, and a **new task** for a one-shot type (`Explore`, `Plan`). Answering a one-shot sub-agent that is paused on an `ask_orchestrator` question is not a new task and goes through — the same exemption the reply box on its row and the legacy `send_to_worker` use.
   </Tab>
   <Tab title="ask_orchestrator">
     Every sub-agent gets this one tool of its own: ask the parent a question and **pause** until it answers.
@@ -230,7 +230,9 @@ Sub-agents are **on by default** for every agent. The `agent` and `send_message`
 
     The sub-agent shows as **waiting for input** until it is answered or the request times out.
 
-    Who can answer depends on the type. For `general-purpose` and for your own types, the parent answers with `send_message`. For `Explore` and `Plan` — the two **one-shot** built-ins — `send_message` refuses regardless of the question, so the answer has to come from the reply box on the sub-agent's row (or from the legacy [`send_to_worker`](#legacy-swarm-tools)).
+    Three things can answer it, whatever the type: the parent's own `send_message`, the reply box on the sub-agent's row, and the legacy [`send_to_worker`](#legacy-swarm-tools). That includes the one-shot `Explore` and `Plan` — being one-shot refuses a new task, not an answer.
+
+    **A question lives only as long as the turn that launched the sub-agent.** When that turn ends the question is dropped, the sub-agent's `ask_orchestrator` call comes back aborted, and it carries on without an answer. A foreground `agent` call holds its turn open until the child finishes, so there is time to answer; a **background** sub-agent that is still waiting when its launching turn ends is no longer waiting for anyone.
   </Tab>
 </Tabs>
 
@@ -246,7 +248,7 @@ Sub-agents are **on by default** for every agent. The `agent` and `send_message`
 | `Explore` | Broad read-only searches where you only want the conclusion | `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `load_skill` |
 | `Plan` | Designing a step-by-step implementation plan | The same read-only set |
 
-`Explore` and `Plan` are **one-shot**: they are read-only and cannot be given a new task, so `send_message` refuses them — including when one of them is paused on a question. If one stops to ask, answer it yourself from the reply box on its row, or from the legacy `send_to_worker`, both of which do answer a paused one-shot. Your own types and plugin types are never one-shot.
+`Explore` and `Plan` are **one-shot**: they are read-only and cannot be given a new task, so `send_message` refuses one. Answering a question is not a new task — `send_message`, the reply box on the row and the legacy `send_to_worker` all get through to a paused one-shot. Your own types and plugin types are never one-shot; the one exception is a definition that deliberately **shadows** `Explore` or `Plan` by name, which replaces the built-in in that workspace and is resumable like any other type.
 
 **Your own agent types.** Drop a markdown file with Claude Code frontmatter into `.dash/agents/` (or `.claude/agents/`) in the agent's workspace and it becomes a launchable type — the frontmatter sets its name, description, tool list, model, and preloaded skills, and the body is its system prompt. Plugins ship types too. See [Configuration → Sub-agent types](/configuration#sub-agent-types) for the file format, where the files can live, and which one wins. Whatever a definition asks for, **a sub-agent can never hold a tool or an MCP server its parent doesn't have.**
 
@@ -273,7 +275,7 @@ Sub-agent rows are a chat-app feature. Over Telegram or WhatsApp you get the age
 What that means in practice:
 
 - `spawn_worker` is an `agent` call with `subagent_type: general-purpose` and `run_in_background: true`. The `role` becomes the child's description (and its name, when the role is a legal name).
-- `send_to_worker` does what `send_message` does, which means it now **resumes a worker that has already finished** instead of refusing. The two differ in one place: `send_to_worker` also answers a **one-shot** worker that is paused on a question, where `send_message` refuses.
+- `send_to_worker` does what `send_message` does, which means it now **resumes a worker that has already finished** instead of refusing. The two differ only in **shape**: `send_to_worker` reports a refusal as a not-ok result, where `send_message` raises an error the agent sees as a failed tool call.
 - `wait_workers` and `check_workers` read the same children the sub-agent tools do.
 - Workers and sub-agents **share one set of caps** — there is one coordinator behind both.
 - A worker's **read-only default is unchanged**: with no `tools` argument it gets `read`, `grep`, `find`, and `ls`, intersected with what the parent holds.

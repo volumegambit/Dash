@@ -488,9 +488,17 @@ Something not working? Here are the most common issues and how to fix them.
     Note: alias "opus" is not configured (subagents.modelAliases); using the parent model
     ```
 
-    The `agent` tool's `model` parameter accepts short alias names as well as full model ids, but **no aliases are configured in this release** — there is no `subagents.modelAliases` setting yet. Any alias resolves to nothing, the sub-agent runs on the parent's model, and the note above is appended to the tool result. Nothing failed.
+    The `agent` tool's `model` parameter accepts short alias names as well as full model ids. An alias is looked up in the agent's `subagents.modelAliases`, and **no aliases are configured by default** — which model `opus` should mean depends on which provider the agent uses, so nothing is assumed. An alias that isn't in the map resolves to nothing, the sub-agent runs on the parent's model, and the note above is appended to the tool result. Nothing failed.
 
-    **Fix:** pass a full `provider/model` id (or `inherit`) instead. If the id isn't the parent's model or one of its fallbacks, add it to the agent's `subagents.allowedModels` first — see [Configuration → Sub-agents](/configuration#sub-agents).
+    **Fix:** add the alias to the agent's `subagents.modelAliases` (for example `{"opus": "anthropic/claude-opus-4-6"}`), or pass a full `provider/model` id (or `inherit`) instead. Either way, if the id isn't the parent's model or one of its fallbacks, add it to the agent's `subagents.allowedModels` first — see [Configuration → Sub-agents](/configuration#sub-agents).
+  </Accordion>
+
+  <Accordion title="My sub-agent stopped waiting for an answer">
+    A sub-agent asked a question with `ask_orchestrator`, showed as **waiting for input**, and then carried on — or finished — without anyone answering. Its own transcript shows the call coming back as `ask_orchestrator aborted`.
+
+    **A question lives only as long as the turn that launched the sub-agent.** When that turn ends, any question still open is dropped so the sub-agent is not left waiting on a conversation that has moved on. A foreground sub-agent holds its parent's turn open until it finishes, so there is time to answer from the reply box on its row. A **background** sub-agent usually outlives the turn that launched it, so a question it asks after that turn has ended has nobody to answer it.
+
+    **Fix:** answer while the turn is still running, or launch the sub-agent in the foreground when you expect it to need a decision. A brief that tells the sub-agent what to assume when it cannot ask is the sturdier fix for background work.
   </Accordion>
 
   <Accordion title="isolation: worktree requires a git workspace">
@@ -507,7 +515,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="My sub-agent's worktree wasn't removed">
     A directory is still sitting under `~/.dash/gateway/worktrees/<agent-name>/<subagent-id>/` after the sub-agent finished.
 
-    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is not handed back to you in the chat: to find it, either fill in the template above with the sub-agent's id, or look in the gateway log, where every kept worktree is recorded with a `keeping <path>` line naming the path and why it was kept.
+    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is not handed back to you in the chat: to find it, either fill in the template above with the sub-agent's id, or look in the gateway log, where every kept worktree is recorded with a line containing `keeping` and the path, and why it was kept.
 
     **Fix:** look at what's inside and keep or merge what you want. Once the checkout is clean, `git worktree remove <path>` from the parent repository takes it down; git refuses while there are changes in it, so commit or discard them first (or pass `--force` if you are sure).
   </Accordion>
@@ -521,11 +529,11 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 
   <Accordion title="Resume is refused or greyed out">
-    A **Resume** — from a row, from the tasks list, or from the parent's own `send_message` — comes back with an error instead. There are three reasons:
+    A **Resume** — from a row, from the tasks list, or from the parent's own `send_message` — comes back with an error instead. There are three common reasons, and a resume also counts against the launch caps, so the two cap messages described under *"A sub-agent didn't start (cap reached)"* above can arrive here too:
 
-    - `Agent "..." is a one-shot Explore agent and cannot be resumed.` — `Explore` and `Plan` are read-only, one-shot types. **Fix:** launch a new one with the follow-up task. (If the agent is still running and asking a question, you *can* answer it from the reply box on its row — that's an answer, not a resume. The parent's own `send_message` refuses even then; the reply box and the legacy `send_to_worker` are the two paths that get through.)
+    - `Agent "..." is a one-shot Explore agent and cannot be resumed.` — `Explore` and `Plan` are read-only, one-shot types, so they cannot be given a new task. **Fix:** launch a new one with the follow-up task. (If the agent is still running and asking a question, that is an *answer*, not a resume, and it goes through: the parent's `send_message`, the reply box on its row and the legacy `send_to_worker` all reach a paused one-shot.)
     - `steer cap reached for "..." (max 10 per agent).` — you've hit the per-child message cap, which counts across resumes for as long as the gateway holds that child in memory (a restart resets it to zero). **Fix:** raise `swarm.maxSteersPerWorker` for the agent, or start a fresh sub-agent.
-    - `Agent "..." cannot be resumed: its grant cannot be rebuilt.` — the parent's grant could not be re-established. Either **sub-agents have been turned off** on the parent agent, or the parent conversation (or one above it) was **deleted** — deleting a conversation stops everything under it from running again. **Fix:** re-enable sub-agents on the parent agent — see [Configuration → Per-agent settings](/configuration#per-agent-settings), and read the note there about Mission Control's **Swarm** card, which is the usual way an agent ends up with sub-agents switched off. A deleted parent cannot be brought back, so launch a new sub-agent instead.
+    - `Agent "..." cannot be resumed: its grant cannot be rebuilt.` — the parent's grant could not be re-established. Either **sub-agents have been turned off** on the parent agent (or the agent itself was **deleted** — its conversations survive the delete, but nothing under them can run again), or the parent conversation (or one above it) was **deleted** — deleting a conversation stops everything under it from running again. A sub-agent created by an **older gateway build**, before the grant was stored beside the row, has the same symptom. **Fix:** re-enable sub-agents on the parent agent — see [Configuration → Per-agent settings](/configuration#per-agent-settings). A deleted parent, a deleted agent and a grant that was never stored cannot be recovered, so launch a new sub-agent instead.
 
     A resume also **silently** re-intersects the child's tools and MCP servers with what its parent holds now, so a resumed sub-agent can come back with fewer tools than it had, without any message saying so. Its **model** is not re-checked: a child keeps the model it was launched with even if that model has since been removed from the parent's allowed set.
 
