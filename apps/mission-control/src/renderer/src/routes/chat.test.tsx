@@ -852,6 +852,22 @@ describe('MessageBubble sub-agent cards', () => {
     expect(within(group).getByTestId('subagent-card-sub_b')).toBeInTheDocument();
   });
 
+  // The group header is a card-level affordance one level up, and it obeys the
+  // same rule: it writes `subagentUi`, which belongs to the selected
+  // conversation. Off it, the summary line renders and nothing is clickable.
+  it('gives a parallel group no toggle when it is not on the selected conversation', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[started, { ...started, subagentId: 'sub_b', name: 'planner' }]}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 2 running');
+    expect(screen.queryByTestId('subagent-group-toggle-sub_a')).not.toBeInTheDocument();
+  });
+
   it('collapses a parallel group as a unit', () => {
     render(
       <MessageBubble

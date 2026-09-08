@@ -810,36 +810,56 @@ function SubagentCluster({
 }): JSX.Element {
   const anchorId = groups[0].subagentId;
   const toggleSubagentGroup = useChatStore((state) => state.toggleSubagentGroup);
+  const selectedKey = useChatStore((state) =>
+    state.selectedConversationRef ? conversationKey(state.selectedConversationRef) : null,
+  );
+  // The header is an affordance one level above the card, and it obeys the
+  // card's rule for the same reason: collapsing writes `subagentUi`, which
+  // describes the SELECTED conversation's children. Off that conversation the
+  // summary line still renders — it is a statement about this message, which
+  // is honest anywhere — but nothing is clickable and the stored collapse,
+  // which belongs to somebody else's card record, is not read.
+  const interactive = surfaceKey !== undefined && surfaceKey === selectedKey;
   // Groups default to OPEN, so the stored value reads as "collapsed unless
   // told otherwise" — an unvisited group has no record at all.
-  const collapsed = useChatStore((state) => state.subagentUi[anchorId]?.groupCollapsed === true);
+  const collapsed =
+    useChatStore((state) => state.subagentUi[anchorId]?.groupCollapsed === true) && interactive;
   const multi = groups.length > 1;
   const showCards = !multi || !collapsed;
+  const summary = (
+    <>
+      <Users size={10} className="shrink-0" />
+      <span className="min-w-0 truncate">{formatClusterSummary(groups)}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {groups.map((group) => (
+          <span
+            key={group.subagentId}
+            className={`inline-block h-1.5 w-1.5 rounded-full ${SUBAGENT_DOT_COLOR[group.status]}`}
+            title={`${group.type}: ${group.status}`}
+            data-testid={`subagent-group-dot-${group.subagentId}`}
+          />
+        ))}
+      </span>
+    </>
+  );
+  const headerClass = 'mb-1 flex w-full items-center gap-2 px-3 py-1 text-left text-[11px]';
 
   return (
     <div data-testid={multi ? 'subagent-group' : undefined}>
-      {multi && (
-        <button
-          type="button"
-          onClick={() => toggleSubagentGroup(anchorId)}
-          aria-expanded={!collapsed}
-          className="mb-1 flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-muted hover:text-foreground"
-          data-testid={`subagent-group-toggle-${anchorId}`}
-        >
-          <Users size={10} className="shrink-0" />
-          <span className="min-w-0 truncate">{formatClusterSummary(groups)}</span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            {groups.map((group) => (
-              <span
-                key={group.subagentId}
-                className={`inline-block h-1.5 w-1.5 rounded-full ${SUBAGENT_DOT_COLOR[group.status]}`}
-                title={`${group.type}: ${group.status}`}
-                data-testid={`subagent-group-dot-${group.subagentId}`}
-              />
-            ))}
-          </span>
-        </button>
-      )}
+      {multi &&
+        (interactive ? (
+          <button
+            type="button"
+            onClick={() => toggleSubagentGroup(anchorId)}
+            aria-expanded={!collapsed}
+            className={`${headerClass} text-muted hover:text-foreground`}
+            data-testid={`subagent-group-toggle-${anchorId}`}
+          >
+            {summary}
+          </button>
+        ) : (
+          <div className={`${headerClass} text-muted`}>{summary}</div>
+        ))}
       {showCards && (
         <div>
           {groups.map((group) => (
@@ -1011,7 +1031,11 @@ function SubagentCard({
             <span className="capitalize">Status:</span> {SUBAGENT_STATUS_LABEL[status]}
           </p>
           {group.description && <p className="text-muted">{group.description}</p>}
-          <SubagentTranscript messages={ui?.transcript} depth={depth} />
+          <SubagentTranscript
+            messages={ui?.transcript}
+            depth={depth}
+            conversationKey={surfaceKey}
+          />
           {group.report && (
             <div className="max-h-64 overflow-auto prose-sm">
               <Markdown>{group.report}</Markdown>
@@ -1067,9 +1091,11 @@ function SubagentCard({
 function SubagentTranscript({
   messages,
   depth,
+  conversationKey: surfaceKey,
 }: {
   messages?: ConversationMessage[];
   depth: number;
+  conversationKey?: ConversationKey;
 }): JSX.Element {
   if (!messages) {
     return (
@@ -1090,6 +1116,11 @@ function SubagentTranscript({
             <div key={message.id}>
               {renderEventsToElements(message.content.events as Record<string, unknown>[], {
                 depth: depth + 1,
+                // A card only expands on the selected conversation, so this
+                // subtree is inside it: a group nested one level down keeps
+                // its collapse toggle, while its CARDS stay read-only under
+                // the depth cap.
+                conversationKey: surfaceKey,
                 // A message the child has not finished is LIVE. Without this
                 // the walk's tail-flush draws its in-flight tool call as
                 // "interrupted" and the fold terminalizes a grandchild to
