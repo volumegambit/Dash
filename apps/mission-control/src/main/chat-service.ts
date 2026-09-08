@@ -135,19 +135,22 @@ export class ChatService {
     // reason a reconnect does: a subscribe replays nothing. The transport
     // fires that signal, from `{ reopened: true }`, when the socket opens.
     for (const [conversationId, held] of this.watchedConversations) {
-      if (!transport) {
-        // Going offline. `closeAll` above dropped every child socket without
-        // the transport's own lost signal firing for any of them, so this is
-        // the only place that can say so.
-        this.subscriptionLostListener?.(conversationId);
-        continue;
-      }
+      // Lost whether or not there is a replacement, because the same thing is
+      // true of both: `closeAll` above has just dropped every child socket.
+      // Going offline it stays that way until a transport arrives; with a
+      // replacement it stays that way until the new socket opens — a window
+      // the holder used to be told nothing about, so it kept `live: true`,
+      // wrote optimistic rows for a stream that could not answer them, and
+      // never saw the `accepted` that would pair them. That is the same window
+      // an ordinary 1006 close already fires this signal for.
+      this.subscriptionLostListener?.(conversationId);
       // `reopened`, rather than announcing the restore here. This service
       // cannot know whether the replacement's socket will open — the factory
       // can throw INSIDE this call and fire `onSubscriptionLost` first — so
       // saying "restored" on the next line would overwrite a `lost` that had
-      // just been told the truth. The transport says it when the socket opens.
-      transport.watchConversation(held.agentId, conversationId, { reopened: true });
+      // just been told the truth. The transport says it when the socket opens,
+      // and that is what takes the flag above back.
+      transport?.watchConversation(held.agentId, conversationId, { reopened: true });
     }
   }
 

@@ -19,6 +19,7 @@ import { WebSocketServer } from 'ws';
 import type { GatewayConnection } from './chat-service.js';
 import { ChatService } from './chat-service.js';
 import { ConversationController } from './conversation-controller.js';
+import type { ChatSocket } from './resumable-chat-transport.js';
 import { ResumableChatTransport } from './resumable-chat-transport.js';
 import { FixtureGatewayConversationRepository } from './test-support/fixture-gateway-conversation-repository.js';
 
@@ -28,6 +29,21 @@ const LEGACY_TURN_ID = 'legacy-turn';
 
 function localRef(id: string): ConversationRef {
   return { id, origin: 'local' };
+}
+
+/**
+ * A socket that is created and simply never opens — an ordinary slow connect.
+ * The transport holds it in `state.socket` with no `open`, no `close` and no
+ * reconnect scheduled, which is exactly the window a transport swap leaves
+ * between `closeAll()` and the replacement's first open.
+ */
+function neverOpeningSocket(): ChatSocket {
+  return {
+    readyState: 0,
+    addEventListener: () => undefined,
+    send: () => undefined,
+    close: () => undefined,
+  };
 }
 
 function createLocal(service: ChatService, agentId: string) {
@@ -1132,6 +1148,46 @@ describe('ChatService gateway conversations', () => {
 
       expect(lost).toHaveBeenCalledWith(childId);
       expect(restored).not.toHaveBeenCalled();
+    });
+
+    // The MIRROR of the ordering `2878a1f4` fixed. That one stopped this
+    // service claiming a restore before the socket opened; this one is the
+    // silence on the other side of the same window. `closeAll()` above has
+    // just dropped every child socket and the replacement's has not connected
+    // yet, so NOTHING is watching — and the renderer still reads `live: true`,
+    // writes an optimistic row for anything typed into an expanded child card,
+    // and never gets the `accepted` that would pair it. That is the condition
+    // the ordinary 1006 close already fires a `lost` for; a swap has it too.
+    //
+    // A never-opening socket, deliberately: the test above uses a THROWING
+    // factory, which fires `lost` from `abandonSubscription`, so it cannot see
+    // this window at all.
+    it('says the watch is lost while a replacement transport is still connecting', () => {
+      const lost = vi.fn();
+      const restored = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.subscribeConversation('agent-1', childId);
+      lost.mockClear();
+      const replacement = new ResumableChatTransport({
+        connection: { url: 'wss://gateway.example.com/ws/chat?token=chat-token' },
+        channelId: 'mission-control',
+        replay: vi.fn().mockResolvedValue([]),
+        onFrame: vi.fn(),
+        onConnectionError: vi.fn(),
+        onProtocolError: vi.fn(),
+        onSubscriptionRestored: restored,
+        onSubscriptionLost: lost,
+        socketFactory: () => neverOpeningSocket(),
+      });
+
+      service.setResumableTransport(replacement);
+
+      expect(lost).toHaveBeenCalledWith(childId);
+      // Told, not dropped: the watch is still on its way, and the
+      // replacement's own open is what takes the flag back.
+      expect(replacement.watchedConversations()).toEqual([childId]);
+      expect(restored).not.toHaveBeenCalled();
+      replacement.closeAll();
     });
 
     // C2 path 4. The count is right to record — a transport arriving watches
