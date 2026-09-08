@@ -3,6 +3,18 @@ const CONTROL_TAGS = [
   'task-notification',
   'cross-session-message',
   'subagent-message',
+  // The notification envelope's OWN inner tags. Scanned text is embedded inside
+  // `<result>…</result>` of a `<task-notification>` block, so without these a
+  // report can close `</result>`, emit a second `<status>` and reopen
+  // `<result>` — forging sibling metadata about itself. It cannot open a second
+  // `<task-notification>` or a `<system-reminder>`; this closes the remaining
+  // half. The composed envelope is never re-scanned (the only callers scan
+  // child-produced report/message text), so the harness's own tags are safe.
+  'result',
+  'status',
+  'summary',
+  'agent-name',
+  'task-id',
 ];
 const TAG_RE = new RegExp(`<(/?)(?:${CONTROL_TAGS.join('|')}|system[a-z_-]*)\\b([^>]*)>`, 'gi');
 const ROLE_RE = /^(Human|Assistant|User|System):/gm;
