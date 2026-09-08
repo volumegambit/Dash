@@ -69,9 +69,10 @@ export function SwarmPanel({ onClose }: { onClose: () => void }): JSX.Element {
     .map((entry) => entry.id);
   // `liveKey`, not `live`: the string is the identity of the array, and
   // depending on the array itself would tear every subscription down and put
-  // it back on every list read. No suppression is needed for that — biome
-  // reads the join as the dependency and is satisfied; an ignore here is a
-  // suppression with nothing to suppress, which is itself a warning.
+  // it back on every list read. No suppression is needed for that: the
+  // dependency array below names exactly what the body reads, so
+  // `useExhaustiveDependencies` does not fire — and an ignore for a rule that
+  // is not firing is itself a `suppressions/unused` warning.
   const liveKey = live.join(',');
   useEffect(() => {
     const held = liveKey ? liveKey.split(',') : [];
