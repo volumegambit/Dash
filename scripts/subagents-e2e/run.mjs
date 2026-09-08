@@ -46,7 +46,6 @@ import {
   pickModel,
   preflight,
   registerAgent,
-  setMemoryConfig,
   sleep,
 } from '../memory-e2e/harness.mjs';
 
@@ -897,7 +896,11 @@ try {
   console.log(`agents ${agent.id} (default) ${nested.id} (maxDepth 2) ${noNest.id} (maxDepth 0)`);
   // The registration validator accepting `subagents.maxDepth` is a precondition
   // of assertion 5; a 400 here would be the finding, not a model failure.
-  for (const a of [agent, nested, noNest]) await setMemoryConfig(gw, a.id, { enabled: false });
+  //
+  // NOTE: the harness's `setMemoryConfig` is deliberately NOT called. Agent
+  // memory does not exist on this branch — `PATCH /agents/:id/memory/config`
+  // is a 404 here — so there is no post-turn sweep to pin off, unlike
+  // `skills:e2e` on main.
 
   // Assertions 3 and 4 share one conversation and one socket: `writer` must
   // still be in the parent's roster when 4 resumes it.
