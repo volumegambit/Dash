@@ -245,7 +245,7 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
     name: 'send_to_worker',
     label: 'Send to Worker',
     description:
-      'Answer a worker that is waiting on you, or steer a running worker with an additional instruction. Use this between wait_workers calls to unblock or redirect a worker, then wait again. Steers are capped per worker; a worker that has already finished cannot be steered.',
+      'Answer a worker that is waiting on you, or steer a running worker with an additional instruction. Use this between wait_workers calls to unblock or redirect a worker, then wait again. Steers are capped per worker; a worker that has already FINISHED is resumed with your message instead, keeping its context.',
     parameters: SEND_TO_WORKER_PARAMETERS,
     execute: async (_id, params) => {
       const p = asRecord(params);
