@@ -1237,12 +1237,26 @@ export const useChatStore = create<ChatState>((set, get) => {
 /**
  * Cadence of the live re-read of the selected conversation's children.
  *
- * INTERIM. This poll is the whole of Mission Control's liveness for a child
- * outside a live parent turn: `swarm:run-changed` is throttled to one per run
- * per second with no trailing emit, and no `subagent_*` frame reaches this
- * client unless a parent turn is streaming. Task D7b adds design §8.3's
- * conversation-scoped subscription, at which point this becomes a backstop
- * rather than the mechanism. Do not grow it in the meantime.
+ * A BACKSTOP, and D7b kept it deliberately rather than removing it (ruling 6).
+ *
+ * The conversation-scoped subscription replaced this poll for every child
+ * something is WATCHING — an expanded card, or any non-terminal child while
+ * the tasks panel is open. Those get their status from their own stream: a
+ * `done` on the child's socket re-reads the list (`applySubagentFrame`).
+ *
+ * The case it does NOT cover, and the reason this stays: a non-terminal child
+ * with NO holder. A collapsed row in the transcript, with the panel closed,
+ * has a status pill and an elapsed clock and nothing feeding either —
+ * `swarm:run-changed` is throttled to one per run per second with no trailing
+ * emit, and no `subagent_*` frame reaches this client unless a PARENT turn is
+ * streaming. Without this the row would say `Running` for the rest of the
+ * session.
+ *
+ * Deliberately NOT narrowed to "some non-terminal child has no holder", which
+ * would be the tighter condition: this subscriber only re-runs when
+ * `subagents` changes identity, so a card COLLAPSING would not re-arm a poll
+ * that had stopped, and nothing else would ever read the list again. Armed by
+ * the children alone, it cannot wedge. Do not grow it.
  *
  * It lives here, next to the children it re-reads, rather than in `SwarmPanel`
  * where it started: mounted in the panel it ran only while the panel was open,
