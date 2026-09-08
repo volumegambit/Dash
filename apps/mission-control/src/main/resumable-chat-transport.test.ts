@@ -898,4 +898,240 @@ describe('ResumableChatTransport', () => {
     await vi.runAllTimersAsync();
     expect(socket.readyState).toBe(3);
   });
+
+  // ---------------------------------------------------------------------
+  // Conversation subscriptions (design §7.6) — task D7b
+  // ---------------------------------------------------------------------
+
+  describe('conversation subscriptions', () => {
+    const childId = '018f0f4a-5c42-7a8b-9c01-33445566aabb';
+    const childTurn = '018f0f4a-5c42-7a8b-9c01-9988776655ff';
+
+    function event(seq: number, text: string, conversationId = childId): MobileWsServerFrame {
+      return {
+        type: 'event',
+        id: childTurn,
+        conversationId,
+        seq,
+        event: { type: 'text_delta', text },
+      } as MobileWsServerFrame;
+    }
+
+    function done(seq: number): MobileWsServerFrame {
+      return {
+        type: 'done',
+        id: childTurn,
+        conversationId: childId,
+        seq,
+        outcome: 'completed',
+      } as MobileWsServerFrame;
+    }
+
+    it('writes subscribe, not resume, and keeps the socket after a done', async () => {
+      const socket = new FakeSocket();
+      const factory = vi.fn(() => socket);
+      const delivered: MobileWsServerFrame[] = [];
+      const transport = makeTransport(factory, (frame) => delivered.push(frame));
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+
+      expect(socket.sent).toHaveLength(1);
+      expect(socket.sent[0]).toMatchObject({
+        type: 'subscribe',
+        agentId: 'agent-01',
+        conversationId: childId,
+      });
+      expect(socket.sent.some((frame) => frame.type === 'resume')).toBe(false);
+
+      socket.frame(event(7, 'one'));
+      socket.frame(done(8));
+      await vi.waitFor(() => expect(delivered).toHaveLength(2));
+      // The turn path deletes the entry and closes the socket on `done`; a
+      // conversation subscription outlives every turn it carries.
+      expect(socket.readyState).toBe(1);
+      socket.frame(event(9, 'after the done'));
+      await vi.waitFor(() => expect(delivered).toHaveLength(3));
+    });
+
+    it('delivers the first frame whatever its seq, then only strictly newer ones', async () => {
+      const socket = new FakeSocket();
+      const delivered: MobileWsServerFrame[] = [];
+      const replay = vi.fn().mockResolvedValue([]);
+      const transport = makeTransport(
+        () => socket,
+        (frame) => delivered.push(frame),
+        { replay },
+      );
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      // A subscription lands mid-turn: seq 42 is the first frame this client
+      // sees, and the turn path's `lastSeq + 1` gate would drop it forever.
+      socket.frame(event(42, 'mid-turn'));
+      socket.frame(event(42, 'duplicate'));
+      socket.frame(event(41, 'older'));
+      socket.frame(event(44, 'newer, with a hole before it'));
+
+      await vi.waitFor(() => expect(delivered).toHaveLength(2));
+      expect(delivered.map((frame) => ('seq' in frame ? frame.seq : null))).toEqual([42, 44]);
+      // No replay: a subscription has no cursor to replay from, and the gap is
+      // healed by the renderer's REST re-read.
+      expect(replay).not.toHaveBeenCalled();
+    });
+
+    it('re-sends subscribe after a drop and reports the restore, never on the first open', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const restored = vi.fn();
+      const transport = new ResumableChatTransport({
+        connection: { url: 'wss://gateway.example.com/ws/chat?token=chat-token' },
+        channelId: 'mission-control',
+        replay: vi.fn().mockResolvedValue([]),
+        onFrame: vi.fn(),
+        onConnectionError: vi.fn(),
+        onProtocolError: vi.fn(),
+        onSubscriptionRestored: restored,
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      expect(restored).not.toHaveBeenCalled();
+
+      sockets[0].drop();
+      await vi.runAllTimersAsync();
+      expect(sockets).toHaveLength(2);
+      sockets[1].open();
+
+      expect(sockets[1].sent[0]).toMatchObject({ type: 'subscribe', conversationId: childId });
+      expect(restored).toHaveBeenCalledExactlyOnceWith(childId);
+      transport.closeAll();
+    });
+
+    it('writes unsubscribe and closes the socket on release, and holds one socket per conversation', () => {
+      const sockets: FakeSocket[] = [];
+      const factory = vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const transport = makeTransport(factory, vi.fn());
+
+      transport.watchConversation('agent-01', childId);
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      expect(factory).toHaveBeenCalledOnce();
+
+      transport.unwatchConversation(childId);
+      expect(sockets[0].sent[1]).toMatchObject({
+        type: 'unsubscribe',
+        agentId: 'agent-01',
+        conversationId: childId,
+      });
+      expect(sockets[0].readyState).toBe(3);
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+
+    it('swallows an older gateway rejecting its own subscribe frame', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const onError = vi.fn();
+      const transport = makeTransport(() => socket, delivered, { onError });
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      const sent = socket.sent[0];
+      socket.frame({
+        type: 'error',
+        id: sent.id,
+        conversationId: childId,
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      });
+
+      await vi.waitFor(() => expect(socket.readyState).toBe(1));
+      expect(delivered).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('forwards a turn error on the watched conversation without bannering the app', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const onError = vi.fn();
+      const transport = makeTransport(() => socket, delivered, { onError });
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      const failure = {
+        type: 'error' as const,
+        id: childTurn,
+        conversationId: childId,
+        error: 'the child fell over',
+      };
+      socket.frame(failure);
+
+      await vi.waitFor(() => expect(delivered).toHaveBeenCalledWith(failure));
+      // `onConnectionError` raises the app-wide banner over the PARENT's
+      // transcript; a child's own turn failing is not that.
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('drops a frame for a conversation it is not watching', async () => {
+      const socket = new FakeSocket();
+      const delivered = vi.fn();
+      const transport = makeTransport(() => socket, delivered, {});
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      socket.frame(event(3, 'somebody else', conversation.id));
+      socket.frame(event(4, 'ours'));
+
+      await vi.waitFor(() => expect(delivered).toHaveBeenCalledOnce());
+      expect(delivered).toHaveBeenCalledWith(event(4, 'ours'));
+    });
+
+    it('drops the subscription on an auth close instead of reconnecting or bannering', async () => {
+      vi.useFakeTimers();
+      const sockets: FakeSocket[] = [];
+      const onError = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        vi.fn(),
+        { onError },
+      );
+
+      transport.watchConversation('agent-01', childId);
+      sockets[0].open();
+      sockets[0].drop(4401, 'unauthorized');
+      await vi.runAllTimersAsync();
+
+      expect(sockets).toHaveLength(1);
+      expect(onError).not.toHaveBeenCalled();
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+
+    it('closeAll tears the subscriptions down with the turns', async () => {
+      vi.useFakeTimers();
+      const socket = new FakeSocket();
+      const transport = makeTransport(() => socket, vi.fn());
+
+      transport.watchConversation('agent-01', childId);
+      socket.open();
+      transport.closeAll();
+
+      await vi.runAllTimersAsync();
+      expect(socket.readyState).toBe(3);
+      expect(transport.watchedConversations()).toEqual([]);
+    });
+  });
 });
