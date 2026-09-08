@@ -192,6 +192,32 @@ export interface ChatState {
   toggleSubagentGroup(anchorSubagentId: string): void;
   /** Fetch a child's transcript. Once per card unless `force`. */
   loadSubagentTranscript(subagentId: string, force?: boolean): Promise<void>;
+  /**
+   * Take one hold on a child's live stream (design §7.6, §8.3): its frames
+   * then reach {@link applyFrame} and land in this card's transcript.
+   *
+   * REFCOUNTED, because two surfaces can legitimately want the same child at
+   * once — an expanded card and the open tasks panel — and because D1's fold
+   * renders a row for a crash-reconciled child in TWO messages, so one row
+   * collapsing must not cut the other one's stream off.
+   */
+  subscribeSubagent(subagentId: string): void;
+  /** Release one hold; the last one out drops the watch, a microtask later. */
+  unsubscribeSubagent(subagentId: string): void;
+  /**
+   * Whether this client holds a subscription on a child — i.e. whether an
+   * `accepted` frame naming it will ever arrive here. `resumeSubagent` asks
+   * before it shows the user's own sentence: an optimistic row with no echo
+   * coming is a row nothing can reconcile.
+   */
+  isSubagentSubscribed(subagentId: string): boolean;
+  /**
+   * A watched child's stream dropped and came back. Subscribing replays
+   * NOTHING, so the only recovery for the gap is a re-read — and only for a
+   * card that already has a transcript; one that never loaded reads on its
+   * next expansion anyway.
+   */
+  restoreSubagentTranscript(subagentId: string): Promise<void>;
   setSubagentDraft(subagentId: string, draft: string): void;
   dismissSubagentNotice(subagentId: string): void;
   stopSubagent(subagentId: string): Promise<void>;
@@ -393,6 +419,40 @@ export const useChatStore = create<ChatState>((set, get) => {
     sending: false,
   };
 
+  /**
+   * Children whose live stream this store holds, and how many surfaces hold
+   * each. Closure state, not store state: it is wiring, and nothing renders it.
+   */
+  const childSubscriptions = new Map<string, { agentId: string; holds: number }>();
+  /**
+   * Every child this conversation has EVER held a subscription for. Wider than
+   * `childSubscriptions` on purpose: the release is deferred and main closes
+   * the socket later still, so frames keep arriving for a child with no holds
+   * left. Without this they would fall through to the conversation path and be
+   * written under the child's own key — where a `done` sends `refreshTerminal`
+   * down `chatGetMessages`, which subscribes the resumable transport to a
+   * SECOND socket on the same child (`main/chat-service.ts`'s `getMessages`).
+   * Cleared by `clearSubagents`, which is the point at which the child stops
+   * being any of this conversation's business.
+   */
+  const knownChildIds = new Set<string>();
+  /**
+   * Rows this store put into a child's transcript itself — a live assistant
+   * message being streamed, or the user's own sentence before the server has
+   * a copy. `loadSubagentTranscript` needs to tell them from the server's,
+   * because they are the only ones a re-read must not simply replace.
+   */
+  const localChildRows = new Map<string, Set<string>>();
+
+  const rememberLocalRow = (subagentId: string, messageId: string): void => {
+    const rows = localChildRows.get(subagentId) ?? new Set<string>();
+    rows.add(messageId);
+    localChildRows.set(subagentId, rows);
+  };
+
+  const nextChildOrdinal = (transcript: ConversationMessage[]): number =>
+    transcript.reduce((highest, row) => Math.max(highest, row.ordinal), 0) + 1;
+
   const patchSubagentUi = (subagentId: string, patch: Partial<SubagentUiState>): void => {
     set((state) => ({
       subagentUi: {
@@ -400,6 +460,97 @@ export const useChatStore = create<ChatState>((set, get) => {
         [subagentId]: { ...BLANK_SUBAGENT_UI, ...state.subagentUi[subagentId], ...patch },
       },
     }));
+  };
+
+  /** Rewrite a child's transcript in place, leaving `transcriptLoaded` alone. */
+  const patchChildTranscript = (
+    subagentId: string,
+    rewrite: (transcript: ConversationMessage[]) => ConversationMessage[],
+  ): void => {
+    const current = get().subagentUi[subagentId]?.transcript ?? [];
+    patchSubagentUi(subagentId, { transcript: rewrite(current) });
+  };
+
+  /**
+   * A watched child's own frame (design §8.3). It builds the same thing a REST
+   * read would have: a streaming assistant message on `accepted`, its events as
+   * they arrive, finished on `done`.
+   *
+   * Deliberately NOT `applySequencedFrame`. That gates on `lastSeq + 1` and
+   * calls `refreshTerminal` on a gap, and a subscription routinely begins in
+   * the middle of a turn — the transport already delivers these in order and
+   * drops what it has seen (`deliverSubscribed`).
+   */
+  const applySubagentFrame = (subagentId: string, frame: MobileWsServerFrame): void => {
+    if (frame.type === 'accepted') {
+      const now = new Date().toISOString();
+      patchChildTranscript(subagentId, (transcript) => {
+        // The echo (§7.6) is the only correlation there is between the message
+        // this client sent and the turn it became. Pairing here gives the local
+        // row the server's own id, so the next REST page supersedes it instead
+        // of landing beside it.
+        const paired = frame.requestId
+          ? transcript.map((row) =>
+              row.role === 'user' && row.turnId === frame.requestId
+                ? { ...row, id: frame.userMessageId, turnId: frame.id }
+                : row,
+            )
+          : transcript;
+        if (frame.requestId) {
+          const local = localChildRows.get(subagentId);
+          if (local?.delete(frame.requestId)) local.add(frame.userMessageId);
+          rememberLocalRow(subagentId, frame.userMessageId);
+        }
+        rememberLocalRow(subagentId, frame.assistantMessageId);
+        return [
+          ...paired,
+          {
+            id: frame.assistantMessageId,
+            conversationId: subagentId,
+            turnId: frame.id,
+            ordinal: nextChildOrdinal(paired),
+            role: 'assistant',
+            status: 'streaming',
+            content: { type: 'assistant', events: [] },
+            createdAt: now,
+            updatedAt: now,
+          } satisfies ConversationMessage,
+        ];
+      });
+      return;
+    }
+    if (frame.type === 'event') {
+      patchChildTranscript(subagentId, (transcript) =>
+        transcript.map((row) =>
+          row.turnId === frame.id && row.status === 'streaming' && row.content.type === 'assistant'
+            ? {
+                ...row,
+                content: { type: 'assistant', events: [...row.content.events, frame.event] },
+              }
+            : row,
+        ),
+      );
+      return;
+    }
+    if (frame.type !== 'done' && frame.type !== 'error') return;
+    // A no-op over a row that is already finished. `done` can arrive after a
+    // REST read has landed the completed row — the collapse window, or a
+    // reconnect — and rewriting it there costs the content this stream never
+    // carried (web D2 fix round 4, guard 1).
+    const finished: ConversationMessage['status'] =
+      frame.type === 'error' ? 'failed' : frame.outcome === 'cancelled' ? 'cancelled' : 'completed';
+    patchChildTranscript(subagentId, (transcript) =>
+      transcript.map((row) =>
+        row.turnId === frame.id && row.status === 'streaming' ? { ...row, status: finished } : row,
+      ),
+    );
+    // The child's turn ending changes its row in the list, and the page the
+    // stream built is missing everything that happened before the subscription
+    // started. Both re-reads are the same recovery `resumeSubagent` does.
+    void get().refreshSubagents();
+    if (get().subagentUi[subagentId]?.transcriptLoaded) {
+      void get().loadSubagentTranscript(subagentId, true);
+    }
   };
 
   const reasonOf = (error: unknown): string =>
@@ -412,6 +563,17 @@ export const useChatStore = create<ChatState>((set, get) => {
    */
   const clearSubagents = (): void => {
     appliedSubagentSeq = ++subagentReadSeq;
+    // Released HERE and synchronously, rather than left to the cards' own
+    // effects: a conversation switch unmounts them a commit later, and until it
+    // does main is holding sockets on children of a conversation nobody is
+    // looking at. The count is dropped with them, so the cards' own releases
+    // find nothing to release and send no second frame.
+    for (const subagentId of [...childSubscriptions.keys()]) {
+      childSubscriptions.delete(subagentId);
+      window.api.subagentUnsubscribe(subagentId);
+    }
+    knownChildIds.clear();
+    localChildRows.clear();
     set({ subagents: [], subagentUi: {} });
   };
 
@@ -732,6 +894,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     async applyFrame(frame) {
       if (!frame.conversationId) return;
+      // Ruling 4: a child's frames belong to the child's transcript. Ahead of
+      // everything below, because the conversation path would key
+      // `messages`/`streamingFrames` by the CHILD's id and then send its `done`
+      // through `refreshTerminal` — a `chatGetMessages` that opens a second,
+      // turn-scoped socket on a conversation this client already watches.
+      const selected = get().selectedConversationRef;
+      if (knownChildIds.has(frame.conversationId) && frame.conversationId !== selected?.id) {
+        applySubagentFrame(frame.conversationId, frame);
+        return;
+      }
       const ref = { id: frame.conversationId, origin: 'gateway' as const };
       const key = conversationKey(ref);
       const current = {
@@ -873,6 +1045,62 @@ export const useChatStore = create<ChatState>((set, get) => {
       patchSubagentUi(anchorSubagentId, { groupCollapsed: !collapsed });
     },
 
+    subscribeSubagent(subagentId) {
+      const held = childSubscriptions.get(subagentId);
+      if (held) {
+        held.holds += 1;
+        return;
+      }
+      // A child rides its PARENT's agent id: it belongs to the same agent, and
+      // the gateway's hub keys its watcher registry on that pair. Without one
+      // there is no frame to send, so no hold is taken either — a hold main
+      // never heard of would be released against a count that never rose.
+      const ref = get().selectedConversationRef;
+      const agentId = ref && ref.origin === 'gateway' ? exactConversation(ref)?.agentId : undefined;
+      if (!agentId) return;
+      childSubscriptions.set(subagentId, { agentId, holds: 1 });
+      knownChildIds.add(subagentId);
+      window.api.subagentSubscribe(agentId, subagentId);
+    },
+
+    /**
+     * The bookkeeping is immediate; the wire frame is one microtask later.
+     *
+     * A card is remounted by things that have nothing to do with it — most
+     * often the streaming bubble being swapped for the finalized message when
+     * the parent's turn ends, which happens in ONE React commit. React runs the
+     * removed subtree's cleanup before the added subtree's setup inside that
+     * commit, so the count really does go 1 → 0 → 1 and a synchronous release
+     * would put an `unsubscribe` on the wire. The gateway replays nothing on
+     * the `subscribe` that follows (`apps/gateway/src/chat-ws.ts:425-427`), so
+     * anything the child emitted in the gap is gone — including a `done`.
+     *
+     * Deferring closes it: both effects of the commit have run by the time the
+     * microtask fires, and it re-checks the count.
+     */
+    unsubscribeSubagent(subagentId) {
+      const held = childSubscriptions.get(subagentId);
+      if (!held) return;
+      held.holds -= 1;
+      if (held.holds > 0) return;
+      queueMicrotask(() => {
+        const current = childSubscriptions.get(subagentId);
+        // Re-taken by a remount, or already dropped by `clearSubagents`.
+        if (!current || current.holds > 0) return;
+        childSubscriptions.delete(subagentId);
+        window.api.subagentUnsubscribe(subagentId);
+      });
+    },
+
+    isSubagentSubscribed(subagentId) {
+      return (childSubscriptions.get(subagentId)?.holds ?? 0) > 0;
+    },
+
+    async restoreSubagentTranscript(subagentId) {
+      if (!get().subagentUi[subagentId]?.transcriptLoaded) return;
+      await get().loadSubagentTranscript(subagentId, true);
+    },
+
     async loadSubagentTranscript(subagentId, force = false) {
       if (!force && get().subagentUi[subagentId]?.transcriptLoaded) return;
       try {
@@ -881,7 +1109,36 @@ export const useChatStore = create<ChatState>((set, get) => {
         // return `ordinal ASC` today, but a card that renders `page.items`
         // verbatim depends on that silently — and the parent transcript does
         // not, since every page it reads goes through `mergeCanonicalMessages`.
-        const transcript = [...page.items].sort((a, b) => a.ordinal - b.ordinal);
+        const items = [...page.items].sort((a, b) => a.ordinal - b.ordinal);
+        const local = localChildRows.get(subagentId);
+        const existing = get().subagentUi[subagentId]?.transcript ?? [];
+        // A re-read is a RECOVERY, not a replacement. Every trigger for one —
+        // a `done`, a restored stream, a resume — can land while a turn is
+        // still streaming into this card, and the server's copy of a live row
+        // is a snapshot taken before the events this store already holds.
+        const live = new Set(
+          existing
+            .filter((row) => local?.has(row.id) && row.status === 'streaming')
+            .map((row) => row.id),
+        );
+        const serverIds = new Set(items.map((row) => row.id));
+        const serverTurns = new Set(items.map((row) => row.turnId));
+        const kept = existing.filter(
+          (row) =>
+            local?.has(row.id) === true &&
+            // Still streaming: only this store knows how far it has got.
+            (row.status === 'streaming' ||
+              // Otherwise it survives exactly until the server has it, by id or
+              // by turn. That is what stops the user's own sentence appearing
+              // twice once the child's turn is persisted.
+              (!serverIds.has(row.id) && !serverTurns.has(row.turnId))),
+        );
+        const transcript = [...items.filter((row) => !live.has(row.id)), ...kept].sort(
+          (a, b) => a.ordinal - b.ordinal,
+        );
+        for (const id of local ?? []) {
+          if (!kept.some((row) => row.id === id)) local?.delete(id);
+        }
         patchSubagentUi(subagentId, { transcript, transcriptLoaded: true });
       } catch (error) {
         patchSubagentUi(subagentId, { notice: reasonOf(error) });
@@ -911,12 +1168,39 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     async resumeSubagent(subagentId, message) {
       patchSubagentUi(subagentId, { sending: true, notice: null });
-      // Sent so the server CAN correlate the turn this becomes; Mission
-      // Control cannot observe the echo, because the `accepted` frame carrying
-      // it rides the CHILD conversation's stream and this app holds no
-      // subscription to it. Omitting it would forfeit a correlation that
-      // cannot be claimed after the fact.
+      // The echo (§7.6) rides the CHILD conversation's stream, so it reaches
+      // this client only while a subscription is held. That is the whole test
+      // for showing the user's sentence early: an optimistic row with no
+      // `accepted` coming is a row nothing can pair, and the next REST page
+      // lands the server's copy of it beside it.
       const requestId = crypto.randomUUID();
+      const entry = get().subagents.find((child) => child.id === subagentId);
+      // ...with one exception the gateway's own shape forces. A message to a
+      // child PARKED on a question is an ANSWER: `sendToChild`'s answering
+      // branch resolves the waiter (`packages/swarm/src/child-handle.ts:386`),
+      // which starts no turn, emits no `accepted`, and persists no user row.
+      // A row for it would be a sentence the child's transcript never contains
+      // and nothing would ever supersede.
+      const parked = entry !== undefined && rowStatusOf(entry.status) === 'waiting';
+      const optimistic = get().isSubagentSubscribed(subagentId) && !parked;
+      if (optimistic) {
+        const now = new Date().toISOString();
+        rememberLocalRow(subagentId, `pending:${requestId}`);
+        patchChildTranscript(subagentId, (transcript) => [
+          ...transcript,
+          {
+            id: `pending:${requestId}`,
+            conversationId: subagentId,
+            turnId: requestId,
+            ordinal: nextChildOrdinal(transcript),
+            role: 'user',
+            status: 'completed',
+            content: { type: 'user', text: message },
+            createdAt: now,
+            updatedAt: now,
+          } satisfies ConversationMessage,
+        ]);
+      }
       let accepted = false;
       try {
         const result = await window.api.subagentResume(subagentId, message, requestId);
@@ -926,8 +1210,17 @@ export const useChatStore = create<ChatState>((set, get) => {
         patchSubagentUi(subagentId, { sending: false, notice: reasonOf(error) });
       }
       // The draft survives a refusal — the user's sentence is still worth
-      // something once they know why it bounced.
-      if (!accepted) return false;
+      // something once they know why it bounced. The optimistic ROW does not:
+      // it claims the child received this, and it did not.
+      if (!accepted) {
+        if (optimistic) {
+          localChildRows.get(subagentId)?.delete(`pending:${requestId}`);
+          patchChildTranscript(subagentId, (transcript) =>
+            transcript.filter((row) => row.id !== `pending:${requestId}`),
+          );
+        }
+        return false;
+      }
       patchSubagentUi(subagentId, { sending: false, draft: '' });
       // Both re-reads exist because no child event reaches the parent outside a
       // live parent turn: without them the row and its body describe the run
@@ -996,6 +1289,14 @@ export function initChatListeners(): void {
   });
   window.api.onChatConnectionError((issue) => {
     useChatStore.getState().handleConnectionIssue(issue);
+  });
+  // A watched child's stream dropped and came back. Main has already
+  // re-subscribed; what it cannot do is recover the gap.
+  window.api.onSubagentResubscribed((subagentId) => {
+    void useChatStore
+      .getState()
+      .restoreSubagentTranscript(subagentId)
+      .catch(() => undefined);
   });
   window.api.onChatConversationInvalidated((event) => {
     void useChatStore
