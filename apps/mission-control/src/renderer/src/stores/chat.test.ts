@@ -891,6 +891,118 @@ describe('sub-agent list reads', () => {
     expect(useChatStore.getState().subagents).toEqual([subagentEntry({ id: 'sub_b' })]);
   });
 
+  // `purgeConversation` is the OTHER path that changes the selection without
+  // going through `selectConversation` — it runs the same `selectedAfterRemoval`
+  // — and it is worse than `closeTab` was: `subagents` keeps its identity, so
+  // the 20 s poll is not armed, and with every child terminal the dead
+  // conversation's children stay on screen until something else re-reads.
+  it("forgets a deleted conversation's children and reads the new selection's", async () => {
+    useChatStore.setState({
+      conversations: [gatewayConversation, { ...gatewayConversation, id: 'other' }],
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+      selectedConversationRef: parentRef,
+      openTabKeys: ['gateway:shared-id', 'gateway:other'],
+      subagents: [subagentEntry({ status: 'done' })],
+      subagentUi: {
+        sub_a: {
+          expanded: true,
+          groupCollapsed: false,
+          draft: 'half a sentence',
+          notice: null,
+          sending: false,
+          transcriptLoaded: true,
+        },
+      },
+    });
+    mockApi.chatDeleteConversation.mockResolvedValue(undefined);
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ id: 'sub_b' })]);
+
+    await useChatStore.getState().deleteConversation(parentRef);
+
+    expect(useChatStore.getState().subagentUi).toEqual({});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockApi.subagentsList).toHaveBeenCalledWith('other');
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry({ id: 'sub_b' })]);
+  });
+
+  // The same switch arrives unprompted when another client deletes the
+  // conversation: the gateway pushes an invalidation and the store purges.
+  it('forgets the children when the gateway says the conversation is gone', async () => {
+    useChatStore.setState({
+      conversations: [gatewayConversation, { ...gatewayConversation, id: 'other' }],
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+      selectedConversationRef: parentRef,
+      openTabKeys: ['gateway:shared-id', 'gateway:other'],
+      subagents: [subagentEntry({ status: 'done' })],
+    });
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ id: 'sub_b' })]);
+
+    await useChatStore
+      .getState()
+      .invalidateConversation({ type: 'deleted', conversation: parentRef });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockApi.subagentsList).toHaveBeenCalledWith('other');
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry({ id: 'sub_b' })]);
+  });
+
+  // …and the purge's re-read goes through D3's guards like every other one:
+  // switch again while it is in flight and the stale response is dropped.
+  it("drops the purge's re-read when the user has moved on again", async () => {
+    useChatStore.setState({
+      conversations: [gatewayConversation, { ...gatewayConversation, id: 'other' }],
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+      selectedConversationRef: parentRef,
+      openTabKeys: ['gateway:shared-id', 'gateway:other'],
+      subagents: [subagentEntry()],
+    });
+    // The purge's own read hangs; the selection that overtakes it answers.
+    const pending = deferred<SubagentListEntry[]>();
+    mockApi.subagentsList.mockImplementation((id: string) =>
+      id === 'other' ? pending.promise : Promise.resolve([subagentEntry({ id: 'sub_c' })]),
+    );
+    mockApi.chatGetConversation.mockResolvedValue({ ...gatewayConversation, id: 'third' });
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
+
+    await useChatStore
+      .getState()
+      .invalidateConversation({ type: 'deleted', conversation: parentRef });
+    await useChatStore.getState().selectConversation({ id: 'third', origin: 'gateway' });
+    pending.resolve([subagentEntry({ id: 'sub_b' })]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockApi.subagentsList.mock.calls.map((call) => call[0])).toEqual(['other', 'third']);
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry({ id: 'sub_c' })]);
+  });
+
+  // Deleting a conversation that is NOT selected changes nothing about whose
+  // children are on screen, so it must not clear or re-read.
+  it('leaves the children alone when the conversation deleted was not selected', async () => {
+    useChatStore.setState({
+      conversations: [gatewayConversation, { ...gatewayConversation, id: 'other' }],
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+      selectedConversationRef: parentRef,
+      openTabKeys: ['gateway:shared-id', 'gateway:other'],
+      subagents: [subagentEntry()],
+    });
+
+    await useChatStore.getState().invalidateConversation({
+      type: 'deleted',
+      conversation: { id: 'other', origin: 'gateway' },
+    });
+
+    await Promise.resolve();
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry()]);
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+  });
+
   // …and only then: closing a background tab leaves the selection, and
   // therefore the children on screen, exactly where they were.
   it('leaves the children alone when the tab closed was not the selected one', async () => {

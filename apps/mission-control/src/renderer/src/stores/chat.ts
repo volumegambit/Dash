@@ -261,6 +261,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   const purgeConversation = (ref: ConversationRef): void => {
     const key = conversationKey(ref);
+    const before = get().selectedConversationRef;
     set((state) => {
       const openTabKeys = state.openTabKeys.filter((tab) => tab !== key);
       const unread = new Set(state.unreadConversations);
@@ -281,6 +282,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         unreadConversations: unread,
       };
     });
+    // Deleting the conversation you are looking at switches the selection the
+    // same way closing its tab does, through the same `selectedAfterRemoval`.
+    followSelectionSwitch(before);
   };
 
   const exactConversation = (ref: ConversationRef): McConversationView | undefined =>
@@ -409,6 +413,34 @@ export const useChatStore = create<ChatState>((set, get) => {
   const clearSubagents = (): void => {
     appliedSubagentSeq = ++subagentReadSeq;
     set({ subagents: [], subagentUi: {} });
+  };
+
+  /**
+   * Make a selection change that did NOT go through `selectConversation` do
+   * what one does: forget the previous conversation's children and read the new
+   * selection's. Two paths reach here — `closeTab` and `purgeConversation` —
+   * and both run `selectedAfterRemoval`, so both can move the selection while
+   * `subagents` and `subagentUi`, which describe ONE conversation, keep
+   * describing the conversation that has just gone. Left alone the panel draws
+   * the old children under the new tab's transcript, and there is nothing to
+   * correct it: the 20 s poll is armed by the LIST changing identity, which a
+   * removal does not do, so with every child terminal no timer is running at
+   * all.
+   *
+   * Clearing alone is not enough for the same reason — an empty list disarms
+   * the poll and nothing would ever refill it — so this clears and re-reads.
+   * The re-read carries D3's guards: `clearSubagents` bumps both counters, so a
+   * read still in flight for the conversation being left is already behind the
+   * cursor when it lands.
+   *
+   * Pass the selection as it was BEFORE the `set`; an unchanged selection is a
+   * non-change and must not disturb the children on screen.
+   */
+  const followSelectionSwitch = (before: ConversationRef | null): void => {
+    const after = get().selectedConversationRef;
+    if (keyOrNull(before) === keyOrNull(after)) return;
+    clearSubagents();
+    void get().refreshSubagents();
   };
 
   return {
@@ -570,16 +602,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         };
       });
       // Closing the SELECTED tab switches conversation without going through
-      // `selectConversation`, and `subagents` / `subagentUi` describe ONE
-      // conversation: left alone, the panel draws the closed conversation's
-      // children under the new tab's transcript. Clearing alone would only
-      // blank them — the poll is armed by the list itself, so nothing would
-      // ever fill it again — so this does what a selection does and re-reads.
-      // Closing any other tab leaves the selection, and the children, alone.
-      const after = get().selectedConversationRef;
-      if (keyOrNull(before) === keyOrNull(after)) return;
-      clearSubagents();
-      void get().refreshSubagents();
+      // `selectConversation`; closing any other leaves the selection, and the
+      // children, alone. See `followSelectionSwitch`.
+      followSelectionSwitch(before);
     },
 
     async createConversation(agentId) {
