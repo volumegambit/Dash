@@ -1814,7 +1814,7 @@ LLM calls.
 
 ### 32.3 Expanding a card: the child's transcript, its report, its composer
 1. After a completed run, click a card header. **Verify:** `aria-expanded` flips and the body opens.
-2. **Verify:** the body fetches the child's conversation **once** and renders its transcript with the same components as the parent's — text, thinking, tool cards — inside a nesting rail. Collapse and re-expand: it is **not** re-fetched.
+2. **Verify:** the body fetches the child's conversation **once** and renders its transcript with the same components as the parent's — text, thinking, tool cards — inside a nesting rail. Collapse and re-expand: it is **not** re-fetched. (A **live** child's body is re-read once more, when its turn ends — see 32.10. That is the only automatic re-fetch.)
 3. **Verify:** the child's final **report** renders as Markdown at the bottom of the body.
 4. **Verify:** a message the orchestrator sent to the child renders as a muted **"from orchestrator:"** row, not as one of your own bubbles.
 5. **Nesting depth is 1.** If a child spawned a grandchild, **verify:** the grandchild renders as a card inside the child's transcript but has **no toggle** — it cannot be expanded, and clicking it does nothing. (Web and iOS cap nesting the same way; the design doc's "unlimited by the renderer" is a deliberate, matched divergence on all three clients.)
@@ -1869,6 +1869,58 @@ Until the legacy mirrors are removed, the gateway emits **both** families for ev
 6a. Now send a message from that session view's own composer and let it spawn a child. **Verify:** while the turn is streaming the cards there are **live** — spinning glyph, ticking elapsed, and a yellow question the moment a child parks on one (there is still no expand toggle and no reply box, so this row is the only place that question can appear). The panel's own conversation is subscribed while it runs, so its fold moves in real time. **Verify:** when the turn ends the same cards settle into step 6's snapshot, and no question survives onto a card that has gone terminal.
 6b. Click the session view's **Open in Chat** button, then navigate back to the task. **Verify:** with the session now the Chat route's selection the cards are fully interactive — toggle, reply box, and no `snapshot` marker — because the list on this surface is now its own.
 7. Spawn **two `background: true` children** back to back, let the parent turn end, and wait for both to finish (no event reaches the parent after its turn ends, so the cards flip on the next list re-read, within 20 s). **Verify:** the summary line and both dots follow the cards — `2 agents · 2 done`, not `2 agents · 2 running`. The header counts the same resolved statuses its cards do; it never keeps counting this message's own fold while the cards beneath it read the server.
+
+### 32.10 A live child's transcript, streaming (design §8.3)
+
+The card body used to be whatever the fetch caught at the moment you opened
+it: a running child's transcript sat still until you acted on it. This section
+covers the conversation-scoped subscription that fixed that. Everything here
+needs a **running** child, so start from the bootstrap prompt and open the card
+while it works.
+
+1. Expand a **running** child's card and leave it open, touching nothing.
+   **Verify:** new text, thinking and tool cards appear in the body **as the
+   child produces them**, without any click and without the spinner
+   restarting. This is the whole of this section — if the body is static, stop
+   and file it.
+2. **Verify:** the parent's own transcript above the card is undisturbed: no
+   duplicated bubble, no new message, no scroll jump. The child's frames must
+   reach only the child's body.
+3. Let the child finish with the card still open. **Verify:** the last row
+   settles from streaming into its finished form, the report renders beneath
+   it, and the header's status and meta line follow — all without a manual
+   refresh.
+4. **Collapse the card while the child is still running**, wait a few seconds,
+   and expand it again. **Verify:** the body catches up — the lines produced
+   while it was shut are there. (Nothing replays a subscription, so this is a
+   fresh read; if the gap is missing, the read is not happening.)
+5. **Type into a running child from the open card.** **Verify:** your sentence
+   appears in the body **immediately**, and does **not** appear twice once the
+   child's turn is persisted.
+6. **Answer a child parked on a question**, from the card's yellow reply box.
+   **Verify:** the child resumes and no duplicate of your answer is left
+   stranded in the body. (An answer completes the child's current turn rather
+   than starting a new one, so the server keeps no copy of it — the card
+   deliberately shows none either.)
+7. **Refusal.** Reply to a one-shot child, or blow the steer cap. **Verify:**
+   the gateway's sentence appears on the card, your draft is still in the box,
+   and the optimistic row is **gone** from the body — it must not claim the
+   child received something it refused.
+8. **The panel counts too.** Close every card, open the **Sub-agents** drawer
+   while a child is running, and leave it open. **Verify:** the row's status,
+   elapsed and tool count move on their own. Close the drawer: the row stops
+   being watched, and the 20 s backstop poll takes over (see 32.7).
+9. **Conversation switch.** With a card open on a running child, switch to
+   another conversation and back. **Verify:** the card is collapsed (expansion
+   is not kept across a switch — a known divergence from web), and expanding
+   it again shows a current transcript rather than a stale one.
+10. **Reconnect.** With a card open on a running child, stop the gateway for
+    ~15 s and start it again. **Verify:** the body catches up with what the
+    child did while the connection was down, and no red connection banner
+    appears over the **parent's** transcript on account of the child's socket.
+11. **Quit.** With several cards open, quit Mission Control. **Verify:** it
+    exits without hanging. (Every watch is released with the transport at
+    `before-quit`; a leaked socket would show as a slow or stuck quit.)
 
 ## Appendix: Test Run Log
 
