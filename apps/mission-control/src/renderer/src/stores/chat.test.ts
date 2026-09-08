@@ -857,6 +857,55 @@ describe('sub-agent list reads', () => {
     expect(useChatStore.getState().selectedConversationRef).toEqual(localRef);
     expect(useChatStore.getState().subagents).toEqual([]);
   });
+
+  // Closing the selected tab switches conversation without going through
+  // `selectConversation`, and the list and its card state describe ONE
+  // conversation. The panel renders that list raw, so without this it shows
+  // the closed conversation's children — and, since the poll only runs while
+  // one of them is live, possibly for as long as the new tab is open.
+  it("forgets the closed conversation's children and reads the new selection's", async () => {
+    useChatStore.setState({
+      selectedConversationRef: parentRef,
+      openTabKeys: ['gateway:shared-id', 'gateway:other'],
+      subagents: [subagentEntry()],
+      subagentUi: {
+        sub_a: {
+          expanded: true,
+          groupCollapsed: false,
+          draft: 'half a sentence',
+          notice: null,
+          sending: false,
+          transcriptLoaded: true,
+        },
+      },
+    });
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ id: 'sub_b' })]);
+
+    useChatStore.getState().closeTab('gateway:shared-id');
+
+    expect(useChatStore.getState().subagents).toEqual([]);
+    expect(useChatStore.getState().subagentUi).toEqual({});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockApi.subagentsList).toHaveBeenCalledWith('other');
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry({ id: 'sub_b' })]);
+  });
+
+  // …and only then: closing a background tab leaves the selection, and
+  // therefore the children on screen, exactly where they were.
+  it('leaves the children alone when the tab closed was not the selected one', async () => {
+    useChatStore.setState({
+      selectedConversationRef: parentRef,
+      openTabKeys: ['gateway:shared-id', 'gateway:other'],
+      subagents: [subagentEntry()],
+    });
+
+    useChatStore.getState().closeTab('gateway:other');
+
+    await Promise.resolve();
+    expect(useChatStore.getState().subagents).toEqual([subagentEntry()]);
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+  });
 });
 
 describe('sub-agent list triggers', () => {

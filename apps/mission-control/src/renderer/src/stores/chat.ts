@@ -211,6 +211,11 @@ const SUBAGENT_LIST_TRIGGERS = new Set<string>([
   'worker_done',
 ]);
 
+/** The selected conversation's key, or `null` when nothing is selected. */
+function keyOrNull(ref: ConversationRef | null): ConversationKey | null {
+  return ref ? conversationKey(ref) : null;
+}
+
 function selectedAfterRemoval(
   state: ChatState,
   removedKey: ConversationKey,
@@ -556,6 +561,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     closeTab(key) {
+      const before = get().selectedConversationRef;
       set((state) => {
         const openTabKeys = state.openTabKeys.filter((tab) => tab !== key);
         return {
@@ -563,6 +569,17 @@ export const useChatStore = create<ChatState>((set, get) => {
           selectedConversationRef: selectedAfterRemoval(state, key, openTabKeys),
         };
       });
+      // Closing the SELECTED tab switches conversation without going through
+      // `selectConversation`, and `subagents` / `subagentUi` describe ONE
+      // conversation: left alone, the panel draws the closed conversation's
+      // children under the new tab's transcript. Clearing alone would only
+      // blank them — the poll is armed by the list itself, so nothing would
+      // ever fill it again — so this does what a selection does and re-reads.
+      // Closing any other tab leaves the selection, and the children, alone.
+      const after = get().selectedConversationRef;
+      if (keyOrNull(before) === keyOrNull(after)) return;
+      clearSubagents();
+      void get().refreshSubagents();
     },
 
     async createConversation(agentId) {
