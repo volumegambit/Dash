@@ -138,6 +138,9 @@ function createMockApi(): MockApi {
     subagentsList: vi.fn().mockResolvedValue([]),
     subagentStop: vi.fn().mockResolvedValue({ ok: true, status: 'cancelled' }),
     subagentResume: vi.fn().mockResolvedValue({ ok: true, status: 'running', mode: 'queued' }),
+    subagentSubscribe: vi.fn(),
+    subagentUnsubscribe: vi.fn(),
+    onSubagentResubscribed: vi.fn().mockReturnValue(() => {}),
     conversationMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 }),
 
     // Settings

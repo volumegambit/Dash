@@ -139,6 +139,12 @@ const api: MissionControlAPI = {
     ipcRenderer.on('chat:conversationRenamed', listener);
     return () => ipcRenderer.removeListener('chat:conversationRenamed', listener);
   },
+  onSubagentResubscribed: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+      callback(conversationId);
+    ipcRenderer.on('chat:subagentResubscribed', listener);
+    return () => ipcRenderer.removeListener('chat:subagentResubscribed', listener);
+  },
 
   // Skills
   skillsList: (agentId) => ipcRenderer.invoke('skills:list', agentId),
@@ -161,6 +167,10 @@ const api: MissionControlAPI = {
     ipcRenderer.invoke('subagents:resume', subagentId, message, requestId),
   conversationMessages: (conversationId, before) =>
     ipcRenderer.invoke('conversations:messages', conversationId, before),
+  subagentSubscribe: (agentId, conversationId) =>
+    ipcRenderer.send('subagents:watch', { watch: true, agentId, conversationId }),
+  subagentUnsubscribe: (conversationId) =>
+    ipcRenderer.send('subagents:watch', { watch: false, conversationId }),
 
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),

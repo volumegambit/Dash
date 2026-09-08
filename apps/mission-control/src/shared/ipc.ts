@@ -531,6 +531,13 @@ export interface MissionControlAPI {
   onChatDone(callback: (conversationId: string) => void): () => void;
   onChatError(callback: (conversationId: string, error: string) => void): () => void;
   onChatConversationRenamed(callback: (conversationId: string, title: string) => void): () => void;
+  /**
+   * A watched child conversation's stream dropped and came back. Subscribing
+   * replays NOTHING (`apps/gateway/src/chat-ws.ts:425-427`), so everything the
+   * child emitted while the socket was down is only recoverable by re-reading
+   * its transcript over REST — which is what this asks for.
+   */
+  onSubagentResubscribed(callback: (conversationId: string) => void): () => void;
 
   // Skills (gateway passthrough)
   skillsList(agentId: string): Promise<SkillInfo[]>;
@@ -572,6 +579,19 @@ export interface MissionControlAPI {
   ): Promise<SubagentResumeResult>;
   /** One page of any conversation's messages — the child transcript a card expands into. */
   conversationMessages(conversationId: string, before?: string): Promise<ConversationMessagePage>;
+  /**
+   * Take one hold on a child conversation's live stream (design §7.6, §8.3),
+   * so its frames reach `onChatFrame` while a card is expanded or the panel is
+   * open. `agentId` is the PARENT's — a child belongs to the same agent, and
+   * the gateway's hub keys its watcher registry on that pair.
+   *
+   * Both halves ride ONE channel rather than two, so the pair can never
+   * arrive out of order and leave main holding a watch nobody wants. Main
+   * refcounts; the renderer must send exactly one release per hold.
+   */
+  subagentSubscribe(agentId: string, conversationId: string): void;
+  /** Release one hold. The last one out sends `unsubscribe` and closes. */
+  subagentUnsubscribe(conversationId: string): void;
 
   // Settings
   settingsGet(): Promise<AppSettings>;

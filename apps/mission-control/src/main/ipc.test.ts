@@ -15,6 +15,7 @@ import {
   ConversationLifecycleEpoch,
   GatewayEventStreamManager,
   activatePendingConversationRuntime,
+  applySubagentWatch,
   assertLocalPairingSource,
   configurePendingConversationRuntime,
   conversationContextFromOfflineProfile,
@@ -228,6 +229,31 @@ describe('canonical chat IPC boundary', () => {
         },
       });
     }
+  });
+});
+
+describe('sub-agent watch channel', () => {
+  function spies() {
+    return { subscribeConversation: vi.fn(), unsubscribeConversation: vi.fn() };
+  }
+
+  it('takes and releases a hold over one channel', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, agentId: 'agent-1', conversationId: 'child-1' });
+    applySubagentWatch(service, { watch: false, conversationId: 'child-1' });
+
+    expect(service.subscribeConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1');
+    expect(service.unsubscribeConversation).toHaveBeenCalledExactlyOnceWith('child-1');
+  });
+
+  it('drops a hold with no agent id rather than taking one the release would unbalance', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, conversationId: 'child-1' });
+
+    expect(service.subscribeConversation).not.toHaveBeenCalled();
+    expect(service.unsubscribeConversation).not.toHaveBeenCalled();
   });
 });
 

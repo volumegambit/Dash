@@ -842,6 +842,8 @@ describe('ChatService gateway conversations', () => {
     cancel: ReturnType<typeof vi.fn>;
     answer: ReturnType<typeof vi.fn>;
     closeAll: ReturnType<typeof vi.fn>;
+    watchConversation: ReturnType<typeof vi.fn>;
+    unwatchConversation: ReturnType<typeof vi.fn>;
   };
   let service: ChatService;
 
@@ -865,6 +867,8 @@ describe('ChatService gateway conversations', () => {
       cancel: vi.fn(),
       answer: vi.fn(),
       closeAll: vi.fn(),
+      watchConversation: vi.fn(),
+      unwatchConversation: vi.fn(),
     };
     service = new ChatService(
       store,
@@ -1023,6 +1027,71 @@ describe('ChatService gateway conversations', () => {
     service.setResumableTransport(replacement);
 
     expect(resumable.closeAll).toHaveBeenCalledOnce();
+  });
+
+  describe('child conversation subscriptions', () => {
+    const childId = 'child-conversation-1';
+
+    it('watches once however many holders ask, and releases on the last one out', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-1', childId);
+
+      expect(resumable.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId);
+
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    it('ignores a release nobody holds, so the count cannot go negative', () => {
+      service.unsubscribeConversation(childId);
+      service.subscribeConversation('agent-1', childId);
+      service.unsubscribeConversation(childId);
+      resumable.unwatchConversation.mockClear();
+      // The renderer's card and panel effects can both release on the way out
+      // of a conversation switch that already released every hold.
+      service.unsubscribeConversation(childId);
+
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    it('re-watches every held conversation on a replacement transport, and says a re-read is owed', () => {
+      const restored = vi.fn();
+      service.setSubscriptionRestoredListener(restored);
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-2', 'child-conversation-2');
+
+      const replacement = {
+        closeAll: vi.fn(),
+        watchConversation: vi.fn(),
+        unwatchConversation: vi.fn(),
+      };
+      service.setResumableTransport(replacement as unknown as ResumableChatTransport);
+
+      // The old transport's `closeAll` dropped both sockets and the new one's
+      // registry is empty, while the renderer still holds both.
+      expect(replacement.watchConversation.mock.calls).toEqual([
+        ['agent-1', childId],
+        ['agent-2', 'child-conversation-2'],
+      ]);
+      expect(restored.mock.calls).toEqual([[childId], ['child-conversation-2']]);
+    });
+
+    it('holds the count while there is no transport, and watches when one arrives', () => {
+      service.setResumableTransport(undefined);
+      service.subscribeConversation('agent-1', childId);
+
+      const arriving = {
+        closeAll: vi.fn(),
+        watchConversation: vi.fn(),
+        unwatchConversation: vi.fn(),
+      };
+      service.setResumableTransport(arriving as unknown as ResumableChatTransport);
+
+      expect(arriving.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId);
+    });
   });
 
   it('starts gateway title and task bookkeeping only after durable acceptance', async () => {

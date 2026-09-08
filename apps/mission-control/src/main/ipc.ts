@@ -187,6 +187,33 @@ export function activatePendingConversationRuntime(
   service.setResumableTransport(runtime?.transport ?? undefined);
 }
 
+export interface SubagentWatchRequest {
+  watch: boolean;
+  agentId?: string;
+  conversationId: string;
+}
+
+/**
+ * The body of the `subagents:watch` channel (design §7.6). Extracted so it can
+ * be tested: `ipcMain.on` is registered inside `registerIpcHandlers`, which
+ * needs a live Electron app.
+ *
+ * A hold with no agent id is DROPPED rather than guessed at. The gateway's hub
+ * keys its watcher registry on `(agentId, conversationId)`
+ * (`apps/gateway/src/chat-ws.ts:425-432`), so a wrong agent id would subscribe
+ * to nothing and the release would then decrement a hold that was never taken.
+ */
+export function applySubagentWatch(
+  service: Pick<ChatService, 'subscribeConversation' | 'unsubscribeConversation'>,
+  request: SubagentWatchRequest,
+): void {
+  if (request.watch) {
+    if (request.agentId) service.subscribeConversation(request.agentId, request.conversationId);
+    return;
+  }
+  service.unsubscribeConversation(request.conversationId);
+}
+
 export function createCanonicalChatHandlers(
   chat: Pick<
     ChatService,
@@ -1079,6 +1106,18 @@ export async function registerIpcHandlers(
       ? pendingConversationRuntime.repository
       : null;
 
+  /**
+   * A watched child conversation's stream came back after a drop. Fired both
+   * by the transport's own reconnect and by `ChatService` when the whole
+   * transport is replaced; the renderer answers both the same way, with a
+   * REST re-read of that child.
+   */
+  const sendSubagentResubscribed = (conversationId: string): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed())
+      win.webContents.send('chat:subagentResubscribed', conversationId);
+  };
+
   const chatUrl = (endpoint: ActiveGatewayEndpoint): string =>
     `${trimTrailingSlash(endpoint.chatBaseUrl)}/ws/chat?token=${encodeURIComponent(endpoint.chatToken)}`;
 
@@ -1129,6 +1168,7 @@ export async function registerIpcHandlers(
             if (win && !win.isDestroyed())
               win.webContents.send('chat:error', conversationId, message);
           },
+          onSubscriptionRestored: sendSubagentResubscribed,
         }),
     });
     if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
@@ -2007,6 +2047,19 @@ export async function registerIpcHandlers(
   ipcMain.handle('conversations:messages', async (_e, conversationId: string, before?: string) =>
     (await getSwarmClient()).conversationMessages(conversationId, before),
   );
+
+  // `ipcMain.on`, not `handle`: the preload sends these fire-and-forget (see
+  // the note on `chat:cancel`). ONE channel for both halves, so a release can
+  // never overtake the hold it belongs to.
+  // Attached beside the handler that creates the holds: the renderer must be
+  // told to re-read whether the stream came back through the transport's own
+  // reconnect or through a whole transport swap, and only ChatService knows
+  // about the second.
+  getChatService(getWindow).setSubscriptionRestoredListener(sendSubagentResubscribed);
+
+  ipcMain.on('subagents:watch', (_event, request: SubagentWatchRequest) => {
+    applySubagentWatch(getChatService(getWindow), request);
+  });
 
   // -----------------------------------------------------------------------
   // Settings

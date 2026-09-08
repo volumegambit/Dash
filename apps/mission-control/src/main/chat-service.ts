@@ -105,6 +105,14 @@ export class ChatService {
    */
   private sessionStatusListener?: (conversationId: string, status: SessionStatus) => void;
 
+  private subscriptionRestoredListener?: (conversationId: string) => void;
+
+  /**
+   * Child conversations the renderer is watching, and how many holders each
+   * has. See {@link subscribeConversation}.
+   */
+  private readonly watchedConversations = new Map<string, { agentId: string; holds: number }>();
+
   constructor(
     private store: ConversationStore,
     private onEvent: (conversationId: string, event: McAgentEvent) => void,
@@ -117,8 +125,59 @@ export class ChatService {
   ) {}
 
   setResumableTransport(transport: ResumableChatTransport | undefined): void {
-    if (this.resumable !== transport) this.resumable?.closeAll();
+    if (this.resumable === transport) return;
+    this.resumable?.closeAll();
     this.resumable = transport;
+    // A swap is a reconnect nobody else names. `closeAll` above dropped every
+    // child socket and the replacement's registry is empty, while the
+    // renderer's holds are untouched — so the count here is what puts them
+    // back, and every re-watch owes its reader a REST re-read for the same
+    // reason a reconnect does: a subscribe replays nothing.
+    for (const [conversationId, held] of this.watchedConversations) {
+      transport?.watchConversation(held.agentId, conversationId);
+      if (transport) this.subscriptionRestoredListener?.(conversationId);
+    }
+  }
+
+  /**
+   * Told when a watched conversation's stream was interrupted and restored, so
+   * the renderer can re-read the transcript the gap swallowed.
+   */
+  setSubscriptionRestoredListener(listener: (conversationId: string) => void): void {
+    this.subscriptionRestoredListener = listener;
+  }
+
+  /**
+   * Take one hold on a child conversation's live stream (design §7.6).
+   *
+   * The COUNT lives here rather than in the transport because it has to
+   * survive a transport swap: `setResumableTransport` closes every socket the
+   * old one had, and only a record of what is held can put them back. The
+   * transport's own registry is what makes one socket per conversation
+   * structural; this is what makes the holds outlive the socket.
+   *
+   * `agentId` is the PARENT's: a child conversation belongs to the same agent,
+   * and the hub keys its watcher registry on that pair
+   * (`apps/gateway/src/chat-ws.ts:425-432`).
+   */
+  subscribeConversation(agentId: string, conversationId: string): void {
+    const held = this.watchedConversations.get(conversationId);
+    if (held) {
+      held.holds += 1;
+      return;
+    }
+    this.watchedConversations.set(conversationId, { agentId, holds: 1 });
+    this.resumable?.watchConversation(agentId, conversationId);
+  }
+
+  /** Release one hold; the last one out drops the watch. */
+  unsubscribeConversation(conversationId: string): void {
+    const held = this.watchedConversations.get(conversationId);
+    if (!held) return;
+    held.holds -= 1;
+    if (held.holds > 0) return;
+    this.watchedConversations.delete(conversationId);
+    this.resumable?.unwatchConversation(conversationId);
   }
 
   setSessionStatusListener(
