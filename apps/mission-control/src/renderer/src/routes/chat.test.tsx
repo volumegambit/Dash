@@ -1188,7 +1188,13 @@ describe('MessageBubble sub-agent cards', () => {
   // §8.1 puts the pending question on the COLLAPSED row precisely so nobody
   // has to expand a card to discover a child is stuck. A read-only card still
   // says so; what it drops is the reply box, which is the action.
-  it('still shows a pending question on a read-only card, without a reply box', () => {
+  // A card off the selected conversation has NO live source: the list belongs
+  // to another conversation, the poll re-reads only that one, and a background
+  // child's fold is never moved again once its parent's turn has ended. So it
+  // renders nothing live — the clock does not tick and the yellow question,
+  // which the fold may have been holding for hours, is not shown as if it were
+  // still being asked. It says what it is instead.
+  it('draws a read-only card as a snapshot, with no ticking clock and no question', () => {
     render(
       <MessageBubble
         message={assistantMessage(waitingBackground)}
@@ -1196,8 +1202,28 @@ describe('MessageBubble sub-agent cards', () => {
       />,
     );
 
-    expect(screen.getByTestId('subagent-question-sub_a')).toHaveTextContent('Which branch?');
+    const card = screen.getByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'waiting');
+    expect(within(card).getByTestId('subagent-card-meta').textContent).not.toContain('·');
+    expect(card.querySelector('.animate-spin')).toBeNull();
+    expect(screen.queryByTestId('subagent-question-sub_a')).not.toBeInTheDocument();
     expect(screen.queryByTestId('subagent-reply-input-sub_a')).not.toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toHaveTextContent('snapshot');
+  });
+
+  // Frozen, not blank: a run the fold saw finish has a real duration, and a
+  // snapshot of it is honest. This is D1/D2's rule — an elapsed segment needs
+  // `endedAt`, never `now`.
+  it('keeps a finished read-only card its recorded duration', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-meta')).toHaveTextContent('12 tool uses · 45s');
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toBeInTheDocument();
   });
 
   it('replies to a waiting child from the card, and re-reads afterwards', async () => {

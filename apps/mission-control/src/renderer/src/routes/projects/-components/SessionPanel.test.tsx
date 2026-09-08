@@ -231,6 +231,8 @@ describe('SessionPanel', () => {
     const card = await screen.findByTestId('subagent-card-sub_a');
     expect(card).toHaveAttribute('data-status', 'running');
     expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
+    // …and it says so: nothing here is live, so the card is a snapshot.
+    expect(screen.getByTestId('subagent-card-snapshot-sub_a')).toBeInTheDocument();
   });
 
   it('keeps read-only local history visible without enabling mutations', () => {

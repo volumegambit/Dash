@@ -742,11 +742,22 @@ function formatTokens(n: number): string {
 }
 
 /** Status glyph for a sub-agent card header, mirroring ToolBlock's inline icon. */
-function SubagentStatusIcon({ status }: { status: SubagentStatus }): JSX.Element {
+function SubagentStatusIcon({
+  status,
+  live = true,
+}: {
+  status: SubagentStatus;
+  live?: boolean;
+}): JSX.Element {
   switch (status) {
     case 'running':
     case 'waiting':
-      return <Loader size={10} className="inline animate-spin text-accent mr-1.5" />;
+      // The spin is the canonical "this is happening right now". On a card
+      // with no live source nothing is happening that this client can see, so
+      // the glyph keeps the status the fold recorded and drops the animation.
+      return (
+        <Loader size={10} className={`inline text-accent mr-1.5 ${live ? 'animate-spin' : ''}`} />
+      );
     case 'done':
       return <Check size={10} className="inline text-green mr-1.5" />;
     case 'failed':
@@ -905,6 +916,14 @@ function SubagentCluster({
  * `resolveSubagentStatus`. Every question/terminal decision here goes through
  * the resolved value, never `group.status`.
  *
+ * A card whose `conversationKey` is not the store's selected conversation has
+ * no live source at all, and renders as the SNAPSHOT it is: the fold's status
+ * and the fold's tool count, a frozen elapsed (only a run the fold saw finish
+ * has one), no pending question and a `snapshot` marker saying so. Nothing on
+ * that surface can move — the list, the poll and every frame trigger address
+ * the selected conversation — so anything live there is a claim this client
+ * cannot stand behind.
+ *
  * A card at `depth >= 1` is inside another child's transcript: no toggle, no
  * composer, no actions. So is a card whose `conversationKey` is not the
  * store's selected conversation — `subagents` and `subagentUi` describe ONE
@@ -946,7 +965,17 @@ function SubagentCard({
   const question = resolveSubagentQuestion(group, entry);
   const terminal = isTerminalSubagentStatus(status);
   const open = interactive && ui?.expanded === true;
-  const elapsed = useSubagentElapsed(group.startedAt, group.endedAt, !terminal);
+  // The clock is live only where something can move this row: on the selected
+  // conversation the list read does (the poll, the frame triggers, a resume);
+  // off it nothing ever will, so a running child would tick upward forever and
+  // `3h 00m` would be the age of the message rather than the length of the
+  // run. `onSelectedConversation`, not `interactive`: a nested grandchild is
+  // redrawn from the transcript its parent card fetches, so its clock stays.
+  const elapsed = useSubagentElapsed(
+    group.startedAt,
+    group.endedAt,
+    !terminal && onSelectedConversation,
+  );
   const isError = status === 'failed';
   const detail = group.detail;
   // A one-shot child (Explore, Plan) refuses a resume — EXCEPT when it is
@@ -964,10 +993,19 @@ function SubagentCard({
 
   const header = (
     <>
-      <SubagentStatusIcon status={status} />
+      <SubagentStatusIcon status={status} live={onSelectedConversation} />
       <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
       <span className="font-mono shrink-0">{group.type || group.name || 'sub-agent'}</span>
       {detail && <span className="ml-2 min-w-0 truncate text-muted">{detail}</span>}
+      {!nested && !onSelectedConversation && (
+        <span
+          className="ml-2 shrink-0 rounded-sm border border-border px-1 text-[10px] uppercase tracking-wide text-muted"
+          data-testid={`subagent-card-snapshot-${group.subagentId}`}
+          title="A snapshot of this message — this child is not being re-read here"
+        >
+          snapshot
+        </span>
+      )}
       <span
         className="ml-auto shrink-0 pl-2 font-[family-name:var(--font-mono)] text-[10px] text-muted"
         data-testid="subagent-card-meta"
@@ -998,12 +1036,17 @@ function SubagentCard({
         </button>
       )}
 
-      {/* The pending question sits on the COLLAPSED row too (§8.1): a child
-          waiting on input is the one thing a user must not have to expand a
-          card to discover. It is therefore NOT gated on `interactive` — a card
-          drawn for another conversation still says the child is stuck; what it
-          drops is the reply box, which is the action. */}
-      {question && !nested && (
+      {/* The pending question sits on the COLLAPSED row (§8.1): a child waiting
+          on input is the one thing a user must not have to expand a card to
+          discover. It is gated on `interactive` all the same, which reverts
+          `aad4ce66`'s widening to `!nested`: off the selected conversation the
+          fold is all there is, and it holds the question of the last event
+          that reached the parent — a child stopped or answered elsewhere, or
+          simply finished after its parent's turn ended, keeps that question
+          for the life of the conversation. A read-only row that cannot be
+          re-read must not ask a question that may have been answered hours
+          ago; it says `snapshot` instead. */}
+      {question && interactive && (
         <div className="border-t border-border px-3 py-1.5">
           <p
             className="mb-1.5 text-yellow-400"
