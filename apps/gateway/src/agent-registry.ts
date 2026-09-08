@@ -5,8 +5,10 @@ import { dirname } from 'node:path';
 /**
  * Per-agent swarm configuration. All fields optional — the gateway's
  * `swarm.defaults` fill any gap and `enabled` gates whether the agent may
- * spawn workers at all. `allowedModels`, when set, restricts the models an
- * orchestrator may hand to its workers. Persisted verbatim on the agent config
+ * spawn workers at all. `allowedModels` ADDS to what a worker may be given: the
+ * coordinator's allowed set is the UNION of the orchestrator's own model, its
+ * `fallbackModels` and this list (`coordinator.ts` `validateModel`), so it can
+ * never withhold the parent's model. Persisted verbatim on the agent config
  * (the registry round-trips the whole config object as JSON).
  */
 export interface AgentSwarmConfig {
@@ -62,9 +64,10 @@ export interface AgentSubagentsConfig {
   maxRunSeconds?: number;
   /**
    * How deep this orchestrator's descendants may nest (0 = may not nest at
-   * all). VALIDATED AND PERSISTED BUT NOT YET ENFORCED — **Task C3** owns
-   * nesting and the depth ceiling; until it lands, the coordinator's own
-   * ceiling is the only limit.
+   * all). ENFORCED in two places: a child at the ceiling is not handed the
+   * `agent` tool at all (`subagent-tools.ts` `createChildSpawnTools`), and the
+   * coordinator refuses a spawn past it (`depth limit reached`) as defence in
+   * depth.
    */
   maxDepth?: number;
 }

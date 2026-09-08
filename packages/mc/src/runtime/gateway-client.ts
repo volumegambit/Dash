@@ -11,9 +11,11 @@ import type {
 /**
  * Per-agent swarm caps + gating. Mirror of the gateway's `AgentSwarmConfig`
  * (`apps/gateway/src/agent-registry.ts`). `enabled` gates whether the agent may
- * spawn workers at all; the numeric caps and `allowedModels` (when set) override
- * the gateway defaults. All fields optional — an omitted field falls back to the
- * gateway `swarm.defaults`.
+ * spawn workers at all and the numeric caps override the gateway defaults.
+ * `allowedModels` ADDS to what a worker may be given — the gateway's allowed
+ * set is the union of the orchestrator's model, its fallbacks and this list, so
+ * it cannot withhold the parent's model. All fields optional — an omitted field
+ * falls back to the gateway `swarm.defaults`.
  */
 export interface AgentSwarmConfig {
   enabled?: boolean;
