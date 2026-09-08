@@ -1460,3 +1460,64 @@ describe('MessageBubble sub-agent cards', () => {
     expect(screen.getByTestId('subagent-card-sub_a')).toHaveTextContent('one-shot');
   });
 });
+
+/**
+ * The Sub-agents panel affordance read `swarm?.enabled === true`, one of the
+ * two blocks the gateway consults. The gateway's gate is
+ * `subagents?.enabled ?? swarm?.enabled ?? true`, so for the DEFAULT
+ * population — an agent with neither block, which has sub-agents on and holds
+ * the `agent` tool — the toolbar button was hidden until a child happened to
+ * exist. Turning the feature on from the Swarm card, which now writes
+ * `subagents.enabled`, would not have brought it back either.
+ */
+describe('Sub-agents panel affordance', () => {
+  const withConfig = (config: Record<string, unknown>) => ({
+    ...agent1,
+    config: { ...agent1.config, ...config },
+  });
+
+  // The affordance is `enabled || this conversation already has children`, so
+  // a child left in the store by an earlier test would hide the gate half of
+  // it — which is the half these cases are about.
+  beforeEach(() => {
+    mockApi.subagentsList.mockResolvedValue([]);
+    useChatStore.setState({ subagents: [], subagentUi: {} });
+  });
+
+  it('is shown for an agent with NEITHER block — sub-agents are on by default', async () => {
+    useAgentsStore.setState({ agents: [agent1], loading: false, error: null });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    expect(await screen.findByTestId('swarm-panel-toggle')).toBeInTheDocument();
+  });
+
+  it('is shown when only subagents.enabled says so, over a legacy swarm off', async () => {
+    useAgentsStore.setState({
+      agents: [withConfig({ swarm: { enabled: false }, subagents: { enabled: true } })],
+      loading: false,
+      error: null,
+    });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    expect(await screen.findByTestId('swarm-panel-toggle')).toBeInTheDocument();
+  });
+
+  it('is hidden for an agent that really has sub-agents off and no children', async () => {
+    // Both directions in ONE test, so the negative cannot be a mistyped
+    // selector quietly matching nothing.
+    useAgentsStore.setState({ agents: [agent1], loading: false, error: null });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    expect(await screen.findByTestId('swarm-panel-toggle')).toBeInTheDocument();
+    cleanup();
+
+    useAgentsStore.setState({
+      agents: [withConfig({ subagents: { enabled: false } })],
+      loading: false,
+      error: null,
+    });
+    setCanonicalState([gatewayConversation], { id: gatewayConversation.id, origin: 'gateway' });
+    render(<Chat />);
+    await waitFor(() => expect(screen.queryByTestId('swarm-panel-toggle')).not.toBeInTheDocument());
+  });
+});

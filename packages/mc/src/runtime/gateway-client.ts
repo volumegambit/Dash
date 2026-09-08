@@ -49,6 +49,22 @@ export interface AgentSubagentsConfig {
   modelAliases?: Record<string, string>;
 }
 
+/**
+ * The gateway's own sub-agent gate, mirrored for the renderer:
+ * `subagents?.enabled ?? swarm?.enabled ?? true`
+ * (`apps/gateway/src/subagent-config.ts` `isSubagentsEnabled`).
+ *
+ * It lives here, next to the mirrored config, because reading only one of the
+ * two blocks has now been a defect twice in Mission Control: the Swarm card
+ * rendered every default agent as OFF, and the chat route hid the Sub-agents
+ * panel for the same population. `undefined` (no agent selected) is `false` —
+ * an absent agent is not an agent with the feature on.
+ */
+export function subagentsEnabledFor(config: GatewayAgent['config'] | undefined): boolean {
+  if (!config) return false;
+  return config.subagents?.enabled ?? config.swarm?.enabled ?? true;
+}
+
 export interface GatewayAgent {
   id: string;
   name: string;

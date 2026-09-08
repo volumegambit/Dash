@@ -1,5 +1,6 @@
 import type { PluginRecord, RuntimePluginProvider } from '@dash/management';
 import type { AgentSubagentsConfig, AgentSwarmConfig, GatewayAgent } from '@dash/mc';
+import { subagentsEnabledFor } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpConnectorInfo } from '../../../../../shared/ipc.js';
@@ -319,20 +320,19 @@ export function AgentConfigTab({
   // Sync swarm draft when agentConfig changes. Numeric caps render as text (a
   // blank field = "use the gateway default").
   const swarmCfg = agentConfig?.swarm;
-  const subagentsCfg = agentConfig?.subagents;
   useEffect(() => {
     // The SAME precedence the gateway reads (`isSubagentsEnabled`:
     // `subagents?.enabled ?? swarm?.enabled ?? true`). Sub-agents are ON by
     // default so that every agent registered before either block existed has
     // them; rendering an unset value as OFF both misreported the agent and,
     // on Save, turned the feature off for it.
-    setSwarmEnabled(subagentsCfg?.enabled ?? swarmCfg?.enabled ?? true);
+    setSwarmEnabled(subagentsEnabledFor(agentConfig));
     setSwarmMaxConcurrent(swarmCfg?.maxConcurrentWorkers?.toString() ?? '');
     setSwarmMaxPerRun(swarmCfg?.maxWorkersPerRun?.toString() ?? '');
     setSwarmMaxSteers(swarmCfg?.maxSteersPerWorker?.toString() ?? '');
     setSwarmMaxRunSeconds(swarmCfg?.maxRunSeconds?.toString() ?? '');
     setSwarmAllowedModels((swarmCfg?.allowedModels ?? []).join(', '));
-  }, [swarmCfg, subagentsCfg]);
+  }, [agentConfig, swarmCfg]);
 
   const handleSaveSwarm = async (): Promise<void> => {
     setSwarmSaving(true);
@@ -352,7 +352,10 @@ export function AgentConfigTab({
       // The gate is written on `subagents`, the block that supersedes `swarm`
       // and the one the gateway reads first — and spread over whatever is
       // stored, because the gateway replaces this block wholesale too.
-      const subagents: AgentSubagentsConfig = { ...subagentsCfg, enabled: swarmEnabled };
+      const subagents: AgentSubagentsConfig = {
+        ...agentConfig?.subagents,
+        enabled: swarmEnabled,
+      };
       await updateConfig(agentId, { swarm, subagents });
       setOpenCard(null);
     } finally {

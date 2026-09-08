@@ -1,4 +1,5 @@
 import type { ConversationRef, McConversationView, McMessage } from '@dash/mc';
+import { subagentsEnabledFor } from '@dash/mc';
 import type { ConversationMessage, MobileImage, MobileWsServerFrame } from '@dash/mobile-contract';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import hljs from 'highlight.js/lib/core';
@@ -2505,7 +2506,12 @@ export function Chat(): JSX.Element {
   // conversation already has children. The second half is what makes the
   // drawer reachable on a conversation whose agent has since had the feature
   // turned off — the children are still there and still stoppable.
-  const swarmEnabled = selectedAgent?.config.swarm?.enabled === true;
+  // The gateway's precedence, not the legacy block alone: an agent with
+  // neither block has sub-agents ON, so reading `swarm?.enabled === true` hid
+  // this affordance from the whole default population until a child happened
+  // to exist — and after the Swarm card started writing `subagents.enabled`,
+  // turning the feature on in the UI would not have brought it back.
+  const swarmEnabled = subagentsEnabledFor(selectedAgent?.config);
   const showSwarmAffordance =
     Boolean(selectedConversationRef) && (swarmEnabled || subagents.length > 0);
 

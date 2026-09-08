@@ -72,7 +72,11 @@ export type {
   GatewayConnectionSettings,
 } from './settings-store.js';
 export { getPlatformDataDir } from './platform-paths.js';
-export { GatewayManagementClient, GatewayHttpError } from './runtime/gateway-client.js';
+export {
+  GatewayManagementClient,
+  GatewayHttpError,
+  subagentsEnabledFor,
+} from './runtime/gateway-client.js';
 export type {
   ConversationMessagePage,
   ConversationPage,
