@@ -217,9 +217,9 @@ Sub-agents are **on by default** for every agent. The `agent` and `send_message`
     | `to` | `string` | yes | The name or id of a sub-agent in this conversation |
     | `message` | `string` | yes | The message to deliver |
 
-    Returns immediately. A **running** agent receives the message after its current step; a **finished** agent is resumed with its context intact and picks up from where it stopped. Either way, its next completion comes back as a notification.
+    Returns immediately. A **running** agent receives the message after its current turn finishes, not between its tool calls — unless it is **paused on an `ask_orchestrator` question**, in which case the message arrives at once as the answer and does not count against the message cap. A **finished** agent is resumed with its context intact and picks up from where it stopped. Either way, its next completion comes back as a notification.
 
-    Refuses a one-shot type (`Explore`, `Plan`), an unknown name, and a message past the per-agent steer cap.
+    Refuses a one-shot type (`Explore`, `Plan`), an unknown name, and a message past the per-agent steer cap. The one-shot refusal is unconditional here: it applies even to a one-shot sub-agent that is paused on an `ask_orchestrator` question.
   </Tab>
   <Tab title="ask_orchestrator">
     Every sub-agent gets this one tool of its own: ask the parent a question and **pause** until it answers.
@@ -228,7 +228,9 @@ Sub-agents are **on by default** for every agent. The `agent` and `send_message`
     |-----------|------|----------|-------------|
     | `question` | `string` | yes | The blocker or decision to send up to the parent |
 
-    The sub-agent shows as **waiting for input** until the parent replies with `send_message`, until you reply from the row's reply box, or until the request times out.
+    The sub-agent shows as **waiting for input** until it is answered or the request times out.
+
+    Who can answer depends on the type. For `general-purpose` and for your own types, the parent answers with `send_message`. For `Explore` and `Plan` — the two **one-shot** built-ins — `send_message` refuses regardless of the question, so the answer has to come from the reply box on the sub-agent's row (or from the legacy [`send_to_worker`](#legacy-swarm-tools)).
   </Tab>
 </Tabs>
 
@@ -240,11 +242,11 @@ Sub-agents are **on by default** for every agent. The `agent` and `send_message`
 
 | Type | What it's for | Tools |
 |------|---------------|-------|
-| `general-purpose` | Researching complex questions, searching for code, multi-step tasks | Everything the parent has, except the skill-management, connector-management and Projects tools, which are never passed down |
+| `general-purpose` | Researching complex questions, searching for code, multi-step tasks | Everything the parent has, except the skill-management, connector-management and Projects tools, which are never passed down. The four legacy swarm tools are not passed down either — a sub-agent that is still allowed to spawn gets `agent` and `send_message` instead, and one already at the nesting ceiling gets neither |
 | `Explore` | Broad read-only searches where you only want the conclusion | `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `load_skill` |
 | `Plan` | Designing a step-by-step implementation plan | The same read-only set |
 
-`Explore` and `Plan` are **one-shot**: they are read-only and cannot be given a new task, so `send_message` refuses them. If one of them stops to ask a question, you can still answer it yourself from the reply box on its row.
+`Explore` and `Plan` are **one-shot**: they are read-only and cannot be given a new task, so `send_message` refuses them — including when one of them is paused on a question. If one stops to ask, answer it yourself from the reply box on its row, or from the legacy `send_to_worker`, both of which do answer a paused one-shot. Your own types and plugin types are never one-shot.
 
 **Your own agent types.** Drop a markdown file with Claude Code frontmatter into `.dash/agents/` (or `.claude/agents/`) in the agent's workspace and it becomes a launchable type — the frontmatter sets its name, description, tool list, model, and preloaded skills, and the body is its system prompt. Plugins ship types too. See [Configuration → Sub-agent types](/configuration#sub-agent-types) for the file format, where the files can live, and which one wins. Whatever a definition asks for, **a sub-agent can never hold a tool or an MCP server its parent doesn't have.**
 
@@ -271,7 +273,7 @@ Sub-agent rows are a chat-app feature. Over Telegram or WhatsApp you get the age
 What that means in practice:
 
 - `spawn_worker` is an `agent` call with `subagent_type: general-purpose` and `run_in_background: true`. The `role` becomes the child's description (and its name, when the role is a legal name).
-- `send_to_worker` is `send_message`, which means it now **resumes a worker that has already finished** instead of refusing.
+- `send_to_worker` does what `send_message` does, which means it now **resumes a worker that has already finished** instead of refusing. The two differ in one place: `send_to_worker` also answers a **one-shot** worker that is paused on a question, where `send_message` refuses.
 - `wait_workers` and `check_workers` read the same children the sub-agent tools do.
 - Workers and sub-agents **share one set of caps** — there is one coordinator behind both.
 - A worker's **read-only default is unchanged**: with no `tools` argument it gets `read`, `grep`, `find`, and `ls`, intersected with what the parent holds.
@@ -312,7 +314,7 @@ The four tools:
     | `workerId` | `string` | yes | The worker to steer or answer |
     | `message` | `string` | yes | The answer or additional instruction to deliver |
 
-    Messages are capped per worker. A worker that has already finished is **resumed** by this call rather than refused; a one-shot type still refuses.
+    Messages are capped per worker. A worker that has already finished is **resumed** by this call rather than refused. A one-shot type is refused — as a not-ok result rather than an error — **unless it is paused on a question, in which case this call answers it.**
   </Tab>
   <Tab title="check_workers">
     Return a non-blocking snapshot of every worker in the run — id, role, status, and latest report or question. Use it to poll progress without blocking (unlike `wait_workers`).

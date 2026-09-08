@@ -507,7 +507,7 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="My sub-agent's worktree wasn't removed">
     A directory is still sitting under `~/.dash/gateway/worktrees/<agent-name>/<subagent-id>/` after the sub-agent finished.
 
-    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is reported back with the sub-agent's result so you can find it.
+    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is not handed back to you in the chat: to find it, either fill in the template above with the sub-agent's id, or look in the gateway log, where every kept worktree is recorded with a `keeping <path>` line naming the path and why it was kept.
 
     **Fix:** look at what's inside and keep or merge what you want. Once the checkout is clean, `git worktree remove <path>` from the parent repository takes it down; git refuses while there are changes in it, so commit or discard them first (or pass `--force` if you are sure).
   </Accordion>
@@ -523,9 +523,11 @@ Something not working? Here are the most common issues and how to fix them.
   <Accordion title="Resume is refused or greyed out">
     A **Resume** — from a row, from the tasks list, or from the parent's own `send_message` — comes back with an error instead. There are three reasons:
 
-    - `Agent "..." is a one-shot Explore agent and cannot be resumed.` — `Explore` and `Plan` are read-only, one-shot types. **Fix:** launch a new one with the follow-up task. (If the agent is still running and asking a question, you *can* answer it from the reply box on its row — that's an answer, not a resume.)
-    - `steer cap reached for "..." (max 10 per agent).` — you've hit the per-child message cap, which counts across resumes. **Fix:** raise `swarm.maxSteersPerWorker` for the agent, or start a fresh sub-agent.
-    - A refusal naming a tool or model the sub-agent can no longer have — a resume re-checks the child's tools, MCP servers, and model against what the parent holds **now**, so a child cannot outlive a narrowing of its parent. **Fix:** restore the parent's tools or model, or launch a new sub-agent under the current configuration.
+    - `Agent "..." is a one-shot Explore agent and cannot be resumed.` — `Explore` and `Plan` are read-only, one-shot types. **Fix:** launch a new one with the follow-up task. (If the agent is still running and asking a question, you *can* answer it from the reply box on its row — that's an answer, not a resume. The parent's own `send_message` refuses even then; the reply box and the legacy `send_to_worker` are the two paths that get through.)
+    - `steer cap reached for "..." (max 10 per agent).` — you've hit the per-child message cap, which counts across resumes for as long as the gateway holds that child in memory (a restart resets it to zero). **Fix:** raise `swarm.maxSteersPerWorker` for the agent, or start a fresh sub-agent.
+    - `Agent "..." cannot be resumed: its grant cannot be rebuilt.` — the parent's grant could not be re-established. Either **sub-agents have been turned off** on the parent agent, or the parent conversation (or one above it) was **deleted** — deleting a conversation stops everything under it from running again. **Fix:** re-enable sub-agents on the parent agent — see [Configuration → Per-agent settings](/configuration#per-agent-settings), and read the note there about Mission Control's **Swarm** card, which is the usual way an agent ends up with sub-agents switched off. A deleted parent cannot be brought back, so launch a new sub-agent instead.
+
+    A resume also **silently** re-intersects the child's tools and MCP servers with what its parent holds now, so a resumed sub-agent can come back with fewer tools than it had, without any message saying so. Its **model** is not re-checked: a child keeps the model it was launched with even if that model has since been removed from the parent's allowed set.
 
     Mission Control's panel also greys **Resume** out for a sub-agent that has already finished; use the web tasks panel or `POST /subagents/:id/resume` to resume one from there.
   </Accordion>

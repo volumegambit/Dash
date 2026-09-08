@@ -35,15 +35,15 @@ Each agent carries an optional `subagents` block on its config, saved verbatim t
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Whether this agent gets the sub-agent tools at all. When unset, the older `swarm.enabled` is read instead; when both are set, `subagents.enabled` wins. |
-| `delegation` | derived from the model | `auto` — delegate proactively; `explicit` — only when you ask for it. Unset means it follows the agent's model, as its **provider's** catalog rates it: a model the provider lists as top-tier (`anthropic/claude-opus-…`, `google/gemini-…-pro`, `openai/o3-pro`, …) gets `auto`, everything else gets `explicit` — including the same model reached through an aggregator such as OpenRouter, which rates its own list separately. |
+| `delegation` | derived from the model | `auto` — delegate proactively; `explicit` — only when you ask for it. This is **guidance written into the system prompt, not an enforced limit**: an `explicit` agent still holds the sub-agent tools and can launch a sub-agent whenever it decides to. Unset means it follows the agent's model, as its **provider's** catalog rates it: a model the provider lists as top-tier (`anthropic/claude-opus-…`, `google/gemini-…-pro`, `openai/o3-pro`, …) gets `auto`, everything else gets `explicit` — including the same model reached through an aggregator such as OpenRouter, which rates its own list separately. |
 | `allowedTypes` | *(all)* | The sub-agent types this agent may launch. An entry that matches no type is reported as a warning, not an error. |
-| `allowedModels` | *(unset)* | Models a sub-agent may be given. When unset, a child uses the parent's model and fallbacks. |
+| `allowedModels` | *(unset)* | **Extra** models a sub-agent may be given, in addition to the parent's own model and its fallback models — the allowed set is the union of all three. It cannot be used to withhold the parent's model, so setting it to a cheaper model does not stop a sub-agent asking for the parent's expensive one. When unset, a child can use the parent's model and fallbacks. |
 | `maxConcurrent` | `8` | Most sub-agents this agent may run **at once**. |
 | `maxPerTurn` | `24` | Most sub-agents this agent may launch **in one turn**. |
 | `maxRunSeconds` | `1800` | Wall-clock limit for a single sub-agent (30 minutes). |
 | `maxDepth` | `3` | How deep sub-agents may nest. A direct child is depth 1; `0` stops this agent spawning at all. |
 
-Messages to a running child are capped separately, by `swarm.maxSteersPerWorker` (default `10`); the count spans a child's whole life, resumes included.
+Messages to a running child are capped separately, by `swarm.maxSteersPerWorker` (default `10`); the count spans a child's whole life, resumes included, for as long as the gateway keeps that child in memory. The count is not written to disk, so a child resumed after a gateway restart starts from zero again.
 
 <Note>
   Mission Control has no Sub-agents card yet. The `subagents` block is set through the [Management API](/api-reference) (`PUT /agents/:id`). Mission Control's **Configuration → Swarm** card still writes the older `swarm` block — and because it shows its checkbox unticked for any agent that has no `swarm` block, **saving that card turns sub-agents off** for the agent (`swarm.enabled: false`). Re-tick it, or set `subagents.enabled: true`, to turn them back on.
@@ -89,7 +89,7 @@ isolation: worktree
 You are a senior reviewer...
 ```
 
-`name` and `description` are required. `tools` is a comma-separated list of Dash tool names, MCP patterns (`mcp__<server>`, `mcp__<server>__<tool>`, `mcp__*`), or `agent(<type>, …)` to limit which types this agent may launch in turn; omit it to inherit everything the parent has. `disallowedTools` is subtracted first. `model` takes a `provider/model` id or `inherit`. `skills` names skills to preload into the prompt. `maxTurns` stops the agent after that many tool calls and reports what it has so far (it can be resumed). `background` makes this type detach by default. `isolation: worktree` gives the agent its own git checkout of the workspace, cut from the workspace's current commit. Claude Code keys Dash does not act on — `permissionMode`, `hooks`, `mcpServers`, `memory`, `effort`, `color`, `experimental` — are ignored with a warning in the log.
+`name` and `description` are required; `name` must match `^[a-z0-9][a-z0-9-]*$` — lowercase letters, digits and hyphens only. `tools` is a comma-separated list of Dash tool names, MCP patterns (`mcp__<server>`, `mcp__<server>__<tool>`, `mcp__*`), or `agent(<type>, …)` to limit which types this agent may launch in turn; omit it to inherit the parent's grant **after** the skill-management, connector-management and Projects tools have been dropped — those are parent-only however the agent is configured, so "everything the parent has" never includes them. `disallowedTools` is subtracted first. `model` takes a `provider/model` id or `inherit`. `skills` names skills to preload into the prompt. `maxTurns` stops the agent once it has made more than that many tool calls and reports what it has so far (it can be resumed) — the call that trips the limit still runs to completion, so the agent stops after `maxTurns + 1` calls rather than before. `background: true` **forces** this type to detach: a caller passing `run_in_background: false` cannot bring it back into the foreground, though a caller can always add background to a type that does not set it. `isolation: worktree` gives the agent its own git checkout of the workspace, cut from the workspace's current commit. Claude Code keys Dash does not act on — `permissionMode`, `hooks`, `mcpServers`, `memory`, `effort`, `color`, `experimental` — are **silently ignored**: nothing is written to the gateway log, so a setting that appears to do nothing is one of these rather than a file that failed to load.
 
 Definitions are read from four places. Where the same name appears twice, the **first** match here wins:
 
@@ -100,7 +100,7 @@ Definitions are read from four places. Where the same name appears twice, the **
 | 3 | A plugin's `agents/*.md` | `<plugin>:<name>` |
 | 4 | The built-ins (`general-purpose`, `Explore`, `Plan`) | by name |
 
-Plugin types are always namespaced, so they can never shadow anything; a workspace file named `Explore` does replace the built-in.
+Plugin types are always namespaced, so they can never shadow anything; a workspace file whose `name` is `explore` does replace the built-in `Explore`. Because the `name` grammar is lowercase-only, that is how you spell it — a file with `name: Explore` is rejected, not applied.
 
 <Warning>
   **A sub-agent can never hold a tool or an MCP server its parent does not have.** A definition's `tools` list is intersected with the parent's own tools, and its MCP access with the parent's assigned servers. Asking for more does not grant it — and if the intersection comes out empty, the launch fails rather than running a tool-less agent.
@@ -310,8 +310,10 @@ Supported events:
 | `PreToolUse` | Before a tool executes (matched by tool name) | Allow or deny the tool call |
 | `PostToolUse` | After a tool executes (matched by tool name) | Block the result, or append context |
 | `Stop` | After the run completes | Cleanup (its output is logged, not injected) |
-| `SubagentStart` | When a [sub-agent](/tools#sub-agents) starts (matched by its role) | Observe launches — log, notify, audit |
-| `SubagentStop` | When a sub-agent finishes, fails, is cancelled, or hits its turn limit (matched by its role) | Observe results — log, notify, audit |
+| `SubagentStart` | When a [sub-agent](/tools#sub-agents) starts (matched by its **role**, see below) | Observe launches — log, notify, audit |
+| `SubagentStop` | When a sub-agent finishes, fails, is cancelled, or hits its turn limit (matched by its **role**) | Observe results — log, notify, audit |
+
+A sub-agent's **role** — what these two matchers match on — is the `name` the `agent` call passed, and the **type name** (`general-purpose`, `Explore`, `Plan`, `my-plugin:reviewer`) when no `name` was given. On the legacy `spawn_worker` path it is the `role` argument. It is never the `description`.
 
 Each event maps to an array of matcher groups; each group has an optional `matcher` (a tool name, a `|`-separated list, or a regex — omit or use `*` to match everything) and a `hooks` array of `{ "type": "command", "command": "...", "timeout": <seconds> }` entries.
 
