@@ -826,6 +826,36 @@ describe('sub-agent list reads', () => {
 
     expect(useChatStore.getState().subagents).toEqual([]);
   });
+
+  // Guard 3, the cursor bump in `clearSubagents`, on the one selection that
+  // reaches it alone. The test above cannot fail without the bump: it
+  // re-selects the SAME gateway ref, so the selection's own trailing
+  // `refreshSubagents()` takes a fresh sequence number and writes the cursor
+  // itself. Selecting the LOCAL tab of the same id returns early at
+  // `ref.origin !== 'gateway'` BEFORE the cursor is touched, so the bump in
+  // `clearSubagents` is the only thing between the gateway conversation's
+  // children and the local conversation's transcript.
+  it('keeps a gateway read in flight off the local tab that shares its id', async () => {
+    const gatewayRef = { id: 'shared-id', origin: 'gateway' as const };
+    const localRef = { id: 'shared-id', origin: 'local' as const };
+    useChatStore.setState({
+      selectedConversationRef: gatewayRef,
+      conversations: [gatewayConversation, localConversation],
+      conversationAuthority: 'gateway',
+      gatewayOnline: true,
+    });
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
+    const pending = deferred<SubagentListEntry[]>();
+    mockApi.subagentsList.mockReturnValue(pending.promise);
+
+    const read = useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().selectConversation(localRef);
+    pending.resolve([subagentEntry()]);
+    await read;
+
+    expect(useChatStore.getState().selectedConversationRef).toEqual(localRef);
+    expect(useChatStore.getState().subagents).toEqual([]);
+  });
 });
 
 describe('sub-agent list triggers', () => {
