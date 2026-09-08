@@ -149,8 +149,11 @@ describe('recoverInterruptedSubagentTails', () => {
     });
   });
 
-  it('mirrors the legacy worker_done when a legacy worker_spawned card is dangling too', () => {
+  it('repairs a PRE-D8 tail (legacy worker_spawned present) with the canonical pair only', () => {
     const parent = parentWithOpenTurn();
+    // A transcript persisted before D8 still carries the retired mirror. The
+    // dangling scan has always been driven off `subagent_started`, so the
+    // repair is unchanged — and it no longer writes a `worker_done` of its own.
     service.appendTurnEvent(parent.id, parent.turnId, {
       type: 'worker_spawned',
       workerId: 'sub_a',
@@ -161,18 +164,24 @@ describe('recoverInterruptedSubagentTails', () => {
     });
     service.appendTurnEvent(parent.id, parent.turnId, started('sub_a'));
 
-    recoverInterruptedSubagentTails({ eventLog: service.eventLog, conversations: service });
-
-    const tail = service.eventLog.readSince(AGENT, parent.id, 0);
-    // Live order is worker_done first, then subagent_finished — replay has to
-    // match it or a legacy-only decoder sees the card resolve out of order.
-    expect(tail.at(-2)?.payload).toMatchObject({
-      type: 'event',
-      event: { type: 'worker_done', workerId: 'sub_a', runId: 'run-1', status: 'failed' },
+    const result = recoverInterruptedSubagentTails({
+      eventLog: service.eventLog,
+      conversations: service,
     });
+
+    expect(result.childrenTerminalized).toBe(1);
+    const tail = service.eventLog.readSince(AGENT, parent.id, 0);
     expect(tail.at(-1)?.payload).toMatchObject({
       type: 'event',
       event: { type: 'subagent_finished', subagentId: 'sub_a', status: 'interrupted' },
+    });
+    const appended = tail.map((t) => (t.payload as { event?: { type?: string } }).event?.type);
+    expect(appended.filter((t) => t === 'worker_done')).toEqual([]);
+    // D6's restart notification (`0da16410`) still fires for the repaired child.
+    expect(result.notificationsQueued).toBe(1);
+    expect(service.peekNotifications(parent.id)[0].payload).toMatchObject({
+      subagentId: 'sub_a',
+      status: 'interrupted',
     });
   });
 

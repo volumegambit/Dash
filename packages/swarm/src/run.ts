@@ -1,7 +1,6 @@
 import type { AgentEvent } from '@dash/agent';
 import { AsyncChannel } from './channel.js';
-import type { ChildHandle } from './child-handle.js';
-import { legacyWorkerDoneStatus } from './subagent-status.js';
+import type { ChildHandle, TerminalChildStatus } from './child-handle.js';
 import type { SwarmCaps, WorkerSpec, WorkerStatus } from './types.js';
 
 /** A worker's spec at its terminal transition — see `onWorkerFinished`. */
@@ -192,7 +191,7 @@ export class SwarmRun {
   /**
    * Un-adopt a child whose registration failed. `adopt` has already put it in
    * `handles`/`order`, so without this the phantom stays in the run: the
-   * coordinator's `terminalizePhantom` emits one `worker_done` for it and the
+   * coordinator's `terminalizePhantom` emits the terminal pair for it and the
    * run's later `cancelAll` emits a SECOND for the same id, on top of a
    * phantom row in every `snapshot()`.
    */
@@ -254,8 +253,8 @@ export class SwarmRun {
   }
 
   /**
-   * Cancel this turn's FOREGROUND workers synchronously (their `worker_done`
-   * is pushed to the channel first).
+   * Cancel this turn's FOREGROUND workers synchronously (their
+   * `subagent_finished` is pushed to the channel first).
    *
    * A `background: true` child is deliberately left alone: since Task C4 it is
    * DETACHED from the turn that spawned it (design §5.2 — "you will be notified
@@ -273,21 +272,22 @@ export class SwarmRun {
 
   /**
    * Finalize the run. Synchronous, idempotent, NEVER awaits worker settlement.
-   * Order: cancel non-terminal workers (their worker_done{cancelled} lands in
-   * the channel first), abort the orchestrator, fire `closed`, close the
-   * channel, stop the wall-clock timer.
+   * Order: cancel non-terminal workers (their `subagent_finished{cancelled}`
+   * lands in the channel first), abort the orchestrator, fire `closed`, close
+   * the channel, stop the wall-clock timer.
    *
    * Event-log out-of-band append and ring-buffer snapshotting are owned by the
-   * coordinator (which knows the eventLog + messageId) — this method returns the
-   * terminal worker_done events it produced so the coordinator can log them.
+   * coordinator (which knows the eventLog + messageId) — this method returns
+   * the terminal `subagent_finished` events it produced so the coordinator can
+   * log them.
    */
   finalize(reason: string): AgentEvent[] {
     if (this.finalized) return [];
     this.finalizedAt = Date.now();
 
-    // Workers still live at entry are the only ones whose worker_done has not
-    // already ridden the live channel — already-terminal workers emitted theirs
-    // at completion time. Snapshot before cancelAll terminalizes them so the
+    // Workers still live at entry are the only ones whose `subagent_finished`
+    // has not already ridden the live channel — already-terminal workers
+    // emitted theirs at completion time. Snapshot before cancelAll terminalizes them so the
     // returned events cover exactly what THIS call produced (no double-logging).
     const cancelledHere = new Set(
       this.order.filter((id) => {
@@ -296,8 +296,8 @@ export class SwarmRun {
       }),
     );
 
-    // 1) Cancel this turn's foreground workers; their worker_done{cancelled}
-    //    lands in the channel first. Background children detach — see cancelAll.
+    // 1) Cancel this turn's foreground workers; their
+    //    `subagent_finished{cancelled}` lands in the channel first. Background children detach — see cancelAll.
     this.cancelAll(reason);
 
     // 2) Abort the orchestrator (cooperative).
@@ -310,7 +310,7 @@ export class SwarmRun {
     // 4) Stop the wall-clock timer.
     clearTimeout(this.wallClockTimer);
 
-    // Return ONLY the worker_done events this call produced (cancellations) for
+    // Return ONLY the terminal events this call produced (cancellations) for
     // optional out-of-band logging — events from earlier terminal transitions
     // already reached the consumer via the live channel.
     return this.terminalDoneEvents(cancelledHere);
@@ -318,19 +318,30 @@ export class SwarmRun {
 
   private terminalDoneEvents(only: ReadonlySet<string>): AgentEvent[] {
     const events: AgentEvent[] = [];
+    // Only reached for handles `cancelAll` just terminalized, so both stamps
+    // are set; the fallback keeps the event well-formed rather than trusting it.
+    const nowIso = new Date().toISOString();
     for (const id of this.order) {
       if (!only.has(id)) continue;
       const h = this.handles.get(id) as ChildHandle;
       if (!TERMINAL.has(h.status)) continue;
+      // `subagent_finished`, not the retired `worker_done` mirror: this return
+      // value is the OUT-OF-BAND event-log append on a consumer-gone finalize
+      // (`coordinator.ts` logs it), so dropping it rather than reshaping it
+      // would cost a child cancelled on a closed socket its persisted terminal
+      // row entirely. The five-case status now reaches every client unflattened.
       events.push({
-        type: 'worker_done',
-        workerId: h.workerId,
-        runId: this.runId,
-        role: h.role,
-        // Legacy mirror: flattened for the iOS / MC decoders (see the helper).
-        status: legacyWorkerDoneStatus(h.status),
+        type: 'subagent_finished',
+        subagentId: h.subagentId,
+        ...(h.name !== undefined ? { name: h.name } : {}),
+        subagentType: h.subagentType,
+        description: h.description,
+        status: h.status as TerminalChildStatus,
         report: h.report ?? '',
         usage: h.usage,
+        toolCallCount: h.toolCallCount,
+        startedAt: h.startedAtIso ?? nowIso,
+        endedAt: h.endedAtIso ?? nowIso,
       });
     }
     return events;

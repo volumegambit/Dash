@@ -57,7 +57,7 @@ export {
   type CreateSwarmToolsOptions,
   type QuestionHost,
 } from './tools.js';
-export { DEFAULT_SUBAGENT_TYPE, legacyWorkerDoneStatus } from './subagent-status.js';
+export { DEFAULT_SUBAGENT_TYPE } from './subagent-status.js';
 export { ChildTurnStartError } from './types.js';
 export type {
   ChildConversationInput,

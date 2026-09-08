@@ -16,7 +16,7 @@ describe('isTransientAgentEvent', () => {
   it('marks every other event durable — including the subagent lifecycle pair', () => {
     const durable: AgentEvent[] = [
       { type: 'text_delta', text: 'hi' },
-      { type: 'worker_status', workerId: 'w-1', runId: 'r-1', role: 'r', status: 'running' },
+      { type: 'agent_spawned', name: 'r' },
       {
         type: 'subagent_started',
         subagentId: 'w-1',

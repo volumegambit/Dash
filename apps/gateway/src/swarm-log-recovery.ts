@@ -1,6 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
 import type { MobileAgentEvent } from '@dash/mobile-contract';
-import { legacyWorkerDoneStatus } from '@dash/swarm';
 import type { ConversationService } from './conversation-service.js';
 import type { EventLogPayload, EventLogStore } from './event-log-store.js';
 
@@ -23,8 +22,10 @@ import type { EventLogPayload, EventLogStore } from './event-log-store.js';
  *     This is the case (1) cannot see: a DETACHED background child dies with
  *     its parent idle, so the parent has no interrupted tail at all.
  *
- * What used to live here and is deliberately gone: the `worker_done{cancelled}`
- * scan driven off `worker_spawned` (superseded by the `subagent_*` pair), the
+ * What used to live here and is deliberately gone: the whole `worker_*` family
+ * (retired in D8 — the mirrors were additive, and the dangling scan has always
+ * been driven off `subagent_started`, so a pre-D8 tail is repaired the same
+ * way), the
  * synthesized `{type:'error'}` stream marker (the generic recovery appends
  * exactly one, and a second would be a duplicate), and the rebuilt
  * `RunSnapshot` pushed into the coordinator's ring buffer (the panel reads
@@ -49,7 +50,6 @@ export const INTERRUPTED_CHILD_REPORT =
 
 type SubagentStartedEvent = Extract<AgentEvent, { type: 'subagent_started' }> & MobileAgentEvent;
 type SubagentFinishedEvent = Extract<AgentEvent, { type: 'subagent_finished' }> & MobileAgentEvent;
-type WorkerSpawnedEvent = Extract<AgentEvent, { type: 'worker_spawned' }> & MobileAgentEvent;
 
 function isSubagentStarted(event: MobileAgentEvent): event is SubagentStartedEvent {
   return (
@@ -63,15 +63,6 @@ function isSubagentStarted(event: MobileAgentEvent): event is SubagentStartedEve
 
 function isSubagentFinished(event: MobileAgentEvent): event is SubagentFinishedEvent {
   return event.type === 'subagent_finished' && typeof event.subagentId === 'string';
-}
-
-function isWorkerSpawned(event: MobileAgentEvent): event is WorkerSpawnedEvent {
-  return (
-    event.type === 'worker_spawned' &&
-    typeof event.workerId === 'string' &&
-    typeof event.runId === 'string' &&
-    typeof event.role === 'string'
-  );
 }
 
 /** The slice of the conversation service both steps need. */
@@ -190,17 +181,11 @@ export function recoverInterruptedSubagentTails(
 
       const started = new Map<string, SubagentStartedEvent>();
       const finished = new Set<string>();
-      const legacySpawns = new Map<string, WorkerSpawnedEvent>();
-      const legacyTerminals = new Set<string>();
       for (const entry of tail) {
         if (entry.payload.type !== 'event') continue;
         const event = entry.payload.event;
         if (isSubagentStarted(event)) started.set(event.subagentId, event);
         else if (isSubagentFinished(event)) finished.add(event.subagentId);
-        else if (isWorkerSpawned(event)) legacySpawns.set(event.workerId, event);
-        else if (event.type === 'worker_done' && typeof event.workerId === 'string') {
-          legacyTerminals.add(event.workerId);
-        }
       }
 
       const dangling = [...started.values()].filter((event) => !finished.has(event.subagentId));
@@ -223,26 +208,6 @@ export function recoverInterruptedSubagentTails(
           startedAt: event.startedAt,
           endedAt,
         };
-
-        // The legacy mirror, and ONLY when the same tail left a legacy card
-        // dangling: iOS and MC decode `worker_done` and nothing else, so a card
-        // whose twin never lands spins for ever. Order matches the live
-        // terminal path (`ChildHandle.finalizeTerminal`): mirror first.
-        const legacy = legacySpawns.get(event.subagentId);
-        if (legacy && !legacyTerminals.has(event.subagentId)) {
-          eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, {
-            type: 'event',
-            event: {
-              type: 'worker_done',
-              workerId: legacy.workerId,
-              runId: legacy.runId,
-              role: legacy.role,
-              status: legacyWorkerDoneStatus('interrupted'),
-              report: INTERRUPTED_CHILD_REPORT,
-              usage: { inputTokens: 0, outputTokens: 0 },
-            },
-          } satisfies EventLogPayload);
-        }
 
         eventLog.append(conv.agentId, conv.conversationId, conv.lastMsgId, {
           type: 'event',

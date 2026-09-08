@@ -585,7 +585,7 @@ describe('SwarmCoordinator', () => {
 
   // Behavior 7: sync registration.
   describe('sync registration', () => {
-    it('emits worker_spawned + agent_spawned synchronously before any await', () => {
+    it('emits agent_spawned + subagent_started synchronously before any await', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
@@ -601,8 +601,12 @@ describe('SwarmCoordinator', () => {
       // The events were pushed synchronously inside spawnWorker.
       return Promise.resolve().then(() => {
         const types = seen.map((e) => e.type);
-        expect(types).toContain('worker_spawned');
+        // `agent_spawned` is Android's only sub-agent event and stays (D8);
+        // `subagent_started` is emitted by `ChildHandle.start()`, which
+        // `startChild` calls synchronously.
         expect(types).toContain('agent_spawned');
+        expect(types).toContain('subagent_started');
+        expect(types.filter((t) => t.startsWith('worker_'))).toEqual([]);
         const spawnedAgent = seen.find((e) => e.type === 'agent_spawned');
         expect(spawnedAgent).toMatchObject({ type: 'agent_spawned', name: 'planner' });
       });
@@ -754,7 +758,7 @@ describe('SwarmCoordinator', () => {
       expect(orchestratorAbort).toHaveBeenCalledTimes(1);
     });
 
-    it('pushes worker_done{cancelled} to the channel before closing it (consumerAlive)', async () => {
+    it('pushes subagent_finished{cancelled} to the channel before closing it (consumerAlive)', async () => {
       const { factory, backends } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       const a = coord.attach(baseAttach());
@@ -762,8 +766,9 @@ describe('SwarmCoordinator', () => {
       await backends[0].onNextSegment();
       a.finalize({ consumerAlive: true });
       const events = await drain(a.channel);
-      const done = events.find((e) => e.type === 'worker_done');
-      expect(done).toMatchObject({ type: 'worker_done', status: 'cancelled' });
+      const done = events.find((e) => e.type === 'subagent_finished');
+      expect(done).toMatchObject({ type: 'subagent_finished', status: 'cancelled' });
+      expect(events.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
     });
 
     it('returns synchronously even when a backend stop() hangs forever', async () => {
@@ -780,7 +785,7 @@ describe('SwarmCoordinator', () => {
       expect(backends[0].abortCalls).toBe(1);
     });
 
-    it('appends terminal worker_done to the eventLog ONLY on consumer-gone finalize', async () => {
+    it('appends the terminal subagent_finished to the eventLog ONLY on consumer-gone finalize', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
       const coord = new SwarmCoordinator({
@@ -797,11 +802,11 @@ describe('SwarmCoordinator', () => {
         agentId: AGENT_ID,
         conversationId: CONVO_ID,
         messageId: 'm-1',
-        payload: { type: 'event', event: { type: 'worker_done' } },
+        payload: { type: 'event', event: { type: 'subagent_finished' } },
       });
     });
 
-    it('does not re-append a worker_done that already rode the live stream (completed before WS cancel)', async () => {
+    it('does not re-append a terminal event that already rode the live stream (completed before WS cancel)', async () => {
       const { factory, backends } = makeFactory();
       const { sink, appends } = makeEventLog();
       const coord = new SwarmCoordinator({
@@ -810,8 +815,9 @@ describe('SwarmCoordinator', () => {
       });
       coord.attach(baseAttach({ messageId: 'm-1' }));
 
-      // Worker A completes normally: its worker_done{done} was pushed to the
-      // live channel at completion time (and logged by the chat-ws consumer).
+      // Worker A completes normally: its subagent_finished{done} was pushed to
+      // the live channel at completion time (and logged by the chat-ws
+      // consumer).
       const { workerId: doneId } = coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'a', brief: 'b' });
       const segA = await backends[0].onNextSegment();
       segA.complete();
@@ -831,8 +837,8 @@ describe('SwarmCoordinator', () => {
       const logged = appends.map((x) => x.payload.event);
       expect(logged).toHaveLength(1);
       expect(logged[0]).toMatchObject({
-        type: 'worker_done',
-        workerId: liveId,
+        type: 'subagent_finished',
+        subagentId: liveId,
         status: 'cancelled',
       });
     });
@@ -1330,11 +1336,68 @@ describe('SwarmCoordinator', () => {
         depth: 1,
       });
       expect(started && 'startedAt' in started && started.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-      expect(events.some((e) => e.type === 'worker_spawned' && e.workerId === workerId)).toBe(true);
-      // The legacy mirror lands first so clients that only decode worker_spawned
-      // still create the card before any subagent_* update refers to it.
+      // D8 retired the `worker_spawned` mirror that used to lead it.
+      expect(events.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
+    });
+
+    it('a WHOLE child lifecycle emits no worker_* event, and still emits agent_spawned', async () => {
+      const { coordinator, events } = setupLiveTurn({
+        script: [{ type: 'response', content: 'r', usage: { inputTokens: 0, outputTokens: 0 } }],
+      });
+      const { workerId } = coordinator.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'mapper',
+        brief: 'map it',
+      });
+      await coordinator.waitWorker(AGENT_ID, CONVO_ID, workerId);
+      await flush();
+
+      const legacy = events.filter((e) => e.type.startsWith('worker_'));
+      expect(legacy.map((e) => e.type)).toEqual([]);
+      // Both halves of the canonical pair are still there...
+      expect(events.some((e) => e.type === 'subagent_started')).toBe(true);
+      expect(events.some((e) => e.type === 'subagent_finished')).toBe(true);
+      // ...and `agent_spawned` STAYS: it is the only event Android decodes
+      // (`android/.../AgentEvent.kt:130`).
+      expect(events.find((e) => e.type === 'agent_spawned')).toMatchObject({ name: 'mapper' });
+    });
+
+    it('a phantom (registration refused) is still ANCHORED by a subagent_started', async () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({
+        childDriver: {
+          ...createFakeChildDriver(factory),
+          // The driver refuses outright, so `startChild` throws before
+          // `ChildHandle.start()` — the path `terminalizePhantom` covers.
+          prepareChild: () => {
+            throw new Error('driver refused');
+          },
+        },
+      });
+      const a = coord.attach(baseAttach());
+      const events: AgentEvent[] = [];
+      void (async () => {
+        for (;;) {
+          const r = await a.channel.take();
+          if (r.done) return;
+          events.push(r.value);
+        }
+      })();
+      expect(() => coord.spawnWorker(AGENT_ID, CONVO_ID, { role: 'ghost', brief: 'b' })).toThrow(
+        /driver refused/,
+      );
+      await flush();
+
+      // Pre-D8 the row was anchored by the `worker_spawned` card pushed before
+      // `startChild`. With the mirror gone the phantom needs its own start, or
+      // every client renders an unanchored orphan for a spawn that failed.
       const types = events.map((e) => e.type);
-      expect(types.indexOf('worker_spawned')).toBeLessThan(types.indexOf('subagent_started'));
+      expect(types.filter((t) => t.startsWith('worker_'))).toEqual([]);
+      expect(types.indexOf('subagent_started')).toBeGreaterThanOrEqual(0);
+      expect(types.indexOf('subagent_started')).toBeLessThan(types.indexOf('subagent_finished'));
+      expect(events.find((e) => e.type === 'subagent_finished')).toMatchObject({
+        status: 'failed',
+        report: 'driver refused',
+      });
     });
 
     it('spawnWorker threads the new spec fields through to the worker factory', () => {
@@ -1466,7 +1529,7 @@ describe('SwarmCoordinator', () => {
       expect(coordinator.rosterFor(AGENT_ID, 'other-convo')).toEqual([]);
     });
 
-    it('subagent_finished is emitted alongside worker_done', async () => {
+    it('subagent_finished is the only terminal event on the parent stream', async () => {
       const { coordinator, events } = setupLiveTurn({
         script: [{ type: 'response', content: 'r', usage: { inputTokens: 0, outputTokens: 0 } }],
       });
@@ -1479,9 +1542,7 @@ describe('SwarmCoordinator', () => {
         report: 'r',
         toolCallCount: 0,
       });
-      // The legacy mirror lands first, then the richer event.
-      const types = events.map((e) => e.type);
-      expect(types.indexOf('worker_done')).toBeLessThan(types.indexOf('subagent_finished'));
+      expect(events.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
     });
   });
 
@@ -1542,16 +1603,22 @@ describe('SwarmCoordinator', () => {
       ).toThrow(/register exploded/);
       await flush();
 
-      const spawned = events.find((e) => e.type === 'worker_spawned' && e.role === 'ghost');
+      // The phantom anchors its own row: `ChildHandle.start()` never ran, so
+      // `terminalizePhantom` emits BOTH halves (D8 — the `worker_spawned` card
+      // that used to anchor it is gone).
+      const spawned = events.find((e) => e.type === 'subagent_started' && e.name === 'ghost');
       expect(spawned).toBeDefined();
-      const ghostId = spawned && 'workerId' in spawned ? spawned.workerId : '';
-      expect(events.find((e) => e.type === 'worker_done' && e.workerId === ghostId)).toMatchObject({
-        status: 'failed',
-        report: 'register exploded',
-      });
+      const ghostId = spawned && 'subagentId' in spawned ? spawned.subagentId : '';
+      expect(ghostId).toBeTruthy();
       expect(
         events.find((e) => e.type === 'subagent_finished' && e.subagentId === ghostId),
-      ).toMatchObject({ status: 'failed', name: 'ghost', subagentType: 'Explore' });
+      ).toMatchObject({
+        status: 'failed',
+        report: 'register exploded',
+        name: 'ghost',
+        subagentType: 'Explore',
+      });
+      expect(events.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
     });
 
     it('waitWorker agrees with findWorker after the turn finalizes', async () => {
@@ -2084,18 +2151,18 @@ describe('SwarmCoordinator registry and roster bounds', () => {
     ).toThrow(/driver refused/);
 
     // The run must not carry a child that never started: it would show up in
-    // every snapshot and get a SECOND worker_done from the cancel sweep.
+    // every snapshot and get a SECOND terminal event from the cancel sweep.
     expect(run.snapshot().workers).toHaveLength(realCount);
     run.finalize('turn over');
     await flush();
-    const spawned = events.find((e) => e.type === 'worker_spawned' && e.role === 'ghost');
-    const ghostId = spawned && 'workerId' in spawned ? spawned.workerId : '';
+    const spawned = events.find((e) => e.type === 'subagent_started' && e.description === 'd');
+    const ghostId = spawned && 'subagentId' in spawned ? spawned.subagentId : '';
     expect(ghostId).toBeTruthy();
-    // Exactly one: the phantom's own terminal pair, not a second from the
+    // Exactly one: the phantom's own terminal event, not a second from the
     // run's cancel sweep finding a child that never started.
-    expect(events.filter((e) => e.type === 'worker_done' && e.workerId === ghostId)).toHaveLength(
-      1,
-    );
+    expect(
+      events.filter((e) => e.type === 'subagent_finished' && e.subagentId === ghostId),
+    ).toHaveLength(1);
   });
 });
 

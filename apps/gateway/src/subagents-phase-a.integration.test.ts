@@ -75,7 +75,7 @@ function deferred(): Deferred {
 /**
  * A worker backend script. A background child asks the orchestrator a question
  * first (the real `ask_orchestrator` tool the coordinator injects), which is
- * what produces the mid-life `worker_status` / `subagent_progress` pair; the
+ * what produces the mid-life `subagent_progress` ping; the
  * orchestrator answers it with `send_message`. Then every child emits one tool
  * call and one final response, which becomes its report.
  */
@@ -106,7 +106,7 @@ function makeWorkerFactory(
         if (spec.background) {
           const ask = spec.extraTools.find((t) => t.name === 'ask_orchestrator');
           if (!ask) throw new Error('ask_orchestrator was not injected into the worker');
-          // execute() emits worker_status{waiting_input} synchronously (before
+          // execute() emits subagent_progress{waiting_input} synchronously (before
           // its first await), so resolving right after the call is accurate.
           const answer = ask.execute('ask-1', { question: 'proceed?' });
           asked.resolve();
@@ -388,21 +388,9 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     expect(started).toBeGreaterThanOrEqual(0);
     expect(progress).toBeGreaterThan(started);
     expect(finished).toBeGreaterThan(progress);
-    // worker_* family, scoped to the same child. NOTE: no cross-family ordering
-    // is asserted — the legacy mirrors go away in Task D8 and the two families'
-    // relative order is deliberately unspecified.
-    const spawnedAt = indexOf(
-      events,
-      (e) => e.type === 'worker_spawned' && e.workerId === backgroundId,
-    );
-    const statusAt = indexOf(
-      events,
-      (e) => e.type === 'worker_status' && e.workerId === backgroundId,
-    );
-    const doneAt = indexOf(events, (e) => e.type === 'worker_done' && e.workerId === backgroundId);
-    expect(spawnedAt).toBeGreaterThanOrEqual(0);
-    expect(statusAt).toBeGreaterThan(spawnedAt);
-    expect(doneAt).toBeGreaterThan(statusAt);
+    // D8 retired the whole `worker_*` family; the canonical trio above is the
+    // only sub-agent family on the stream now.
+    expect(events.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
     // Both children terminalized cleanly.
     const isFinished = (e: AgentEvent): e is Extract<AgentEvent, { type: 'subagent_finished' }> =>
       e.type === 'subagent_finished';
@@ -512,9 +500,6 @@ describe('Phase A sub-agents integration (default agent, no swarm/subagents bloc
     expect(
       events.filter((e) => e.type === 'subagent_finished' && e.subagentId === strayId),
     ).toHaveLength(0);
-    expect(events.filter((e) => e.type === 'worker_done' && e.workerId === strayId)).toHaveLength(
-      0,
-    );
 
     // 4) The turn is over, the child is not: it stays addressable, on the
     //    roster the next turn reads, and counted against the global ceiling.

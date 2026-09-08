@@ -233,9 +233,8 @@ describe('ChildHandle', () => {
       toolCallCount: 1,
       usage: { inputTokens: 3, outputTokens: 4 },
     });
-    // The legacy mirror still leads, so a worker_done-only decoder keeps working.
-    const order = events.map((e) => e.type);
-    expect(order.indexOf('worker_done')).toBeLessThan(order.indexOf('subagent_finished'));
+    // D8: the `worker_done` mirror that used to lead is gone entirely.
+    expect(events.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
     expect(d.patches.at(-1)).toMatchObject({
       id: CHILD_ID,
       status: 'done',
@@ -530,7 +529,7 @@ describe('ChildHandle', () => {
 
     expect(terminals).toEqual(['cancelled']);
     expect(d.cancels).toEqual([CHILD_ID]);
-    expect(events.filter((e) => e.type === 'worker_done')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'subagent_finished')).toHaveLength(1);
     expect(handle.report).toBe('once');
   });
 

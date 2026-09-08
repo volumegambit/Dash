@@ -876,8 +876,9 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
 
     // Step the merge loop by pulling one event at a time from the generator and
     // scripting orchestrator emits / worker spawns between pulls. Each spawn
-    // pushes worker_spawned + agent_spawned synchronously into the channel;
-    // releasing a worker makes it report and finalize (worker_done{done}).
+    // pushes agent_spawned + subagent_started synchronously into the channel;
+    // releasing a worker makes it report and finalize
+    // (subagent_finished{done}).
     const pull = async () => {
       const r = await gen.next();
       if (!r.done) collected.push(r.value);
@@ -888,14 +889,14 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await controller.emit({ type: 'text_delta', text: 'O1' });
     await pull(); // O1
     coordinator.spawnWorker(id, 'c1', { role: 'A', brief: 'bA' });
-    await pull(); // worker_spawned A (or agent_spawned — both in channel)
+    await pull(); // agent_spawned A (or subagent_started — both in channel)
     await pull(); // the other of the pair
     // Orchestrator emits O2 while worker A is still running.
     await controller.emit({ type: 'text_delta', text: 'O2' });
     await pull(); // O2
-    // Release worker A → response → done → worker_done{done} into channel.
+    // Release worker A → response → done → subagent_finished{done} into channel.
     release(0);
-    await pull(); // worker_done A (done)
+    await pull(); // subagent_finished A (done)
     // Orchestrator emits O3, then ends its turn.
     await controller.emit({ type: 'text_delta', text: 'O3' });
     await pull(); // O3
@@ -908,13 +909,15 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     // Orchestrator events, in order.
     const orch = collected.filter((e) => e.type === 'text_delta').map((e) => e.text);
     expect(orch).toEqual(['O1', 'O2', 'O3']);
-    // Worker events: exactly one worker_spawned and one worker_done{done} for A.
-    const spawned = collected.filter((e) => e.type === 'worker_spawned');
+    // Worker events: exactly one subagent_started and one
+    // subagent_finished{done} for A, and no retired mirror alongside either.
+    const spawned = collected.filter((e) => e.type === 'subagent_started');
     expect(spawned).toHaveLength(1);
-    expect(spawned[0]).toMatchObject({ type: 'worker_spawned', role: 'A' });
-    const workerDone = collected.filter((e) => e.type === 'worker_done');
+    expect(spawned[0]).toMatchObject({ type: 'subagent_started', description: 'A' });
+    const workerDone = collected.filter((e) => e.type === 'subagent_finished');
     expect(workerDone).toHaveLength(1);
-    expect(workerDone[0]).toMatchObject({ type: 'worker_done', status: 'done' });
+    expect(workerDone[0]).toMatchObject({ type: 'subagent_finished', status: 'done' });
+    expect(collected.filter((e) => e.type.startsWith('worker_'))).toEqual([]);
     // agent_spawned appears exactly once too (no dropped loser).
     expect(collected.filter((e) => e.type === 'agent_spawned')).toHaveLength(1);
 
@@ -922,8 +925,8 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
   });
 
   // (c) Normal completion: a straggler worker cancelled by finalize appears as
-  // worker_done{cancelled} in the yielded output (teardown-before-drain).
-  it('(c) yields a straggler worker_done{cancelled} on normal completion (teardown-before-drain)', async () => {
+  // subagent_finished{cancelled} in the yielded output (teardown-before-drain).
+  it('(c) yields a straggler subagent_finished{cancelled} on normal completion (teardown-before-drain)', async () => {
     const { id, coordinator, controller, agents } = setup({ swarmEnabled: true });
 
     const collected: AgentEvent[] = [];
@@ -939,24 +942,28 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await pull(); // O1
     // Spawn a worker but NEVER release it — it is a straggler at turn end.
     coordinator.spawnWorker(id, 'c1', { role: 'straggler', brief: 'b' });
-    await pull(); // worker_spawned
     await pull(); // agent_spawned
+    await pull(); // subagent_started
     // Orchestrator ends WITHOUT waiting on the worker.
     controller.end();
     while (!(await pull()).done) {
       /* drain */
     }
 
-    const done = collected.filter((e) => e.type === 'worker_done');
+    const done = collected.filter((e) => e.type === 'subagent_finished');
     expect(done).toHaveLength(1);
-    expect(done[0]).toMatchObject({ type: 'worker_done', status: 'cancelled', role: 'straggler' });
+    expect(done[0]).toMatchObject({
+      type: 'subagent_finished',
+      status: 'cancelled',
+      description: 'straggler',
+    });
     await agents.stop();
   });
 
   // (d) Consumer-gone: stream.return() mid-flight → generator finishes without
   // yielding more, workers cancelled, and the eventLog sink got the terminal
-  // worker_done append (out-of-band, consumer-gone path).
-  it('(d) stream.return() mid-flight cancels workers and logs the terminal worker_done', async () => {
+  // subagent_finished append (out-of-band, consumer-gone path).
+  it('(d) stream.return() mid-flight cancels workers and logs the terminal subagent_finished', async () => {
     const { sink, appends } = makeEventLogSink();
     const { id, coordinator, controller, agents } = setup({ swarmEnabled: true, eventLog: sink });
 
@@ -983,13 +990,16 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await Promise.resolve();
     // The turn is finalized (no live run remains) and the worker was cancelled.
     expect(coordinator.getLiveRun(id, 'c1')).toBeUndefined();
-    // The eventLog sink received the terminal worker_done for the cancelled worker.
+    // The eventLog sink received the terminal subagent_finished for the
+    // cancelled worker. This is the append D8 had to RESHAPE rather than
+    // delete: without it a child cancelled on a closed socket loses its
+    // persisted terminal row entirely.
     expect(appends.length).toBeGreaterThanOrEqual(1);
     expect(appends[0]).toMatchObject({
       agentId: id,
       conversationId: 'c1',
       messageId: 'm-1',
-      payload: { type: 'event', event: { type: 'worker_done', status: 'cancelled' } },
+      payload: { type: 'event', event: { type: 'subagent_finished', status: 'cancelled' } },
     });
     // Prevent an unhandled-rejection from the abandoned scripted generator.
     controller.end();
@@ -1051,17 +1061,17 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     const { workerId, status } = coordinator.spawnWorker(id, 'c1', { role: 'r', brief: 'b' });
     expect(status).toBe('spawning');
     expect(coordinator.getLiveRun(id, 'c1')?.runId).toBeDefined();
-    await pull(); // worker_spawned
     await pull(); // agent_spawned
+    await pull(); // subagent_started
     release(0);
-    await pull(); // worker_done{done}
+    await pull(); // subagent_finished{done}
     controller.end();
     while (!(await pull()).done) {
       /* drain */
     }
 
-    const done = collected.find((e) => e.type === 'worker_done');
-    expect(done).toMatchObject({ type: 'worker_done', workerId, status: 'done' });
+    const done = collected.find((e) => e.type === 'subagent_finished');
+    expect(done).toMatchObject({ type: 'subagent_finished', subagentId: workerId, status: 'done' });
     await agents.stop();
   });
 
@@ -1107,16 +1117,16 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     // ...and the coordinator's live gate re-read must ALLOW this spawn.
     const { workerId, status } = coordinator.spawnWorker(id, 'c1', { role: 'r', brief: 'b' });
     expect(status).toBe('spawning');
-    await pull(); // worker_spawned
     await pull(); // agent_spawned
+    await pull(); // subagent_started
     release(0);
-    await pull(); // worker_done{done}
+    await pull(); // subagent_finished{done}
     controller.end();
     while (!(await pull()).done) {
       /* drain */
     }
-    expect(collected.find((e) => e.type === 'worker_done')).toMatchObject({
-      workerId,
+    expect(collected.find((e) => e.type === 'subagent_finished')).toMatchObject({
+      subagentId: workerId,
       status: 'done',
     });
     await agents.stop();
@@ -1163,8 +1173,8 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     await controller.emit({ type: 'text_delta', text: 'start' });
     await pull();
     coordinator.spawnWorker(id, 'c1', { role: 'w', brief: 'b' });
-    await pull(); // worker_spawned
     await pull(); // agent_spawned
+    await pull(); // subagent_started
 
     // The fake factory recorded the spec it was handed — the workspace must be
     // the orchestrator's, NOT process.cwd().
@@ -1173,7 +1183,7 @@ describe('AgentChatCoordinator swarm merge wrapper', () => {
     expect(specs[0].workspace).not.toBe(process.cwd());
 
     release(0);
-    await pull(); // worker_done{done}
+    await pull(); // subagent_finished{done}
     controller.end();
     while (!(await pull()).done) {
       /* drain */

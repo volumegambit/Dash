@@ -529,18 +529,10 @@ export class SwarmCoordinator {
       depth,
     };
 
-    // worker_spawned + agent_spawned are pushed synchronously BEFORE the handle
-    // starts, so the legacy mirror precedes `subagent_started`: a client that
-    // only decodes worker_spawned always has the card before any subagent_*
-    // event refers to it.
-    this.emitToParent(parent.agentId, parent.conversationId, {
-      type: 'worker_spawned',
-      workerId: childId,
-      runId: run.runId,
-      role: p.role,
-      brief: p.brief,
-      model,
-    });
+    // `agent_spawned` is pushed synchronously BEFORE the handle starts. It is
+    // name-only chrome for every client but Android, which decodes it and
+    // nothing else (`android/.../AgentEvent.kt:130`) — which is why D8 kept it
+    // when the `worker_*` mirrors beside it went.
     this.emitToParent(parent.agentId, parent.conversationId, {
       type: 'agent_spawned',
       name: p.role,
@@ -550,11 +542,11 @@ export class SwarmCoordinator {
       this.startChild(spec, turn.caps, run);
     } catch (err) {
       // `start()` catches its own failures, so reaching here means the run or
-      // the driver refused outright. The worker_spawned card is already on the
-      // stream: terminalize the phantom before rethrowing so no client is left
-      // with a card that can never complete.
+      // the driver refused outright — `ChildHandle.emitStarted` never ran, so
+      // nothing has anchored a row. Emit the whole pair before rethrowing, or
+      // every client renders an orphan for a spawn that failed.
       this.forgetChild(parent.conversationId, childId, run);
-      this.terminalizePhantom(run, childId, p, err);
+      this.terminalizePhantom(run, childId, { ...p, model, depth }, err);
       throw err;
     }
 
@@ -1488,27 +1480,45 @@ export class SwarmCoordinator {
   }
 
   /**
-   * Emit the terminal pair for a worker whose `worker_spawned` card reached the
-   * stream but whose registration failed. Mirrors ChildHandle's ordering:
-   * legacy `worker_done` first, then `subagent_finished`.
+   * Emit the whole `subagent_started` + `subagent_finished` pair for a worker
+   * whose registration failed before {@link ChildHandle.start} could emit
+   * either. Both halves, in order: pre-D8 the row was anchored by the
+   * `worker_spawned` card `spawnChild` pushed before `startChild`, and with
+   * that mirror gone a finish-only phantom is an ORPHAN row on all three
+   * clients (web `subagents.ts`, iOS `ChatReducer`, MC `chat.swarm.ts` each
+   * mark a draft with no start as one).
    */
   private terminalizePhantom(
     run: SwarmRun,
     workerId: string,
-    p: { role: string; name?: string; subagentType?: string; description?: string },
+    p: {
+      role: string;
+      name?: string;
+      subagentType?: string;
+      description?: string;
+      brief?: string;
+      model?: string;
+      background?: boolean;
+      depth?: number;
+      isolation?: 'worktree';
+    },
     err: unknown,
   ): void {
     const report = err instanceof Error ? err.message : String(err);
     const nowIso = new Date().toISOString();
     const usage = { inputTokens: 0, outputTokens: 0 };
     run.channel.push({
-      type: 'worker_done',
-      workerId,
-      runId: run.runId,
-      role: p.role,
-      status: 'failed',
-      report,
-      usage,
+      type: 'subagent_started',
+      subagentId: workerId,
+      ...(p.name !== undefined ? { name: p.name } : {}),
+      subagentType: p.subagentType ?? DEFAULT_SUBAGENT_TYPE,
+      description: p.description ?? p.role,
+      prompt: p.brief ?? '',
+      model: p.model ?? '',
+      background: p.background ?? false,
+      depth: p.depth ?? 1,
+      startedAt: nowIso,
+      ...(p.isolation !== undefined ? { isolation: p.isolation } : {}),
     });
     run.channel.push({
       type: 'subagent_finished',
@@ -1541,7 +1551,8 @@ export class SwarmCoordinator {
    * not write into a channel nobody is reading.
    *
    * Deliberately NOT gated on `turn.finalized`: `finalizeTurn` flips that flag
-   * before it cancels the turn's children, and their `worker_done{cancelled}`
+   * before it cancels the turn's children, and their
+   * `subagent_finished{cancelled}`
    * has to reach the channel before it closes. The map delete at the end of
    * `finalizeTurn` is the real boundary; `AsyncChannel.push` is already a
    * no-op once closed.
@@ -1590,7 +1601,7 @@ export class SwarmCoordinator {
     this.children.delete(subagentId);
     this.childSpecs.delete(subagentId);
     // `adopt` already put it in the run; leaving it there gives the phantom a
-    // second `worker_done` from the run's cancel sweep and a row in every
+    // second `subagent_finished` from the run's cancel sweep and a row in every
     // snapshot of a child that never started.
     run?.forget(subagentId);
     const list = this.childrenByParent.get(parentConversationId);

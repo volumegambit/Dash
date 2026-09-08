@@ -147,15 +147,20 @@ describe('createSwarmTools', () => {
       await waitForBackends(backends, 1);
     });
 
-    it('emits worker_spawned synchronously into the run channel (observed via getLiveRun)', async () => {
+    it('emits agent_spawned then subagent_started synchronously into the run channel', async () => {
       const { coord, byName } = setup();
       await tool(byName, 'spawn_worker').execute('call-1', { role: 'r', brief: 'b' });
       const run = coord.getLiveRun(AGENT_ID, CONVO_ID);
       if (!run) throw new Error('expected a live run');
-      // The synchronously-pushed worker_spawned event is the first channel item.
+      // `agent_spawned` is pushed by `spawnChild` before the handle starts and
+      // is still the first item; `subagent_started` follows synchronously from
+      // `ChildHandle.start()`. The `worker_spawned` mirror that used to lead
+      // was retired in D8.
       const first = await run.channel.take();
       expect(first.done).toBe(false);
-      expect((first.value as AgentEvent).type).toBe('worker_spawned');
+      expect((first.value as AgentEvent).type).toBe('agent_spawned');
+      const second = await run.channel.take();
+      expect((second.value as AgentEvent).type).toBe('subagent_started');
     });
 
     it('throws when a per-run cap is exceeded (maxWorkersPerRun)', async () => {

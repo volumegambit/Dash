@@ -1,5 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
-import { DEFAULT_SUBAGENT_TYPE, legacyWorkerDoneStatus } from './subagent-status.js';
+import { DEFAULT_SUBAGENT_TYPE } from './subagent-status.js';
 import type {
   ChildSnapshot,
   ChildSpec,
@@ -88,7 +88,7 @@ const MAX_TURNS_PARTIAL_MARKER = '[partial: maxTurns reached; resumable with sen
 /** The report of a child whose conversation was deleted out from under it. */
 export const CHILD_DELETED_REASON = 'child conversation was deleted';
 
-type TerminalChildStatus = Exclude<WorkerStatus, 'spawning' | 'running' | 'waiting_input'>;
+export type TerminalChildStatus = Exclude<WorkerStatus, 'spawning' | 'running' | 'waiting_input'>;
 
 interface QuestionWaiter {
   resolve(answer: string): void;
@@ -603,11 +603,11 @@ export class ChildHandle {
   }
 
   /**
-   * The ONE terminal transition, shared by every finalizer. Emits the legacy
-   * `worker_done` and its `subagent_finished` twin, persists the terminal row,
-   * runs the `subagentStop` hook, notifies the spawner, drops the driver
-   * subscriptions, calls `onTerminal` and resolves the terminal promise — in
-   * that order, exactly once.
+   * The ONE terminal transition, shared by every finalizer. Emits
+   * `subagent_finished`, persists the terminal row, runs the `subagentStop`
+   * hook, notifies the spawner, drops the driver subscriptions, calls
+   * `onTerminal` and resolves the terminal promise — in that order, exactly
+   * once.
    */
   private finalizeTerminal(
     status: TerminalChildStatus,
@@ -640,15 +640,6 @@ export class ChildHandle {
       },
     });
 
-    this.emit({
-      type: 'worker_done',
-      workerId: this.workerId,
-      runId: this.runId,
-      role: this.role,
-      status: legacyWorkerDoneStatus(status),
-      report,
-      usage: this.usage,
-    });
     this.emitFinished(status, report);
     this.opts.hooks?.subagentStop?.({ workerId: this.workerId, role: this.role, status });
     if (settled) this.notifyFinishedAfter(settled);
@@ -777,15 +768,6 @@ export class ChildHandle {
     question?: string,
   ): void {
     this.lastProgressAt = Date.now();
-    this.emit({
-      type: 'worker_status',
-      workerId: this.workerId,
-      runId: this.runId,
-      role: this.role,
-      status,
-      ...(detail !== undefined ? { detail } : {}),
-      ...(question !== undefined ? { question } : {}),
-    });
     this.emit({
       type: 'subagent_progress',
       subagentId: this.subagentId,

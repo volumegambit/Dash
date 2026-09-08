@@ -56,6 +56,15 @@ export type AgentEvent =
   | { type: 'error'; error: Error; timestamp?: string }
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
+  /**
+   * @deprecated D8 retired the `worker_*` mirrors: nothing emits one any more
+   * (`ChildHandle`, `SwarmCoordinator`, `SwarmRun` and the gateway's boot
+   * recovery all emit the `subagent_*` family alone). The three variants stay
+   * for ONE release so a PERSISTED pre-D8 transcript still decodes — every
+   * client drops them from its fold instead of failing the frame. Delete them,
+   * and the clients' drop cases, one release after D8. `agent_spawned` is NOT
+   * deprecated: it is the only sub-agent event Android decodes.
+   */
   | {
       type: 'worker_spawned';
       workerId: string;
@@ -64,6 +73,7 @@ export type AgentEvent =
       brief: string;
       model: string;
     }
+  /** @deprecated See `worker_spawned`. */
   | {
       type: 'worker_status';
       workerId: string;
@@ -73,6 +83,7 @@ export type AgentEvent =
       detail?: string;
       question?: string;
     }
+  /** @deprecated See `worker_spawned`. */
   | {
       type: 'worker_done';
       workerId: string;
