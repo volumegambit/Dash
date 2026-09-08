@@ -150,12 +150,13 @@ struct AgentEventTests {
     #expect(status == expected)
   }
 
-  /// One enum serves both families, so `worker_done` accepts all five even
-  /// though no producer emits more than three — they flatten through
-  /// `legacyWorkerDoneStatus`. This pins the tolerance, not a live path: if
-  /// that flatten is ever removed (and D4 made iOS its last in-tree consumer),
-  /// the wider statuses arrive here and must already decode.
-  @Test("worker_done accepts interrupted and max_turns", arguments: ["interrupted", "max_turns"])
+  /// The retired `worker_done` still DECODES for one release (a persisted
+  /// pre-D8 transcript contains it) and one enum serves both, so it accepts
+  /// all five. Pre-D8 no producer emitted more than three — they flattened
+  /// through `legacyWorkerDoneStatus`, which D8 deleted with the mirrors.
+  @Test(
+    "a retired worker_done still decodes, incl. interrupted and max_turns",
+    arguments: ["interrupted", "max_turns"])
   func legacyDoneAcceptsWiderStatuses(raw: String) throws {
     let json = """
       {"type":"worker_done","workerId":"w1","runId":"r1","role":"reviewer",\

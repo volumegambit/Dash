@@ -249,15 +249,11 @@ export interface ChatState {
 
 /**
  * The frames that change WHICH children a conversation has, or what state one
- * of them is in — the trigger for a list re-read. Both families, because the
- * legacy mirrors are still on the wire until task D8.
+ * of them is in — the trigger for a list re-read. The canonical family alone:
+ * D8 retired the `worker_*` mirrors, and a persisted pre-D8 one arrives only
+ * on a REPLAY, where the list is read anyway.
  */
-const SUBAGENT_LIST_TRIGGERS = new Set<string>([
-  'subagent_started',
-  'subagent_finished',
-  'worker_spawned',
-  'worker_done',
-]);
+const SUBAGENT_LIST_TRIGGERS = new Set<string>(['subagent_started', 'subagent_finished']);
 
 /** The selected conversation's key, or `null` when nothing is selected. */
 function keyOrNull(ref: ConversationRef | null): ConversationKey | null {
@@ -502,11 +498,11 @@ export const useChatStore = create<ChatState>((set, get) => {
   const recordChildLiveStatus = (event: MobileAgentEvent): void => {
     const childId = subagentIdOf(event);
     if (!childId) return;
-    if (event.type === 'subagent_progress' || event.type === 'worker_status') {
+    if (event.type === 'subagent_progress') {
       childLiveStatus.set(childId, event.status === 'waiting_input' ? 'waiting' : 'running');
       return;
     }
-    if (event.type === 'subagent_finished' || event.type === 'worker_done') {
+    if (event.type === 'subagent_finished') {
       childLiveStatus.delete(childId);
     }
   };

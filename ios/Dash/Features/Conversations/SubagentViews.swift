@@ -539,9 +539,9 @@ private struct SubagentTranscriptRow: View {
 
 /// Elapsed for a FINISHED child, or `nil` when it has no honest duration.
 ///
-/// A terminal run with no `endedAt` — a legacy-only `worker_done` child, or one
-/// end-of-stream-terminalized to `cancelled`, or one the stop route cancelled
-/// before the list caught up — renders NO time at all, never the row's own age,
+/// A terminal run with no `endedAt` — one end-of-stream-terminalized to
+/// `cancelled`, or one the stop route cancelled before the list caught up —
+/// renders NO time at all, never the row's own age,
 /// because the row's age keeps growing while the child has been dead for an
 /// hour. The fold discards `subagent_progress.elapsedMs` for the same reason:
 /// one source, not two that can disagree.

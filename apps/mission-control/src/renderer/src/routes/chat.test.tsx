@@ -760,6 +760,8 @@ describe('MessageBubble sub-agent cards', () => {
     expect(within(card).getByTestId('subagent-card-meta')).toHaveTextContent('12 tool uses · 45s');
   });
 
+  // A persisted PRE-D8 message carries the retired mirror. It must draw
+  // exactly one card (from the canonical half) and no unknown-activity row.
   it('no longer draws a child as activity from a newer Dash version', () => {
     render(
       <MessageBubble
@@ -788,22 +790,7 @@ describe('MessageBubble sub-agent cards', () => {
       <MessageBubble
         conversationKey={CARD_KEY}
         message={assistantMessage([
-          {
-            type: 'worker_spawned',
-            workerId: 'sub_a',
-            runId: 'r',
-            role: 'reviewer',
-            brief: 'b',
-            model: 'm',
-          },
-          {
-            type: 'worker_done',
-            workerId: 'sub_a',
-            runId: 'r',
-            role: 'reviewer',
-            status: 'done',
-            report: 'ok',
-          },
+          { ...started, startedAt: undefined } as unknown as McAgentEvent,
         ])}
       />,
     );

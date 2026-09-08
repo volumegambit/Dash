@@ -1034,7 +1034,7 @@ describe('sub-agent list triggers', () => {
   it('re-reads the list when a child starts or finishes on the open conversation', async () => {
     await selectParent();
     await useChatStore.getState().applyFrame(eventFrame('subagent_started'));
-    await useChatStore.getState().applyFrame(eventFrame('worker_done'));
+    await useChatStore.getState().applyFrame(eventFrame('subagent_finished'));
     await Promise.resolve();
 
     expect(mockApi.subagentsList).toHaveBeenCalledTimes(2);
@@ -2100,8 +2100,10 @@ describe('sub-agent optimistic rows', () => {
     expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
   });
 
-  // The legacy mirror carries the same fact and is still on the wire until D8.
-  it('reads the legacy worker_status mirror the same way', async () => {
+  // D8 retired the `worker_status` mirror: a persisted pre-D8 one reaching the
+  // store must park NOTHING. The canonical `subagent_progress` above is the
+  // only source of a parked child now.
+  it('ignores a retired worker_status mirror', async () => {
     await selectParentWithAgent();
     mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
     useChatStore.getState().subscribeSubagent('sub_a');
@@ -2110,7 +2112,10 @@ describe('sub-agent optimistic rows', () => {
 
     await useChatStore.getState().resumeSubagent('sub_a', 'the second one');
 
-    expect(useChatStore.getState().subagentUi.sub_a.transcript).toBeUndefined();
+    // Nothing parked the child, so this reads as a STEER and the optimistic
+    // row is shown — the same answer the store gives for a child that never
+    // parked at all. Pre-D8 the mirror parked it and the row was suppressed.
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
   });
 
   // A finished child cannot be parked, and the entry must not outlive it: a

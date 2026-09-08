@@ -24,16 +24,15 @@
  *    reported as `cancelled` — the run is over and this child simply never
  *    reported back.
  *
- * Two families, one identity. The gateway currently emits BOTH the legacy
- * `worker_*` mirrors and the canonical `subagent_*` events for every child
- * (`packages/swarm/src/coordinator.ts` pushes `worker_spawned` immediately
- * before the handle emits `subagent_started`; `child-handle.ts` pushes
- * `worker_done` immediately before `subagent_finished`). The child's
- * conversation id IS its worker id, so both families key on the same string
- * and fold into ONE group — a child that emits both must never produce two
- * rows. Task D8 removes the mirrors; until then `subagent_*` wins every
- * shared field regardless of arrival order, so the fold does not depend on
- * the emission order staying what it is today.
+ * ONE family. D8 retired the legacy `worker_*` mirrors: nothing emits one, and
+ * `subagent_started` is the only anchor. A transcript PERSISTED before D8
+ * still contains them, and the recorded policy is that the CLIENT drops them
+ * (the gateway does not rewrite on replay): every persisted mirror is twinned
+ * with the canonical event it mirrored, so nothing is lost, and dropping is
+ * the only choice that costs an old conversation nothing on a replay path.
+ * They stay in {@link isSubagentEvent} so the transcript renderer keeps
+ * skipping them rather than drawing its unsupported-content fallback three
+ * times per child.
  */
 
 import type { MobileAgentEvent, SubagentStatus as WireSubagentStatus } from '@dash/mobile-contract';
@@ -105,32 +104,38 @@ export interface SubagentGroup {
   adjacentToPrevious: boolean;
 }
 
-/** Event types this module folds. Both families; D8 drops the `worker_*` half. */
-const FOLDED_EVENT_TYPES = new Set([
-  'subagent_started',
-  'subagent_progress',
-  'subagent_finished',
-  'worker_spawned',
-  'worker_status',
-  'worker_done',
-]);
+/** Event types this module folds into a row. */
+const FOLDED_EVENT_TYPES = new Set(['subagent_started', 'subagent_progress', 'subagent_finished']);
+
+/**
+ * The retired `worker_*` mirrors (D8). They fold into NOTHING, but they are
+ * still sub-agent events as far as the transcript renderer is concerned: a
+ * persisted pre-D8 message contains three of them per child, and letting them
+ * reach the renderer's unsupported-content fallback would redecorate every old
+ * conversation with rows the user never had.
+ */
+const RETIRED_EVENT_TYPES = new Set(['worker_spawned', 'worker_status', 'worker_done']);
 
 /**
  * Event types that render nothing of their own between two sub-agent rows.
- * `agent_spawned` is the coordinator's name-only announcement, pushed between
- * a child's `worker_spawned` and its `subagent_started`; treating it as chrome
- * is what lets back-to-back spawns still read as one parallel group.
+ * `agent_spawned` is the coordinator's name-only announcement, pushed just
+ * before a child's `subagent_started`; treating it as chrome is what lets
+ * back-to-back spawns still read as one parallel group.
  */
-const CHROME_EVENT_TYPES = new Set([...FOLDED_EVENT_TYPES, 'agent_spawned']);
+const CHROME_EVENT_TYPES = new Set([
+  ...FOLDED_EVENT_TYPES,
+  ...RETIRED_EVENT_TYPES,
+  'agent_spawned',
+]);
 
 /**
- * True for an event type this module folds into a row. The transcript renderer
- * uses it to skip those events in its own walk — both families anchor rows, so
- * neither may fall through to its "unsupported content" fallback while task D8
- * still leaves the legacy mirrors on the wire.
+ * True for an event type the transcript renderer must NOT draw itself: the
+ * three this module folds into a row, plus the three D8 retired, which a
+ * persisted pre-D8 message still carries and which must not fall through to
+ * the renderer's "unsupported content" fallback.
  */
 export function isSubagentEvent(type: string): boolean {
-  return FOLDED_EVENT_TYPES.has(type);
+  return FOLDED_EVENT_TYPES.has(type) || RETIRED_EVENT_TYPES.has(type);
 }
 
 const TERMINAL_STATUSES = new Set<SubagentStatus>([
@@ -187,51 +192,36 @@ function subagentIdOf(event: MobileAgentEvent): string | undefined {
 }
 
 /**
- * Per-family accumulators. Keeping the two families in separate slots (rather
- * than last-writer-wins) is what makes precedence order-independent: the
- * `subagent_*` slot is preferred at finalize time no matter which arrived
- * first.
+ * One child's accumulated row. Single-family since D8 — the per-family slots
+ * (`modernX` / `legacyX`) and the whole-unit progress resolution they needed
+ * went with the `worker_*` mirrors.
  */
 interface Draft {
   subagentId: string;
   anchorIndex: number;
   hasStart: boolean;
   orphan: boolean;
-  /**
-   * True once a `subagent_progress` has been seen. Once the canonical family
-   * is reporting progress, the `worker_status` mirror is ignored WHOLESALE —
-   * see the finalizer. A per-field `modern ?? legacy` is not enough because
-   * `question` is deliberately cleared by a running progress event, and an
-   * absent modern value would let a stale mirrored question leak back onto a
-   * row that is running again.
-   */
-  sawModernProgress: boolean;
   name?: string;
-  modernType?: string;
-  legacyType?: string;
-  modernDescription?: string;
-  legacyDescription?: string;
+  type?: string;
+  description?: string;
   background?: boolean;
   depth?: number;
   startedAt?: string;
   endedAt?: string;
-  modernTerminal?: SubagentStatus;
-  legacyTerminal?: SubagentStatus;
-  modernReport?: string;
-  legacyReport?: string;
-  modernLive?: 'running' | 'waiting';
-  legacyLive?: 'running' | 'waiting';
-  modernDetail?: string;
-  legacyDetail?: string;
-  modernQuestion?: string;
-  legacyQuestion?: string;
+  terminal?: SubagentStatus;
+  report?: string;
+  live?: 'running' | 'waiting';
+  detail?: string;
+  question?: string;
   progressToolCallCount?: number;
   finishedToolCallCount?: number;
 }
 
 /**
- * Fold every `subagent_*` and `worker_*` event in one assistant message's
- * event list into one group per child, in anchor order.
+ * Fold every `subagent_*` event in one assistant message's event list into one
+ * group per child, in anchor order. A retired `worker_*` mirror is skipped
+ * outright, so a persisted pre-D8 message folds to exactly the rows its
+ * canonical half describes.
  *
  * `isStreaming` is the parent turn's liveness: when false, a child with no
  * terminal event is reported `cancelled` (MC's `deriveWorkerStatus`).
@@ -244,6 +234,7 @@ export function groupSubagentEvents(
 
   for (let i = 0; i < events.length; i++) {
     const event = events[i];
+    if (RETIRED_EVENT_TYPES.has(event.type)) continue;
     const id = subagentIdOf(event);
     if (!id) continue;
 
@@ -255,7 +246,6 @@ export function groupSubagentEvents(
         anchorIndex: i,
         hasStart: false,
         orphan: true,
-        sawModernProgress: false,
       };
       drafts.set(id, draft);
     }
@@ -273,51 +263,34 @@ export function groupSubagentEvents(
     switch (event.type) {
       case 'subagent_started': {
         draft.name = str(event.name) ?? draft.name;
-        draft.modernType = str(event.subagentType) ?? draft.modernType;
-        draft.modernDescription = str(event.description) ?? draft.modernDescription;
+        draft.type = str(event.subagentType) ?? draft.type;
+        draft.description = str(event.description) ?? draft.description;
         if (typeof event.background === 'boolean') draft.background = event.background;
         draft.depth = num(event.depth) ?? draft.depth;
         draft.startedAt = str(event.startedAt) ?? draft.startedAt;
         break;
       }
       case 'subagent_progress': {
-        draft.sawModernProgress = true;
-        draft.modernLive = event.status === 'waiting_input' ? 'waiting' : 'running';
-        draft.modernQuestion = str(event.question);
+        draft.live = event.status === 'waiting_input' ? 'waiting' : 'running';
+        // Resolved as a UNIT with `live`: a running progress event deliberately
+        // CLEARS the question, so `question` is assigned, never merged.
+        draft.question = str(event.question);
         // Sticky, like MC's `latestWorkerDetail`, which scans BACKWARDS for the
         // newest event that actually carries something: a later progress event
         // with no detail must not blank the line the row is already showing.
-        draft.modernDetail = str(event.question) ?? str(event.detail) ?? draft.modernDetail;
+        draft.detail = str(event.question) ?? str(event.detail) ?? draft.detail;
         draft.progressToolCallCount = num(event.toolCallCount) ?? draft.progressToolCallCount;
         break;
       }
       case 'subagent_finished': {
         draft.name = str(event.name) ?? draft.name;
-        draft.modernType = str(event.subagentType) ?? draft.modernType;
-        draft.modernDescription = str(event.description) ?? draft.modernDescription;
-        draft.modernTerminal = terminalStatus(event.status) ?? 'done';
-        draft.modernReport = str(event.report);
+        draft.type = str(event.subagentType) ?? draft.type;
+        draft.description = str(event.description) ?? draft.description;
+        draft.terminal = terminalStatus(event.status) ?? 'done';
+        draft.report = str(event.report);
         draft.finishedToolCallCount = num(event.toolCallCount) ?? draft.finishedToolCallCount;
         draft.startedAt = str(event.startedAt) ?? draft.startedAt;
         draft.endedAt = str(event.endedAt) ?? draft.endedAt;
-        break;
-      }
-      case 'worker_spawned': {
-        draft.legacyType = str(event.role) ?? draft.legacyType;
-        draft.legacyDescription = str(event.brief) ?? draft.legacyDescription;
-        break;
-      }
-      case 'worker_status': {
-        draft.legacyLive = event.status === 'waiting_input' ? 'waiting' : 'running';
-        draft.legacyQuestion = str(event.question);
-        draft.legacyDetail = str(event.question) ?? str(event.detail) ?? draft.legacyDetail;
-        draft.legacyType = str(event.role) ?? draft.legacyType;
-        break;
-      }
-      case 'worker_done': {
-        draft.legacyTerminal = terminalStatus(event.status) ?? 'done';
-        draft.legacyReport = str(event.report);
-        draft.legacyType = str(event.role) ?? draft.legacyType;
         break;
       }
     }
@@ -326,15 +299,11 @@ export function groupSubagentEvents(
   const ordered = [...drafts.values()].sort((a, b) => a.anchorIndex - b.anchorIndex);
 
   return ordered.map((draft, index) => {
-    const description = draft.modernDescription ?? draft.legacyDescription ?? '';
-    const terminal = draft.modernTerminal ?? draft.legacyTerminal;
-    // Progress slots resolve as a UNIT, not field by field: `question` is
-    // deliberately CLEARED by a running `subagent_progress`, so a per-field
-    // `modern ?? legacy` would let a stale `worker_status` question reappear on
-    // a row the canonical family already said is running again.
-    const live = draft.sawModernProgress ? draft.modernLive : draft.legacyLive;
-    const question = draft.sawModernProgress ? draft.modernQuestion : draft.legacyQuestion;
-    const latestDetail = draft.sawModernProgress ? draft.modernDetail : draft.legacyDetail;
+    const description = draft.description ?? '';
+    const terminal = draft.terminal;
+    const live = draft.live;
+    const question = draft.question;
+    const latestDetail = draft.detail;
     const background = draft.background ?? false;
     // End-of-stream terminalization (MC's `deriveWorkerStatus`), with one
     // exemption MC never needed: a `background: true` child is spawned
@@ -349,7 +318,7 @@ export function groupSubagentEvents(
 
     const group: SubagentGroup = {
       subagentId: draft.subagentId,
-      type: draft.modernType ?? draft.legacyType ?? '',
+      type: draft.type ?? '',
       description,
       status,
       background,
@@ -369,7 +338,7 @@ export function groupSubagentEvents(
     if (name !== undefined) group.name = name;
     const endedAt = draft.endedAt;
     if (endedAt !== undefined) group.endedAt = endedAt;
-    const report = draft.modernReport ?? draft.legacyReport;
+    const report = draft.report;
     if (report !== undefined) group.report = report;
     // Gated on the RESOLVED status, not just on the presence of a terminal
     // event: end-of-stream terminalization reaches `cancelled` with no

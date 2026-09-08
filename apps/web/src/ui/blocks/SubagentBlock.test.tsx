@@ -202,9 +202,9 @@ describe('SubagentBlock', () => {
       expect(within(screen.getByTestId('subagent-block')).getByText('3 tool uses')).toBeTruthy();
     });
 
-    // Ruling 5: `worker_*` carries no timestamp, so a legacy-only child folds
-    // to `startedAt: ''`. No elapsed segment at all — never NaN, never 1970.
-    it('shows the tool count with no elapsed for a legacy-only child with no startedAt', () => {
+    // D8: a message containing ONLY retired mirrors renders no row at all —
+    // and, critically, no unknown-block either (see the next test).
+    it('renders no row for a message carrying only retired worker_* events', () => {
       renderEvents(
         [
           { type: 'worker_spawned', workerId: CHILD, role: 'reviewer', brief: 'Review the diff' },
@@ -213,14 +213,12 @@ describe('SubagentBlock', () => {
         { streaming: true },
       );
 
-      const row = screen.getByTestId('subagent-block');
-      expect(within(row).getByText('0 tool uses')).toBeTruthy();
-      expect(row.textContent).not.toContain('NaN');
-      expect(row.textContent).not.toContain('1970');
+      expect(screen.queryByTestId('subagent-block')).toBeNull();
     });
 
-    // Ruling 3: both families fold into rows, so neither may reach
-    // `pushUnknown()` while task D8 still leaves the legacy mirrors on the wire.
+    // A persisted pre-D8 message carries three retired events per child. They
+    // must not reach `pushUnknown()` — that would redecorate every old
+    // conversation with rows the user never had.
     it('never renders an unknown-block for either event family', () => {
       renderEvents(
         [
@@ -238,7 +236,7 @@ describe('SubagentBlock', () => {
       expect(screen.queryByTestId('unknown-block')).toBeNull();
     });
 
-    it('folds a child that emits both families into exactly one row', () => {
+    it('folds a persisted pre-D8 child into exactly one row', () => {
       renderEvents(
         [
           { type: 'worker_spawned', workerId: CHILD, role: 'reviewer', brief: 'Review the diff' },
@@ -251,9 +249,9 @@ describe('SubagentBlock', () => {
       expect(screen.getAllByTestId('subagent-block')).toHaveLength(1);
     });
 
-    // Ruling 4: pre-D8 the anchor is the `worker_spawned` mirror, not the
-    // canonical start — the row must still render between the surrounding text.
-    it('anchors the row at the legacy mirror when that is what came first', () => {
+    // D8: the anchor is `subagent_started`. The retired mirror before it is
+    // chrome, so the row still renders between the surrounding text.
+    it('anchors the row at subagent_started, with the retired mirror as chrome', () => {
       const { container } = renderEvents(
         [
           { type: 'text_delta', text: 'Spawning a scout.' },

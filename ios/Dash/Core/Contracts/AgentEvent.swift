@@ -7,25 +7,22 @@ struct UsageDTO: Codable, Hashable, Sendable {
   let cacheWriteTokens: Int?
 }
 
-/// The live half of a child's lifecycle, shared by the canonical
-/// `subagent_progress` event and the legacy `worker_status` mirror it
-/// replaces (sub-agents design §7.2). One enum for both families so the two
-/// vocabularies cannot drift before D8 retires the mirrors.
+/// The live half of a child's lifecycle (`subagent_progress`, sub-agents
+/// design §7.2). Also decodes the retired `worker_status`, which a transcript
+/// persisted before D8 still contains.
 enum SubagentLiveStatus: String, Codable, Hashable, Sendable {
   case running
   case waitingInput = "waiting_input"
 }
 
-/// The terminal half, likewise shared by `subagent_finished` and `worker_done`.
+/// The terminal half (`subagent_finished`), and also the retired `worker_done`.
 ///
-/// This has FIVE cases, not three, and the reason is `subagent_finished`, NOT
-/// the legacy mirror. `worker_done` never carried more than three: every
-/// producer flattens through `legacyWorkerDoneStatus`
-/// (`packages/swarm/src/subagent-status.ts:13`), which maps `interrupted` and
-/// `max_turns` to `failed` — the A2 ruling that kept old clients working.
-/// `subagent_finished` carries the true status UNFLATTENED, so making it a
-/// known event (D4) is what requires all five here. Widening `worker_done` to
-/// match costs nothing and means one enum serves both families.
+/// FIVE cases. Pre-D8 the mirror carried only three — every producer flattened
+/// through `legacyWorkerDoneStatus`, which mapped `interrupted` and
+/// `max_turns` to `failed` — but D8 retired that flatten with the mirrors, so
+/// all five now reach every client on `subagent_finished`. The extra two
+/// remain accepted on a persisted `worker_done` because widening it costs
+/// nothing and means one enum serves both.
 ///
 /// Modelling only three would therefore not have been a pre-existing bug — it
 /// would have been a bug D4 INTRODUCED. §8.1 gives all five a finished glyph.
@@ -70,9 +67,8 @@ enum AgentEvent: Codable, Hashable, Sendable {
     report: String,
     usage: UsageDTO?
   )
-  /// Canonical child lifecycle (sub-agents design §7.2). Persisted in the
-  /// parent's event log; the legacy `worker_spawned` mirror carries the same
-  /// child under the same id until D8.
+  /// Canonical child lifecycle (sub-agents design §7.2), persisted in the
+  /// parent's event log. The only anchor since D8.
   case subagentStarted(
     subagentId: String,
     name: String?,

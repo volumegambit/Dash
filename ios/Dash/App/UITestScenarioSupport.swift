@@ -361,7 +361,7 @@ extension AppDependenciesFactory {
     }
 
     /// The id of the child `streaming-reconnect` spawns. Shared by the
-    /// scripted `worker_spawned`/`subagent_started` pair, by the row's
+    /// scripted retired-mirror/`subagent_started` pair, by the row's
     /// accessibility identifier, and by the child conversation this transcript
     /// belongs to — because a worker id IS the child's conversation id.
     static let subagentID = "ui-subagent"
@@ -1867,12 +1867,12 @@ extension AppDependenciesFactory {
       yieldEvent(
         turnID: turnID,
         conversationID: conversationID,
-        // BOTH families for one child, in the order the gateway really emits
-        // them (`coordinator.ts` pushes `worker_spawned` immediately before the
-        // handle emits `subagent_started`). The id is shared because a worker
-        // id IS the child's conversation id, and `ConversationUITests` asserts
-        // exactly ONE `chat.subagent.ui-subagent` element exists — that is
-        // ruling 4 proven in the running app, not just in the reducer.
+        // A PERSISTED PRE-D8 shape: the retired `worker_spawned` mirror ahead
+        // of the `subagent_started` that is now the only anchor. Nothing emits
+        // this pair any more; the scenario keeps it because
+        // `ConversationUITests` asserting exactly ONE
+        // `chat.subagent.ui-subagent` element is the D8 drop policy proven in
+        // the running app, not just in the reducer.
         .workerSpawned(
           workerId: "ui-subagent",
           runId: "ui-run",

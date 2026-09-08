@@ -758,7 +758,7 @@ struct ChatReducerTests {
   /// `role`/`brief` standing in for `subagentType`/`description`. It carries no
   /// timestamps at all, which is why `startedAt` is optional: D5 must render
   /// nothing for elapsed rather than the row's own age.
-  @Test("a legacy-only child folds with no timestamps")
+  @Test("a retired worker_* mirror folds into nothing")
   func subagentLegacyOnly() {
     var state = acceptedState(cursor: 1)
     _ = apply(
@@ -773,14 +773,65 @@ struct ChatReducerTests {
       to: &state
     )
 
-    let card = state.messages.last?.assistant?.subagentCards.first
-    #expect(card?.id == "child-1")
-    #expect(card?.type == "researcher")
-    #expect(card?.description == "Inspect")
-    #expect(card?.status == .running)
-    #expect(card?.startedAt == nil)
-    #expect(card?.endedAt == nil)
-    #expect(card?.toolCallCount == 0)
+    // D8: it anchors no card...
+    #expect(state.messages.last?.assistant?.subagentCards.isEmpty == true)
+    // ...and it is still CHROME, so it never reaches the `.unknown` branch,
+    // which would draw "Gateway event: worker_spawned" on every persisted
+    // pre-D8 conversation.
+    #expect(state.messages.last?.assistant?.statusRows.isEmpty == true)
+  }
+
+  /// The whole pre-D8 sequence one child used to produce. It must render
+  /// exactly the card its canonical half describes — no second card, no
+  /// unknown-event rows, and no field taken from a mirror.
+  @Test("a persisted pre-D8 transcript renders one normal card")
+  func subagentPreD8Transcript() {
+    var state = acceptedState(cursor: 1)
+    _ = apply(
+      .workerSpawned(
+        workerId: "child-1", runId: "run-1", role: "researcher", brief: "Inspect",
+        model: "test/model"),
+      seq: 2, to: &state)
+    _ = apply(.agentSpawned(name: "researcher"), seq: 3, to: &state)
+    _ = apply(
+      .subagentStarted(
+        subagentId: "child-1", name: "scout", subagentType: "Explore", description: "Map it",
+        prompt: "p", model: "test/model", background: false, depth: 1,
+        startedAt: Date(timeIntervalSince1970: 100), isolation: nil, parentTurnId: nil),
+      seq: 4, to: &state)
+    _ = apply(
+      .workerStatus(
+        workerId: "child-1", runId: "run-1", role: "researcher", status: .waitingInput,
+        detail: "legacy detail", question: "Legacy question?"),
+      seq: 5, to: &state)
+    _ = apply(
+      .subagentProgress(
+        subagentId: "child-1", status: .running, toolCallCount: 4, elapsedMs: 1,
+        detail: "modern detail", question: nil),
+      seq: 6, to: &state)
+    _ = apply(
+      .workerDone(
+        workerId: "child-1", runId: "run-1", role: "researcher", status: .cancelled,
+        report: "Legacy report", usage: nil),
+      seq: 7, to: &state)
+    _ = apply(
+      .subagentFinished(
+        subagentId: "child-1", name: "scout", subagentType: "Explore", description: "Map it",
+        status: .done, report: "Modern report", usage: nil, toolCallCount: 6,
+        startedAt: Date(timeIntervalSince1970: 100),
+        endedAt: Date(timeIntervalSince1970: 160)),
+      seq: 8, to: &state)
+
+    let cards = state.messages.last?.assistant?.subagentCards ?? []
+    #expect(cards.count == 1)
+    #expect(cards.first?.type == "Explore")
+    #expect(cards.first?.description == "Map it")
+    #expect(cards.first?.status == .done)
+    #expect(cards.first?.report == "Modern report")
+    #expect(cards.first?.detail == "modern detail")
+    #expect(cards.first?.toolCallCount == 6)
+    #expect(cards.first?.isOrphan == false)
+    #expect(state.messages.last?.assistant?.statusRows.contains { $0.kind == .unknown } == false)
   }
 
   /// The fold DISCARDS `subagent_progress.elapsedMs` — D1 parked this and D2
@@ -882,11 +933,18 @@ struct ChatReducerTests {
     #expect(card?.detail == "Continue?")
   }
 
-  /// The same clearing for the legacy family, which is how the pre-D4 reducer
-  /// behaved (`worker_done` blanked `detail` and `question` outright).
-  @Test("worker done clears the waiting-input question")
+  /// D8 retired the `worker_*` family. A persisted pre-D8 `worker_status`
+  /// must NOT park the row, and a `worker_done` must NOT terminalize it: the
+  /// canonical half of the same transcript is what says both.
+  @Test("a retired worker_status/worker_done pair changes nothing")
   func legacyWorkerDoneClearsWaitingInput() {
     var state = acceptedState(cursor: 1)
+    _ = apply(
+      .subagentStarted(
+        subagentId: "child-1", name: nil, subagentType: "Explore", description: "Map it",
+        prompt: "p", model: "m", background: false, depth: 1,
+        startedAt: Date(timeIntervalSince1970: 100), isolation: nil, parentTurnId: nil),
+      seq: 2, to: &state)
     _ = apply(
       .workerStatus(
         workerId: "child-1",
@@ -896,7 +954,7 @@ struct ChatReducerTests {
         detail: "Need context",
         question: "Continue?"
       ),
-      seq: 2,
+      seq: 3,
       to: &state
     )
     _ = apply(
@@ -908,14 +966,15 @@ struct ChatReducerTests {
         report: "Complete",
         usage: nil
       ),
-      seq: 3,
+      seq: 4,
       to: &state
     )
 
     let card = state.messages.last?.assistant?.subagentCards.first
-    #expect(card?.status == .done)
+    // Live (the parent turn is still streaming) and never parked.
+    #expect(card?.status == .running)
     #expect(card?.question == nil)
-    #expect(card?.report == "Complete")
+    #expect(card?.report == nil)
   }
 
   @Test("response content is a fallback and usage is retained")

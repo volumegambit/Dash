@@ -3708,13 +3708,13 @@ extension MobileWSServerFrame {
   /// Four triggers, each covering a case the others do not:
   ///
   /// 1. `subagent_started` / `subagent_finished` — a FOREGROUND child's row
-  ///    moving while its spawning turn is still running. The legacy
-  ///    `worker_spawned`/`worker_done` mirrors are deliberately excluded: the
-  ///    gateway emits both families for the same child, so reading on them too
-  ///    would double every read for no new information. `subagent_progress`
-  ///    is excluded for a different reason — it is transient and never
-  ///    persisted, so refreshing on it would be a round trip per tool call for
-  ///    a row whose only live field ticks locally anyway.
+  ///    moving while its spawning turn is still running. The retired
+  ///    `worker_*` mirrors are excluded because nothing emits one (D8); a
+  ///    persisted pre-D8 one arrives only on a replay, where the list is read
+  ///    anyway. `subagent_progress` is excluded for a different reason — it is
+  ///    transient and never persisted, so refreshing on it would be a round
+  ///    trip per tool call for a row whose only live field ticks locally
+  ///    anyway.
   /// 2. `accepted` with `origin == .notification` — the ONLY thing that tells
   ///    a parent about a BACKGROUND child's finish. Nothing about that finish
   ///    reaches the parent's own event stream, and the gateway starts a

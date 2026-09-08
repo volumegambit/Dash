@@ -209,19 +209,6 @@ describe('groupSubagentEvents', () => {
     expect(group.detail).toBe('Proceed?');
   });
 
-  it('does not let a stale worker_status question survive a modern running progress', () => {
-    const events = [
-      started('a'),
-      workerStatus('a', { status: 'waiting_input', question: 'Which branch?' }),
-      progress('a', { status: 'waiting_input', question: 'Which branch?' }),
-      progress('a', { status: 'running', detail: 'checking out' }),
-    ];
-    const [group] = groupSubagentEvents(events, true);
-    expect(group.status).toBe('running');
-    expect(group.question).toBeUndefined();
-    expect(group.detail).toBe('checking out');
-  });
-
   it('drops the pending question once the child is terminal', () => {
     const events = [
       started('a'),
@@ -232,17 +219,6 @@ describe('groupSubagentEvents', () => {
     expect(group.status).toBe('cancelled');
     expect(group.question).toBeUndefined();
     expect(group.detail).toBe('Which branch?');
-  });
-
-  it('drops the pending question when only the legacy mirror terminalizes', () => {
-    const events = [
-      workerSpawned('a'),
-      workerStatus('a', { status: 'waiting_input', question: 'Which branch?' }),
-      workerDone('a', { status: 'cancelled' }),
-    ];
-    const [group] = groupSubagentEvents(events, true);
-    expect(group.status).toBe('cancelled');
-    expect(group.question).toBeUndefined();
   });
 
   it('drops the pending question when end-of-stream terminalizes the row', () => {
@@ -344,8 +320,15 @@ describe('groupSubagentEvents', () => {
     });
   });
 
-  describe('legacy worker_* mirrors (removed in D8)', () => {
-    it('folds worker_* and subagent_* for the same child into ONE group', () => {
+  /**
+   * D8 retired the `worker_*` mirrors. Nothing emits one, but a transcript
+   * PERSISTED before D8 still contains them, and the policy is that the client
+   * DROPS them: they anchor nothing, contribute nothing, and — because
+   * `isSubagentEvent` still claims them — never reach the renderer's
+   * "Activity from a newer Dash version" fallback.
+   */
+  describe('a persisted PRE-D8 transcript', () => {
+    it('renders one normal card from the canonical half alone', () => {
       const events = [
         workerSpawned('a'),
         { type: 'agent_spawned', name: 'reviewer' } as McAgentEvent,
@@ -357,98 +340,85 @@ describe('groupSubagentEvents', () => {
       ];
       const groups = groupSubagentEvents(events, false);
       expect(groups).toHaveLength(1);
-      expect(groups[0].subagentId).toBe('a');
+      expect(groups[0]).toMatchObject({
+        subagentId: 'a',
+        type: 'code-reviewer',
+        description: 'Review the diff',
+        status: 'done',
+        report: 'Two findings, both minor.',
+        startedAt: START_ISO,
+        orphan: false,
+        detail: 'modern detail',
+      });
     });
 
-    it('anchors the merged group at the FIRST start event (the legacy mirror)', () => {
+    it('anchors at subagent_started, NOT at the retired worker_spawned before it', () => {
       const groups = groupSubagentEvents([workerSpawned('a'), started('a')], true);
-      expect(groups[0].anchorIndex).toBe(0);
+      expect(groups[0].anchorIndex).toBe(1);
       expect(groups[0].orphan).toBe(false);
     });
 
-    it('lets subagent_* win over worker_* for the fields it folds into its own slot', () => {
-      const forward = groupSubagentEvents([workerSpawned('a'), started('a')], true)[0];
-      const reversed = groupSubagentEvents([started('a'), workerSpawned('a')], true)[0];
-      for (const group of [forward, reversed]) {
-        expect(group.type).toBe('code-reviewer');
-        expect(group.description).toBe('Review the diff');
-        expect(group.startedAt).toBe(START_ISO);
-      }
-    });
-
-    // …and the two exceptions, which have ONE draft slot each written by both
-    // families and are therefore last-writer-wins. Invisible today — the
-    // gateway builds each pair from one value (`spec.model` is the `model` it
-    // puts on `worker_spawned`; `worker_done` and `subagent_finished` share
-    // one `this.usage`) — and gone at D8 with the mirrors. Pinned so the
-    // module comment can say what the code does instead of what it wishes.
-    it('takes model and usage from whichever family wrote them last', () => {
-      const modelForward = groupSubagentEvents(
-        [workerSpawned('a', { model: 'legacy-model' }), started('a', { model: 'modern-model' })],
-        true,
-      )[0];
+    it('takes model and usage from the canonical family only', () => {
+      // These were the two last-writer-wins slots written by BOTH families.
       const modelReversed = groupSubagentEvents(
         [started('a', { model: 'modern-model' }), workerSpawned('a', { model: 'legacy-model' })],
         true,
       )[0];
-      expect(modelForward.model).toBe('modern-model');
-      expect(modelReversed.model).toBe('legacy-model');
+      expect(modelReversed.model).toBe('modern-model');
 
-      const legacyUsage = { inputTokens: 1, outputTokens: 2 };
-      const usageForward = groupSubagentEvents(
-        [started('a'), workerDone('a', { usage: legacyUsage }), finished('a')],
-        false,
-      )[0];
       const usageReversed = groupSubagentEvents(
-        [started('a'), finished('a'), workerDone('a', { usage: legacyUsage })],
+        [
+          started('a'),
+          finished('a'),
+          workerDone('a', { usage: { inputTokens: 1, outputTokens: 2 } }),
+        ],
         false,
       )[0];
-      expect(usageForward.usage).toEqual({ inputTokens: 1200, outputTokens: 340 });
-      expect(usageReversed.usage).toEqual(legacyUsage);
+      expect(usageReversed.usage).toEqual({ inputTokens: 1200, outputTokens: 340 });
     });
 
-    it('lets subagent_finished win over worker_done regardless of arrival order', () => {
-      const forward = groupSubagentEvents(
-        [started('a'), workerDone('a', { status: 'cancelled' }), finished('a')],
-        false,
-      )[0];
-      const reversed = groupSubagentEvents(
-        [started('a'), finished('a'), workerDone('a', { status: 'cancelled' })],
-        false,
-      )[0];
-      for (const group of [forward, reversed]) {
-        expect(group.status).toBe('done');
-        expect(group.report).toBe('Two findings, both minor.');
-        expect(group.toolCallCount).toBe(5);
-      }
-    });
-
-    it('renders a legacy-only child from worker_* alone', () => {
+    it('creates NO card for a legacy-only child (nothing canonical ever arrived)', () => {
       const events = [
         workerSpawned('a'),
         workerStatus('a', { detail: 'digging' }),
         workerDone('a'),
       ];
-      const [group] = groupSubagentEvents(events, false);
-      expect(group).toMatchObject({
-        subagentId: 'a',
-        type: 'reviewer',
-        description: 'Review the diff',
-        status: 'done',
-        report: 'Legacy report.',
-        startedAt: '',
-        orphan: false,
-      });
+      expect(groupSubagentEvents(events, false)).toEqual([]);
     });
 
-    it('maps worker_status waiting_input to waiting and carries the question', () => {
+    it('a retired mirror contributes no field, in either arrival order', () => {
+      const forward = groupSubagentEvents(
+        [started('a'), workerDone('a', { status: 'cancelled' })],
+        false,
+      )[0];
+      const reversed = groupSubagentEvents(
+        [workerDone('a', { status: 'cancelled' }), started('a')],
+        false,
+      )[0];
+      for (const group of [forward, reversed]) {
+        // No canonical terminal arrived, so end-of-stream terminalization
+        // applies — the retired `cancelled` is NOT the source.
+        expect(group.status).toBe('cancelled');
+        expect(group.report).toBeUndefined();
+        expect(group.type).toBe('code-reviewer');
+      }
+    });
+
+    it('a retired worker_status leaves no question and no live status on the card', () => {
       const events = [
-        workerSpawned('a'),
+        started('a'),
         workerStatus('a', { status: 'waiting_input', question: 'Which branch?' }),
       ];
       const [group] = groupSubagentEvents(events, true);
-      expect(group.status).toBe('waiting');
-      expect(group.question).toBe('Which branch?');
+      expect(group.status).toBe('running');
+      expect(group.question).toBeUndefined();
+      expect(group.detail).toBe('Review the diff');
+    });
+
+    it('still counts as sub-agent chrome, so the renderer never falls back on it', () => {
+      expect(isSubagentEvent('worker_spawned')).toBe(true);
+      expect(isSubagentEvent('worker_status')).toBe(true);
+      expect(isSubagentEvent('worker_done')).toBe(true);
     });
   });
 
@@ -534,7 +504,7 @@ describe('formatClusterSummary', () => {
 });
 
 describe('isSubagentEvent', () => {
-  it('claims both event families so neither reaches the unknown-activity fallback', () => {
+  it('claims the canonical family AND the three D8 retired, so neither reaches the unknown-activity fallback', () => {
     for (const type of [
       'subagent_started',
       'subagent_progress',
