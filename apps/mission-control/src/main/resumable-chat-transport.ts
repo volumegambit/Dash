@@ -193,9 +193,17 @@ export function parseCapableServerFrame(value: unknown): MobileWsServerFrame {
       }
       break;
     case 'event':
+      // `seq` is OPTIONAL on an event frame, and the gateway means it: a
+      // TRANSIENT event (spec §7.2 — `subagent_progress` today) is
+      // live-broadcast and never appended to the durable log, so
+      // `resumable-chat-hub.ts:382-390` emits it with no sequence at all.
+      // Requiring one here rejected every heartbeat a real child sends, which
+      // is the whole of D5 and the first half of D3. Present-but-malformed is
+      // still a reject — the relaxation is "absent is legal", not "anything
+      // goes".
       if (
         !isNonblankString(value.conversationId) ||
-        !isPositiveInteger(value.seq) ||
+        (value.seq !== undefined && !isPositiveInteger(value.seq)) ||
         !isRecord(value.event) ||
         !isNonblankString(value.event.type)
       ) {
@@ -706,6 +714,12 @@ export class ResumableChatTransport {
       // a streaming row to finalize; never through `onConnectionError`, which
       // is the app-wide banner.
       if (frame.type === 'error' && 'conversationId' in frame) this.options.onFrame(frame);
+      // So does a TRANSIENT event (spec §7.2). Dropping it here is why a
+      // WATCHED conversation — every background child, §7.6 — showed a card
+      // that never moved off `0 tool uses`: the heartbeat is the only thing
+      // that carries a running child's tool count between its start and its
+      // finish. Never advances `lastSeq`; it is not a position in the log.
+      if (frame.type === 'event') this.options.onFrame(frame);
       return;
     }
     if (seq <= state.lastSeq) return;
@@ -836,6 +850,14 @@ export class ResumableChatTransport {
         if (state.accepted && frame.conversationId === undefined) return;
         state.terminal = true;
         this.finish(state.conversation.id);
+        return;
+      }
+      // A TRANSIENT event (spec §7.2): live-only, never persisted, therefore
+      // no cursor. Delivered, and deliberately WITHOUT touching `lastSeq` —
+      // it is not a position in the log, so it must neither advance the
+      // cursor nor be read as a gap the replay path has to fill.
+      if (frame.type === 'event') {
+        this.options.onFrame(frame);
         return;
       }
       return invalidFrame();

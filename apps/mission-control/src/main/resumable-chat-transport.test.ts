@@ -1333,3 +1333,49 @@ describe('ResumableChatTransport', () => {
     });
   });
 });
+
+/**
+ * D5 / D3 — the transient `subagent_progress` frame.
+ *
+ * `subagent_progress` is live-stream only (spec §7.2), so
+ * `resumable-chat-hub.ts:382-390` broadcasts it with NO `seq` and never
+ * persists it, and `MobileWsServerFrame` declares `event.seq` optional for
+ * exactly that reason. This transport required it, so every heartbeat a real
+ * child emits raised `invalidFrame()` — "Update Dash: the gateway sent an
+ * unsupported chat frame" (D5) — and, because the turn socket's `.catch`
+ * routes that through `fail()`, terminalized the turn: the `tool_result`, the
+ * `done` and the composer's re-enable never landed (D3).
+ *
+ * The stream is `subagent-progress-frames.jsonl`, captured verbatim from a
+ * real gateway by `scripts/subagents-e2e/capture-fixtures.mjs`. Three of its
+ * fourteen frames carry no `seq`.
+ */
+describe('ResumableChatTransport — a captured stream with transient frames', () => {
+  it('delivers a real turn end to end, seq-less heartbeats included', async () => {
+    const captured = await jsonl<MobileWsServerFrame>('subagent-progress-frames.jsonl');
+    const seqless = captured.filter((f) => f.type === 'event' && f.seq === undefined);
+    expect(seqless).toHaveLength(3);
+    expect(
+      seqless.map((f) => (f as Extract<MobileWsServerFrame, { type: 'event' }>).event.type),
+    ).toEqual(['subagent_progress', 'subagent_progress', 'subagent_progress']);
+
+    const conversationId = (captured[0] as { conversationId: string }).conversationId;
+    const capturedTurn = captured[0].id;
+    const socket = new FakeSocket();
+    const delivered = vi.fn();
+    const onError = vi.fn();
+    const transport = makeTransport(() => socket, delivered, { onError });
+    void transport
+      .send({ ...conversation, id: conversationId, activeTurnId: capturedTurn }, capturedTurn, 'go')
+      .catch(() => {});
+    socket.open();
+    for (const frame of captured) socket.raw(JSON.stringify(frame));
+
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(captured.length));
+    expect(onError).not.toHaveBeenCalled();
+    const types = delivered.mock.calls.map(([f]) => (f.type === 'event' ? f.event.type : f.type));
+    expect(types).toContain('subagent_progress');
+    // The turn reached its own terminal frame: this is the half D3 lost.
+    expect(types.at(-1)).toBe('done');
+  });
+});
