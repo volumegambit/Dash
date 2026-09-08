@@ -9,7 +9,11 @@ import type {
   McpStatusChange,
   MissionControlAPI,
 } from '../shared/ipc.js';
-import { unwrapChatIpcResult } from '../shared/ipc.js';
+import {
+  CHAT_SUBAGENT_RESUBSCRIBED,
+  CHAT_SUBAGENT_WATCH_LOST,
+  unwrapChatIpcResult,
+} from '../shared/ipc.js';
 import type { ProjectsEvent } from '../shared/projects-ipc.js';
 
 type ApiResult<K extends keyof MissionControlAPI> = MissionControlAPI[K] extends (
@@ -142,14 +146,14 @@ const api: MissionControlAPI = {
   onSubagentResubscribed: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
       callback(conversationId);
-    ipcRenderer.on('chat:subagentResubscribed', listener);
-    return () => ipcRenderer.removeListener('chat:subagentResubscribed', listener);
+    ipcRenderer.on(CHAT_SUBAGENT_RESUBSCRIBED, listener);
+    return () => ipcRenderer.removeListener(CHAT_SUBAGENT_RESUBSCRIBED, listener);
   },
   onSubagentWatchLost: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
       callback(conversationId);
-    ipcRenderer.on('chat:subagentWatchLost', listener);
-    return () => ipcRenderer.removeListener('chat:subagentWatchLost', listener);
+    ipcRenderer.on(CHAT_SUBAGENT_WATCH_LOST, listener);
+    return () => ipcRenderer.removeListener(CHAT_SUBAGENT_WATCH_LOST, listener);
   },
 
   // Skills

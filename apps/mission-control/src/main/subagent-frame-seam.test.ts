@@ -1,13 +1,49 @@
 import type { McConversationView } from '@dash/mc';
 import type { MobileWsServerFrame } from '@dash/mobile-contract';
+import type { BrowserWindow } from 'electron';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../vitest.setup.js';
 import { useChatStore } from '../renderer/src/stores/chat.js';
+import type { MissionControlAPI } from '../shared/ipc.js';
+import { createSubagentWatchBridge } from './ipc.js';
 import {
   type ChatSocket,
   type ChatSocketEvent,
   ResumableChatTransport,
 } from './resumable-chat-transport.js';
+
+/**
+ * One fake IPC bus, shared by the mocked `electron` module. `webContents.send`
+ * writes into it by channel name and the preload's `ipcRenderer.on` reads out
+ * of it by channel name; nothing else joins the two ends.
+ */
+const bridge = vi.hoisted(() => {
+  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  const exposed: { api?: unknown } = {};
+  return { listeners, exposed };
+});
+
+vi.mock('electron', () => ({
+  // `main/ipc.ts` reads these at import time.
+  app: { isPackaged: true },
+  dialog: {},
+  ipcMain: { handle: vi.fn(), on: vi.fn() },
+  shell: {},
+  // The preload's two.
+  contextBridge: {
+    exposeInMainWorld: (_key: string, api: unknown) => {
+      bridge.exposed.api = api;
+    },
+  },
+  ipcRenderer: {
+    on: (channel: string, listener: (...args: unknown[]) => void) => {
+      bridge.listeners.set(channel, [...(bridge.listeners.get(channel) ?? []), listener]);
+    },
+    removeListener: () => undefined,
+    send: vi.fn(),
+    invoke: vi.fn(),
+  },
+}));
 
 /**
  * Ruling 4's seam, and the only test on this branch that spans both halves of
@@ -154,5 +190,50 @@ describe('the child frame seam', () => {
 
     useChatStore.getState().unsubscribeSubagent('sub_a');
     transport.closeAll();
+  });
+});
+
+/**
+ * F6's seam. The two channel names are the ONLY thing the main and renderer
+ * halves of the child-watch lifecycle have to agree on, and nothing crossed
+ * that boundary before this: `tsc` cannot compare two string literals in two
+ * files, biome has no opinion about them, and `vitest.setup.ts` mocks
+ * `onSubagentWatchLost` as a bare `vi.fn()`. A typo on either side shipped
+ * GREEN and would have silently disabled the whole C2 fix in production —
+ * `markSubagentWatchLost` never firing, `live` staying `true`, the permanent
+ * duplicate row back in full.
+ *
+ * The shared constant is the fix: there is one string now, and a mistyped
+ * identifier is a compile error. This is what says the constant is the one
+ * BOTH sides actually use — the real `createSubagentWatchBridge` sender on one
+ * end, the real preload registration on the other, joined by nothing but the
+ * channel string.
+ */
+describe('the child watch-lifecycle channels', () => {
+  it('carries both signals from the real sender into the real preload listener', async () => {
+    // Imported for its side effect: the module's own
+    // `contextBridge.exposeInMainWorld` call is how the renderer gets this
+    // object in the app, so this is the registration itself and not a copy.
+    await import('../preload/index.js');
+    const api = bridge.exposed.api as MissionControlAPI;
+    const win = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel: string, ...args: unknown[]) => {
+          for (const listener of bridge.listeners.get(channel) ?? []) listener({}, ...args);
+        },
+      },
+    } as unknown as BrowserWindow;
+    const sender = createSubagentWatchBridge(() => win);
+    const lost: string[] = [];
+    const resubscribed: string[] = [];
+    api.onSubagentWatchLost((id) => lost.push(id));
+    api.onSubagentResubscribed((id) => resubscribed.push(id));
+
+    sender.sendSubagentWatchLost('sub_a');
+    sender.sendSubagentResubscribed('sub_a');
+
+    expect(lost).toEqual(['sub_a']);
+    expect(resubscribed).toEqual(['sub_a']);
   });
 });

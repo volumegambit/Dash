@@ -235,6 +235,21 @@ export async function captureChatIpcResult<T>(
   }
 }
 
+/**
+ * The two channels a watched child's stream lifecycle rides on (§7.6, C2).
+ *
+ * Constants rather than literals on both sides because a typo in either one
+ * ships GREEN: nothing crosses this boundary in a test, `tsc` cannot compare
+ * two string literals in two files, and biome has no opinion about them. In
+ * production a mistyped name would silently disable the whole C2 fix —
+ * `markSubagentWatchLost` would never fire, `live` would stay `true`, and the
+ * permanent duplicate row would be back. With one exported constant there is
+ * only one string, and a mistyped IDENTIFIER is a compile error.
+ */
+export const CHAT_SUBAGENT_WATCH_LOST = 'chat:subagentWatchLost';
+/** @see CHAT_SUBAGENT_WATCH_LOST */
+export const CHAT_SUBAGENT_RESUBSCRIBED = 'chat:subagentResubscribed';
+
 export function unwrapChatIpcResult<T>(result: ChatIpcResult<T>): T {
   if (result.ok) return result.value;
   const error = new Error(result.error.message);

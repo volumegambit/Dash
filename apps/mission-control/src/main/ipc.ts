@@ -64,7 +64,11 @@ import type {
   PairingInfo,
   SetupStatus,
 } from '../shared/ipc.js';
-import { captureChatIpcResult } from '../shared/ipc.js';
+import {
+  CHAT_SUBAGENT_RESUBSCRIBED,
+  CHAT_SUBAGENT_WATCH_LOST,
+  captureChatIpcResult,
+} from '../shared/ipc.js';
 import { ChatService } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { startCodexOAuth } from './codex-auth.js';
@@ -954,6 +958,40 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
   return chatService;
 }
 
+/**
+ * The main half of the child-watch lifecycle: the two `webContents.send`s that
+ * carry it to the renderer.
+ *
+ * Extracted from `registerIpcHandlers` so the seam test can drive the REAL
+ * sender. The channel NAME is the only thing the two processes have to agree
+ * on and the only thing neither `tsc` nor biome can check across them, so it
+ * is the one piece of this glue worth a seam rather than a copy of the wiring.
+ */
+export function createSubagentWatchBridge(getWindow: () => BrowserWindow | undefined): {
+  /**
+   * A watched child conversation's stream came back after a drop. Fired both
+   * by the transport's own reconnect and by `ChatService` when the whole
+   * transport is replaced; the renderer answers both the same way, with a
+   * REST re-read of that child.
+   */
+  sendSubagentResubscribed: (conversationId: string) => void;
+  /**
+   * The socket behind a watched child is not open. Fired by the transport for
+   * every way that happens, and by `ChatService` for the two it cannot see —
+   * a hold taken with no transport at all, and the transport going away.
+   */
+  sendSubagentWatchLost: (conversationId: string) => void;
+} {
+  const send = (channel: string, conversationId: string): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(channel, conversationId);
+  };
+  return {
+    sendSubagentResubscribed: (conversationId) => send(CHAT_SUBAGENT_RESUBSCRIBED, conversationId),
+    sendSubagentWatchLost: (conversationId) => send(CHAT_SUBAGENT_WATCH_LOST, conversationId),
+  };
+}
+
 export async function registerIpcHandlers(
   getWindow: () => BrowserWindow | undefined,
 ): Promise<void> {
@@ -1151,27 +1189,7 @@ export async function registerIpcHandlers(
       ? pendingConversationRuntime.repository
       : null;
 
-  /**
-   * A watched child conversation's stream came back after a drop. Fired both
-   * by the transport's own reconnect and by `ChatService` when the whole
-   * transport is replaced; the renderer answers both the same way, with a
-   * REST re-read of that child.
-   */
-  const sendSubagentResubscribed = (conversationId: string): void => {
-    const win = getWindow();
-    if (win && !win.isDestroyed())
-      win.webContents.send('chat:subagentResubscribed', conversationId);
-  };
-
-  /**
-   * The socket behind a watched child is not open. Fired by the transport for
-   * every way that happens, and by `ChatService` for the two it cannot see —
-   * a hold taken with no transport at all, and the transport going away.
-   */
-  const sendSubagentWatchLost = (conversationId: string): void => {
-    const win = getWindow();
-    if (win && !win.isDestroyed()) win.webContents.send('chat:subagentWatchLost', conversationId);
-  };
+  const { sendSubagentResubscribed, sendSubagentWatchLost } = createSubagentWatchBridge(getWindow);
 
   const chatUrl = (endpoint: ActiveGatewayEndpoint): string =>
     `${trimTrailingSlash(endpoint.chatBaseUrl)}/ws/chat?token=${encodeURIComponent(endpoint.chatToken)}`;
