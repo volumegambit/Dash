@@ -1170,8 +1170,11 @@ enum ChatReducer {
     // row, contribute no field, and `isSubagentChrome` still claims them so
     // they never reach the `.unknown` branch below, which would redecorate
     // every old conversation with three "Gateway event: worker_…" rows per
-    // child. Every persisted mirror is twinned with the canonical event it
-    // mirrored, so dropping them loses nothing.
+    // child. The mirrors were never TWINNED in the log — a `worker_done` from
+    // the consumer-gone cancel path has no `subagent_finished` beside it — so
+    // dropping loses that one cancel report (TEST_PLAN §32.8 step 4). Dropping
+    // is still the choice: a rewrite on replay would synthesise an event into
+    // every old conversation's log.
     case .workerSpawned, .workerStatus, .workerDone:
       break
 

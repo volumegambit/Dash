@@ -27,9 +27,13 @@
  * ONE family. D8 retired the legacy `worker_*` mirrors: nothing emits one, and
  * `subagent_started` is the only anchor. A transcript PERSISTED before D8
  * still contains them, and the recorded policy is that the CLIENT drops them
- * (the gateway does not rewrite on replay): every persisted mirror is twinned
- * with the canonical event it mirrored, so nothing is lost, and dropping is
- * the only choice that costs an old conversation nothing on a replay path.
+ * (the gateway does not rewrite on replay). The mirrors were never TWINNED in
+ * the log — a `worker_done` written on the consumer-gone cancel path has no
+ * `subagent_finished` beside it — so dropping them loses that one cancel
+ * report (pinned: `a retired mirror contributes no field…`, TEST_PLAN §32.8
+ * step 4). Dropping is still the choice because rewriting on replay would put
+ * a synthesised event into every old conversation's log for a report nobody
+ * had asked for.
  * They stay in {@link isSubagentEvent} so the transcript renderer keeps
  * skipping them rather than drawing its unsupported-content fallback three
  * times per child.

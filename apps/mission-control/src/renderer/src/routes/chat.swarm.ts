@@ -45,9 +45,11 @@
  * `subagent_started` is the only anchor and every field has ONE source —
  * including `model` and `usage`, which used to be plain last-writer-wins slots
  * written by both families. A transcript PERSISTED before D8 still contains
- * the mirrors, and the recorded policy is that the CLIENT drops them: every
- * persisted mirror is twinned with the canonical event it mirrored, so nothing
- * is lost, and dropping costs an old conversation nothing on a replay path.
+ * the mirrors, and the recorded policy is that the CLIENT drops them. They were
+ * never TWINNED in the log — a `worker_done` from the consumer-gone cancel path
+ * has no `subagent_finished` beside it — so dropping loses that one cancel
+ * report (pinned; TEST_PLAN §32.8 step 4). Dropping is still the choice: a
+ * rewrite on replay would synthesise an event into every old log.
  * They stay in {@link isSubagentEvent} so the renderer keeps skipping them.
  *
  * All functions here are framework-free pure functions so they can be
