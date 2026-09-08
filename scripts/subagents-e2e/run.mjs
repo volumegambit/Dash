@@ -151,6 +151,7 @@ async function openWatcher(gw) {
         (fs) => fs.find((f) => f.id === id && (f.type === 'done' || f.type === 'error')),
         timeoutMs,
       );
+      if (end === undefined) diagnose(gw, frames, id, timeoutMs);
       return { id, end, timedOut: end === undefined, events: eventsOf(frames, id) };
     },
     close() {
@@ -159,6 +160,28 @@ async function openWatcher(gw) {
       } catch {}
     },
   };
+}
+
+/**
+ * Everything a timed-out turn is allowed to be, printed so the next run does
+ * not have to guess: whether the turn was ACCEPTED at all (no `accepted` means
+ * the hub never took it — a protocol or routing problem), what else the socket
+ * received meanwhile, and what the gateway itself said. A discovery smoke that
+ * reports only "timed out" is not usable.
+ */
+function diagnose(gw, frames, id, timeoutMs) {
+  const mine = frames.filter((f) => f.id === id);
+  const others = frames.filter((f) => f.id !== id);
+  console.log(`     ⏱  no terminal frame for ${id} within ${timeoutMs}ms`);
+  console.log(
+    `        frames for this turn (${mine.length}): ` +
+      `${mine.map((f) => f.type).join(', ') || 'NONE — the hub never accepted it'}`,
+  );
+  console.log(
+    `        frames on this socket for other ids (${others.length}): ` +
+      `${[...new Set(others.map((f) => `${f.type}${f.origin ? `/${f.origin}` : ''}`))].join(', ') || 'none'}`,
+  );
+  console.log(`        --- gateway log tail ---\n${gw.tail(25)}`);
 }
 
 const rand = () => Math.random().toString(36).slice(2, 10);
