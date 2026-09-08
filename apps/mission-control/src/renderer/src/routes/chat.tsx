@@ -983,10 +983,13 @@ function SubagentCard({
   // selected conversation. The fold of this message's own events feeds a
   // STREAMING bubble on any conversation — `applyFrame` writes
   // `streamingFrames[key]` for every conversation id, ungated by the selection
-  // (`stores/chat.ts:741`, `:759`), and main subscribes a running conversation
-  // the moment somebody reads its messages (`chat-service.ts:394-400`), which
-  // `SessionPanel` does on mount. A persisted message has neither, and is the
-  // snapshot below.
+  // (`applyFrame`'s two `set` calls, `stores/chat.ts:938` and `:956`), and main
+  // subscribes a running conversation the moment somebody reads its messages
+  // (`ChatService.getMessages`, `chat-service.ts:452-459`), which `SessionPanel`
+  // does on mount. A persisted message has neither, and is the snapshot below.
+  //
+  // Line numbers are cited beside the SYMBOL they belong to: these two have
+  // moved three times, and a bare number is a citation that rots silently.
   const live = onSelectedConversation || isStreaming;
   const status = resolveSubagentStatus(group, entry);
   const question = resolveSubagentQuestion(group, entry);

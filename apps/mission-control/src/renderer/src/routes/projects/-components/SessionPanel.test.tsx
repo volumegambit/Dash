@@ -74,7 +74,23 @@ function assistantMessageWithChild(): ConversationMessage {
   } as ConversationMessage;
 }
 
-const LIVE_STARTED_AT = new Date(Date.now() - 65_000).toISOString();
+/**
+ * A placeholder, replaced with a FRESH timestamp by `liveTurn`.
+ *
+ * It used to be `new Date(Date.now() - 65_000).toISOString()` evaluated at
+ * module scope, which made the `1m` assertion below hold only while under 55 s
+ * of wall clock separated the module being imported from that render — a
+ * window the whole file shared. Measured margin was ~93x, so this is hygiene
+ * rather than a fix for a flake anyone has seen. Fake timers are the wrong
+ * tool: `useSubagentElapsed` runs a `setInterval` and this file waits with
+ * `findBy*`/`waitFor`, so a fake clock buys a hang.
+ */
+const LIVE_STARTED_AT = 'live-started-at';
+
+/** 65 s ago, as of NOW — so the window is one test's own duration. */
+function freshStartedAt(): string {
+  return new Date(Date.now() - 65_000).toISOString();
+}
 
 function subagentFrame(seq: number, event: Record<string, unknown>): MobileWsServerFrame {
   return {
@@ -108,13 +124,17 @@ const parkedEvent = {
 
 /** The panel's own turn, streaming: frames land in `streamingFrames[key]`. */
 function liveTurn(events: Record<string, unknown>[]): void {
+  const startedAt = freshStartedAt();
+  const dated = events.map((event) =>
+    event.startedAt === LIVE_STARTED_AT ? { ...event, startedAt } : event,
+  );
   useChatStore.setState({
     messages: { [key]: [] },
     selectedConversationRef: { id: 'another-conversation', origin: 'gateway' },
     subagents: [],
     subagentUi: {},
     lastSeq: { [key]: events.length },
-    streamingFrames: { [key]: events.map((event, index) => subagentFrame(index + 1, event)) },
+    streamingFrames: { [key]: dated.map((event, index) => subagentFrame(index + 1, event)) },
   });
 }
 
@@ -297,9 +317,9 @@ describe('SessionPanel', () => {
   // …but a card on a STREAMING message has a live source even off the
   // selection, and the round-2 snapshot must not reach it. `ensureMessages`
   // makes main subscribe this conversation when it is running
-  // (`chat-service.ts:394-400`) and `applyFrame` writes `streamingFrames[key]`
-  // for ANY conversation id, ungated by the selection (`stores/chat.ts:741`,
-  // `:759`). The fold under this bubble moves in real time, so the clock, the
+  // (`ChatService.getMessages`, `chat-service.ts:452-459`) and `applyFrame`
+  // writes `streamingFrames[key]` for ANY conversation id, ungated by the
+  // selection (its two `set` calls, `stores/chat.ts:938` and `:956`). The fold under this bubble moves in real time, so the clock, the
   // spinner and §8.1's collapsed-row question all belong here — and the card
   // has no expand toggle, so hiding the question hides it from this screen
   // entirely.
