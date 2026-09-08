@@ -234,7 +234,11 @@ describe('canonical chat IPC boundary', () => {
 
 describe('sub-agent watch channel', () => {
   function spies() {
-    return { subscribeConversation: vi.fn(), unsubscribeConversation: vi.fn() };
+    return {
+      subscribeConversation: vi.fn(),
+      unsubscribeConversation: vi.fn(),
+      rewatchConversation: vi.fn(),
+    };
   }
 
   it('takes and releases a hold over one channel', () => {
@@ -254,6 +258,33 @@ describe('sub-agent watch channel', () => {
 
     expect(service.subscribeConversation).not.toHaveBeenCalled();
     expect(service.unsubscribeConversation).not.toHaveBeenCalled();
+  });
+
+  // C2/F2. A hold that is already counted asking for a socket back, on the
+  // same channel so it cannot overtake the pair. It must NOT take a hold: the
+  // renderer's count did not move either, and a second `subscribeConversation`
+  // here would leave main one hold ahead for the rest of the session.
+  it('asks for a fresh socket without taking a hold', () => {
+    const service = spies();
+
+    applySubagentWatch(service, {
+      watch: true,
+      rewatch: true,
+      agentId: 'agent-1',
+      conversationId: 'child-1',
+    });
+
+    expect(service.rewatchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1');
+    expect(service.subscribeConversation).not.toHaveBeenCalled();
+    expect(service.unsubscribeConversation).not.toHaveBeenCalled();
+  });
+
+  it('drops a rewatch with no agent id, for the same reason a hold is dropped', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, rewatch: true, conversationId: 'child-1' });
+
+    expect(service.rewatchConversation).not.toHaveBeenCalled();
   });
 });
 

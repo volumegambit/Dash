@@ -860,6 +860,7 @@ describe('ChatService gateway conversations', () => {
     closeAll: ReturnType<typeof vi.fn>;
     watchConversation: ReturnType<typeof vi.fn>;
     unwatchConversation: ReturnType<typeof vi.fn>;
+    watchedConversations: ReturnType<typeof vi.fn>;
   };
   let service: ChatService;
 
@@ -885,6 +886,7 @@ describe('ChatService gateway conversations', () => {
       closeAll: vi.fn(),
       watchConversation: vi.fn(),
       unwatchConversation: vi.fn(),
+      watchedConversations: vi.fn().mockReturnValue([]),
     };
     service = new ChatService(
       store,
@@ -1071,6 +1073,53 @@ describe('ChatService gateway conversations', () => {
       service.unsubscribeConversation(childId);
 
       expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    // F2's main half. The renderer is the only side that can ask: its own
+    // `subscribeSubagent` returns on an existing entry before any IPC, so
+    // `subscribeConversation` below is never re-entered for a conversation
+    // already held, and with two holders the count never reaches 0 either.
+    it('puts a socket back under a held watch without moving the count', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-1', childId);
+      resumable.watchConversation.mockClear();
+      // The watch died: the transport dropped it from its own registry
+      // (`abandonSubscription`) and left the count here alone, which is what
+      // lets it be re-watched at all.
+      resumable.watchedConversations.mockReturnValue([]);
+
+      service.rewatchConversation('agent-1', childId);
+
+      // `reopened`, because the restore on the new socket's open is the only
+      // thing that puts the holder's optimism back and forces its re-read.
+      expect(resumable.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId, {
+        reopened: true,
+      });
+      // Both holds still stand: one release does not drop the watch.
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    it('asks for nothing when the transport is already watching', () => {
+      service.subscribeConversation('agent-1', childId);
+      resumable.watchConversation.mockClear();
+      // A reconnect in flight: the state is still in the transport's map and
+      // its own re-open fires the restore.
+      resumable.watchedConversations.mockReturnValue([childId]);
+
+      service.rewatchConversation('agent-1', childId);
+
+      expect(resumable.watchConversation).not.toHaveBeenCalled();
+    });
+
+    it('asks for nothing for a conversation nothing holds', () => {
+      resumable.watchedConversations.mockReturnValue([]);
+
+      service.rewatchConversation('agent-1', childId);
+
+      expect(resumable.watchConversation).not.toHaveBeenCalled();
     });
 
     it('re-watches every held conversation on a replacement transport, and says a re-read is owed', () => {

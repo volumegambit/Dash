@@ -603,6 +603,18 @@ export interface MissionControlAPI {
   subagentSubscribe(agentId: string, conversationId: string): void;
   /** Release one hold. The last one out sends `unsubscribe` and closes. */
   subagentUnsubscribe(conversationId: string): void;
+  /**
+   * Ask for a fresh socket on a hold that is ALREADY counted, because the one
+   * behind it died (§7.6, C2). Takes no hold and releases none — the count is
+   * exactly what it was — so the 1:1 subscribe/unsubscribe pairing main
+   * refcounts on is untouched.
+   *
+   * This exists because the renderer is the only side that knows a watch is
+   * dead: `subagentSubscribe` on a conversation already held never reaches
+   * main at all (the store returns on the existing entry), so with two holders
+   * — the panel open AND a card expanded — nothing could revive it.
+   */
+  subagentRewatch(agentId: string, conversationId: string): void;
 
   // Settings
   settingsGet(): Promise<AppSettings>;

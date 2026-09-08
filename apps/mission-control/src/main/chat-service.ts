@@ -195,6 +195,31 @@ export class ChatService {
   }
 
   /**
+   * Put a socket back under a hold that is already counted, because the one
+   * it had died (C2). Takes no hold and releases none: the count is exactly
+   * what it was, so the 1:1 pairing {@link subscribeConversation} and
+   * {@link unsubscribeConversation} depend on is untouched.
+   *
+   * Only the renderer can ask for this. It is the side that is told the watch
+   * is dead, and the side whose own early return on an existing hold means
+   * {@link subscribeConversation} is never re-entered for one.
+   *
+   * `{ reopened: true }` is load-bearing: the restore fired on the new
+   * socket's open is what puts the holder's optimism back and forces the REST
+   * re-read a subscribe does not replay.
+   */
+  rewatchConversation(agentId: string, conversationId: string): void {
+    if (!this.watchedConversations.has(conversationId)) return;
+    // No transport: the holder was already told this watch is lost, and a
+    // transport arriving re-watches every held conversation itself.
+    if (!this.resumable) return;
+    // Already watched — a reconnect in flight, say — so the transport's own
+    // restore is coming and a second watch would be a no-op anyway.
+    if (this.resumable.watchedConversations().includes(conversationId)) return;
+    this.resumable.watchConversation(agentId, conversationId, { reopened: true });
+  }
+
+  /**
    * Drop every hold, however many holders each had, and close every child
    * socket with them (design §7.6, ruling 5's "window close").
    *

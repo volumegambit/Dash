@@ -195,6 +195,12 @@ export function activatePendingConversationRuntime(
 
 export interface SubagentWatchRequest {
   watch: boolean;
+  /**
+   * A hold that is already counted, asking for a socket back because the one
+   * it had died. Rides the same channel as the pair so it can never overtake
+   * either of them, and moves no count.
+   */
+  rewatch?: boolean;
   agentId?: string;
   conversationId: string;
 }
@@ -210,11 +216,19 @@ export interface SubagentWatchRequest {
  * to nothing and the release would then decrement a hold that was never taken.
  */
 export function applySubagentWatch(
-  service: Pick<ChatService, 'subscribeConversation' | 'unsubscribeConversation'>,
+  service: Pick<
+    ChatService,
+    'subscribeConversation' | 'unsubscribeConversation' | 'rewatchConversation'
+  >,
   request: SubagentWatchRequest,
 ): void {
   if (request.watch) {
-    if (request.agentId) service.subscribeConversation(request.agentId, request.conversationId);
+    if (!request.agentId) return;
+    if (request.rewatch) {
+      service.rewatchConversation(request.agentId, request.conversationId);
+      return;
+    }
+    service.subscribeConversation(request.agentId, request.conversationId);
     return;
   }
   service.unsubscribeConversation(request.conversationId);

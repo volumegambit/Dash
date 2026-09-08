@@ -1153,6 +1153,19 @@ export const useChatStore = create<ChatState>((set, get) => {
       const held = childSubscriptions.get(subagentId);
       if (held) {
         held.holds += 1;
+        // Re-taking a hold whose socket is DEAD is the only moment this client
+        // can ask for it back. Main's own `subscribeConversation` is never
+        // re-entered for a conversation already held — the count above returns
+        // before any IPC — so under the two-holder shape the rulings create
+        // (the panel open AND a card expanded) collapsing and re-expanding
+        // never reaches 0, and nothing revives a watch killed by 4001 / 4401 /
+        // 4429 or by an older gateway's `validation_failed`.
+        //
+        // A rewatch, not an unsubscribe-then-subscribe: the count must not
+        // move, and only a `{ reopened: true }` watch fires the restore that
+        // puts optimism back and forces the re-read the card is owed. A plain
+        // first watch announces nothing and would leave optimism off forever.
+        if (!held.live) window.api.subagentRewatch(held.agentId, subagentId);
         return;
       }
       // A child rides its PARENT's agent id: it belongs to the same agent, and

@@ -1465,6 +1465,79 @@ describe('sub-agent subscriptions', () => {
     await Promise.resolve();
     expect(mockApi.subagentUnsubscribe).toHaveBeenCalledTimes(2);
   });
+
+  // F2. The shape the rulings themselves create: the panel holds every
+  // non-terminal child while it is open (`SwarmPanel.tsx:77-84`) and the card
+  // holds its own while expanded (`routes/chat.tsx:1024-1028`), so `holds` is
+  // 2. Mid-stream the socket dies — 4429, a 4401 on token expiry, an older
+  // gateway's `validation_failed` — and `live` goes false.
+  //
+  // Collapsing the card takes 2 → 1, which is not a genuine release, so no
+  // `transcriptLoaded: false` fires. Re-expanding takes 1 → 2 and used to
+  // return on the existing entry BEFORE any IPC, so main was never re-entered:
+  // no re-subscribe, no re-read, optimism off, and no re-read owed. The card
+  // sat at the partial sentence until the user closed the panel AND collapsed
+  // the card, which is not something the card can tell them to do.
+  //
+  // Re-taking a DEAD hold now asks for a fresh socket. It takes no hold and
+  // releases none, so main's count is exactly what it was and the 1:1 pairing
+  // the refcount depends on is untouched.
+  it('asks for a fresh socket when a hold is re-taken while the watch is dead', async () => {
+    await selectParentWithAgent();
+    // The panel's hold, then the card's.
+    useChatStore.getState().subscribeSubagent('sub_a');
+    useChatStore.getState().subscribeSubagent('sub_a');
+    useChatStore.getState().markSubagentWatchLost('sub_a');
+    mockApi.subagentSubscribe.mockClear();
+
+    // Collapse: 2 → 1, and the panel still holds, so nothing is released.
+    useChatStore.getState().unsubscribeSubagent('sub_a');
+    await Promise.resolve();
+    expect(mockApi.subagentUnsubscribe).not.toHaveBeenCalled();
+
+    // Re-expand: 1 → 2, on a watch that is not open.
+    useChatStore.getState().subscribeSubagent('sub_a');
+
+    expect(mockApi.subagentRewatch).toHaveBeenCalledExactlyOnceWith('agent-1', 'sub_a');
+    // Not a second subscribe, and not a release: the count never moved.
+    expect(mockApi.subagentSubscribe).not.toHaveBeenCalled();
+    expect(mockApi.subagentUnsubscribe).not.toHaveBeenCalled();
+  });
+
+  // The other half: a hold re-taken on a watch that is ALIVE asks for nothing.
+  // A card remounting mid-stream is the common case, and a rewatch there would
+  // put a `subscribe` on the wire for a socket that is already open.
+  it('asks for nothing when a hold is re-taken on a live watch', async () => {
+    await selectParentWithAgent();
+    useChatStore.getState().subscribeSubagent('sub_a');
+
+    useChatStore.getState().subscribeSubagent('sub_a');
+
+    expect(mockApi.subagentRewatch).not.toHaveBeenCalled();
+  });
+
+  // What the re-watch buys, end to end at the store: main answers the fresh
+  // socket's open with `chat:subagentResubscribed`, which is the ONLY thing
+  // that puts optimism back and forces the re-read the card has been owed
+  // since the stream died. Both holders are still counted throughout.
+  it('recovers the card once the fresh socket opens', async () => {
+    await selectParentWithAgent();
+    useChatStore.getState().subscribeSubagent('sub_a');
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+    useChatStore.getState().markSubagentWatchLost('sub_a');
+    expect(useChatStore.getState().isSubagentSubscribed('sub_a')).toBe(false);
+    useChatStore.getState().unsubscribeSubagent('sub_a');
+    await Promise.resolve();
+    useChatStore.getState().subscribeSubagent('sub_a');
+    expect(mockApi.subagentRewatch).toHaveBeenCalledExactlyOnceWith('agent-1', 'sub_a');
+    mockApi.conversationMessages.mockClear();
+
+    await useChatStore.getState().restoreSubagentTranscript('sub_a');
+
+    expect(useChatStore.getState().isSubagentSubscribed('sub_a')).toBe(true);
+    expect(mockApi.conversationMessages).toHaveBeenCalledWith('sub_a');
+  });
 });
 
 describe('sub-agent live transcripts', () => {

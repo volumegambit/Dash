@@ -177,6 +177,8 @@ const api: MissionControlAPI = {
     ipcRenderer.send('subagents:watch', { watch: true, agentId, conversationId }),
   subagentUnsubscribe: (conversationId) =>
     ipcRenderer.send('subagents:watch', { watch: false, conversationId }),
+  subagentRewatch: (agentId, conversationId) =>
+    ipcRenderer.send('subagents:watch', { watch: true, rewatch: true, agentId, conversationId }),
 
   // Settings
   settingsGet: () => ipcRenderer.invoke('settings:get'),
