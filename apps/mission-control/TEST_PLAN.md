@@ -1848,6 +1848,7 @@ LLM calls.
 1. Spawn a **background** child (one that outlives the turn). **Verify:** when the parent turn ends, that child's card does **not** flip to **Cancelled** — a background child is exempt from end-of-stream terminalization.
 2. Let the background child finish while you are on a different conversation. Switch back. **Verify:** the panel and the card both show its true final status. (Reading the list on conversation selection is the only trigger that fires here — no live turn means no event ever reaches the parent.)
 3. With a child live, leave the panel open and do nothing for a minute. **Verify:** the row's status keeps up (a 20s poll runs while any child is non-terminal). Once every child is terminal, **verify** the polling stops — no further `GET /conversations/:id/subagents` requests in the gateway log.
+   Then repeat with the panel **closed**, watching an expanded card in the transcript instead. **Verify:** the same 20s re-read happens — the poll follows the children, not the drawer. This is what a reopened conversation with a background child depends on: without it that card's spinner and elapsed counter tick upward forever.
 4. Switch conversations rapidly back and forth while a list read is in flight. **Verify:** the panel never shows another conversation's children, and never briefly flashes them.
 
 ### 32.8 Legacy `worker_*` events still fold onto the same card
@@ -1855,6 +1856,14 @@ Until the legacy mirrors are removed, the gateway emits **both** families for ev
 1. Run any sub-agent turn and re-open the conversation from history.
 2. **Verify:** each child renders as **exactly one** card — never two, and never a card plus an "Activity from a newer Dash version" block.
 3. **Verify:** a conversation recorded before this change (legacy `worker_*` only) still renders one card per worker, with its role as the type, its brief as the description, and no elapsed segment (the legacy events carry no timestamps).
+
+### 32.9 The parallel group container (design §8.2)
+1. Send the bootstrap prompt, which spawns two children back to back.
+2. **Verify:** the two cards sit inside **one group container** headed by a summary line — `2 agents · 2 running`, becoming e.g. `2 agents · 1 running · 1 done` and then `2 agents · 2 done` — with one status dot per child on the right of that line.
+3. Click the summary line. **Verify:** both cards collapse **as a unit** and the summary line stays; click again and they come back. An expanded card inside the group keeps its expansion across the collapse.
+4. Prompt the agent to spawn one child, say something, then spawn another (so ordinary text sits between the two starts). **Verify:** they render as **two** separate rows with **no** group chrome — a group is adjacent children only.
+5. **Verify:** a lone child never draws a summary line or dot strip.
+6. Open the same conversation from a project task's own session view (Section 27, a task with a linked session). **Verify:** the cards there are read-only — no expand toggle, no group toggle, no reply box — but a child parked on a question still shows its question in yellow. The sub-agent list belongs to the conversation the **Chat** route has selected, so a card outside it must never claim to describe a child it cannot re-read.
 
 ## Appendix: Test Run Log
 
