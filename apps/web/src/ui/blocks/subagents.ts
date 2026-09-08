@@ -67,9 +67,8 @@ export interface SubagentGroup {
   /** 1 for a child of a user conversation. */
   depth: number;
   /**
-   * ISO start timestamp. Empty string for a legacy-only child: `worker_*`
-   * carries no timestamp. Moot once D8 removes the mirrors, since every child
-   * then has a `subagent_started` or `subagent_finished`.
+   * ISO start timestamp; empty string until `subagent_started` arrives (an
+   * orphan terminal from a crash-split message has none).
    */
   startedAt: string;
   /** ISO end timestamp; present only once `subagent_finished` has arrived. */
@@ -250,11 +249,9 @@ export function groupSubagentEvents(
       drafts.set(id, draft);
     }
 
-    const isStart = event.type === 'subagent_started' || event.type === 'worker_spawned';
+    const isStart = event.type === 'subagent_started';
     if (isStart && !draft.hasStart) {
-      // The FIRST start wins the anchor: a child emits `worker_spawned` and
-      // `subagent_started` back to back, and the row belongs at the earlier
-      // of the two so it does not jump when D8 removes the mirror.
+      // `subagent_started` is the ONLY anchor since D8.
       draft.anchorIndex = i;
       draft.hasStart = true;
       draft.orphan = false;

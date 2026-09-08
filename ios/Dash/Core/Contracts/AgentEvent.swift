@@ -278,24 +278,57 @@ enum AgentEvent: Codable, Hashable, Sendable {
       self = .unknown(type: type, raw: raw)
       return
     }
+    // ONE malformed persisted event must not make a conversation permanently
+    // unopenable (sub-agents design, D8 ruling 4). Both iOS decode paths map a
+    // `DecodingError` to `GatewayError.updateRequired` — `ChatConnection`'s
+    // `decodedFrame` for the socket and `HTTPTransport.send` for the REST
+    // page — so a single bad event in a persisted transcript used to kill WS
+    // replay AND REST recovery for that conversation, for ever.
+    //
+    // It degrades to `.unknown` instead, which is exactly what an event type
+    // this build has never heard of already does. That is the argument for the
+    // narrowing, not merely a mitigation: `updateRequired` NEVER fired for a
+    // newer gateway sending a new event type — the `knownTypes` guard above
+    // has always tolerated those — so the only thing it ever caught was a
+    // KNOWN type with a bad payload, which is corruption, not version skew.
+    // Version skew is negotiated in `health-capabilities`, not inferred from a
+    // malformed row.
+    //
+    // Scope, deliberately narrow: only the per-type PAYLOAD decode is relaxed.
+    // An event with no `type` at all still throws (above), and the envelope,
+    // the frame and every DTO keep the strict decode D4 gave them. The one
+    // thing genuinely lost is the signal a SIXTH `SubagentTerminalStatus`
+    // would have raised: it now draws a placeholder row rather than a hard
+    // stop.
+    do {
+      self = try Self.decodeKnown(type: type, raw: raw)
+    } catch is DecodingError {
+      self = .unknown(type: type, raw: raw)
+    }
+  }
+
+  /// The strict per-type decode. Throws `DecodingError` for a known type whose
+  /// payload does not match; {@link init(from:)} is what decides that a throw
+  /// here is non-fatal.
+  private static func decodeKnown(type: String, raw: JSONValue) throws -> AgentEvent {
     let data = try ContractCoding.encoder().encode(raw)
     let payload = try ContractCoding.decoder().decode(Payload.self, from: data)
 
     switch type {
     case "text_delta":
-      self = .textDelta(text: try required(payload.text, "text", type))
+      return .textDelta(text: try required(payload.text, "text", type))
     case "thinking_delta":
-      self = .thinkingDelta(text: try required(payload.text, "text", type))
+      return .thinkingDelta(text: try required(payload.text, "text", type))
     case "tool_use_start":
-      self = .toolUseStart(
+      return .toolUseStart(
         id: try required(payload.id, "id", type),
         name: try required(payload.name, "name", type),
         input: payload.input
       )
     case "tool_use_delta":
-      self = .toolUseDelta(partialJSON: try required(payload.partialJSON, "partial_json", type))
+      return .toolUseDelta(partialJSON: try required(payload.partialJSON, "partial_json", type))
     case "tool_result":
-      self = .toolResult(
+      return .toolResult(
         id: try required(payload.id, "id", type),
         name: try required(payload.name, "name", type),
         content: try required(payload.content, "content", type),
@@ -303,18 +336,18 @@ enum AgentEvent: Codable, Hashable, Sendable {
         details: payload.details
       )
     case "response":
-      self = .response(
+      return .response(
         content: try required(payload.content, "content", type),
         usage: try required(payload.usage, "usage", type)
       )
     case "error":
-      self = .error(error: try required(payload.error, "error", type), timestamp: payload.timestamp)
+      return .error(error: try required(payload.error, "error", type), timestamp: payload.timestamp)
     case "file_changed":
-      self = .fileChanged(files: try required(payload.files, "files", type))
+      return .fileChanged(files: try required(payload.files, "files", type))
     case "agent_spawned":
-      self = .agentSpawned(name: try required(payload.name, "name", type))
+      return .agentSpawned(name: try required(payload.name, "name", type))
     case "worker_spawned":
-      self = .workerSpawned(
+      return .workerSpawned(
         workerId: try required(payload.workerId, "workerId", type),
         runId: try required(payload.runId, "runId", type),
         role: try required(payload.role, "role", type),
@@ -326,7 +359,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
       guard let status = SubagentLiveStatus(rawValue: statusValue) else {
         throw corrupt("status", type)
       }
-      self = .workerStatus(
+      return .workerStatus(
         workerId: try required(payload.workerId, "workerId", type),
         runId: try required(payload.runId, "runId", type),
         role: try required(payload.role, "role", type),
@@ -339,7 +372,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
       guard let status = SubagentTerminalStatus(rawValue: statusValue) else {
         throw corrupt("status", type)
       }
-      self = .workerDone(
+      return .workerDone(
         workerId: try required(payload.workerId, "workerId", type),
         runId: try required(payload.runId, "runId", type),
         role: try required(payload.role, "role", type),
@@ -348,7 +381,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
         usage: payload.usage
       )
     case "subagent_started":
-      self = .subagentStarted(
+      return .subagentStarted(
         subagentId: try required(payload.subagentId, "subagentId", type),
         name: payload.name,
         subagentType: try required(payload.subagentType, "subagentType", type),
@@ -366,7 +399,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
       guard let status = SubagentLiveStatus(rawValue: statusValue) else {
         throw corrupt("status", type)
       }
-      self = .subagentProgress(
+      return .subagentProgress(
         subagentId: try required(payload.subagentId, "subagentId", type),
         status: status,
         toolCallCount: try required(payload.toolCallCount, "toolCallCount", type),
@@ -379,7 +412,7 @@ enum AgentEvent: Codable, Hashable, Sendable {
       guard let status = SubagentTerminalStatus(rawValue: statusValue) else {
         throw corrupt("status", type)
       }
-      self = .subagentFinished(
+      return .subagentFinished(
         subagentId: try required(payload.subagentId, "subagentId", type),
         name: payload.name,
         subagentType: try required(payload.subagentType, "subagentType", type),
@@ -392,27 +425,27 @@ enum AgentEvent: Codable, Hashable, Sendable {
         endedAt: try required(payload.endedAt, "endedAt", type)
       )
     case "agent_retry":
-      self = .agentRetry(
+      return .agentRetry(
         attempt: try required(payload.attempt, "attempt", type),
         reason: try required(payload.reason, "reason", type)
       )
     case "context_compacted":
-      self = .contextCompacted(overflow: try required(payload.overflow, "overflow", type))
+      return .contextCompacted(overflow: try required(payload.overflow, "overflow", type))
     case "question":
-      self = .question(
+      return .question(
         id: try required(payload.id, "id", type),
         question: try required(payload.question, "question", type),
         options: try required(payload.options, "options", type)
       )
     case "skill_loaded":
-      self = .skillLoaded(name: try required(payload.name, "name", type))
+      return .skillLoaded(name: try required(payload.name, "name", type))
     case "skill_created":
-      self = .skillCreated(
+      return .skillCreated(
         name: try required(payload.name, "name", type),
         description: try required(payload.description, "description", type)
       )
     case "mcp_server_error":
-      self = .mcpServerError(
+      return .mcpServerError(
         server: try required(payload.server, "server", type),
         error: try required(payload.error, "error", type)
       )

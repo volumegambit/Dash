@@ -216,6 +216,44 @@ describe('SubagentBlock', () => {
       expect(screen.queryByTestId('subagent-block')).toBeNull();
     });
 
+    /**
+     * D8 ruling 4 — one malformed persisted event must not make a conversation
+     * unopenable. Web has no strict decode (a `MobileAgentEvent` is
+     * `{ type: string; …unknown }`), so the degradation is at RENDER time:
+     * the malformed event simply renders nothing and every sibling survives.
+     * The three clients therefore agree on what MATTERS — the page and the
+     * socket survive — and differ in the visible treatment: iOS placeholders
+     * it (`.unknown` → one "Gateway event: …" status row) because that is the
+     * only non-fatal escape a strict decoder has, web and MC drop it.
+     */
+    it('drops a malformed sub-agent event, keeping every sibling in the message', () => {
+      renderEvents(
+        [
+          { type: 'text_delta', text: 'before' },
+          // `subagent_finished` with no `subagentId` — the event the fold keys
+          // on. It cannot become a row, and it must not take the message down.
+          {
+            type: 'subagent_finished',
+            subagentType: 'Explore',
+            description: 'd',
+            status: 'done',
+            report: 'r',
+          } as unknown as MobileAgentEvent,
+          { type: 'text_delta', text: 'after' },
+        ],
+        { streaming: false },
+      );
+
+      // DROPPED, which is one of the two outcomes the ruling sanctions:
+      // `isSubagentEvent` claims the type, so the renderer skips it, and with
+      // no `subagentId` the fold makes no row for it either. It renders
+      // nothing and costs nothing else.
+      expect(screen.queryByTestId('subagent-block')).toBeNull();
+      expect(screen.queryByTestId('unknown-block')).toBeNull();
+      expect(document.body.textContent).toContain('before');
+      expect(document.body.textContent).toContain('after');
+    });
+
     // A persisted pre-D8 message carries three retired events per child. They
     // must not reach `pushUnknown()` — that would redecorate every old
     // conversation with rows the user never had.

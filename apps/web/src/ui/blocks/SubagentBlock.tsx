@@ -160,7 +160,7 @@ export function SubagentBlock({ group, nested, renderContent }: SubagentBlockPro
   const terminal = isTerminalSubagentStatus(status);
   const oneShot = oneShotFact === true;
   // `terminal`, not just `endedAt`: an end-of-stream-terminalized child
-  // (`cancelled`) and a legacy-only `worker_done` one both finish without an
+  // (`cancelled`) child and an orphan terminal both finish without an
   // end timestamp, and neither may keep counting behind a finished glyph.
   const elapsed = useElapsed(group.startedAt, group.endedAt, !terminal);
 

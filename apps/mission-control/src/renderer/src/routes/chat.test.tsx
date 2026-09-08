@@ -760,6 +760,39 @@ describe('MessageBubble sub-agent cards', () => {
     expect(within(card).getByTestId('subagent-card-meta')).toHaveTextContent('12 tool uses · 45s');
   });
 
+  /**
+   * D8 ruling 4 — one malformed persisted event must not make a conversation
+   * unopenable. MC has no strict decode (`McAgentEvent` mirrors the open
+   * `AgentEvent` shape), so the degradation is at RENDER time. Measured, not
+   * assumed: it renders NOTHING for the bad event and every sibling survives.
+   * Same outcome as web; iOS placeholders it instead, because `.unknown` is
+   * the only non-fatal escape a strict decoder has.
+   */
+  it('drops a malformed sub-agent event, keeping every sibling in the message', () => {
+    const { container } = render(
+      <MessageBubble
+        conversationKey={CARD_KEY}
+        message={assistantMessage([
+          { type: 'text_delta', text: 'before' },
+          // `subagent_finished` with no `subagentId` — the key the fold uses.
+          {
+            type: 'subagent_finished',
+            subagentType: 'Explore',
+            description: 'd',
+            status: 'done',
+            report: 'r',
+          },
+          { type: 'text_delta', text: 'after' },
+        ])}
+      />,
+    );
+
+    expect(screen.queryByTestId('subagent-card-meta')).toBeNull();
+    expect(screen.queryByText('Activity from a newer Dash version')).not.toBeInTheDocument();
+    expect(container.textContent).toContain('before');
+    expect(container.textContent).toContain('after');
+  });
+
   // A persisted PRE-D8 message carries the retired mirror. It must draw
   // exactly one card (from the canonical half) and no unknown-activity row.
   it('no longer draws a child as activity from a newer Dash version', () => {

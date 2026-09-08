@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react';
  * `running` is what actually decides that, NOT the presence of `endedAt`.
  * Plenty of finished children have no end timestamp: only
  * `subagent_finished` carries one, so an end-of-stream-terminalized child
- * (`cancelled`) and a legacy-only `worker_done` child both arrive terminal
+ * (`cancelled`) child and an orphan terminal both arrive terminal
  * with `endedAt: undefined`. Keying the clock off `endedAt` alone would leave
  * those rows counting up forever behind a finished glyph, one live interval
  * each.

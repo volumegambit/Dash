@@ -101,6 +101,55 @@ struct GatewayAPITests {
     )
   }
 
+  /// D8 ruling 4, at the REST path — the OTHER place a `DecodingError` became
+  /// `GatewayError.updateRequired` (`HTTPTransport.send`). One malformed
+  /// persisted event in a message page used to fail the WHOLE page, so the
+  /// conversation could not be opened by recovery either. The page decodes now
+  /// and the bad event is one `.unknown` inside it; every other message and
+  /// every other event in the same message is untouched.
+  ///
+  /// `HTTPTransport` itself is unchanged: the fallback lives in
+  /// `AgentEvent.init(from:)`, so both paths inherit it from one place.
+  @Test("one malformed persisted event does not fail the whole message page")
+  func malformedEventDoesNotFailThePage() async throws {
+    let page = """
+      {"items":[
+      {"id":"m1","conversationId":"c1","turnId":"t1","ordinal":1,"role":"assistant",
+       "status":"completed","content":{"type":"assistant","events":[
+         {"type":"text_delta","text":"before"},
+         {"type":"subagent_finished","subagentId":"sub-1","subagentType":"Explore",
+          "description":"d","status":"done","report":"r","toolCallCount":1,
+          "startedAt":"2026-09-04T00:00:00.000Z"},
+         {"type":"text_delta","text":"after"}]},
+       "createdAt":"2026-07-12T00:00:02.000Z","updatedAt":"2026-07-12T00:00:05.000Z",
+       "origin":"user"}],
+      "nextCursor":null,"throughSeq":5}
+      """
+    URLProtocolStub.enqueue(status: 200, data: Data(page.utf8))
+    let api = makeAPI()
+
+    let result = try await api.messages(conversationID: "c1", limit: 40, before: nil)
+
+    #expect(result.items.count == 1)
+    guard case let .assistant(events) = result.items[0].content else {
+      Issue.record("expected an assistant message")
+      return
+    }
+    #expect(events.count == 3)
+    guard case let .unknown(type, _) = events[1] else {
+      Issue.record("the malformed event was not degraded to .unknown")
+      return
+    }
+    #expect(type == "subagent_finished")
+    // Its neighbours in the SAME message are untouched.
+    guard case let .textDelta(before) = events[0], case let .textDelta(after) = events[2] else {
+      Issue.record("neighbouring events were lost")
+      return
+    }
+    #expect(before == "before")
+    #expect(after == "after")
+  }
+
   @Test("models and every conversation read and mutation use exact routes")
   func conversationRequestShapes() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "models-list.json")

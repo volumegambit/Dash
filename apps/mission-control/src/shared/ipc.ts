@@ -57,7 +57,11 @@ export type SetupStatus =
   | { state: 'gateway-failed'; error: string };
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport).
-// The worker_* variants mirror @dash/agent's AgentEvent exactly — they carry no
+// @deprecated The worker_* variants are the mirrors D8 retired. Nothing emits
+// one; they stay for ONE release because a PERSISTED pre-D8 transcript still
+// contains them and the renderer must recognise them rather than draw
+// "Activity from a newer Dash version". They mirror @dash/agent's AgentEvent
+// exactly — they carry no
 // Error objects, so their fields are copied as-is (the error-as-string
 // convention only applies to the `error` variant above).
 export type McAgentEvent =
@@ -104,7 +108,8 @@ export type McAgentEvent =
       usage?: { inputTokens: number; outputTokens: number };
     }
   // The canonical sub-agent family (design §7.2), mirroring @dash/agent's
-  // AgentEvent exactly. The gateway emits these ALONGSIDE the `worker_*`
+  // AgentEvent exactly. The gateway emitted these alongside the retired
+  // `worker_*`
   // variants above for every child until task D8 retires the mirrors; the
   // child's conversation id IS its worker id, so both families name the same
   // string and `chat.swarm.ts` folds them onto ONE card.
@@ -145,7 +150,7 @@ export type McAgentEvent =
       endedAt: string;
     }
   // The coordinator's name-only spawn announcement, pushed between a child's
-  // `worker_spawned` and its `subagent_started`. It renders nothing of its own
+  // `agent_spawned` and its `subagent_started`. It renders nothing of its own
   // — the sub-agent card is the announcement — but it has to be MODELLED, or
   // the transcript draws "Activity from a newer Dash version" beside every
   // child this gateway spawns.

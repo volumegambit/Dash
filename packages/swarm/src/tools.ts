@@ -307,7 +307,7 @@ export function createSwarmTools(opts: CreateSwarmToolsOptions): SwarmExtraTool[
 /**
  * Build the worker-side `ask_orchestrator` tool. Passed to a worker via
  * WorkerSpec.extraTools by the coordinator. Calling it pauses the worker
- * (worker_status{waiting_input}) until the orchestrator answers (send_to_worker),
+ * (subagent_progress{waiting_input}) until the orchestrator answers (send_to_worker),
  * the run closes, the pi signal aborts, or a 10-minute timeout elapses.
  *
  * `closed` is the run's `closed` signal; it is combined with pi's per-call

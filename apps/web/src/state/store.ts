@@ -1491,7 +1491,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       // its own write.
       //
       // Matched by STRING rather than through `ui/blocks/subagents.ts`'s
-      // `isSubagentEvent`: that predicate also covers the legacy `worker_*`
+      // `isSubagentEvent`: that predicate also covers the retired `worker_*`
       // mirrors, which the gateway emits for the very same children, so
       // sharing it would double every read until D8 removes them — and the
       // store has no business importing from `ui/`.

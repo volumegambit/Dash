@@ -34,6 +34,49 @@ struct AgentEventTests {
     #expect(encoded == (try canonical(Data(json.utf8))), "round-trip failed for \(json)")
   }
 
+  /// D8 ruling 4 — ONE malformed persisted event must not make a conversation
+  /// permanently unopenable. Both decode paths (`ChatConnection.decodedFrame`,
+  /// `HTTPTransport.send`) map a `DecodingError` to
+  /// `GatewayError.updateRequired`, so a `subagent_finished` missing a
+  /// REQUIRED field used to kill WS replay and REST recovery for that
+  /// conversation for ever. It degrades to `.unknown` instead — the same
+  /// answer an event type this build has never heard of already gets — and
+  /// round-trips byte-for-byte so a re-encode loses nothing.
+  @Test(
+    "a malformed known event degrades to .unknown instead of failing the decode",
+    arguments: [
+      // subagent_finished with no `endedAt`.
+      #"{"type":"subagent_finished","subagentId":"sub-1","subagentType":"Explore","description":"d","status":"done","report":"r","toolCallCount":1,"startedAt":"2026-09-04T00:00:00.000Z"}"#,
+      // subagent_started with no `startedAt`.
+      #"{"type":"subagent_started","subagentId":"sub-1","subagentType":"Explore","description":"d","prompt":"p","model":"m","background":false,"depth":1}"#,
+      // subagent_progress with a status this build does not know.
+      #"{"type":"subagent_progress","subagentId":"sub-1","status":"hibernating","toolCallCount":1,"elapsedMs":2}"#,
+      // subagent_finished with a SIXTH terminal status — the one signal this
+      // narrowing genuinely gives up, recorded rather than hidden.
+      #"{"type":"subagent_finished","subagentId":"sub-1","subagentType":"Explore","description":"d","status":"evicted","report":"r","toolCallCount":1,"startedAt":"2026-09-04T00:00:00.000Z","endedAt":"2026-09-04T00:01:00.000Z"}"#,
+    ])
+  func malformedKnownEventDegrades(json: String) throws {
+    let event = try decode(json)
+    guard case let .unknown(type, _) = event else {
+      Issue.record("expected .unknown, got \(event)")
+      return
+    }
+    #expect(type.hasPrefix("subagent_"))
+    let encoded = try canonical(ContractCoding.encoder().encode(event))
+    #expect(encoded == (try canonical(Data(json.utf8))))
+  }
+
+  /// The scope of the relaxation, stated as a test: an event with NO `type` is
+  /// not an event at all and still throws. The envelope, the frame and every
+  /// DTO keep D4's strict decode; only the per-type payload is relaxed.
+  @Test("an event with no type still throws")
+  func typelessEventStillThrows() {
+    #expect(throws: DecodingError.self) {
+      _ = try ContractCoding.decoder().decode(
+        AgentEvent.self, from: Data(#"{"text":"no type here"}"#.utf8))
+    }
+  }
+
   @Test("subagent_started keeps every optional it was given")
   func startedFullShape() throws {
     let json = """
@@ -81,17 +124,25 @@ struct AgentEventTests {
     )
   }
 
-  @Test("subagent_started without a subagentId is rejected, not silently empty")
-  func startedRequiresSubagentID() {
-    #expect(throws: (any Error).self) {
-      _ = try decode(
-        """
-        {"type":"subagent_started","subagentType":"Explore","description":"d",\
-        "prompt":"p","model":"m","background":false,"depth":1,\
-        "startedAt":"2026-09-04T00:00:00.000Z"}
-        """
-      )
+  /// Was "rejected, not silently empty" (D4). D8 ruling 4 keeps the REJECTION
+  /// — the event is still not decoded into a half-empty `subagentStarted` —
+  /// but makes it non-fatal: it becomes `.unknown` rather than a thrown
+  /// `DecodingError`, which both transports turned into `.updateRequired` and
+  /// therefore into a conversation nobody could open again.
+  @Test("subagent_started without a subagentId is not decoded as a started event")
+  func startedRequiresSubagentID() throws {
+    let event = try decode(
+      """
+      {"type":"subagent_started","subagentType":"Explore","description":"d",\
+      "prompt":"p","model":"m","background":false,"depth":1,\
+      "startedAt":"2026-09-04T00:00:00.000Z"}
+      """
+    )
+    guard case let .unknown(type, _) = event else {
+      Issue.record("expected .unknown, got \(event)")
+      return
     }
+    #expect(type == "subagent_started")
   }
 
   @Test("subagent_progress carries its question and round-trips")
@@ -117,16 +168,21 @@ struct AgentEventTests {
     #expect(question == "Which branch?")
   }
 
-  @Test("an unknown progress status is rejected rather than coerced to running")
-  func progressRejectsUnknownStatus() {
-    #expect(throws: (any Error).self) {
-      _ = try decode(
-        """
-        {"type":"subagent_progress","subagentId":"sub-1","status":"napping",\
-        "toolCallCount":0,"elapsedMs":0}
-        """
-      )
+  /// Still not coerced to `running` — the whole point of the D4 test — but
+  /// non-fatal since D8 ruling 4.
+  @Test("an unknown progress status is not coerced to running")
+  func progressRejectsUnknownStatus() throws {
+    let event = try decode(
+      """
+      {"type":"subagent_progress","subagentId":"sub-1","status":"napping",\
+      "toolCallCount":0,"elapsedMs":0}
+      """
+    )
+    guard case let .unknown(type, _) = event else {
+      Issue.record("expected .unknown, got \(event)")
+      return
     }
+    #expect(type == "subagent_progress")
   }
 
   @Test("every subagent_finished terminal status decodes", arguments: [
@@ -192,16 +248,23 @@ struct AgentEventTests {
     #expect(endedAt == Date(timeIntervalSince1970: 1_788_480_072))
   }
 
-  @Test("subagent_finished without endedAt is rejected")
-  func finishedRequiresEndedAt() {
-    #expect(throws: (any Error).self) {
-      _ = try decode(
-        """
-        {"type":"subagent_finished","subagentId":"sub-1","subagentType":"t",\
-        "description":"d","status":"done","report":"r","toolCallCount":1,\
-        "startedAt":"2026-09-04T00:00:00.000Z"}
-        """
-      )
+  /// Non-fatal since D8 ruling 4, and this is the exact shape the ruling was
+  /// written about: a `subagent_finished` missing `endedAt` in a PERSISTED
+  /// transcript used to make that conversation permanently unopenable on both
+  /// the WS and the REST path.
+  @Test("subagent_finished without endedAt is not decoded as a finished event")
+  func finishedRequiresEndedAt() throws {
+    let event = try decode(
+      """
+      {"type":"subagent_finished","subagentId":"sub-1","subagentType":"t",\
+      "description":"d","status":"done","report":"r","toolCallCount":1,\
+      "startedAt":"2026-09-04T00:00:00.000Z"}
+      """
+    )
+    guard case let .unknown(type, _) = event else {
+      Issue.record("expected .unknown, got \(event)")
+      return
     }
+    #expect(type == "subagent_finished")
   }
 }

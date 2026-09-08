@@ -587,6 +587,60 @@ struct ChatConnectionTests {
     #expect(await task.closeCode == .goingAway)
   }
 
+  /// D8 ruling 4, at the SOCKET. A malformed `subagent_finished` in a replayed
+  /// frame used to reach `decodedFrame`'s `catch is DecodingError` and end the
+  /// connection with `.updateRequired`; the conversation could then never be
+  /// opened again. It arrives as an `.unknown` event now and the socket stays
+  /// up — proved by a second, well-formed frame arriving after it.
+  @Test("a malformed sub-agent event does not kill the socket")
+  func malformedSubagentEventKeepsSocket() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task)
+    let frames = Task { try await collectFrames(from: connection, count: 3) }
+    try await connection.connect()
+    try await connection.sendTurn(
+      id: turnID,
+      agentID: "agent-1",
+      conversationID: conversationID,
+      text: "Hello",
+      images: []
+    )
+
+    let accepted = try fixture("chat-accepted.json")
+    await task.enqueue(.string(serverJSON(accepted)))
+    let malformed = """
+      {"type":"event","id":"\(turnID)","conversationId":"\(conversationID)","seq":2,\
+      "event":{"type":"subagent_finished","subagentId":"sub-1","subagentType":"Explore",\
+      "description":"d","status":"done","report":"r","toolCallCount":1,\
+      "startedAt":"2026-09-04T00:00:00.000Z"}}
+      """
+    await task.enqueue(.string(malformed))
+    let good = """
+      {"type":"event","id":"\(turnID)","conversationId":"\(conversationID)","seq":3,\
+      "event":{"type":"text_delta","text":"still here"}}
+      """
+    await task.enqueue(.string(good))
+
+    let values = try await frames.value
+    #expect(values.count == 3)
+    guard case .event(_, _, _, let event) = values[1] else {
+      Issue.record("expected the malformed frame to be delivered as an event")
+      return
+    }
+    guard case .unknown(let type, _) = event else {
+      Issue.record("malformed sub-agent event was not degraded to .unknown")
+      return
+    }
+    #expect(type == "subagent_finished")
+    // The socket survived it: the NEXT frame arrived.
+    guard case .event(_, _, _, .textDelta(let text)) = values[2] else {
+      Issue.record("the frame after the malformed one never arrived")
+      return
+    }
+    #expect(text == "still here")
+    await connection.detach()
+  }
+
   @Test("unknown agent events remain successful capable frames")
   func unknownAgentEvent() async throws {
     let task = FakeWebSocketTask()

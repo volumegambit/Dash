@@ -414,7 +414,7 @@ async function main() {
 
   // The swarm coordinator: one per gateway. Owns every live swarm run's worker
   // pool + event channel, enforces the global concurrent-worker ceiling and the
-  // per-agent caps, and appends straggler worker_done events out-of-band to the
+  // per-agent caps, and appends straggler subagent_finished events out-of-band to the
   // event log on the consumer-gone finalize path. Constructed BEFORE the chat
   // coordinator so the merge wrapper (which attaches turns) and the swarm-tool
   // injection in createBackend both address the same instance. Caps come from

@@ -250,7 +250,7 @@ function ThinkingBlock({ text }: { text: string }): ReactNode {
  * with a malformed shape — degrades to `UnknownBlock` rather than throwing.
  *
  * A fifth block kind joins them in task D2: the sub-agent row (design §8.1).
- * `subagent_*` and `worker_*` events do NOT stream through the loop below —
+ * `subagent_*` events do NOT stream through the loop below —
  * they are folded up front by `blocks/subagents.ts` and emitted as one
  * `SubagentCluster` per parallel group, at the index its first event sits at.
  * `agent_spawned`, the coordinator's announcement between the two, is a no-op
@@ -262,7 +262,7 @@ function renderAssistantEvents(
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   let key = 0;
-  // Pre-scan (design §8.1/§8.2): every `subagent_*`/`worker_*` event in this
+  // Pre-scan (design §8.1/§8.2): every `subagent_*` event in this
   // message folds into one group per child, and adjacent children into one
   // parallel cluster. Each cluster renders ONCE, where its first event sits.
   // The anchor is an INDEX, deliberately: pre-D8 it points at the legacy

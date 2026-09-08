@@ -558,8 +558,9 @@ export function createAgentChatCoordinator(
       // --- Swarm merge path ---
       //
       // Merge the orchestrator's own event stream (`gen`) with the swarm run's
-      // event channel (`attachment.channel`) so worker events (worker_spawned,
-      // worker_status, worker_done) interleave into the single AgentEvent
+      // event channel (`attachment.channel`) so child events (agent_spawned,
+      // subagent_started / _progress / _finished) interleave into the single
+      // AgentEvent
       // stream the consumer iterates. The retained-promise invariant is the
       // whole point: exactly ONE outstanding `gen.next()` and ONE outstanding
       // `channel.take()` are kept across race iterations, and a settled loser is
@@ -680,7 +681,7 @@ export function createAgentChatCoordinator(
 
         // Normal-completion path finishes INSIDE the try (controller mandate):
         // finalize FIRST (cancels stragglers and pushes their
-        // worker_done{cancelled} into the channel, then closes it), THEN drain —
+        // subagent_finished{cancelled} into the channel, then closes it), THEN drain —
         // so those straggler events are yielded and durably logged
         // (teardown-before-drain). The drain starts from any retained
         // `chanNext` (a settled loser must not be discarded).
@@ -707,7 +708,7 @@ export function createAgentChatCoordinator(
         // path `completedNormally` is false, so it runs as
         // finalize({consumerAlive:false}) — cancelling workers, aborting the
         // orchestrator, and (inside the coordinator) appending straggler
-        // worker_done events out-of-band to the event log. The abort listener
+        // subagent_finished events out-of-band to the event log. The abort listener
         // is `once` and self-cleaning, so there is nothing to remove here.
         attachment.finalize({ consumerAlive: completedNormally });
         pool.unpin(request.agentId, request.conversationId);
