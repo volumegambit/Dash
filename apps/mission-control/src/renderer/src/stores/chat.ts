@@ -998,11 +998,11 @@ export const useChatStore = create<ChatState>((set, get) => {
           void get().refreshSubagents();
         }
       }
-      // A conversation this renderer has NO record of — not selected, not in
-      // its list — is one it inherited from a socket a previous renderer
-      // opened. A macOS window close leaves main's sockets running; the
-      // dock-icon click that follows builds a fresh renderer with an empty
-      // `knownChildIds`, and a child frame still in flight lands here.
+      // A conversation this renderer has NO record of is one it inherited from
+      // a socket a previous renderer opened. A macOS window close leaves
+      // main's sockets running; the dock-icon click that follows builds a
+      // fresh renderer with an empty `knownChildIds`, and a child frame still
+      // in flight lands here.
       //
       // `refreshTerminal` is the only thing that must not run for it:
       // `chatGetMessages` reaches `ChatService.getMessages`, which subscribes
@@ -1012,8 +1012,17 @@ export const useChatStore = create<ChatState>((set, get) => {
       // nothing anyway. Children are never in the list (the gateway hides
       // them from `list` unless the caller names their kind), so this cannot
       // withhold a recovery a child card wanted.
+      //
+      // "This renderer has READ it" leads, because list membership is the
+      // unreliable part: `reconcileFirstPage` does not merge, so a
+      // conversation that got into `conversations` by an upsert rather than by
+      // page 1 — a project session's — is EVICTED by any first page that does
+      // not carry it, and mid-turn that would strip it of the recovery that
+      // clears `sending`. `messages` never gains a child key (children go to
+      // `subagentUi`), so leading with it cannot reopen the stampede.
       const recoverable =
         keyOrNull(get().selectedConversationRef) === key ||
+        Object.hasOwn(get().messages, key) ||
         get().conversations.some((conversation) => sameConversation(conversation, ref));
       const applied = applySequencedFrame(current, frame);
       if (applied.gapAfter !== null) {

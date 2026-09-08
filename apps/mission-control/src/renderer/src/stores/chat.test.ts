@@ -1784,6 +1784,58 @@ describe('frames for a conversation this renderer has no record of', () => {
 
     expect(mockApi.chatGetMessages).toHaveBeenCalledOnce();
   });
+
+  // The THIRD removal path, and the one the guard was written without.
+  // `reconcileFirstPage` does not merge: it returns `incoming.map(...)` and
+  // drops every conversation absent from the new first page. A conversation
+  // that reached `conversations` by `ensureConversation`'s upsert rather than
+  // by page 1 — a project session's, `routes/projects/issues.$issueId.tsx` —
+  // is evicted by any `loadConversations()` whose page does not carry it, and
+  // `loadConversations()` runs from three places that have nothing to do with
+  // that session. Mid-turn, the eviction used to strip it of its terminal
+  // recovery: `sending` stayed `true` for the rest of the session and
+  // `SessionPanel.composerLocked` includes `sending`.
+  //
+  // What this renderer has READ is the property the guard actually wanted.
+  it('still recovers a mid-turn conversation the first page has evicted', async () => {
+    const session: McConversationView = { ...gatewayConversation, id: 'session-1' };
+    const ref = { id: 'session-1', origin: 'gateway' as const };
+    const key = conversationKey(ref);
+    useChatStore.setState({
+      selectedConversationRef: null,
+      conversations: [session],
+      // What `SessionPanel`'s `ensureMessages` leaves behind on mount.
+      messages: { [key]: [] },
+      sending: { [key]: true },
+      lastSeq: { [key]: 40 },
+    });
+    mockApi.chatListConversations.mockResolvedValue({
+      items: [gatewayConversation],
+      nextCursor: null,
+      authority: 'gateway',
+      gatewayOnline: true,
+    });
+
+    await useChatStore.getState().loadConversations();
+
+    // The eviction itself, so this test fails for the right reason if
+    // `reconcileFirstPage` ever starts merging.
+    expect(useChatStore.getState().conversations.map((item) => item.id)).not.toContain('session-1');
+
+    mockApi.chatGetConversation.mockResolvedValue(session);
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 43 });
+
+    await useChatStore.getState().applyFrame({
+      type: 'done',
+      id: 'session-turn-1',
+      conversationId: 'session-1',
+      seq: 43,
+      outcome: 'completed',
+    } as MobileWsServerFrame);
+
+    expect(mockApi.chatGetMessages).toHaveBeenCalledWith(ref, undefined);
+    expect(useChatStore.getState().sending[key]).toBe(false);
+  });
 });
 
 describe('sub-agent optimistic rows', () => {
