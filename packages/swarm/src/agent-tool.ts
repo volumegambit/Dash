@@ -508,15 +508,18 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
       if (!message) throw new Error('message is required.');
       const target = coordinator.findWorker(agentId, convo(), to);
       if (!target) throw new Error(`No agent named or with id "${to}" in this conversation.`);
-      if (target.oneShot) {
-        const kind = target.subagentType;
-        throw new Error(
-          `Agent "${to}" is a one-shot ${kind} agent and cannot be resumed. Launch a new one.`,
-        );
-      }
       // One gate for both outcomes: a RUNNING child queues the message as its
       // next turn, a FINISHED one is resumed with it now. Both return at once —
       // the child's next completion comes back as a notification.
+      //
+      // The one-shot refusal is `sendToChild`'s and only `sendToChild`'s. A
+      // duplicate gate here threw BEFORE it, so its `answering` exemption —
+      // every child gets `ask_orchestrator`, so a one-shot Explore/Plan child
+      // can park itself on a question — was unreachable from this tool, and
+      // the legacy `send_to_worker` facade could answer a parked one-shot
+      // where `send_message` could not. This tool holds a `ChildSnapshot`, not
+      // the handle, so it cannot evaluate `hasPendingQuestion` itself;
+      // re-deriving the condition in a second place is what produced the drift.
       const { status, mode } = coordinator.sendToChild(convo(), to, message);
       const who = target.name ?? target.workerId;
       return {

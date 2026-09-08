@@ -21,6 +21,14 @@ const PARENT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
 const PARENT_EFFECTIVE = parentBuiltinTools(PARENT_TOOLS);
 const PARENT_MODEL = 'orch-model';
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 /** A parent context, defaulting to the standard grant and no MCP. */
 function ctx(over: Partial<ParentToolContext> = {}): ParentToolContext {
   return { builtinTools: PARENT_EFFECTIVE, mcpTools: [], depth: 0, maxDepth: 3, ...over };
@@ -651,17 +659,23 @@ describe('agent tool', () => {
     expect(c.spawned[0]).toMatchObject({ model: undefined });
   });
 
-  it('send_message refuses one-shot types and unknown targets', async () => {
+  it('send_message refuses an unknown target before it reaches the coordinator', async () => {
     const c = makeCoordinator({
       findWorker: vi.fn((_a: string, _c: string, id: string) =>
         id === 'x' ? { workerId: 'x', status: 'done', oneShot: true } : undefined,
       ),
     });
     const [, send] = createAgentTools(base(c));
-    await expect(send.execute('t', { to: 'x', message: 'm' })).rejects.toThrow(/one-shot/);
     await expect(send.execute('t', { to: 'ghost', message: 'm' })).rejects.toThrow(
       /No agent named or with id "ghost"/,
     );
+    expect(c.sendToChild).not.toHaveBeenCalled();
+    // The one-shot refusal is NOT the tool's any more — it is
+    // `sendToChild`'s, so that its `answering` exemption is reachable from
+    // here. This fake validates nothing, so the refusal is pinned against a
+    // real coordinator below.
+    await expect(send.execute('t', { to: 'x', message: 'm' })).resolves.toBeDefined();
+    expect(c.sendToChild).toHaveBeenCalledOnce();
   });
 });
 
@@ -774,6 +788,107 @@ describe('agent tool against a real SwarmCoordinator', () => {
       agent.execute('t', { prompt: 'p', description: 'd', run_in_background: true }),
     ).resolves.toBeDefined();
     expect(specs[0].tools).toEqual(['read', 'bash', 'load_skill', 'task']);
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  /**
+   * C1. `coordinator.sendToChild` carries the `answering` exemption: every
+   * child gets `ask_orchestrator` (`coordinator.ts:610`), including the
+   * one-shot built-ins `Explore` and `Plan`, and an answer completes the
+   * child's CURRENT turn rather than resuming it. The `send_message` tool used
+   * to throw its own one-shot refusal FIRST, so the exemption was live on
+   * `POST /subagents/:id/resume` and on the legacy `send_to_worker` facade and
+   * unreachable from the tool — the orchestrator could not answer a question
+   * its own child had asked, while a legacy orchestrator could.
+   *
+   * BACKGROUND on purpose: a FOREGROUND `agent` call awaits `waitWorker` with
+   * `returnOnWaitingInput: false` (`coordinator.ts:948`), so the orchestrator
+   * never regains control mid-call and cannot reach `send_message` at all.
+   * That presentation is a hang, not a refusal, and whether a foreground call
+   * should return on `waiting_input` is a change to the `agent` tool's
+   * contract — raised, not made here.
+   */
+  it('send_message ANSWERS a background one-shot child parked on ask_orchestrator', async () => {
+    const askResult = deferred<string>();
+    const specs: WorkerSpec[] = [];
+    const factory: WorkerFactory = (spec) => {
+      specs.push(spec);
+      const ask = spec.extraTools.find((t) => t.name === 'ask_orchestrator');
+      if (!ask) throw new Error('expected an ask_orchestrator tool in the spec');
+      const backend: WorkerBackend = {
+        async *chat(): AsyncGenerator<AgentEvent> {
+          const res = await ask.execute('call-1', { question: 'which db?' }, undefined);
+          askResult.resolve(res.content[0].text);
+          await new Promise<void>(() => {});
+        },
+        abort() {},
+        async stop() {},
+      };
+      return Promise.resolve(backend);
+    };
+    const coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+    const attachment = coordinator.attach({
+      agentId: 'a',
+      agentName: 'A',
+      conversationId: 'c',
+      orchestratorModel: 'orch-model',
+    });
+    const [agent, send] = createAgentTools({
+      coordinator,
+      agentId: 'a',
+      conversationId: () => 'c',
+      resolver: createStaticResolver(builtinSubagentTypes()),
+      backgroundMode: 'detached',
+      parentTools: () => PARENT_TOOLS,
+    });
+
+    const spawned = await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      subagent_type: 'Explore',
+      run_in_background: true,
+    });
+    const subagentId = (spawned.details as { subagentId: string }).subagentId;
+    expect(specs[0].oneShot).toBe(true);
+
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      const status = coordinator.getLiveRun('a', 'c')?.getHandle(subagentId)?.status;
+      if (status === 'waiting_input') break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(coordinator.getLiveRun('a', 'c')?.getHandle(subagentId)?.status).toBe('waiting_input');
+
+    const answered = await send.execute('t2', { to: subagentId, message: 'use postgres' });
+    expect(answered.details).toMatchObject({ subagentId, mode: 'queued' });
+    expect(await askResult.promise).toBe('use postgres');
+
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('send_message still refuses a one-shot child that is NOT parked on a question', async () => {
+    const { coordinator, attachment, agent } = setup();
+    const [, send] = createAgentTools({
+      coordinator,
+      agentId: 'a',
+      conversationId: () => 'c',
+      resolver: createStaticResolver(builtinSubagentTypes()),
+      backgroundMode: 'detached',
+      parentTools: () => PARENT_TOOLS,
+    });
+    const spawned = await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      subagent_type: 'Explore',
+      run_in_background: true,
+    });
+    const subagentId = (spawned.details as { subagentId: string }).subagentId;
+    // This child is running with nothing pending, so the exemption does not
+    // apply and the refusal stands — it is just `sendToChild`'s now rather
+    // than the tool's, and its text is the coordinator's.
+    await expect(send.execute('t2', { to: subagentId, message: 'again' })).rejects.toThrow(
+      /is a one-shot Explore agent and cannot be resumed/,
+    );
     attachment.finalize({ consumerAlive: true });
   });
 
