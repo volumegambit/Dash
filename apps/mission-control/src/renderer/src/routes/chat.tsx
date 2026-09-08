@@ -113,6 +113,19 @@ interface RenderEventsOptions {
    * imposes no limit; all three clients diverge from it the same way.
    */
   depth?: number;
+  /**
+   * The `ConversationKey` of the conversation this transcript belongs to, so a
+   * card can tell whether the store's REST list — which belongs to ONE
+   * conversation, the selected one — is its own list or somebody else's.
+   *
+   * `undefined` means "not stated", and a card that cannot state its
+   * conversation renders fold-only. It is a KEY and not an id because the
+   * store deliberately models a local and a gateway conversation sharing one
+   * id; matching on the id alone would hand the gateway conversation's
+   * children to the local one, which is the same defect `clearSubagents`'s
+   * read-cursor bump exists to stop.
+   */
+  conversationKey?: ConversationKey;
 }
 
 function renderEventsToElements(
@@ -126,6 +139,7 @@ function renderEventsToElements(
     onNavigateToConnections,
     isStreaming = false,
     depth = 0,
+    conversationKey: surfaceKey,
   } = options;
   const elements: JSX.Element[] = [];
   let blockCount = 0;
@@ -182,7 +196,12 @@ function renderEventsToElements(
       if (group && group.anchorIndex === i) {
         flushProse();
         elements.push(
-          <SubagentCard key={`subagent-${group.subagentId}`} group={group} depth={depth} />,
+          <SubagentCard
+            key={`subagent-${group.subagentId}`}
+            group={group}
+            depth={depth}
+            conversationKey={surfaceKey}
+          />,
         );
       }
       continue;
@@ -779,10 +798,31 @@ function useSubagentElapsed(
  * the resolved value, never `group.status`.
  *
  * A card at `depth >= 1` is inside another child's transcript: no toggle, no
- * composer, no actions.
+ * composer, no actions. So is a card whose `conversationKey` is not the
+ * store's selected conversation — `subagents` and `subagentUi` describe ONE
+ * conversation, and `MessageBubble` has a second caller (`SessionPanel`) that
+ * draws a different one's transcript. There the REST enhancement is not
+ * merely absent: a stop or a resume would address the child correctly and
+ * then refresh a different conversation's list, so the row the user is
+ * looking at never moves. A card that cannot state its conversation, or
+ * states one that is not selected, renders the fold and nothing else.
  */
-function SubagentCard({ group, depth }: { group: SubagentGroup; depth: number }): JSX.Element {
-  const entry = useChatStore((state) => state.subagents.find((e) => e.id === group.subagentId));
+function SubagentCard({
+  group,
+  depth,
+  conversationKey: surfaceKey,
+}: {
+  group: SubagentGroup;
+  depth: number;
+  conversationKey?: ConversationKey;
+}): JSX.Element {
+  const selectedKey = useChatStore((state) =>
+    state.selectedConversationRef ? conversationKey(state.selectedConversationRef) : null,
+  );
+  const onSelectedConversation = surfaceKey !== undefined && surfaceKey === selectedKey;
+  const entry = useChatStore((state) =>
+    onSelectedConversation ? state.subagents.find((e) => e.id === group.subagentId) : undefined,
+  );
   const ui = useChatStore((state) => state.subagentUi[group.subagentId]);
   const toggleSubagent = useChatStore((state) => state.toggleSubagent);
   const loadSubagentTranscript = useChatStore((state) => state.loadSubagentTranscript);
@@ -791,10 +831,13 @@ function SubagentCard({ group, depth }: { group: SubagentGroup; depth: number })
   const resumeSubagent = useChatStore((state) => state.resumeSubagent);
 
   const nested = depth >= 1;
+  // Everything that acts on the child, or stores state about it, is gated on
+  // this: the card is the top level of THIS conversation's transcript.
+  const interactive = !nested && onSelectedConversation;
   const status = resolveSubagentStatus(group, entry);
   const question = resolveSubagentQuestion(group, entry);
   const terminal = isTerminalSubagentStatus(status);
-  const open = !nested && ui?.expanded === true;
+  const open = interactive && ui?.expanded === true;
   const elapsed = useSubagentElapsed(group.startedAt, group.endedAt, !terminal);
   const isError = status === 'failed';
   const detail = group.detail;
@@ -802,7 +845,7 @@ function SubagentCard({ group, depth }: { group: SubagentGroup; depth: number })
   // parked on a question, which is an ANSWER rather than a steer and is the
   // one thing the gateway still lets through.
   const oneShotBlocked = entry?.oneShot === true && status !== 'waiting';
-  const canSend = !nested && !terminal && !oneShotBlocked;
+  const canSend = interactive && !terminal && !oneShotBlocked;
 
   useEffect(() => {
     if (open) void loadSubagentTranscript(group.subagentId);
@@ -833,7 +876,7 @@ function SubagentCard({ group, depth }: { group: SubagentGroup; depth: number })
       data-status={status}
       data-depth={depth}
     >
-      {nested ? (
+      {!interactive ? (
         <div className="flex w-full items-center px-3 py-1.5 text-left">{header}</div>
       ) : (
         <button
@@ -850,7 +893,7 @@ function SubagentCard({ group, depth }: { group: SubagentGroup; depth: number })
       {/* The pending question sits on the COLLAPSED row too (§8.1): a child
           waiting on input is the one thing a user must not have to expand a
           card to discover. */}
-      {question && !nested && (
+      {question && interactive && (
         <div className="border-t border-border px-3 py-1.5">
           <p
             className="mb-1.5 text-yellow-400"
@@ -871,7 +914,7 @@ function SubagentCard({ group, depth }: { group: SubagentGroup; depth: number })
         </div>
       )}
 
-      {ui?.notice && !nested && (
+      {ui?.notice && interactive && (
         // biome-ignore lint/a11y/useSemanticElements: the wrapper carries the test id the panel's notice also uses
         <div
           role="status"
@@ -1097,7 +1140,12 @@ function CopyButton({ text }: { text: string }): JSX.Element {
   );
 }
 
-// Exported for reuse by the task page's embedded session panel.
+// Exported for reuse by the task page's embedded session panel — which is why
+// `conversationKey` is a prop and not a store read: the second caller draws a
+// DIFFERENT conversation's transcript, and a sub-agent card inside it must not
+// take the selected conversation's children for its own. Pass the key of the
+// conversation whose transcript this is; a bubble that omits it draws
+// read-only cards.
 export const MessageBubble = memo(function MessageBubble({
   message,
   streamingEvents,
@@ -1105,6 +1153,7 @@ export const MessageBubble = memo(function MessageBubble({
   onAnswerQuestion,
   answeredQuestions,
   onNavigateToConnections,
+  conversationKey: surfaceKey,
 }: {
   message?: RenderableMessage;
   streamingEvents?: McAgentEvent[];
@@ -1112,6 +1161,7 @@ export const MessageBubble = memo(function MessageBubble({
   onAnswerQuestion?: (questionId: string, answer: string) => void;
   answeredQuestions?: Record<string, string>;
   onNavigateToConnections?: () => void;
+  conversationKey?: ConversationKey;
 }): JSX.Element {
   const isUser = message?.role === 'user';
 
@@ -1155,6 +1205,7 @@ export const MessageBubble = memo(function MessageBubble({
     answeredQuestions,
     onNavigateToConnections,
     isStreaming: isLive,
+    conversationKey: surfaceKey,
   });
   const usage = extractUsage(events);
   const assistantText = extractTextFromEvents(events);
@@ -2721,6 +2772,7 @@ export function Chat(): JSX.Element {
                   <MessageBubble
                     key={msg.id}
                     message={msg}
+                    conversationKey={selectedKey ?? undefined}
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                     answeredQuestions={answeredQuestions}
@@ -2731,6 +2783,7 @@ export function Chat(): JSX.Element {
                 {liveEvents.length > 0 && (
                   <MessageBubble
                     streamingEvents={liveEvents}
+                    conversationKey={selectedKey ?? undefined}
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                     answeredQuestions={answeredQuestions}

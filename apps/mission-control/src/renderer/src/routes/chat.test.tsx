@@ -672,6 +672,10 @@ describe('MessageBubble auto-retry rendering', () => {
 describe('MessageBubble sub-agent cards', () => {
   const START = '2026-09-04T00:00:00.000Z';
   const END = '2026-09-04T00:00:45.000Z';
+  // Every card below is drawn for the conversation the store has selected, the
+  // way the Chat route draws it. A bubble that states a different conversation
+  // — or none — draws read-only cards, which is its own test.
+  const CARD_KEY = 'gateway:parent-1';
 
   function assistantMessage(events: Record<string, unknown>[]) {
     return {
@@ -743,7 +747,12 @@ describe('MessageBubble sub-agent cards', () => {
   });
 
   it('renders one card with the type, description and "12 tool uses · 45s"', () => {
-    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
 
     const card = screen.getByTestId('subagent-card-sub_a');
     expect(card).toHaveTextContent('code-reviewer');
@@ -754,6 +763,7 @@ describe('MessageBubble sub-agent cards', () => {
   it('no longer draws a child as activity from a newer Dash version', () => {
     render(
       <MessageBubble
+        conversationKey={CARD_KEY}
         message={assistantMessage([
           {
             type: 'worker_spawned',
@@ -776,6 +786,7 @@ describe('MessageBubble sub-agent cards', () => {
   it('renders no elapsed segment for a terminal child with no endedAt', () => {
     render(
       <MessageBubble
+        conversationKey={CARD_KEY}
         message={assistantMessage([
           {
             type: 'worker_spawned',
@@ -802,16 +813,46 @@ describe('MessageBubble sub-agent cards', () => {
     expect(meta.textContent).not.toContain('·');
   });
 
+  // The store's `subagents` list belongs to the SELECTED conversation. A card
+  // drawn for any other one — `SessionPanel` draws a project session's
+  // transcript with the same bubble — must not read it, and must not offer
+  // actions whose follow-up read would refresh a different conversation.
+  // Same id, different origin: the store models that pair deliberately.
+  it('renders fold-only for a card that is not on the selected conversation', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'done', oneShot: true })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([{ ...started, background: true }])}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    const card = screen.getByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'running');
+    expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
+  });
+
   it('reads the server status over its own fold', () => {
     useChatStore.setState({ subagents: [entry({ status: 'running' })] });
 
-    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
 
     expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'running');
   });
 
   it('falls back to the fold for a child the list does not carry', () => {
-    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
 
     expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'done');
   });
@@ -835,6 +876,7 @@ describe('MessageBubble sub-agent cards', () => {
       <MessageBubble
         message={assistantMessage([started, waiting])}
         streamingEvents={[started, waiting]}
+        conversationKey={CARD_KEY}
       />,
     );
 
@@ -861,7 +903,12 @@ describe('MessageBubble sub-agent cards', () => {
       throughSeq: 0,
     });
 
-    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
     fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
 
     await waitFor(() => expect(mockApi.conversationMessages).toHaveBeenCalledWith('sub_a'));
@@ -893,7 +940,12 @@ describe('MessageBubble sub-agent cards', () => {
       throughSeq: 0,
     });
 
-    render(<MessageBubble message={assistantMessage([started, finishedEvent])} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started, finishedEvent])}
+        conversationKey={CARD_KEY}
+      />,
+    );
     fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
 
     expect(await screen.findByTestId('subagent-card-sub_b')).toBeInTheDocument();
@@ -941,7 +993,13 @@ describe('MessageBubble sub-agent cards', () => {
       throughSeq: 0,
     });
 
-    render(<MessageBubble message={assistantMessage([started])} streamingEvents={[started]} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started])}
+        streamingEvents={[started]}
+        conversationKey={CARD_KEY}
+      />,
+    );
     fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
 
     const transcript = await screen.findByTestId('subagent-transcript');
@@ -972,7 +1030,13 @@ describe('MessageBubble sub-agent cards', () => {
       throughSeq: 0,
     });
 
-    render(<MessageBubble message={assistantMessage([started])} streamingEvents={[started]} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started])}
+        streamingEvents={[started]}
+        conversationKey={CARD_KEY}
+      />,
+    );
     fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
 
     const grandchild = await screen.findByTestId('subagent-card-sub_b');
@@ -982,6 +1046,7 @@ describe('MessageBubble sub-agent cards', () => {
   it('uses the pause and hourglass glyphs the spec names', () => {
     const { container } = render(
       <MessageBubble
+        conversationKey={CARD_KEY}
         message={assistantMessage([
           started,
           { ...finishedEvent, status: 'interrupted', report: '' },
@@ -993,6 +1058,7 @@ describe('MessageBubble sub-agent cards', () => {
     cleanup();
     const second = render(
       <MessageBubble
+        conversationKey={CARD_KEY}
         message={assistantMessage([started, { ...finishedEvent, status: 'max_turns', report: '' }])}
       />,
     );
@@ -1002,7 +1068,9 @@ describe('MessageBubble sub-agent cards', () => {
   it('replies to a waiting child from the card, and re-reads afterwards', async () => {
     useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
 
-    render(<MessageBubble message={assistantMessage(waitingBackground)} />);
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
 
     expect(screen.getByTestId('subagent-question-sub_a')).toHaveTextContent('Which branch?');
     fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
@@ -1025,7 +1093,9 @@ describe('MessageBubble sub-agent cards', () => {
       reason: 'sub-agent type Explore is one-shot and cannot be resumed',
     });
 
-    render(<MessageBubble message={assistantMessage(waitingBackground)} />);
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
 
     fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
       target: { value: 'main' },
@@ -1044,7 +1114,9 @@ describe('MessageBubble sub-agent cards', () => {
   it('lets a one-shot child parked on a question be answered', () => {
     useChatStore.setState({ subagents: [entry({ status: 'waiting_input', oneShot: true })] });
 
-    render(<MessageBubble message={assistantMessage(waitingBackground)} />);
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
     fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
       target: { value: 'main' },
     });
@@ -1056,7 +1128,13 @@ describe('MessageBubble sub-agent cards', () => {
   it('disables the composer of a running one-shot child and says why', async () => {
     useChatStore.setState({ subagents: [entry({ status: 'running', oneShot: true })] });
 
-    render(<MessageBubble message={assistantMessage([started])} streamingEvents={[started]} />);
+    render(
+      <MessageBubble
+        message={assistantMessage([started])}
+        streamingEvents={[started]}
+        conversationKey={CARD_KEY}
+      />,
+    );
     fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
 
     expect(await screen.findByTestId('subagent-compose-button-sub_a')).toBeDisabled();

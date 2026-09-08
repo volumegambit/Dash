@@ -120,6 +120,7 @@ export function SessionPanel({
               <MessageBubble
                 key={message.id}
                 message={message}
+                conversationKey={key}
                 onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                 answeredQuestions={answeredQuestions}
               />
@@ -127,6 +128,7 @@ export function SessionPanel({
             {streamingEvents.length > 0 && (
               <MessageBubble
                 streamingEvents={streamingEvents}
+                conversationKey={key}
                 onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                 answeredQuestions={answeredQuestions}
               />

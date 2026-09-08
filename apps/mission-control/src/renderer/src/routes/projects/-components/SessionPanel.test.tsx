@@ -45,6 +45,35 @@ function userMessage(text: string): ConversationMessage {
   };
 }
 
+function assistantMessageWithChild(): ConversationMessage {
+  return {
+    id: 'message-2',
+    conversationId: ref.id,
+    turnId: 'turn-1',
+    ordinal: 2,
+    role: 'assistant',
+    status: 'completed',
+    content: {
+      type: 'assistant',
+      events: [
+        {
+          type: 'subagent_started',
+          subagentId: 'sub_a',
+          name: 'reviewer',
+          subagentType: 'code-reviewer',
+          description: 'Review the diff',
+          prompt: 'Review it',
+          background: true,
+          depth: 1,
+          startedAt: '2026-09-04T00:00:00.000Z',
+        },
+      ],
+    },
+    createdAt: '2026-07-12T00:00:02Z',
+    updatedAt: '2026-07-12T00:00:02Z',
+  } as ConversationMessage;
+}
+
 function reset(patch: Partial<McConversationView> = {}): void {
   useChatStore.setState({
     conversations: [{ ...conversation, ...patch }],
@@ -170,6 +199,38 @@ describe('SessionPanel', () => {
     await userEvent.click(screen.getByText('Yes'));
 
     expect(mockApi.chatAnswerQuestion).toHaveBeenCalledWith(ref, 'local-turn', 'question-1', 'Yes');
+  });
+
+  // The chat store's `subagents` / `subagentUi` describe the conversation the
+  // CHAT route has selected. This panel draws a different one, so its cards
+  // read the fold and offer nothing: a stop or a resume from here addresses
+  // the child correctly and then refreshes the other conversation's list, so
+  // the row the user is looking at never moves.
+  it('draws a sub-agent card in a session transcript from the fold, with no actions', async () => {
+    useChatStore.setState({
+      messages: { [key]: [assistantMessageWithChild()] },
+      selectedConversationRef: { id: 'another-conversation', origin: 'gateway' },
+      subagents: [
+        {
+          id: 'sub_a',
+          type: 'code-reviewer',
+          description: 'Review the diff',
+          status: 'done',
+          background: false,
+          depth: 1,
+          startedAt: '2026-09-04T00:00:00.000Z',
+          toolCallCount: 12,
+          oneShot: true,
+        },
+      ],
+      subagentUi: {},
+    });
+
+    render(<SessionPanel conversationRef={ref} />);
+
+    const card = await screen.findByTestId('subagent-card-sub_a');
+    expect(card).toHaveAttribute('data-status', 'running');
+    expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
   });
 
   it('keeps read-only local history visible without enabling mutations', () => {
