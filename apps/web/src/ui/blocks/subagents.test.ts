@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { MobileAgentEvent } from '@dash/mobile-contract';
 import {
   clusterAdjacent,
@@ -501,5 +504,69 @@ describe('formatToolCount', () => {
   it('pluralizes zero and many', () => {
     expect(formatToolCount(0)).toBe('0 tool uses');
     expect(formatToolCount(12)).toBe('12 tool uses');
+  });
+});
+
+/**
+ * D4 — §8.2's parallel-group container, against streams a real gateway sent.
+ *
+ * Both files were captured verbatim by
+ * `scripts/subagents-e2e/capture-fixtures.mjs`, and they disagree, which is
+ * the finding. Two FOREGROUND `agent` calls put both children's `tool_result`s
+ * after both `subagent_started`s and the container renders. Two BACKGROUND
+ * calls return each child's "launched in the background" `tool_result`
+ * IMMEDIATELY, so one lands between the anchors — and the container vanishes
+ * while both children are still running, which is exactly the case §8.2
+ * exists for. D4 was filed as structural; it is this race.
+ *
+ * The `agent` tool's own start/result are chrome for adjacency because the
+ * fold already renders that tool call AS the card.
+ */
+describe('captured gateway streams — §8.2 parallel groups', () => {
+  const eventsOf = (file: string): MobileAgentEvent[] => {
+    const path = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../../contracts/mobile/v1/fixtures',
+      file,
+    );
+    const frames = readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: MobileAgentEvent });
+    const first = frames[0].id;
+    return frames
+      .filter((f) => f.type === 'event' && f.id === first)
+      .map((f) => f.event as MobileAgentEvent);
+  };
+
+  const containers = (file: string): string[] =>
+    clusterAdjacent(groupSubagentEvents(eventsOf(file), false))
+      .filter((cluster) => cluster.length > 1)
+      .map(formatClusterSummary);
+
+  it('renders one container for two foreground children in one turn', () => {
+    expect(containers('subagent-parallel-frames.jsonl')).toEqual(['2 agents · 2 done']);
+  });
+
+  it('renders one container for two background children in one turn', () => {
+    // RED before the fix: `[]`. Two `tool_result` events for the `agent` tool
+    // sit between the anchors, `adjacentToPrevious` is false, and
+    // `clusterAdjacent` yields two clusters of one.
+    expect(containers('subagent-background-pair-frames.jsonl')).toEqual([
+      '2 agents · 1 running · 1 done',
+    ]);
+  });
+
+  it('still splits a cluster when real content sits between two spawns', () => {
+    const events = eventsOf('subagent-background-pair-frames.jsonl');
+    const anchors = events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event }) => event.type === 'subagent_started');
+    expect(anchors).toHaveLength(2);
+    const split = [...events];
+    split.splice(anchors[1].index, 0, { type: 'text_delta', text: 'and now, separately' });
+    expect(clusterAdjacent(groupSubagentEvents(split, false)).filter((c) => c.length > 1)).toEqual(
+      [],
+    );
   });
 });

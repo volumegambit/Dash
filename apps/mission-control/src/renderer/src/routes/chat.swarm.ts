@@ -173,6 +173,34 @@ const CHROME_EVENT_TYPES = new Set<string>([
   'agent_spawned',
 ]);
 
+/** The tool whose call IS a child. Its own rows are the card, not content. */
+const SPAWNING_TOOL = 'agent';
+
+/**
+ * True for an event that renders nothing of its own between two sub-agent
+ * cards.
+ *
+ * The `agent` tool's own `tool_use_start` / `tool_result` count, and that is
+ * D4: a BACKGROUND spawn's tool result comes back immediately ("launched in
+ * the background"), so with two background children in one turn one child's
+ * result lands between the two `subagent_started` anchors and splits what is
+ * unambiguously a parallel group — both children still running — while two
+ * FOREGROUND children in the same shape cluster fine, because their results
+ * arrive after both starts. `subagent-background-pair-frames.jsonl` and
+ * `subagent-parallel-frames.jsonl` are the two real streams.
+ *
+ * Only the SPAWNING tool is chrome. Any other tool call between two spawns is
+ * real content and still splits the cluster: this tool call is already
+ * rendered — as the card.
+ */
+function isChromeEvent(event: McAgentEvent): boolean {
+  if (CHROME_EVENT_TYPES.has(event.type)) return true;
+  return (
+    (event.type === 'tool_use_start' || event.type === 'tool_result') &&
+    (event as { name?: unknown }).name === SPAWNING_TOOL
+  );
+}
+
 /**
  * True for an event type the transcript renderer must NOT draw itself: the
  * three this module folds into a card, plus the three D8 retired, which a
@@ -458,7 +486,7 @@ export function groupSubagentEvents(
 /** True when every event strictly between `from` and `to` is sub-agent chrome. */
 function isOnlyChromeBetween(events: readonly McAgentEvent[], from: number, to: number): boolean {
   for (let i = from + 1; i < to; i++) {
-    if (!CHROME_EVENT_TYPES.has(events[i].type)) return false;
+    if (!isChromeEvent(events[i])) return false;
   }
   return true;
 }

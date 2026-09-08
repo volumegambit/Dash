@@ -722,3 +722,62 @@ describe('SubagentGroup', () => {
     expect(group.subagentId).toBe('a');
   });
 });
+
+/**
+ * D4 — §8.2's parallel-group container, against streams a real gateway sent.
+ *
+ * Both files were captured verbatim by
+ * `scripts/subagents-e2e/capture-fixtures.mjs`, and they disagree, which is
+ * the finding. Two FOREGROUND `agent` calls put both children's `tool_result`s
+ * after both `subagent_started`s and the container renders. Two BACKGROUND
+ * calls return each child's "launched in the background" `tool_result`
+ * IMMEDIATELY, so one lands between the anchors — and the container vanishes
+ * while both children are still running, which is exactly the case §8.2
+ * exists for. D4 was filed as structural; it is this race.
+ */
+describe('captured gateway streams — §8.2 parallel groups', () => {
+  const eventsOf = (file: string): McAgentEvent[] => {
+    const frames = readFileSync(
+      resolve(__dirname, '../../../../../../contracts/mobile/v1/fixtures', file),
+      'utf8',
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: McAgentEvent });
+    const first = frames[0].id;
+    return frames
+      .filter((f) => f.type === 'event' && f.id === first)
+      .map((f) => f.event as McAgentEvent);
+  };
+
+  const containers = (file: string): string[] =>
+    clusterAdjacent(groupSubagentEvents(eventsOf(file), false))
+      .filter((cluster) => cluster.length > 1)
+      .map(formatClusterSummary);
+
+  it('renders one container for two foreground children in one turn', () => {
+    expect(containers('subagent-parallel-frames.jsonl')).toEqual(['2 agents · 2 done']);
+  });
+
+  it('renders one container for two background children in one turn', () => {
+    // RED before the fix: `[]`.
+    expect(containers('subagent-background-pair-frames.jsonl')).toEqual([
+      '2 agents · 1 running · 1 done',
+    ]);
+  });
+
+  it('still splits a cluster when real content sits between two spawns', () => {
+    const events = eventsOf('subagent-background-pair-frames.jsonl');
+    const second = events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event }) => event.type === 'subagent_started')[1];
+    const split = [...events];
+    split.splice(second.index, 0, {
+      type: 'text_delta',
+      text: 'and now, separately',
+    } as McAgentEvent);
+    expect(clusterAdjacent(groupSubagentEvents(split, false)).filter((c) => c.length > 1)).toEqual(
+      [],
+    );
+  });
+});

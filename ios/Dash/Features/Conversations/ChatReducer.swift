@@ -1303,10 +1303,29 @@ enum ChatReducer {
     case .subagentStarted, .subagentProgress, .subagentFinished,
       .workerSpawned, .workerStatus, .workerDone, .agentSpawned:
       true
+    case let .toolUseStart(_, name, _) where name == spawningToolName:
+      true
+    case let .toolResult(_, name, _, _, _) where name == spawningToolName:
+      true
+    // The SPAWNING tool's own rows. A BACKGROUND spawn's `agent` tool result
+    // comes back immediately ("launched in the background"), so with two
+    // background children in one turn one child's result lands between the two
+    // `subagent_started` anchors and splits what is unambiguously a parallel
+    // group — both children still running. Two FOREGROUND children in the same
+    // shape cluster fine, because their results arrive after both starts. That
+    // race is D4; `subagent-background-pair-frames.jsonl` and
+    // `subagent-parallel-frames.jsonl` are the two real gateway streams.
+    //
+    // Only the spawning tool. Any OTHER tool call between two spawns is real
+    // content and still splits the cluster: this one is already rendered — as
+    // the card.
     default:
       false
     }
   }
+
+  /// The tool whose call IS a child, so its own rows are the card, not content.
+  private static let spawningToolName = "agent"
 
   private static func upsertSubagent(
     id: String,

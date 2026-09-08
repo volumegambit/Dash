@@ -1769,4 +1769,90 @@ struct ChatReducerTests {
   private func usage() -> UsageDTO {
     UsageDTO(inputTokens: 12, outputTokens: 6, cacheReadTokens: 2, cacheWriteTokens: 1)
   }
+
+  // MARK: - D4: captured gateway streams
+
+  /// §8.2's parallel-group container, against streams a REAL gateway sent.
+  ///
+  /// Both files were captured verbatim by
+  /// `scripts/subagents-e2e/capture-fixtures.mjs` and they DISAGREE, which is
+  /// the finding. Two FOREGROUND `agent` calls put both children's
+  /// `tool_result`s after both `subagent_started`s and the group renders. Two
+  /// BACKGROUND calls return each child's "launched in the background"
+  /// `tool_result` IMMEDIATELY, so one lands between the anchors — and the
+  /// group vanishes while both children are still RUNNING, which is exactly
+  /// the case §8.2 exists for.
+  ///
+  /// Synthetic fixtures are why this survived three clients: every hand-written
+  /// adjacency test put `agent_spawned` and nothing else between two starts.
+  @Test("two foreground children in one captured turn render one parallel group")
+  func capturedForegroundPairIsAdjacent() throws {
+    let cards = try foldCapture("subagent-parallel-frames.jsonl")
+    #expect(cards.count == 2)
+    #expect(cards.first?.isAdjacentToPrevious == false)
+    #expect(cards.last?.isAdjacentToPrevious == true)
+  }
+
+  @Test("two background children in one captured turn render one parallel group")
+  func capturedBackgroundPairIsAdjacent() throws {
+    // RED before the fix: `false`. Each child's own `agent` tool result lands
+    // between the two anchors, so `chromeRank` differs and the pair splits.
+    let cards = try foldCapture("subagent-background-pair-frames.jsonl")
+    #expect(cards.count == 2)
+    #expect(cards.first?.isAdjacentToPrevious == false)
+    #expect(cards.last?.isAdjacentToPrevious == true)
+  }
+
+  @Test("a non-spawning tool call between two captured spawns still splits the group")
+  func capturedOtherToolBreaksAdjacency() throws {
+    let events = try capturedEvents("subagent-background-pair-frames.jsonl")
+    var patched: [AgentEvent] = []
+    var startsSeen = 0
+    for event in events {
+      if case .subagentStarted = event {
+        startsSeen += 1
+        if startsSeen == 2 {
+          patched.append(
+            .toolResult(id: "t9", name: "bash", content: "ok", isError: false, details: nil)
+          )
+        }
+      }
+      patched.append(event)
+    }
+    let cards = foldEvents(patched)
+    #expect(cards.count == 2)
+    #expect(cards.last?.isAdjacentToPrevious == false)
+  }
+
+  /// The events of the FIRST turn in a captured `MobileWSServerFrame` stream.
+  private func capturedEvents(_ name: String) throws -> [AgentEvent] {
+    let text = String(decoding: try FixtureLoader.data(name), as: UTF8.self)
+    let decoder = ContractCoding.decoder()
+    var turnID: String?
+    var events: [AgentEvent] = []
+    for line in text.split(whereSeparator: \.isNewline) where line.isEmpty == false {
+      let frame = try decoder.decode(MobileWSServerFrame.self, from: Data(line.utf8))
+      switch frame {
+      case let .accepted(id, _, _, _, _, _, _, _, _):
+        if turnID == nil { turnID = id }
+      case let .event(id, _, _, event):
+        if id == turnID { events.append(event) }
+      default:
+        continue
+      }
+    }
+    return events
+  }
+
+  private func foldCapture(_ name: String) throws -> [SubagentCardState] {
+    foldEvents(try capturedEvents(name))
+  }
+
+  private func foldEvents(_ events: [AgentEvent]) -> [SubagentCardState] {
+    var state = acceptedState(cursor: 1)
+    for (offset, event) in events.enumerated() {
+      _ = apply(event, seq: offset + 2, to: &state)
+    }
+    return state.messages.last?.assistant?.subagentCards ?? []
+  }
 }
