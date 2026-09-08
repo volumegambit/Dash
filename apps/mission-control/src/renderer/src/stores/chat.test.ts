@@ -1319,6 +1319,64 @@ function childDone(seq = 43): MobileWsServerFrame {
   } as MobileWsServerFrame;
 }
 
+/**
+ * A child's transient progress, on the PARENT's stream. `subagent_progress`
+ * is never logged (design §7.2), so it only exists while a parent turn is
+ * live — which is the window `parked` was getting wrong.
+ */
+function parentProgress(status: 'running' | 'waiting_input', seq = 1): MobileWsServerFrame {
+  return {
+    type: 'event',
+    id: 'parent-turn-1',
+    conversationId: parentRef.id,
+    seq,
+    event: {
+      type: 'subagent_progress',
+      subagentId: 'sub_a',
+      status,
+      toolCallCount: 2,
+      elapsedMs: 1000,
+      ...(status === 'waiting_input' ? { question: 'which branch?' } : {}),
+    },
+  } as MobileWsServerFrame;
+}
+
+function parentWorkerStatus(status: 'running' | 'waiting_input', seq = 1): MobileWsServerFrame {
+  return {
+    type: 'event',
+    id: 'parent-turn-1',
+    conversationId: parentRef.id,
+    seq,
+    event: {
+      type: 'worker_status',
+      workerId: 'sub_a',
+      runId: 'run-1',
+      role: 'code-reviewer',
+      status,
+    },
+  } as MobileWsServerFrame;
+}
+
+function parentFinished(seq = 1): MobileWsServerFrame {
+  return {
+    type: 'event',
+    id: 'parent-turn-1',
+    conversationId: parentRef.id,
+    seq,
+    event: {
+      type: 'subagent_finished',
+      subagentId: 'sub_a',
+      subagentType: 'code-reviewer',
+      description: 'Review the diff',
+      status: 'done',
+      report: 'all good',
+      toolCallCount: 2,
+      startedAt: '2026-07-12T00:00:00.000Z',
+      endedAt: '2026-07-12T00:01:00.000Z',
+    },
+  } as MobileWsServerFrame;
+}
+
 function childMessage(id: string, over: Partial<ConversationMessage> = {}): ConversationMessage {
   return { ...message(id, childRef, 'assistant'), ordinal: 1, ...over };
 }
@@ -1874,6 +1932,97 @@ describe('sub-agent optimistic rows', () => {
 
     const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
     expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
+  });
+
+  // I2. `parked` was decided from REST alone, which lags the gateway by up to
+  // 20 s — and that is exactly the window in which a user answers. A
+  // `subagent_progress { status: 'waiting_input' }` reaches this client's
+  // `applyFrame` the moment the child parks, and D7b threw it away because
+  // `subagent_progress` is deliberately not a list trigger. The panel's
+  // Resume box then opened for a child REST still called `running`, the
+  // gateway took `sendToChild`'s ANSWERING branch — which starts no turn,
+  // emits no `accepted` and persists no user row — and the optimistic row
+  // stranded forever.
+  //
+  // The store does the reading, not the panel, so D7's "the panel is
+  // REST-only" ruling is untouched and `subagent_progress` is still not a
+  // list trigger.
+  it('adds no row for an answer the live stream knows is an answer', async () => {
+    await selectParentWithAgent();
+    // REST still says `running`: this is the lag, not a fixture convenience.
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().applyFrame(parentProgress('waiting_input'));
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'the second one');
+
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toBeUndefined();
+  });
+
+  // The control, and it also proves the map is not sticky: a child that parks
+  // and then runs again is steerable, and a steer IS shown.
+  it('shows the row again once the live stream says the child is running', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().applyFrame(parentProgress('waiting_input', 1));
+    await useChatStore.getState().applyFrame(parentProgress('running', 2));
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
+  });
+
+  // The legacy mirror carries the same fact and is still on the wire until D8.
+  it('reads the legacy worker_status mirror the same way', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().applyFrame(parentWorkerStatus('waiting_input'));
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'the second one');
+
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toBeUndefined();
+  });
+
+  // A finished child cannot be parked, and the entry must not outlive it: a
+  // resume that restarts it would otherwise read `waiting` for the whole new
+  // run. Same reason D3 refused to merge the REST list with the fold.
+  it('forgets a parked child once its finish reaches the parent stream', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().applyFrame(parentProgress('waiting_input', 1));
+    await useChatStore.getState().applyFrame(parentFinished(2));
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'run again');
+
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
+  });
+
+  // Everything keyed by child id describes ONE conversation. Without this the
+  // map would outlive the switch and grow for the store's lifetime — the
+  // defect D2 and D3 already paid for with `subagentInfo` and `transcripts`.
+  it('forgets what the live stream said when the conversation changes', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    await useChatStore.getState().applyFrame(parentProgress('waiting_input'));
+
+    await releaseEverySubscription();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+    await selectParentWithAgent();
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'keep going');
+
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
   });
 
   it('takes the row back when the gateway refuses the message', async () => {

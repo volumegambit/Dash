@@ -7,6 +7,7 @@ import type {
 import type {
   ConversationMessage,
   ConversationMessagePage,
+  MobileAgentEvent,
   MobileApiError,
   MobileImage,
   MobileWsServerFrame,
@@ -18,7 +19,7 @@ import type {
   ConversationInvalidation,
   McAgentEvent,
 } from '../../../shared/ipc.js';
-import { isTerminalSubagentStatus, rowStatusOf } from '../routes/chat.swarm.js';
+import { isTerminalSubagentStatus, rowStatusOf, subagentIdOf } from '../routes/chat.swarm.js';
 import {
   applySequencedFrame,
   mergeCanonicalMessages,
@@ -477,6 +478,38 @@ export const useChatStore = create<ChatState>((set, get) => {
    * because they are the only ones a re-read must not simply replace.
    */
   const localChildRows = new Map<string, Set<string>>();
+  /**
+   * What a child's own LIVE stream last said about it, for the children of the
+   * selected conversation (design §7.2's transient progress).
+   *
+   * The REST list lags the gateway by up to twenty seconds — `subagent_progress`
+   * is deliberately not a list trigger, because a busy child emits many — and
+   * that is exactly the window in which a user answers a question. A message
+   * to a child the gateway thinks is PARKED takes `sendToChild`'s answering
+   * branch: no turn, no `accepted`, no persisted user row. An optimistic row
+   * for it is a sentence the child's transcript will never contain.
+   *
+   * The STORE reads this, not the panel, so D7's "the panel is REST-only"
+   * ruling stands and `subagent_progress` is still not a list trigger.
+   *
+   * Deliberately not sticky: a child that parks and runs again is steerable
+   * again, and a finish deletes the entry outright — D3's lesson that a
+   * persisted `done` folded into a live view reads `done` for the whole
+   * resumed run.
+   */
+  const childLiveStatus = new Map<string, 'running' | 'waiting'>();
+
+  const recordChildLiveStatus = (event: MobileAgentEvent): void => {
+    const childId = subagentIdOf(event);
+    if (!childId) return;
+    if (event.type === 'subagent_progress' || event.type === 'worker_status') {
+      childLiveStatus.set(childId, event.status === 'waiting_input' ? 'waiting' : 'running');
+      return;
+    }
+    if (event.type === 'subagent_finished' || event.type === 'worker_done') {
+      childLiveStatus.delete(childId);
+    }
+  };
 
   const rememberLocalRow = (subagentId: string, messageId: string): void => {
     const rows = localChildRows.get(subagentId) ?? new Set<string>();
@@ -608,6 +641,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
     knownChildIds.clear();
     localChildRows.clear();
+    childLiveStatus.clear();
     set({ subagents: [], subagentUi: {} });
   };
 
@@ -950,6 +984,14 @@ export const useChatStore = create<ChatState>((set, get) => {
       // status set it would report has not changed. Gated on the SELECTED
       // conversation, so a grandchild starting inside a subscribed child does
       // not trigger a read the list could not answer anyway.
+      // Scoped to the SELECTED conversation, the same gate the list triggers
+      // use: a grandchild's progress inside a subscribed child says nothing
+      // about this conversation's own children. Recorded ahead of the sequence
+      // gate, because what the frame SAYS is true whether or not it arrived
+      // contiguously.
+      if (frame.type === 'event' && selected && selected.id === frame.conversationId) {
+        recordChildLiveStatus(frame.event);
+      }
       if (frame.type === 'event' && SUBAGENT_LIST_TRIGGERS.has(frame.event.type)) {
         const selected = get().selectedConversationRef;
         if (selected && selected.id === frame.conversationId) {
@@ -1313,8 +1355,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       // The list is still consulted, for the panel's Resume button and the
       // body composer: those are REST-driven surfaces, so their two sources
       // agree, and a child the list says is `waiting` is parked whoever asks.
+      //
+      // Three sources, narrowest first. The caller's flag is the only one the
+      // question composer needs. `childLiveStatus` closes the panel's Resume
+      // and the body composer for a child whose parking THIS client has
+      // already seen — the store holds the frame the render sites cannot. The
+      // list is the backstop and is right once it catches up.
       const parked =
         options?.answering === true ||
+        childLiveStatus.get(subagentId) === 'waiting' ||
         (entry !== undefined && rowStatusOf(entry.status) === 'waiting');
       const optimistic = get().isSubagentSubscribed(subagentId) && !parked;
       if (optimistic) {
@@ -1391,6 +1440,14 @@ export const useChatStore = create<ChatState>((set, get) => {
  * `subagents` changes identity, so a card COLLAPSING would not re-arm a poll
  * that had stopped, and nothing else would ever read the list again. Armed by
  * the children alone, it cannot wedge. Do not grow it.
+ *
+ * This and the subscription are NOT prevented from firing a re-read for the
+ * same event: `applySubagentFrame`'s `done` tail calls `refreshSubagents` and
+ * so does this interval, and the two can overlap. They are made IDEMPOTENT
+ * instead, by the `subagentReadSeq`/`appliedSubagentSeq` cursor — the newest
+ * read that STARTED is the only one allowed to write, so whichever order two
+ * overlapping responses land in, the newer wins and the older is dropped.
+ * That is the honest statement of it; "they cannot both fire" would not be.
  *
  * It lives here, next to the children it re-reads, rather than in `SwarmPanel`
  * where it started: mounted in the panel it ran only while the panel was open,

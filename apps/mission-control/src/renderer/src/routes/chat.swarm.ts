@@ -83,6 +83,7 @@ import type {
   SubagentListEntry,
   SubagentStatus as WireSubagentStatus,
 } from '@dash/mobile-contract';
+import type { MobileAgentEvent } from '@dash/mobile-contract';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 
 /** Coalesced lifecycle state for one child, as the collapsed row renders it. */
@@ -272,8 +273,17 @@ function terminalStatus(value: unknown): SubagentStatus | undefined {
     : undefined;
 }
 
-/** The child id an event names, or undefined when it is not a folded event. */
-function subagentIdOf(event: McAgentEvent): string | undefined {
+/**
+ * The child id an event names, or undefined when it is not a folded event.
+ *
+ * Exported for the store's live status map, which reads events straight off
+ * the wire: both families name the same string (a child's conversation id IS
+ * its worker id), and one reader of that rule is better than two. Typed on
+ * the WIRE shape (`MobileAgentEvent`, an open record) rather than the folded
+ * one so both callers fit; every field it reads goes through `str`, which
+ * already treats them as unknown.
+ */
+export function subagentIdOf(event: MobileAgentEvent): string | undefined {
   switch (event.type) {
     case 'subagent_started':
     case 'subagent_progress':
