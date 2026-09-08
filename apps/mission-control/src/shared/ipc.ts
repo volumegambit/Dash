@@ -538,6 +538,17 @@ export interface MissionControlAPI {
    * its transcript over REST — which is what this asks for.
    */
   onSubagentResubscribed(callback: (conversationId: string) => void): () => void;
+  /**
+   * The socket behind a watch this renderer holds is NOT OPEN — the factory
+   * threw, the socket closed, an older gateway refused the `subscribe` frame,
+   * or the hold was taken while main had no transport at all.
+   *
+   * A hold is bookkeeping; only an open socket can carry an `accepted`. The
+   * store answers by turning optimism off for that child, and keeps the hold
+   * so the subscribe/unsubscribe pairing stays 1:1. `onSubagentResubscribed`
+   * is the only thing that takes it back.
+   */
+  onSubagentWatchLost(callback: (conversationId: string) => void): () => void;
 
   // Skills (gateway passthrough)
   skillsList(agentId: string): Promise<SkillInfo[]>;

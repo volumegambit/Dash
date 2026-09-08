@@ -1079,6 +1079,33 @@ describe('ChatService gateway conversations', () => {
       expect(restored.mock.calls).toEqual([[childId], ['child-conversation-2']]);
     });
 
+    // C2 path 4. The count is right to record — a transport arriving watches
+    // it — but nothing is watching NOW, and the renderer's `isSubagentSubscribed`
+    // is the only gate on showing an optimistic row.
+    it('says the watch is lost when a hold is taken with no transport', () => {
+      const lost = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.setResumableTransport(undefined);
+
+      service.subscribeConversation('agent-1', childId);
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    // C2 path 4b, the mirror of the re-watch loop above: going OFFLINE
+    // `closeAll`s every child socket and the replacement is `undefined`, so
+    // nothing fires the transport's own lost signal for them.
+    it('says every held watch is lost when the transport goes away', () => {
+      const lost = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-2', 'child-conversation-2');
+
+      service.setResumableTransport(undefined);
+
+      expect(lost.mock.calls).toEqual([[childId], ['child-conversation-2']]);
+    });
+
     it('holds the count while there is no transport, and watches when one arrives', () => {
       service.setResumableTransport(undefined);
       service.subscribeConversation('agent-1', childId);

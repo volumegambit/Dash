@@ -212,10 +212,20 @@ export interface ChatState {
    */
   isSubagentSubscribed(subagentId: string): boolean;
   /**
+   * Main says the socket behind a hold is not open (design §7.6). The hold
+   * STAYS — it is what keeps the subscribe/unsubscribe pairing 1:1 and what
+   * main re-watches on a transport swap — but it stops counting as a live
+   * stream, so no optimistic row is written for a message whose `accepted`
+   * cannot arrive.
+   */
+  markSubagentWatchLost(subagentId: string): void;
+  /**
    * A watched child's stream dropped and came back. Subscribing replays
    * NOTHING, so the only recovery for the gap is a re-read — and only for a
    * card that already has a transcript; one that never loaded reads on its
    * next expansion anyway.
+   *
+   * Also the ONLY thing that takes {@link markSubagentWatchLost} back.
    */
   restoreSubagentTranscript(subagentId: string): Promise<void>;
   setSubagentDraft(subagentId: string, draft: string): void;
@@ -434,7 +444,20 @@ export const useChatStore = create<ChatState>((set, get) => {
    * Children whose live stream this store holds, and how many surfaces hold
    * each. Closure state, not store state: it is wiring, and nothing renders it.
    */
-  const childSubscriptions = new Map<string, { agentId: string; holds: number }>();
+  const childSubscriptions = new Map<
+    string,
+    {
+      agentId: string;
+      holds: number;
+      /**
+       * Whether the SOCKET behind this hold is open, as far as main has said.
+       * Separate from `holds` because they answer different questions: `holds`
+       * decides when to send `unsubscribe`, `live` decides whether an
+       * `accepted` can ever arrive. Only the second gates optimism.
+       */
+      live: boolean;
+    }
+  >();
   /**
    * Every child this conversation has EVER held a subscription for. Wider than
    * `childSubscriptions` on purpose: the release is deferred and main closes
@@ -1069,7 +1092,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       const ref = get().selectedConversationRef;
       const agentId = ref && ref.origin === 'gateway' ? exactConversation(ref)?.agentId : undefined;
       if (!agentId) return;
-      childSubscriptions.set(subagentId, { agentId, holds: 1 });
+      // Optimistically live: main answers with `chat:subagentWatchLost` if it
+      // is not, and that round trip is faster than any message a user types.
+      childSubscriptions.set(subagentId, { agentId, holds: 1, live: true });
       knownChildIds.add(subagentId);
       window.api.subagentSubscribe(agentId, subagentId);
     },
@@ -1104,10 +1129,30 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     isSubagentSubscribed(subagentId) {
-      return (childSubscriptions.get(subagentId)?.holds ?? 0) > 0;
+      const held = childSubscriptions.get(subagentId);
+      // BOTH, and the second is the one D7b was missing. A hold is this
+      // renderer's own bookkeeping and says nothing about whether anything is
+      // watching: the socket factory can throw, the socket can close 4001 or
+      // just 1006, an older gateway answers our `subscribe` with
+      // `validation_failed` and leaves the socket open watching nothing, and
+      // a hold can be taken while main has no transport at all. In every one
+      // of those the echo this row would be paired by never arrives.
+      return held !== undefined && held.holds > 0 && held.live;
+    },
+
+    markSubagentWatchLost(subagentId) {
+      const held = childSubscriptions.get(subagentId);
+      // Deliberately NOT `childSubscriptions.delete`. Deleting would break the
+      // 1:1 pairing main's refcount depends on: a second card opening would
+      // create a fresh entry and send a SECOND `subscribe`, and the first
+      // card's release would then take the count to 0 and unwatch a child the
+      // second is still showing.
+      if (held) held.live = false;
     },
 
     async restoreSubagentTranscript(subagentId) {
+      const held = childSubscriptions.get(subagentId);
+      if (held) held.live = true;
       // The list first, and for every restored child rather than only the ones
       // with a card open: this is the one moment we KNOW a `done` may have
       // fallen in a gap, and a child held only by the panel has no transcript
@@ -1367,6 +1412,10 @@ export function initChatListeners(): void {
       .getState()
       .restoreSubagentTranscript(subagentId)
       .catch(() => undefined);
+  });
+  // A watched child's socket is not open. The hold stays; optimism stops.
+  window.api.onSubagentWatchLost((subagentId) => {
+    useChatStore.getState().markSubagentWatchLost(subagentId);
   });
   window.api.onChatConversationInvalidated((event) => {
     void useChatStore

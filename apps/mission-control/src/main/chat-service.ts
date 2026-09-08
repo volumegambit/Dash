@@ -107,6 +107,8 @@ export class ChatService {
 
   private subscriptionRestoredListener?: (conversationId: string) => void;
 
+  private subscriptionLostListener?: (conversationId: string) => void;
+
   /**
    * Child conversations the renderer is watching, and how many holders each
    * has. See {@link subscribeConversation}.
@@ -134,8 +136,15 @@ export class ChatService {
     // back, and every re-watch owes its reader a REST re-read for the same
     // reason a reconnect does: a subscribe replays nothing.
     for (const [conversationId, held] of this.watchedConversations) {
-      transport?.watchConversation(held.agentId, conversationId);
-      if (transport) this.subscriptionRestoredListener?.(conversationId);
+      if (!transport) {
+        // Going offline. `closeAll` above dropped every child socket without
+        // the transport's own lost signal firing for any of them, so this is
+        // the only place that can say so.
+        this.subscriptionLostListener?.(conversationId);
+        continue;
+      }
+      transport.watchConversation(held.agentId, conversationId);
+      this.subscriptionRestoredListener?.(conversationId);
     }
   }
 
@@ -145,6 +154,17 @@ export class ChatService {
    */
   setSubscriptionRestoredListener(listener: (conversationId: string) => void): void {
     this.subscriptionRestoredListener = listener;
+  }
+
+  /**
+   * Told when a hold is being kept over a watch whose socket is NOT open, so
+   * the renderer can stop treating that hold as a live stream.
+   *
+   * The count itself is deliberately kept — it is what re-watches on a
+   * transport swap — so this says "not watching", never "not held".
+   */
+  setSubscriptionLostListener(listener: (conversationId: string) => void): void {
+    this.subscriptionLostListener = listener;
   }
 
   /**
@@ -167,7 +187,13 @@ export class ChatService {
       return;
     }
     this.watchedConversations.set(conversationId, { agentId, holds: 1 });
-    this.resumable?.watchConversation(agentId, conversationId);
+    if (this.resumable) {
+      this.resumable.watchConversation(agentId, conversationId);
+      return;
+    }
+    // No transport: the count stands and a transport arriving will watch it,
+    // but nothing is watching now and the holder has to know that.
+    this.subscriptionLostListener?.(conversationId);
   }
 
   /** Release one hold; the last one out drops the watch. */

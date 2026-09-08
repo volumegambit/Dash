@@ -145,6 +145,12 @@ const api: MissionControlAPI = {
     ipcRenderer.on('chat:subagentResubscribed', listener);
     return () => ipcRenderer.removeListener('chat:subagentResubscribed', listener);
   },
+  onSubagentWatchLost: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, conversationId: string) =>
+      callback(conversationId);
+    ipcRenderer.on('chat:subagentWatchLost', listener);
+    return () => ipcRenderer.removeListener('chat:subagentWatchLost', listener);
+  },
 
   // Skills
   skillsList: (agentId) => ipcRenderer.invoke('skills:list', agentId),

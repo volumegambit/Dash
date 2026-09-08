@@ -1118,6 +1118,16 @@ export async function registerIpcHandlers(
       win.webContents.send('chat:subagentResubscribed', conversationId);
   };
 
+  /**
+   * The socket behind a watched child is not open. Fired by the transport for
+   * every way that happens, and by `ChatService` for the two it cannot see —
+   * a hold taken with no transport at all, and the transport going away.
+   */
+  const sendSubagentWatchLost = (conversationId: string): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('chat:subagentWatchLost', conversationId);
+  };
+
   const chatUrl = (endpoint: ActiveGatewayEndpoint): string =>
     `${trimTrailingSlash(endpoint.chatBaseUrl)}/ws/chat?token=${encodeURIComponent(endpoint.chatToken)}`;
 
@@ -1169,6 +1179,7 @@ export async function registerIpcHandlers(
               win.webContents.send('chat:error', conversationId, message);
           },
           onSubscriptionRestored: sendSubagentResubscribed,
+          onSubscriptionLost: sendSubagentWatchLost,
         }),
     });
     if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
@@ -2056,6 +2067,7 @@ export async function registerIpcHandlers(
   // reconnect or through a whole transport swap, and only ChatService knows
   // about the second.
   getChatService(getWindow).setSubscriptionRestoredListener(sendSubagentResubscribed);
+  getChatService(getWindow).setSubscriptionLostListener(sendSubagentWatchLost);
 
   ipcMain.on('subagents:watch', (_event, request: SubagentWatchRequest) => {
     applySubagentWatch(getChatService(getWindow), request);

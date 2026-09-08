@@ -1747,6 +1747,66 @@ describe('sub-agent optimistic rows', () => {
     expect(useChatStore.getState().subagentUi.sub_a.transcript).toBeUndefined();
   });
 
+  // C2. A hold is bookkeeping; only an OPEN SOCKET can carry an `accepted`.
+  // Four paths leave the first without the second — the factory throwing, an
+  // auth close, an older gateway refusing `subscribe`, and a hold taken with
+  // no transport — and a fifth, an ordinary reconnect, leaves it briefly.
+  // Optimism in any of them writes a `pending:<uuid>` row keyed on a
+  // `requestId` nothing will ever echo, and the merge keeps it forever: its
+  // id is never in a page's ids and its turn is never in a page's turns. The
+  // user's own sentence, twice, permanently.
+  it('adds no second copy of the sentence when the hold is dead', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    // Main says the socket behind this hold is not open.
+    useChatStore.getState().markSubagentWatchLost('sub_a');
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'try the other branch');
+
+    // No `accepted` frame is delivered: that is the whole point of the case.
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          ...message('server-user-1', childRef, 'user'),
+          turnId: 'server-turn-1',
+          ordinal: 1,
+          content: { type: 'user', text: 'try the other branch' },
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    await useChatStore.getState().loadSubagentTranscript('sub_a', true);
+
+    const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
+    expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'server-user-1' });
+  });
+
+  // The other direction, so the fix is not "never show the row": a lost watch
+  // that comes back is a live stream again, and `chat:subagentResubscribed`
+  // is the only thing that says so.
+  it('shows the row again once the watch is restored', async () => {
+    await selectParentWithAgent();
+    mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().refreshSubagents();
+    useChatStore.getState().markSubagentWatchLost('sub_a');
+    await useChatStore.getState().restoreSubagentTranscript('sub_a');
+
+    await useChatStore.getState().resumeSubagent('sub_a', 'try the other branch');
+
+    const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
+    expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
+  });
+
   it('takes the row back when the gateway refuses the message', async () => {
     await selectParentWithAgent();
     mockApi.subagentsList.mockResolvedValue([subagentEntry()]);
