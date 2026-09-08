@@ -25,9 +25,8 @@ import type { EventLogPayload, EventLogStore } from './event-log-store.js';
  * What used to live here and is deliberately gone: the whole `worker_*` family
  * (retired in D8 — the mirrors were additive, and the dangling scan has always
  * been driven off `subagent_started`, so a pre-D8 tail is repaired the same
- * way), the
- * synthesized `{type:'error'}` stream marker (the generic recovery appends
- * exactly one, and a second would be a duplicate), and the rebuilt
+ * way), the synthesized `{type:'error'}` stream marker (the generic recovery
+ * appends exactly one, and a second would be a duplicate), and the rebuilt
  * `RunSnapshot` pushed into the coordinator's ring buffer (the panel reads
  * child conversations now — see `swarm-management.ts`).
  *
