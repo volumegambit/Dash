@@ -2084,11 +2084,11 @@ export async function registerIpcHandlers(
   // `ipcMain.on`, not `handle`: the preload sends these fire-and-forget (see
   // the note on `chat:cancel`). ONE channel for both halves, so a release can
   // never overtake the hold it belongs to.
-  // Attached beside the handler that creates the holds: the renderer must be
-  // told to re-read whether the stream came back through the transport's own
-  // reconnect or through a whole transport swap, and only ChatService knows
-  // about the second.
-  getChatService(getWindow).setSubscriptionRestoredListener(sendSubagentResubscribed);
+  // Attached beside the handler that creates the holds. Only the LOST half
+  // lives here: a hold taken with no transport, and a transport going away,
+  // are the two ways a watch dies that the transport cannot see. The restore
+  // half is entirely the transport's — a swap re-watches with
+  // `{ reopened: true }` and the signal fires when that socket opens.
   getChatService(getWindow).setSubscriptionLostListener(sendSubagentWatchLost);
 
   ipcMain.on('subagents:watch', (_event, request: SubagentWatchRequest) => {

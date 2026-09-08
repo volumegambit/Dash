@@ -19,7 +19,7 @@ import { WebSocketServer } from 'ws';
 import type { GatewayConnection } from './chat-service.js';
 import { ChatService } from './chat-service.js';
 import { ConversationController } from './conversation-controller.js';
-import type { ResumableChatTransport } from './resumable-chat-transport.js';
+import { ResumableChatTransport } from './resumable-chat-transport.js';
 import { FixtureGatewayConversationRepository } from './test-support/fixture-gateway-conversation-repository.js';
 
 const BASE_PORT = 19700 + Math.floor(Math.random() * 200);
@@ -1058,8 +1058,6 @@ describe('ChatService gateway conversations', () => {
     });
 
     it('re-watches every held conversation on a replacement transport, and says a re-read is owed', () => {
-      const restored = vi.fn();
-      service.setSubscriptionRestoredListener(restored);
       service.subscribeConversation('agent-1', childId);
       service.subscribeConversation('agent-2', 'child-conversation-2');
 
@@ -1071,12 +1069,15 @@ describe('ChatService gateway conversations', () => {
       service.setResumableTransport(replacement as unknown as ResumableChatTransport);
 
       // The old transport's `closeAll` dropped both sockets and the new one's
-      // registry is empty, while the renderer still holds both.
+      // registry is empty, while the renderer still holds both. `reopened`
+      // is how the re-read is owed: the transport fires the restore when the
+      // socket actually OPENS, rather than this service claiming it here
+      // before anything has connected — and before it can even know whether
+      // the socket will connect at all.
       expect(replacement.watchConversation.mock.calls).toEqual([
-        ['agent-1', childId],
-        ['agent-2', 'child-conversation-2'],
+        ['agent-1', childId, { reopened: true }],
+        ['agent-2', 'child-conversation-2', { reopened: true }],
       ]);
-      expect(restored.mock.calls).toEqual([[childId], ['child-conversation-2']]);
     });
 
     // I1. Closing the window on macOS quits nothing: `window-all-closed` only
@@ -1099,6 +1100,38 @@ describe('ChatService gateway conversations', () => {
       resumable.unwatchConversation.mockClear();
       service.unsubscribeConversation(childId);
       expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    // The hole this seam had, driven through a REAL transport rather than a
+    // stub, because it is an ORDERING defect and a stub has no ordering. The
+    // swap loop used to announce the restore itself, next to the re-watch —
+    // so when the replacement's socket factory threw, the transport fired
+    // `lost` synchronously inside `watchConversation` and the loop's own
+    // `restored` landed on top of it. The renderer ended up believing a watch
+    // that will never have a socket is live, which is C2 again, one layer up.
+    it('announces no restore for a swap whose socket never opens', () => {
+      const lost = vi.fn();
+      const restored = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.subscribeConversation('agent-1', childId);
+      const replacement = new ResumableChatTransport({
+        connection: { url: 'wss://gateway.example.com/ws/chat?token=chat-token' },
+        channelId: 'mission-control',
+        replay: vi.fn().mockResolvedValue([]),
+        onFrame: vi.fn(),
+        onConnectionError: vi.fn(),
+        onProtocolError: vi.fn(),
+        onSubscriptionRestored: restored,
+        onSubscriptionLost: lost,
+        socketFactory: () => {
+          throw new Error('no socket for you');
+        },
+      });
+
+      service.setResumableTransport(replacement);
+
+      expect(lost).toHaveBeenCalledWith(childId);
+      expect(restored).not.toHaveBeenCalled();
     });
 
     // C2 path 4. The count is right to record — a transport arriving watches
@@ -1139,7 +1172,13 @@ describe('ChatService gateway conversations', () => {
       };
       service.setResumableTransport(arriving as unknown as ResumableChatTransport);
 
-      expect(arriving.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId);
+      // `reopened` here too, and it is not cosmetic: the renderer was told
+      // this hold was LOST when it was taken with no transport, so it needs
+      // the restore signal to start treating the stream as live again. A
+      // plain first watch fires nothing and would leave optimism off forever.
+      expect(arriving.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId, {
+        reopened: true,
+      });
     });
   });
 

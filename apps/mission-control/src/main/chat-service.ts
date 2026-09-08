@@ -105,8 +105,6 @@ export class ChatService {
    */
   private sessionStatusListener?: (conversationId: string, status: SessionStatus) => void;
 
-  private subscriptionRestoredListener?: (conversationId: string) => void;
-
   private subscriptionLostListener?: (conversationId: string) => void;
 
   /**
@@ -134,7 +132,8 @@ export class ChatService {
     // child socket and the replacement's registry is empty, while the
     // renderer's holds are untouched — so the count here is what puts them
     // back, and every re-watch owes its reader a REST re-read for the same
-    // reason a reconnect does: a subscribe replays nothing.
+    // reason a reconnect does: a subscribe replays nothing. The transport
+    // fires that signal, from `{ reopened: true }`, when the socket opens.
     for (const [conversationId, held] of this.watchedConversations) {
       if (!transport) {
         // Going offline. `closeAll` above dropped every child socket without
@@ -143,17 +142,13 @@ export class ChatService {
         this.subscriptionLostListener?.(conversationId);
         continue;
       }
-      transport.watchConversation(held.agentId, conversationId);
-      this.subscriptionRestoredListener?.(conversationId);
+      // `reopened`, rather than announcing the restore here. This service
+      // cannot know whether the replacement's socket will open — the factory
+      // can throw INSIDE this call and fire `onSubscriptionLost` first — so
+      // saying "restored" on the next line would overwrite a `lost` that had
+      // just been told the truth. The transport says it when the socket opens.
+      transport.watchConversation(held.agentId, conversationId, { reopened: true });
     }
-  }
-
-  /**
-   * Told when a watched conversation's stream was interrupted and restored, so
-   * the renderer can re-read the transcript the gap swallowed.
-   */
-  setSubscriptionRestoredListener(listener: (conversationId: string) => void): void {
-    this.subscriptionRestoredListener = listener;
   }
 
   /**

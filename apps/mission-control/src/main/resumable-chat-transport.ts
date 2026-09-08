@@ -474,8 +474,17 @@ export class ResumableChatTransport {
    * a second watch of a conversation already watched is a no-op rather than a
    * second socket. That is ruling 5's "at most one socket per subscribed
    * conversation", enforced structurally by the map.
+   *
+   * Pass `{ reopened: true }` when this conversation was already being watched
+   * on a transport that has just been replaced: the first open then counts as
+   * a RESTORE and the reader is told a REST re-read is owed, because a
+   * subscribe replays nothing.
    */
-  watchConversation(agentId: string, conversationId: string): void {
+  watchConversation(
+    agentId: string,
+    conversationId: string,
+    options?: { reopened?: boolean },
+  ): void {
     this.assertOpen();
     if (this.subscriptions.has(conversationId)) return;
     const state: SubscriptionState = {
@@ -486,7 +495,12 @@ export class ResumableChatTransport {
       reconnectTimer: null,
       delivery: Promise.resolve(),
       lastSeq: 0,
-      everOpened: false,
+      // `reopened` says this conversation was ALREADY being watched, on a
+      // transport that has just been replaced. Pre-seeding `everOpened` makes
+      // the first `open` on the new socket fire `onSubscriptionRestored` — so
+      // "restored" keeps meaning "the socket is open", which is the whole
+      // point of the pair, rather than "somebody asked for one".
+      everOpened: options?.reopened === true,
       frameIds: new Set(),
     };
     this.subscriptions.set(conversationId, state);

@@ -1232,6 +1232,53 @@ describe('ResumableChatTransport', () => {
       transport.closeAll();
     });
 
+    // A transport SWAP is a reconnect nobody names, and `ChatService` used to
+    // announce the restore itself — synchronously, next to the re-watch,
+    // before any socket had opened. Two things were wrong with that. The
+    // socket may never open at all (the factory throws), in which case `lost`
+    // fired first and `restored` overwrote it, leaving the renderer believing
+    // a dead watch was live. And even when it does open, "restored" meant
+    // "asked for" rather than "open", which is the exact thing ruling 2 says
+    // it must not mean.
+    it('treats a re-watch as a restore, and only once the socket is open', () => {
+      const sockets: FakeSocket[] = [];
+      const restored = vi.fn();
+      const transport = makeTransport(
+        () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        vi.fn(),
+        { onSubscriptionRestored: restored },
+      );
+
+      transport.watchConversation('agent-01', childId, { reopened: true });
+      expect(restored).not.toHaveBeenCalled();
+
+      sockets[0].open();
+
+      expect(restored).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(sockets[0].sent[0]).toMatchObject({ type: 'subscribe', conversationId: childId });
+    });
+
+    it('reports a re-watch whose socket never opens as lost, never as restored', () => {
+      const lost = vi.fn();
+      const restored = vi.fn();
+      const transport = makeTransport(
+        () => {
+          throw new Error('no socket for you');
+        },
+        vi.fn(),
+        { onSubscriptionLost: lost, onSubscriptionRestored: restored },
+      );
+
+      transport.watchConversation('agent-01', childId, { reopened: true });
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+      expect(restored).not.toHaveBeenCalled();
+    });
+
     // M4: every subscribe and unsubscribe frame added a uuid and only a
     // matching `error` ever removed one, so a watch that reconnected for an
     // hour accumulated one id per reconnect. Only the ids still outstanding
