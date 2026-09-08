@@ -18,6 +18,7 @@ import type {
   ConversationInvalidation,
   McAgentEvent,
 } from '../../../shared/ipc.js';
+import { isTerminalSubagentStatus, rowStatusOf } from '../routes/chat.swarm.js';
 import {
   applySequencedFrame,
   mergeCanonicalMessages,
@@ -896,6 +897,47 @@ export const useChatStore = create<ChatState>((set, get) => {
       return true;
     },
   };
+});
+
+/**
+ * Cadence of the live re-read of the selected conversation's children.
+ *
+ * INTERIM. This poll is the whole of Mission Control's liveness for a child
+ * outside a live parent turn: `swarm:run-changed` is throttled to one per run
+ * per second with no trailing emit, and no `subagent_*` frame reaches this
+ * client unless a parent turn is streaming. Task D7b adds design §8.3's
+ * conversation-scoped subscription, at which point this becomes a backstop
+ * rather than the mechanism. Do not grow it in the meantime.
+ *
+ * It lives here, next to the children it re-reads, rather than in `SwarmPanel`
+ * where it started: mounted in the panel it ran only while the panel was open,
+ * so an expanded card of a background child in a reopened conversation — no
+ * live turn, no frames, panel closed — had no refresh trigger at all, and its
+ * spinner and elapsed counter ticked upward forever.
+ */
+const LIVE_SUBAGENT_POLL_MS = 20_000;
+
+let livePollTimer: ReturnType<typeof setInterval> | null = null;
+
+// Driven off the children themselves, so every writer of `subagents` is
+// covered — the selection read, the frame trigger, a stop, a resume, the poll
+// itself, and `clearSubagents` — without any of them having to remember.
+useChatStore.subscribe((state, previous) => {
+  if (state.subagents === previous.subagents) return;
+  const live = state.subagents.some(
+    (entry) => !isTerminalSubagentStatus(rowStatusOf(entry.status)),
+  );
+  if (!live) {
+    if (livePollTimer !== null) {
+      clearInterval(livePollTimer);
+      livePollTimer = null;
+    }
+    return;
+  }
+  if (livePollTimer !== null) return;
+  livePollTimer = setInterval(() => {
+    void useChatStore.getState().refreshSubagents();
+  }, LIVE_SUBAGENT_POLL_MS);
 });
 
 let initialized = false;

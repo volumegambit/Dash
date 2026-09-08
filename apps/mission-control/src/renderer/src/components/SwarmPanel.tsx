@@ -13,9 +13,6 @@ import {
 import { useChatStore } from '../stores/chat.js';
 import { formatTokens } from './SwarmPanel.helpers.js';
 
-/** Interval poll cadence while any child of the open conversation is live. */
-const LIVE_POLL_MS = 20_000;
-
 const STATUS_DOT: Record<SubagentStatus, string> = {
   running: 'bg-green animate-pulse',
   waiting: 'bg-yellow',
@@ -41,27 +38,20 @@ const STATUS_DOT: Record<SubagentStatus, string> = {
  * owns the list and its two read guards; this component only renders it and
  * asks for re-reads.
  *
- * Refresh strategy, all four in the store except the last:
+ * Refresh strategy, all four in the store:
  *   (a) on conversation selection — the only one that fires for a reopened
  *       conversation with a background child and no live turn;
  *   (b) on a `subagent_started`/`subagent_finished` frame for this conversation;
  *   (c) after every stop and every resume — without it, each surface holds the
  *       child's pre-action status for the whole new run;
- *   (d) a 20s interval here while any child is non-terminal, which is the only
+ *   (d) a 20s interval while any child is non-terminal, which is the only
  *       thing that catches a child whose transition poke was throttled away.
+ *       It used to live HERE, which meant it ran only while this panel was
+ *       open; it follows the children now, so a card expanded in the
+ *       transcript is refreshed whether or not anyone opens the drawer.
  */
 export function SwarmPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const subagents = useChatStore((state) => state.subagents);
-  const refreshSubagents = useChatStore((state) => state.refreshSubagents);
-  const anyLive = subagents.some((entry) => !isTerminalSubagentStatus(rowStatusOf(entry.status)));
-
-  // (d): poll only while there is live work. A list that has gone entirely
-  // terminal tears the timer down.
-  useEffect(() => {
-    if (!anyLive) return;
-    const timer = setInterval(() => void refreshSubagents(), LIVE_POLL_MS);
-    return () => clearInterval(timer);
-  }, [anyLive, refreshSubagents]);
 
   return (
     <div

@@ -896,6 +896,36 @@ describe('sub-agent list triggers', () => {
   });
 });
 
+describe('sub-agent live poll', () => {
+  // The poll used to live in `SwarmPanel`, so it ran only while the panel was
+  // open — and an expanded card of a background child in a reopened
+  // conversation had no refresh trigger at all until somebody opened it. It
+  // follows the children now, so it runs panel or not.
+  it('re-reads while a child is live and stops once they are all terminal', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'running' })]);
+      useChatStore.setState({
+        selectedConversationRef: parentRef,
+        subagents: [subagentEntry({ status: 'running' })],
+      });
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(mockApi.subagentsList).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(mockApi.subagentsList).toHaveBeenCalledTimes(2);
+
+      mockApi.subagentsList.mockResolvedValue([subagentEntry({ status: 'done' })]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(mockApi.subagentsList).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(mockApi.subagentsList).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('sub-agent card state', () => {
   it('keeps the card facts and the card UI in separate records', async () => {
     await selectParent();

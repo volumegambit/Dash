@@ -160,20 +160,6 @@ describe('SwarmPanel', () => {
     );
   });
 
-  it('polls while a child is live and stops once they are all terminal', async () => {
-    vi.useFakeTimers();
-    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
-
-    render(<SwarmPanel onClose={() => undefined} />);
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(mockApi.subagentsList).toHaveBeenCalledTimes(1);
-
-    useChatStore.setState({ subagents: [entry({ status: 'done', endedAt: END })] });
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockApi.subagentsList).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
-  });
-
   it('clicking a row asks the transcript to expand that card', () => {
     useChatStore.setState({ subagents: [entry()] });
 
