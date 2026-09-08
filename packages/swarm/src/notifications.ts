@@ -51,9 +51,18 @@ export interface NotificationDriver {
 }
 
 /**
- * A child's `name` is operator-supplied and lands inside an XML attribute, so a
- * quote in it would otherwise let the child close the attribute and inject
- * further markup into the parent's prompt.
+ * Escapes a value that is interpolated into the notification envelope — either
+ * inside an XML attribute (`from="…"`) or as element content (`<agent-name>`,
+ * `<summary>`, `<task-id>`, `<status>`).
+ *
+ * Every one of those fields is chosen by the SPAWNING conversation, and only
+ * `report`/`message` go through {@link scanSubagentOutput}. Without this,
+ * `description` — which has no validation anywhere on the spawn path — can
+ * close `<summary>` and `<task-notification>` and open a live
+ * `<system-reminder>` in the parent's next-turn prompt. `name` and
+ * `subagentType` are grammar-bound today (`NAME_RE`, definition load) and
+ * `subagentId` is server-minted, but those grammars are not this function's to
+ * rely on, so all four are escaped.
  */
 function escapeAttribute(value: string): string {
   return value
@@ -103,7 +112,7 @@ export function composeNotificationText(items: PendingNotification[]): string {
       const scanned = scanSubagentOutput(String(report));
       const resultText = scanned.text;
 
-      const block = `<task-notification>\n<task-id>${String(subagentId)}</task-id>\n<agent-name>${agentName}</agent-name>\n<status>${statusValue}</status>\n<summary>Agent "${String(description)}" finished</summary>\n<result>\n${resultText}\n</result>\n</task-notification>`;
+      const block = `<task-notification>\n<task-id>${escapeAttribute(String(subagentId))}</task-id>\n<agent-name>${escapeAttribute(String(agentName))}</agent-name>\n<status>${escapeAttribute(statusValue)}</status>\n<summary>Agent "${escapeAttribute(String(description))}" finished</summary>\n<result>\n${resultText}\n</result>\n</task-notification>`;
       blocks.push(block);
     } else if (item.kind === 'subagent_message') {
       const payload = item.payload as Record<string, unknown>;
