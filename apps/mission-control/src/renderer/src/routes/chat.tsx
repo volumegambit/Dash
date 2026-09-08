@@ -203,6 +203,7 @@ function renderEventsToElements(
             groups={cluster}
             depth={depth}
             conversationKey={surfaceKey}
+            isStreaming={isStreaming}
           />,
         );
       }
@@ -814,10 +815,12 @@ function SubagentCluster({
   groups,
   depth,
   conversationKey: surfaceKey,
+  isStreaming,
 }: {
   groups: SubagentGroup[];
   depth: number;
   conversationKey?: ConversationKey;
+  isStreaming: boolean;
 }): JSX.Element {
   const anchorId = groups[0].subagentId;
   const toggleSubagentGroup = useChatStore((state) => state.toggleSubagentGroup);
@@ -895,6 +898,7 @@ function SubagentCluster({
               group={group}
               depth={depth}
               conversationKey={surfaceKey}
+              isStreaming={isStreaming}
             />
           ))}
         </div>
@@ -916,17 +920,26 @@ function SubagentCluster({
  * `resolveSubagentStatus`. Every question/terminal decision here goes through
  * the resolved value, never `group.status`.
  *
- * A card whose `conversationKey` is not the store's selected conversation has
- * no live source at all, and renders as the SNAPSHOT it is: the fold's status
+ * A card with no live source renders as the SNAPSHOT it is: the fold's status
  * and the fold's tool count, a frozen elapsed (only a run the fold saw finish
- * has one), no pending question and a `snapshot` marker saying so. Nothing on
- * that surface can move — the list, the poll and every frame trigger address
- * the selected conversation — so anything live there is a claim this client
- * cannot stand behind.
+ * has one), no pending question and a `snapshot` marker saying so — anything
+ * live there would be a claim this client cannot stand behind.
  *
- * A card at `depth >= 1` is inside another child's transcript: no toggle, no
+ * There are TWO sources, and "off the selected conversation" only removes one
+ * of them. The REST list (`state.subagents`) describes the selected
+ * conversation, so off it `entry` is always `undefined` and the poll, the frame
+ * triggers and a resume all address somebody else. But the fold of this
+ * message's own events is live whenever the message is STREAMING, on any
+ * conversation: `applyFrame` appends to `streamingFrames[key]` for every
+ * conversation id with no selection gate, and main subscribes a running
+ * conversation on `getMessages`, which `SessionPanel` calls on mount. So the
+ * snapshot is a property of `!live`, not of `!onSelectedConversation`; a
+ * persisted panel message is a snapshot, and a live panel turn is not.
+ *
+ * ACTIONS are a narrower question than liveness, and keep the narrower gate. A
+ * card at `depth >= 1` is inside another child's transcript: no toggle, no
  * composer, no actions. So is a card whose `conversationKey` is not the
- * store's selected conversation — `subagents` and `subagentUi` describe ONE
+ * store's selected conversation, live or not — `subagents` and `subagentUi` describe ONE
  * conversation, and `MessageBubble` has a second caller (`SessionPanel`) that
  * draws a different one's transcript. There the REST enhancement is not
  * merely absent: a stop or a resume would address the child correctly and
@@ -938,10 +951,12 @@ function SubagentCard({
   group,
   depth,
   conversationKey: surfaceKey,
+  isStreaming,
 }: {
   group: SubagentGroup;
   depth: number;
   conversationKey?: ConversationKey;
+  isStreaming: boolean;
 }): JSX.Element {
   const selectedKey = useChatStore((state) =>
     state.selectedConversationRef ? conversationKey(state.selectedConversationRef) : null,
@@ -961,21 +976,27 @@ function SubagentCard({
   // Everything that acts on the child, or stores state about it, is gated on
   // this: the card is the top level of THIS conversation's transcript.
   const interactive = !nested && onSelectedConversation;
+  // …and everything that CLAIMS the row is moving is gated on this: does the
+  // card have a live source at all. Two can feed it. The REST list feeds the
+  // selected conversation. The fold of this message's own events feeds a
+  // STREAMING bubble on any conversation — `applyFrame` writes
+  // `streamingFrames[key]` for every conversation id, ungated by the selection
+  // (`stores/chat.ts:741`, `:759`), and main subscribes a running conversation
+  // the moment somebody reads its messages (`chat-service.ts:394-400`), which
+  // `SessionPanel` does on mount. A persisted message has neither, and is the
+  // snapshot below.
+  const live = onSelectedConversation || isStreaming;
   const status = resolveSubagentStatus(group, entry);
   const question = resolveSubagentQuestion(group, entry);
   const terminal = isTerminalSubagentStatus(status);
   const open = interactive && ui?.expanded === true;
-  // The clock is live only where something can move this row: on the selected
-  // conversation the list read does (the poll, the frame triggers, a resume);
-  // off it nothing ever will, so a running child would tick upward forever and
-  // `3h 00m` would be the age of the message rather than the length of the
-  // run. `onSelectedConversation`, not `interactive`: a nested grandchild is
+  // The clock is live only where something can move this row: the selected
+  // conversation's list read (the poll, the frame triggers, a resume) or a
+  // stream still arriving. With neither, a running child would tick upward
+  // forever and `3h 00m` would be the age of the message rather than the
+  // length of the run. `live`, not `interactive`: a nested grandchild is
   // redrawn from the transcript its parent card fetches, so its clock stays.
-  const elapsed = useSubagentElapsed(
-    group.startedAt,
-    group.endedAt,
-    !terminal && onSelectedConversation,
-  );
+  const elapsed = useSubagentElapsed(group.startedAt, group.endedAt, !terminal && live);
   const isError = status === 'failed';
   const detail = group.detail;
   // A one-shot child (Explore, Plan) refuses a resume — EXCEPT when it is
@@ -993,11 +1014,11 @@ function SubagentCard({
 
   const header = (
     <>
-      <SubagentStatusIcon status={status} live={onSelectedConversation} />
+      <SubagentStatusIcon status={status} live={live} />
       <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
       <span className="font-mono shrink-0">{group.type || group.name || 'sub-agent'}</span>
       {detail && <span className="ml-2 min-w-0 truncate text-muted">{detail}</span>}
-      {!nested && !onSelectedConversation && (
+      {!nested && !live && (
         <span
           className="ml-2 shrink-0 rounded-sm border border-border px-1 text-[10px] uppercase tracking-wide text-muted"
           data-testid={`subagent-card-snapshot-${group.subagentId}`}
@@ -1038,15 +1059,18 @@ function SubagentCard({
 
       {/* The pending question sits on the COLLAPSED row (§8.1): a child waiting
           on input is the one thing a user must not have to expand a card to
-          discover. It is gated on `interactive` all the same, which reverts
-          `aad4ce66`'s widening to `!nested`: off the selected conversation the
-          fold is all there is, and it holds the question of the last event
-          that reached the parent — a child stopped or answered elsewhere, or
-          simply finished after its parent's turn ended, keeps that question
-          for the life of the conversation. A read-only row that cannot be
-          re-read must not ask a question that may have been answered hours
-          ago; it says `snapshot` instead. */}
-      {question && interactive && (
+          discover — and on a card with no toggle this row is the ONLY place it
+          could appear. Gated on `live`, which is `interactive || (isStreaming
+          && !nested)` written the short way: a stream can retract the question
+          it set — a running `subagent_progress` clears it and the finalizer
+          drops it on any terminal status — so it is current while it shows. A
+          card with no live source has no retraction: the fold holds the
+          question of the last event that reached the parent, and a child
+          stopped or answered elsewhere keeps it for the life of the
+          conversation. That row must not ask a question that may have been
+          answered hours ago; it says `snapshot` instead. The reply box stays
+          on `interactive`: answering needs this conversation's list. */}
+      {question && !nested && live && (
         <div className="border-t border-border px-3 py-1.5">
           <p
             className="mb-1.5 text-yellow-400"
