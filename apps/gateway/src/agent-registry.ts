@@ -44,6 +44,19 @@ export interface AgentSubagentsConfig {
   allowedTypes?: string[];
   /** Models a child may be given. Unset → falls back to `swarm.allowedModels`. */
   allowedModels?: string[];
+  /**
+   * Bare model names a definition's `model:` or a per-call `model` may use —
+   * `{ sonnet: 'anthropic/claude-sonnet-4-6' }`. Claude Code's agent
+   * frontmatter accepts bare aliases, so this is what lets a file copied from
+   * there resolve instead of warning and inheriting the parent's model.
+   *
+   * A value containing `/` is a provider/model id and is taken verbatim; only
+   * a bare name is looked up here, and an unconfigured one still warns and
+   * falls back (`resolve-spawn.ts` `resolveChildModel`). No aliases ship by
+   * default: mapping `sonnet`/`opus`/`haiku` onto whatever provider an agent
+   * uses is an operator's decision.
+   */
+  modelAliases?: Record<string, string>;
   maxConcurrent?: number;
   maxPerTurn?: number;
   maxRunSeconds?: number;

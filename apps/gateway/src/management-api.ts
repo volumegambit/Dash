@@ -271,9 +271,27 @@ function validateAgentSubagents(value: unknown): void {
     'maxPerTurn',
     'maxRunSeconds',
     'maxDepth',
+    'modelAliases',
   ]);
   if (!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
     throw new Error('subagents contains unknown or invalid fields');
+  }
+  if (value.modelAliases !== undefined) {
+    // A flat `{ alias: 'provider/model' }` map. An alias with a `/` in it can
+    // never be reached — `resolveChildModel` treats a value containing `/` as
+    // a provider id and never looks it up — so it is refused rather than
+    // silently ignored.
+    if (!isPlainRecord(value.modelAliases)) {
+      throw new Error('subagents.modelAliases must be an object of alias → model id');
+    }
+    for (const [alias, target] of Object.entries(value.modelAliases)) {
+      if (!alias || alias.includes('/')) {
+        throw new Error(`subagents.modelAliases key "${alias}" must be a bare name (no "/")`);
+      }
+      if (typeof target !== 'string' || target.length === 0) {
+        throw new Error(`subagents.modelAliases.${alias} must be a non-empty model id`);
+      }
+    }
   }
   if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
     throw new Error('subagents.enabled must be a boolean');

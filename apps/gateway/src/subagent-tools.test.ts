@@ -80,7 +80,7 @@ const ALL_MCP_TOOLS = ['github__pr', 'github__merge', 'linear__issue'];
 
 function setup(
   parentTools: string[] | undefined = MC_PARENT_TOOLS,
-  opts: { parentMcp?: string[]; attachMcp?: string[] } = {},
+  opts: { parentMcp?: string[]; attachMcp?: string[]; modelAliases?: Record<string, string> } = {},
 ) {
   const parentMcp = opts.parentMcp ?? [];
   const specs: WorkerSpec[] = [];
@@ -96,6 +96,9 @@ function setup(
     orchestratorModel: 'orch-model',
     orchestratorTools: parentTools,
     orchestratorMcpTools: opts.attachMcp ?? parentMcp,
+    // The models an operator granted this orchestrator's children. Only a
+    // model in this union may be pinned, so an alias has to resolve to one.
+    ...(opts.modelAliases ? { allowedModels: Object.values(opts.modelAliases) } : {}),
   });
   const tools = createSubagentExtraTools({
     coordinator,
@@ -108,6 +111,9 @@ function setup(
     parentTools: () => parentTools,
     parentMcpTools: () => parentMcp,
     parentModel: () => 'orch-model',
+    ...(opts.modelAliases
+      ? { parentModelAliases: () => opts.modelAliases as Record<string, string> }
+      : {}),
     listSkills: async () => [{ name: 'house-style', content: 'Two spaces.' }],
   });
   const agent = tools.find((t) => t.name === 'agent');
@@ -141,6 +147,61 @@ describe('createSubagentExtraTools parent wiring', () => {
     await expect(opts.listSkills?.()).resolves.toEqual([
       { name: 'house-style', content: 'Two spaces.' },
     ]);
+  });
+
+  /**
+   * C2. `subagents.modelAliases` was named by the spec and the plan and never
+   * built: this wiring hard-coded `{}`, so a Claude Code agent file's
+   * `model: sonnet` warned and inherited the parent's model. Claude Code's
+   * frontmatter accepts bare aliases, so that was an interface-parity gap
+   * whose own warning named a config key that did not exist.
+   */
+  it('resolves a per-call model through the configured subagents.modelAliases', async () => {
+    const { attachment, specs, agent } = setup(MC_PARENT_TOOLS, {
+      modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' },
+    });
+    const res = await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      model: 'sonnet',
+      run_in_background: true,
+    });
+    expect(specs[0].model).toBe('anthropic/claude-sonnet-4-6');
+    expect(res.content[0].text).not.toContain('is not configured');
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('still warns and inherits the parent model for an alias nobody configured', async () => {
+    const { attachment, specs, agent } = setup(MC_PARENT_TOOLS, {
+      modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' },
+    });
+    const res = await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      model: 'haiku',
+      run_in_background: true,
+    });
+    expect(res.content[0].text).toContain(
+      'alias "haiku" is not configured (subagents.modelAliases); using the parent model',
+    );
+    // Inheritance pins nothing, so the coordinator applies its own read of the
+    // orchestrator model rather than the alias.
+    expect(specs[0].model).toBe('orch-model');
+    attachment.finalize({ consumerAlive: true });
+  });
+
+  it('takes a provider/model id verbatim rather than looking it up as an alias', async () => {
+    const { attachment, specs, agent } = setup(MC_PARENT_TOOLS, {
+      modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' },
+    });
+    await agent.execute('t', {
+      prompt: 'p',
+      description: 'd',
+      model: 'anthropic/claude-sonnet-4-6',
+      run_in_background: true,
+    });
+    expect(specs[0].model).toBe('anthropic/claude-sonnet-4-6');
+    attachment.finalize({ consumerAlive: true });
   });
 
   it('spawns for an agent configured with skill- and MCP-management tools', async () => {

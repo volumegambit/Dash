@@ -74,6 +74,17 @@ export interface SubagentExtraToolsOptions {
    */
   parentModel: () => string;
   /**
+   * LIVE read of `subagents.modelAliases` — the bare-name → model-id map a
+   * definition's `model:` or a per-call `model` resolves through. Live for the
+   * same reason as `parentTools`: a `PUT /agents/:id` that adds an alias does
+   * not evict the warm pool, so a snapshot captured at backend creation would
+   * keep warning about an alias the operator has since configured.
+   *
+   * Unset means no aliases, which is the shipped default: an unconfigured
+   * alias warns and inherits the parent model.
+   */
+  parentModelAliases?: () => Record<string, string>;
+  /**
    * The parent backend's skill discovery — the SAME lookup `load_skill`
    * performs, so a definition's `skills:` name resolves exactly as it would in
    * a prompt. Unset makes a skill-preloading definition refuse to spawn rather
@@ -130,10 +141,10 @@ export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): Swarm
       maxDepth: subagentMaxDepth(opts.agentConfig),
     }),
     parentModel: () => opts.parentModel(),
-    // No config surface for `subagents.modelAliases` yet: an alias in a
-    // per-call `model:` resolves to nothing, warns, and inherits the parent
-    // model. Wire this to the config block when that key lands.
-    modelAliases: () => ({}),
+    // `subagents.modelAliases`, read per call. The snapshot on `agentConfig`
+    // is the fallback for a caller that wires no live read.
+    modelAliases: () =>
+      opts.parentModelAliases?.() ?? opts.agentConfig.subagents?.modelAliases ?? {},
     listSkills: opts.listSkills,
   } satisfies CreateAgentToolsOptions;
   const seam = createChildSpawnSeam(agentToolOptions);
@@ -154,6 +165,8 @@ export interface ChildSpawnToolsOptions {
   types: ResolvedSubagentType[];
   /** The child backend's skill discovery, for a definition that preloads skills. */
   listSkills?: () => Promise<Array<{ name: string; content: string }>>;
+  /** The agent's `subagents.modelAliases`, read per call. See the orchestrator side. */
+  modelAliases?: () => Record<string, string>;
 }
 
 /**
@@ -190,7 +203,10 @@ export function createChildSpawnTools(opts: ChildSpawnToolsOptions): SwarmExtraT
       maxDepth: opts.maxDepth,
     }),
     parentModel: () => opts.spec.model,
-    modelAliases: () => ({}),
+    // A nesting child resolves the SAME operator aliases its parent did: the
+    // map is per-agent, and a grandchild spawned from a definition copied out
+    // of Claude Code names the same bare model.
+    modelAliases: () => opts.modelAliases?.() ?? {},
     listSkills: opts.listSkills,
   });
 }

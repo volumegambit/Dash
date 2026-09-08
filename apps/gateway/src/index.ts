@@ -761,6 +761,7 @@ async function main() {
             spec,
             maxDepth: subagentMaxDepth(parentConfig),
             types: (await subagentRosters.resolverFor(agentId)).list(),
+            modelAliases: () => registry.get(agentId)?.config.subagents?.modelAliases ?? {},
           })
         : [];
       const runtime = await createChildBackend(
@@ -1028,6 +1029,12 @@ async function main() {
             parentMcpTools: () =>
               orchestratorMcpToolNames(registry.get(agentId)?.config, listMcpToolNames),
             parentModel: () => registry.get(agentId)?.config.model ?? agentConfig.model,
+            // `subagents.modelAliases`, read live: adding an alias must apply on
+            // the next turn, and a `PUT /agents/:id` does not evict the pool.
+            parentModelAliases: () =>
+              registry.get(agentId)?.config.subagents?.modelAliases ??
+              agentConfig.subagents?.modelAliases ??
+              {},
             // The parent's OWN skill discovery — the same lookup `load_skill`
             // uses — so a definition's `skills:` preloads the body the parent
             // would have loaded. Consulted only when a definition names skills.

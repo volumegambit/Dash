@@ -943,6 +943,66 @@ describe('createGatewayManagementApp', () => {
       }
     });
 
+    // C2: `subagents.modelAliases` was named by the spec and never built, so
+    // the key was REJECTED here while `resolve-spawn.ts` warned about it by
+    // name — a warning pointing at a config key that did not exist.
+    it('accepts subagents.modelAliases and stores it verbatim', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      const res = await app.request(`/agents/${entry.id}`, {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          subagents: { modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' } },
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as JsonBody).config.subagents).toEqual({
+        modelAliases: { sonnet: 'anthropic/claude-sonnet-4-6' },
+      });
+    });
+
+    it('rejects a modelAliases map that could never resolve', async () => {
+      const { app, agentRegistry } = createApp();
+      const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({
+        name: 'x',
+        model: 'm',
+        systemPrompt: 'p',
+      });
+      for (const [value, message] of [
+        [{ modelAliases: [] }, 'subagents.modelAliases must be an object of alias → model id'],
+        [
+          // A `/` in the KEY is unreachable: `resolveChildModel` treats any
+          // value containing `/` as a provider id and never looks it up.
+          { modelAliases: { 'anthropic/sonnet': 'anthropic/claude-sonnet-4-6' } },
+          'subagents.modelAliases key "anthropic/sonnet" must be a bare name (no "/")',
+        ],
+        [
+          { modelAliases: { sonnet: '' } },
+          'subagents.modelAliases.sonnet must be a non-empty model id',
+        ],
+        [
+          { modelAliases: { sonnet: 3 } },
+          'subagents.modelAliases.sonnet must be a non-empty model id',
+        ],
+      ] as const) {
+        const res = await app.request(`/agents/${entry.id}`, {
+          method: 'PUT',
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ subagents: value }),
+        });
+        expect(res.status, message).toBe(400);
+        expect((await res.json()) as JsonBody).toMatchObject({
+          code: 'validation_failed',
+          error: message,
+        });
+      }
+    });
+
     it('accepts maxDepth: 0 — "may not nest at all" must be expressible', async () => {
       const { app, agentRegistry } = createApp();
       const entry = (agentRegistry.register as ReturnType<typeof vi.fn>)({

@@ -43,6 +43,8 @@ export interface AgentSubagentsConfig {
   maxPerTurn?: number;
   maxRunSeconds?: number;
   maxDepth?: number;
+  /** Bare model name → model id, for a definition's `model:` or a per-call one. */
+  modelAliases?: Record<string, string>;
 }
 
 export interface GatewayAgent {
