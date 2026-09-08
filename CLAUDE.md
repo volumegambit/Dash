@@ -71,6 +71,45 @@ PLUGINS_E2E_MODEL=moonshotai/kimi-k2.7-code npm run plugins:e2e   # or pin a mod
 
 Prereqs: **Node ≥ 22.12** (older Node breaks `pi-coding-agent`'s undici — use `nvm use 22.23`) and a **provider API key configured** in the gateway (`~/.dash/gateway`). It makes real (small, ~cents) LLM calls, so it is **not** part of `npm test`/`preflight`/CI. Run it after changes to the plugin loader (`packages/plugins`), the gateway plugin wiring (`apps/gateway/src/index.ts`), or `@dash/agent` skill injection. A `/test-plugins` slash command wraps it for convenience, but `.claude/` is gitignored (local-only) per repo policy, so the npm script is the canonical entry point.
 
+### Sub-agents E2E
+
+```bash
+npm run subagents:e2e                                    # auto-picks a model from ~/.dash/gateway/agents.json
+npm run subagents:e2e -- --only 1,2,8                    # a subset, to iterate without re-spending
+SUBAGENTS_E2E_MODEL=openrouter/deepseek/deepseek-v4-pro npm run subagents:e2e   # or pin a model
+```
+
+`scripts/subagents-e2e/run.mjs` boots a **real gateway** under an isolated temp `DASH_HOME`
+(reusing `scripts/memory-e2e/harness.mjs`), `git init`s a throwaway workspace that gitignores
+`docs/plans/`, registers three agents, and drives the sub-agent feature end to end over the chat
+WebSocket: a **foreground** `agent` call (asserting the tool result is byte-equal to the child's
+report), **parallel** children (two `subagent_started` before any `subagent_finished`), a
+**background** child whose completion wakes the parent as a server-initiated notification turn
+(`accepted { origin: 'notification' }`, a `<task-notification>` prompt), **resume** via both the
+`send_message` tool and `POST /subagents/:id/resume` (which is the only path that echoes
+`accepted.requestId`), **nesting** to depth 2 plus the `depth limit reached` refusal at
+`subagents.maxDepth: 0`, the **cancel cascade** (`POST /subagents/:id/stop` → a
+`subagent_finished { status: 'cancelled' }` notification), **worktree isolation** (a clean child's
+worktree is removed; one holding a gitignored deliverable is kept), and the **legacy swarm
+facades** (`spawn_worker` / `wait_workers` / `check_workers`, asserted on their results).
+
+Two things it exists to catch that the unit tests cannot: (1) it collects **every** frame type
+seen on every socket and asserts no retired `worker_*` event appears anywhere in the run — a
+positive-absence check; and (2) it watches a **conversation**, not a turn, because the harness's
+`driveTurn` drops frames whose `id` is not the turn it started, which is exactly the frames a
+notification turn arrives on. Every turn it drives is `resumable: true`, since only a resumable
+turn runs through `resumable-chat-hub.ts` and only that hub delivers notification turns to
+subscribers.
+
+Prereqs: **Node ≥ 22.12** and a **provider API key configured** in the gateway. Real (small,
+~cents) LLM calls across roughly 25 model turns, so like `plugins:e2e` it is **not** part of
+`npm test`/`preflight`/CI. Run it after changes to `packages/swarm/*`,
+`apps/gateway/src/subagent-*.ts`, `notification-driver.ts` or `resumable-chat-hub.ts`. Assertions
+1-6 need a model that actually calls tools and nests a delegation two levels deep: a model that
+does neither fails them, and that is a real result about the model, not a broken script — the
+model that ran is printed in the banner and in the summary. It does **not** exercise any client
+UI, boot recovery, or the cap refusals.
+
 ### Clerk auth E2E
 
 ```bash
