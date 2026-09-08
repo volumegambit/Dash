@@ -1897,11 +1897,18 @@ while it works.
 5. **Type into a running child from the open card.** **Verify:** your sentence
    appears in the body **immediately**, and does **not** appear twice once the
    child's turn is persisted.
-6. **Answer a child parked on a question**, from the card's yellow reply box.
-   **Verify:** the child resumes and no duplicate of your answer is left
-   stranded in the body. (An answer completes the child's current turn rather
-   than starting a new one, so the server keeps no copy of it — the card
-   deliberately shows none either.)
+6. **Answer a child parked on a question**, from the card's yellow reply box,
+   **as soon as the question appears** — do not wait, and do not stop or
+   resume anything first. **Verify:** the child resumes and your answer is
+   **not** left in the body as a row of its own.
+   The timing is the test. The yellow box is drawn by the parent's event
+   stream, which reports `waiting_input` immediately; the sub-agent LIST is
+   not re-read on that event, so for up to 20 s the two disagree about
+   whether this child is parked. An answer completes the child's current turn
+   rather than starting a new one, so the server persists no copy of it and
+   sends no `accepted` — a row added in that window would sit there for the
+   rest of the session with nothing to pair it with and nothing to replace
+   it. Answering *after* the list has caught up must behave identically.
 7. **Refusal.** Reply to a one-shot child, or blow the steer cap. **Verify:**
    the gateway's sentence appears on the card, your draft is still in the box,
    and the optimistic row is **gone** from the body — it must not claim the

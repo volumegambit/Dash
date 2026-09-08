@@ -1245,6 +1245,59 @@ describe('MessageBubble sub-agent cards', () => {
     await waitFor(() => expect(mockApi.subagentsList).toHaveBeenCalled());
   });
 
+  // The reply box appears the instant the FOLD sees the child park, and
+  // `subagent_progress` is deliberately not a list trigger — so REST still
+  // says `running` for up to 20 s while the user is looking at the question.
+  // Deciding "is this an answer?" from REST alone gets that window wrong, and
+  // an answer starts no turn, emits no `accepted` and persists no user row:
+  // the optimistic row would have nothing to pair with and nothing to
+  // supersede it.
+  it('adds no optimistic row for an answer the list has not caught up with', async () => {
+    useChatStore.setState({
+      conversations: [{ ...gatewayConversation, id: 'parent-1', agentId: 'agent-1' }],
+      subagents: [entry({ status: 'running' })],
+    });
+
+    render(
+      <MessageBubble message={assistantMessage(waitingBackground)} conversationKey={CARD_KEY} />,
+    );
+    // The hold is what turns optimism on at all, so the card must be open.
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    fireEvent.change(screen.getByTestId('subagent-reply-input-sub_a'), {
+      target: { value: 'main' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-reply-button-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentResume).toHaveBeenCalled());
+    const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
+    expect(rows.filter((row) => row.role === 'user')).toHaveLength(0);
+  });
+
+  // …and the complement, so the fix cannot be "never show the row": a steer
+  // typed into the BODY composer of a running child does get one, because its
+  // `accepted` really is coming.
+  it('still shows the row for a steer typed into a running child', async () => {
+    useChatStore.setState({
+      conversations: [{ ...gatewayConversation, id: 'parent-1', agentId: 'agent-1' }],
+      subagents: [entry({ status: 'running' })],
+    });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    fireEvent.change(screen.getByTestId('subagent-compose-input-sub_a'), {
+      target: { value: 'try the other branch' },
+    });
+    fireEvent.click(screen.getByTestId('subagent-compose-button-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentResume).toHaveBeenCalled());
+    const rows = useChatStore.getState().subagentUi.sub_a.transcript ?? [];
+    expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
+  });
+
   // Ruling 5: a refusal with no render site is a refusal nobody sees. The card
   // is one of the two action sites; the panel is the other.
   it('shows the gateway reason on the card when a reply is refused', async () => {

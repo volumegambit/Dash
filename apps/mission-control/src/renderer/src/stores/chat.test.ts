@@ -1601,13 +1601,18 @@ describe('sub-agent live transcripts', () => {
     ]);
   });
 
-  it('re-reads nothing for a restored child whose card never loaded one', async () => {
+  // A restore is the one moment we KNOW a `done` may have fallen in a gap. A
+  // child held only by the open panel has no transcript to re-read, but it
+  // does have a row that would otherwise read `Running` until the 20 s
+  // backstop came round.
+  it('re-reads the list on a restore even with no transcript to re-read', async () => {
     await selectParentWithAgent();
     useChatStore.getState().subscribeSubagent('sub_a');
 
     await useChatStore.getState().restoreSubagentTranscript('sub_a');
 
     expect(mockApi.conversationMessages).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockApi.subagentsList).toHaveBeenCalledWith('shared-id'));
   });
 });
 

@@ -1105,7 +1105,11 @@ function SubagentCard({
               sending={ui?.sending === true}
               disabled={!canSend}
               onDraft={setSubagentDraft}
-              onSend={resumeSubagent}
+              // THIS composer is an answer, and it is the only site that can
+              // say so: the box is drawn from the fold's question, which
+              // arrives up to a list-read ahead of the REST status the store
+              // would otherwise have to infer it from.
+              onSend={(id, text) => resumeSubagent(id, text, { answering: true })}
             />
           )}
         </div>

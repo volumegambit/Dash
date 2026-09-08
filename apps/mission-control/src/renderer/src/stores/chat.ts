@@ -221,8 +221,19 @@ export interface ChatState {
   setSubagentDraft(subagentId: string, draft: string): void;
   dismissSubagentNotice(subagentId: string): void;
   stopSubagent(subagentId: string): Promise<void>;
-  /** True when the gateway accepted the message. */
-  resumeSubagent(subagentId: string, message: string): Promise<boolean>;
+  /**
+   * Send a message to a child. True when the gateway accepted it.
+   *
+   * `answering` is the CALLER's declaration that this message is a reply to
+   * the question the card is showing. Only the question composer passes it,
+   * and it exists because the two sources disagree for up to 20 s: see the
+   * comment on the `parked` test inside.
+   */
+  resumeSubagent(
+    subagentId: string,
+    message: string,
+    options?: { answering?: boolean },
+  ): Promise<boolean>;
 }
 
 /**
@@ -1097,6 +1108,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     async restoreSubagentTranscript(subagentId) {
+      // The list first, and for every restored child rather than only the ones
+      // with a card open: this is the one moment we KNOW a `done` may have
+      // fallen in a gap, and a child held only by the panel has no transcript
+      // to re-read but does have a row that would otherwise say `Running`
+      // until the backstop poll came round.
+      void get().refreshSubagents();
       if (!get().subagentUi[subagentId]?.transcriptLoaded) return;
       await get().loadSubagentTranscript(subagentId, true);
     },
@@ -1166,7 +1183,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       await get().refreshSubagents();
     },
 
-    async resumeSubagent(subagentId, message) {
+    async resumeSubagent(subagentId, message, options) {
       patchSubagentUi(subagentId, { sending: true, notice: null });
       // The echo (§7.6) rides the CHILD conversation's stream, so it reaches
       // this client only while a subscription is held. That is the whole test
@@ -1181,7 +1198,25 @@ export const useChatStore = create<ChatState>((set, get) => {
       // which starts no turn, emits no `accepted`, and persists no user row.
       // A row for it would be a sentence the child's transcript never contains
       // and nothing would ever supersede.
-      const parked = entry !== undefined && rowStatusOf(entry.status) === 'waiting';
+      //
+      // Read from the CALLER first, and only then from the list. The reply box
+      // is drawn by the FOLD: `resolveSubagentQuestion` shows the question the
+      // instant a `subagent_progress { status: 'waiting_input' }` lands on the
+      // parent's stream, gated only on the resolved status not being terminal.
+      // `subagent_progress` is deliberately not a list trigger
+      // (`SUBAGENT_LIST_TRIGGERS`), so REST goes on saying `running` until the
+      // next start, finish, stop, resume, selection or 20 s poll — while the
+      // user is looking at the question and answering it. The gateway has no
+      // such lag (`waitForQuestion` persists `waiting_input` at
+      // `packages/swarm/src/child-handle.ts:419`), so it takes the answering
+      // branch and this client is the only one that got it wrong.
+      //
+      // The list is still consulted, for the panel's Resume button and the
+      // body composer: those are REST-driven surfaces, so their two sources
+      // agree, and a child the list says is `waiting` is parked whoever asks.
+      const parked =
+        options?.answering === true ||
+        (entry !== undefined && rowStatusOf(entry.status) === 'waiting');
       const optimistic = get().isSubagentSubscribed(subagentId) && !parked;
       if (optimistic) {
         const now = new Date().toISOString();
