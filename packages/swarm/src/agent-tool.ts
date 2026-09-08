@@ -9,7 +9,12 @@ import {
   resolveChildModel,
   resolveChildTools,
 } from './resolve-spawn.js';
-import { type SubagentTypeResolver, buildRosterText } from './subagent-types.js';
+import { DEFAULT_SUBAGENT_TYPE } from './subagent-status.js';
+import {
+  type ResolvedSubagentType,
+  type SubagentTypeResolver,
+  buildRosterText,
+} from './subagent-types.js';
 import type { SwarmExtraTool } from './types.js';
 
 /**
@@ -51,7 +56,11 @@ const TURN_SCOPED_NOTE =
 const DETACHED_NOTE = ' You will be notified when it completes.';
 
 const NAME_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$';
-const NAME_RE = new RegExp(NAME_PATTERN);
+/**
+ * Exported for the legacy facade: a `spawn_worker` role is free text, so it is
+ * only passed as the child's `name` when it can BE one (see `tools.ts`).
+ */
+export const NAME_RE = new RegExp(NAME_PATTERN);
 
 /** What the roster says for a definition that resolves to nothing shareable. */
 const NO_OVERLAP = 'none — no overlap with your tools';
@@ -101,6 +110,12 @@ export interface CreateAgentToolsOptions {
   listSkills?: () => Promise<Array<{ name: string; content: string }>>;
   /** Parent's depth; children get depth+1 (default 0 → 1). */
   depth?: number;
+  /**
+   * The spawn seam to build the tools over. Defaults to a fresh one built from
+   * these same options; a caller that builds BOTH bundles passes one so the
+   * legacy facades and `agent` demonstrably share it.
+   */
+  seam?: ChildSpawnSeam;
 }
 
 /** Coerce a raw params value into a shape with known optional fields. */
@@ -108,7 +123,78 @@ function asRecord(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
 }
 
-export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[] {
+/**
+ * One typed spawn — the request shape BOTH the `agent` tool and the legacy
+ * `spawn_worker` facade (design §5.2) reach the coordinator through.
+ *
+ * Before D8 the legacy four called `coordinator.spawnWorker` directly with a
+ * raw `{role, brief, tools, model}`, which is why `resolve-spawn.ts`'s header
+ * said "the legacy `spawn_worker` tool reaches the coordinator without passing
+ * through here". It does now: one definition resolution, one grant, one model
+ * precedence, one set of caps.
+ */
+export interface TypedSpawnRequest {
+  prompt: string;
+  description: string;
+  /** Definition name; defaults to `general-purpose`. */
+  typeName?: string;
+  name?: string;
+  /**
+   * The row's free-text role. The legacy facade's `role` is not required to be
+   * a legal `name`, and it is what every roster, panel and card has always
+   * shown — so it is carried separately rather than derived from `name`.
+   * Defaults to the name, then to the definition's own name.
+   */
+  role?: string;
+  model?: string;
+  background?: boolean;
+  isolation?: 'worktree';
+  /**
+   * An EXPLICIT built-in grant, replacing the definition's resolved `tools`.
+   * The legacy facade passes it (its `tools` parameter, or the read-only
+   * default it has always documented); `agent` never does. Verbatim — the
+   * coordinator's `validateTools` is what refuses a name the parent lacks, so
+   * the legacy actionable error survives the move.
+   */
+  toolsOverride?: string[];
+}
+
+export interface TypedSpawnResult {
+  workerId: string;
+  type: ResolvedSubagentType;
+  /** Resolved background flag (per-call OR the definition's). */
+  background: boolean;
+  /** A model-resolution warning to append to the tool's text, if any. */
+  warning?: string;
+  /** The parent context the grant was computed against. */
+  parent: ParentToolContext;
+}
+
+/** The definition + grant + parent context one type resolves to right now. */
+export interface ResolvedGrant {
+  type: ResolvedSubagentType;
+  parent: ParentToolContext;
+  grant: ResolvedChildTools;
+}
+
+/** The shared spawn path behind `agent` and the legacy facades. */
+export interface ChildSpawnSeam {
+  spawn(req: TypedSpawnRequest): Promise<TypedSpawnResult>;
+  /** Resolve a definition BY NAME (throws with the valid list when unknown). */
+  grantFor(typeName: string): ResolvedGrant;
+  /** Resolve an already-known definition — what the roster renders. */
+  resolveGrant(type: ChildToolRequest): {
+    parent: ParentToolContext;
+    grant: ResolvedChildTools;
+  };
+}
+
+/**
+ * Build the shared spawn seam. `createAgentTools` and `createSwarmTools` both
+ * take one, so "one coordinator, shared caps" (design §5.2) is a property of
+ * the code rather than a claim about it.
+ */
+export function createChildSpawnSeam(opts: CreateAgentToolsOptions): ChildSpawnSeam {
   const { coordinator, agentId, resolver } = opts;
   const convo = () => opts.conversationId();
 
@@ -142,10 +228,109 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
     return { parent, grant: resolveChildTools(type, parent) };
   };
 
+  const grantFor = (typeName: string): ResolvedGrant => {
+    const type = resolver.resolve(typeName);
+    if (!type) {
+      const valid = resolver
+        .list()
+        .map((t) => t.name)
+        .join(', ');
+      throw new Error(`Unknown subagent_type "${typeName}". Valid types: ${valid}`);
+    }
+    const { parent, grant } = resolveGrant(type);
+    return { type, parent, grant };
+  };
+
+  const spawn = async (req: TypedSpawnRequest): Promise<TypedSpawnResult> => {
+    const { type, parent, grant } = grantFor(req.typeName ?? DEFAULT_SUBAGENT_TYPE);
+
+    if (req.name !== undefined && !NAME_RE.test(req.name)) {
+      throw new Error('name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$');
+    }
+
+    const background = req.background === true || type.background === true;
+    const isolation =
+      req.isolation === 'worktree' || type.isolation === 'worktree' ? 'worktree' : undefined;
+
+    // Model (design §6.4 step 3). `resolveChildModel` already encodes the
+    // whole precedence (per-call → definition → parent, `inherit` at either
+    // level falling through, an unconfigured alias warning and falling back),
+    // so the only thing left to decide is whether to PIN the result: a model
+    // equal to the parent's is inheritance, and passing `undefined` lets the
+    // coordinator apply its own authoritative read of the orchestrator model.
+    const parentModel = opts.parentModel?.() ?? UNKNOWN_PARENT_MODEL;
+    const modelResult = resolveChildModel({
+      requested: req.model,
+      definition: type.model,
+      parentModel,
+      aliases: opts.modelAliases?.() ?? {},
+    });
+    const pinModel = modelResult.model === parentModel ? undefined : modelResult.model;
+
+    // Skills (design §6.4 step 4). An unknown name throws (in preloadSkills)
+    // and so does a definition that names skills with no lookup wired: both
+    // would otherwise spawn a child missing the knowledge it depends on.
+    let systemPrompt = type.systemPrompt;
+    if (type.skills && type.skills.length > 0) {
+      if (!opts.listSkills) {
+        const named = type.skills.join(', ');
+        throw new Error(
+          `subagent type "${type.name}" preloads skills (${named}) but no skill lookup is wired`,
+        );
+      }
+      systemPrompt += preloadSkills(type.skills, await opts.listSkills());
+    }
+
+    // An explicit override REPLACES the resolved built-in grant and narrows the
+    // MCP grant to whatever it names (a legacy `tools: ["read","bash"]` names
+    // no MCP tool, so a facade spawn carries none — exactly what the legacy
+    // path granted).
+    const tools = req.toolsOverride ?? grant.tools;
+    const mcpTools = req.toolsOverride
+      ? grant.mcpTools.filter((m) => req.toolsOverride?.includes(m))
+      : grant.mcpTools;
+
+    const { workerId } = coordinator.spawnWorker(agentId, convo(), {
+      role: req.role ?? req.name ?? type.name,
+      brief: req.prompt,
+      tools,
+      mcpTools: mcpTools.length > 0 ? mcpTools : undefined,
+      canSpawn: grant.canSpawn,
+      spawnableTypes: grant.spawnableTypes,
+      model: pinModel,
+      subagentType: type.name,
+      description: req.description,
+      name: req.name,
+      systemPrompt,
+      background,
+      isolation,
+      skipMemory: type.skipMemory,
+      maxTurns: type.maxTurns,
+      oneShot: type.oneShot,
+      depth: parent.depth + 1,
+    });
+
+    return {
+      workerId,
+      type,
+      background,
+      parent,
+      ...(modelResult.warning !== undefined ? { warning: modelResult.warning } : {}),
+    };
+  };
+
+  return { spawn, grantFor, resolveGrant };
+}
+
+export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[] {
+  const { coordinator, agentId, resolver } = opts;
+  const convo = () => opts.conversationId();
+  const seam = opts.seam ?? createChildSpawnSeam(opts);
+
   const rosterDescription = () => {
     const roster = buildRosterText(resolver.list(), (t) => {
       try {
-        const { grant } = resolveGrant(t);
+        const { grant } = seam.resolveGrant(t);
         const all = [...grant.tools, ...grant.mcpTools];
         return all.length > 0 ? all.join(', ') : NO_OVERLAP;
       } catch {
@@ -219,80 +404,22 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
       const description = typeof p.description === 'string' ? p.description : '';
       if (!prompt) throw new Error('prompt is required.');
       if (!description) throw new Error('description is required.');
-      const typeName =
-        typeof p.subagent_type === 'string' && p.subagent_type
-          ? p.subagent_type
-          : 'general-purpose';
-      const type = resolver.resolve(typeName);
-      if (!type) {
-        const valid = resolver
-          .list()
-          .map((t) => t.name)
-          .join(', ');
-        throw new Error(`Unknown subagent_type "${typeName}". Valid types: ${valid}`);
-      }
       const name = typeof p.name === 'string' ? p.name : undefined;
-      if (name !== undefined && !NAME_RE.test(name)) {
-        throw new Error('name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$');
-      }
 
-      const background = p.run_in_background === true || type.background === true;
-      const isolation =
-        p.isolation === 'worktree' || type.isolation === 'worktree' ? 'worktree' : undefined;
-
-      // Tools (design §6.4 step 2) — the same computation the roster reads.
-      const { parent, grant } = resolveGrant(type);
-
-      // Model (design §6.4 step 3). `resolveChildModel` already encodes the
-      // whole precedence (per-call → definition → parent, `inherit` at either
-      // level falling through, an unconfigured alias warning and falling back),
-      // so the only thing left to decide is whether to PIN the result: a model
-      // equal to the parent's is inheritance, and passing `undefined` lets the
-      // coordinator apply its own authoritative read of the orchestrator model.
-      const parentModel = opts.parentModel?.() ?? UNKNOWN_PARENT_MODEL;
-      const modelResult = resolveChildModel({
-        requested: typeof p.model === 'string' ? p.model : undefined,
-        definition: type.model,
-        parentModel,
-        aliases: opts.modelAliases?.() ?? {},
-      });
-      const pinModel = modelResult.model === parentModel ? undefined : modelResult.model;
-
-      // Skills (design §6.4 step 4). An unknown name throws (in preloadSkills)
-      // and so does a definition that names skills with no lookup wired: both
-      // would otherwise spawn a child missing the knowledge it depends on.
-      let systemPrompt = type.systemPrompt;
-      if (type.skills && type.skills.length > 0) {
-        if (!opts.listSkills) {
-          const named = type.skills.join(', ');
-          throw new Error(
-            `subagent type "${type.name}" preloads skills (${named}) but no skill lookup is wired`,
-          );
-        }
-        systemPrompt += preloadSkills(type.skills, await opts.listSkills());
-      }
-
-      const { workerId } = coordinator.spawnWorker(agentId, convo(), {
-        role: name ?? type.name,
-        brief: prompt,
-        tools: grant.tools,
-        mcpTools: grant.mcpTools.length > 0 ? grant.mcpTools : undefined,
-        canSpawn: grant.canSpawn,
-        spawnableTypes: grant.spawnableTypes,
-        model: pinModel,
-        subagentType: type.name,
+      const spawned = await seam.spawn({
+        prompt,
         description,
-        name,
-        systemPrompt,
-        background,
-        isolation,
-        skipMemory: type.skipMemory,
-        maxTurns: type.maxTurns,
-        oneShot: type.oneShot,
-        depth: parent.depth + 1,
+        ...(typeof p.subagent_type === 'string' && p.subagent_type
+          ? { typeName: p.subagent_type }
+          : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(typeof p.model === 'string' ? { model: p.model } : {}),
+        background: p.run_in_background === true,
+        ...(p.isolation === 'worktree' ? { isolation: 'worktree' as const } : {}),
       });
+      const { workerId, type, background, warning } = spawned;
 
-      const statusText = modelResult.warning ? `\n\nNote: ${modelResult.warning}` : '';
+      const statusText = warning ? `\n\nNote: ${warning}` : '';
 
       if (background) {
         const note = opts.backgroundMode === 'turn-scoped' ? TURN_SCOPED_NOTE : DETACHED_NOTE;
@@ -307,7 +434,7 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
             subagentId: workerId,
             name,
             status: 'running',
-            ...(modelResult.warning && { warning: modelResult.warning }),
+            ...(warning && { warning }),
           },
         };
       }
@@ -346,12 +473,11 @@ export function createAgentTools(opts: CreateAgentToolsOptions): SwarmExtraTool[
           // behind uncommitted (design 5.2).
           ...(snap.workspace !== undefined ? { workspace: snap.workspace } : {}),
           scannerMatched: scanned.matched,
-          ...(modelResult.warning && { warning: modelResult.warning }),
+          ...(warning && { warning }),
         },
       };
     },
   };
-
   const sendMessage: SwarmExtraTool = {
     name: 'send_message',
     label: 'Send Message',

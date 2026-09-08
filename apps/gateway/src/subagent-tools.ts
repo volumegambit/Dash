@@ -1,11 +1,13 @@
 import type { FlatSkillFile } from '@dash/agent';
 import {
   type ChildSpec,
+  type CreateAgentToolsOptions,
   type ResolvedSubagentType,
   type SubagentTypeResolver,
   type SwarmCoordinator,
   type SwarmExtraTool,
   createAgentTools,
+  createChildSpawnSeam,
   createStaticResolver,
   createSwarmTools,
   parentBuiltinTools,
@@ -93,50 +95,50 @@ export interface SubagentExtraToolsOptions {
 export function createSubagentExtraTools(opts: SubagentExtraToolsOptions): SwarmExtraTool[] {
   if (!isSubagentsEnabled(opts.agentConfig)) return [];
   const conversationId = () => opts.conversationId();
-  return [
-    ...createSwarmTools({
-      coordinator: opts.coordinator,
-      agentId: opts.agentId,
-      conversationId,
+  // ONE options object and ONE spawn seam behind both bundles. Since D8 the
+  // legacy four are §5.2 facades over the same typed spawn `agent` performs,
+  // so building them from two independent option sets is how their rosters,
+  // grants and caps would drift apart again.
+  const agentToolOptions = {
+    coordinator: opts.coordinator,
+    agentId: opts.agentId,
+    conversationId,
+    // The registry-backed roster. Narrowing to `subagents.allowedTypes`
+    // already happened inside the registry, so the roster the model sees and
+    // the set it can resolve match.
+    resolver: opts.resolver,
+    // A background child is DETACHED: it outlives the turn that spawned it
+    // and reports back as a notification (design §5.2). The run only cancels
+    // this turn's FOREGROUND children.
+    backgroundMode: 'detached',
+    // A child may only be granted tools the parent itself holds, and only
+    // the INHERITABLE ones: `create_skill` / `mcp_add_server` and friends are
+    // configurable on the parent but are never passed down.
+    parentContext: () => ({
+      builtinTools: parentBuiltinTools(opts.parentTools()),
+      // The SAME list `attach()` receives as `orchestratorMcpTools` (both are
+      // built by `orchestratorMcpToolNames` in the gateway entrypoint). The
+      // coordinator's `validateMcpTools` fails closed on anything the
+      // attachment did not declare, so a divergence here would refuse every
+      // MCP-carrying spawn.
+      mcpTools: opts.parentMcpTools?.() ?? [],
+      depth: ORCHESTRATOR_DEPTH,
+      // The CONFIGURED ceiling, not a constant. `resolveChildTools` uses it
+      // to decide whether a child is handed `agent` / `send_message` at all,
+      // and the coordinator refuses a spawn past the same number — so an
+      // operator's `subagents.maxDepth` is both advertised and enforced.
+      maxDepth: subagentMaxDepth(opts.agentConfig),
     }),
-    ...createAgentTools({
-      coordinator: opts.coordinator,
-      agentId: opts.agentId,
-      conversationId,
-      // The registry-backed roster. Narrowing to `subagents.allowedTypes`
-      // already happened inside the registry, so the roster the model sees and
-      // the set it can resolve match.
-      resolver: opts.resolver,
-      // A background child is DETACHED: it outlives the turn that spawned it
-      // and reports back as a notification (design §5.2). The run only cancels
-      // this turn's FOREGROUND children.
-      backgroundMode: 'detached',
-      // A child may only be granted tools the parent itself holds, and only
-      // the INHERITABLE ones: `create_skill` / `mcp_add_server` and friends are
-      // configurable on the parent but are never passed down.
-      parentContext: () => ({
-        builtinTools: parentBuiltinTools(opts.parentTools()),
-        // The SAME list `attach()` receives as `orchestratorMcpTools` (both are
-        // built by `orchestratorMcpToolNames` in the gateway entrypoint). The
-        // coordinator's `validateMcpTools` fails closed on anything the
-        // attachment did not declare, so a divergence here would refuse every
-        // MCP-carrying spawn.
-        mcpTools: opts.parentMcpTools?.() ?? [],
-        depth: ORCHESTRATOR_DEPTH,
-        // The CONFIGURED ceiling, not a constant. `resolveChildTools` uses it
-        // to decide whether a child is handed `agent` / `send_message` at all,
-        // and the coordinator refuses a spawn past the same number — so an
-        // operator's `subagents.maxDepth` is both advertised and enforced.
-        maxDepth: subagentMaxDepth(opts.agentConfig),
-      }),
-      parentModel: () => opts.parentModel(),
-      // No config surface for `subagents.modelAliases` yet: an alias in a
-      // per-call `model:` resolves to nothing, warns, and inherits the parent
-      // model. Wire this to the config block when that key lands.
-      modelAliases: () => ({}),
-      listSkills: opts.listSkills,
-    }),
-  ];
+    parentModel: () => opts.parentModel(),
+    // No config surface for `subagents.modelAliases` yet: an alias in a
+    // per-call `model:` resolves to nothing, warns, and inherits the parent
+    // model. Wire this to the config block when that key lands.
+    modelAliases: () => ({}),
+    listSkills: opts.listSkills,
+  } satisfies CreateAgentToolsOptions;
+  const seam = createChildSpawnSeam(agentToolOptions);
+  const shared = { ...agentToolOptions, seam };
+  return [...createSwarmTools(shared), ...createAgentTools(shared)];
 }
 
 /** What {@link createChildSpawnTools} needs to arm a child for nesting. */

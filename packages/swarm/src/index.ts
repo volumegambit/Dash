@@ -1,7 +1,12 @@
 export {
   AGENT_TOOL_DESCRIPTION,
+  type ChildSpawnSeam,
   type CreateAgentToolsOptions,
+  type ResolvedGrant,
+  type TypedSpawnRequest,
+  type TypedSpawnResult,
   createAgentTools,
+  createChildSpawnSeam,
 } from './agent-tool.js';
 export { AsyncChannel } from './channel.js';
 export {
