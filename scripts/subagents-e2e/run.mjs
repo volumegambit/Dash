@@ -587,8 +587,10 @@ async function assertion5(ctx) {
         .map((e) => e.payload.event);
       for (const e of gcEvents) if (e?.type) seenEventTypes.add(e.type);
       check(
-        !gcEvents.some((e) => e.type === 'tool_use_start' && e.name === 'agent'),
-        'the depth-2 child was never handed an `agent` tool (the ceiling is a GRANT, not an error)',
+        gcEvents.length > 0 &&
+          !gcEvents.some((e) => e.type === 'tool_use_start' && e.name === 'agent'),
+        'the depth-2 child was never handed an `agent` tool (the ceiling is a GRANT, not an error; ' +
+          'an EMPTY replay is a failure, not a pass)',
         gcEvents
           .filter((e) => e.type === 'tool_use_start')
           .map((e) => e.name)
@@ -803,6 +805,7 @@ async function assertion8(ctx) {
     );
     trace(turn.events);
     const spawn = resultsOf(turn.events, 'spawn_worker')[0];
+    const spawnedId = spawn?.content.match(/spawned (sub_[0-9A-Za-z]{26})/)?.[1];
     const wait = resultsOf(turn.events, 'wait_workers')[0];
     const roster = resultsOf(turn.events, 'check_workers')[0];
     check(
@@ -816,8 +819,11 @@ async function assertion8(ctx) {
       wait ? oneLine(wait.content, 200) : 'not called',
     );
     check(
-      roster !== undefined && !roster.isError && /sub_[0-9A-Za-z]{26}/.test(roster.content),
-      'check_workers returns the roster the facade built',
+      roster !== undefined &&
+        !roster.isError &&
+        spawnedId !== undefined &&
+        roster.content.includes(spawnedId),
+      'check_workers returns the roster the facade built (names the id spawn_worker returned)',
       roster ? oneLine(roster.content, 200) : 'not called',
     );
     const started = turn.events.filter((e) => e.type === 'subagent_started');
