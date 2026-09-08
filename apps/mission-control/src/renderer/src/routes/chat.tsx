@@ -984,8 +984,10 @@ function SubagentCard({
 
       {/* The pending question sits on the COLLAPSED row too (§8.1): a child
           waiting on input is the one thing a user must not have to expand a
-          card to discover. */}
-      {question && interactive && (
+          card to discover. It is therefore NOT gated on `interactive` — a card
+          drawn for another conversation still says the child is stuck; what it
+          drops is the reply box, which is the action. */}
+      {question && !nested && (
         <div className="border-t border-border px-3 py-1.5">
           <p
             className="mb-1.5 text-yellow-400"
@@ -993,16 +995,18 @@ function SubagentCard({
           >
             {question}
           </p>
-          <SubagentComposer
-            subagentId={group.subagentId}
-            testIdPrefix="subagent-reply"
-            placeholder="Answer this sub-agent…"
-            draft={ui?.draft ?? ''}
-            sending={ui?.sending === true}
-            disabled={!canSend}
-            onDraft={setSubagentDraft}
-            onSend={resumeSubagent}
-          />
+          {interactive && (
+            <SubagentComposer
+              subagentId={group.subagentId}
+              testIdPrefix="subagent-reply"
+              placeholder="Answer this sub-agent…"
+              draft={ui?.draft ?? ''}
+              sending={ui?.sending === true}
+              disabled={!canSend}
+              onDraft={setSubagentDraft}
+              onSend={resumeSubagent}
+            />
+          )}
         </div>
       )}
 

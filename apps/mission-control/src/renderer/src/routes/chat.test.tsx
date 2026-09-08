@@ -1134,6 +1134,21 @@ describe('MessageBubble sub-agent cards', () => {
     expect(second.container.querySelector('.lucide-hourglass')).not.toBeNull();
   });
 
+  // §8.1 puts the pending question on the COLLAPSED row precisely so nobody
+  // has to expand a card to discover a child is stuck. A read-only card still
+  // says so; what it drops is the reply box, which is the action.
+  it('still shows a pending question on a read-only card, without a reply box', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage(waitingBackground)}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-question-sub_a')).toHaveTextContent('Which branch?');
+    expect(screen.queryByTestId('subagent-reply-input-sub_a')).not.toBeInTheDocument();
+  });
+
   it('replies to a waiting child from the card, and re-reads afterwards', async () => {
     useChatStore.setState({ subagents: [entry({ status: 'waiting_input' })] });
 
