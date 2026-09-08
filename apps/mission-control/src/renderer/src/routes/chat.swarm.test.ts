@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { McAgentEvent } from '../../../shared/ipc.js';
 import {
   type SubagentGroup,
+  clusterAdjacent,
+  formatClusterSummary,
   formatElapsed,
   formatToolCount,
   groupSubagentEvents,
@@ -427,6 +429,76 @@ describe('groupSubagentEvents', () => {
     const b = groupSubagentEvents([started('b'), finished('b', { status: 'max_turns' })], false)[0];
     expect(a.status).toBe('interrupted');
     expect(b.status).toBe('max_turns');
+  });
+});
+
+// Design §8.2, ported from the web module this file's source was ported to.
+// Byte-for-byte the same nine cases: the fold's adjacency rule and the summary
+// line are the two things three clients have to agree on.
+describe('clusterAdjacent', () => {
+  it('clusters children whose start events are adjacent', () => {
+    const events = [started('a'), started('b'), started('c')];
+    const clusters = clusterAdjacent(groupSubagentEvents(events, true));
+    expect(clusters.map((c) => c.map((g) => g.subagentId))).toEqual([['a', 'b', 'c']]);
+  });
+
+  it('clusters across the interleaved legacy mirrors and agent_spawned chrome', () => {
+    const events = [
+      workerSpawned('a'),
+      { type: 'agent_spawned', name: 'reviewer' } as McAgentEvent,
+      started('a'),
+      workerSpawned('b'),
+      { type: 'agent_spawned', name: 'reviewer' } as McAgentEvent,
+      started('b'),
+    ];
+    const clusters = clusterAdjacent(groupSubagentEvents(events, true));
+    expect(clusters.map((c) => c.map((g) => g.subagentId))).toEqual([['a', 'b']]);
+  });
+
+  it('splits a cluster when other content sits between two starts', () => {
+    const events = [started('a'), text('thinking out loud'), started('b')];
+    const clusters = clusterAdjacent(groupSubagentEvents(events, true));
+    expect(clusters.map((c) => c.map((g) => g.subagentId))).toEqual([['a'], ['b']]);
+  });
+
+  it('keeps a later child in the same cluster when only its siblings events intervene', () => {
+    const events = [started('a'), started('b'), progress('a'), progress('b'), started('c')];
+    const clusters = clusterAdjacent(groupSubagentEvents(events, true));
+    expect(clusters.map((c) => c.map((g) => g.subagentId))).toEqual([['a', 'b', 'c']]);
+  });
+
+  it('never clusters an orphan terminal with anything', () => {
+    const events = [finished('a'), started('b'), started('c')];
+    const clusters = clusterAdjacent(groupSubagentEvents(events, false));
+    expect(clusters.map((c) => c.map((g) => g.subagentId))).toEqual([['a'], ['b', 'c']]);
+  });
+
+  it('returns an empty list for no groups', () => {
+    expect(clusterAdjacent([])).toEqual([]);
+  });
+});
+
+describe('formatClusterSummary', () => {
+  it('summarizes a mixed cluster as "N agents · R running · D done"', () => {
+    const events = [started('a'), started('b'), started('c'), finished('c')];
+    const [cluster] = clusterAdjacent(groupSubagentEvents(events, true));
+    expect(formatClusterSummary(cluster)).toBe('3 agents · 2 running · 1 done');
+  });
+
+  it('singularizes one agent and omits empty buckets', () => {
+    const [cluster] = clusterAdjacent(groupSubagentEvents([started('a')], true));
+    expect(formatClusterSummary(cluster)).toBe('1 agent · 1 running');
+  });
+
+  it('counts waiting and failed children', () => {
+    const events = [
+      started('a'),
+      progress('a', { status: 'waiting_input', question: 'ok?' }),
+      started('b'),
+      finished('b', { status: 'failed' }),
+    ];
+    const [cluster] = clusterAdjacent(groupSubagentEvents(events, true));
+    expect(formatClusterSummary(cluster)).toBe('2 agents · 1 waiting · 1 failed');
   });
 });
 

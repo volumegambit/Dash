@@ -68,6 +68,8 @@ import {
   SUBAGENT_STATUS_LABEL,
   type SubagentGroup,
   type SubagentStatus,
+  clusterAdjacent,
+  formatClusterSummary,
   formatElapsed as formatSubagentElapsed,
   formatToolCount,
   groupSubagentEvents,
@@ -153,11 +155,14 @@ function renderEventsToElements(
   let lastErrorElementIndex: number | null = null;
 
   // Pre-scan: fold every sub-agent event — BOTH families — into one group per
-  // child, so we can render one card at its anchor position and let the rest
+  // child, and adjacent children into one parallel cluster (§8.2), so we can
+  // render one container at the cluster's anchor position and let the rest
   // fall through without touching the text/thinking/tool fold buffers.
-  const subagentGroups = new Map<string, SubagentGroup>();
-  for (const group of groupSubagentEvents(events as McAgentEvent[], isStreaming)) {
-    subagentGroups.set(group.subagentId, group);
+  const clusterByAnchor = new Map<number, SubagentGroup[]>();
+  for (const cluster of clusterAdjacent(
+    groupSubagentEvents(events as McAgentEvent[], isStreaming),
+  )) {
+    clusterByAnchor.set(cluster[0].anchorIndex, cluster);
   }
 
   // Flush any pending text/thinking so a worker card lands in reading order.
@@ -180,25 +185,22 @@ function renderEventsToElements(
     const event = events[i] as McAgentEvent;
 
     if (isSubagentEvent(event.type)) {
-      const id =
-        'subagentId' in event && typeof event.subagentId === 'string'
-          ? event.subagentId
-          : 'workerId' in event && typeof event.workerId === 'string'
-            ? event.workerId
-            : undefined;
-      const group = id ? subagentGroups.get(id) : undefined;
-      // Render a card only at the group's anchor position (the first start
-      // event, or an orphan terminal's own position); every other event for
-      // that child is folded into the one card and renders nothing standalone.
-      // Both families anchor cards, so neither may fall through to the
-      // unknown-activity fallback while the legacy mirrors are still on the
-      // wire (task D8 removes them).
-      if (group && group.anchorIndex === i) {
+      // Render a container only at the cluster's anchor position (its first
+      // child's first start event, or an orphan terminal's own position);
+      // every other event for those children is folded into the cards and
+      // renders nothing standalone. Both families anchor cards, so neither may
+      // fall through to the unknown-activity fallback while the legacy mirrors
+      // are still on the wire (task D8 removes them).
+      const cluster = clusterByAnchor.get(i);
+      if (cluster) {
         flushProse();
         elements.push(
-          <SubagentCard
-            key={`subagent-${group.subagentId}`}
-            group={group}
+          // Keyed by the first child's id, never by the render counter: a
+          // container keyed by position is remounted the moment the number of
+          // nodes emitted before it changes.
+          <SubagentCluster
+            key={`subagent-${cluster[0].subagentId}`}
+            groups={cluster}
             depth={depth}
             conversationKey={surfaceKey}
           />,
@@ -782,6 +784,76 @@ function useSubagentElapsed(
     return () => clearInterval(timer);
   }, [live]);
   return subagentElapsedMs(startedAt, endedAt, running, now);
+}
+
+/**
+ * One cluster of children (design §8.2). A cluster of one renders as a bare
+ * card; two or more gain the group chrome — a summary line, a dot strip, and a
+ * collapse-as-a-unit toggle.
+ *
+ * The wrapper is rendered UNCONDITIONALLY, and the cards always sit in the
+ * same inner container at the same child position, so a lone card that becomes
+ * a group mid-stream (its neighbour spawning a moment later) keeps its DOM
+ * position. Both of web's guards are kept, and they earn their place here for
+ * a Mission-Control-specific reason: card expansion lives in the store, so a
+ * remount would not lose it — but it WOULD unmount the composer inside an
+ * expanded card, taking the caret and the focus with it while the user types.
+ */
+function SubagentCluster({
+  groups,
+  depth,
+  conversationKey: surfaceKey,
+}: {
+  groups: SubagentGroup[];
+  depth: number;
+  conversationKey?: ConversationKey;
+}): JSX.Element {
+  const anchorId = groups[0].subagentId;
+  const toggleSubagentGroup = useChatStore((state) => state.toggleSubagentGroup);
+  // Groups default to OPEN, so the stored value reads as "collapsed unless
+  // told otherwise" — an unvisited group has no record at all.
+  const collapsed = useChatStore((state) => state.subagentUi[anchorId]?.groupCollapsed === true);
+  const multi = groups.length > 1;
+  const showCards = !multi || !collapsed;
+
+  return (
+    <div data-testid={multi ? 'subagent-group' : undefined}>
+      {multi && (
+        <button
+          type="button"
+          onClick={() => toggleSubagentGroup(anchorId)}
+          aria-expanded={!collapsed}
+          className="mb-1 flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-muted hover:text-foreground"
+          data-testid={`subagent-group-toggle-${anchorId}`}
+        >
+          <Users size={10} className="shrink-0" />
+          <span className="min-w-0 truncate">{formatClusterSummary(groups)}</span>
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {groups.map((group) => (
+              <span
+                key={group.subagentId}
+                className={`inline-block h-1.5 w-1.5 rounded-full ${SUBAGENT_DOT_COLOR[group.status]}`}
+                title={`${group.type}: ${group.status}`}
+                data-testid={`subagent-group-dot-${group.subagentId}`}
+              />
+            ))}
+          </span>
+        </button>
+      )}
+      {showCards && (
+        <div>
+          {groups.map((group) => (
+            <SubagentCard
+              key={group.subagentId}
+              group={group}
+              depth={depth}
+              conversationKey={surfaceKey}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**

@@ -118,6 +118,16 @@ export function isRevisionConflict(error: unknown): boolean {
  */
 export interface SubagentUiState {
   expanded: boolean;
+  /**
+   * §8.2's parallel group, collapsed as a unit. Held against the FIRST child
+   * of the cluster, which is the only member whose identity the cluster has.
+   *
+   * In the store rather than in the component for the same reason `expanded`
+   * is: a live turn's bubble and the persisted message that replaces it are
+   * different elements, so component state would snap the group back open at
+   * exactly the moment the turn ends.
+   */
+  groupCollapsed: boolean;
   transcript?: ConversationMessage[];
   /** True once a fetch has landed, so a re-open does not re-walk the history. */
   transcriptLoaded: boolean;
@@ -177,6 +187,8 @@ export interface ChatState {
   /** Re-read the selected conversation's children. Safe to call at any time. */
   refreshSubagents(): Promise<void>;
   toggleSubagent(subagentId: string): void;
+  /** Collapse or expand §8.2's parallel group anchored on this child. */
+  toggleSubagentGroup(anchorSubagentId: string): void;
   /** Fetch a child's transcript. Once per card unless `force`. */
   loadSubagentTranscript(subagentId: string, force?: boolean): Promise<void>;
   setSubagentDraft(subagentId: string, draft: string): void;
@@ -364,6 +376,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   const BLANK_SUBAGENT_UI: SubagentUiState = {
     expanded: false,
+    groupCollapsed: false,
     transcriptLoaded: false,
     draft: '',
     notice: null,
@@ -810,6 +823,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     toggleSubagent(subagentId) {
       const open = get().subagentUi[subagentId]?.expanded === true;
       patchSubagentUi(subagentId, { expanded: !open });
+    },
+
+    toggleSubagentGroup(anchorSubagentId) {
+      const collapsed = get().subagentUi[anchorSubagentId]?.groupCollapsed === true;
+      patchSubagentUi(anchorSubagentId, { groupCollapsed: !collapsed });
     },
 
     async loadSubagentTranscript(subagentId, force = false) {

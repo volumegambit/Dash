@@ -52,12 +52,20 @@
  * unit-tested under the app's vitest config without a DOM. The presentational
  * components live in `chat.tsx`.
  *
- * DIVERGENCE FROM WEB, recorded deliberately: web's `clusterAdjacent` /
- * `formatClusterSummary` (design §8.2's parallel-group container) are NOT
- * ported. Mission Control's §8.4 bullet asks for the panel and the nested
- * transcript, not the group container, and unused fold state is how the stale
- * predicate above survived in the first place. The pinned strip
- * (`summarizeSwarmStrip`) is Mission Control's own and has no web twin.
+ * §8.2's parallel-group container (`clusterAdjacent` / `formatClusterSummary`
+ * / `adjacentToPrevious`) is HERE. It was left out of the first port on the
+ * reading that §8.4's Mission Control bullet asks only for the panel and the
+ * nested transcript; that reading was wrong. §8.1 is titled "Collapsed row
+ * (all clients)" and §8.2 and §8.3 continue its scope with no client
+ * qualifier — §8.4 is the only per-client subsection, and it governs the tasks
+ * panel, which is not what §8.2 is about. Web and iOS both shipped it; this
+ * fold is where the whole module started, so the container comes home too.
+ *
+ * The pinned strip (`summarizeSwarmStrip`) is Mission Control's own and has no
+ * web twin. It stays separate from `formatClusterSummary` on purpose: the
+ * strip summarises a LIVE turn across the whole message and deliberately shows
+ * only the running and waiting buckets, while §8.2's line counts every status
+ * in one parallel group.
  */
 
 import type {
@@ -126,6 +134,14 @@ export interface SubagentGroup {
   anchorIndex: number;
   /** True when no start event for this child appeared in THIS message. */
   orphan: boolean;
+  /**
+   * True when this group's start event is "adjacent" to the previous group's
+   * in the same message — nothing but sub-agent chrome sits between them —
+   * which is what §8.2 means by a parallel group. Computed here because it
+   * needs the source event list; `clusterAdjacent` only reads it, so it must
+   * be given the unfiltered, in-order output of {@link groupSubagentEvents}.
+   */
+  adjacentToPrevious: boolean;
 }
 
 /** Event types this module folds. Both families; D8 drops the `worker_*` half. */
@@ -137,6 +153,14 @@ const FOLDED_EVENT_TYPES = new Set<string>([
   'worker_status',
   'worker_done',
 ]);
+
+/**
+ * Event types that render nothing of their own between two sub-agent cards.
+ * `agent_spawned` is the coordinator's name-only announcement, pushed between
+ * a child's `worker_spawned` and its `subagent_started`; treating it as chrome
+ * is what lets back-to-back spawns still read as one parallel group.
+ */
+const CHROME_EVENT_TYPES = new Set<string>([...FOLDED_EVENT_TYPES, 'agent_spawned']);
 
 /**
  * True for an event type this module folds into a card. The transcript renderer
@@ -399,7 +423,7 @@ export function groupSubagentEvents(
   // By anchorIndex, not by insertion order (divergence 3).
   const ordered = [...drafts.values()].sort((a, b) => a.anchorIndex - b.anchorIndex);
 
-  return ordered.map((draft) => {
+  return ordered.map((draft, index) => {
     const description = draft.modernDescription ?? draft.legacyDescription ?? '';
     const terminal = draft.modernTerminal ?? draft.legacyTerminal;
     // Progress slots resolve as a UNIT, not field by field: `question` is
@@ -412,6 +436,7 @@ export function groupSubagentEvents(
     const background = draft.background ?? false;
     const status: SubagentStatus =
       terminal ?? (isStreaming || background ? (live ?? 'running') : 'cancelled');
+    const previous = ordered[index - 1];
 
     const group: SubagentGroup = {
       subagentId: draft.subagentId,
@@ -424,6 +449,11 @@ export function groupSubagentEvents(
       toolCallCount: draft.finishedToolCallCount ?? draft.progressToolCallCount ?? 0,
       anchorIndex: draft.anchorIndex,
       orphan: draft.orphan,
+      adjacentToPrevious:
+        previous !== undefined &&
+        !previous.orphan &&
+        !draft.orphan &&
+        isOnlyChromeBetween(events, previous.anchorIndex, draft.anchorIndex),
     };
 
     const name = draft.name;
@@ -445,6 +475,72 @@ export function groupSubagentEvents(
 
     return group;
   });
+}
+
+/** True when every event strictly between `from` and `to` is sub-agent chrome. */
+function isOnlyChromeBetween(events: readonly McAgentEvent[], from: number, to: number): boolean {
+  for (let i = from + 1; i < to; i++) {
+    if (!CHROME_EVENT_TYPES.has(events[i].type)) return false;
+  }
+  return true;
+}
+
+/**
+ * Split groups into parallel clusters (§8.2): a run of children whose start
+ * events are adjacent in the message renders inside one group container.
+ *
+ * Expects the in-order, unfiltered output of {@link groupSubagentEvents} — the
+ * adjacency it splits on was computed there against the source event list.
+ * Orphan terminals never join a cluster: they are finished children from a
+ * previous message, not a live fan-out.
+ */
+export function clusterAdjacent(groups: readonly SubagentGroup[]): SubagentGroup[][] {
+  const clusters: SubagentGroup[][] = [];
+  for (const group of groups) {
+    const current = clusters[clusters.length - 1];
+    if (current && group.adjacentToPrevious) current.push(group);
+    else clusters.push([group]);
+  }
+  return clusters;
+}
+
+const STATUS_WORDS: Record<SubagentStatus, string> = {
+  running: 'running',
+  waiting: 'waiting',
+  done: 'done',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  interrupted: 'interrupted',
+  max_turns: 'max turns',
+};
+
+// Fixed order so the summary line reads the same way every render, rather
+// than following whichever status happened to be seen first.
+const STATUS_ORDER: SubagentStatus[] = [
+  'running',
+  'waiting',
+  'done',
+  'failed',
+  'cancelled',
+  'interrupted',
+  'max_turns',
+];
+
+/**
+ * The parallel group's summary line (§8.2), e.g. `3 agents · 2 running · 1 done`.
+ * Empty buckets are omitted. Byte-identical to web's `formatClusterSummary`,
+ * which is the spec's own example.
+ */
+export function formatClusterSummary(groups: readonly SubagentGroup[]): string {
+  const counts = new Map<SubagentStatus, number>();
+  for (const group of groups) counts.set(group.status, (counts.get(group.status) ?? 0) + 1);
+
+  const parts = [`${groups.length} ${groups.length === 1 ? 'agent' : 'agents'}`];
+  for (const status of STATUS_ORDER) {
+    const count = counts.get(status);
+    if (count) parts.push(`${count} ${STATUS_WORDS[status]}`);
+  }
+  return parts.join(' · ');
 }
 
 /**

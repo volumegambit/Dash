@@ -785,6 +785,7 @@ describe('sub-agent list reads', () => {
       subagentUi: {
         sub_a: {
           expanded: true,
+          groupCollapsed: false,
           draft: 'half a sentence',
           notice: null,
           sending: false,

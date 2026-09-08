@@ -833,6 +833,59 @@ describe('MessageBubble sub-agent cards', () => {
     expect(screen.queryByTestId('subagent-card-toggle-sub_a')).not.toBeInTheDocument();
   });
 
+  // Design §8.2: adjacent children render inside one group container with a
+  // summary line, a dot strip and a collapse-as-a-unit toggle. The line is
+  // `formatClusterSummary`'s, which is byte-identical to web's and to the
+  // spec's own example.
+  it('draws two adjacent children as one parallel group with the spec summary line', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[started, { ...started, subagentId: 'sub_b', name: 'planner' }]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    const group = screen.getByTestId('subagent-group');
+    expect(group).toHaveTextContent('2 agents · 2 running');
+    expect(within(group).getByTestId('subagent-card-sub_a')).toBeInTheDocument();
+    expect(within(group).getByTestId('subagent-card-sub_b')).toBeInTheDocument();
+  });
+
+  it('collapses a parallel group as a unit', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[started, { ...started, subagentId: 'sub_b', name: 'planner' }]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('subagent-group-toggle-sub_a'));
+
+    expect(screen.queryByTestId('subagent-card-sub_a')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-card-sub_b')).not.toBeInTheDocument();
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 2 running');
+  });
+
+  it('gives a lone child no group chrome, and splits a group on other content', () => {
+    render(
+      <MessageBubble
+        message={assistantMessage([])}
+        streamingEvents={[
+          started,
+          { type: 'text_delta', text: 'thinking out loud' },
+          { ...started, subagentId: 'sub_b', name: 'planner' },
+        ]}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.queryByTestId('subagent-group')).not.toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-sub_a')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-sub_b')).toBeInTheDocument();
+  });
+
   it('reads the server status over its own fold', () => {
     useChatStore.setState({ subagents: [entry({ status: 'running' })] });
 
