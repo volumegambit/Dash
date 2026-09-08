@@ -194,6 +194,39 @@ describe('createChildTurnDriver', () => {
     });
   });
 
+  /**
+   * S5: the row and its grant used to be two independent writes — one
+   * `createSubagent` transaction, then a bare `UPDATE` outside it — so a
+   * process death between them left a durable child row with
+   * `subagent_grant = NULL`. Both consumers refuse such a row for good
+   * (`its grant cannot be rebuilt`), so the child could never run again.
+   */
+  it('writes the grant INSIDE the create — there is no second write to die between', () => {
+    const parent = parentConversation();
+    let separateWrites = 0;
+    const fragile = new Proxy(conversations, {
+      get(target, prop, receiver) {
+        if (prop === 'putSubagentGrant') {
+          return () => {
+            separateWrites++;
+            throw new Error('the process died between the two writes');
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as SqliteConversationService;
+
+    const driver = createChildTurnDriver({ conversations: fragile, hub: () => hub });
+    const childId = childConversationId();
+    driver.prepareChild(specFor(childId, parent.id));
+    driver.createChild(childInput(childId, parent.id));
+
+    expect(separateWrites).toBe(0);
+    expect(conversations.get(childId)).toBeTruthy();
+    expect(conversations.getSubagentGrant(childId)?.tools).toEqual(['read']);
+  });
+
   it('re-narrows the persisted grant when a resume prepares a smaller one', () => {
     const parent = parentConversation();
     const driver = makeDriver();

@@ -62,6 +62,15 @@ export interface CreateSubagentConversationInput {
   parentTurnId: string;
   title: string;
   subagent: SubagentInfo;
+  /**
+   * The child's resolved {@link SubagentGrant}, written in the SAME transaction
+   * as the row. It used to be a separate `putSubagentGrant` immediately after
+   * the create, and a process death between the two left a durable child row
+   * with no grant — a child that can never take another turn, refused with the
+   * generic `its grant cannot be rebuilt`. Omitted only where the caller has no
+   * spec to derive one from.
+   */
+  grant?: SubagentGrant;
 }
 
 /**

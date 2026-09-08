@@ -1025,6 +1025,13 @@ export class SqliteConversationService implements ConversationService {
   /**
    * Create a child conversation. Idempotent on `id` so a spawn retry (or a
    * replayed recovery step) returns the existing row instead of colliding.
+   *
+   * `input.grant` is written INSIDE this transaction — as a column on the
+   * insert, or as the same bare `UPDATE` {@link putSubagentGrant} performs on
+   * the idempotent (resume) path, so a grant narrowed since the child last ran
+   * still replaces the stored one. Writing it afterwards left a window in which
+   * a process death produced a durable child row with no grant, which both
+   * consumers refuse to rebuild.
    */
   createSubagent(input: CreateSubagentConversationInput): ConversationSummary {
     return this.db.transaction((value: CreateSubagentConversationInput) => {
@@ -1049,6 +1056,7 @@ export class SqliteConversationService implements ConversationService {
             false,
           );
         }
+        if (value.grant !== undefined) this.writeSubagentGrant(value.id, value.grant);
         return this.mapConversation(existing);
       }
 
@@ -1061,13 +1069,15 @@ export class SqliteConversationService implements ConversationService {
             revision, status, active_turn_id, owning_issue_id, project_id,
             last_seq, created_at, updated_at, deleted_at,
             kind, parent_conversation_id, parent_turn_id, depth,
-            subagent_type, subagent_name, subagent_status, subagent_meta
+            subagent_type, subagent_name, subagent_status, subagent_meta,
+            subagent_grant
           ) VALUES (
             @id, @createRequestId, @agentId, @agentName, @title,
             1, 'idle', NULL, @owningIssueId, @projectId,
             0, @createdAt, @updatedAt, NULL,
             'subagent', @parentConversationId, @parentTurnId, @depth,
-            @subagentType, @subagentName, @subagentStatus, @subagentMeta
+            @subagentType, @subagentName, @subagentStatus, @subagentMeta,
+            @subagentGrant
           )
         `)
         .run({
@@ -1089,15 +1099,25 @@ export class SqliteConversationService implements ConversationService {
           subagentName: value.subagent.name ?? null,
           subagentStatus: value.subagent.status,
           subagentMeta: JSON.stringify(subagentMeta(value.subagent)),
+          subagentGrant: value.grant ? JSON.stringify(value.grant) : null,
         });
       return this.mapConversation(this.requireConversationRow(value.id));
     })(input);
   }
 
   putSubagentGrant(id: string, grant: SubagentGrant | undefined): void {
-    // No revision bump and no `updated_at` touch: the grant is gateway-internal
-    // (it is not in `ConversationSummary`), so a client's optimistic-concurrency
-    // token must not move because a child was re-prepared.
+    this.writeSubagentGrant(id, grant);
+  }
+
+  /**
+   * The grant write itself, so {@link createSubagent} can perform it inside its
+   * own transaction.
+   *
+   * No revision bump and no `updated_at` touch: the grant is gateway-internal
+   * (it is not in `ConversationSummary`), so a client's optimistic-concurrency
+   * token must not move because a child was re-prepared.
+   */
+  private writeSubagentGrant(id: string, grant: SubagentGrant | undefined): void {
     this.db
       .prepare('UPDATE conversations SET subagent_grant = @grant WHERE id = @id')
       .run({ id, grant: grant ? JSON.stringify(grant) : null });

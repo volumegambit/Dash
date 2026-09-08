@@ -51,6 +51,18 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
     },
 
     createChild(input: ChildConversationInput): void {
+      // The child's GRANT, beside the row rather than in it: `subagent_meta` is
+      // the mobile contract's user-visible half and carries no tool or MCP
+      // field, so without this a resume has nothing to rebuild a spec from
+      // (design §5.2). Written on the idempotent create a RESUME performs too,
+      // so a grant narrowed by the parent's current config replaces the stored
+      // one instead of drifting behind it.
+      //
+      // It travels IN the create so both writes share one transaction: as two
+      // writes, a process death between them left a durable child row with no
+      // grant, and `effectiveGrantOf`/`reconstructChildSpec` both refuse such a
+      // row for good (`its grant cannot be rebuilt`).
+      const spec = specs.get(input.id);
       conversations.createSubagent({
         id: input.id,
         agentId: input.agentId,
@@ -59,15 +71,8 @@ export function createChildTurnDriver(options: ChildTurnDriverOptions): ChildTur
         parentTurnId: input.parentTurnId,
         title: input.title,
         subagent: toSubagentInfo(input.subagent),
+        ...(spec ? { grant: grantFromSpec(spec) } : {}),
       });
-      // The child's GRANT, beside the row rather than in it: `subagent_meta` is
-      // the mobile contract's user-visible half and carries no tool or MCP
-      // field, so without this a resume has nothing to rebuild a spec from
-      // (design §5.2). Written on the idempotent create a RESUME performs too,
-      // so a grant narrowed by the parent's current config replaces the stored
-      // one instead of drifting behind it.
-      const spec = specs.get(input.id);
-      if (spec) conversations.putSubagentGrant(input.id, grantFromSpec(spec));
     },
 
     startTurn({ agentId, conversationId, text, requestId }): { turnId: string } {
