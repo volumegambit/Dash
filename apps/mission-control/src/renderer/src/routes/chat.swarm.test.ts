@@ -153,6 +153,18 @@ describe('groupSubagentEvents', () => {
     expect(groups.map((g) => g.anchorIndex)).toEqual([0, 2]);
   });
 
+  // Divergence 3 of the three D1 found: groups come out in ANCHOR order, not in
+  // the order their ids were first seen. The two sequences only differ when a
+  // child's first event in the message is not its start — crash-reconcile and
+  // mid-turn attach both produce that — so the test above, whose fixture has
+  // the same order either way, cannot fail when the sort is removed.
+  it('orders groups by anchor even when a child is first seen on a non-start event', () => {
+    const events = [workerStatus('b'), started('a'), started('b')];
+    const groups = groupSubagentEvents(events, true);
+    expect(groups.map((g) => g.subagentId)).toEqual(['a', 'b']);
+    expect(groups.map((g) => g.anchorIndex)).toEqual([1, 2]);
+  });
+
   it('carries the newest progress detail and toolCallCount while running', () => {
     const events = [
       started('a'),
