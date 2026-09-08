@@ -104,6 +104,34 @@ function mcpPatternMatches(pattern: string, qualified: string): boolean {
   return qualified.startsWith(`${rest}__`);
 }
 
+/**
+ * Subtracts a definition's `disallowedTools` from an EXPLICIT tool list.
+ *
+ * {@link resolveChildTools} applies the denial to the parent's sets while it
+ * builds a grant, but the `spawn_worker` facade passes the model's explicit
+ * `tools` array through as an override that REPLACES that grant, so the denial
+ * has to be re-applied to the override itself. Without this, an operator who
+ * shadows a built-in with `disallowed-tools: [bash]` has it honoured on the
+ * `agent` path and silently ignored on the legacy one.
+ *
+ * Subtraction only — deliberately NOT an intersection with the resolved
+ * grant, which would change the legacy refusal semantics `validateTools` is
+ * there to give.
+ */
+export function subtractDisallowedTools(
+  tools: readonly string[],
+  disallowed: readonly string[] | undefined,
+): string[] {
+  if (!disallowed || disallowed.length === 0) return [...tools];
+  const deniedBuiltins = new Set(disallowed.filter((d) => !d.startsWith(MCP_PREFIX)));
+  const mcpDenies = disallowed.filter((d) => d.startsWith(MCP_PREFIX));
+  return tools.filter((t) =>
+    t.startsWith(MCP_PREFIX)
+      ? !mcpDenies.some((d) => mcpPatternMatches(d, t.slice(MCP_PREFIX.length)))
+      : !deniedBuiltins.has(t),
+  );
+}
+
 function zeroToolsError(entries: string[]): Error {
   const detail = entries.length
     ? entries.join(', ')

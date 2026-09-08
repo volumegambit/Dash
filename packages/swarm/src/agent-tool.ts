@@ -8,6 +8,7 @@ import {
   preloadSkills,
   resolveChildModel,
   resolveChildTools,
+  subtractDisallowedTools,
 } from './resolve-spawn.js';
 import { DEFAULT_SUBAGENT_TYPE } from './subagent-status.js';
 import {
@@ -285,7 +286,12 @@ export function createChildSpawnSeam(opts: CreateAgentToolsOptions): ChildSpawnS
     // MCP grant to whatever it names (a legacy `tools: ["read","bash"]` names
     // no MCP tool, so a facade spawn carries none — exactly what the legacy
     // path granted).
-    const tools = req.toolsOverride ?? grant.tools;
+    // …and the definition's own denials still apply to it: they were subtracted
+    // while `grant` was built, and an override that replaced the grant would
+    // otherwise re-admit them (`subtractDisallowedTools`, subtraction only).
+    const tools = req.toolsOverride
+      ? subtractDisallowedTools(req.toolsOverride, type.disallowedTools)
+      : grant.tools;
     const mcpTools = req.toolsOverride
       ? grant.mcpTools.filter((m) => req.toolsOverride?.includes(m))
       : grant.mcpTools;

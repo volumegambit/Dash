@@ -257,6 +257,33 @@ describe('createSwarmTools', () => {
       ).rejects.toThrow(/the orchestrator does not have it/);
     });
 
+    it('spawn_worker CANNOT re-admit a tool the shadowing definition disallows', async () => {
+      // B3 lets a workspace or plugin definition shadow a built-in by name, and
+      // `definitionToType` maps `disallowed-tools:` through. The denial is
+      // subtracted while the grant is built, but the facade's explicit `tools`
+      // REPLACES that grant — so without the subtraction the operator's policy
+      // holds on the `agent` path and is ignored here.
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      coord.attach(baseAttach());
+      const shadowed = builtinSubagentTypes().map((t) =>
+        t.name === 'general-purpose' ? { ...t, disallowedTools: ['bash'] } : t,
+      );
+      const tools = createSwarmTools({
+        ...facadeOptions(coord),
+        resolver: createStaticResolver(shadowed),
+      });
+      const byName = new Map(tools.map((t) => [t.name, t]));
+      await tool(byName, 'spawn_worker').execute('c1', {
+        role: 'r',
+        brief: 'b',
+        tools: ['read', 'bash'],
+      });
+      await waitForSpecs(specs, 1);
+      expect(specs[0].tools).toEqual(['read']);
+      expect(specs[0].tools).not.toContain('bash');
+    });
+
     it('spawn_worker keeps its legacy result shape (E1 assertion 8 reads it)', async () => {
       const { byName } = setup();
       const res = await tool(byName, 'spawn_worker').execute('c1', {
