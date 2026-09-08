@@ -52,6 +52,30 @@ const STATUS_DOT: Record<SubagentStatus, string> = {
  */
 export function SwarmPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const subagents = useChatStore((state) => state.subagents);
+  const subscribeSubagent = useChatStore((state) => state.subscribeSubagent);
+  const unsubscribeSubagent = useChatStore((state) => state.unsubscribeSubagent);
+
+  // Design §7.2: a client subscribes to a child "when a row is expanded or a
+  // tasks panel is open". Only the NON-TERMINAL ones: a finished child emits
+  // nothing, so a socket for it watches nothing — and that is also the bound on
+  // how many this can open at once, since the list is depth-0 children of one
+  // conversation.
+  //
+  // Joined into a string so the effect re-runs when the SET changes and not on
+  // every list read: `refreshSubagents` replaces `subagents` wholesale, so the
+  // array identity changes every twenty seconds whether anything moved or not.
+  const live = subagents
+    .filter((entry) => !isTerminalSubagentStatus(rowStatusOf(entry.status)))
+    .map((entry) => entry.id);
+  const liveKey = live.join(',');
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `liveKey` is the identity of `live`; depending on the array itself would re-subscribe on every list read
+  useEffect(() => {
+    const held = liveKey ? liveKey.split(',') : [];
+    for (const id of held) subscribeSubagent(id);
+    return () => {
+      for (const id of held) unsubscribeSubagent(id);
+    };
+  }, [liveKey, subscribeSubagent, unsubscribeSubagent]);
 
   return (
     <div

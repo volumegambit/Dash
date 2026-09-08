@@ -169,3 +169,53 @@ describe('SwarmPanel', () => {
     expect(useChatStore.getState().subagentUi.sub_a?.expanded).toBe(true);
   });
 });
+
+// Design §7.2: clients "subscribe to it live (§7.6) when a row is expanded or a
+// tasks panel is open". Ruling 1's second half.
+describe('SwarmPanel subscriptions', () => {
+  const parentConversation = {
+    id: 'parent-1',
+    agentId: 'agent-1',
+    agentName: 'Developer',
+    title: 'Gateway conversation',
+    revision: 2,
+    status: 'idle' as const,
+    activeTurnId: null,
+    owningIssueId: null,
+    projectId: null,
+    lastSeq: 0,
+    lastMessagePreview: '',
+    createdAt: START,
+    updatedAt: START,
+    kind: 'user' as const,
+    origin: 'gateway' as const,
+    offline: false,
+    readOnly: false,
+  };
+
+  it('holds a live child while it is open, and lets it go when it closes', async () => {
+    useChatStore.setState({ conversations: [parentConversation], subagents: [entry()] });
+
+    const view = render(<SwarmPanel onClose={() => undefined} />);
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    view.unmount();
+
+    await waitFor(() => expect(mockApi.subagentUnsubscribe).toHaveBeenCalledWith('sub_a'));
+  });
+
+  // A terminal child emits nothing, so a socket for it is a socket for nothing.
+  // This is the bound on ruling 5's stampede: the panel opens at most one per
+  // NON-TERMINAL depth-0 child, and the design's own worked example is eight.
+  it('holds nothing for a child that has already finished', async () => {
+    useChatStore.setState({
+      conversations: [parentConversation],
+      subagents: [entry({ id: 'sub_done', status: 'done', endedAt: END })],
+    });
+
+    render(<SwarmPanel onClose={() => undefined} />);
+    await waitFor(() => expect(screen.getByTestId('swarm-subagent-sub_done')).toBeInTheDocument());
+
+    expect(mockApi.subagentSubscribe).not.toHaveBeenCalled();
+  });
+});

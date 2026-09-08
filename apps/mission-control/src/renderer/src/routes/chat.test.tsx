@@ -5,7 +5,7 @@ import type {
   MobileWsServerFrame,
   SubagentListEntry,
 } from '@dash/mobile-contract';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { mockApi } from '../../../../vitest.setup.js';
 import { type McAgentEvent, unwrapChatIpcResult } from '../../../shared/ipc.js';
@@ -1284,6 +1284,91 @@ describe('MessageBubble sub-agent cards', () => {
 
     expect(screen.getByTestId('subagent-reply-input-sub_a')).not.toBeDisabled();
     expect(screen.getByTestId('subagent-reply-button-sub_a')).not.toBeDisabled();
+  });
+
+  // Ruling 1: subscribe exactly while the card is expanded. The parent's own
+  // conversation has to be in the store for the hold to be addressable — a
+  // child rides its parent's agent id.
+  const parentConversation: McConversationView = {
+    ...gatewayConversation,
+    id: 'parent-1',
+    agentId: 'agent-1',
+  };
+
+  it("holds the child's stream while the card is open, and lets it go on collapse", async () => {
+    useChatStore.setState({ conversations: [parentConversation] });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    await waitFor(() => expect(mockApi.subagentUnsubscribe).toHaveBeenCalledWith('sub_a'));
+  });
+
+  // Ruling 7. A grandchild has no toggle, so it cannot be expanded — and it
+  // must not take a hold on its own account either.
+  it('takes no hold for a card that cannot be opened', async () => {
+    useChatStore.setState({ conversations: [parentConversation] });
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        {
+          id: 'cm1',
+          conversationId: 'sub_a',
+          turnId: 't1',
+          ordinal: 1,
+          role: 'assistant',
+          status: 'completed',
+          content: {
+            type: 'assistant',
+            events: [{ ...started, subagentId: 'sub_b', depth: 2, description: 'Grandchild' }],
+          },
+          createdAt: START,
+          updatedAt: START,
+        },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+
+    expect(await screen.findByTestId('subagent-card-sub_b')).toBeInTheDocument();
+    expect(mockApi.subagentSubscribe).not.toHaveBeenCalledWith('agent-1', 'sub_b');
+  });
+
+  // The whole point of D7b: an open card grows on its own, with no re-fetch and
+  // no action by the user.
+  it('grows while it is open, from the child’s own stream', async () => {
+    useChatStore.setState({ conversations: [parentConversation] });
+
+    render(<MessageBubble message={assistantMessage([started])} conversationKey={CARD_KEY} />);
+    fireEvent.click(screen.getByTestId('subagent-card-toggle-sub_a'));
+    await waitFor(() => expect(mockApi.subagentSubscribe).toHaveBeenCalledWith('agent-1', 'sub_a'));
+
+    await act(async () => {
+      await useChatStore.getState().applyFrame({
+        type: 'accepted',
+        id: 'child-turn-1',
+        conversationId: 'sub_a',
+        userMessageId: 'child-user-1',
+        assistantMessageId: 'child-assistant-1',
+        revision: 3,
+        seq: 41,
+      } as MobileWsServerFrame);
+      await useChatStore.getState().applyFrame({
+        type: 'event',
+        id: 'child-turn-1',
+        conversationId: 'sub_a',
+        seq: 42,
+        event: { type: 'text_delta', text: 'arriving live' },
+      } as MobileWsServerFrame);
+    });
+
+    expect(await screen.findByText('arriving live')).toBeInTheDocument();
   });
 
   it('disables the composer of a running one-shot child and says why', async () => {

@@ -971,6 +971,8 @@ function SubagentCard({
   const setSubagentDraft = useChatStore((state) => state.setSubagentDraft);
   const dismissSubagentNotice = useChatStore((state) => state.dismissSubagentNotice);
   const resumeSubagent = useChatStore((state) => state.resumeSubagent);
+  const subscribeSubagent = useChatStore((state) => state.subscribeSubagent);
+  const unsubscribeSubagent = useChatStore((state) => state.unsubscribeSubagent);
 
   const nested = depth >= 1;
   // Everything that acts on the child, or stores state about it, is gated on
@@ -1008,6 +1010,19 @@ function SubagentCard({
   useEffect(() => {
     if (open) void loadSubagentTranscript(group.subagentId);
   }, [open, group.subagentId, loadSubagentTranscript]);
+
+  // §8.3: subscribe while the row is expanded, so the body below grows on its
+  // own instead of showing whatever the last fetch happened to catch. Gated on
+  // `open`, which already carries `!nested` and "on the selected conversation"
+  // — a grandchild has no toggle and a card on somebody else's transcript has
+  // no list to address. The store refcounts and defers the release, so the
+  // remount this component goes through when the parent's turn ends costs
+  // nothing.
+  useEffect(() => {
+    if (!open) return;
+    subscribeSubagent(group.subagentId);
+    return () => unsubscribeSubagent(group.subagentId);
+  }, [open, group.subagentId, subscribeSubagent, unsubscribeSubagent]);
 
   const meta = [formatToolCount(group.toolCallCount)];
   if (elapsed !== null) meta.push(formatSubagentElapsed(elapsed));
