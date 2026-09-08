@@ -98,6 +98,28 @@ describe('AgentDetail', () => {
     });
   });
 
+  // Agent-detail refinement (2026-09-07), findings 13 + 14.
+  describe('Overview tab', () => {
+    it('shows status once, in the header badge, never as a raw row', async () => {
+      const registered = { ...activeAgent, status: 'registered' as const };
+      mockApi.agentsList.mockResolvedValue([registered]);
+      useAgentsStore.setState({ agents: [registered], loading: false, error: null });
+      render(<AgentDetail />);
+      // The badge folds `registered` into "active"; the Agent Info card used
+      // to print the raw enum beside it, so the page disagreed with itself.
+      expect(await screen.findByText('active')).toBeInTheDocument();
+      expect(screen.queryByText('registered')).not.toBeInTheDocument();
+      expect(screen.queryByText('Status')).not.toBeInTheDocument();
+    });
+
+    it('has no permanent Recent Activity placeholder', async () => {
+      render(<AgentDetail />);
+      expect(await screen.findByText('Agent Info')).toBeInTheDocument();
+      expect(screen.queryByText('Recent Activity')).not.toBeInTheDocument();
+      expect(screen.queryByText('No activity recorded.')).not.toBeInTheDocument();
+    });
+  });
+
   describe('Tools card', () => {
     function renderWithTools(tools: string[]): void {
       const agent = { ...activeAgent, config: { ...activeAgent.config, tools } };

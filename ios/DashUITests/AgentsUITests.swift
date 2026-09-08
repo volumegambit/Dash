@@ -133,6 +133,32 @@ final class AgentsUITests: DashUITestCase {
     waitUntilSelected(tab("tab.conversations", in: app))
   }
 
+  /// Agent detail refinement (2026-09-07, finding 3): a disabled agent keeps
+  /// its Start Chat button — a disabled control explains the state where a
+  /// missing one would not — but the button must not be actionable.
+  func testDisabledAgentCannotStartChat() {
+    let app = launch(scenario: "agents")
+    openAgent("sleeping-agent", in: app)
+    let startChat = element("agent.startChat", in: app)
+    XCTAssertFalse(startChat.isEnabled, "Start Chat must be disabled for a disabled agent")
+
+    openAgent("research-agent", in: app)
+    XCTAssertTrue(element("agent.startChat", in: app).isEnabled)
+  }
+
+  /// Finding 1: a section header is a promise that content follows. The
+  /// fixture agents carry none of the optional configuration values, so no
+  /// "Configuration" header may render for them.
+  func testDetailOmitsEmptyConfigurationSection() {
+    let app = launch(scenario: "agents")
+    openAgent("research-agent", in: app)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["agent.tools.list"].waitForExistence(timeout: 5))
+    // iOS 18 upper-cases section headers, so match either rendering.
+    XCTAssertFalse(app.staticTexts["Configuration"].exists)
+    XCTAssertFalse(app.staticTexts["CONFIGURATION"].exists)
+  }
+
   func testAgentMemorySectionListsAndDeletes() {
     let app = launch(scenario: "agents")
     openAgent("research-agent", in: app)

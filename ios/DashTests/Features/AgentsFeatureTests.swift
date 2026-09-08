@@ -1308,3 +1308,83 @@ struct ModelCatalogTests {
     #expect(ModelCatalog.grouped(kimi, query: "Moonshot AI").map(\.provider) == ["moonshotai"])
   }
 }
+
+/// `AgentDetailPresentation` — the pure decisions behind the agent detail
+/// screen (2026-09-07 refinement): which sections earn a header, whether
+/// Start Chat is offered, and when a system prompt needs a clamp.
+@Suite("AgentDetailPresentation")
+struct AgentDetailPresentationTests {
+  private func config(
+    fallbackModels: [String]? = nil,
+    workspace: String? = nil,
+    maxTokens: Int? = nil,
+    providers: [String]? = nil,
+    plugins: [String]? = nil
+  ) -> AgentConfigDTO {
+    AgentConfigDTO(
+      name: "Agent",
+      model: "openai/gpt-5",
+      systemPrompt: "Be brief",
+      fallbackModels: fallbackModels,
+      tools: ["read"],
+      skills: nil,
+      workspace: workspace,
+      maxTokens: maxTokens,
+      mcpServers: nil,
+      swarm: nil,
+      plugins: plugins,
+      providers: providers
+    )
+  }
+
+  @Test("Configuration section is omitted when every optional is absent or empty")
+  func configurationOmittedWhenEmpty() {
+    #expect(AgentDetailPresentation.hasConfiguration(config()) == false)
+    #expect(
+      AgentDetailPresentation.hasConfiguration(
+        config(fallbackModels: [], workspace: "", providers: [], plugins: [])
+      ) == false
+    )
+  }
+
+  @Test("Configuration section appears for any single populated value")
+  func configurationShownForAnyValue() {
+    #expect(AgentDetailPresentation.hasConfiguration(config(fallbackModels: ["openai/gpt-5-mini"])))
+    #expect(AgentDetailPresentation.hasConfiguration(config(workspace: "/srv/app")))
+    #expect(AgentDetailPresentation.hasConfiguration(config(maxTokens: 4096)))
+    #expect(AgentDetailPresentation.hasConfiguration(config(providers: ["openai"])))
+    #expect(AgentDetailPresentation.hasConfiguration(config(plugins: ["dash-core-providers"])))
+  }
+
+  @Test("Start Chat needs an online gateway and an agent that is not disabled")
+  func startChatGating() {
+    #expect(AgentDetailPresentation.canStartChat(status: .registered, online: true))
+    #expect(AgentDetailPresentation.canStartChat(status: .active, online: true))
+    #expect(AgentDetailPresentation.canStartChat(status: .disabled, online: true) == false)
+    #expect(AgentDetailPresentation.canStartChat(status: .registered, online: false) == false)
+  }
+
+  @Test("Start Chat hint explains the blocking condition, offline first")
+  func startChatHint() {
+    #expect(AgentDetailPresentation.startChatHint(status: .registered, online: true) == "")
+    #expect(
+      AgentDetailPresentation.startChatHint(status: .disabled, online: true)
+        == "Enable this agent to start a conversation"
+    )
+    #expect(
+      AgentDetailPresentation.startChatHint(status: .disabled, online: false)
+        == "Connect to the gateway to start a conversation"
+    )
+  }
+
+  @Test("System prompt is long when it has many lines or many characters")
+  func promptClamp() {
+    #expect(AgentDetailPresentation.isPromptLong("Research carefully") == false)
+    let fiveLines = Array(repeating: "line", count: 5).joined(separator: "\n")
+    #expect(AgentDetailPresentation.isPromptLong(fiveLines) == false)
+    let sevenLines = Array(repeating: "line", count: 7).joined(separator: "\n")
+    #expect(AgentDetailPresentation.isPromptLong(sevenLines))
+    let wall = String(repeating: "x", count: 400)
+    #expect(AgentDetailPresentation.isPromptLong(wall))
+  }
+}
