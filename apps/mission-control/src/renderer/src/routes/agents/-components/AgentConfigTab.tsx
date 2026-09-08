@@ -1,6 +1,6 @@
 import type { PluginRecord, RuntimePluginProvider } from '@dash/management';
 import type { AgentSubagentsConfig, AgentSwarmConfig, GatewayAgent } from '@dash/mc';
-import { subagentsEnabledFor } from '@dash/mc';
+import { subagentsEnabledFor } from '@dash/mc/gateway-client';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpConnectorInfo } from '../../../../../shared/ipc.js';

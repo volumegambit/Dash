@@ -1,5 +1,5 @@
 import type { ConversationRef, McConversationView, McMessage } from '@dash/mc';
-import { subagentsEnabledFor } from '@dash/mc';
+import { subagentsEnabledFor } from '@dash/mc/gateway-client';
 import type { ConversationMessage, MobileImage, MobileWsServerFrame } from '@dash/mobile-contract';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import hljs from 'highlight.js/lib/core';

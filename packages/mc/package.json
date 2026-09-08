@@ -12,6 +12,10 @@
     "./provider-keys": {
       "import": "./dist/runtime/provider-keys.js",
       "types": "./dist/runtime/provider-keys.d.ts"
+    },
+    "./gateway-client": {
+      "import": "./dist/runtime/gateway-client.js",
+      "types": "./dist/runtime/gateway-client.d.ts"
     }
   },
   "scripts": {
