@@ -824,14 +824,30 @@ function SubagentCluster({
   // told otherwise" — an unvisited group has no record at all.
   const collapsed =
     useChatStore((state) => state.subagentUi[anchorId]?.groupCollapsed === true) && interactive;
+  // The summary line and the dots count the RESOLVED statuses, through the
+  // same list and the same gate as the cards beneath them, so the header can
+  // never disagree with what it heads. `interactive` here is exactly the
+  // card's `onSelectedConversation` (a group is never nested-only), which is
+  // what gates the card's own list lookup. The lock is on
+  // `formatClusterSummary`, not on its argument: the function is untouched.
+  const entries = useChatStore((state) => (interactive ? state.subagents : undefined));
+  const shown = entries
+    ? groups.map((group) => ({
+        ...group,
+        status: resolveSubagentStatus(
+          group,
+          entries.find((entry) => entry.id === group.subagentId),
+        ),
+      }))
+    : groups;
   const multi = groups.length > 1;
   const showCards = !multi || !collapsed;
   const summary = (
     <>
       <Users size={10} className="shrink-0" />
-      <span className="min-w-0 truncate">{formatClusterSummary(groups)}</span>
+      <span className="min-w-0 truncate">{formatClusterSummary(shown)}</span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {groups.map((group) => (
+        {shown.map((group) => (
           <span
             key={group.subagentId}
             className={`inline-block h-1.5 w-1.5 rounded-full ${SUBAGENT_DOT_COLOR[group.status]}`}

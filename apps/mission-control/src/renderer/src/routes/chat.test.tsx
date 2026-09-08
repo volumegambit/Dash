@@ -868,6 +868,57 @@ describe('MessageBubble sub-agent cards', () => {
     expect(screen.queryByTestId('subagent-group-toggle-sub_a')).not.toBeInTheDocument();
   });
 
+  // The header counts what the cards beneath it count. The broad trigger is an
+  // ordinary `background: true` fan-out: those children outlive the parent
+  // turn, so no event ever moves the fold again and only the list read knows
+  // what became of them. Left on the fold, the summary line and the dot strip
+  // would contradict the cards under them for the life of the conversation.
+  it('counts the resolved statuses in the group summary and dots, as its cards do', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          { ...started, background: true },
+          finishedEvent,
+          { ...started, subagentId: 'sub_b', name: 'planner', background: true },
+        ])}
+        conversationKey={CARD_KEY}
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'running');
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 2 running');
+    const dot = screen.getByTestId('subagent-group-dot-sub_a');
+    expect(dot).toHaveAttribute('title', 'code-reviewer: running');
+    expect(dot.className).toContain('bg-accent');
+  });
+
+  // Off the selected conversation the fold is the only honest source — the
+  // list describes somebody else's children — so the summary line and the dots
+  // stay on it, exactly as the cards beneath them do.
+  it('leaves the group summary and dots on the fold off the selected conversation', () => {
+    useChatStore.setState({ subagents: [entry({ status: 'running' })] });
+
+    render(
+      <MessageBubble
+        message={assistantMessage([
+          { ...started, background: true },
+          finishedEvent,
+          { ...started, subagentId: 'sub_b', name: 'planner', background: true },
+        ])}
+        conversationKey="local:parent-1"
+      />,
+    );
+
+    expect(screen.getByTestId('subagent-card-sub_a')).toHaveAttribute('data-status', 'done');
+    expect(screen.getByTestId('subagent-group')).toHaveTextContent('2 agents · 1 running · 1 done');
+    expect(screen.getByTestId('subagent-group-dot-sub_a')).toHaveAttribute(
+      'title',
+      'code-reviewer: done',
+    );
+  });
+
   it('collapses a parallel group as a unit', () => {
     render(
       <MessageBubble

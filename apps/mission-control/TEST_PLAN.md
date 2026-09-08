@@ -1864,6 +1864,7 @@ Until the legacy mirrors are removed, the gateway emits **both** families for ev
 4. Prompt the agent to spawn one child, say something, then spawn another (so ordinary text sits between the two starts). **Verify:** they render as **two** separate rows with **no** group chrome — a group is adjacent children only.
 5. **Verify:** a lone child never draws a summary line or dot strip.
 6. Open the same conversation from a project task's own session view (Section 27, a task with a linked session). **Verify:** the cards there are read-only — no expand toggle, no group toggle, no reply box — but a child parked on a question still shows its question in yellow. The sub-agent list belongs to the conversation the **Chat** route has selected, so a card outside it must never claim to describe a child it cannot re-read.
+7. Spawn **two `background: true` children** back to back, let the parent turn end, and wait for both to finish (no event reaches the parent after its turn ends, so the cards flip on the next list re-read, within 20 s). **Verify:** the summary line and both dots follow the cards — `2 agents · 2 done`, not `2 agents · 2 running`. The header counts the same resolved statuses its cards do; it never keeps counting this message's own fold while the cards beneath it read the server.
 
 ## Appendix: Test Run Log
 
