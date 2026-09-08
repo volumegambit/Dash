@@ -31,8 +31,7 @@ export function renderHeaders(csp) {
 }
 
 const invokedDirectly =
-  process.argv[1] !== undefined &&
-  fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
 
 if (invokedDirectly) {
   const dist = process.argv[2];

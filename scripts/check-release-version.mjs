@@ -7,7 +7,7 @@
 //   node scripts/check-release-version.mjs v1.2.3
 //   node scripts/check-release-version.mjs            # uses $GITHUB_REF_NAME
 import { realpathSync } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -92,8 +92,7 @@ export async function checkReleaseVersion({ root, ref }) {
 }
 
 const invokedDirectly =
-  process.argv[1] !== undefined &&
-  fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
 
 if (invokedDirectly) {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
