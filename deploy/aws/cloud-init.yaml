@@ -1,0 +1,188 @@
+#cloud-config
+# First-boot bootstrap for the Dash production relay host. Rendered by
+# Terraform's templatefile(): a dollar-brace is a Terraform variable; a doubled
+# dollar sign escapes a literal shell/compose reference. Runs ONCE on first
+# boot — changes here need a rebuilt host.
+
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - fail2ban
+  - unattended-upgrades
+  - sqlite3
+  - awscli
+
+timezone: Etc/UTC
+
+groups:
+  - docker
+
+users:
+  - default
+  # GitHub Actions deploys as this user: key-only, no sudo, docker group so
+  # deploy.sh can run compose. Home holds nothing; the stack lives in /srv.
+  - name: deploy
+    gecos: Dash deploy (GitHub Actions)
+    shell: /bin/bash
+    groups: [docker]
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "${deploy_public_key}"
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/60-dash.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      MaxAuthTries 3
+
+  - path: /etc/fail2ban/jail.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 5
+      bantime = 1h
+
+  - path: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    permissions: "0644"
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "20:00";
+
+  # Docker ships every container's stdout/stderr to CloudWatch through the
+  # instance role — no agent, no keys. One stream per container.
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "awslogs",
+        "log-opts": {
+          "awslogs-region": "${region}",
+          "awslogs-group": "${log_group}",
+          "tag": "{{.Name}}"
+        }
+      }
+
+  # Traefik: the only public listener. Wildcard cert via Cloudflare DNS-01,
+  # same resolver name (cfdns) deploy/server/docker-compose.yml defaults to.
+  - path: /srv/traefik/docker-compose.yml
+    permissions: "0644"
+    content: |
+      services:
+        traefik:
+          image: traefik:v3.4
+          container_name: traefik
+          restart: unless-stopped
+          command:
+            - --providers.docker=true
+            - --providers.docker.exposedbydefault=false
+            - --providers.docker.network=traefik
+            - --entrypoints.web.address=:80
+            - --entrypoints.web.http.redirections.entrypoint.to=websecure
+            - --entrypoints.web.http.redirections.entrypoint.scheme=https
+            - --entrypoints.websecure.address=:443
+            - --certificatesresolvers.cfdns.acme.dnschallenge=true
+            - --certificatesresolvers.cfdns.acme.dnschallenge.provider=cloudflare
+            - --certificatesresolvers.cfdns.acme.email=$${ACME_EMAIL}
+            - --certificatesresolvers.cfdns.acme.storage=/letsencrypt/acme-cfdns.json
+            - --log.level=INFO
+          ports:
+            - "80:80"
+            - "443:443"
+          environment:
+            CF_DNS_API_TOKEN: $${CF_DNS_API_TOKEN}
+          volumes:
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+            - traefik-letsencrypt:/letsencrypt
+          networks:
+            - traefik
+      networks:
+        traefik:
+          external: true
+      volumes:
+        traefik-letsencrypt: {}
+
+  - path: /srv/traefik/.env.example
+    permissions: "0644"
+    content: |
+      # Copy to .env (chmod 600). Never written by Terraform or cloud-init.
+      # Cloudflare API token scoped to Zone / DNS / Edit on the relay zone's domain.
+      CF_DNS_API_TOKEN=
+      ACME_EMAIL=${acme_email}
+
+  # Nightly logical backup: SQLite online .backup of both stores (no downtime),
+  # gzip, upload to S3 via the instance role. EBS snapshots are the second copy.
+  - path: /usr/local/bin/dash-backup
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      BUCKET="${backup_bucket}"
+      DAY="$(date -u +%Y/%m/%d)"
+      TMP="$(mktemp -d)"
+      trap 'rm -rf "$TMP"' EXIT
+      for db in /srv/dash-server/data/relay/relay-creds.db /srv/dash-server/data/cp/control-plane.db; do
+        [ -f "$db" ] || continue
+        name="$(basename "$db")"
+        sqlite3 "$db" ".backup '$TMP/$name'"
+        gzip -9 "$TMP/$name"
+        aws s3 cp "$TMP/$name.gz" "s3://$BUCKET/$DAY/$name.gz" --only-show-errors
+        echo "backed up $name to s3://$BUCKET/$DAY/"
+      done
+
+  - path: /etc/systemd/system/dash-backup.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Nightly Dash SQLite backup to S3
+      After=docker.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/dash-backup
+
+  - path: /etc/systemd/system/dash-backup.timer
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Run dash-backup nightly
+
+      [Timer]
+      OnCalendar=*-*-* 19:30:00 UTC
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+
+runcmd:
+  # Docker Engine + compose plugin from Docker's own apt repository.
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >-
+    sh -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable"
+    > /etc/apt/sources.list.d/docker.list'
+  - apt-get update -q
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - systemctl enable --now docker
+  - docker network create traefik || true
+  # Stack layout. The image runs as uid 1000 (node) → data dirs are 1000:1000
+  # on purpose (that is `ubuntu` on this host, not `deploy`). `deploy` owns the
+  # stack dir so deploy.sh can rewrite .env.
+  - mkdir -p /srv/dash-server/data/relay /srv/dash-server/data/cp /srv/dash-server/secrets
+  - chown -R 1000:1000 /srv/dash-server/data
+  - chown deploy:deploy /srv/dash-server /srv/dash-server/secrets
+  - chmod 750 /srv/dash-server/secrets
+  - systemctl daemon-reload
+  - systemctl enable --now dash-backup.timer
+  - systemctl enable --now fail2ban
+  - systemctl restart ssh
+
+final_message: "dash relay host bootstrapped after $UPTIME seconds — next: /srv/traefik/.env, then the runbook (deploy/README.md §5)"
