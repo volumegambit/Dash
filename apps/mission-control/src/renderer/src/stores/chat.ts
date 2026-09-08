@@ -1133,18 +1133,39 @@ export const useChatStore = create<ChatState>((set, get) => {
         // a `done`, a restored stream, a resume — can land while a turn is
         // still streaming into this card, and the server's copy of a live row
         // is a snapshot taken before the events this store already holds.
-        const live = new Set(
-          existing
-            .filter((row) => local?.has(row.id) && row.status === 'streaming')
-            .map((row) => row.id),
-        );
+        //
+        // Both halves of ruling 3, and web paid four rounds for the pair
+        // (`apps/web/src/state/store.ts`, D2 fix round 4). GUARD 2 — never
+        // overwrite a finished row with an emptier one — lives in
+        // `applySubagentFrame`'s `done`. GUARD 1 is here: clear the local
+        // stream exactly when the SERVER says that turn is over. Without it a
+        // `done` that fell in a reconnect gap is never recoverable — the
+        // restore's re-read drops the server's `completed` copy in favour of
+        // the fragment, and no further `done` is coming for that turn.
         const serverIds = new Set(items.map((row) => row.id));
         const serverTurns = new Set(items.map((row) => row.turnId));
+        const serverStatus = new Map(items.map((row) => [row.id, row.status]));
+        // A row the page does not carry at all counts as UNFINISHED, so a turn
+        // that started while the fetch was in flight is kept rather than
+        // wiped. That is the interleaving web's guard 1 broke on first.
+        const finishedOnServer = (row: ConversationMessage): boolean =>
+          (serverStatus.get(row.id) ?? 'streaming') !== 'streaming';
+        const live = new Set(
+          existing
+            .filter(
+              (row) => local?.has(row.id) && row.status === 'streaming' && !finishedOnServer(row),
+            )
+            .map((row) => row.id),
+        );
+        // The same predicate, and it has to be in BOTH: a row dropped from
+        // `live` still matches the `streaming` escape below, and would then
+        // survive BESIDE the server's copy — two rows for one turn.
         const kept = existing.filter(
           (row) =>
             local?.has(row.id) === true &&
-            // Still streaming: only this store knows how far it has got.
-            (row.status === 'streaming' ||
+            // Still streaming, and the server agrees: only this store knows
+            // how far it has got.
+            ((row.status === 'streaming' && !finishedOnServer(row)) ||
               // Otherwise it survives exactly until the server has it, by id or
               // by turn. That is what stops the user's own sentence appearing
               // twice once the child's turn is persisted.

@@ -1541,10 +1541,12 @@ describe('sub-agent live transcripts', () => {
     });
   });
 
-  // The case the `streaming` clause exists for, and the one a re-read can
-  // destroy: the server HAS this row, and its copy is a snapshot taken before
-  // the events this store is holding. Ruling 3 — never clear a live pending on
-  // a re-read.
+  // The CONTROL for the test below, and the other direction of ruling 3's
+  // guard 1: the server has this row and still says it is `streaming`, so its
+  // copy is a snapshot taken before the events this store is holding. Both
+  // sides agree the turn is live, and the local fragment wins. Keep the pair
+  // together — on its own this one pins nothing about what happens when the
+  // server has FINISHED, which is the case the round originally missed.
   it('keeps a live row the server has an emptier copy of', async () => {
     await selectParentWithAgent();
     mockApi.conversationMessages.mockResolvedValue({
@@ -1578,6 +1580,47 @@ describe('sub-agent live transcripts', () => {
         type: 'assistant',
         events: [{ type: 'text_delta', text: 'the part only the stream has' }],
       },
+    });
+  });
+
+  // The OTHER direction, and the half ruling 3 calls guard 1: the server says
+  // that turn is OVER. Its copy is then the complete one and the local
+  // fragment is what the reconnect gap left behind — the `done` never arrived
+  // and never will, so keeping the fragment strands the card mid-sentence
+  // under a header that reads `Done` for the rest of the selection.
+  it("takes the server's finished copy when the done fell in a reconnect gap", async () => {
+    await selectParentWithAgent();
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+    await useChatStore.getState().applyFrame(accepted());
+    await useChatStore.getState().applyFrame(childEvent(42, 'half a '));
+    // The socket dropped here. The rest of the reply AND the `done` fell in the
+    // gap; the server has the whole turn.
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        childMessage('child-assistant-1', {
+          turnId: 'child-turn-1',
+          status: 'completed',
+          content: { type: 'assistant', events: [{ type: 'text_delta', text: 'half a sentence' }] },
+        }),
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    await useChatStore.getState().restoreSubagentTranscript('sub_a');
+
+    const transcript = useChatStore.getState().subagentUi.sub_a.transcript;
+    expect(transcript).toHaveLength(1);
+    expect(transcript?.[0]).toMatchObject({
+      id: 'child-assistant-1',
+      status: 'completed',
+      content: { type: 'assistant', events: [{ type: 'text_delta', text: 'half a sentence' }] },
     });
   });
 
