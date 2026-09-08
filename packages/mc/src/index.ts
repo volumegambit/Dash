@@ -85,6 +85,7 @@ export type {
 export type {
   GatewayAgent,
   AgentSwarmConfig,
+  AgentSubagentsConfig,
   GatewayChannel,
   GatewayHealthResponse,
   CreateAgentRequest,

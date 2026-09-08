@@ -1,5 +1,5 @@
 import type { PluginRecord, RuntimePluginProvider } from '@dash/management';
-import type { AgentSwarmConfig, GatewayAgent } from '@dash/mc';
+import type { AgentSubagentsConfig, AgentSwarmConfig, GatewayAgent } from '@dash/mc';
 import { ChevronDown, ChevronUp, FolderOpen, RotateCcw, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { McpConnectorInfo } from '../../../../../shared/ipc.js';
@@ -27,8 +27,12 @@ type ConfigPatch = {
   // back to "all available providers"; a non-empty array scopes the agent.
   providers?: string[] | null;
   // The gateway's `update()` replaces the whole `swarm` block wholesale
-  // (shallow merge), so we always send the complete block.
+  // (shallow merge), so we always send the complete block. The same is true of
+  // `subagents`, which is why the toggle's save SPREADS the stored block rather
+  // than sending `{ enabled }` alone — that would wipe `maxDepth`,
+  // `allowedTypes`, `allowedModels` and the caps.
   swarm?: AgentSwarmConfig;
+  subagents?: AgentSubagentsConfig;
 };
 
 interface AgentConfigTabProps {
@@ -315,14 +319,20 @@ export function AgentConfigTab({
   // Sync swarm draft when agentConfig changes. Numeric caps render as text (a
   // blank field = "use the gateway default").
   const swarmCfg = agentConfig?.swarm;
+  const subagentsCfg = agentConfig?.subagents;
   useEffect(() => {
-    setSwarmEnabled(swarmCfg?.enabled === true);
+    // The SAME precedence the gateway reads (`isSubagentsEnabled`:
+    // `subagents?.enabled ?? swarm?.enabled ?? true`). Sub-agents are ON by
+    // default so that every agent registered before either block existed has
+    // them; rendering an unset value as OFF both misreported the agent and,
+    // on Save, turned the feature off for it.
+    setSwarmEnabled(subagentsCfg?.enabled ?? swarmCfg?.enabled ?? true);
     setSwarmMaxConcurrent(swarmCfg?.maxConcurrentWorkers?.toString() ?? '');
     setSwarmMaxPerRun(swarmCfg?.maxWorkersPerRun?.toString() ?? '');
     setSwarmMaxSteers(swarmCfg?.maxSteersPerWorker?.toString() ?? '');
     setSwarmMaxRunSeconds(swarmCfg?.maxRunSeconds?.toString() ?? '');
     setSwarmAllowedModels((swarmCfg?.allowedModels ?? []).join(', '));
-  }, [swarmCfg]);
+  }, [swarmCfg, subagentsCfg]);
 
   const handleSaveSwarm = async (): Promise<void> => {
     setSwarmSaving(true);
@@ -333,14 +343,17 @@ export function AgentConfigTab({
       // orchestrator's model + fallbackModels (the most restrictive default).
       const allowed = parseAllowedModels(swarmAllowedModels);
       const swarm: AgentSwarmConfig = {
-        enabled: swarmEnabled,
         maxConcurrentWorkers: parsePositiveInt(swarmMaxConcurrent),
         maxWorkersPerRun: parsePositiveInt(swarmMaxPerRun),
         maxSteersPerWorker: parsePositiveInt(swarmMaxSteers),
         maxRunSeconds: parsePositiveInt(swarmMaxRunSeconds),
         ...(allowed.length > 0 ? { allowedModels: allowed } : {}),
       };
-      await updateConfig(agentId, { swarm });
+      // The gate is written on `subagents`, the block that supersedes `swarm`
+      // and the one the gateway reads first — and spread over whatever is
+      // stored, because the gateway replaces this block wholesale too.
+      const subagents: AgentSubagentsConfig = { ...subagentsCfg, enabled: swarmEnabled };
+      await updateConfig(agentId, { swarm, subagents });
       setOpenCard(null);
     } finally {
       setSwarmSaving(false);

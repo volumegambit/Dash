@@ -24,6 +24,27 @@ export interface AgentSwarmConfig {
   allowedModels?: string[];
 }
 
+/**
+ * Per-agent sub-agent gating + caps. Mirror of the gateway's
+ * `AgentSubagentsConfig` (`apps/gateway/src/agent-registry.ts`), which
+ * SUPERSEDES the legacy `swarm` block.
+ *
+ * `enabled` unset is meaningful: the gateway reads
+ * `subagents?.enabled ?? swarm?.enabled ?? true`, so an agent registered before
+ * either block existed has sub-agents ON. A client that renders an unset value
+ * as OFF misreports the agent, and saving that view turns the feature off.
+ */
+export interface AgentSubagentsConfig {
+  enabled?: boolean;
+  delegation?: 'auto' | 'explicit';
+  allowedTypes?: string[];
+  allowedModels?: string[];
+  maxConcurrent?: number;
+  maxPerTurn?: number;
+  maxRunSeconds?: number;
+  maxDepth?: number;
+}
+
 export interface GatewayAgent {
   id: string;
   name: string;
@@ -51,6 +72,8 @@ export interface GatewayAgent {
     providers?: string[];
     /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
     swarm?: AgentSwarmConfig;
+    /** Per-agent sub-agent gating + caps. See {@link AgentSubagentsConfig}. */
+    subagents?: AgentSubagentsConfig;
   };
   status: 'registered' | 'active' | 'disabled';
   registeredAt: string;
