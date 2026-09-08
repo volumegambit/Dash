@@ -1079,6 +1079,28 @@ describe('ChatService gateway conversations', () => {
       expect(restored.mock.calls).toEqual([[childId], ['child-conversation-2']]);
     });
 
+    // I1. Closing the window on macOS quits nothing: `window-all-closed` only
+    // calls `app.quit()` off darwin, so without this every child socket stays
+    // open, and the fresh renderer a dock-icon click builds holds them again
+    // — one leaked socket per window cycle.
+    it('releases every watch when the renderer holding them goes away', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-2', 'child-conversation-2');
+
+      service.releaseAllConversationWatches();
+
+      expect(resumable.unwatchConversation.mock.calls).toEqual([
+        [childId],
+        ['child-conversation-2'],
+      ]);
+      // The whole bucket goes, however many holders it had: a released
+      // renderer's holds cannot be released one at a time by anybody.
+      resumable.unwatchConversation.mockClear();
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
     // C2 path 4. The count is right to record — a transport arriving watches
     // it — but nothing is watching NOW, and the renderer's `isSubagentSubscribed`
     // is the only gate on showing an optimistic row.

@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { BrowserWindow, app, nativeImage } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { destroyCompanionWindow } from './companion-window.js';
-import { registerIpcHandlers } from './ipc';
+import { registerIpcHandlers, releaseRendererConversationWatches } from './ipc';
 import { buildMainWindowOptions, revealWhenReady } from './main-window.js';
 import { setupAutoUpdater } from './updater.js';
 
@@ -32,6 +32,11 @@ function createWindow(): void {
     // The companion widget hides when the main window closes; this also
     // preserves `window-all-closed` semantics (no orphan always-on-top window).
     destroyCompanionWindow();
+    // Every child-conversation watch belonged to the renderer that has just
+    // gone. On macOS nothing else releases them: `window-all-closed` quits
+    // only off darwin, so the sockets would outlive the window and the fresh
+    // renderer an `activate` builds would take its own on top of them.
+    releaseRendererConversationWatches();
     mainWindow = undefined;
   });
 

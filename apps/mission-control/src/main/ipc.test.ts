@@ -693,6 +693,24 @@ describe('gateway event stream lifecycle', () => {
     ).toBeNull();
     expect(transport.closeAll).toHaveBeenCalledOnce();
   });
+
+  // M6: `closeAll` sets `closed = true`, and every entry point on the
+  // transport goes through `assertOpen()`. Leaving `ChatService` pointing at
+  // it meant a `subagents:watch` arriving after `before-quit` threw
+  // "Chat transport closed" inside an `ipcMain.on` listener, which is
+  // unhandled. Detaching it in the same breath is what closes that.
+  it('detaches the disposed transport from the chat service', () => {
+    const transport = { closeAll: vi.fn() };
+    const setResumableTransport = vi.fn();
+
+    disposePendingConversationRuntime(
+      { gatewayId: 'gateway-1', repository: { offline: false }, transport } as never,
+      { setResumableTransport } as never,
+    );
+
+    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(setResumableTransport).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
 });
 
 describe('legacy renderer chat wire adapters', () => {

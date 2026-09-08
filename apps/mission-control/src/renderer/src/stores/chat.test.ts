@@ -1659,6 +1659,44 @@ describe('sub-agent live transcripts', () => {
   });
 });
 
+// I1's second half. Closing the macOS window and clicking the dock icon
+// builds a FRESH renderer with an empty `knownChildIds`, and until it selects
+// a conversation it knows nothing. A child frame still in flight then falls
+// to the conversation path, is keyed under the child's own id with `lastSeq`
+// 0, gaps on its mid-turn seq, and `refreshTerminal` sends `chatGetMessages`
+// — which subscribes the resumable transport to the running turn
+// (`chat-service.ts`'s `getMessages`). A SECOND, turn-scoped socket on a
+// conversation this client already watches: the exact stampede ruling 4's
+// routing branch exists to make impossible, through the one door it does not
+// cover.
+describe('frames for a conversation this renderer has no record of', () => {
+  beforeEach(releaseEverySubscription);
+
+  it('opens no recovery read for a conversation it has never heard of', async () => {
+    useChatStore.setState({ selectedConversationRef: null, conversations: [] });
+
+    await useChatStore.getState().applyFrame(childEvent(42, 'mid-turn, from before the reload'));
+    await useChatStore.getState().applyFrame(childDone(43));
+
+    expect(mockApi.chatGetMessages).not.toHaveBeenCalled();
+  });
+
+  // The control, so the guard is not "never recover": a conversation the
+  // renderer HAS still heals its own gap.
+  it('still recovers a gap on a conversation it knows', async () => {
+    useChatStore.setState({
+      selectedConversationRef: null,
+      conversations: [{ ...gatewayConversation, id: 'sub_a' }],
+    });
+    mockApi.chatGetConversation.mockResolvedValue({ ...gatewayConversation, id: 'sub_a' });
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 });
+
+    await useChatStore.getState().applyFrame(childEvent(42, 'mid-turn'));
+
+    expect(mockApi.chatGetMessages).toHaveBeenCalledOnce();
+  });
+});
+
 describe('sub-agent optimistic rows', () => {
   beforeEach(releaseEverySubscription);
 

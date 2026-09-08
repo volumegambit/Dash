@@ -956,9 +956,26 @@ export const useChatStore = create<ChatState>((set, get) => {
           void get().refreshSubagents();
         }
       }
+      // A conversation this renderer has NO record of — not selected, not in
+      // its list — is one it inherited from a socket a previous renderer
+      // opened. A macOS window close leaves main's sockets running; the
+      // dock-icon click that follows builds a fresh renderer with an empty
+      // `knownChildIds`, and a child frame still in flight lands here.
+      //
+      // `refreshTerminal` is the only thing that must not run for it:
+      // `chatGetMessages` reaches `ChatService.getMessages`, which subscribes
+      // the resumable transport to the running turn — a SECOND, turn-scoped
+      // socket on a conversation main already watches. Withhold the recovery,
+      // not the frame; a conversation with no tab and no selection renders
+      // nothing anyway. Children are never in the list (the gateway hides
+      // them from `list` unless the caller names their kind), so this cannot
+      // withhold a recovery a child card wanted.
+      const recoverable =
+        keyOrNull(get().selectedConversationRef) === key ||
+        get().conversations.some((conversation) => sameConversation(conversation, ref));
       const applied = applySequencedFrame(current, frame);
       if (applied.gapAfter !== null) {
-        await refreshTerminal(ref);
+        if (recoverable) await refreshTerminal(ref);
         return;
       }
       if (applied.state === current) return;
@@ -1000,7 +1017,9 @@ export const useChatStore = create<ChatState>((set, get) => {
             : conversation,
         ),
       }));
-      if (frame.type === 'done' || frame.type === 'error') await refreshTerminal(ref);
+      if ((frame.type === 'done' || frame.type === 'error') && recoverable) {
+        await refreshTerminal(ref);
+      }
     },
 
     handleConnectionIssue(issue) {

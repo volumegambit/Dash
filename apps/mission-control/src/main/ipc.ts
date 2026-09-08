@@ -175,8 +175,14 @@ export function configurePendingConversationRuntime(options: {
 
 export function disposePendingConversationRuntime(
   runtime: PendingConversationRuntime | null,
+  service?: Pick<ChatService, 'setResumableTransport'>,
 ): null {
   runtime?.transport?.closeAll();
+  // `closeAll` sets `closed = true` and every entry point on the transport
+  // goes through `assertOpen()`. Left attached, a `subagents:watch` arriving
+  // after `before-quit` throws "Chat transport closed" inside an
+  // `ipcMain.on` listener, which is unhandled. Detach it in the same breath.
+  service?.setResumableTransport(undefined);
   return null;
 }
 
@@ -878,6 +884,22 @@ export async function projectsAssignAgentHandler(
     turnId,
   );
   return conversation.id;
+}
+
+/**
+ * The renderer holding every child-conversation watch has gone away — the
+ * window closed, or it is about to be replaced (design §7.6, ruling 5).
+ *
+ * Called from `main/index.ts`'s `closed` handler. On macOS that is the only
+ * signal there is: the app keeps running, `before-quit` may be hours away,
+ * and the fresh renderer a dock-icon click builds starts with an empty
+ * `knownChildIds` and takes its own holds on top of these.
+ *
+ * A no-op before the service exists, which is the case for a window closed
+ * during startup.
+ */
+export function releaseRendererConversationWatches(): void {
+  chatService?.releaseAllConversationWatches();
 }
 
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
@@ -2512,7 +2534,10 @@ export async function registerIpcHandlers(
     shuttingDown = true;
     conversationLifecycle.invalidate();
     gatewaySubscriptions.stop();
-    pendingConversationRuntime = disposePendingConversationRuntime(pendingConversationRuntime);
+    pendingConversationRuntime = disposePendingConversationRuntime(
+      pendingConversationRuntime,
+      chatService,
+    );
     gatewayPoller?.stop();
     await chatService?.drainBackgroundTasks();
     await shutdownGatewayOnQuit(DATA_DIR);

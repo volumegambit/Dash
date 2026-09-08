@@ -196,6 +196,27 @@ export class ChatService {
     this.subscriptionLostListener?.(conversationId);
   }
 
+  /**
+   * Drop every hold, however many holders each had, and close every child
+   * socket with them (design §7.6, ruling 5's "window close").
+   *
+   * The holds belong to ONE renderer. On macOS closing the window quits
+   * nothing — `window-all-closed` only calls `app.quit()` off darwin — so
+   * without this the counts and the sockets outlive the renderer that took
+   * them, and the fresh renderer a dock-icon click builds takes its own on
+   * top: one leaked socket per window cycle, plus frames arriving at a
+   * renderer whose `knownChildIds` is empty.
+   *
+   * Not decrement-by-one: a renderer that is gone cannot release its holds
+   * individually, so the whole bucket goes.
+   */
+  releaseAllConversationWatches(): void {
+    for (const conversationId of [...this.watchedConversations.keys()]) {
+      this.watchedConversations.delete(conversationId);
+      this.resumable?.unwatchConversation(conversationId);
+    }
+  }
+
   /** Release one hold; the last one out drops the watch. */
   unsubscribeConversation(conversationId: string): void {
     const held = this.watchedConversations.get(conversationId);
