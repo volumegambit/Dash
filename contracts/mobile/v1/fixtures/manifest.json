@@ -203,6 +203,34 @@
       "format": "jsonl"
     },
     {
+      "file": "subagent-parallel-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-background-pair-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-progress-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-notification-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
       "file": "sse-conversation-changed.txt",
       "document": "openapi",
       "schema": "ConversationChangedEvent",

@@ -148,7 +148,7 @@ function assertCanonicalAgentEvent(value: unknown): void {
       options: expect.any(Array),
     });
   } else if (event.type === 'response') {
-    expect(event).toEqual({
+    expect(event).toMatchObject({
       type: 'response',
       content: expect.any(String),
       usage: {
@@ -156,6 +156,17 @@ function assertCanonicalAgentEvent(value: unknown): void {
         outputTokens: expect.any(Number),
       },
     });
+    // The two cache counters are optional and REAL: `piagent.ts:1246` fills
+    // them from the provider, every client models them (`AgentEvent.swift:7`,
+    // `AgentEvent.kt:111`, `chat.context.tsx:32`) and a captured gateway
+    // stream carries them. Only this helper had never seen one, because every
+    // fixture before the E3-x1 captures was hand-written.
+    const usage = event.usage as Record<string, unknown>;
+    const allowed = new Set(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']);
+    expect(Object.keys(usage).filter((key) => !allowed.has(key))).toEqual([]);
+    expect(Object.keys(event).filter((key) => !['type', 'content', 'usage'].includes(key))).toEqual(
+      [],
+    );
   }
 }
 
