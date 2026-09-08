@@ -28,6 +28,22 @@ function createWindow(): void {
     e.preventDefault();
   });
 
+  // A RELOAD — ⌘R, which Electron's default menu offers in a packaged build
+  // because nothing here ever calls `Menu.setApplicationMenu` — fires no
+  // `closed`, so without this the holds the outgoing renderer took would stay
+  // counted in main for the life of the app, and the fresh renderer's own
+  // release could never take them to 0. The `webContents.id` survives a
+  // reload, which is exactly why the release has to happen HERE rather than
+  // being inferred from a new id.
+  //
+  // `isSameDocument` is the guard that matters: the router's pushState
+  // navigations fire this event too, and releasing on those would drop every
+  // child socket on every route change.
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    releaseRendererConversationWatches(mainWindow?.webContents.id);
+  });
+
   mainWindow.on('closed', () => {
     // The companion widget hides when the main window closes; this also
     // preserves `window-all-closed` semantics (no orphan always-on-top window).

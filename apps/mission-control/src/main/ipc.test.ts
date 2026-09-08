@@ -241,14 +241,18 @@ describe('sub-agent watch channel', () => {
     };
   }
 
-  it('takes and releases a hold over one channel', () => {
+  // The holder rides through both halves. A hold belongs to the renderer that
+  // took it — `event.sender.id` in `registerIpcHandlers` — so a release from
+  // anything else must not be able to take it off that renderer's count, and a
+  // renderer navigating away must be able to give back exactly its own.
+  it('takes and releases a hold over one channel, for the holder that asked', () => {
     const service = spies();
 
-    applySubagentWatch(service, { watch: true, agentId: 'agent-1', conversationId: 'child-1' });
-    applySubagentWatch(service, { watch: false, conversationId: 'child-1' });
+    applySubagentWatch(service, { watch: true, agentId: 'agent-1', conversationId: 'child-1' }, 11);
+    applySubagentWatch(service, { watch: false, conversationId: 'child-1' }, 11);
 
-    expect(service.subscribeConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1');
-    expect(service.unsubscribeConversation).toHaveBeenCalledExactlyOnceWith('child-1');
+    expect(service.subscribeConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1', 11);
+    expect(service.unsubscribeConversation).toHaveBeenCalledExactlyOnceWith('child-1', 11);
   });
 
   it('drops a hold with no agent id rather than taking one the release would unbalance', () => {

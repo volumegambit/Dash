@@ -93,6 +93,12 @@ function legacyView(record: McConversation): McConversationView {
   };
 }
 
+/**
+ * The holder id for a hold taken with no renderer in scope. `webContents.id`
+ * is always a positive integer, so this can never collide with a real one.
+ */
+const UNOWNED_HOLD = -1;
+
 export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
   private readonly backgroundTasks = new Set<Promise<void>>();
@@ -108,10 +114,18 @@ export class ChatService {
   private subscriptionLostListener?: (conversationId: string) => void;
 
   /**
-   * Child conversations the renderer is watching, and how many holders each
-   * has. See {@link subscribeConversation}.
+   * Child conversations a renderer is watching: the agent each belongs to, and
+   * how many holds each HOLDER has on it. See {@link subscribeConversation}.
+   *
+   * Keyed by holder rather than one count per conversation, because a hold
+   * belongs to the renderer that took it and nothing else can release it on
+   * that renderer's behalf. `webContents.id` is what `main/ipc.ts` passes;
+   * {@link UNOWNED_HOLD} covers callers with no renderer in scope.
    */
-  private readonly watchedConversations = new Map<string, { agentId: string; holds: number }>();
+  private readonly watchedConversations = new Map<
+    string,
+    { agentId: string; holds: Map<number, number> }
+  >();
 
   constructor(
     private store: ConversationStore,
@@ -178,13 +192,27 @@ export class ChatService {
    * and the hub keys its watcher registry on that pair
    * (`apps/gateway/src/chat-ws.ts:425-432`).
    */
-  subscribeConversation(agentId: string, conversationId: string): void {
+  subscribeConversation(
+    agentId: string,
+    conversationId: string,
+    holder: number = UNOWNED_HOLD,
+  ): void {
     const held = this.watchedConversations.get(conversationId);
     if (held) {
-      held.holds += 1;
+      held.holds.set(holder, (held.holds.get(holder) ?? 0) + 1);
+      // A bucket can outlive the socket under it: the transport drops a dead
+      // watch from its own registry (`abandonSubscription`) and leaves the
+      // count here alone, and a renderer that reloaded leaves a bucket behind
+      // with no holder to release it. Answering a hold on one with silence
+      // would leave the asker's optimistic `live: true` uncontradicted with
+      // nothing watching. `{ reopened: true }` so the restore fires on the
+      // socket's open, which is what owes the asker its re-read.
+      if (this.resumable && !this.resumable.watchedConversations().includes(conversationId)) {
+        this.resumable.watchConversation(held.agentId, conversationId, { reopened: true });
+      }
       return;
     }
-    this.watchedConversations.set(conversationId, { agentId, holds: 1 });
+    this.watchedConversations.set(conversationId, { agentId, holds: new Map([[holder, 1]]) });
     if (this.resumable) {
       this.resumable.watchConversation(agentId, conversationId);
       return;
@@ -220,6 +248,32 @@ export class ChatService {
   }
 
   /**
+   * Release every hold ONE holder has, however many each was, and close the
+   * sockets no other holder is keeping (design §7.6, F3).
+   *
+   * This is what a renderer RELOAD needs, and a reload is reachable in a
+   * packaged build: nothing in `src/main/` calls `Menu.setApplicationMenu`, so
+   * Electron installs its default menu and its View submenu carries ⌘R. A
+   * reload fires no `closed`, so without this the holds the pre-reload
+   * renderer took stay counted for the life of the app and the fresh
+   * renderer's own release can never take them to 0.
+   *
+   * A reload keeps the SAME `webContents.id`, so keying the holds by holder is
+   * not by itself what closes the leak — the navigation hook that calls this
+   * is. What the key buys is that the release is precise: only the holds of
+   * the renderer that is going, so anything else holding the same child keeps
+   * its socket.
+   */
+  releaseConversationWatches(holder: number): void {
+    for (const [conversationId, held] of [...this.watchedConversations]) {
+      if (!held.holds.delete(holder)) continue;
+      if (held.holds.size > 0) continue;
+      this.watchedConversations.delete(conversationId);
+      this.resumable?.unwatchConversation(conversationId);
+    }
+  }
+
+  /**
    * Drop every hold, however many holders each had, and close every child
    * socket with them (design §7.6, ruling 5's "window close").
    *
@@ -240,12 +294,25 @@ export class ChatService {
     }
   }
 
-  /** Release one hold; the last one out drops the watch. */
-  unsubscribeConversation(conversationId: string): void {
+  /**
+   * Release one hold; the last holder out drops the watch.
+   *
+   * A release from a holder that holds nothing is ignored rather than taken
+   * off somebody else's count: with one count per conversation a stray release
+   * — from a renderer that has already been released wholesale, say — would
+   * have dropped a watch another holder is still showing.
+   */
+  unsubscribeConversation(conversationId: string, holder: number = UNOWNED_HOLD): void {
     const held = this.watchedConversations.get(conversationId);
     if (!held) return;
-    held.holds -= 1;
-    if (held.holds > 0) return;
+    const holds = held.holds.get(holder);
+    if (!holds) return;
+    if (holds > 1) {
+      held.holds.set(holder, holds - 1);
+      return;
+    }
+    held.holds.delete(holder);
+    if (held.holds.size > 0) return;
     this.watchedConversations.delete(conversationId);
     this.resumable?.unwatchConversation(conversationId);
   }

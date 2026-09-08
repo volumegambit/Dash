@@ -878,15 +878,24 @@ describe('ChatService gateway conversations', () => {
       capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
       repository: gateway,
     });
+    // The registry is tracked rather than stubbed flat, because the service
+    // now READS it: a hold taken on a bucket the transport is not watching
+    // puts a socket back. A stub that always answered `[]` would claim every
+    // second holder needs one.
+    const watched = new Set<string>();
     resumable = {
       send: vi.fn(),
       subscribe: vi.fn().mockResolvedValue(undefined),
       cancel: vi.fn(),
       answer: vi.fn(),
       closeAll: vi.fn(),
-      watchConversation: vi.fn(),
-      unwatchConversation: vi.fn(),
-      watchedConversations: vi.fn().mockReturnValue([]),
+      watchConversation: vi.fn((_agentId: string, conversationId: string) => {
+        watched.add(conversationId);
+      }),
+      unwatchConversation: vi.fn((conversationId: string) => {
+        watched.delete(conversationId);
+      }),
+      watchedConversations: vi.fn(() => [...watched]),
     };
     service = new ChatService(
       store,
@@ -1120,6 +1129,67 @@ describe('ChatService gateway conversations', () => {
       service.rewatchConversation('agent-1', childId);
 
       expect(resumable.watchConversation).not.toHaveBeenCalled();
+    });
+
+    // F3. A renderer RELOAD — ⌘R, which Electron's default menu offers in a
+    // packaged build because nothing in `src/main/` ever calls
+    // `Menu.setApplicationMenu` — does not fire `closed`, so the holds the
+    // pre-reload renderer took were never released. The fresh renderer's own
+    // subscribe then found the leaked bucket, incremented, and returned, and
+    // its release could never take the count to 0.
+    //
+    // Holds are keyed by their HOLDER for this: the release is scoped to the
+    // renderer that is going, so a second holder — the companion window, or
+    // whatever comes next — keeps its own.
+    it('releases the holds of one renderer and leaves another holder its own', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+      service.subscribeConversation('agent-1', childId, 11);
+      service.subscribeConversation('agent-1', childId, 22);
+
+      service.releaseConversationWatches(11);
+
+      // 22 still holds it, so the socket stays.
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+      service.unsubscribeConversation(childId, 22);
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    it('drops the watch when the last holder is released', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+      service.subscribeConversation('agent-1', childId, 11);
+
+      service.releaseConversationWatches(11);
+
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    // A release from a holder that holds nothing must not take somebody
+    // else's. Before the holds were keyed, one count served everybody and a
+    // stray release from a reloaded renderer would have dropped a live watch.
+    it('ignores a release from a holder that holds nothing', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+
+      service.unsubscribeConversation(childId, 22);
+
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    // The other half of F3, and what makes a SURVIVING leaked bucket safe:
+    // a bucket can outlive the socket under it, because the transport drops a
+    // dead watch from its own registry and leaves the count here alone. A
+    // renderer asking for a hold on one used to be answered with silence — its
+    // optimistic `live: true` was never contradicted and nothing re-watched.
+    it('puts a socket back when a hold is taken on a bucket nothing is watching', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+      resumable.watchConversation.mockClear();
+      // The watch died while the leaked bucket stood.
+      resumable.watchedConversations.mockReturnValue([]);
+
+      service.subscribeConversation('agent-1', childId, 22);
+
+      expect(resumable.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId, {
+        reopened: true,
+      });
     });
 
     it('re-watches every held conversation on a replacement transport, and says a re-read is owed', () => {

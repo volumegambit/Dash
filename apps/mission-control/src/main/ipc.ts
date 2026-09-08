@@ -221,6 +221,7 @@ export function applySubagentWatch(
     'subscribeConversation' | 'unsubscribeConversation' | 'rewatchConversation'
   >,
   request: SubagentWatchRequest,
+  holder?: number,
 ): void {
   if (request.watch) {
     if (!request.agentId) return;
@@ -228,10 +229,10 @@ export function applySubagentWatch(
       service.rewatchConversation(request.agentId, request.conversationId);
       return;
     }
-    service.subscribeConversation(request.agentId, request.conversationId);
+    service.subscribeConversation(request.agentId, request.conversationId, holder);
     return;
   }
-  service.unsubscribeConversation(request.conversationId);
+  service.unsubscribeConversation(request.conversationId, holder);
 }
 
 export function createCanonicalChatHandlers(
@@ -901,19 +902,27 @@ export async function projectsAssignAgentHandler(
 }
 
 /**
- * The renderer holding every child-conversation watch has gone away — the
- * window closed, or it is about to be replaced (design §7.6, ruling 5).
+ * A renderer holding child-conversation watches has gone away — the window
+ * closed, or it is navigating and about to be replaced (design §7.6,
+ * ruling 5).
  *
- * Called from `main/index.ts`'s `closed` handler. On macOS that is the only
- * signal there is: the app keeps running, `before-quit` may be hours away,
- * and the fresh renderer a dock-icon click builds starts with an empty
- * `knownChildIds` and takes its own holds on top of these.
+ * With a `holder` (`webContents.id`), only that renderer's holds go: this is
+ * the RELOAD case, which fires no `closed` and which Electron's default menu
+ * offers on ⌘R in a packaged build. Without one, every hold goes, which is the
+ * window-close case — on macOS that is the only signal there is, since the app
+ * keeps running, `before-quit` may be hours away, and the fresh renderer a
+ * dock-icon click builds starts with an empty `knownChildIds` and takes its
+ * own holds on top of these.
  *
  * A no-op before the service exists, which is the case for a window closed
  * during startup.
  */
-export function releaseRendererConversationWatches(): void {
-  chatService?.releaseAllConversationWatches();
+export function releaseRendererConversationWatches(holder?: number): void {
+  if (holder === undefined) {
+    chatService?.releaseAllConversationWatches();
+    return;
+  }
+  chatService?.releaseConversationWatches(holder);
 }
 
 function getChatService(getWindow: () => BrowserWindow | undefined): ChatService {
@@ -2105,8 +2114,11 @@ export async function registerIpcHandlers(
   // `{ reopened: true }` and the signal fires when that socket opens.
   getChatService(getWindow).setSubscriptionLostListener(sendSubagentWatchLost);
 
-  ipcMain.on('subagents:watch', (_event, request: SubagentWatchRequest) => {
-    applySubagentWatch(getChatService(getWindow), request);
+  ipcMain.on('subagents:watch', (event, request: SubagentWatchRequest) => {
+    // `event.sender.id` is the holder. A hold belongs to the renderer that
+    // took it, and only that renderer's own release — or its navigation away
+    // — can give it back.
+    applySubagentWatch(getChatService(getWindow), request, event.sender.id);
   });
 
   // -----------------------------------------------------------------------
