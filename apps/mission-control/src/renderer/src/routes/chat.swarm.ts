@@ -44,9 +44,20 @@
  * child's conversation id IS its worker id (`coordinator.ts` sets
  * `workerId: childId` and `childConversationId: childId` from one value), so
  * both families key on the same string and fold into one group. Task D8 removes
- * the mirrors; until then `subagent_*` wins every shared field regardless of
- * arrival order, so the fold does not depend on the emission order staying what
- * it is today.
+ * the mirrors; until then every field the two families both carry is folded
+ * into a modern slot and a legacy slot, and the modern one wins at the merge —
+ * so for those fields the fold does not depend on the emission order staying
+ * what it is today.
+ *
+ * `model` and `usage` are the two exceptions: they have ONE draft slot each,
+ * written by both families, so they are plain last-writer-wins and DO follow
+ * arrival order. Nothing turns on it today, because the gateway builds each
+ * pair from a single value — `coordinator.ts` passes the same `model` to
+ * `worker_spawned` and to the child's spec, and `ChildHandle` puts one
+ * `this.usage` on `worker_done` and on `subagent_finished` — and the question
+ * disappears with the mirrors at D8. The code is therefore left as it is and
+ * this paragraph says what it does; the behaviour is pinned by `takes model
+ * and usage from whichever family wrote them last`.
  *
  * All functions here are framework-free pure functions so they can be
  * unit-tested under the app's vitest config without a DOM. The presentational

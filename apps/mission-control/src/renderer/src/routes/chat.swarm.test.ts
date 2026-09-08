@@ -366,7 +366,7 @@ describe('groupSubagentEvents', () => {
       expect(groups[0].orphan).toBe(false);
     });
 
-    it('lets subagent_* fields win over worker_* regardless of arrival order', () => {
+    it('lets subagent_* win over worker_* for the fields it folds into its own slot', () => {
       const forward = groupSubagentEvents([workerSpawned('a'), started('a')], true)[0];
       const reversed = groupSubagentEvents([started('a'), workerSpawned('a')], true)[0];
       for (const group of [forward, reversed]) {
@@ -374,6 +374,37 @@ describe('groupSubagentEvents', () => {
         expect(group.description).toBe('Review the diff');
         expect(group.startedAt).toBe(START_ISO);
       }
+    });
+
+    // …and the two exceptions, which have ONE draft slot each written by both
+    // families and are therefore last-writer-wins. Invisible today — the
+    // gateway builds each pair from one value (`spec.model` is the `model` it
+    // puts on `worker_spawned`; `worker_done` and `subagent_finished` share
+    // one `this.usage`) — and gone at D8 with the mirrors. Pinned so the
+    // module comment can say what the code does instead of what it wishes.
+    it('takes model and usage from whichever family wrote them last', () => {
+      const modelForward = groupSubagentEvents(
+        [workerSpawned('a', { model: 'legacy-model' }), started('a', { model: 'modern-model' })],
+        true,
+      )[0];
+      const modelReversed = groupSubagentEvents(
+        [started('a', { model: 'modern-model' }), workerSpawned('a', { model: 'legacy-model' })],
+        true,
+      )[0];
+      expect(modelForward.model).toBe('modern-model');
+      expect(modelReversed.model).toBe('legacy-model');
+
+      const legacyUsage = { inputTokens: 1, outputTokens: 2 };
+      const usageForward = groupSubagentEvents(
+        [started('a'), workerDone('a', { usage: legacyUsage }), finished('a')],
+        false,
+      )[0];
+      const usageReversed = groupSubagentEvents(
+        [started('a'), finished('a'), workerDone('a', { usage: legacyUsage })],
+        false,
+      )[0];
+      expect(usageForward.usage).toEqual({ inputTokens: 1200, outputTokens: 340 });
+      expect(usageReversed.usage).toEqual(legacyUsage);
     });
 
     it('lets subagent_finished win over worker_done regardless of arrival order', () => {
