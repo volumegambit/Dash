@@ -24,38 +24,89 @@ Each agent is configured in Mission Control's **Deploy** wizard (and editable la
 
 Your agents are saved to `~/.dash/gateway/agents.json` and restored automatically when the gateway restarts.
 
-## Swarm
+## Sub-agents
 
-An agent can be given a **swarm** so it can spawn short-lived **worker** subagents that run in parallel, each with its own isolated context, and then synthesize their reports into one answer. Swarm is **off by default** and is enabled per agent from Mission Control's **Configuration** tab → **Swarm** card ("Enable swarm — let this agent spawn parallel workers"). When it's on, the agent gains the `spawn_worker`, `wait_workers`, `send_to_worker`, and `check_workers` tools — see [Tools → Swarm orchestration](/tools#swarm-orchestration).
+Any agent can hand a self-contained task to a **sub-agent** — a child agent with its own context, its own tool set, and its own transcript — and either wait for its report or let it run in the background. This is **on by default**: the `agent` and `send_message` tools (and the older `spawn_worker` family) are given to every agent automatically. See [Tools → Sub-agents](/tools#sub-agents) for what the agent can do with them.
 
-Every agent carries its own optional swarm block on its config (saved verbatim to `agents.json`):
+### Per-agent settings
+
+Each agent carries an optional `subagents` block on its config, saved verbatim to `agents.json`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `enabled` | `false` | Whether this agent may spawn workers at all. When off, the swarm tools are not given to the agent. |
-| `maxConcurrentWorkers` | `8` | Most workers this agent may run **at once** in a single turn. |
-| `maxWorkersPerRun` | `24` | Most workers this agent may spawn **in total** across one turn. |
-| `maxSteersPerWorker` | `10` | Most follow-up messages (steers/answers) the orchestrator may send to any one worker. |
-| `maxRunSeconds` | `1800` | Wall-clock limit for a single swarm turn (30 minutes). When it's hit, the turn closes and in-flight workers are settled. |
-| `allowedModels` | *(unset)* | Optional list of models a worker may use. When unset, workers use the orchestrator's own model (and its fallbacks). |
+| `enabled` | `true` | Whether this agent gets the sub-agent tools at all. When unset, the older `swarm.enabled` is read instead; when both are set, `subagents.enabled` wins. |
+| `delegation` | derived from the model | `auto` — delegate proactively; `explicit` — only when you ask for it. Unset means it follows the agent's model, as its **provider's** catalog rates it: a model the provider lists as top-tier (`anthropic/claude-opus-…`, `google/gemini-…-pro`, `openai/o3-pro`, …) gets `auto`, everything else gets `explicit` — including the same model reached through an aggregator such as OpenRouter, which rates its own list separately. |
+| `allowedTypes` | *(all)* | The sub-agent types this agent may launch. An entry that matches no type is reported as a warning, not an error. |
+| `allowedModels` | *(unset)* | Models a sub-agent may be given. When unset, a child uses the parent's model and fallbacks. |
+| `maxConcurrent` | `8` | Most sub-agents this agent may run **at once**. |
+| `maxPerTurn` | `24` | Most sub-agents this agent may launch **in one turn**. |
+| `maxRunSeconds` | `1800` | Wall-clock limit for a single sub-agent (30 minutes). |
+| `maxDepth` | `3` | How deep sub-agents may nest. A direct child is depth 1; `0` stops this agent spawning at all. |
 
-Leave any cap **blank** to inherit the gateway default (below). A cap change **takes effect on the agent's next message** — the gateway rebuilds the agent so the new limits and the enabled/disabled state apply to the next turn.
+Messages to a running child are capped separately, by `swarm.maxSteersPerWorker` (default `10`); the count spans a child's whole life, resumes included.
 
-### Gateway swarm defaults
+<Note>
+  Mission Control has no Sub-agents card yet. The `subagents` block is set through the [Management API](/api-reference) (`PUT /agents/:id`). Mission Control's **Configuration → Swarm** card still writes the older `swarm` block — and because it shows its checkbox unticked for any agent that has no `swarm` block, **saving that card turns sub-agents off** for the agent (`swarm.enabled: false`). Re-tick it, or set `subagents.enabled: true`, to turn them back on.
+</Note>
 
-The gateway also enforces a **global** ceiling across every agent's runs and supplies the per-agent defaults above. Each one can be overridden with an environment variable set where the gateway runs:
+A change to either block **takes effect on the agent's next message** — the gateway rebuilds the agent so the new limits, delegation mode, and enabled state apply to the next turn.
+
+### Gateway defaults
+
+The gateway enforces a **global** ceiling across every agent and supplies the per-agent defaults above. Each can be overridden with an environment variable set where the gateway runs:
 
 | Setting | Default | Environment variable | Description |
 |---------|---------|----------------------|-------------|
-| `maxConcurrentWorkersGlobal` | `16` | `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL` | Hard ceiling on workers running **at once across all agents** on this gateway. A spawn that would exceed it fails until other workers finish. |
-| `defaults.maxConcurrentWorkers` | `8` | `SWARM_DEFAULT_MAX_CONCURRENT_WORKERS` | Per-agent default used when an agent's own `maxConcurrentWorkers` is blank. |
-| `defaults.maxWorkersPerRun` | `24` | `SWARM_DEFAULT_MAX_WORKERS_PER_RUN` | Per-agent default for `maxWorkersPerRun`. |
-| `defaults.maxSteersPerWorker` | `10` | `SWARM_DEFAULT_MAX_STEERS_PER_WORKER` | Per-agent default for `maxSteersPerWorker`. |
-| `defaults.maxRunSeconds` | `1800` | `SWARM_DEFAULT_MAX_RUN_SECONDS` | Per-agent default for `maxRunSeconds`. |
+| `maxConcurrentWorkersGlobal` | `16` | `SUBAGENTS_MAX_CONCURRENT_GLOBAL` | Hard ceiling on sub-agents running **at once across all agents** on this gateway. A launch that would exceed it fails until others finish. |
+| `defaults.maxConcurrentWorkers` | `8` | `SUBAGENTS_MAX_CONCURRENT` | Per-agent default used when an agent's own `maxConcurrent` is unset. |
+| `defaults.maxWorkersPerRun` | `24` | `SUBAGENTS_MAX_PER_TURN` | Per-agent default for `maxPerTurn`. |
+| `defaults.maxRunSeconds` | `1800` | `SUBAGENTS_MAX_RUN_SECONDS` | Per-agent default for `maxRunSeconds`. |
+| `defaults.maxSteersPerWorker` | `10` | `SWARM_DEFAULT_MAX_STEERS_PER_WORKER` | Per-agent default for messages per child. This one has no `SUBAGENTS_` name. |
+
+The older names — `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL`, `SWARM_DEFAULT_MAX_CONCURRENT_WORKERS`, `SWARM_DEFAULT_MAX_WORKERS_PER_RUN`, `SWARM_DEFAULT_MAX_RUN_SECONDS` — are still read for one release. When both are set, the `SUBAGENTS_` value wins. There is **no environment variable for nesting depth**; set `subagents.maxDepth` per agent.
 
 Values must be **positive whole numbers** — anything else is ignored with a warning in the gateway log, and the built-in default is used instead. When Mission Control manages the gateway for you, set the variable in the environment you launch Mission Control from — the gateway inherits it. Restart the gateway (or Mission Control) to apply a change.
 
-Worker transcripts are written under `~/.dash/gateway/sessions/<agent-name>/.swarm/` and are never auto-deleted — see [Troubleshooting](/troubleshooting#swarm) if you need to find or clean them up.
+A sub-agent is a conversation of its own, so its transcript sits beside your other conversations on disk, under `~/.dash/gateway/sessions/<agent-name>/<subagent-id>/`. Transcripts are never auto-deleted. (Older `.swarm/` directories from previous releases are no longer written to, and are left alone — delete them by hand if you want the space.)
+
+### Sub-agent types
+
+A **type** is a markdown file with YAML frontmatter, in Claude Code's subagent format — the frontmatter configures the agent, the body is its system prompt:
+
+```markdown
+---
+name: code-reviewer
+description: Reviews a diff for correctness bugs. Use after implementing a task.
+tools: read, grep, find, bash
+disallowedTools: write, edit
+model: inherit
+skills:
+  - dash-conventions
+maxTurns: 40
+background: false
+isolation: worktree
+---
+You are a senior reviewer...
+```
+
+`name` and `description` are required. `tools` is a comma-separated list of Dash tool names, MCP patterns (`mcp__<server>`, `mcp__<server>__<tool>`, `mcp__*`), or `agent(<type>, …)` to limit which types this agent may launch in turn; omit it to inherit everything the parent has. `disallowedTools` is subtracted first. `model` takes a `provider/model` id or `inherit`. `skills` names skills to preload into the prompt. `maxTurns` stops the agent after that many tool calls and reports what it has so far (it can be resumed). `background` makes this type detach by default. `isolation: worktree` gives the agent its own git checkout of the workspace, cut from the workspace's current commit. Claude Code keys Dash does not act on — `permissionMode`, `hooks`, `mcpServers`, `memory`, `effort`, `color`, `experimental` — are ignored with a warning in the log.
+
+Definitions are read from four places. Where the same name appears twice, the **first** match here wins:
+
+| Order | Where | Named |
+|---|---|---|
+| 1 | `<workspace>/.dash/agents/*.md`, then `<workspace>/.claude/agents/*.md` | by its `name` |
+| 2 | `~/.dash/gateway/subagents/<agent-name>/*.md` | by its `name` |
+| 3 | A plugin's `agents/*.md` | `<plugin>:<name>` |
+| 4 | The built-ins (`general-purpose`, `Explore`, `Plan`) | by name |
+
+Plugin types are always namespaced, so they can never shadow anything; a workspace file named `Explore` does replace the built-in.
+
+<Warning>
+  **A sub-agent can never hold a tool or an MCP server its parent does not have.** A definition's `tools` list is intersected with the parent's own tools, and its MCP access with the parent's assigned servers. Asking for more does not grant it — and if the intersection comes out empty, the launch fails rather than running a tool-less agent.
+</Warning>
+
+The gateway reads these files once and caches them per agent. A file you add or edit by hand is picked up the next time the agent's config is saved, a plugin reloads, or the gateway restarts. The Management API also exposes them: `GET /agents/:id/subagent-types` lists everything an agent can launch (including which definition shadowed which), and `GET`/`PUT`/`DELETE /agents/:id/subagent-definitions/:name` read and write the per-agent directory. A `PUT` validates before it writes, so an unparseable definition is rejected rather than silently ignored.
 
 ## Data directory
 
@@ -93,8 +144,8 @@ Dash needs no environment variables for normal Mission Control use. These are av
 | `DASH_HOME` | Root directory for everything Dash stores on disk (default: `~/.dash`). |
 | `MC_DATA_DIR` | Override just the Mission Control app's data folder (used by tests and QA). |
 | `POOL_MAX_SIZE` | Maximum number of agent runtimes kept in memory by the gateway (default: `200`). |
-| `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL` | Ceiling on swarm workers running at once across **all** agents (default: `16`). |
-| `SWARM_DEFAULT_*` | Per-agent swarm cap defaults — see [Gateway swarm defaults](#gateway-swarm-defaults) for the full list. |
+| `SUBAGENTS_MAX_CONCURRENT_GLOBAL` | Ceiling on sub-agents running at once across **all** agents (default: `16`). Was `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL`, still read. |
+| `SUBAGENTS_*`, `SWARM_DEFAULT_*` | Per-agent sub-agent cap defaults — see [Gateway defaults](#gateway-defaults) for the full list. |
 | `NODE_ENV` | Set to `production` to quiet the gateway's verbose request logging. |
 
 Provider API keys are **not** read from environment variables when you use Mission Control — they live in the encrypted credential store (see [Secrets](/secrets)). When running the gateway standalone, you can supply them as environment variables (e.g. `ANTHROPIC_API_KEY`); see [AI Providers](/ai-providers#configuring-credentials).
@@ -188,7 +239,7 @@ Each plugin follows the Claude Code layout:
 
 - **`skills/`** — one subdirectory per skill, each with a `SKILL.md` file in standard frontmatter format (`name`, `description`, body).
 - **`commands/`** — flat `<name>.md` files. Each becomes a `/<plugin>:<command>` slash command (see below).
-- **`agents/`** — flat `<name>.md` files (Claude Code subagent format). Each becomes a loadable specialist (see below).
+- **`agents/`** — flat `<name>.md` files (Claude Code subagent format). Each becomes a sub-agent type this plugin's agents can launch (see below).
 - **`hooks/hooks.json`** — event hooks that run shell commands at key points in a run (see [Hooks](#hooks) below). Code execution, so it requires `trusted`.
 - **`.mcp.json`** — extra MCP servers to register with the gateway. Code execution, so it requires `trusted` (see below).
 - **`providers/`** — flat `<provider>.json` LLM provider catalogs that add selectable models. Credential-bearing, so they require `trusted` (see [LLM providers](#llm-providers) below).
@@ -236,11 +287,11 @@ A `path` entry is **enabled automatically** — you do not need `"enabled": true
 
 Each `commands/<name>.md` file becomes a slash command named `/<plugin>:<name>`. For example, a plugin called `my-skills` with `commands/triage.md` exposes `/my-skills:triage`. The command body is the markdown content; optional frontmatter (`name`, `description`) overrides the command name and supplies a description. The slash name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. Commands need only `enabled`.
 
-### Subagents (specialists)
+### Plugin sub-agent types
 
-Each `agents/<name>.md` file (Claude Code subagent format — frontmatter `name`/`description` plus a markdown body) is exposed as a **loadable specialist**. For example, a plugin called `my-skills` with `agents/reviewer.md` is invocable as `/my-skills:reviewer` or via the agent's `load_skill` tool. As with commands, the loadable name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. When loaded, the specialist contributes its instructions to the conversation on demand. Like commands, subagents are markdown — they need only `enabled` (not `trusted`).
+Each `agents/<name>.md` file (Claude Code subagent format) is a **sub-agent type** an agent can launch with the [`agent` tool](/tools#sub-agents). A plugin called `my-skills` with `agents/reviewer.md` contributes the type `my-skills:reviewer`; the namespaced name is `<plugin>:<frontmatter-name>` when `name:` frontmatter is present, otherwise `<plugin>:<filename-without-.md>`. Like commands, these are markdown — they need only `enabled`, not `trusted`.
 
-**Loadable specialists run in the main session.** A loaded specialist contributes its instructions to the *current* conversation, so its `tools` frontmatter field is **advisory, not enforced** — the specialist uses the agent's own tool set. This is different from **isolated** subagents: for true parallel workers that each run in a **separate context** with a restricted tool subset, enable the agent's [**Swarm**](#swarm) feature and let it use the `spawn_worker` tool. See [Tools](/tools#swarm-orchestration).
+**This changed.** A plugin's `agents/*.md` used to be a *loadable specialist*: it ran in the main conversation, was invoked as `/<plugin>:<agent>` or through `load_skill`, and its `tools` frontmatter was advisory. It is now a **spawnable type instead** — it runs in its own context with its own transcript, its `tools` and `model` frontmatter are **enforced**, and it is no longer a slash command or loadable through `load_skill`. Enforced still means bounded: a sub-agent never receives a tool or MCP server its parent lacks. See [Sub-agent types](#sub-agent-types) for the full file format and where else definitions can live.
 
 ### MCP servers and executables
 
@@ -259,8 +310,8 @@ Supported events:
 | `PreToolUse` | Before a tool executes (matched by tool name) | Allow or deny the tool call |
 | `PostToolUse` | After a tool executes (matched by tool name) | Block the result, or append context |
 | `Stop` | After the run completes | Cleanup (its output is logged, not injected) |
-| `SubagentStart` | When an [agent swarm](/tools#swarm-orchestration) worker starts (matched by worker role) | Observe worker starts — log, notify, audit |
-| `SubagentStop` | When a swarm worker finishes, fails, or is cancelled (matched by worker role) | Observe worker results — log, notify, audit |
+| `SubagentStart` | When a [sub-agent](/tools#sub-agents) starts (matched by its role) | Observe launches — log, notify, audit |
+| `SubagentStop` | When a sub-agent finishes, fails, is cancelled, or hits its turn limit (matched by its role) | Observe results — log, notify, audit |
 
 Each event maps to an array of matcher groups; each group has an optional `matcher` (a tool name, a `|`-separated list, or a regex — omit or use `*` to match everything) and a `hooks` array of `{ "type": "command", "command": "...", "timeout": <seconds> }` entries.
 
@@ -293,7 +344,7 @@ The string `${CLAUDE_PLUGIN_ROOT}` in a command is substituted with the plugin's
 
 **Fail-open by design.** A hook that errors, times out, exits non-zero (other than `2`), or prints malformed JSON is ignored — the run proceeds as if the hook had allowed it. Hooks never crash the gateway.
 
-**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages. `SubagentStart` and `SubagentStop` fire only for swarm-enabled agents, around each worker's lifecycle; their stdin payload carries `worker_id`, `role`, and (on stop) the terminal `status` (`done`, `failed`, or `cancelled`). They are observe-only — a Subagent hook cannot block a worker, and its output is logged, not injected.
+**Where each event fires.** `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` fire on **every** agent run, whether the run was reached through Mission Control chat or an inbound channel. `UserPromptSubmit` fires **only on the channel path** (Telegram, WhatsApp); it does not run for Mission Control chat messages. `SubagentStart` and `SubagentStop` fire around every sub-agent's lifecycle, however it was launched; their stdin payload carries `worker_id`, `role`, and (on stop) the terminal `status` (`done`, `failed`, `cancelled`, or `max_turns`). They are observe-only — a Subagent hook cannot block a sub-agent, and its output is logged, not injected. A sub-agent that a gateway restart interrupted is marked terminal at boot without firing these hooks.
 
 ### LLM providers
 
@@ -367,5 +418,5 @@ echo '{ "my-skills": { "enabled": true } }' \
 When the gateway starts, it logs `[plugins] loaded 'my-skills' (skills)` and the agent's `load_skill` tool (see [Tools](/tools) — requires `load_skill` in the agent's tools list) can reference any skill from that plugin.
 
 <Note>
-  Skills, commands, subagents, hooks, MCP servers, `bin/` executables, and LLM providers are active. Plugin subagents load into the main session (see above). For **isolated** parallel workers — each with its own context and tool subset — enable the agent's [Swarm](#swarm) feature.
+  Skills, commands, sub-agent types, hooks, MCP servers, `bin/` executables, and LLM providers are active. A plugin's `agents/*.md` is a sub-agent type (see above), launched with the [`agent` tool](/tools#sub-agents) rather than loaded into the main session.
 </Note>

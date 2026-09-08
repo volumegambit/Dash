@@ -66,7 +66,9 @@ Dash is flexible about where each piece runs.
 
 Dash for iOS and capability-aware Mission Control share one view. They render the same
 gateway-authoritative conversation history. Android remains a legacy, non-resumable client in
-this release, so its private chat sessions are not part of that shared history.
+this release, so its private chat sessions are not part of that shared history, and the
+[sub-agent](#sub-agents) interface — rows, transcripts, and the tasks list — is on iOS, the web
+client, and Mission Control only.
 
 For gateways that advertise `conversation-sync-v1`, the gateway owns conversation metadata,
 messages, revisions, active turns, and replay sequences. Mission Control keeps a
@@ -254,31 +256,36 @@ The gateway replays the durable gap and attaches the socket for future frames wi
 LLM to process the prompt again. Conversation change events over the mobile SSE endpoint tell
 clients when to refresh summaries; they do not replace replay for chat content.
 
-## Agent Swarm
+## Sub-agents
 
-When an agent has [swarm](/configuration#swarm) enabled, a single chat turn can fan out into an **orchestrator** plus several short-lived **worker** subagents that run in parallel. The orchestrator is the agent you're chatting with; a worker is a stripped-down agent — no MCP, no skills, no plugin tools — that shares the orchestrator's workspace but runs in its own isolated context from a self-contained brief.
+Any agent can hand a self-contained task to a **sub-agent**: a child agent that runs on the same workspace, in its own context, from a prompt that stands alone. The parent either waits for the child's report inside its own turn (foreground) or lets it run detached (background) and is told when it finishes. The tools are [`agent` and `send_message`](/tools#sub-agents); the older `spawn_worker` family are wrappers over the same path.
 
-**Turn-scoped, unless you ask for background.** A swarm run lives **within one chat turn**. The gateway's swarm coordinator keys each run by `agentId/conversationId`: only the live turn can spawn or finalize it, and when the turn ends the run is finalized and every still-running **foreground** worker is settled. A worker launched in the **background** is the exception: it keeps running after the turn ends, stays addressable by name, and reports back on its own. Each worker is bounded by its own wall clock (`maxRunSeconds`) whether or not its turn is still open, and cancelling a background worker (or deleting the conversation it belongs to) stops it.
+**A sub-agent is a conversation.** Each child gets a conversation of its own — kind `subagent`, with a link to the parent conversation and the turn that started it, its own messages, its own status, and its own session directory. That is what makes everything else work: its transcript can be replayed and subscribed to like any other, it is addressable by id over HTTP, it can be resumed after it has finished, and it **survives a gateway restart** rather than disappearing with the process that created it. Child conversations are hidden from the ordinary conversation list — you reach them through their parent — and they are readable only with the same credentials as that parent.
+
+**Foreground or detached.** A foreground child belongs to the parent's turn: cancelling the turn cancels it. A background child outlives the turn, stays addressable by name, and reports back on its own. Either way the child is bounded by its own wall clock (`maxRunSeconds`), and cancelling a child (or deleting the conversation it belongs to) stops everything it started.
 
 **Data flow.**
 
 <Steps>
-  <Step title="Orchestrator spawns workers">
-    Using `spawn_worker`, the orchestrator hands each worker a role, a brief, a model, and a tool subset. The coordinator enforces per-agent and global caps before creating the worker.
+  <Step title="The parent launches children">
+    The `agent` tool resolves the requested type to a definition, intersects its tool list with the parent's own, resolves the model, and asks the coordinator for a child. Per-agent and global caps are enforced before anything starts. Several `agent` calls in one turn run concurrently.
   </Step>
-  <Step title="Workers run in parallel">
-    Each worker is its own agent backend running on the shared workspace. It works from its brief and can call `ask_orchestrator` to pause and ask a blocking question.
+  <Step title="Children run in parallel">
+    Each child is its own agent backend on the shared workspace — or on its own git worktree, with `isolation: worktree`. It works from its prompt and can call `ask_orchestrator` to pause and ask a blocking question.
   </Step>
-  <Step title="Worker events ride the chat stream">
-    The coordinator's per-run event channel is **merged into the orchestrator's own `AgentEvent` stream**, so `worker_spawned`, `worker_status`, and `worker_done` events interleave with the orchestrator's text and tool events over the same WebSocket. These events are **self-describing** (they carry the worker's role, model, and report), which is what lets Mission Control draw one card per worker — live, and identically when replayed from history.
+  <Step title="Three events ride the parent's stream">
+    The parent's own event stream carries `subagent_started`, `subagent_progress`, and `subagent_finished` for each child — self-describing events (type, name, description, status, report, usage) which is what lets a client draw one card per child, live and identically when replayed from history. The child's own text and tool events do **not** ride the parent's stream; they stay in the child's conversation.
   </Step>
-  <Step title="Orchestrator collects and synthesizes">
-    The orchestrator uses `wait_workers` to collect reports (and `send_to_worker` to answer or steer), then writes one final answer built from the workers' reports. That final response is what channels like Telegram receive — intermediate worker events are for Mission Control only.
+  <Step title="Clients open the child on demand">
+    Expanding a child's row fetches that child's conversation over REST and, while it is live, subscribes to it so its transcript streams in place. Nothing is mirrored ahead of time.
+  </Step>
+  <Step title="The report comes back">
+    A foreground child's report is the `agent` tool's result, inside the parent's turn. A background child's completion is queued as a **notification** instead.
   </Step>
 </Steps>
 
-**Supervision via the management API.** Mission Control's **swarm panel** reads live and recent runs over the [Management API](/api-reference) (`GET /agents/:id/swarm/runs` and `/runs/:runId`) and can cancel a worker or send it a message (`POST …/workers/:workerId/cancel` and `…/send`). A cancel or send against a worker that has already finished returns **409**, which the panel surfaces as a dismissable notice rather than an error. A "run" is the group of sub-agents one chat turn started, so runs are listed straight from the sub-agents' own conversations — they survive a gateway restart instead of disappearing with the process that created them.
+**Notification turns.** When a background child finishes — or a resumed one, or one that was sent a message, or a child that messages its parent directly — the gateway records a pending notification and then starts a **system-initiated turn** on the parent conversation carrying it. The parent reads it as a `<task-notification>` block explicitly marked as an automated event rather than user input, and answers in a normal assistant turn that streams and persists like any other. If the parent is busy, the notification waits and is delivered when its current turn finishes; everything pending rides one turn, in order. Clients render the notification message as a compact system row, not a user bubble. A child's report is scanned for instruction-shaped text before it reaches the parent; messages going the other way are not.
 
-**Sub-agents over HTTP.** The same three operations are available per conversation, on the loopback API and on `/mobile/v1`: `GET /conversations/:id/subagents` lists a conversation's sub-agents with their status and report, `POST /subagents/:id/stop` cancels one and everything it started, and `POST /subagents/:id/resume` sends it a message — resuming it if it has already finished. A sub-agent's transcript is a conversation of its own, so `GET /conversations/:id/messages` works on a sub-agent id too.
+**Sub-agents over HTTP.** Three operations are available per conversation, on the loopback API and on `/mobile/v1`: `GET /conversations/:id/subagents` lists a conversation's sub-agents with their status and report, `POST /subagents/:id/stop` cancels one and everything it started, and `POST /subagents/:id/resume` sends it a message — resuming it if it has already finished. A sub-agent's transcript is a conversation of its own, so `GET /conversations/:id/messages` works on a sub-agent id too. Mission Control's **Sub-agents** panel, the web tasks panel, and the iOS tasks sheet are all built on these three.
 
-**After a restart.** A gateway that is killed mid-run marks every sub-agent that was running as **interrupted** on the next start, tells the parent agent about each one, and keeps the transcript. An interrupted sub-agent can be resumed — with `POST /subagents/:id/resume`, or by the parent agent itself — and picks up where it left off. Any leftover worktrees from sub-agents that were running are cleaned up at the same time, except ones holding uncommitted work, which are kept.
+**After a restart.** A gateway that is killed mid-run marks every sub-agent that was running as **interrupted** on the next start, keeps the transcript, and queues a notification for each parent — delivered as soon as the gateway is serving again, or with the parent's next turn if it is busy. An interrupted sub-agent can be resumed — with `POST /subagents/:id/resume`, or by the parent agent itself — and picks up where it left off. Any leftover worktrees from sub-agents that were running are cleaned up at the same time, except ones holding work: uncommitted changes, untracked files, or commits no branch would keep alive.
