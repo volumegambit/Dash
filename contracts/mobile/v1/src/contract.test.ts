@@ -71,9 +71,23 @@ function assertEventShape(
   expect(Object.keys(event).filter((key) => !allowed.has(key))).toEqual([]);
 }
 
+/**
+ * The `worker_*` mirrors D8 retired. No producer emits one, and no VALID
+ * fixture may carry one — a fixture is what a client is written against, so a
+ * retired event in one is how a client re-grows a fold for something the
+ * gateway will never send again. Persisted pre-D8 transcripts still contain
+ * them; that is a client DECODE concern, not a contract-fixture one.
+ */
+const RETIRED_EVENT_TYPES = new Set(['worker_spawned', 'worker_status', 'worker_done']);
+
 function assertCanonicalAgentEvent(value: unknown): void {
   if (typeof value !== 'object' || value === null) return;
   const event = value as Record<string, unknown>;
+  if (typeof event.type === 'string' && RETIRED_EVENT_TYPES.has(event.type)) {
+    throw new Error(
+      `retired event type "${event.type}" in a valid fixture: the worker_* mirrors were removed in D8`,
+    );
+  }
   if (event.type === 'subagent_started') {
     assertEventShape(
       event,
@@ -173,6 +187,46 @@ async function listFixtureFiles(dir: string, prefix = ''): Promise<string[]> {
 }
 
 describe('mobile v1 contract fixtures', () => {
+  /**
+   * D8 retired the `worker_*` mirrors. Two halves, and the second is what makes
+   * the first mean anything: no fixture carries one, AND the assertion every
+   * valid fixture is put through actually REJECTS one. Without the second, the
+   * corpus scan is satisfied by an assertion that ignores unknown types — which
+   * is exactly what `assertCanonicalAgentEvent` did before D8.
+   */
+  it('rejects a retired worker_* event, and no fixture file contains one', async () => {
+    for (const type of ['worker_spawned', 'worker_status', 'worker_done']) {
+      expect(() => assertCanonicalAgentEvent({ type, workerId: 'w1', runId: 'r1' })).toThrow(
+        /retired event type/,
+      );
+      // …and through the walker every fixture is actually put through.
+      expect(() => assertCanonicalAgentEvents({ type: 'event', event: { type } })).toThrow(
+        /retired event type/,
+      );
+    }
+    // The canonical family still passes the same walker.
+    expect(() =>
+      assertCanonicalAgentEvents({
+        type: 'event',
+        event: {
+          type: 'subagent_progress',
+          subagentId: 'sub_a',
+          status: 'running',
+          toolCallCount: 1,
+          elapsedMs: 2,
+        },
+      }),
+    ).not.toThrow();
+
+    const files = await listFixtureFiles(join(root, 'fixtures'));
+    const offenders: string[] = [];
+    for (const file of files) {
+      const raw = await readFile(join(root, 'fixtures', file), 'utf8');
+      if (/"worker_(spawned|status|done)"/.test(raw)) offenders.push(file);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('publishes only TLS pairing versions with one phone capability per fixture', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       components?: {

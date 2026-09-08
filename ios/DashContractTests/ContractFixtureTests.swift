@@ -87,6 +87,11 @@ struct ContractFixtureTests {
       #"{"type":"error","error":"failed","timestamp":"2026-07-12T00:00:00.000Z"}"#,
       #"{"type":"file_changed","files":["a.txt"]}"#,
       #"{"type":"agent_spawned","name":"worker"}"#,
+      // The three D8 retired. Nothing emits one, but a transcript PERSISTED
+      // before D8 contains them and the client's policy is to DECODE and drop
+      // rather than let them become `.unknown` — which renders a visible
+      // "Gateway event: …" row. Delete these three, and the enum cases, one
+      // release after D8.
       #"{"type":"worker_spawned","workerId":"w1","runId":"r1","role":"reviewer","brief":"review","model":"openai/gpt-5"}"#,
       #"{"type":"worker_status","workerId":"w1","runId":"r1","role":"reviewer","status":"waiting_input","detail":"paused","question":"continue?"}"#,
       #"{"type":"worker_done","workerId":"w1","runId":"r1","role":"reviewer","status":"done","report":"ok","usage":{"inputTokens":3,"outputTokens":2}}"#,
