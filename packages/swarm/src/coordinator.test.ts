@@ -505,6 +505,29 @@ describe('SwarmCoordinator', () => {
       expect(specs[0].tools).toEqual([]);
     });
 
+    it('an EXPLICIT empty grant stays empty even when the parent HOLDS the default four', () => {
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      // The sibling case above gives the parent only `bash`, so the omitted-list
+      // default filters down to [] as well — it cannot see the difference
+      // between an explicit [] and an omitted list, which is why re-conflating
+      // the two (`requested === undefined || requested.length === 0`) passed the
+      // whole suite. This parent holds read/grep/find/ls, so conflating them
+      // hands an MCP-only child the four built-ins its roster printed as
+      // `none — no overlap with your tools`.
+      coord.attach(
+        baseAttach({ orchestratorTools: undefined, orchestratorMcpTools: ['github__pr'] }),
+      );
+      coord.spawnWorker(AGENT_ID, CONVO_ID, {
+        role: 'r',
+        brief: 'b',
+        tools: [],
+        mcpTools: ['github__pr'],
+      });
+      expect(specs[0].tools).toEqual([]);
+      expect(specs[0].mcpTools).toEqual(['github__pr']);
+    });
+
     it('bounds the child grant by parentBuiltinTools — the same list the agent tool reads', () => {
       const { factory } = makeFactory();
       const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
