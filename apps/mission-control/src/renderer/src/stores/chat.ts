@@ -776,7 +776,10 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     async refreshSubagents() {
       const ref = get().selectedConversationRef;
-      if (!ref) {
+      // Gateway conversations only. An "On this Mac" conversation has no
+      // gateway row, so asking for its children is a request that can only
+      // fail — once per selection, silently, forever.
+      if (!ref || ref.origin !== 'gateway') {
         set({ subagents: [] });
         return;
       }
@@ -813,7 +816,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (!force && get().subagentUi[subagentId]?.transcriptLoaded) return;
       try {
         const page = await window.api.conversationMessages(subagentId);
-        patchSubagentUi(subagentId, { transcript: page.items, transcriptLoaded: true });
+        // Sorted here rather than trusting the page order. The route does
+        // return `ordinal ASC` today, but a card that renders `page.items`
+        // verbatim depends on that silently — and the parent transcript does
+        // not, since every page it reads goes through `mergeCanonicalMessages`.
+        const transcript = [...page.items].sort((a, b) => a.ordinal - b.ordinal);
+        patchSubagentUi(subagentId, { transcript, transcriptLoaded: true });
       } catch (error) {
         patchSubagentUi(subagentId, { notice: reasonOf(error) });
       }

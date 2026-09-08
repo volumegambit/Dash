@@ -722,6 +722,20 @@ describe('sub-agent list reads', () => {
     expect(useChatStore.getState().subagents).toEqual([subagentEntry()]);
   });
 
+  // An "On this Mac" conversation has no gateway row and therefore no children.
+  // Asking for them is a guaranteed failing HTTP call on every selection.
+  it('does not ask the gateway for the children of a local conversation', async () => {
+    useChatStore.setState({
+      selectedConversationRef: { id: 'legacy-1', origin: 'local' },
+      subagents: [subagentEntry()],
+    });
+
+    await useChatStore.getState().refreshSubagents();
+
+    expect(mockApi.subagentsList).not.toHaveBeenCalled();
+    expect(useChatStore.getState().subagents).toEqual([]);
+  });
+
   it('empties the list when nothing is selected', async () => {
     useChatStore.setState({ subagents: [subagentEntry()], selectedConversationRef: null });
 
@@ -885,6 +899,28 @@ describe('sub-agent card state', () => {
 
     await useChatStore.getState().loadSubagentTranscript('sub_a', true);
     expect(mockApi.conversationMessages).toHaveBeenCalledTimes(2);
+  });
+
+  // The route returns a page ordered by `ordinal ASC`, but a card that renders
+  // `page.items` verbatim depends on that silently — and the parent transcript
+  // does not (it runs every page through `mergeCanonicalMessages`).
+  it('orders a child transcript by ordinal, whatever order the page arrives in', async () => {
+    const child = { id: 'sub_a', origin: 'gateway' as const };
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [
+        { ...message('m2', child, 'assistant'), ordinal: 2 },
+        { ...message('m1', child, 'user'), ordinal: 1 },
+      ],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+
+    expect(useChatStore.getState().subagentUi.sub_a.transcript?.map((m) => m.id)).toEqual([
+      'm1',
+      'm2',
+    ]);
   });
 
   it('puts a failed transcript fetch on the card rather than throwing', async () => {
