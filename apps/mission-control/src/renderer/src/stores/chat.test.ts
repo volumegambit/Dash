@@ -1624,6 +1624,37 @@ describe('sub-agent live transcripts', () => {
     });
   });
 
+  // I3. A VOLUNTARY release — collapsing the card, or the panel closing — is
+  // exactly the moment this client stops being able to see the child's
+  // `done`, and it triggers none of ruling 3's three recoveries. Without this
+  // the next expansion early-returns on `transcriptLoaded` and the body sits
+  // at the partial sentence with a streaming indicator, under a header that
+  // reads `Done` from REST, until the conversation selection changes.
+  it('owes the card a re-read once its hold is released', async () => {
+    await selectParentWithAgent();
+    mockApi.conversationMessages.mockResolvedValue({
+      items: [],
+      nextCursor: null,
+      throughSeq: 0,
+    });
+    useChatStore.getState().subscribeSubagent('sub_a');
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+    await useChatStore.getState().applyFrame(accepted());
+    expect(useChatStore.getState().subagentUi.sub_a.transcriptLoaded).toBe(true);
+
+    useChatStore.getState().unsubscribeSubagent('sub_a');
+    await vi.waitFor(() => expect(mockApi.subagentUnsubscribe).toHaveBeenCalledWith('sub_a'));
+    mockApi.conversationMessages.mockClear();
+    // The card is re-expanded. Its effect asks WITHOUT `force`, which is the
+    // whole problem: only the loaded flag decides.
+    await useChatStore.getState().loadSubagentTranscript('sub_a');
+
+    expect(mockApi.conversationMessages).toHaveBeenCalledExactlyOnceWith('sub_a');
+    // The rows the stream built stay on screen until the re-read lands —
+    // dropping the flag owes a read, it does not blank the card.
+    expect(useChatStore.getState().subagentUi.sub_a.transcript).toHaveLength(1);
+  });
+
   it('re-reads a restored child, and the live row survives it', async () => {
     await selectParentWithAgent();
     mockApi.conversationMessages.mockResolvedValue({

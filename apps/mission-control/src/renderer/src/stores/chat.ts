@@ -1144,6 +1144,20 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (!current || current.holds > 0) return;
         childSubscriptions.delete(subagentId);
         window.api.subagentUnsubscribe(subagentId);
+        // The card now OWES itself a re-read (ruling 3, and web's D2 round 3
+        // does the same by dropping the child from its loaded set). A
+        // voluntary release is precisely the moment this client stops being
+        // able to see the child's `done`, and it triggers none of the three
+        // recoveries: no `done` reaches us, no `chat:subagentResubscribed`
+        // fires, and no resume happens. `loadSubagentTranscript` early-returns
+        // on `transcriptLoaded`, so without this the next expansion re-reads
+        // nothing and the body stays at the partial sentence with a live
+        // indicator until the conversation selection changes.
+        //
+        // Unconditional rather than gated on the child looking unfinished: the
+        // read is cheap, the flag only says "a read is owed", and the rows
+        // already on screen stay there until it lands.
+        patchSubagentUi(subagentId, { transcriptLoaded: false });
       });
     },
 

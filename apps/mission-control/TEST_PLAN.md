@@ -1814,7 +1814,7 @@ LLM calls.
 
 ### 32.3 Expanding a card: the child's transcript, its report, its composer
 1. After a completed run, click a card header. **Verify:** `aria-expanded` flips and the body opens.
-2. **Verify:** the body fetches the child's conversation **once** and renders its transcript with the same components as the parent's — text, thinking, tool cards — inside a nesting rail. Collapse and re-expand: it is **not** re-fetched. (A **live** child's body is re-read once more, when its turn ends — see 32.10. That is the only automatic re-fetch.)
+2. **Verify:** the body fetches the child's conversation and renders its transcript with the same components as the parent's — text, thinking, tool cards — inside a nesting rail. **Verify:** it is re-fetched on a **re-expand**, and *not* on any other re-render. (Collapsing releases the child's live stream, which is exactly when a `done` can be missed, so the next expansion owes itself a read. A **live** child's body is also re-read when its turn ends — see 32.10.)
 3. **Verify:** the child's final **report** renders as Markdown at the bottom of the body.
 4. **Verify:** a message the orchestrator sent to the child renders as a muted **"from orchestrator:"** row, not as one of your own bubbles.
 5. **Nesting depth is 1.** If a child spawned a grandchild, **verify:** the grandchild renders as a card inside the child's transcript but has **no toggle** — it cannot be expanded, and clicking it does nothing. (Web and iOS cap nesting the same way; the design doc's "unlimited by the renderer" is a deliberate, matched divergence on all three clients.)
