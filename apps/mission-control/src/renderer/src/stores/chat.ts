@@ -1065,7 +1065,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       // returns the state UNCHANGED for a frame with no `seq` and the
       // `applied.state === current` guard below then reads that as "nothing to
       // do". The frame never reached `streamingFrames`, which is the array the
-      // card fold walks — so a child parked on `ask_orchestrator` showed no
+      // card fold walks — for the chat route (`chat.tsx:2307`) and for a
+      // project session alike (`SessionPanel.tsx:45,128`, same `MessageBubble`,
+      // same fold, so both surfaces move and both inherit the anchored gate
+      // below). So a child parked on `ask_orchestrator` showed no
       // waiting glyph, no question and no reply box on its COLLAPSED row (the
       // one live §32.6 FAIL), and no card's tool count or elapsed detail ever
       // moved. Every store test for progress minted a synthetic `seq`, and none
@@ -1079,20 +1082,65 @@ export const useChatStore = create<ChatState>((set, get) => {
       // below does; a background child's heartbeat outlives its launching turn
       // and would mark an idle parent `running` again.
       //
-      // Gated on there BEING a live stream on screen. `refreshTerminal` empties
-      // `streamingFrames[key]` on the turn's `done`, and a background child
-      // goes on emitting after that; appending to the emptied array would
-      // rebuild `liveEvents` and draw a ghost card for a child whose real card
-      // is already in a confirmed message. A transient frame updates the stream
-      // it belongs to or it is dropped.
+      // Gated on the child being ANCHORED in the stream that is live — not on
+      // a stream merely existing. "Is anything live" and "is this child's card
+      // here" diverge for a BACKGROUND child, the only kind that outlives its
+      // launching turn: `run.ts:268` (`if (h.background) continue;`) leaves it
+      // running through the turn's finalize, and `emitToParent`
+      // (`coordinator.ts:1560`) pushes its heartbeat into whatever turn is live
+      // NOW, because `this.live` is keyed `(agentId, conversationId)`. So a
+      // turn-1 child heartbeats onto turn 2's stream, where it has no
+      // `subagent_started` — and `groupSubagentEvents` (`chat.swarm.ts:373-381`)
+      // drafts a card for any `subagentIdOf` hit, clearing `orphan` only on a
+      // start. The result is a second, unlabelled card carrying the question
+      // and the `subagent-reply` composer for a child whose real card is
+      // already in a confirmed message: D2's class, and out of reach of D2's
+      // fix, because `liveEvents` (`chat.tsx:2308`) is built straight off this
+      // array and never goes through `mergeSubagentEventLists`. The anchored
+      // rule subsumes the emptied-stream case — an emptied array anchors
+      // nothing — and keeps §32.6 verbatim: a foreground child parked on
+      // `ask_orchestrator` inside the live turn is anchored in that same
+      // stream. A transient frame updates the stream it belongs to or it is
+      // dropped.
+      //
+      // Coalesced, not appended: `PROGRESS_THROTTLE_MS` is 1_000
+      // (`child-handle.ts:75`), so a busy child emits one of these a second for
+      // the whole turn, and the fold is last-write-wins per child — every
+      // heartbeat but the newest is dead weight in an array `groupSubagentEvents`
+      // re-walks on each one. Replaced in PLACE, so the array holds at most one
+      // per child and no anchor index the fold reads ever moves.
       if (frame.type === 'event' && frame.seq === undefined) {
-        if (current.frames.length === 0) return;
-        set((state) => ({
-          streamingFrames: {
-            ...state.streamingFrames,
-            [key]: [...(state.streamingFrames[key] ?? []), frame],
-          },
-        }));
+        // `isTransientAgentEvent` is `subagent_progress` and only it
+        // (`transient-events.ts:12-14`), so a seq-less frame always names a
+        // child today. A future non-sub-agent transient type needs its own
+        // rule here rather than a silent fall-through to delivery.
+        const childId = subagentIdOf(frame.event);
+        if (childId === undefined) return;
+        const anchored = current.frames.some(
+          (candidate) =>
+            candidate.type === 'event' &&
+            candidate.event.type === 'subagent_started' &&
+            subagentIdOf(candidate.event) === childId,
+        );
+        if (!anchored) return;
+        set((state) => {
+          const frames = state.streamingFrames[key] ?? [];
+          const previous = frames.findIndex(
+            (candidate) =>
+              candidate.type === 'event' &&
+              candidate.seq === undefined &&
+              subagentIdOf(candidate.event) === childId,
+          );
+          return {
+            streamingFrames: {
+              ...state.streamingFrames,
+              [key]:
+                previous === -1
+                  ? [...frames, frame]
+                  : frames.map((candidate, index) => (index === previous ? frame : candidate)),
+            },
+          };
+        });
         return;
       }
       const applied = applySequencedFrame(current, frame);

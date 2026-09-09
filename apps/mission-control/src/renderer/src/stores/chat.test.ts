@@ -6,6 +6,8 @@ import type {
 } from '@dash/mobile-contract';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi } from '../../../../vitest.setup.js';
+import type { McAgentEvent } from '../../../shared/ipc.js';
+import { groupSubagentEvents } from '../routes/chat.swarm.js';
 import { conversationKey, initChatListeners, useChatStore } from './chat.js';
 
 const gatewayConversation: McConversationView = {
@@ -1242,10 +1244,10 @@ describe('a TRANSIENT sub-agent frame on the parent stream', () => {
   }
 
   /** The real wire shape: no `seq`. */
-  function parked(): MobileWsServerFrame {
+  function parked(over: { id?: string; elapsedMs?: number } = {}): MobileWsServerFrame {
     return {
       type: 'event',
-      id: 'turn-1',
+      id: over.id ?? 'turn-1',
       conversationId: 'shared-id',
       event: {
         type: 'subagent_progress',
@@ -1253,9 +1255,46 @@ describe('a TRANSIENT sub-agent frame on the parent stream', () => {
         status: 'waiting_input',
         question: 'which file should I read, src/alpha.ts or src/beta.ts?',
         toolCallCount: 0,
-        elapsedMs: 30000,
+        elapsedMs: over.elapsedMs ?? 30000,
       },
     } as unknown as MobileWsServerFrame;
+  }
+
+  /** Turn 2's own first frame. Sequenced, and no anchor for `sub_a`. */
+  function turnTwo(seq: number): MobileWsServerFrame {
+    return {
+      type: 'event',
+      id: 'turn-2',
+      conversationId: 'shared-id',
+      seq,
+      event: { type: 'text_delta', text: 'on the next turn now' },
+    } as unknown as MobileWsServerFrame;
+  }
+
+  /**
+   * Turn 1 launches a BACKGROUND child and ends. `run.ts:268`
+   * (`if (h.background) continue;`) deliberately does NOT finalize it, so it is
+   * still running when the user sends turn 2 — and `emitToParent`
+   * (`coordinator.ts:1560`) pushes its heartbeat into whatever turn is live
+   * NOW, because `this.live` is keyed `(agentId, conversationId)`. The
+   * heartbeat therefore lands on turn 2's stream, which has no
+   * `subagent_started` for that child.
+   */
+  async function heartbeatIntoTheNextTurn(): Promise<void> {
+    await selectParent();
+    await useChatStore.getState().applyFrame(started(1));
+    // Turn 1's `done`, via `refreshTerminal`.
+    useChatStore.setState((state) => ({
+      streamingFrames: { ...state.streamingFrames, [parentKey]: [] },
+    }));
+    await useChatStore.getState().applyFrame(turnTwo(2));
+    await useChatStore.getState().applyFrame(parked({ id: 'turn-2' }));
+  }
+
+  function liveEvents(): McAgentEvent[] {
+    return (useChatStore.getState().streamingFrames[parentKey] ?? []).flatMap((f) =>
+      f.type === 'event' ? [f.event as McAgentEvent] : [],
+    );
   }
 
   function frameTypes(): string[] {
@@ -1300,21 +1339,63 @@ describe('a TRANSIENT sub-agent frame on the parent stream', () => {
     expect(useChatStore.getState().streamingFrames[parentKey]).toEqual([]);
   });
 
+  // The gate that matters is not "is a stream live" but "is THIS child anchored
+  // in the stream that is live". They diverge for a background child, which is
+  // the only kind that outlives its launching turn.
+  it("drops a background child's heartbeat into a turn that never started it", async () => {
+    await heartbeatIntoTheNextTurn();
+
+    expect(useChatStore.getState().streamingFrames[parentKey]).toHaveLength(1);
+  });
+
+  it('mints no orphan card from it — a lone progress event is enough for one', async () => {
+    await heartbeatIntoTheNextTurn();
+
+    // `chat.tsx:2307` builds the live event list straight off this array and
+    // never runs it through `mergeSubagentEventLists` (that folds CONFIRMED
+    // messages only), so D2's reconciliation cannot collapse a duplicate here.
+    // `chat.swarm.ts:373-381` drafts a group for any `subagentIdOf` hit and
+    // only `subagent_started` clears `orphan`.
+    expect(groupSubagentEvents(liveEvents(), true)).toEqual([]);
+  });
+
+  // `PROGRESS_THROTTLE_MS` is 1_000 (`child-handle.ts:67`), so a busy child
+  // emits one of these a second for the whole turn and the fold is
+  // last-write-wins per child: every heartbeat but the newest is dead weight.
+  // Replaced in place, so the array holds at most one per child and the
+  // anchor positions the fold reads never move.
+  it('coalesces a child heartbeat rather than appending one per second', async () => {
+    await selectParent();
+    await useChatStore.getState().applyFrame(started(1));
+    await useChatStore.getState().applyFrame(parked({ elapsedMs: 30000 }));
+    await useChatStore.getState().applyFrame(parked({ elapsedMs: 31000 }));
+
+    expect(frameTypes()).toEqual(['subagent_started', 'subagent_progress']);
+    const latest = liveEvents()[1] as unknown as { elapsedMs: number };
+    expect(latest.elapsedMs).toBe(31000);
+  });
+
   it('leaves the conversation status alone — it must not mark an idle parent running', async () => {
     await selectParentWithAgent();
-    await useChatStore.getState().applyFrame(started(1));
-    const before = useChatStore
-      .getState()
-      .conversations.find((conversation) => conversation.id === 'shared-id');
+    // The stream is seeded DIRECTLY, not through a sequenced frame: driving
+    // `started(1)` through `applyFrame` first would write `status: 'running'`,
+    // `activeTurnId: 'turn-1'` and `lastSeq: 1` itself, and the regression this
+    // pins writes those same three values — so the guard would hold either way
+    // and pin nothing. The scenario named here is a heartbeat arriving at a
+    // parent row that is IDLE, which is what a background child's does once its
+    // launching turn is over.
+    useChatStore.setState((state) => ({
+      streamingFrames: { ...state.streamingFrames, [parentKey]: [started(1)] },
+    }));
 
     await useChatStore.getState().applyFrame(parked());
 
     const after = useChatStore
       .getState()
       .conversations.find((conversation) => conversation.id === 'shared-id');
-    expect(after?.status).toBe(before?.status);
-    expect(after?.activeTurnId).toBe(before?.activeTurnId);
-    expect(after?.lastSeq).toBe(before?.lastSeq);
+    expect(after?.status).toBe('idle');
+    expect(after?.activeTurnId).toBeNull();
+    expect(after?.lastSeq).toBe(0);
   });
 });
 
