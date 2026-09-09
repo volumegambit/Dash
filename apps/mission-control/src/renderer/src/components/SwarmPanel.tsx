@@ -9,6 +9,7 @@ import {
   isTerminalSubagentStatus,
   rowStatusOf,
   subagentElapsedMs,
+  subagentReportSummary,
 } from '../routes/chat.swarm.js';
 import { useChatStore } from '../stores/chat.js';
 import { formatTokens } from './SwarmPanel.helpers.js';
@@ -188,7 +189,9 @@ function SubagentRow({ entry }: { entry: SubagentListEntry }): JSX.Element {
       )}
 
       {entry.report && terminal && (
-        <p className="mt-1 pl-4 line-clamp-2 text-muted">{entry.report}</p>
+        <p className="mt-1 truncate pl-4 text-muted" data-testid="swarm-subagent-report">
+          {subagentReportSummary(entry.report)}
+        </p>
       )}
 
       {ui?.notice && (

@@ -16,6 +16,7 @@ import {
   resolveSubagentStatus,
   rowStatusOf,
   subagentElapsedMs,
+  subagentReportSummary,
   summarizeSwarmStrip,
 } from './chat.swarm.js';
 
@@ -779,5 +780,25 @@ describe('captured gateway streams — §8.2 parallel groups', () => {
     expect(clusterAdjacent(groupSubagentEvents(split, false)).filter((c) => c.length > 1)).toEqual(
       [],
     );
+  });
+});
+
+describe('subagentReportSummary', () => {
+  it('keeps a short single-line report intact', () => {
+    expect(subagentReportSummary('Two findings, both minor.')).toBe('Two findings, both minor.');
+  });
+
+  it('takes the first line that carries words, stripping Markdown chrome', () => {
+    expect(subagentReportSummary('\n\n## Findings\n\n| a | b |\n')).toBe('Findings');
+  });
+
+  it('clips a long line and marks the clip', () => {
+    const summary = subagentReportSummary(`${'x'.repeat(400)}\ntail`);
+    expect(summary).toHaveLength(120);
+    expect(summary.endsWith('…')).toBe(true);
+  });
+
+  it('returns nothing for a report that is only whitespace and chrome', () => {
+    expect(subagentReportSummary('\n\n---\n  \n')).toBe('');
   });
 });

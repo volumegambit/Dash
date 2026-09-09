@@ -59,6 +59,36 @@ describe('SwarmPanel', () => {
     expect(screen.getByTestId('swarm-subagent-sub_b')).toHaveTextContent('45s');
   });
 
+  /**
+   * D7 — a row dumped the child's whole report. `lister-2`'s row was roughly
+   * 15 000 characters of Markdown table. The `line-clamp-2` on it is a CSS
+   * clamp: every one of those characters is still in the DOM and in the
+   * accessibility tree, which is what X1 read the row through. §32.4.2
+   * describes a row of type, description, meta, dot and status label.
+   */
+  it('reduces a huge report to one line in the collapsed row', () => {
+    const report = [
+      '## Findings',
+      '',
+      '| File | Lines | Note |',
+      ...Array.from({ length: 400 }, (_, i) => `| src/file-${i}.ts | ${i * 7} | looks fine |`),
+    ].join('\n');
+    expect(report.length).toBeGreaterThan(15_000);
+    useChatStore.setState({
+      subagents: [entry({ status: 'done', endedAt: END, report })],
+    });
+
+    render(<SwarmPanel onClose={() => undefined} />);
+
+    const row = screen.getByTestId('swarm-subagent-sub_a');
+    const summary = within(row).getByTestId('swarm-subagent-report');
+    expect(summary.textContent).not.toContain('\n');
+    expect(summary.textContent?.length ?? 0).toBeLessThanOrEqual(140);
+    expect(summary).toHaveTextContent('Findings');
+    // The row must not carry the body at all — not merely hide it.
+    expect(row.textContent ?? '').not.toContain('src/file-399.ts');
+  });
+
   it('renders no elapsed for a terminal child with no endedAt', () => {
     useChatStore.setState({ subagents: [entry({ status: 'cancelled' })] });
 

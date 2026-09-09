@@ -571,6 +571,31 @@ export function formatClusterSummary(groups: readonly SubagentGroup[]): string {
  * which is what an orphan terminal (a crash-split message whose start landed
  * elsewhere) folds to.
  */
+/**
+ * The collapsed row's one line of report (§8.1, §32.4.2).
+ *
+ * D7: the panel rendered `entry.report` whole — one row was roughly 15 000
+ * characters of Markdown table. `line-clamp-2` hid it visually and hid nothing
+ * from the DOM or the accessibility tree, which is how a "collapsed" row came
+ * to carry a child's entire deliverable. The full report keeps its home in the
+ * expanded card body, which is the surface §8.1 gives it.
+ *
+ * The first line that carries words, whitespace-collapsed and clipped. Leading
+ * Markdown chrome (`#`, `>`, `-`, `*`) is stripped so a report that opens with
+ * a heading summarizes as the heading's text rather than as `##`.
+ */
+export function subagentReportSummary(report: string, limit = 120): string {
+  for (const line of report.split('\n')) {
+    const text = line
+      .replace(/^[\s>#*\-|]+/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text.length === 0) continue;
+    return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+  }
+  return '';
+}
+
 export function subagentElapsedMs(
   startedAt: string | undefined,
   endedAt: string | undefined,
