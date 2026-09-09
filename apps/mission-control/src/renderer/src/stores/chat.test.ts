@@ -1359,7 +1359,7 @@ describe('a TRANSIENT sub-agent frame on the parent stream', () => {
     expect(groupSubagentEvents(liveEvents(), true)).toEqual([]);
   });
 
-  // `PROGRESS_THROTTLE_MS` is 1_000 (`child-handle.ts:67`), so a busy child
+  // `PROGRESS_THROTTLE_MS` is 1_000 (`child-handle.ts:75`), so a busy child
   // emits one of these a second for the whole turn and the fold is
   // last-write-wins per child: every heartbeat but the newest is dead weight.
   // Replaced in place, so the array holds at most one per child and the

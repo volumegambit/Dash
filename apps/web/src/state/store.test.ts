@@ -6,12 +6,14 @@ import type {
   ConversationMessagePage,
   ConversationPage,
   ConversationSummary,
+  MobileAgentEvent,
   MobileWsClientFrame,
   MobileWsServerFrame,
   SubagentListEntry,
 } from '@dash/mobile-contract';
 import type { ChatSocket, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
+import { groupSubagentEvents } from '../ui/blocks/subagents';
 import { RECONNECT_BASE_MS, RECONNECT_FACTOR, RECONNECT_MAX_MS, createWebAppStore } from './store';
 
 // apps/web/src/state -> apps/web -> apps -> repo root
@@ -4547,6 +4549,187 @@ describe('createWebAppStore', () => {
         );
         expect(store.getState().connection).toBe('unauthorized');
       });
+    });
+  });
+
+  /**
+   * A BACKGROUND child is the only kind that outlives the turn that launched
+   * it: `run.ts:268` (`if (h.background) continue;`) leaves it running through
+   * that turn's finalize, and `emitToParent` (`coordinator.ts:1560`) pushes its
+   * heartbeat into whatever turn is live NOW, because `this.live` is keyed
+   * `(agentId, conversationId)`. So a turn-1 child heartbeats onto turn 2's
+   * stream, where it has no `subagent_started` — and `groupSubagentEvents`
+   * (`ui/blocks/subagents.ts:267-291`) drafts a group for any `subagentIdOf`
+   * hit and clears `orphan` only on a start. What the user would see is a
+   * second, unlabelled card (header `{group.type || 'agent'}`, blank
+   * description, no `startedAt`) carrying the question and a live
+   * `subagent-reply` composer (`SubagentBlock.tsx:262-274`), for a child whose
+   * real card is already in turn 1's confirmed message —
+   * `ChatView.tsx:980-990` renders the live stream through
+   * `ContentBlocks.tsx:271` raw and never runs it through D2's
+   * `mergeSubagentEventLists`, which folds CONFIRMED messages only.
+   *
+   * The rule, ported from MC's `1d2e641c`: a transient (seq-less) frame
+   * updates the stream it BELONGS to — the one its child is anchored in — or
+   * it is dropped.
+   */
+  describe('a transient sub-agent frame on the parent stream (E3)', () => {
+    const BG_CHILD = 'sub_a';
+    const QUESTION = 'which file should I read, src/alpha.ts or src/beta.ts?';
+
+    function accepted(turnId: string, seq: number): MobileWsServerFrame {
+      return {
+        type: 'accepted',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        userMessageId: `user-${turnId}`,
+        assistantMessageId: `asst-${turnId}`,
+        revision: seq,
+        seq,
+      };
+    }
+
+    function startedChild(turnId: string, seq: number): MobileWsServerFrame {
+      return {
+        type: 'event',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        seq,
+        event: {
+          type: 'subagent_started',
+          subagentId: BG_CHILD,
+          subagentType: 'Explore',
+          description: 'map the code',
+          background: true,
+          depth: 1,
+          startedAt: '2026-09-04T00:00:00.000Z',
+        },
+      } as unknown as MobileWsServerFrame;
+    }
+
+    /** The real wire shape: no `seq`, because the gateway never logs a
+     * transient event (`chat-ws.ts:555`, `resumable-chat-hub.ts:382`). */
+    function heartbeat(turnId: string, over: { elapsedMs?: number } = {}): MobileWsServerFrame {
+      return {
+        type: 'event',
+        id: turnId,
+        conversationId: CONVERSATION_ID,
+        event: {
+          type: 'subagent_progress',
+          subagentId: BG_CHILD,
+          status: 'waiting_input',
+          question: QUESTION,
+          toolCallCount: 0,
+          elapsedMs: over.elapsedMs ?? 30_000,
+        },
+      } as unknown as MobileWsServerFrame;
+    }
+
+    async function connected(): Promise<{
+      store: ReturnType<typeof createWebAppStore>;
+      onFrame: FrameHandler;
+    }> {
+      const { rest } = fakeRest({});
+      const { factory, sockets, onFrames } = scriptedSocketFactory();
+      const store = createWebAppStore({ rest, socketFactory: factory });
+      await openAndConnect(store, sockets, CONVERSATION_ID);
+      return { store, onFrame: onFrames[0] };
+    }
+
+    /** The live stream the card fold walks — `ChatView.tsx:980-990` passes
+     * exactly this array to `<ContentBlocks streaming />`. */
+    function liveEvents(store: ReturnType<typeof createWebAppStore>): MobileAgentEvent[] {
+      const streaming = store.getState().transcripts[CONVERSATION_ID]?.streaming;
+      return streaming && streaming.type === 'assistant' ? streaming.events : [];
+    }
+
+    /** Turn 1 launches the background child and ends; turn 2 opens its own
+     * stream; the still-running child heartbeats into it. */
+    async function heartbeatIntoTheNextTurn(): Promise<{
+      store: ReturnType<typeof createWebAppStore>;
+    }> {
+      const { store, onFrame } = await connected();
+      onFrame(accepted('turn-1', 1));
+      onFrame(startedChild('turn-1', 2));
+      onFrame({ type: 'done', id: 'turn-1', conversationId: CONVERSATION_ID, seq: 3 });
+      // `assemble.ts`'s `case 'done'` returns `streaming: null`: web empties
+      // the live stream on a turn's end exactly as MC's `refreshTerminal`
+      // does. Asserted, because the whole defect hangs off it.
+      expect(store.getState().transcripts[CONVERSATION_ID]?.streaming).toBeNull();
+      onFrame(accepted('turn-2', 4));
+      onFrame({
+        type: 'event',
+        id: 'turn-2',
+        conversationId: CONVERSATION_ID,
+        seq: 5,
+        event: { type: 'text_delta', text: 'on the next turn now' },
+      });
+
+      onFrame(heartbeat('turn-2'));
+      return { store };
+    }
+
+    it("drops a background child's heartbeat into a turn that never started it", async () => {
+      const { store } = await heartbeatIntoTheNextTurn();
+
+      expect(liveEvents(store).map((event) => event.type)).toEqual(['text_delta']);
+    });
+
+    it('mints no orphan card from it — a lone progress event is enough for one', async () => {
+      const { store } = await heartbeatIntoTheNextTurn();
+
+      expect(groupSubagentEvents(liveEvents(store), true)).toEqual([]);
+    });
+
+    /**
+     * The case the gate must NOT break, and the one §32.6 is about: a child
+     * parked on `ask_orchestrator` INSIDE the live turn is anchored in that
+     * same stream, so its question and reply box still reach the row.
+     */
+    it('delivers a heartbeat for a child anchored in THIS stream — the parked row keeps its question', async () => {
+      const { store, onFrame } = await connected();
+      onFrame(accepted('turn-1', 1));
+      onFrame(startedChild('turn-1', 2));
+
+      onFrame(heartbeat('turn-1'));
+
+      expect(liveEvents(store).map((event) => event.type)).toEqual([
+        'subagent_started',
+        'subagent_progress',
+      ]);
+      const groups = groupSubagentEvents(liveEvents(store), true);
+      expect(groups).toHaveLength(1);
+      expect(groups[0]).toMatchObject({
+        subagentId: BG_CHILD,
+        orphan: false,
+        status: 'waiting',
+        question: QUESTION,
+        type: 'Explore',
+        description: 'map the code',
+      });
+    });
+
+    /**
+     * `PROGRESS_THROTTLE_MS` is 1_000 (`packages/swarm/src/child-handle.ts:75`),
+     * so a busy child emits one of these a second for the whole turn and the
+     * fold is last-write-wins per child: every heartbeat but the newest is dead
+     * weight in an array `groupSubagentEvents` re-walks on each one. Replaced
+     * in PLACE, so the array holds at most one per child and no `anchorIndex`
+     * the fold reads ever moves.
+     */
+    it('coalesces a child heartbeat rather than appending one per second', async () => {
+      const { store, onFrame } = await connected();
+      onFrame(accepted('turn-1', 1));
+      onFrame(startedChild('turn-1', 2));
+
+      onFrame(heartbeat('turn-1', { elapsedMs: 30_000 }));
+      onFrame(heartbeat('turn-1', { elapsedMs: 31_000 }));
+
+      expect(liveEvents(store).map((event) => event.type)).toEqual([
+        'subagent_started',
+        'subagent_progress',
+      ]);
+      expect((liveEvents(store)[1] as { elapsedMs?: number }).elapsedMs).toBe(31_000);
     });
   });
 });

@@ -71,6 +71,26 @@ function streamingEvents(t: Transcript): MobileAgentEvent[] {
   return t.streaming && t.streaming.type === 'assistant' ? t.streaming.events : [];
 }
 
+/**
+ * The events `ui/blocks/subagents.ts` folds into a card, and the `subagentId`
+ * read it uses (`:221-224`). Duplicated rather than imported: `subagentIdOf`
+ * is module-private over there, and `state/` importing from `ui/` is the
+ * dependency `store.ts:1497` already refuses to take for the very same
+ * predicate. Six lines, and they must stay in step with that file — a folded
+ * type missing here would let the transient frame through the gate below
+ * ungated, and one missing there is a card the fold never draws.
+ */
+const FOLDED_EVENT_TYPES = new Set(['subagent_started', 'subagent_progress', 'subagent_finished']);
+
+function subagentIdOf(event: MobileAgentEvent): string | undefined {
+  if (!FOLDED_EVENT_TYPES.has(event.type)) return undefined;
+  const named = event as { subagentId?: unknown; workerId?: unknown };
+  for (const value of [named.subagentId, named.workerId]) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
+
 /** Best-effort pending state for `event`/`done` frames that arrive without a
  * preceding `accepted` in this session (e.g. a resumed stream after a page
  * reload lost in-memory state). There's no real `assistantMessageId` to
@@ -216,10 +236,76 @@ export function applyServerFrame(t: Transcript, frame: MobileWsServerFrame): Tra
 
     case 'event': {
       const pending = t.pending ?? fallbackPending(frame);
-      const events = [...streamingEvents(t), frame.event];
+      const live = streamingEvents(t);
+      // A TRANSIENT frame, and the port of MC's `1d2e641c`. A seq-less
+      // `event` is exactly a transient one on the wire: the gateway omits
+      // `seq` only for an event it never logs (`chat-ws.ts:555` and
+      // `resumable-chat-hub.ts:382`, both `isTransientAgentEvent`), and that
+      // predicate is `subagent_progress` and only it
+      // (`packages/swarm/src/transient-events.ts:12-14`). Such a frame
+      // updates the stream it BELONGS to — the one its child is anchored in —
+      // or it is dropped.
+      //
+      // "Is a stream live" is not the same question. They diverge for a
+      // BACKGROUND child, the only kind that outlives its launching turn:
+      // `run.ts:268` (`if (h.background) continue;`) leaves it running
+      // through that turn's finalize, and `emitToParent`
+      // (`coordinator.ts:1560`) pushes its heartbeat into whatever turn is
+      // live NOW, because `this.live` is keyed `(agentId, conversationId)`.
+      // `case 'done'` below has already emptied the stream
+      // (`streaming: null`), so a turn-1 child heartbeats onto turn 2's
+      // stream, where it has no `subagent_started` — and `groupSubagentEvents`
+      // (`ui/blocks/subagents.ts:267-291`) drafts a group for any
+      // `subagentIdOf` hit and clears `orphan` only on a start. That draws a
+      // second, unlabelled card (header `{group.type || 'agent'}`, blank
+      // description, no `startedAt`) carrying the question and a live
+      // `subagent-reply` composer (`SubagentBlock.tsx:262-274`), for a child
+      // whose real card is already in turn 1's confirmed message. Out of
+      // reach of D2's reconciliation: `ChatView.tsx:980-990` renders the live
+      // stream through `ContentBlocks.tsx:271` raw and never passes it
+      // through `mergeSubagentEventLists`, which folds CONFIRMED messages
+      // only.
+      //
+      // §32.6 is kept verbatim by the same predicate: a child parked on
+      // `ask_orchestrator` INSIDE the live turn is anchored in that same
+      // stream, so its question and reply box still reach its row.
+      //
+      // Coalesced, not appended: `PROGRESS_THROTTLE_MS` is 1_000
+      // (`packages/swarm/src/child-handle.ts:75`), so a busy child emits one
+      // of these a second for the whole turn and the fold is last-write-wins
+      // per child. Replaced in PLACE, so the array holds at most one per
+      // child and no `anchorIndex` the fold reads ever moves. Web's coalesce
+      // predicate cannot be MC's (`candidate.seq === undefined`) because web
+      // stores bare events, not frames — but it does not need to be: a
+      // transient event is never persisted, so ANY `subagent_progress` in a
+      // live event list arrived seq-less.
+      if (frame.seq === undefined) {
+        // A future transient type that names no child needs its own rule
+        // here rather than a silent fall-through to delivery.
+        const childId = subagentIdOf(frame.event);
+        if (childId === undefined) return t;
+        const anchored = live.some(
+          (event) => event.type === 'subagent_started' && subagentIdOf(event) === childId,
+        );
+        if (!anchored) return t;
+        const previous = live.findIndex(
+          (event) => event.type === 'subagent_progress' && subagentIdOf(event) === childId,
+        );
+        return {
+          messages: t.messages,
+          streaming: {
+            type: 'assistant',
+            events:
+              previous === -1
+                ? [...live, frame.event]
+                : live.map((event, index) => (index === previous ? frame.event : event)),
+          },
+          pending,
+        };
+      }
       return {
         messages: t.messages,
-        streaming: { type: 'assistant', events },
+        streaming: { type: 'assistant', events: [...live, frame.event] },
         pending,
       };
     }
