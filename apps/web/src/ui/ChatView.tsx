@@ -1,5 +1,5 @@
 import type { ConversationMessage } from '@dash/mobile-contract';
-import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Transcript } from '../state/assemble.js';
 import { useWebAppStore } from './Shell.js';
 import {
@@ -17,6 +17,7 @@ import {
   isNotificationRow,
   isOrchestratorRow,
 } from './blocks/OriginRows.js';
+import { mergeSubagentEventLists } from './blocks/subagents.js';
 import { usePinnedScroll } from './hooks/usePinnedScroll.js';
 
 export interface ChatViewProps {
@@ -806,6 +807,31 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     });
   }, [conversationId, openConversation]);
 
+  // D2: a background child's completion wakes the conversation with a
+  // server-initiated turn that REPLAYS its `subagent_finished`, and the rule
+  // that an orphan terminal anchors its own card (§31.4, §32.8.4) then draws a
+  // SECOND card for a child that already has one. The fold in
+  // `blocks/subagents.ts` is per message and must stay that way; the
+  // conversation is what knows better, so the reconciliation happens here,
+  // once, before any row renders. The MC port of `01eae2ed`.
+  //
+  // Memoized on the store's own messages array — `MessageRow` is `memo`'d on
+  // its `message` reference (see its doc comment), so rebuilding these objects
+  // on every streaming token would defeat that memo for every assistant row.
+  const rawMessages = transcript?.messages;
+  const mergedMessages = useMemo(() => {
+    const list = rawMessages ?? [];
+    const merged = mergeSubagentEventLists(
+      list.map((m) => (m.content.type === 'assistant' ? m.content.events : null)),
+    );
+    return list.map((m, index) => {
+      const events = merged[index];
+      if (!events || m.content.type !== 'assistant') return m;
+      if (events === m.content.events) return m;
+      return { ...m, content: { ...m.content, events } };
+    });
+  }, [rawMessages]);
+
   // 'unauthorized' is Shell's cue to clear the dead credential and route
   // back to 'pick-gateway' (see Shell's store-subscription effect) — by the
   // time that happens this component unmounts anyway, but guard explicitly
@@ -838,7 +864,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
     );
   }
 
-  const messages = transcript?.messages ?? [];
+  const messages = mergedMessages;
   const streaming = transcript?.streaming ?? null;
   const liveMessageIds = markLiveMessages(entranceLedgersRef.current, conversationId, transcript);
   const canSend = connection === 'connected';

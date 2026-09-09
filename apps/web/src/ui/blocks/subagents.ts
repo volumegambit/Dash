@@ -415,6 +415,64 @@ export function clusterAdjacent(groups: readonly SubagentGroup[]): SubagentGroup
   return clusters;
 }
 
+/**
+ * Fold every message's sub-agent events back onto the message that ANCHORED
+ * each child (D2). The web port of MC's `mergeSubagentEventLists`
+ * (`chat.swarm.ts`), against the same captured stream.
+ *
+ * The fold above is message-scoped, and it must be: a card is anchored by the
+ * `subagent_started` in its own message. But a conversation is not. A
+ * background child's completion wakes the conversation with a server-initiated
+ * notification turn that REPLAYS its `subagent_finished`, and the rule that an
+ * orphan terminal still anchors its own card (§31.4, §32.8.4) — correct in
+ * isolation, and asserted on purpose by `subagents:e2e` — then draws a second
+ * card for a child that already has one. `subagent-notification-frames.jsonl`
+ * is exactly that, captured: two messages, one child, two cards.
+ *
+ * A merge and not a suppression, because the two copies DISAGREE and the later
+ * one is better (a card can read `0 tool uses` in the spawning message and
+ * `1 tool use · 3s` in the notification). Dropping the notification's card
+ * would throw the terminal away and leave the first card `running` for ever,
+ * since a background child is exempt from end-of-stream terminalization by
+ * design.
+ *
+ * A child with no EARLIER anchor is left exactly where it is — that is the
+ * crash-reconcile case §31.4 exists for, where the orphan terminal is the only
+ * card anyone will ever draw.
+ *
+ * Takes and returns one entry per message, `null` for a non-assistant one, so
+ * indices line up with the transcript and the caller needs no bookkeeping.
+ */
+export function mergeSubagentEventLists(
+  lists: readonly (readonly MobileAgentEvent[] | null)[],
+): (MobileAgentEvent[] | null)[] {
+  const anchorOf = new Map<string, number>();
+  lists.forEach((list, index) => {
+    if (!list) return;
+    for (const event of list) {
+      if (event.type !== 'subagent_started') continue;
+      const id = subagentIdOf(event);
+      if (id !== undefined && !anchorOf.has(id)) anchorOf.set(id, index);
+    }
+  });
+
+  const out: (MobileAgentEvent[] | null)[] = lists.map((list) => (list ? [] : null));
+  lists.forEach((list, index) => {
+    if (!list) return;
+    for (const event of list) {
+      const id = subagentIdOf(event);
+      const anchor = id === undefined ? undefined : anchorOf.get(id);
+      // Appended rather than spliced into position: the fold upserts by id and
+      // guards the anchor with `hasStart`, so a later terminal updates the
+      // card's fields without moving its anchor. Every folded event is chrome,
+      // so it cannot perturb §8.2 adjacency in the message it lands in either.
+      const target = anchor !== undefined && anchor !== index ? anchor : index;
+      (out[target] as MobileAgentEvent[]).push(event);
+    }
+  });
+  return out;
+}
+
 const STATUS_WORDS: Record<SubagentStatus, string> = {
   running: 'running',
   waiting: 'waiting',

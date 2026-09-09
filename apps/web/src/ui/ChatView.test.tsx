@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   ConversationMessage,
   ConversationPage,
@@ -1716,5 +1719,57 @@ describe('ChatView orchestrator rows (D2)', () => {
 
     expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
     expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+});
+
+/**
+ * D2 on web — a notification turn drew a SECOND card for a child that had one.
+ *
+ * Fixed on Mission Control by `01eae2ed` and recorded there as affecting web
+ * and iOS too. `subagent-notification-frames.jsonl` is the captured stream
+ * that reddens it: one real conversation, an assistant turn that spawns a
+ * background `writer`, then the server-initiated notification turn its
+ * completion wakes. Both messages name the same child.
+ */
+describe('ChatView duplicate sub-agent cards (D2)', () => {
+  function capturedMessages(): ConversationMessage[] {
+    const path = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../contracts/mobile/v1/fixtures/subagent-notification-frames.jsonl',
+    );
+    const frames = readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map(
+        (line) => JSON.parse(line) as { type: string; id: string; event?: Record<string, unknown> },
+      );
+    const byTurn = new Map<string, Record<string, unknown>[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      byTurn.set(frame.id, [...(byTurn.get(frame.id) ?? []), frame.event]);
+    }
+    const turns = [...byTurn.entries()];
+    expect(turns).toHaveLength(2);
+    return turns.map(([turnId, events], index) =>
+      message({
+        id: `assistant-${index}`,
+        turnId,
+        ordinal: index + 1,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events } as ConversationMessage['content'],
+      }),
+    );
+  }
+
+  it('draws one card for a child the notification turn reports again', async () => {
+    await renderConnected({ messages: capturedMessages() });
+
+    const cards = [...document.querySelectorAll('[data-testid="subagent-block"]')];
+    expect(cards.map((c) => c.getAttribute('data-subagent-id'))).toEqual([
+      'sub_01M21PVS839FQA3STD22Z2BNKM',
+    ]);
+    // The merge keeps the LATER copy's data: the surviving card is terminal.
+    expect(cards[0].getAttribute('data-status')).toBe('done');
   });
 });

@@ -10,6 +10,7 @@ import {
   groupSubagentEvents,
   isSubagentEvent,
   isTerminalSubagentStatus,
+  mergeSubagentEventLists,
 } from './subagents.js';
 
 const START_ISO = '2026-09-04T00:00:00.000Z';
@@ -568,5 +569,85 @@ describe('captured gateway streams — §8.2 parallel groups', () => {
     expect(clusterAdjacent(groupSubagentEvents(split, false)).filter((c) => c.length > 1)).toEqual(
       [],
     );
+  });
+});
+
+/**
+ * D2 on web — every background child draws a SECOND card.
+ *
+ * The port of MC's `01eae2ed`, against the same captured stream.
+ * `subagent-notification-frames.jsonl` is one real conversation: an assistant
+ * turn that spawns a background `writer`, then the server-initiated
+ * notification turn its completion wakes. Both messages name the same child,
+ * and the fold is per MESSAGE on every client by construction, so it cannot
+ * see that this child already has a card earlier in the conversation and
+ * anchors one in each.
+ */
+describe('captured gateway streams — D2 duplicate cards', () => {
+  const messageEventLists = (file: string): MobileAgentEvent[][] => {
+    const path = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../../contracts/mobile/v1/fixtures',
+      file,
+    );
+    const frames = readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: MobileAgentEvent });
+    const byTurn = new Map<string, MobileAgentEvent[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      const list = byTurn.get(frame.id) ?? [];
+      list.push(frame.event);
+      byTurn.set(frame.id, list);
+    }
+    return [...byTurn.values()];
+  };
+
+  const cardsPerMessage = (lists: readonly (MobileAgentEvent[] | null)[]): string[][] =>
+    lists.map((list) => (list ? groupSubagentEvents(list, false).map((g) => g.subagentId) : []));
+
+  it('the real stream anchors the same child in two messages', () => {
+    const lists = messageEventLists('subagent-notification-frames.jsonl');
+    expect(lists).toHaveLength(2);
+    const cards = cardsPerMessage(lists);
+    // The defect, stated as the fixture states it: two cards, one child.
+    expect(cards[0]).toHaveLength(1);
+    expect(cards[1]).toEqual(cards[0]);
+  });
+
+  it('merges the notification turn back into the message that anchored the child', () => {
+    const lists = messageEventLists('subagent-notification-frames.jsonl');
+    const merged = mergeSubagentEventLists(lists);
+    const cards = cardsPerMessage(merged);
+    expect(cards[0]).toHaveLength(1);
+    expect(cards[1]).toEqual([]);
+    // Nothing is lost: the surviving card carries the terminal the
+    // notification turn delivered.
+    const group = groupSubagentEvents(merged[0] as MobileAgentEvent[], false)[0];
+    expect(group.status).toBe('done');
+    expect(group.endedAt).toBeDefined();
+    // Still anchored by its OWN start, not re-anchored by the moved terminal.
+    expect(group.startedAt).not.toBe('');
+    expect(group.background).toBe(true);
+    expect(group.orphan).toBe(false);
+  });
+
+  it('leaves a child with no earlier anchor where it is', () => {
+    // Crash-reconcile: only the terminal survives, in its own message. §31.4 /
+    // §32.8.4 keep that card, because nothing else will ever draw it.
+    const lists = messageEventLists('subagent-notification-frames.jsonl');
+    expect(cardsPerMessage(mergeSubagentEventLists([lists[1]]))[0]).toHaveLength(1);
+  });
+
+  it('does not perturb §8.2 adjacency in the message the events land in', () => {
+    // Every folded event is chrome, so a moved terminal cannot split a
+    // parallel cluster in the message it is appended to.
+    const parallel = messageEventLists('subagent-parallel-frames.jsonl');
+    const merged = mergeSubagentEventLists([...parallel, null]);
+    const clusters = clusterAdjacent(
+      groupSubagentEvents(merged[0] as MobileAgentEvent[], false),
+    ).filter((c) => c.length > 1);
+    expect(clusters.map(formatClusterSummary)).toEqual(['2 agents · 2 done']);
   });
 });
