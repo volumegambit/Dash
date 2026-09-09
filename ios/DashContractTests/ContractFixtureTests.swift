@@ -278,6 +278,43 @@ struct ContractFixtureTests {
     #expect(seen == ["subagent_started", "subagent_progress", "subagent_finished"])
   }
 
+  /// D5 — the frame that took the whole socket down.
+  ///
+  /// `subagent_progress` is TRANSIENT (spec §7.2): the hub broadcasts it and
+  /// never appends it to the durable log, so it arrives with NO `seq` and
+  /// `MobileWsServerFrame` declares `event.seq` optional for exactly that
+  /// reason. `CapableServerFrame.validating` required one anyway, and
+  /// `ChatConnection` maps a `ContractValidationError` to
+  /// `GatewayError.updateRequired` — so one heartbeat from one child failed
+  /// the whole conversation.
+  ///
+  /// `subagent-progress-frames.jsonl` is a real turn, captured verbatim from a
+  /// gateway by `scripts/subagents-e2e/capture-fixtures.mjs`: a foreground
+  /// child that outlives one 10s heartbeat. Three of its fourteen frames carry
+  /// no `seq`.
+  @Test("a captured turn's transient heartbeats survive capable validation")
+  func transientProgressFramesAreCapable() throws {
+    let lines = try jsonLines("subagent-progress-frames.jsonl")
+    #expect(lines.count == 14)
+
+    var seqless = 0
+    for line in lines {
+      let frame = try ContractCoding.decoder().decode(MobileWSServerFrame.self, from: line)
+      // RED before the fix: `requiredCapableField("seq")`, three times.
+      let capable = try CapableServerFrame.validating(frame)
+      if case let .event(_, _, seq, event) = capable, seq == nil {
+        seqless += 1
+        guard case .subagentProgress = event else {
+          Issue.record("an unsequenced event that is not a heartbeat")
+          continue
+        }
+      }
+    }
+    #expect(seqless == 3)
+  }
+
+  /// The relaxation is "absent is legal", not "anything goes": an event with
+  /// no conversation id is still the ambiguous cursor D4 froze a fixture for.
   @Test("legacy frames decode but capable validation rejects ambiguous cursors")
   func capableFrameValidation() throws {
     let missingConversation = try FixtureLoader.decode(

@@ -1131,8 +1131,16 @@ extension CapableServerFrame {
   fileprivate var sequenced: (conversationID: String, seq: Int)? {
     switch self {
     case .accepted(_, let conversationID, _, _, _, let seq),
-      .event(_, let conversationID, let seq, _),
       .done(_, let conversationID, let seq, _):
+      return (conversationID, seq)
+    // A TRANSIENT event (spec §7.2) has no cursor because it is never
+    // persisted, so there is nothing here to reconcile OR to store — the
+    // caller's `guard let sequenced else { return }` is the right answer for
+    // it. It still reaches the LIVE reducer, which reads
+    // `MobileWSServerFrame` and has always tolerated a nil seq
+    // (`ChatReducer.sequence(of:)`).
+    case .event(_, let conversationID, let seq, _):
+      guard let seq else { return nil }
       return (conversationID, seq)
     case .error(_, let conversationID, let seq, _, _, _, _):
       guard let conversationID, let seq else { return nil }

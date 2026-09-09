@@ -342,7 +342,17 @@ enum CapableServerFrame: Hashable, Sendable {
     revision: Int,
     seq: Int
   )
-  case event(id: String, conversationId: String, seq: Int, event: AgentEvent)
+  /// `seq` is OPTIONAL, and the gateway means it: a TRANSIENT event (spec
+  /// §7.2 — `subagent_progress` today) is live-broadcast and never appended to
+  /// the durable log, so `resumable-chat-hub.ts:382-390` emits it with no
+  /// sequence at all. `MobileWsServerFrame` has always declared it optional.
+  /// Requiring it here rejected every heartbeat a real child sends, and
+  /// `ChatConnection` maps a `ContractValidationError` to
+  /// `GatewayError.updateRequired` — so ONE heartbeat took the whole socket
+  /// down. `conversationId` stays required: an event with no cursor AND no
+  /// conversation is the ambiguity `invalid/chat-event-missing-conversation-id.json`
+  /// is frozen to reject.
+  case event(id: String, conversationId: String, seq: Int?, event: AgentEvent)
   case done(id: String, conversationId: String, seq: Int, outcome: TurnOutcome)
   case error(
     id: String,
@@ -371,7 +381,6 @@ enum CapableServerFrame: Hashable, Sendable {
       guard let conversationId else {
         throw ContractValidationError.requiredCapableField("conversationId")
       }
-      guard let seq else { throw ContractValidationError.requiredCapableField("seq") }
       return .event(id: id, conversationId: conversationId, seq: seq, event: event)
     case let .done(id, conversationId, seq, outcome):
       guard let conversationId else {
