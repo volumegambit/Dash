@@ -504,6 +504,38 @@ struct ChatReducerTests {
     #expect(timeline.last == .text("After"))
   }
 
+  @Test("the sub-agent cluster sits in the timeline where the FIRST child was spawned, once")
+  func subagentClusterChronology() {
+    // The merge made main's ordered timeline walk the renderer of every block,
+    // so the `.subagents` marker must land at the first child's event position
+    // and a later sibling must join it rather than open a second one.
+    var state = acceptedState(cursor: 1)
+    _ = apply(.textDelta(text: "Before"), seq: 2, to: &state)
+    _ = apply(started("child-1"), seq: 3, to: &state)
+    _ = apply(.textDelta(text: "After"), seq: 4, to: &state)
+    _ = apply(started("child-2"), seq: 5, to: &state)
+
+    let timeline = state.messages.last?.assistant?.timeline ?? []
+    #expect(timeline == [.text("Before"), .subagents, .text("After")])
+    #expect(state.messages.last?.assistant?.subagentDrafts.count == 2)
+  }
+
+  private func started(_ id: String) -> AgentEvent {
+    .subagentStarted(
+      subagentId: id,
+      name: "scout",
+      subagentType: "Explore",
+      description: "map code",
+      prompt: "map it",
+      model: "test/model",
+      background: false,
+      depth: 1,
+      startedAt: Date(timeIntervalSince1970: 1_788_480_000),
+      isolation: nil,
+      parentTurnId: nil
+    )
+  }
+
   @Test("tool error preserves text and an icon-addressable failure state")
   func toolErrorProjection() {
     var state = acceptedState(cursor: 1)
