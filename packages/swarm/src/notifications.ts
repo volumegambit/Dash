@@ -108,8 +108,12 @@ export function composeNotificationText(items: PendingNotification[]): string {
       const agentName = name ?? subagentType;
       const statusValue = statusMapping(String(status));
 
-      // Scan the report before embedding it
-      const scanned = scanSubagentOutput(String(report));
+      // Scan the report before embedding it. `envelope: true` because THIS is
+      // where a `</result>` in the report would escape the block it is about to
+      // be nested in — the only place the envelope's inner tag names mean
+      // anything. Everywhere else (the `agent` tool's result, `GET
+      // /subagents/:id`) the same names are ordinary HTML.
+      const scanned = scanSubagentOutput(String(report), { envelope: true });
       const resultText = scanned.text;
 
       const block = `<task-notification>\n<task-id>${escapeAttribute(String(subagentId))}</task-id>\n<agent-name>${escapeAttribute(String(agentName))}</agent-name>\n<status>${escapeAttribute(statusValue)}</status>\n<summary>Agent "${escapeAttribute(String(description))}" finished</summary>\n<result>\n${resultText}\n</result>\n</task-notification>`;
@@ -125,8 +129,9 @@ export function composeNotificationText(items: PendingNotification[]): string {
       const payload = item.payload as Record<string, unknown>;
       const { from = '', message = '' } = payload;
 
-      // Scan the message before embedding it
-      const scanned = scanSubagentOutput(String(message));
+      // Scan the message before embedding it, in envelope mode for the same
+      // reason as the report above.
+      const scanned = scanSubagentOutput(String(message), { envelope: true });
       const messageText = scanned.text;
 
       const block = `<subagent-message from="${escapeAttribute(String(from))}">\n${messageText}\n</subagent-message>`;

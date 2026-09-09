@@ -1,22 +1,48 @@
+/**
+ * Dangerous in ANY text a child produces, wherever it is going to be read:
+ * each one opens a channel the harness owns.
+ */
 const CONTROL_TAGS = [
   'system-reminder',
   'task-notification',
   'cross-session-message',
   'subagent-message',
-  // The notification envelope's OWN inner tags. Scanned text is embedded inside
-  // `<result>…</result>` of a `<task-notification>` block, so without these a
-  // report can close `</result>`, emit a second `<status>` and reopen
-  // `<result>` — forging sibling metadata about itself. It cannot open a second
-  // `<task-notification>` or a `<system-reminder>`; this closes the remaining
-  // half. The composed envelope is never re-scanned (the only callers scan
-  // child-produced report/message text), so the harness's own tags are safe.
-  'result',
-  'status',
-  'summary',
-  'agent-name',
-  'task-id',
 ];
-const TAG_RE = new RegExp(`<(/?)(?:${CONTROL_TAGS.join('|')}|system[a-z_-]*)\\b([^>]*)>`, 'gi');
+
+/**
+ * The notification envelope's OWN inner tags — dangerous only INSIDE the
+ * envelope, and neutralized only for a caller that is about to embed the text
+ * there ({@link ScanOptions.envelope}).
+ *
+ * `composeNotificationText` puts a child's report inside
+ * `<result>…</result>` of a `<task-notification>` block, so a report can close
+ * `</result>`, emit a second `<status>` and reopen `<result>` — forging sibling
+ * metadata about itself. `</result>` is the only structural escape (nothing
+ * else can forge a sibling while it is still nested inside `<result>`), but all
+ * five are neutralized there because the reader is a model, not a strict
+ * parser, and a `<status>completed</status>` sitting in the report body is
+ * exactly the confusion the escape was for.
+ *
+ * They are NOT neutralized by default, and that scoping is the whole point.
+ * `<summary>` is a standard HTML element (`<details><summary>`); scanning for
+ * it globally replaced a benign Markdown report with an injection warning at
+ * `agent-tool.ts`'s tool result, where there is no envelope and no `<result>`
+ * to escape — the live smoke's assertion 1, failing on 9/10.
+ *
+ * Restricting to CLOSING tags would not have helped: `</summary>` is a closing
+ * tag too. Envelope scoping is what discriminates the two cases.
+ *
+ * The composed envelope is never re-scanned (every caller scans child-produced
+ * report/message text), so the harness's own tags are safe.
+ */
+const ENVELOPE_TAGS = ['result', 'status', 'summary', 'agent-name', 'task-id'];
+
+function tagPattern(names: readonly string[]): RegExp {
+  return new RegExp(`<(/?)(?:${names.join('|')}|system[a-z_-]*)\\b([^>]*)>`, 'gi');
+}
+
+const TAG_RE = tagPattern(CONTROL_TAGS);
+const ENVELOPE_TAG_RE = tagPattern([...CONTROL_TAGS, ...ENVELOPE_TAGS]);
 const ROLE_RE = /^(Human|Assistant|User|System):/gm;
 const PERMISSION_RE = /\b(permissionMode|bypassPermissions|dangerouslyDisableSandbox)\b/;
 const MARKER_PREFIX = '[harness: subagent output matched instruction-shaped pattern(s): ';
@@ -61,11 +87,21 @@ export interface ScannedOutput {
   matched: string[];
 }
 
+export interface ScanOptions {
+  /**
+   * True when the caller is about to embed this text inside the notification
+   * envelope (`composeNotificationText`). Adds {@link ENVELOPE_TAGS} to the
+   * neutralized set — see that constant for why they are off by default.
+   */
+  envelope?: boolean;
+}
+
 /** Claude Code parity: neutralize instruction-shaped text; never remove content. */
-export function scanSubagentOutput(text: string): ScannedOutput {
+export function scanSubagentOutput(text: string, options?: ScanOptions): ScannedOutput {
   try {
     const matched: string[] = [];
-    let out = text.replace(TAG_RE, (whole, slash: string, rest: string) => {
+    const tagRe = options?.envelope === true ? ENVELOPE_TAG_RE : TAG_RE;
+    let out = text.replace(tagRe, (whole, slash: string, rest: string) => {
       const name = whole
         .slice(1 + slash.length)
         .replace(rest, '')
