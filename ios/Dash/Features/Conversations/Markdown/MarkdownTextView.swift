@@ -94,6 +94,51 @@ func markdownPlainTextAccessibilityLabel(for text: String) -> String {
   accessibilityLines(for: segmentMarkdown(text)).joined(separator: "\n")
 }
 
+/// Cheap agreement check for "would `markdownPlainTextAccessibilityLabel`
+/// produce anything to read" — used by `ChatFeature.canCopyLastAssistantText`
+/// so ⌘⇧C's enabled/disabled state agrees with what its action actually
+/// copies (Task 5 review, Important 1). Deliberately does NOT call
+/// `attributedInlineMarkdown`, which parses an `AttributedString(markdown:)`
+/// and runs an `NSDataDetector` pass per block — that is the cost that
+/// starved the main thread when it ran once per streamed frame (see
+/// `canCopyLastAssistantText`'s doc comment). Walking the already-cheap,
+/// single-pass `segmentMarkdown` output and trimming each block's RAW text
+/// is an approximation, not a byte-exact replica of the flattener: a block
+/// whose raw text is non-empty but whose inline markdown happens to parse to
+/// nothing (e.g. a lone unmatched `**`) would still read as "has text" here.
+/// That residual gap is why `copyLastResponse()` also guards at the write —
+/// this function only has to get the common cases right (in particular,
+/// `.horizontalRule`-only replies, which `accessibilityLines` drops
+/// entirely) for the predicate to stop contradicting the action.
+func markdownBlocksHaveVisibleText(_ blocks: [MarkdownBlock]) -> Bool {
+  blocks.contains { block in
+    switch block {
+    case .paragraph(let text), .heading(_, let text), .blockquote(let text):
+      return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    case .fencedCode(_, let code):
+      return code.isEmpty == false
+    case .horizontalRule:
+      return false
+    case .image:
+      // An image is visible content even though it carries no text.
+      return true
+    case .table(let table):
+      let hasHeaderText = table.header.contains {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      }
+      let hasRowText = table.rows.contains { row in
+        row.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+      }
+      return hasHeaderText || hasRowText
+    case .list(let list):
+      return list.items.contains { item in
+        item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+          || markdownBlocksHaveVisibleText(item.children)
+      }
+    }
+  }
+}
+
 private func accessibilityLines(for blocks: [MarkdownBlock]) -> [String] {
   blocks.flatMap { block -> [String] in
     switch block {
@@ -111,6 +156,8 @@ private func accessibilityLines(for blocks: [MarkdownBlock]) -> [String] {
       return [code]
     case .horizontalRule:
       return []
+    case .image(_, let alt):
+      return [alt.map { "Image: \($0)" } ?? "Image"]
     case .table(let table):
       let header = table.header.map { String(attributedInlineMarkdown($0).characters) }
       let rows = table.rows.map { row in
@@ -132,12 +179,28 @@ struct MarkdownTextView: View {
   }
 }
 
+/// Extra leading between wrapped lines of prose (chat UI polish
+/// 2026-09-05). SwiftUI's default is the font's own tight leading, which is
+/// tuned for labels; assistant replies are long-form body text read on a
+/// phone, where set-solid lines are what makes a wall of text a wall.
+///
+/// Applied to prose only — paragraphs, blockquotes, list items. Code blocks
+/// and tables keep the default, where line breaks are structural rather than
+/// a consequence of wrapping and extra leading just spreads them out.
+private let markdownProseLineSpacing: CGFloat = 3
+
+/// Gap between blocks. Must stay clearly larger than
+/// `markdownProseLineSpacing`: if the space between two paragraphs is not
+/// visibly greater than the space between two wrapped lines, the paragraph
+/// break stops reading as one.
+private let markdownBlockSpacing: CGFloat = 10
+
 /// A vertical run of blocks — the document body, or a list item's children.
 private struct MarkdownBlocksView: View {
   let blocks: [MarkdownBlock]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: markdownBlockSpacing) {
       ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
         MarkdownBlockView(block: block, depth: 0)
       }
@@ -153,6 +216,7 @@ private struct MarkdownBlockView: View {
     switch block {
     case .paragraph(let text):
       Text(attributedInlineMarkdown(text))
+        .lineSpacing(markdownProseLineSpacing)
         .textSelection(.enabled)
 
     case .heading(let level, let text):
@@ -174,6 +238,9 @@ private struct MarkdownBlockView: View {
 
     case .table(let table):
       MarkdownTableView(table: table)
+
+    case .image(let url, let alt):
+      MarkdownImageView(url: url, alt: alt)
     }
   }
 
@@ -205,6 +272,7 @@ private struct MarkdownListView: View {
             .frame(minWidth: list.ordered ? 22 : 14, alignment: .trailing)
           VStack(alignment: .leading, spacing: 4) {
             Text(attributedInlineMarkdown(item.text))
+              .lineSpacing(markdownProseLineSpacing)
               .textSelection(.enabled)
             ForEach(Array(item.children.enumerated()), id: \.offset) { _, child in
               MarkdownBlockView(block: child, depth: depth + 1)
@@ -295,12 +363,95 @@ private struct MarkdownTableView: View {
   }
 }
 
+/// A standalone markdown image (`![alt](url)` or a bare image-extension
+/// URL — see `MarkdownBlocks.parseStandaloneImage`). SwiftUI `Text` cannot
+/// render a remote image inline, so this is a dedicated view.
+///
+/// While loading: a muted placeholder sized like a thumbnail. On success:
+/// the image, capped to a readable height, rounded, and tappable to open
+/// the same full-screen `ImageViewerView` (pinch/zoom/Share/Save) that
+/// attached images use — so a generated image can be saved to Photos. On
+/// failure (network, or a URL that turns out not to be an image): fall back
+/// to a tappable link so nothing is lost, matching the pre-change behavior.
+private struct MarkdownImageView: View {
+  let url: URL
+  let alt: String?
+
+  @State private var loaded: UIImage?
+  @State private var failed = false
+  @State private var viewerImage: ViewerImage?
+
+  /// Cap so a tall image doesn't dominate the scroll view; the full image
+  /// is one tap away in the viewer.
+  private let maxHeight: CGFloat = 320
+
+  var body: some View {
+    content
+      .task(id: url) { await load() }
+      .fullScreenCover(item: $viewerImage) { item in
+        ImageViewerView(image: item.image) { viewerImage = nil }
+      }
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    if let loaded {
+      Button {
+        viewerImage = ViewerImage(id: 0, image: loaded)
+      } label: {
+        Image(uiImage: loaded)
+          .resizable()
+          .scaledToFit()
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(maxHeight: maxHeight)
+          .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(alt.map { "Image: \($0)" } ?? "Image")
+      .accessibilityIdentifier("chat.markdown.image")
+    } else if failed {
+      Link(destination: url) {
+        Text(alt?.isEmpty == false ? alt! : url.absoluteString)
+      }
+      .accessibilityIdentifier("chat.markdown.imageLinkFallback")
+    } else {
+      RoundedRectangle(cornerRadius: DashTheme.Radius.small)
+        .fill(Color.secondary.opacity(DashTheme.Opacity.fillSubtle))
+        .frame(height: 160)
+        .frame(maxWidth: .infinity)
+        .overlay(ProgressView())
+        .accessibilityLabel("Loading image")
+        .accessibilityIdentifier("chat.markdown.imageLoading")
+    }
+  }
+
+  private func load() async {
+    // Re-entry on `url` change: reset so a recycled view doesn't flash the
+    // previous image or a stale failure.
+    loaded = nil
+    failed = false
+    do {
+      let (data, response) = try await URLSession.shared.data(from: url)
+      guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+        let image = UIImage(data: data)
+      else {
+        failed = true
+        return
+      }
+      loaded = image
+    } catch {
+      failed = true
+    }
+  }
+}
+
 /// Blockquote: 2pt leading bar overlay, muted text (design doc appendix §1).
 private struct MarkdownBlockquoteView: View {
   let text: String
 
   var body: some View {
     Text(attributedInlineMarkdown(text))
+      .lineSpacing(markdownProseLineSpacing)
       .foregroundStyle(.secondary)
       .padding(.leading, 10)
       .overlay(alignment: .leading) {

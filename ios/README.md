@@ -86,6 +86,34 @@ xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
   test CODE_SIGNING_ALLOWED=NO
 ```
 
+### iPad gate
+
+The iPad is a first-class layout, not a scaled phone: it runs a two-column `NavigationSplitView`,
+presents Settings as a form sheet, and turns every confirmation dialog into an anchored popover.
+None of that is exercised by the iPhone destination, so both suites must also pass on the pinned
+iPad before a change is called green — this is the same pair CI runs:
+
+```bash
+IPAD_UDID="$(ios/scripts/ensure-simulators.sh --ipad-udid)"
+
+xcodebuild -project ios/Dash.xcodeproj -scheme Dash \
+  -destination "platform=iOS Simulator,id=$IPAD_UDID" \
+  test CODE_SIGNING_ALLOWED=NO
+
+xcodebuild -project ios/Dash.xcodeproj -scheme DashUI \
+  -destination "platform=iOS Simulator,id=$IPAD_UDID" \
+  test CODE_SIGNING_ALLOWED=NO
+```
+
+CI additionally re-runs `AccessibilityUITests/testCoreFlowsInCurrentAppearance` on the iPad with
+`simctl ui <udid> appearance dark` and `increase_contrast enabled`, mirroring the iPhone appearance
+step. Run the whole `DashUI` scheme on BOTH the iOS 18.4 iPad (what CI pins) and a current iPad
+runtime: the two runtimes differ in `.searchable` toolbar behaviour, sidebar layout, and default
+sheet sizing, so a pass on one says nothing about the other.
+
+Anything a simulator cannot answer — hardware-keyboard focus traversal with Full Keyboard Access,
+trackpad hover, the ⌘-key shortcut overlay — belongs in `QA_CHECKLIST.md`, not in a test.
+
 The integration target composes production HTTP, SSE, WebSocket, persistence, and sync types.
 Build the Node workspaces once, verify the runner contract, then run either one exact selector or
 the complete six-case live matrix:

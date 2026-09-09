@@ -53,6 +53,9 @@ export function toCanonicalLegacyContent(record: McMessage): ConversationContent
       ...(images.length > 0 ? { images } : {}),
     };
   }
+  if (record.content.type === 'notice') {
+    return { type: 'notice', kind: record.content.kind, text: record.content.text };
+  }
   const events = record.content.events.filter(
     (event): event is MobileAgentEvent => typeof event.type === 'string',
   );

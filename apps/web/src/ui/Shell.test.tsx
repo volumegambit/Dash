@@ -32,6 +32,7 @@ vi.mock('../api/chat-socket.js', () => ({
  * test files. */
 function fakeWebAppState() {
   return create<WebAppState>(() => ({
+    rest: { listAgents: vi.fn(async () => []), listAgentSkills: vi.fn(async () => []) } as never,
     conversations: [],
     transcripts: {},
     subagents: {},

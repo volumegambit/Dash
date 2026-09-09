@@ -8,6 +8,7 @@ import type {
   ConversationMessage,
   ConversationMessageOrigin,
   ConversationMessagePage,
+  ConversationNoticeKind,
   ConversationPage,
   ConversationPatchRequest,
   ConversationSummary,
@@ -25,6 +26,7 @@ import {
 import {
   type AcceptTurnInput,
   type AcceptedTurn,
+  type AppendNoticeInput,
   type ConversationService,
   ConversationServiceError,
   type CreateConversationInput,
@@ -694,7 +696,11 @@ export class SqliteConversationService implements ConversationService {
     const allEvents = this.eventLog.readSince(conversation.agent_id, conversation.id, 0);
     const items = pageRows.map((row): ConversationMessage => {
       let content = parseContent(row.content);
-      if (row.role === 'assistant') {
+      // Notices share the 'assistant' role (the table's CHECK allows only
+      // 'user'/'assistant'), so rebuilding from the event log must be gated on
+      // the stored content too — otherwise a notice is replaced by an empty
+      // assistant message every time the page is read.
+      if (row.role === 'assistant' && content.type === 'assistant') {
         const events: MobileAgentEvent[] = allEvents
           .filter((entry) => entry.msgId === row.turn_id && entry.payload.type === 'event')
           .map((entry) => (entry.payload as { type: 'event'; event: MobileAgentEvent }).event);
@@ -892,6 +898,80 @@ export class SqliteConversationService implements ConversationService {
         firstUserMessage: userOrdinal === 1,
       };
     })(input);
+  }
+
+  /**
+   * Append a standalone notice message to a conversation.
+   *
+   * Used for things that happen AFTER a turn is finalised — a skill learned or
+   * a memory saved by the post-turn review. Those cannot be turn events: a
+   * finished turn refuses them (`appendTurnEvent` returns null once
+   * `activeTurnId` has cleared), and a live-only signal would not survive a
+   * reload.
+   *
+   * The notice gets its OWN turn id. `conversation_messages` carries
+   * `UNIQUE(turn_id, role)`, so reusing the reviewed turn's id would collide
+   * with that turn's own assistant row.
+   */
+  appendNotice(input: AppendNoticeInput): ConversationMessage | null {
+    return this.db.transaction((): ConversationMessage | null => {
+      const conversation = this.requireConversationRow(input.conversationId, true);
+      if (conversation.status === 'archived' || conversation.status === 'deleted') return null;
+
+      const ordinal = (
+        this.db
+          .prepare(`
+            SELECT COALESCE(MAX(ordinal), 0) + 1 AS next
+            FROM conversation_messages
+            WHERE conversation_id = ?
+          `)
+          .get(input.conversationId) as { next: number }
+      ).next;
+
+      const id = this.uuid();
+      const turnId = this.uuid();
+      const now = this.now();
+      const content: ConversationContent = {
+        type: 'notice',
+        kind: input.kind,
+        text: input.text,
+      };
+
+      this.db
+        .prepare(`
+          INSERT INTO conversation_messages (
+            id, conversation_id, turn_id, ordinal, role, content, status, created_at, updated_at
+          ) VALUES (
+            @id, @conversationId, @turnId, @ordinal, 'assistant', @content, 'completed', @now, @now
+          )
+        `)
+        .run({
+          id,
+          conversationId: input.conversationId,
+          turnId,
+          ordinal,
+          content: JSON.stringify(content),
+          now,
+        });
+
+      this.db
+        .prepare(
+          'UPDATE conversations SET updated_at = @now, revision = revision + 1 WHERE id = @id',
+        )
+        .run({ id: input.conversationId, now });
+
+      return {
+        id,
+        conversationId: input.conversationId,
+        turnId,
+        ordinal,
+        role: 'assistant',
+        status: 'completed',
+        content,
+        createdAt: now,
+        updatedAt: now,
+      };
+    })();
   }
 
   appendTurnEvent(

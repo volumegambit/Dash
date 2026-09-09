@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { DashAgent } from '@dash/agent';
+import { DashAgent, MemoryStore } from '@dash/agent';
 import type {
   AgentBackend,
   AgentEvent,
@@ -217,27 +217,72 @@ describe('createChildBackend child config', () => {
     expect((captured.options.at(-1) as PiAgentBackendOptions).mcpManager).toBeUndefined();
   });
 
-  it('skipMemory children get a resolver that marks memory off', async () => {
-    const config = await resolveFor(makeSpec({ skipMemory: true }));
-    expect(config.memory).toEqual({ enabled: false, readOnly: true });
+  async function resolveWithMemory(
+    spec: WorkerSpec,
+    memoryDir: ChildBackendDeps['memoryDir'] = (agentId) => `/tmp/mem/${agentId}`,
+  ): Promise<DashAgentConfig> {
+    return (await createChildBackend(spec, { ...deps, dataDir: dir, memoryDir })).config;
+  }
+
+  it('skipMemory children get NO memory at all, even when the parent has one', async () => {
+    const config = await resolveWithMemory(makeSpec({ skipMemory: true }));
+    expect(config.memory).toBeUndefined();
   });
 
-  it('normal children get a resolver with memory on', async () => {
-    const config = await resolveFor(makeSpec());
-    expect(config.memory).toEqual({ enabled: true, readOnly: true });
+  it('normal children inherit the parent memory dir READ-ONLY (no memory tools)', async () => {
+    const config = await resolveWithMemory(makeSpec());
+    expect(config.memory).toEqual({ dir: '/tmp/mem/agent-id-1', tools: false });
     expect(config.model).toBe('anthropic/claude-sonnet-4-20250514');
     expect(config.systemPrompt).toBe(buildWorkerPreamble(makeSpec()));
   });
 
+  it('keys the memory dir on the registry agentId, not the agent name', async () => {
+    const seen: string[] = [];
+    const config = await resolveWithMemory(
+      makeSpec({ agentId: 'reg-42', agentName: 'renamed-agent' }),
+      (agentId) => {
+        seen.push(agentId);
+        return `/tmp/mem/${agentId}`;
+      },
+    );
+    expect(seen).toEqual(['reg-42']);
+    expect(config.memory?.dir).toBe('/tmp/mem/reg-42');
+  });
+
+  it('omits memory entirely when no memoryDir resolver is supplied', async () => {
+    const config = await resolveFor(makeSpec());
+    expect(config.memory).toBeUndefined();
+  });
+
+  it('omits memory when the resolver returns undefined (agent opted out)', async () => {
+    const config = await resolveWithMemory(makeSpec(), () => undefined);
+    expect(config.memory).toBeUndefined();
+  });
+
+  it('never asks the resolver for a skipMemory child', () => {
+    const seen: string[] = [];
+    buildChildBackendOptions(makeSpec({ skipMemory: true }), {
+      ...deps,
+      memoryDir: (agentId) => {
+        seen.push(agentId);
+        return `/tmp/mem/${agentId}`;
+      },
+    });
+    expect(seen).toEqual([]);
+  });
+
   /**
-   * Ruling 1: the `memory.enabled` flag is INERT unless the child config also
-   * carries a `workspace` — `DashAgent.chat` gates the preamble on BOTH. These
-   * two drive the real factory end to end (real DashAgent, real
-   * buildMemoryPreamble, a real MEMORY.md on disk) and read the system prompt
-   * the backend was actually handed.
+   * Ruling 1, re-expressed against the per-agent memory store: what a child is
+   * actually handed is decided by the config the pool resolves for it, so these
+   * drive the real factory end to end (real `DashAgent`, real
+   * `composeMemoryPrompt`, a real memory on disk) and read the system prompt the
+   * backend was actually given.
    */
-  async function systemPromptFor(spec: WorkerSpec): Promise<string> {
-    const child = await createChildBackend(spec, { ...deps, dataDir: dir });
+  async function systemPromptFor(
+    spec: WorkerSpec,
+    memoryDir?: ChildBackendDeps['memoryDir'],
+  ): Promise<string> {
+    const child = await createChildBackend(spec, { ...deps, dataDir: dir, memoryDir });
     // Exactly what the pool builds for a child conversation.
     const agent = new DashAgent(child.backend, async () => child.config);
     for await (const _ of agent.chat('swarm', spec.workerId, 'go')) {
@@ -248,50 +293,63 @@ describe('createChildBackend child config', () => {
     return state.systemPrompt;
   }
 
-  it('a general-purpose child reads the project MEMORY.md', async () => {
-    const workspace = await mkdtemp(join(tmpdir(), 'swarm-ws-'));
+  async function seedMemory(): Promise<string> {
+    const memDir = await mkdtemp(join(tmpdir(), 'swarm-mem-'));
+    await new MemoryStore(memDir).save({
+      name: 'ship-the-thing',
+      description: 'ship the thing before the demo',
+      type: 'project',
+      source: 'agent',
+      content: 'The release ships before the demo.',
+    });
+    return memDir;
+  }
+
+  it("a general-purpose child reads the parent's memory", async () => {
+    const memDir = await seedMemory();
     try {
-      await writeFile(join(workspace, 'MEMORY.md'), '- 2026-09-05: ship the thing.\n');
       const prompt = await systemPromptFor(
-        makeSpec({ subagentType: 'general-purpose', workspace }),
+        makeSpec({ subagentType: 'general-purpose' }),
+        () => memDir,
       );
-      expect(prompt).toContain('ship the thing.');
-      expect(prompt).toContain('persistent memory file');
+      expect(prompt).toContain('ship the thing before the demo');
+      expect(prompt).toContain('<memory>');
     } finally {
-      await rm(workspace, { recursive: true, force: true });
+      await rm(memDir, { recursive: true, force: true });
     }
   });
 
-  it('but is never told to WRITE it — up to 8 children share one workspace', async () => {
-    const workspace = await mkdtemp(join(tmpdir(), 'swarm-ws-'));
+  it('but is never told to WRITE it — several children share one parent memory', async () => {
+    const memDir = await seedMemory();
     try {
-      await writeFile(join(workspace, 'MEMORY.md'), '- 2026-09-05: ship the thing.\n');
       const prompt = await systemPromptFor(
-        makeSpec({ subagentType: 'general-purpose', workspace }),
+        makeSpec({ subagentType: 'general-purpose' }),
+        () => memDir,
       );
-      expect(prompt).toContain('ship the thing.');
-      // The default preamble's "use write_file to save memories" is a
-      // whole-file overwrite; concurrent children would lose each other's
-      // updates to a user-visible artifact.
-      expect(prompt).not.toContain('write_file');
-      expect(prompt).not.toContain('Proactively update');
-      expect(prompt).toContain('READ-ONLY');
+      expect(prompt).toContain('ship the thing before the demo');
+      // The read-only rules must never name a memory tool the child does not
+      // hold: `tools: false` keeps save/recall/forget out of its registry, and
+      // telling it to call one only produces failed tool calls.
+      expect(prompt).not.toContain('save_memory');
+      expect(prompt).not.toContain('forget_memory');
+      expect(prompt).not.toContain('recall_memory');
+      expect(prompt).toContain('read-only for you');
     } finally {
-      await rm(workspace, { recursive: true, force: true });
+      await rm(memDir, { recursive: true, force: true });
     }
   });
 
   it('a skipMemory child (Explore / Plan) does NOT read it', async () => {
-    const workspace = await mkdtemp(join(tmpdir(), 'swarm-ws-'));
+    const memDir = await seedMemory();
     try {
-      await writeFile(join(workspace, 'MEMORY.md'), '- 2026-09-05: ship the thing.\n');
       const prompt = await systemPromptFor(
-        makeSpec({ subagentType: 'Explore', skipMemory: true, workspace }),
+        makeSpec({ subagentType: 'Explore', skipMemory: true }),
+        () => memDir,
       );
-      expect(prompt).not.toContain('ship the thing.');
-      expect(prompt).not.toContain('persistent memory file');
+      expect(prompt).not.toContain('ship the thing before the demo');
+      expect(prompt).not.toContain('<memory>');
     } finally {
-      await rm(workspace, { recursive: true, force: true });
+      await rm(memDir, { recursive: true, force: true });
     }
   });
 });
@@ -421,26 +479,28 @@ describe('buildChildBackendOptions (definition-driven path)', () => {
 });
 
 describe('buildChildBackendOptions memory policy', () => {
-  it('sets the child workspace so the memory preamble can resolve', () => {
+  it('sets the child workspace — the cwd its hooks and tool sandbox resolve against', () => {
     const spec = makeSpec({ workspace: '/ws/project' });
     expect(buildChildBackendOptions(spec, deps).config.workspace).toBe('/ws/project');
   });
 
-  it('marks memory off for skipMemory children and on for the rest', () => {
-    expect(buildChildBackendOptions(makeSpec({ skipMemory: true }), deps).config.memory).toEqual({
-      enabled: false,
-      readOnly: true,
-    });
-    expect(buildChildBackendOptions(makeSpec(), deps).config.memory).toEqual({
-      enabled: true,
-      readOnly: true,
+  it('drops memory for skipMemory children and inherits it for the rest', () => {
+    const withMemory = { ...deps, memoryDir: (agentId: string) => `/tmp/mem/${agentId}` };
+    expect(
+      buildChildBackendOptions(makeSpec({ skipMemory: true }), withMemory).config.memory,
+    ).toBeUndefined();
+    expect(buildChildBackendOptions(makeSpec(), withMemory).config.memory).toEqual({
+      dir: '/tmp/mem/agent-id-1',
+      tools: false,
     });
   });
 
-  it('every child is read-only over memory, whatever its type', () => {
+  it('every child that gets memory gets it READ-ONLY, whatever its type', () => {
+    const withMemory = { ...deps, memoryDir: (agentId: string) => `/tmp/mem/${agentId}` };
     for (const type of ['general-purpose', 'Explore', 'Plan', undefined]) {
-      const options = buildChildBackendOptions(makeSpec({ subagentType: type }), deps);
-      expect(options.config.memory?.readOnly).toBe(true);
+      const options = buildChildBackendOptions(makeSpec({ subagentType: type }), withMemory);
+      // A `skipMemory` type has none at all; the rest never hold a memory tool.
+      expect(options.config.memory?.tools ?? false).toBe(false);
     }
   });
 });

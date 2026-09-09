@@ -7,6 +7,7 @@ import {
 import type {
   ConversationSummary,
   MobileApiErrorCode,
+  MobileClientLocation,
   MobileImage,
   MobileWsClientFrame,
   MobileWsServerFrame,
@@ -385,6 +386,12 @@ export class ResumableChatTransport {
     turnId: string,
     text: string,
     images?: MobileImage[],
+    /**
+     * Optional and LAST on purpose: `resumable-chat-transport.test.ts` asserts
+     * the sent frame equals the `chat-send.json` fixture byte-for-byte, so a
+     * caller that passes no location must still produce today's exact frame.
+     */
+    location?: MobileClientLocation,
   ): Promise<AcceptedFrame> {
     this.assertOpen();
     const current = this.turns.get(conversation.id);
@@ -408,6 +415,7 @@ export class ResumableChatTransport {
       channelId: this.options.channelId,
       conversationId: conversation.id,
       text,
+      ...(location ? { location } : {}),
       ...(images?.length ? { images } : {}),
       streamingBehavior: 'followUp',
       resumable: true,

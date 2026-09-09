@@ -5,6 +5,7 @@ import type {
   ConversationMessage,
   ConversationMessageOrigin,
   ConversationMessagePage,
+  ConversationNoticeKind,
   ConversationPage,
   ConversationPatchRequest,
   ConversationSummary,
@@ -54,6 +55,13 @@ export interface ListConversationsInput {
   cursor?: string;
 }
 
+export interface AppendNoticeInput {
+  conversationId: string;
+  kind: ConversationNoticeKind;
+  /** Display-ready text; clients render it verbatim inside a chip. */
+  text: string;
+}
+
 export interface CreateSubagentConversationInput {
   id: string;
   agentId: string;
@@ -98,7 +106,7 @@ export interface SubagentGrant {
   depth: number;
   /** The definition body (plus any preloaded skills) it ran under. */
   systemPrompt?: string;
-  /** Explore / Plan: no MEMORY.md read. */
+  /** Explore / Plan: no memory at all (not even read-only). */
   skipMemory?: boolean;
   maxTurns?: number;
 }
@@ -172,6 +180,8 @@ export interface ConversationService {
   delete(id: string, expectedRevision: number): ConversationSummary;
   listMessages(input: ListMessagesInput): ConversationMessagePage;
   acceptTurn(input: AcceptTurnInput): AcceptedTurn;
+  /** Append a standalone notice message (see the sqlite implementation). */
+  appendNotice(input: AppendNoticeInput): ConversationMessage | null;
   appendTurnEvent(
     conversationId: string,
     turnId: string,

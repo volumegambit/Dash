@@ -78,7 +78,26 @@ export interface GatewayAgentConfig {
   systemPrompt: string;
   fallbackModels?: string[];
   tools?: string[];
-  skills?: { paths?: string[]; urls?: string[] };
+  /**
+   * `paths`/`urls`: extra skill sources for this agent.
+   *
+   * `learning`: automatic skill learning — after a turn that did real work, a
+   * review pass decides whether the session produced a durable lesson and
+   * records it in a skill the agent owns. 'auto' (the default — on) | 'on' |
+   * 'off'. Unlike memory's sweep, where 'auto' switches OFF for frontier
+   * providers because those models save memories themselves, there is no
+   * self-save path here for 'auto' to defer to: no model spontaneously stops
+   * mid-task to revise its skill library.
+   *
+   * `minToolCalls`: completed tool calls the turn must have made before a
+   * review is worth paying for. A purely conversational turn costs nothing.
+   */
+  skills?: {
+    paths?: string[];
+    urls?: string[];
+    learning?: 'auto' | 'on' | 'off';
+    minToolCalls?: number;
+  };
   providerApiKeys?: Record<string, string>;
   workspace?: string;
   maxTokens?: number;
@@ -87,6 +106,31 @@ export interface GatewayAgentConfig {
   swarm?: AgentSwarmConfig;
   /** Per-agent sub-agent gating, delegation mode + caps. See {@link AgentSubagentsConfig}. */
   subagents?: AgentSubagentsConfig;
+  /**
+   * Per-agent automated memory. `undefined` = enabled with sweep 'auto'
+   * (backward compat — legacy agents persisted before the memory system have
+   * no key and MUST read as enabled, never as off).
+   * `enabled: false` disables the memory prompt, the tools and the sweep.
+   * `sweep`: 'auto' (on for non-frontier providers), 'on', 'off'.
+   *
+   * Flows through `update()` exactly like `swarm`: a partial-update patch
+   * replaces the object wholesale (it is NOT deep-merged).
+   */
+  memory?: { enabled?: boolean; sweep?: 'auto' | 'on' | 'off' };
+  /**
+   * Per-agent client-location gating. `undefined` = enabled: the coarse tier
+   * comes from `Intl`/`Locale`, which every locale-aware client already reads,
+   * and the precise tier already required an in-app opt-in plus an OS grant
+   * before a client would send it at all. `enabled: false` drops the
+   * <environment> block AND unregisters `get_location`.
+   *
+   * `update()` carries this field like any other (the patch spread has no
+   * allowlist), but NO HTTP route accepts it yet: it is absent from
+   * `AGENT_CREATE_KEYS` in management-api.ts, so today it can only be set
+   * programmatically. The write path and UI are deliberately deferred — see
+   * "Later" in docs/plans/specs/2026-09-06-client-location-awareness-design.md.
+   */
+  location?: { enabled?: boolean };
   /**
    * Per-agent plugin selection (Plan P5). `undefined` = ALL loaded plugins
    * (backward compat — legacy agents persisted before P5 have no key and MUST

@@ -1,8 +1,10 @@
-import { buildMemoryPreamble } from './memory.js';
+import { composeLocationPrompt } from './location/prompt.js';
+import { composeMemoryPrompt } from './memory/prompt.js';
 import type {
   AgentBackend,
   AgentEvent,
   AgentState,
+  ClientLocation,
   DashAgentConfig,
   ImageBlock,
   RunOptions,
@@ -32,7 +34,7 @@ export class DashAgent {
     channelId: string,
     conversationId: string,
     userMessage: string,
-    options: RunOptions & { images?: ImageBlock[] } = {},
+    options: RunOptions & { images?: ImageBlock[]; location?: ClientLocation } = {},
   ): AsyncGenerator<AgentEvent> {
     // Fresh read on every chat: picks up model / fallbackModels /
     // systemPrompt / tools changes made via the gateway management
@@ -47,14 +49,30 @@ export class DashAgent {
     // Note: Skills are injected by pi's system prompt builder via the DashResourceLoader,
     // not here. The backend's listSkills() feeds into resourceLoader.getSkills().
 
-    // Memory preamble goes last — it's dynamic context from past conversations.
-    // `memory.enabled === false` opts out (turn-scoped subagents); an absent
-    // `memory` block keeps the historical behaviour.
-    if (config.workspace && config.memory?.enabled !== false) {
-      const preamble = await buildMemoryPreamble(config.workspace, {
-        readOnly: config.memory?.readOnly,
+    // Environment goes before memory. Both are per-turn dynamic context, but
+    // memory's rules talk about the conversation and read best closest to it,
+    // and the environment block is the smaller, more stable of the two.
+    // The `tool` flag must track whether get_location was actually registered:
+    // naming a tool the model does not have only produces failed tool calls.
+    // `=== true` on purpose, so the UNSAFE direction needs an explicit opt-in:
+    // a caller that passes a location without registering the tool gets a
+    // truthful block rather than a false claim. The gateway sets it explicitly.
+    if (options.location && config.location?.enabled !== false) {
+      systemPrompt = `${systemPrompt}\n\n${composeLocationPrompt(options.location, {
+        tool: config.location?.tool === true,
+      })}`;
+    }
+
+    // Memory goes last (after environment) — it is dynamic context from past conversations and is
+    // rebuilt on every turn from the resolver read, so toggling memory in the
+    // registry takes effect on the next message without a pool eviction.
+    if (config.memory) {
+      const memoryPrompt = await composeMemoryPrompt(config.memory.dir, userMessage, {
+        // `tools: false` (swarm workers) inherit the memory read-only, so the
+        // rules must not tell them to call tools they were never registered.
+        tools: config.memory.tools !== false,
       });
-      systemPrompt = `${systemPrompt}\n\n${preamble}`;
+      systemPrompt = `${systemPrompt}\n\n${memoryPrompt}`;
     }
 
     const state: AgentState = {
@@ -73,6 +91,7 @@ export class DashAgent {
       tools: config.tools,
       workspace: config.workspace,
       images: options.images,
+      location: options.location,
     };
 
     yield* this.backend.run(state, options);

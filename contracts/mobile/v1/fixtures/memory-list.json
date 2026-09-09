@@ -1,0 +1,20 @@
+[
+  {
+    "name": "user-timezone",
+    "description": "Gerry is in Singapore (UTC+8)",
+    "type": "user",
+    "source": "agent",
+    "createdAt": "2026-09-05",
+    "updatedAt": "2026-09-05",
+    "size": 24
+  },
+  {
+    "name": "repo-pnpm",
+    "description": "The repo uses pnpm",
+    "type": "project",
+    "source": "sweep",
+    "createdAt": "2026-09-05",
+    "updatedAt": "2026-09-05",
+    "size": 18
+  }
+]

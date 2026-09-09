@@ -12,8 +12,76 @@
       "additionalProperties": false,
       "required": ["mediaType", "data"],
       "properties": {
-        "mediaType": { "enum": ["image/jpeg", "image/png", "image/gif", "image/webp"] },
-        "data": { "type": "string", "minLength": 1 }
+        "mediaType": {
+          "enum": ["image/jpeg", "image/png", "image/gif", "image/webp"]
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "MobilePreciseLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latitude", "longitude", "accuracyMeters", "capturedAt"],
+      "properties": {
+        "latitude": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "longitude": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "accuracyMeters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339. May predate the message - clients may send a cached fix."
+        },
+        "place": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "MobileClientLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timezone", "utcOffsetMinutes", "locale"],
+      "properties": {
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "IANA time zone id, e.g. \"Asia/Singapore\"."
+        },
+        "utcOffsetMinutes": {
+          "type": "integer",
+          "minimum": -840,
+          "maximum": 840,
+          "description": "Minutes EAST of UTC at send time (Singapore = 480). JS getTimezoneOffset() is west-positive and must be negated; Swift secondsFromGMT() is already east-positive."
+        },
+        "locale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "region": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "description": "ISO 3166-1 alpha-2."
+        },
+        "precise": {
+          "$ref": "#/$defs/MobilePreciseLocation"
+        }
       }
     },
     "MobileApiErrorCode": {
@@ -39,12 +107,19 @@
         "channelId": { "type": "string", "minLength": 1 },
         "conversationId": { "$ref": "#/$defs/ConversationId" },
         "text": { "type": "string" },
+        "location": { "$ref": "#/$defs/MobileClientLocation" },
         "images": {
           "type": "array",
-          "items": { "$ref": "#/$defs/MobileImage" }
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
         },
-        "streamingBehavior": { "enum": ["steer", "followUp"] },
-        "resumable": { "const": true }
+        "streamingBehavior": {
+          "enum": ["steer", "followUp"]
+        },
+        "resumable": {
+          "const": true
+        }
       }
     },
     "ChatResume": {
@@ -64,10 +139,20 @@
       "additionalProperties": false,
       "required": ["type", "id", "questionId", "answer"],
       "properties": {
-        "type": { "const": "answer" },
-        "id": { "type": "string", "format": "uuid" },
-        "questionId": { "type": "string", "minLength": 1 },
-        "answer": { "type": "string" }
+        "type": {
+          "const": "answer"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "questionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer": {
+          "type": "string"
+        }
       }
     },
     "ChatCancel": {
@@ -75,8 +160,13 @@
       "additionalProperties": false,
       "required": ["type", "id"],
       "properties": {
-        "type": { "const": "cancel" },
-        "id": { "type": "string", "format": "uuid" }
+        "type": {
+          "const": "cancel"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
       }
     },
     "ChatSubscribe": {
@@ -141,7 +231,10 @@
           "type": "object",
           "required": ["type"],
           "properties": {
-            "type": { "type": "string", "minLength": 1 }
+            "type": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "additionalProperties": true
         }
@@ -185,12 +278,19 @@
         "channelId": { "type": "string", "minLength": 1 },
         "conversationId": { "$ref": "#/$defs/ConversationId" },
         "text": { "type": "string" },
+        "location": { "$ref": "#/$defs/MobileClientLocation" },
         "images": {
           "type": "array",
-          "items": { "$ref": "#/$defs/MobileImage" }
+          "items": {
+            "$ref": "#/$defs/MobileImage"
+          }
         },
-        "streamingBehavior": { "enum": ["steer", "followUp"] },
-        "resumable": { "type": "boolean" }
+        "streamingBehavior": {
+          "enum": ["steer", "followUp"]
+        },
+        "resumable": {
+          "type": "boolean"
+        }
       }
     },
     "MobileWsEventFrame": {
@@ -206,7 +306,10 @@
           "type": "object",
           "required": ["type"],
           "properties": {
-            "type": { "type": "string", "minLength": 1 }
+            "type": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "additionalProperties": true
         }
@@ -251,16 +354,28 @@
     },
     "MobileWsServerFrame": {
       "oneOf": [
-        { "$ref": "#/$defs/ChatAccepted" },
-        { "$ref": "#/$defs/MobileWsEventFrame" },
-        { "$ref": "#/$defs/MobileWsDoneFrame" },
-        { "$ref": "#/$defs/MobileWsErrorFrame" }
+        {
+          "$ref": "#/$defs/ChatAccepted"
+        },
+        {
+          "$ref": "#/$defs/MobileWsEventFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileWsDoneFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileWsErrorFrame"
+        }
       ]
     },
     "MobileWsFrame": {
       "oneOf": [
-        { "$ref": "#/$defs/MobileWsClientFrame" },
-        { "$ref": "#/$defs/MobileWsServerFrame" }
+        {
+          "$ref": "#/$defs/MobileWsClientFrame"
+        },
+        {
+          "$ref": "#/$defs/MobileWsServerFrame"
+        }
       ]
     }
   },

@@ -1,12 +1,23 @@
 import {
+  bodyIsRedundant,
+  countLines,
+  diffLines,
+  directoryEntries,
+  fitsInline,
   formatDetails,
   formatVisibleDetails,
+  humanizeToolName,
   isTodoWrite,
   middleTruncate,
   normalizeTool,
   parseTodos,
+  resultSummary,
+  searchResults,
+  shortenCommand,
   summarize,
   toolLabel,
+  toolNamespace,
+  writtenContent,
 } from './tool-presentation.js';
 
 // Table tests mirror ios/DashTests/Features/ToolPresentationTests.swift
@@ -41,9 +52,12 @@ describe('toolLabel', () => {
     expect(toolLabel(name)).toBe(expected);
   });
 
-  it('falls back to a capitalized raw name for unknown tools', () => {
+  it('turns an unknown tool into title-cased words', () => {
     expect(toolLabel('search')).toBe('Search');
-    expect(toolLabel('custom_thing')).toBe('Custom_thing');
+    // Was 'Custom_thing': the old fallback uppercased the first character and
+    // left the rest, which rendered MCP tools as `Linear__search_issues`.
+    expect(toolLabel('custom_thing')).toBe('Custom Thing');
+    expect(toolLabel('linear__search_issues')).toBe('Search Issues');
   });
 });
 
@@ -191,17 +205,14 @@ describe('formatVisibleDetails', () => {
     expect(result).toEqual([{ key: 'reason', value: 'checking contents' }]);
   });
 
-  it('skips content for write', () => {
+  it('skips content for write, and path too — path is the header summary', () => {
     const result = formatVisibleDetails('write', { path: 'a.txt', content: 'hello world' });
-    expect(result).toEqual([{ key: 'path', value: 'a.txt' }]);
+    expect(result).toEqual([]);
   });
 
-  it('does not filter for other tools', () => {
+  it('keeps every row of another tool except the header duplicate', () => {
     const result = formatVisibleDetails('bash', { command: 'ls', path: '/tmp' });
-    expect(result).toEqual([
-      { key: 'command', value: 'ls' },
-      { key: 'path', value: '/tmp' },
-    ]);
+    expect(result).toEqual([{ key: 'path', value: '/tmp' }]);
   });
 });
 
@@ -235,5 +246,215 @@ describe('parseTodos', () => {
     expect(parseTodos({})).toBeNull();
     expect(parseTodos({ todos: [] })).toBeNull();
     expect(parseTodos(undefined)).toBeNull();
+  });
+});
+
+describe('shortenCommand', () => {
+  it('drops the leading directory from an absolute launcher path', () => {
+    expect(shortenCommand('/opt/homebrew/bin/gog gmail list')).toBe('gog gmail list');
+  });
+
+  it('leaves a bare executable alone', () => {
+    expect(shortenCommand('npm test')).toBe('npm test');
+  });
+
+  it('preserves paths that are arguments, not the executable', () => {
+    expect(shortenCommand('cd /Users/gerry/x && npm test')).toBe('cd /Users/gerry/x && npm test');
+  });
+
+  it('shortens ./, ../ and ~/ launchers too', () => {
+    expect(shortenCommand('./scripts/build.sh --watch')).toBe('build.sh --watch');
+    expect(shortenCommand('~/bin/deploy prod')).toBe('deploy prod');
+  });
+
+  it('leaves a trailing-slash executable alone rather than emptying it', () => {
+    expect(shortenCommand('/usr/bin/ ')).toBe('/usr/bin/ ');
+  });
+});
+
+describe('middleTruncate path detection', () => {
+  it('does not splice a command onto its last argument', () => {
+    const command = `echo ${'a'.repeat(55)} > /tmp/out.json`;
+    expect(middleTruncate(command)).toBe(`${command.slice(0, 60)}…`);
+  });
+
+  it('still middle-ellipsises a real path', () => {
+    const path = `/Users/gerry/${'a'.repeat(60)}/ChatView.swift`;
+    expect(middleTruncate(path).endsWith('/ChatView.swift')).toBe(true);
+    expect(middleTruncate(path)).toContain('…');
+  });
+});
+
+describe('resultSummary', () => {
+  it('is empty while the tool is still running', () => {
+    expect(resultSummary('bash', undefined)).toBe('');
+  });
+
+  it('shows the first line of an error, truncated', () => {
+    expect(resultSummary('bash', 'ENOENT: no such file\n  at open()', true)).toBe(
+      'ENOENT: no such file',
+    );
+  });
+
+  it('says "failed" when an error has no text', () => {
+    expect(resultSummary('bash', '   ', true)).toBe('failed');
+  });
+
+  it('stays silent for TodoWrite, whose header already carries progress', () => {
+    expect(resultSummary('TodoWrite', 'ok')).toBe('');
+  });
+
+  it('counts a read result in lines, ignoring the XML envelope', () => {
+    const content = '<path>a.ts</path>\n<content>\nline one\nline two\n</content>';
+    expect(resultSummary('read', content)).toBe('2 lines');
+  });
+
+  it('uses the singular for one line', () => {
+    expect(resultSummary('read', 'only line')).toBe('1 line');
+  });
+
+  it("prefers ls's own entry count over a line count", () => {
+    expect(resultSummary('ls', '(30 entries)\nsrc/\npackage.json')).toBe('30 entries');
+  });
+
+  it('counts grep matches and names the empty case', () => {
+    expect(resultSummary('grep', 'a.ts:1: hit\nb.ts:9: hit')).toBe('2 matches');
+    expect(resultSummary('grep', '')).toBe('no matches');
+  });
+
+  it('counts web_search results from the numbered list it emits', () => {
+    const content = '1. [One](https://a)\n   snip\n\n2. [Two](https://b)\n   snip';
+    expect(resultSummary('web_search', content)).toBe('2 results');
+  });
+
+  it('reports a web_fetch body as a size', () => {
+    expect(resultSummary('web_fetch', 'x'.repeat(2048))).toBe('2.0 KB');
+  });
+
+  it('reports an edit as a diff stat', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n-old\n+new\n+also new';
+    expect(resultSummary('edit', 'ok', false, { diff })).toBe('+2 -1');
+  });
+
+  it('falls back to a line count for an unknown tool', () => {
+    expect(resultSummary('some_mcp_tool', 'a\nb\nc')).toBe('3 lines');
+  });
+
+  it('echoes a short single-line result verbatim', () => {
+    expect(resultSummary('bash', 'done')).toBe('done');
+  });
+
+  it('names an empty result', () => {
+    expect(resultSummary('bash', '\n\n')).toBe('no output');
+  });
+});
+
+describe('formatVisibleDetails filtering', () => {
+  it('drops a row that repeats the header summary verbatim', () => {
+    expect(formatVisibleDetails('bash', { command: 'ls -la' })).toEqual([]);
+  });
+
+  it('keeps the row when the header truncated the value', () => {
+    const pattern = 'a'.repeat(100);
+    const rows = formatVisibleDetails('grep', { pattern });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe('pattern');
+    expect(rows[0].value).not.toBe(summarize('grep', { pattern }));
+  });
+
+  it('drops the command row for bash, which the header already carries', () => {
+    // Bash is the one tool where the header's summary is SHORTENED, so the
+    // duplicate rule cannot match it and the full launcher path was printed
+    // directly under a header that already said the same thing.
+    const command = '/opt/homebrew/bin/gog gmail list';
+    expect(formatVisibleDetails('bash', { command })).toEqual([]);
+  });
+
+  it('drops rows whose value is only a type placeholder, for a KNOWN tool', () => {
+    expect(formatVisibleDetails('grep', { pattern: 'x', items: [1, 2, 3] })).toEqual([]);
+  });
+
+  it("keeps an unknown tool's nested arguments as JSON", () => {
+    // For a tool this app does not know the arguments are the only thing that
+    // explains the call. Collapsing them to `{object}` and then dropping that
+    // placeholder left an MCP card showing `Limit: 5` and nothing else.
+    expect(
+      formatVisibleDetails('linear__search_issues', {
+        query: 'tool card',
+        limit: 5,
+        filter: { state: 'open' },
+      }),
+    ).toEqual([
+      { key: 'limit', value: '5' },
+      { key: 'filter', value: '{"state":"open"}' },
+    ]);
+  });
+
+  it('keeps ordinary rows alongside a dropped duplicate', () => {
+    expect(formatVisibleDetails('grep', { pattern: 'foo', path: 'src' })).toEqual([
+      { key: 'path', value: 'src' },
+    ]);
+  });
+});
+
+describe('per-type helpers', () => {
+  it('humanizes a namespaced MCP tool name and splits off its server', () => {
+    expect(humanizeToolName('linear__search_issues')).toBe('Search Issues');
+    expect(toolNamespace('linear__search_issues')).toBe('Linear');
+  });
+
+  it('leaves a core tool without a namespace', () => {
+    expect(toolNamespace('bash')).toBe('');
+    expect(humanizeToolName('some_tool')).toBe('Some Tool');
+  });
+
+  it('keeps a long SINGLE-LINE body out of the inline treatment', () => {
+    // The defect this replaces: the old rule was newline count alone, so a
+    // 1.6 KB one-line page body counted as "short" and rendered uncapped.
+    const oneLongLine = 'x'.repeat(1600);
+    expect(countLines(oneLongLine)).toBe(1);
+    expect(fitsInline(oneLongLine)).toBe(false);
+    expect(fitsInline('a\nb\nc')).toBe(true);
+  });
+
+  it('parses a unified diff and drops the file headers', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n@@ -1,2 +1,3 @@\n keep\n-old\n+new';
+    expect(diffLines({ diff })).toEqual([
+      { kind: 'hunk', text: '@@ -1,2 +1,3 @@' },
+      { kind: 'context', text: ' keep' },
+      { kind: 'removed', text: '-old' },
+      { kind: 'added', text: '+new' },
+    ]);
+  });
+
+  it('returns no diff lines when there is no diff', () => {
+    expect(diffLines(undefined)).toEqual([]);
+    expect(diffLines({})).toEqual([]);
+  });
+
+  it('marks directories in a listing and drops the entry-count chrome', () => {
+    expect(directoryEntries('(2 entries)\nui/\nmain.tsx')).toEqual([
+      { name: 'ui/', isDirectory: true },
+      { name: 'main.tsx', isDirectory: false },
+    ]);
+  });
+
+  it('parses web_search results into title and host', () => {
+    const content = '1. [Observation](https://www.developer.apple.com/x)\n   snippet';
+    expect(searchResults(content)).toEqual([{ title: 'Observation', host: 'developer.apple.com' }]);
+  });
+
+  it('returns no search results for an unexpected format', () => {
+    expect(searchResults('no results found')).toEqual([]);
+  });
+
+  it('treats a one-line skill confirmation as a redundant body', () => {
+    expect(bodyIsRedundant('load_skill', "Loaded skill 'frontend-design'.")).toBe(true);
+    expect(bodyIsRedundant('bash', 'done')).toBe(false);
+  });
+
+  it('extracts the content a write was asked to write', () => {
+    expect(writtenContent({ path: 'a.md', content: '# Hi' })).toBe('# Hi');
+    expect(writtenContent({ path: 'a.md' })).toBe('');
   });
 });

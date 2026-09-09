@@ -170,7 +170,20 @@ enum ComposerBlockReason: Equatable, Sendable {
 }
 
 struct ChatMessageState: Equatable, Identifiable, Sendable {
+  /// The gateway's message id — or, before the `accepted` frame lands, the
+  /// client-minted local id. `reconcileAccepted` rewrites this on ack; every
+  /// lookup (retry, edit & resend, dedup, accessibility ids) goes by it.
   var id: String
+  /// SwiftUI row identity (transcript scroll fix, 2026-09-05). Assigned once,
+  /// at creation, and NEVER rewritten: `MessageListView`'s `ForEach` keys on
+  /// this rather than `id`, so the ack swapping a local id for the server's
+  /// (`reconcileAccepted`) is an in-place update of the same row instead of
+  /// a remove + insert — which replayed the entrance transition on the bubble
+  /// the user just sent, reset any `@State` inside the row (thinking/tool
+  /// disclosures), and nudged the scroll position mid-stream. Canonical
+  /// reloads (`cachedMessagesLoaded`, `olderMessagesLoaded`) carry the
+  /// existing `rowID` over by message id so a refresh is equally invisible.
+  let rowID: String
   let turnID: String
   var ordinal: Int?
   let role: MessageRole
@@ -182,6 +195,34 @@ struct ChatMessageState: Equatable, Identifiable, Sendable {
   /// all, and an older gateway never sends one. A `.notification`/`.parent`
   /// user row renders as a compact system row instead of a bubble (8.5).
   var origin: MessageOrigin?
+
+  /// Set only for a `notice` message — what the post-turn review recorded.
+  /// Rendered as a chip; `user` and `assistant` are both nil for these.
+  var notice: NoticeProjection? = nil
+
+  init(
+    id: String,
+    turnID: String,
+    ordinal: Int?,
+    role: MessageRole,
+    status: MessageStatus,
+    user: UserMessageProjection?,
+    assistant: AssistantMessageProjection?,
+    origin: MessageOrigin? = nil,
+    notice: NoticeProjection? = nil,
+    rowID: String? = nil
+  ) {
+    self.id = id
+    self.rowID = rowID ?? id
+    self.turnID = turnID
+    self.ordinal = ordinal
+    self.role = role
+    self.status = status
+    self.user = user
+    self.assistant = assistant
+    self.origin = origin
+    self.notice = notice
+  }
 }
 
 struct UserMessageProjection: Equatable, Sendable {
@@ -189,7 +230,30 @@ struct UserMessageProjection: Equatable, Sendable {
   var images: [MessageImage]
 }
 
+/// A note the gateway appended after a turn finished. Carries no events — it is
+/// not a turn — so it renders as a single chip rather than a bubble.
+struct NoticeProjection: Equatable, Sendable {
+  var kind: NoticeKind
+  var text: String
+}
+
+enum AssistantTimelineBlock: Equatable, Sendable {
+  case text(String)
+  case thinking(String)
+  case tool(ToolCardState)
+  /// The position of this message's sub-agent rows in the event order — a
+  /// MARKER, not the cards. The rows themselves are `subagentCards`, computed
+  /// from `subagentDrafts` after the fold (end-of-stream terminalization and
+  /// §8.2's clustering both need the whole message), so the timeline can only
+  /// record WHERE the first child was spawned. Appended once per message, at
+  /// the first draft.
+  case subagents
+  case status(StatusRowState)
+  case question(QuestionState)
+}
+
 struct AssistantMessageProjection: Equatable, Sendable {
+  var timeline: [AssistantTimelineBlock] = []
   var text = ""
   var thinking = ""
   // MC parity (design doc appendix §4): thinking is collapsed by default,
@@ -496,6 +560,8 @@ enum StatusRowKind: Equatable, Sendable {
   case skillLoaded
   case skillCreated
   case mcpError
+  case memorySaved
+  case memoryForgotten
   case unknown
 }
 
@@ -528,7 +594,10 @@ enum ChatReducer {
   static func reduce(state: inout ChatState, action: ChatAction) -> [ChatEffect] {
     switch action {
     case let .cachedMessagesLoaded(messages, cursor):
-      state.messages = messages.sorted { $0.ordinal < $1.ordinal }.map(projectMessage)
+      let rowIDs = rowIDsByMessageID(state.messages)
+      state.messages = messages.sorted { $0.ordinal < $1.ordinal }.map {
+        projectMessage($0, rowID: rowIDs[$0.id])
+      }
       reconcileSubagentAnchors(&state.messages)
       state.lastAppliedSeq = max(state.lastAppliedSeq, cursor)
       state.pendingGapFrame = nil
@@ -537,7 +606,7 @@ enum ChatReducer {
     case let .olderMessagesLoaded(messages, nextCursor):
       var byID = Dictionary(uniqueKeysWithValues: state.messages.map { ($0.id, $0) })
       for message in messages {
-        byID[message.id] = projectMessage(message)
+        byID[message.id] = projectMessage(message, rowID: byID[message.id]?.rowID)
       }
       state.messages = byID.values.sorted(by: messageOrder)
       reconcileSubagentAnchors(&state.messages)
@@ -610,6 +679,14 @@ enum ChatReducer {
         guard var assistant = state.messages[index].assistant else { continue }
         guard assistant.pendingQuestion?.id == questionID else { continue }
         assistant.pendingQuestion?.answer = answer
+        if let question = assistant.pendingQuestion,
+          let timelineIndex = assistant.timeline.firstIndex(where: {
+            if case let .question(existing) = $0 { return existing.id == questionID }
+            return false
+          })
+        {
+          assistant.timeline[timelineIndex] = .question(question)
+        }
         state.messages[index].assistant = assistant
         break
       }
@@ -640,7 +717,7 @@ enum ChatReducer {
 
     case let .subagentTranscriptLoaded(id, messages):
       var ui = state.subagentUI[id] ?? SubagentUIState()
-      let loaded = messages.sorted { ($0.ordinal) < ($1.ordinal) }.map(projectMessage)
+      let loaded = messages.sorted { ($0.ordinal) < ($1.ordinal) }.map { projectMessage($0) }
       // Optimistic rows and any live rows already materialised from a `child`
       // frame are KEPT: the REST page is a snapshot taken before them, and
       // replacing wholesale would blank a row the user is watching stream.
@@ -1107,15 +1184,26 @@ enum ChatReducer {
     switch event {
     case let .textDelta(text):
       assistant.text += text
+      if case let .text(existing) = assistant.timeline.last {
+        assistant.timeline[assistant.timeline.count - 1] = .text(existing + text)
+      } else {
+        assistant.timeline.append(.text(text))
+      }
 
     case let .thinkingDelta(text):
       assistant.thinking += text
+      if case let .thinking(existing) = assistant.timeline.last {
+        assistant.timeline[assistant.timeline.count - 1] = .thinking(existing + text)
+      } else {
+        assistant.timeline.append(.thinking(text))
+      }
 
     case let .toolUseStart(id, name, input):
       if let index = assistant.toolCards.firstIndex(where: { $0.id == id }) {
         assistant.toolCards[index].name = name
         assistant.toolCards[index].input = input
         assistant.toolCards[index].status = .running
+        replaceTool(assistant.toolCards[index], in: &assistant)
       } else {
         assistant.toolCards.append(
           ToolCardState(
@@ -1128,11 +1216,13 @@ enum ChatReducer {
             details: nil
           )
         )
+        assistant.timeline.append(.tool(assistant.toolCards.last!))
       }
 
     case let .toolUseDelta(partialJSON):
       if let index = assistant.toolCards.lastIndex(where: { $0.status == .running }) {
         assistant.toolCards[index].partialJSON += partialJSON
+        replaceTool(assistant.toolCards[index], in: &assistant)
       } else {
         assistant.toolCards.append(
           ToolCardState(
@@ -1145,6 +1235,7 @@ enum ChatReducer {
             details: nil
           )
         )
+        assistant.timeline.append(.tool(assistant.toolCards.last!))
       }
 
     case let .toolResult(id, name, content, isError, details):
@@ -1153,6 +1244,7 @@ enum ChatReducer {
         assistant.toolCards[index].content = content
         assistant.toolCards[index].details = details
         assistant.toolCards[index].status = isError ? .failed : .succeeded
+        replaceTool(assistant.toolCards[index], in: &assistant)
       } else {
         assistant.toolCards.append(
           ToolCardState(
@@ -1165,11 +1257,13 @@ enum ChatReducer {
             details: details
           )
         )
+        assistant.timeline.append(.tool(assistant.toolCards.last!))
       }
 
     case let .response(content, usage):
       if assistant.text.isEmpty {
         assistant.text = content
+        assistant.timeline.append(.text(content))
       }
       assistant.usage = usage
       assistant.isThinkingCollapsed = true
@@ -1277,6 +1371,7 @@ enum ChatReducer {
         options: options,
         answer: nil
       )
+      assistant.timeline.append(.question(assistant.pendingQuestion!))
 
     case let .skillLoaded(name):
       appendStatus(kind: .skillLoaded, title: "Skill loaded", detail: name, onto: &assistant)
@@ -1296,6 +1391,17 @@ enum ChatReducer {
         detail: error,
         onto: &assistant
       )
+
+    case let .memorySaved(_, description, _, action):
+      appendStatus(
+        kind: .memorySaved,
+        title: action == .updated ? "Updated memory" : "Remembered",
+        detail: description,
+        onto: &assistant
+      )
+
+    case let .memoryForgotten(name):
+      appendStatus(kind: .memoryForgotten, title: "Forgot memory", detail: name, onto: &assistant)
 
     case let .unknown(type, _):
       appendStatus(
@@ -1324,6 +1430,18 @@ enum ChatReducer {
         unknownType: unknownType
       )
     )
+    assistant.timeline.append(.status(assistant.statusRows.last!))
+  }
+
+  private static func replaceTool(
+    _ tool: ToolCardState,
+    in assistant: inout AssistantMessageProjection
+  ) {
+    guard let index = assistant.timeline.firstIndex(where: {
+      if case let .tool(existing) = $0 { return existing.id == tool.id }
+      return false
+    }) else { return }
+    assistant.timeline[index] = .tool(tool)
   }
 
   /// True for an event that renders nothing of its own between two sub-agent
@@ -1448,6 +1566,10 @@ enum ChatReducer {
         )
       )
       slot = assistant.subagentDrafts.index(before: assistant.subagentDrafts.endIndex)
+      // The whole cluster block renders at the FIRST child's position in the
+      // event order, which is where §8.2's group container belongs: a later
+      // sibling joins the group rather than opening a second one.
+      if assistant.subagentDrafts.count == 1 { assistant.timeline.append(.subagents) }
     }
     if isStart, assistant.subagentDrafts[slot].hasStart == false {
       // `subagent_started` is the ONLY anchor since D8.
@@ -1459,7 +1581,20 @@ enum ChatReducer {
     update(&assistant.subagentDrafts[slot])
   }
 
-  private static func projectMessage(_ message: ConversationMessageDTO) -> ChatMessageState {
+  /// `[message id: rowID]` for the rows currently on screen, so a canonical
+  /// re-projection of the same message keeps its SwiftUI row identity (see
+  /// `ChatMessageState.rowID`). First one wins on the (never expected)
+  /// duplicate-id case rather than trapping.
+  private static func rowIDsByMessageID(_ messages: [ChatMessageState]) -> [String: String] {
+    Dictionary(messages.map { ($0.id, $0.rowID) }, uniquingKeysWith: { first, _ in first })
+  }
+
+  /// `rowID`: the existing row's identity when this DTO replaces a message
+  /// already on screen; `nil` (= the message id) for a genuinely new row.
+  private static func projectMessage(
+    _ message: ConversationMessageDTO,
+    rowID: String? = nil
+  ) -> ChatMessageState {
     switch message.content {
     case let .user(text, images):
       return ChatMessageState(
@@ -1470,7 +1605,38 @@ enum ChatReducer {
         status: message.status,
         user: UserMessageProjection(text: text, images: images ?? []),
         assistant: nil,
-        origin: message.messageOrigin
+        origin: message.messageOrigin,
+        rowID: rowID
+      )
+
+    case let .notice(kind, text):
+      return ChatMessageState(
+        id: message.id,
+        turnID: message.turnId,
+        ordinal: message.ordinal,
+        role: message.role,
+        status: message.status,
+        user: nil,
+        assistant: nil,
+        notice: NoticeProjection(kind: kind, text: text),
+        rowID: rowID
+      )
+
+    case let .unknown(type):
+      // A content type this build predates. Render nothing rather than drop the
+      // row: keeping it preserves ordinals and paging, and an empty row is a
+      // smaller lie than a missing message.
+      _ = type
+      return ChatMessageState(
+        id: message.id,
+        turnID: message.turnId,
+        ordinal: message.ordinal,
+        role: message.role,
+        status: message.status,
+        user: nil,
+        assistant: nil,
+        notice: nil,
+        rowID: rowID
       )
 
     case let .assistant(events):
@@ -1509,7 +1675,8 @@ enum ChatReducer {
         status: message.status,
         user: nil,
         assistant: assistant,
-        origin: message.messageOrigin
+        origin: message.messageOrigin,
+        rowID: rowID
       )
     }
   }

@@ -939,6 +939,9 @@ describe('ChatService gateway conversations', () => {
       accepted.id,
       'hello from Mission Control',
       undefined,
+      // No location provider is wired in tests, so the trailing location
+      // argument is undefined and the frame stays byte-identical to today's.
+      undefined,
     );
     expect(append).not.toHaveBeenCalled();
     await expect(store.listAll()).resolves.toEqual([]);

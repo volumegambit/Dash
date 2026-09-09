@@ -91,11 +91,54 @@ enum ComposeAgentSelection {
     guard availableAgents.isEmpty == false else { return nil }
     return availableAgents.first { $0.id == lastUsedAgentID }?.id ?? availableAgents[0].id
   }
+
+  /// Whether compose can run at all right now — i.e. whether `resolve` above
+  /// would return `nil`, or the gateway would refuse the create.
+  ///
+  /// Shared by BOTH compose entry points: `ConversationListView`'s toolbar
+  /// button and `RootView`'s empty-detail "New conversation" button on the
+  /// iPad two-column layout (design §1.1). The iPad button shipped
+  /// always-enabled and silently no-op'd when there was no agent to compose
+  /// under, which is why this predicate lives here rather than staying a
+  /// private computed property on the list view.
+  ///
+  /// Reentrancy is deliberately NOT part of this: each call site owns its own
+  /// in-flight flag, since only that site knows whether its own compose is
+  /// still running.
+  static func isUnavailable(
+    _ agents: [RegisteredAgentDTO],
+    filteredAgentID: String?,
+    mutationsAllowed: Bool
+  ) -> Bool {
+    mutationsAllowed == false
+      || availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty
+  }
+
+  /// The accessibility hint explaining why `isUnavailable` is `true` — empty
+  /// when compose is available, so it can be attached unconditionally.
+  static func unavailableHint(
+    _ agents: [RegisteredAgentDTO],
+    filteredAgentID: String?,
+    mutationsAllowed: Bool
+  ) -> String {
+    if mutationsAllowed == false {
+      return "Connect to the gateway to create a conversation"
+    }
+    if availableAgents(agents, filteredAgentID: filteredAgentID).isEmpty {
+      return "Enable or create an agent before starting a conversation"
+    }
+    return ""
+  }
 }
 
 struct ConversationListView: View {
   @Environment(AppModel.self) private var appModel
   @Environment(ConversationListFeature.self) private var feature
+  /// iPad goal Phase C: opens the `WindowGroup(id: "conversation", …)`
+  /// scene `DashApp` declares. A no-op on a device that cannot host a
+  /// second scene, which is why the affordance below is gated on
+  /// `supportsMultipleScenes` rather than being offered everywhere.
+  @Environment(\.openWindow) private var openWindow
 
   let presentation: NavigationPresentation
 
@@ -113,6 +156,11 @@ struct ConversationListView: View {
   // replaces guarded the exact same window, just one screen later (after an
   // explicit "Start conversation" tap instead of the compose tap itself).
   @State private var isComposing = false
+  /// Focus of the `.searchable` field, driven by ⌘F
+  /// (`KeyboardCommand.focusSearch`). Bound through `dashSearchFocused(_:)`,
+  /// which is the identity modifier below iOS 18 — see its doc comment for
+  /// why ⌘F is listed but DISABLED there rather than hidden.
+  @FocusState private var isSearchFocused: Bool
 
   var body: some View {
     List {
@@ -128,98 +176,13 @@ struct ConversationListView: View {
         emptyState
           .listRowBackground(Color.clear)
       } else if feature.conversations.isEmpty == false {
-        Section("Conversations") {
-          ForEach(filteredConversations) { conversation in
-            conversationRow(conversation)
-              .task {
-                // Review fix (audit #9): pass the FILTERED list a search is
-                // actively rendering from, not the canonical
-                // `feature.conversations` — see `loadOlderIfNeeded`'s doc
-                // comment for why the canonical list silently stalls
-                // pagination once a query hides its tail rows.
-                await feature.loadOlderIfNeeded(
-                  currentID: conversation.id,
-                  visibleConversations: filteredConversations
-                )
-              }
-              .contextMenu {
-                let actions = actionPolicy(for: conversation)
-
-                if actions.showsRename {
-                  Button {
-                    renameTarget = conversation
-                    renameTitle = conversation.summary.title
-                  } label: {
-                    Label("Rename", systemImage: "pencil")
-                  }
-                  .disabled(actions.canRename == false)
-                  .accessibilityHint(actions.renameDisabledHint)
-                }
-
-                if actions.showsDelete {
-                  Button(role: .destructive) {
-                    deleteTarget = conversation
-                  } label: {
-                    Label("Delete", systemImage: "trash")
-                  }
-                  .disabled(actions.canDelete == false)
-                  .accessibilityHint(actions.deleteDisabledHint)
-                }
-              }
-              // Audit #10: same `ConversationRowActionPolicy` the context
-              // menu above uses — availability, disabled state, and hints
-              // stay identical across both entry points.
-              .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                let actions = actionPolicy(for: conversation)
-                if actions.showsRename {
-                  Button {
-                    renameTarget = conversation
-                    renameTitle = conversation.summary.title
-                  } label: {
-                    Label("Rename", systemImage: "pencil")
-                  }
-                  .disabled(actions.canRename == false)
-                  .accessibilityHint(actions.renameDisabledHint)
-                  .tint(DashTheme.accent)
-                }
-              }
-              .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                let actions = actionPolicy(for: conversation)
-                if actions.showsDelete {
-                  Button(role: .destructive) {
-                    deleteTarget = conversation
-                  } label: {
-                    Label("Delete", systemImage: "trash")
-                  }
-                  .disabled(actions.canDelete == false)
-                  .accessibilityHint(actions.deleteDisabledHint)
-                }
-              }
-          }
-
-          if filteredConversations.isEmpty {
-            ContentUnavailableView.search(text: searchText)
-              .listRowBackground(Color.clear)
-              .listRowSeparator(.hidden)
-              // Review fix (audit #9): with zero locally-matching rows
-              // there's no row left to hang the usual near-the-tail
-              // pagination trigger off, so eagerly keep loading older pages
-              // while this empty-results state is showing — an unloaded
-              // page might still contain a match. Keyed on `nextCursor` so
-              // it re-fires after each successful page load and stops on
-              // its own once a match appears (this view disappears) or
-              // pages run out (`nextCursor` settles at `nil`).
-              .task(id: feature.nextCursor) {
-                await feature.loadOlderForEmptySearchResults()
-              }
-          } else if feature.isLoadingOlder {
-            HStack {
-              Spacer()
-              ProgressView("Loading older conversations")
-              Spacer()
-            }
-            .listRowSeparator(.hidden)
-          }
+        // The nav title already says "Conversations"; a section header
+        // repeating it only earns its place when "Needs Recovery" is also
+        // on screen and the two need telling apart.
+        if feature.recoverablePendingSends.isEmpty {
+          Section { conversationSectionContent }
+        } else {
+          Section("Conversations") { conversationSectionContent }
         }
       }
     }
@@ -227,6 +190,24 @@ struct ConversationListView: View {
     .listStyle(.plain)
     .navigationTitle("Conversations")
     .searchable(text: $searchText, prompt: "Search conversations")
+    .dashSearchFocused($isSearchFocused)
+    // iPad goal Phase B: the list surface's slice of `DashCommands`.
+    // `canCompose` mirrors `composeDisabled`'s agent-availability check so
+    // ⌘N is greyed out for the same reason the toolbar's compose button is
+    // — see `ListCommandActions.canCompose` for why it deliberately does
+    // NOT also fold in `isComposing`.
+    .background {
+      ListCommandPublisher(
+        actions: ListCommandActions(
+          feature: feature,
+          newConversation: { Task { await startCompose() } },
+          focusSearch: { isSearchFocused = true },
+          previous: { step(-1) },
+          next: { step(1) }
+        )
+      )
+      .equatable()
+    }
     .refreshable { await feature.refresh() }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
@@ -380,22 +361,20 @@ struct ConversationListView: View {
 
   // MARK: - Compose-first new chat (Task 3, audit #16)
 
-  private var availableComposeAgents: [RegisteredAgentDTO] {
-    ComposeAgentSelection.availableAgents(feature.agents, filteredAgentID: feature.selectedAgentID)
-  }
-
   private var composeDisabled: Bool {
-    feature.mutationsAllowed == false || availableComposeAgents.isEmpty || isComposing
+    ComposeAgentSelection.isUnavailable(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    ) || isComposing
   }
 
   private var composeDisabledHint: String {
-    if feature.mutationsAllowed == false {
-      return "Connect to the gateway to create a conversation"
-    }
-    if availableComposeAgents.isEmpty {
-      return "Enable or create an agent before starting a conversation"
-    }
-    return ""
+    ComposeAgentSelection.unavailableHint(
+      feature.agents,
+      filteredAgentID: feature.selectedAgentID,
+      mutationsAllowed: feature.mutationsAllowed
+    )
   }
 
   /// Replaces `NewConversationView`'s Form (agent `Picker` + "Start
@@ -410,29 +389,16 @@ struct ConversationListView: View {
   /// `AgentPickerSheet`'s doc comment.
   private func startCompose() async {
     guard isComposing == false else { return }
-    // Armed BEFORE the first `await` below: `lastUsedAgentID()` suspends, and
-    // a second tap landing in that window would otherwise pass the reentrancy
-    // guard and compose twice.
+    // Armed BEFORE the first `await` below: `composeConversation()` suspends,
+    // and a second tap landing in that window would otherwise pass the
+    // reentrancy guard and compose twice.
     isComposing = true
     defer { isComposing = false }
-    guard
-      let agentID = ComposeAgentSelection.resolve(
-        availableAgents: availableComposeAgents,
-        lastUsedAgentID: await feature.lastUsedAgentID()
-      )
-    else { return }
-    // Review fix I2: `create(agentID:)` now returns the resolved
-    // conversation id directly (or `nil` on ANY failure, including a rare
-    // tombstone-reconciliation race) rather than this call re-reading
-    // `feature.selectedID`/`mutationError` afterward — a prior version of
-    // this compared the resolved `selectedID` against its value BEFORE the
-    // call, which broke because `create(agentID:)` is idempotent per agent
-    // (composing twice with the same default/last-used agent legitimately
-    // resolves to the conversation that was already selected, which the old
-    // "did it change" check wrongly treated as failure — caught by
-    // `testAgentChipSwitchesConversationAndPersistsLastUsedAgent`).
-    guard let conversationID = await feature.create(agentID: agentID) else { return }
-    await feature.recordLastUsedAgent(agentID)
+    // `ConversationListFeature.composeConversation()` (iPad goal Phase A,
+    // Task 2) owns the last-used-agent resolution and idempotent create —
+    // see its doc comment for why callers just check the returned id rather
+    // than re-reading `feature.selectedID`/`mutationError` afterward.
+    guard let conversationID = await feature.composeConversation() else { return }
     // Phase 4 minor 2 (iOS half; web: `ConversationList.tsx` `handleCreate`):
     // drop any active search, otherwise the conversation about to be opened
     // is filtered out of the list beside it — selected, being typed into,
@@ -440,6 +406,45 @@ struct ConversationListView: View {
     // toolbar during a search (iOS 18 collapses it to the field + Cancel).
     searchText = ""
     appModel.openConversation(conversationID, presentation: presentation)
+  }
+
+  /// ⌘⇧[ / ⌘⇧] (`KeyboardCommand.previousConversation` / `.nextConversation`):
+  /// walks `filteredConversations` — the list the user is actually looking
+  /// at, so the agent filter and an active search both scope the keyboard
+  /// walk exactly as they scope the rows.
+  ///
+  /// No-op at the ends: stepping past either edge deliberately does nothing
+  /// rather than wrapping, so holding the chord can't cycle forever past the
+  /// conversation the user wanted. With nothing open (or with the open
+  /// conversation hidden by the current filter) it enters the list from the
+  /// end it is travelling towards — first row for next, last for previous.
+  private func step(_ offset: Int) {
+    let conversations = filteredConversations
+    guard conversations.isEmpty == false else { return }
+    guard let index = openConversationID.flatMap({ id in
+      conversations.firstIndex { $0.id == id }
+    }) else {
+      let entry = offset < 0 ? conversations[conversations.count - 1] : conversations[0]
+      appModel.openConversation(entry.id, presentation: presentation)
+      return
+    }
+    let target = index + offset
+    guard conversations.indices.contains(target) else { return }
+    appModel.openConversation(conversations[target].id, presentation: presentation)
+  }
+
+  /// Which conversation `step(_:)` walks from. Branches on presentation for
+  /// the same reason `ChatView`'s `onDisappear` does: a compact back-button
+  /// pop mutates the bound `conversationPath` but never clears
+  /// `splitConversationSelection`, which would leave the compact walk
+  /// stepping from a conversation the user has already left.
+  private var openConversationID: String? {
+    let route: ConversationRoute? = switch presentation {
+    case .compact: appModel.conversationPath.last
+    case .regular: appModel.splitConversationSelection
+    }
+    if case .transcript(let id) = route { return id }
+    return nil
   }
 
   /// Audit #9: local filter over `feature.conversations` (already scoped by
@@ -476,6 +481,153 @@ struct ConversationListView: View {
     }
   }
 
+  /// The `Conversations` section's rows plus the search/pagination tail,
+  /// extracted from the `List` body so the section can be built with or
+  /// without a header without duplicating its contents.
+  @ViewBuilder
+  private var conversationSectionContent: some View {
+    ForEach(filteredConversations) { conversation in
+      decoratedConversationRow(conversation)
+    }
+
+    if filteredConversations.isEmpty {
+      ContentUnavailableView.search(text: searchText)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        // Review fix (audit #9): with zero locally-matching rows
+        // there's no row left to hang the usual near-the-tail
+        // pagination trigger off, so eagerly keep loading older pages
+        // while this empty-results state is showing — an unloaded
+        // page might still contain a match. Keyed on `nextCursor` so
+        // it re-fires after each successful page load and stops on
+        // its own once a match appears (this view disappears) or
+        // pages run out (`nextCursor` settles at `nil`).
+        .task(id: feature.nextCursor) {
+          await feature.loadOlderForEmptySearchResults()
+        }
+    } else if feature.isLoadingOlder {
+      HStack {
+        Spacer()
+        ProgressView("Loading older conversations")
+        Spacer()
+      }
+      .listRowSeparator(.hidden)
+    }
+  }
+
+  /// The conversation row plus every per-row modifier, extracted from the
+  /// `ForEach` closure as one unit: with Task 10's "Open in New Window" item
+  /// and `.draggable` added inline, the closure tipped the type checker over
+  /// its budget ("unable to type-check this expression in reasonable time").
+  /// Keeping the whole chain in ONE function preserves the co-location of
+  /// `.contextMenu` and `.draggable` that Task 8's review fix (aeda641d)
+  /// established, rather than scattering them across views.
+  @ViewBuilder
+  private func decoratedConversationRow(_ conversation: CachedConversation) -> some View {
+    conversationRow(conversation)
+      .task {
+        // Review fix (audit #9): pass the FILTERED list a search is
+        // actively rendering from, not the canonical
+        // `feature.conversations` — see `loadOlderIfNeeded`'s doc
+        // comment for why the canonical list silently stalls
+        // pagination once a query hides its tail rows.
+        await feature.loadOlderIfNeeded(
+          currentID: conversation.id,
+          visibleConversations: filteredConversations
+        )
+      }
+      // iPad goal Phase C (design §3.2). Gated on
+      // `supportsMultipleScenes` so the item never appears where
+      // tapping it could do nothing: UIKit reports `false` for any
+      // app that cannot host a second scene, which is the honest
+      // source of truth here rather than an idiom check.
+      // `.draggable` below is co-located on this same chain rather
+      // than pushed inside `conversationRow`, matching the
+      // arrangement Task 8's review fix (aeda641d) settled on for
+      // message bubbles.
+      .contextMenu {
+        let actions = actionPolicy(for: conversation)
+
+        if UIApplication.shared.supportsMultipleScenes,
+          let gatewayID = appModel.selectedProfile?.gatewayID
+        {
+          Button {
+            ConversationWindowSceneGuard.noteOpened()
+            openWindow(
+              value: ConversationWindowValue(
+                gatewayID: gatewayID,
+                conversationID: conversation.id
+              )
+            )
+          } label: {
+            Label("Open in New Window", systemImage: "macwindow.badge.plus")
+          }
+          .accessibilityIdentifier("conversation.openInWindow.\(conversation.id)")
+        }
+
+        if actions.showsRename {
+          Button {
+            renameTarget = conversation
+            renameTitle = conversation.summary.title
+          } label: {
+            Label("Rename", systemImage: "pencil")
+          }
+          .disabled(actions.canRename == false)
+          .accessibilityHint(actions.renameDisabledHint)
+        }
+
+        if actions.showsDelete {
+          Button(role: .destructive) {
+            deleteTarget = conversation
+          } label: {
+            Label("Delete", systemImage: "trash")
+          }
+          .disabled(actions.canDelete == false)
+          .accessibilityHint(actions.deleteDisabledHint)
+        }
+      }
+      // Review fix round 1 (Important 2): gated on `supportsMultipleScenes`
+      // too, matching the "Open in New Window" menu item above. Without it,
+      // every iPhone row lifted under a drag with no device-reachable
+      // consumer — worse than no drag at all.
+      .draggableConversation(
+        UIApplication.shared.supportsMultipleScenes
+          ? appModel.selectedProfile.map {
+            ConversationWindowValue(gatewayID: $0.gatewayID, conversationID: conversation.id)
+          }
+          : nil
+      )
+      // Audit #10: same `ConversationRowActionPolicy` the context
+      // menu above uses — availability, disabled state, and hints
+      // stay identical across both entry points.
+      .swipeActions(edge: .leading, allowsFullSwipe: true) {
+        let actions = actionPolicy(for: conversation)
+        if actions.showsRename {
+          Button {
+            renameTarget = conversation
+            renameTitle = conversation.summary.title
+          } label: {
+            Label("Rename", systemImage: "pencil")
+          }
+          .disabled(actions.canRename == false)
+          .accessibilityHint(actions.renameDisabledHint)
+          .tint(DashTheme.accent)
+        }
+      }
+      .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        let actions = actionPolicy(for: conversation)
+        if actions.showsDelete {
+          Button(role: .destructive) {
+            deleteTarget = conversation
+          } label: {
+            Label("Delete", systemImage: "trash")
+          }
+          .disabled(actions.canDelete == false)
+          .accessibilityHint(actions.deleteDisabledHint)
+        }
+      }
+  }
+
   private func conversationRow(_ conversation: CachedConversation) -> some View {
     Button {
       appModel.openConversation(
@@ -483,35 +635,68 @@ struct ConversationListView: View {
         presentation: presentation
       )
     } label: {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .firstTextBaseline) {
+      // Two lines, Mail-style (list density 2026-09-05). This was four —
+      // an unbounded-height title, the agent, the preview, and a status
+      // badge — which fit about four and a half conversations on a phone.
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          // `lineLimit(1)`: titles are generated from the conversation and
+          // run long ("I can't check your emails — I don't have access to
+          // your"), so an unbounded title silently doubled a row's height.
           Text(conversation.summary.title)
             .font(.headline)
             .foregroundStyle(.primary)
-          Spacer()
-          Text(conversation.summary.updatedAt, style: .relative)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          Text(RelativeTimestamp.label(for: conversation.summary.updatedAt))
             .font(.caption)
             .foregroundStyle(.secondary)
+            .layoutPriority(1)
         }
-        Text(conversation.summary.agentName)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-        if let preview = conversation.summary.lastMessagePreview, preview.isEmpty == false {
-          Text(preview)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-        }
-        HStack {
-          StatusBadge(
-            title: LocalizedStringKey(conversation.summary.status.displayName),
-            systemImage: conversation.summary.status.systemImage,
-            color: conversation.summary.status.color
-          )
-          if feature.isAuthoritative == false {
-            Label("Cached", systemImage: "internaldrive")
-              .font(.caption)
+
+        // Agent and preview shared one style (`.subheadline`/`.secondary`),
+        // so four grey lines of equal weight stacked up with nothing to
+        // scan by. One line, with the agent carrying the emphasis: it is
+        // the stable identifier you look for, the preview is the detail.
+        // The agent takes the emphasis (Messages puts the sender here) and
+        // the preview stays `.secondary`. Demoting the preview to
+        // `.tertiary` would have read as cleaner hierarchy but is roughly
+        // 3.6:1 against this app's black ground — under the 4.5:1 body-text
+        // floor. Weight and colour carry the hierarchy instead of dimming.
+        HStack(spacing: 0) {
+          Text(conversation.summary.agentName)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
+          if let preview = conversation.summary.lastMessagePreview, preview.isEmpty == false {
+            Text(verbatim: " · ")
+              .font(.subheadline)
               .foregroundStyle(.secondary)
+            Text(preview)
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .lineLimit(1)
+        .truncationMode(.tail)
+
+        // Only states that change what you would do next. `idle` was
+        // rendered on every row, and a badge that is always present
+        // carries no information while costing every row a line.
+        if conversation.summary.status != .idle || feature.isAuthoritative == false {
+          HStack {
+            if conversation.summary.status != .idle {
+              StatusBadge(
+                title: LocalizedStringKey(conversation.summary.status.displayName),
+                systemImage: conversation.summary.status.systemImage,
+                color: conversation.summary.status.color
+              )
+            }
+            if feature.isAuthoritative == false {
+              Label("Cached", systemImage: "internaldrive")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
           }
         }
       }
@@ -519,12 +704,16 @@ struct ConversationListView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .hoverEffect(.highlight)
     .listRowBackground(
       isSelected(conversation.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
     )
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
     .accessibilityIdentifier("conversation.row.\(conversation.id)")
+    // Left the separator starting a third of the way across the row,
+    // aligned under the status badge rather than under the text column.
+    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
   }
 
   private func recoveryRow(_ recovery: RecoverablePendingSend) -> some View {
@@ -580,6 +769,7 @@ struct ConversationListView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .hoverEffect(.highlight)
     .listRowBackground(
       isRecoverySelected(recovery.conversationID)
         ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
@@ -1228,6 +1418,42 @@ struct RecoveryAttachmentIssuePresentation: Equatable {
     case .pendingMessage: "recovery.attachmentsUnavailable.\(conversationID)"
     case .coexistingDraft: "recovery.draft.attachmentsUnavailable.\(conversationID)"
     }
+  }
+}
+
+extension View {
+  /// Applies `.draggable` only when there IS a gateway to name in the
+  /// payload, rather than dragging a `ConversationWindowValue` with an empty
+  /// `gatewayID` that no consumer could ever match. Same shape as
+  /// `MessageViews`' `draggable(_:when:)` gate, under a distinct name so the
+  /// two don't read as overloads of each other.
+  @ViewBuilder
+  fileprivate func draggableConversation(_ value: ConversationWindowValue?) -> some View {
+    if let value {
+      draggable(value)
+    } else {
+      self
+    }
+  }
+}
+
+extension UTType {
+  /// The app's own exported type for a conversation reference, declared in
+  /// `Info.plist` under `UTExportedTypeDeclarations` (identifier
+  /// `app.dash.ios.conversation`, conforming to `public.data`) and kept in
+  /// the bundle id's reverse-DNS namespace. The plist declaration is what
+  /// makes this a DECLARED exported type rather than an undeclared one, so
+  /// the entry is load-bearing, not decoration.
+  static let dashConversation = UTType(exportedAs: "app.dash.ios.conversation")
+}
+
+extension ConversationWindowValue: Transferable {
+  /// Makes a conversation row a drag SOURCE carrying the same value
+  /// "Open in New Window" passes to `openWindow`. Honest scope: nothing in
+  /// Dash consumes this type yet — it is the payload half of the
+  /// drag-a-conversation-out gesture, not by itself a way to open a window.
+  static var transferRepresentation: some TransferRepresentation {
+    CodableRepresentation(contentType: .dashConversation)
   }
 }
 

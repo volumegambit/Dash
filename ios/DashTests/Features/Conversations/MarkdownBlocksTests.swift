@@ -69,6 +69,81 @@ struct MarkdownBlocksTests {
     #expect(String(attributed.characters) == "Some `unterminated code span")
   }
 
+  // MARK: - Images
+
+  @Test("an explicit ![alt](url) image on its own line segments as an image block")
+  func explicitMarkdownImageBecomesImageBlock() {
+    #expect(
+      segmentMarkdown("![a diagram](https://example.com/pic.png)")
+        == [.image(url: URL(string: "https://example.com/pic.png")!, alt: "a diagram")]
+    )
+  }
+
+  @Test("an explicit image with empty alt keeps a nil alt")
+  func explicitMarkdownImageEmptyAlt() {
+    #expect(
+      segmentMarkdown("![](https://example.com/pic.png)")
+        == [.image(url: URL(string: "https://example.com/pic.png")!, alt: nil)]
+    )
+  }
+
+  @Test(
+    "a standalone bare URL ending in an image extension becomes an image block",
+    arguments: [
+      "https://v3b.fal.media/files/b/0aa96c7e/HN6ffHIT.png",
+      "https://example.com/a.jpg",
+      "https://example.com/a.jpeg",
+      "https://example.com/a.gif",
+      "https://example.com/a.webp",
+    ]
+  )
+  func bareImageExtensionURLBecomesImageBlock(url: String) {
+    #expect(segmentMarkdown(url) == [.image(url: URL(string: url)!, alt: nil)])
+  }
+
+  @Test("a bare image URL with a query string still becomes an image block")
+  func bareImageURLWithQueryBecomesImageBlock() {
+    let url = "https://example.com/a.png?sig=abc123"
+    #expect(segmentMarkdown(url) == [.image(url: URL(string: url)!, alt: nil)])
+  }
+
+  @Test("a bare image URL is matched case-insensitively on its extension")
+  func bareImageURLUppercaseExtension() {
+    let url = "https://example.com/A.PNG"
+    #expect(segmentMarkdown(url) == [.image(url: URL(string: url)!, alt: nil)])
+  }
+
+  @Test("a bare image URL surrounded by prose stays a paragraph, not an image")
+  func bareImageURLInProseStaysParagraph() {
+    let input = "Here it is https://example.com/a.png enjoy"
+    #expect(segmentMarkdown(input) == [.paragraph(input)])
+  }
+
+  @Test("a standalone non-image URL stays a paragraph")
+  func bareNonImageURLStaysParagraph() {
+    let input = "https://example.com/page"
+    #expect(segmentMarkdown(input) == [.paragraph(input)])
+  }
+
+  @Test("a non-https image URL is not promoted to an image block")
+  func nonHTTPImageURLStaysParagraph() {
+    let input = "ftp://example.com/a.png"
+    #expect(segmentMarkdown(input) == [.paragraph(input)])
+  }
+
+  @Test("an image block is split out from surrounding paragraphs")
+  func imageBlockSplitFromParagraphs() {
+    let input = "Here's the result:\n\n![out](https://example.com/o.png)\n\nEnjoy!"
+    #expect(
+      segmentMarkdown(input)
+        == [
+          .paragraph("Here's the result:"),
+          .image(url: URL(string: "https://example.com/o.png")!, alt: "out"),
+          .paragraph("Enjoy!"),
+        ]
+    )
+  }
+
   // MARK: - Headings
 
   @Test(

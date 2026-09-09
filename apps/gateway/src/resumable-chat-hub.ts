@@ -9,6 +9,7 @@ import type {
 } from '@dash/mobile-contract';
 import { isTransientAgentEvent } from '@dash/swarm';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { toClientLocation } from './client-location.js';
 import type { ConversationAutoTitleService } from './conversation-auto-title.js';
 import {
   type AcceptedTurn,
@@ -17,6 +18,8 @@ import {
   type PersistedTurnFrame,
 } from './conversation-service.js';
 import type { EventLogEntry } from './event-log-store.js';
+import type { MemorySweepService } from './memory-sweep.js';
+import type { SkillReviewService } from './skill-review.js';
 
 export type ResumableSendFrame = Extract<MobileWsClientFrame, { type: 'message' }> & {
   resumable: true;
@@ -31,6 +34,9 @@ export interface ResumableChatHubOptions {
   conversations: ConversationService;
   agents: AgentChatCoordinator;
   autoTitle: ConversationAutoTitleService;
+  /** Optional post-turn memory sweep; scheduled only for turns that complete. */
+  memorySweep?: Pick<MemorySweepService, 'schedule'>;
+  skillReview?: Pick<SkillReviewService, 'schedule'>;
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
   onChanged?(summary: ConversationSummary): void;
 }
@@ -125,6 +131,11 @@ interface LiveTurn {
   conversationId: string;
   /** Decides conversation fan-out: only a non-`'user'` turn reaches subscribers. */
   origin: ConversationMessageOrigin;
+  /**
+   * `'subagent'` for a CHILD conversation's turn. Read only by the post-turn
+   * work below, which is the parent's, not the child's.
+   */
+  kind: ConversationKind;
   controller: AbortController;
   subscribers: Set<TurnFrameSink>;
   cancelled: boolean;
@@ -370,6 +381,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         images: frame.images?.length
           ? frame.images.map((image) => ({ type: 'image' as const, ...image }))
           : undefined,
+        location: toClientLocation(frame.location),
         messageId: frame.id,
         signal: live.controller.signal,
       });
@@ -393,7 +405,31 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
         const persisted = conversations.appendTurnEvent(live.conversationId, live.turnId, event);
         if (persisted) broadcast(live, frameFromPersisted(live, persisted));
       }
-      if (!live.cancelled) finish(live, 'completed');
+      if (!live.cancelled) {
+        finish(live, 'completed');
+        // A CHILD's turn is never swept or reviewed. Both services key on
+        // `agentId`, and a child conversation carries its PARENT's — so a
+        // child's transcript would be extracted into the parent's memory dir
+        // and its managed skills dir, and the resulting notice would be posted
+        // into the child's conversation. That is the write path the child was
+        // deliberately denied: it inherits memory read-only (`tools: false` in
+        // `buildChildAgentConfig`), and a `skipMemory` type gets none at all.
+        // Children report to their parent; the parent decides what is kept.
+        if (live.kind !== 'subagent') {
+          options.memorySweep?.schedule({
+            agentId: live.agentId,
+            conversationId: live.conversationId,
+            turnId: live.turnId,
+          });
+          // Only completed turns are reviewed: a failed or cancelled turn has no
+          // outcome to learn from, and half of one is worse than none.
+          options.skillReview?.schedule({
+            agentId: live.agentId,
+            conversationId: live.conversationId,
+            turnId: live.turnId,
+          });
+        }
+      }
     } catch (error) {
       if (!live.cancelled) {
         const message = error instanceof Error ? error.message : String(error);
@@ -485,6 +521,7 @@ export function createResumableChatHub(options: ResumableChatHubOptions): Resuma
       agentId: frame.agentId,
       conversationId: frame.conversationId,
       origin,
+      kind: accepted.conversation.kind,
       controller: new AbortController(),
       subscribers: new Set(sink ? [sink] : []),
       cancelled: false,

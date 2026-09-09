@@ -1995,13 +1995,17 @@ private actor GatedNowClock: AppClock {
   func sleep(for _: Duration) async throws {}
 }
 
+/// Polls `condition` for up to ~5 s. Time-based (1 ms sleeps), not
+/// yield-based: on a slow CI runner (iPad job, 2026-09-04) 5,000 bare
+/// `Task.yield()`s ran out before the engine's real async work completed and
+/// "transport reconnect retries the full authoritative bootstrap" flaked.
 private func eventually(
   _ condition: @escaping @Sendable () async -> Bool,
   attempts: Int = 5_000
 ) async {
   for _ in 0..<attempts {
     if await condition() { return }
-    await Task.yield()
+    try? await Task.sleep(for: .milliseconds(1))
   }
   Issue.record("Condition did not become true")
 }

@@ -19,9 +19,15 @@ type LoadSkillInput = Static<typeof loadSkillSchema>;
 /**
  * Create the load_skill tool.
  * Loads a skill's full content into the conversation context.
+ *
+ * `augmentsFn` supplies bodies of learned lesson books that ride along with the
+ * requested skill. It is how a lesson about a read-only skill still reaches the
+ * agent at the moment that skill is used, and it is optional so the tool works
+ * unchanged for agents that have learning turned off.
  */
 export function createLoadSkillTool(
   listSkillsFn: () => Promise<SkillDiscoveryResult[]>,
+  augmentsFn?: (skillName: string) => Promise<string[]>,
 ): AgentTool<typeof loadSkillSchema> {
   return {
     name: 'load_skill',
@@ -41,7 +47,16 @@ export function createLoadSkillTool(
           `Skill "${params.name}" not found. Available skills: ${available || '(none)'}`,
         );
       }
-      return textResult(skill.content);
+      if (!augmentsFn) return textResult(skill.content);
+
+      // A failure to collect ride-alongs must not fail the load: the authored
+      // skill is the part the agent actually asked for.
+      try {
+        const { appendAugments } = await import('./learning/augment.js');
+        return textResult(appendAugments(skill.content, await augmentsFn(skill.name)));
+      } catch {
+        return textResult(skill.content);
+      }
     },
   };
 }

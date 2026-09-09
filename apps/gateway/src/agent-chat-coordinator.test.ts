@@ -2,10 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
+import { MemoryStore } from '@dash/agent';
 import { SwarmCoordinator, type SwarmEventLogSink } from '@dash/swarm';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type AgentChatCoordinatorSwarm,
+  type BackendFactoryConfig,
   createAgentChatCoordinator,
 } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
@@ -1645,5 +1647,291 @@ describe('child conversations on the shared pool', () => {
     // (whose workspace is the real repo, outside the child's worktree).
     expect(attaches).toHaveLength(1);
     expect(runtimeCalls).toBe(1);
+  });
+});
+
+describe('AgentChatCoordinator memory wiring', () => {
+  it('passes the memory dir to the backend config and to the per-chat resolver', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'mem-a', model: 'm', systemPrompt: 'p' });
+    const seenConfigs: BackendFactoryConfig[] = [];
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      memoryDir: (agentId) => join('/tmp/dash-mem', agentId),
+      createBackend: async (config) => {
+        seenConfigs.push(config);
+        return backend;
+      },
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+    // The RESOLVED runtime object rides under the distinct `memoryRuntime` key
+    // so it can never be confused with the persisted `memory` flags.
+    expect(seenConfigs[0].memoryRuntime).toEqual({ dir: join('/tmp/dash-mem', id) });
+    expect(states[0].systemPrompt).toContain('<memory>');
+
+    await agents.stop();
+  });
+
+  it('omits memory entirely when the agent has memory.enabled === false', async () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: 'mem-b',
+      model: 'm',
+      systemPrompt: 'p',
+      memory: { enabled: false },
+    });
+    const seenConfigs: BackendFactoryConfig[] = [];
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      memoryDir: (agentId) => join('/tmp/dash-mem', agentId),
+      createBackend: async (config) => {
+        seenConfigs.push(config);
+        return backend;
+      },
+    });
+
+    await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+    expect(seenConfigs[0].memoryRuntime).toBeUndefined();
+    expect(states[0].systemPrompt).not.toContain('<memory>');
+    expect(agents.memoryStore(id)).toBeNull();
+
+    await agents.stop();
+  });
+
+  it('memoryStore is null when no memoryDir resolver is configured', () => {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({ name: 'mem-none', model: 'm', systemPrompt: 'p' });
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => makeMockBackend([]),
+    });
+    expect(agents.memoryStore(id)).toBeNull();
+  });
+
+  it('exposes list/save/get/remove backed by the memory dir', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dash-coord-mem-'));
+    try {
+      const registry = new AgentRegistry();
+      const { id } = registry.register({ name: 'mem-c', model: 'm', systemPrompt: 'p' });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(dir, agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      const saved = await agents.saveMemory(id, {
+        name: 'x',
+        description: 'd',
+        type: 'user',
+        content: 'c',
+      });
+      expect(saved.action).toBe('created');
+      expect((await agents.listMemories(id)).map((m) => m.name)).toEqual(['x']);
+      // The human-facing API path always writes source 'user'.
+      expect((await agents.getMemory(id, 'x'))?.source).toBe('user');
+      expect(await agents.removeMemory(id, 'x')).toBe(true);
+      expect(await agents.getMemory(id, 'x')).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps reads and deletes working (but refuses saves) when memory is disabled', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dash-coord-mem-off-'));
+    try {
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-off',
+        model: 'm',
+        systemPrompt: 'p',
+        memory: { enabled: false },
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(dir, agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      // Memories written before the user turned memory off are still on disk;
+      // the management surfaces must show them and be able to delete them.
+      const store = new MemoryStore(join(dir, id));
+      await store.save({
+        name: 'x',
+        description: 'd',
+        type: 'user',
+        content: 'c',
+        source: 'user',
+      });
+
+      expect((await agents.listMemories(id)).map((m) => m.name)).toEqual(['x']);
+      expect((await agents.getMemory(id, 'x'))?.content).toBe('c');
+      await expect(
+        agents.saveMemory(id, { name: 'y', description: 'd', type: 'user', content: 'c' }),
+      ).rejects.toThrow(/disabled/);
+      expect(await agents.removeMemory(id, 'x')).toBe(true);
+      expect(await agents.getMemory(id, 'x')).toBeNull();
+      // The chat-path store stays null: no prompt, no tools, no sweep.
+      expect(agents.memoryStore(id)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives a memory-disabled agent no memory block and no memory tools', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dash-coord-mem-off2-'));
+    try {
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-off-prompt',
+        model: 'm',
+        systemPrompt: 'p',
+        memory: { enabled: false },
+      });
+      const store = new MemoryStore(join(dir, id));
+      await store.save({
+        name: 'x',
+        description: 'd',
+        type: 'user',
+        content: 'c',
+        source: 'user',
+      });
+      const seenConfigs: BackendFactoryConfig[] = [];
+      const { backend, states } = makeStateCapturingBackend();
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(dir, agentId),
+        createBackend: async (config) => {
+          seenConfigs.push(config);
+          return backend;
+        },
+      });
+
+      await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+      expect(seenConfigs[0].memoryRuntime).toBeUndefined();
+      expect(states[0].systemPrompt).not.toContain('<memory>');
+
+      await agents.stop();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('imports a legacy workspace MEMORY.md when the pool entry is created', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-legacy-'));
+    try {
+      const workspace = join(root, 'ws');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'MEMORY.md'), '- likes tea\n');
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-d',
+        model: 'm',
+        systemPrompt: 'p',
+        workspace,
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(root, 'mem', agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+      expect((await agents.listMemories(id)).map((m) => m.name)).toEqual(['legacy-memory-md']);
+      expect((await agents.getMemory(id, 'legacy-memory-md'))?.content).toContain('likes tea');
+
+      await agents.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not import the legacy file when memory is disabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dash-coord-legacy-off-'));
+    try {
+      const workspace = join(root, 'ws');
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, 'MEMORY.md'), '- likes tea\n');
+
+      const registry = new AgentRegistry();
+      const { id } = registry.register({
+        name: 'mem-e',
+        model: 'm',
+        systemPrompt: 'p',
+        workspace,
+        memory: { enabled: false },
+      });
+      const agents = createAgentChatCoordinator({
+        registry,
+        poolMaxSize: 10,
+        memoryDir: (agentId) => join(root, 'mem', agentId),
+        createBackend: async () => makeMockBackend([]),
+      });
+
+      await drain(agents.chat({ agentId: id, conversationId: 'c1', channelId: 'ch', text: 'hi' }));
+
+      expect(await agents.listMemories(id)).toEqual([]);
+
+      await agents.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('AgentChatCoordinator location gating', () => {
+  const location = {
+    timezone: 'Asia/Singapore',
+    utcOffsetMinutes: 480,
+    locale: 'en-SG',
+    region: 'SG',
+  };
+
+  async function promptFor(agentLocation?: { enabled?: boolean }): Promise<string> {
+    const registry = new AgentRegistry();
+    const { id } = registry.register({
+      name: `loc-${Math.random().toString(36).slice(2)}`,
+      model: 'anthropic/claude-sonnet-5',
+      systemPrompt: 'base',
+      ...(agentLocation ? { location: agentLocation } : {}),
+    });
+    const { backend, states } = makeStateCapturingBackend();
+    const agents = createAgentChatCoordinator({
+      registry,
+      poolMaxSize: 10,
+      createBackend: async () => backend,
+    });
+    await drain(agents.chat({ agentId: id, conversationId: 'conv-loc', text: 'hi', location }));
+    await agents.stop();
+    return states[0].systemPrompt;
+  }
+
+  it('renders the environment block and names get_location by default', async () => {
+    const prompt = await promptFor();
+    expect(prompt).toContain('<environment>');
+    expect(prompt).toContain('Asia/Singapore');
+    expect(prompt).toContain('call get_location');
+  });
+
+  it('drops the block entirely when the agent opts out', async () => {
+    const prompt = await promptFor({ enabled: false });
+    expect(prompt).not.toContain('<environment>');
+    // The tool is unregistered under the same condition, so the prompt must
+    // not name it either.
+    expect(prompt).not.toContain('get_location');
   });
 });

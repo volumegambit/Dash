@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { formatElapsed, formatToolCount } from './subagents.js';
-import { formatVisibleDetails, middleTruncate, summarize, toolLabel } from './tool-presentation.js';
+import {
+  formatVisibleDetails,
+  middleTruncate,
+  resultSummary,
+  summarize,
+  toolLabel,
+} from './tool-presentation.js';
 
 // Cross-platform rendering-parity fixtures (Task 5, output-rendering plan).
 //
@@ -55,6 +61,19 @@ interface DetailsCase {
   expectedDetails: { key: string; value: string }[];
 }
 
+interface ResultSummaryCase {
+  name: string;
+  kind: 'resultSummary';
+  toolName: string;
+  /** `null` means the tool is still running — no `tool_result` has arrived.
+   * The Swift consumer decodes the same null to `nil`, which is the same
+   * input; this side maps it to `undefined`. */
+  resultContent: string | null;
+  isError?: boolean;
+  resultDetails?: unknown;
+  expectedResultSummary: string | null;
+}
+
 interface ElapsedCase {
   name: string;
   kind: 'elapsed';
@@ -74,6 +93,7 @@ type FixtureCase =
   | SummarizeCase
   | TruncateCase
   | DetailsCase
+  | ResultSummaryCase
   | ElapsedCase
   | ToolCountCase;
 
@@ -96,16 +116,20 @@ const labelCases = fixture.cases.filter((c): c is LabelCase => c.kind === 'label
 const summarizeCases = fixture.cases.filter((c): c is SummarizeCase => c.kind === 'summarize');
 const truncateCases = fixture.cases.filter((c): c is TruncateCase => c.kind === 'truncate');
 const detailsCases = fixture.cases.filter((c): c is DetailsCase => c.kind === 'details');
+const resultSummaryCases = fixture.cases.filter(
+  (c): c is ResultSummaryCase => c.kind === 'resultSummary',
+);
 const elapsedCases = fixture.cases.filter((c): c is ElapsedCase => c.kind === 'elapsed');
 const toolCountCases = fixture.cases.filter((c): c is ToolCountCase => c.kind === 'toolCount');
 
 describe('rendering parity fixtures', () => {
-  it('loads a non-empty fixture with all six case kinds', () => {
+  it('loads a non-empty fixture with all seven case kinds', () => {
     expect(fixture.cases.length).toBeGreaterThan(0);
     expect(labelCases.length).toBeGreaterThan(0);
     expect(summarizeCases.length).toBeGreaterThan(0);
     expect(truncateCases.length).toBeGreaterThan(0);
     expect(detailsCases.length).toBeGreaterThan(0);
+    expect(resultSummaryCases.length).toBeGreaterThan(0);
     expect(elapsedCases.length).toBeGreaterThan(0);
     expect(toolCountCases.length).toBeGreaterThan(0);
   });
@@ -127,6 +151,21 @@ describe('rendering parity fixtures', () => {
   describe.each(truncateCases)('truncate: $name', (c) => {
     it('matches middleTruncate', () => {
       expect(middleTruncate(c.input)).toBe(c.expectedTruncated);
+    });
+  });
+
+  describe.each(resultSummaryCases)('resultSummary: $name', (c) => {
+    it('matches resultSummary', () => {
+      // Web's resultSummary() returns '' for "nothing to show"; the fixture
+      // uses null as the shared empty sentinel, same as expectedSummary.
+      expect(
+        resultSummary(
+          c.toolName,
+          c.resultContent ?? undefined,
+          c.isError ?? false,
+          c.resultDetails,
+        ),
+      ).toBe(c.expectedResultSummary ?? '');
     });
   });
 

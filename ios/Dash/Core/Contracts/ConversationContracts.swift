@@ -54,32 +54,58 @@ struct MessageImage: Codable, Hashable, Sendable {
   let data: String
 }
 
+/// What a `notice` message is reporting. Unknown values decode to `.unknown`
+/// rather than throwing, so a gateway that learns a new notice kind does not
+/// break decoding on an app that predates it.
+enum NoticeKind: String, Codable, Hashable, Sendable {
+  case skillLearned = "skill_learned"
+  case memorySaved = "memory_saved"
+  case unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = NoticeKind(rawValue: raw) ?? .unknown
+  }
+}
+
 enum MessageContent: Codable, Hashable, Sendable {
   case user(text: String, images: [MessageImage]?)
   case assistant(events: [AgentEvent])
+  /// Something the gateway recorded after a turn finished — a skill learned or
+  /// a memory saved by its post-turn review.
+  case notice(kind: NoticeKind, text: String)
+  /// A content type this build does not know about. Same reasoning as
+  /// `AgentEvent.unknown`: a whole page of messages decodes as a unit, so a
+  /// single unrecognised message must degrade rather than fail the page and
+  /// blank the transcript.
+  case unknown(type: String)
 
   private enum CodingKeys: String, CodingKey {
     case type
     case text
     case images
     case events
-  }
-
-  private enum Kind: String, Codable {
-    case user
-    case assistant
+    case kind
   }
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    switch try container.decode(Kind.self, forKey: .type) {
-    case .user:
+    let type = try container.decode(String.self, forKey: .type)
+    switch type {
+    case "user":
       self = .user(
         text: try container.decode(String.self, forKey: .text),
         images: try container.decodeIfPresent([MessageImage].self, forKey: .images)
       )
-    case .assistant:
+    case "assistant":
       self = .assistant(events: try container.decode([AgentEvent].self, forKey: .events))
+    case "notice":
+      self = .notice(
+        kind: try container.decode(NoticeKind.self, forKey: .kind),
+        text: try container.decode(String.self, forKey: .text)
+      )
+    default:
+      self = .unknown(type: type)
     }
   }
 
@@ -87,12 +113,18 @@ enum MessageContent: Codable, Hashable, Sendable {
     var container = encoder.container(keyedBy: CodingKeys.self)
     switch self {
     case let .user(text, images):
-      try container.encode(Kind.user, forKey: .type)
+      try container.encode("user", forKey: .type)
       try container.encode(text, forKey: .text)
       try container.encodeIfPresent(images, forKey: .images)
     case let .assistant(events):
-      try container.encode(Kind.assistant, forKey: .type)
+      try container.encode("assistant", forKey: .type)
       try container.encode(events, forKey: .events)
+    case let .notice(kind, text):
+      try container.encode("notice", forKey: .type)
+      try container.encode(kind, forKey: .kind)
+      try container.encode(text, forKey: .text)
+    case let .unknown(type):
+      try container.encode(type, forKey: .type)
     }
   }
 }

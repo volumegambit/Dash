@@ -1076,10 +1076,15 @@ try {
   // The registration validator accepting `subagents.maxDepth` is a precondition
   // of assertion 5; a 400 here would be the finding, not a model failure.
   //
-  // NOTE: the harness's `setMemoryConfig` is deliberately NOT called. Agent
-  // memory does not exist on this branch — `PATCH /agents/:id/memory/config`
-  // is a 404 here — so there is no post-turn sweep to pin off, unlike
-  // `skills:e2e` on main.
+  // NOTE: the harness's `setMemoryConfig` is deliberately NOT called, and after
+  // the merge with `main` that is a CHOICE rather than a fact about the branch:
+  // agent memory exists now, so the post-turn sweep is live for these agents.
+  // Leaving it on is the point — a CHILD's turn runs through the same
+  // `ResumableChatHub` as a user's and carries its PARENT's agentId, so an
+  // unguarded sweep would extract a child's transcript into the parent's
+  // memory. `resumable-chat-hub.ts` gates the sweep and the skill review on
+  // `kind !== 'subagent'`; the unit test in `resumable-chat-hub.test.ts` is
+  // what pins it, and this script simply does not disarm the mechanism.
 
   // Assertions 3 and 4 share one conversation and one socket: `writer` must
   // still be in the parent's roster when 4 resumes it.

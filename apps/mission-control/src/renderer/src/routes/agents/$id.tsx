@@ -13,12 +13,18 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AVAILABLE_TOOLS,
+  TOOL_DESCRIPTIONS,
+  TOOL_GROUPS,
+} from '../../components/deploy-options.js';
 import { useAgentsStore } from '../../stores/agents.js';
 import { useChannelsStore } from '../../stores/messaging-apps.js';
 import { AgentConfigTab } from './-components/AgentConfigTab.js';
+import { MemoryTab } from './-components/MemoryTab.js';
 import { SkillsTab } from './-components/SkillsTab.js';
 
-type TabId = 'overview' | 'configuration' | 'channels' | 'skills';
+type TabId = 'overview' | 'configuration' | 'channels' | 'skills' | 'memory';
 
 export function AgentDetail(): JSX.Element {
   const { id } = Route.useParams();
@@ -143,6 +149,7 @@ export function AgentDetail(): JSX.Element {
     { id: 'configuration', label: 'Configuration' },
     { id: 'channels', label: 'Channels' },
     { id: 'skills', label: 'Skills' },
+    { id: 'memory', label: 'Memory' },
   ];
 
   return (
@@ -284,6 +291,94 @@ export function AgentDetail(): JSX.Element {
         )}
         {activeTab === 'channels' && <ChannelsTab connectedChannels={connectedChannels} />}
         {activeTab === 'skills' && <SkillsTab agentId={id} />}
+        {activeTab === 'memory' && <MemoryTab agentId={id} />}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tools card (Overview tab, left column)
+// ---------------------------------------------------------------------------
+
+const TOOL_LABELS: Record<string, string> = Object.fromEntries(
+  AVAILABLE_TOOLS.map((t) => [t.value, t.label]),
+);
+
+/** Pretty label for a tool id, falling back to a humanized form for ids the
+ * curated list does not know (e.g. a future or MCP-provided tool). */
+function toolLabel(id: string): string {
+  return (
+    TOOL_LABELS[id] ??
+    id
+      .split('_')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ')
+  );
+}
+
+/** The enabled tools, bucketed into the same groups the deploy wizard uses.
+ * Any enabled id that belongs to no known group is collected under "Other" so
+ * it is still shown rather than silently dropped. */
+function groupEnabledTools(
+  enabled: string[],
+): { name: string; description?: string; tools: string[] }[] {
+  const enabledSet = new Set(enabled);
+  const grouped: { name: string; description?: string; tools: string[] }[] = [];
+  const claimed = new Set<string>();
+
+  for (const group of TOOL_GROUPS) {
+    const tools = group.tools.filter((t) => enabledSet.has(t));
+    for (const t of tools) claimed.add(t);
+    if (tools.length > 0) {
+      grouped.push({ name: group.name, description: group.description, tools });
+    }
+  }
+
+  const other = enabled.filter((t) => !claimed.has(t));
+  if (other.length > 0) grouped.push({ name: 'Other', tools: other });
+
+  return grouped;
+}
+
+function ToolsCard({ tools }: { tools: string[] }): JSX.Element {
+  const groups = groupEnabledTools(tools);
+
+  return (
+    <div className="bg-card-bg border border-border overflow-hidden">
+      <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+        <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+          Tools
+        </span>
+        <span className="font-[family-name:var(--font-mono)] text-[10px] text-muted">
+          {tools.length}
+        </span>
+      </div>
+      <div className="p-5 flex flex-col gap-4">
+        {groups.length === 0 ? (
+          <p className="text-sm text-muted">No tools enabled</p>
+        ) : (
+          groups.map((group) => (
+            <div key={group.name} className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-foreground">{group.name}</span>
+              {group.description && (
+                <span className="text-[11px] text-muted -mt-1">{group.description}</span>
+              )}
+              <div className="flex flex-wrap gap-1.5 mt-0.5">
+                {group.tools.map((id) => (
+                  <span
+                    key={id}
+                    title={TOOL_DESCRIPTIONS[id]}
+                    className="inline-flex items-center rounded bg-sidebar-hover border border-border px-2 py-0.5 text-xs text-foreground"
+                  >
+                    {toolLabel(id)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
@@ -300,84 +395,69 @@ function OverviewTab({
   agent: GatewayAgent;
   connectedChannels: GatewayChannel[];
 }): JSX.Element {
+  // Agent-detail refinement (2026-09-07). This used to be a fixed 360px column
+  // of cards beside a "Recent Activity" card that nothing ever wrote to — it
+  // read "No activity recorded." for every agent, forever, and took the whole
+  // right half of the window (finding 14). A header is a promise that content
+  // follows, so the placeholder is gone and the real cards share the width in
+  // a grid instead. The Agent Info card also printed the raw `status` enum
+  // (`registered`) next to a header badge that folds `registered` into
+  // "active", so the page disagreed with itself; the badge is now the one
+  // source of status (finding 13).
   return (
-    <div className="flex gap-6">
-      {/* Left column */}
-      <div className="w-[360px] flex flex-col gap-5 shrink-0">
-        {/* Agent Info card */}
-        <div className="bg-card-bg border border-border overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-              Agent Info
-            </span>
-          </div>
-          <div className="p-5 flex flex-col gap-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Model</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agent.config.model}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Registered</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {new Date(agent.registeredAt).toLocaleDateString('en-GB', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                })}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Status</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agent.status}
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted">Tools</span>
-              <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
-                {agent.config.tools?.length ?? 0}
-              </span>
-            </div>
-          </div>
+    <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+      {/* Agent Info card */}
+      <div className="bg-card-bg border border-border overflow-hidden">
+        {/* `flex items-center` on every card header so the three headers share
+            one height; the Tools card's header is a flex row for its count. */}
+        <div className="px-5 py-3 border-b border-border flex items-center">
+          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+            Agent Info
+          </span>
         </div>
-
-        {/* Connected Channels card */}
-        <div className="bg-card-bg border border-border overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-              Connected Channels
+        <div className="p-5 flex flex-col gap-3">
+          <div className="flex justify-between gap-4 text-sm">
+            <span className="text-muted">Model</span>
+            <span className="text-foreground font-[family-name:var(--font-mono)] text-xs text-right break-all">
+              {agent.config.model}
             </span>
           </div>
-          <div className="p-5 flex flex-col gap-3">
-            {connectedChannels.length === 0 ? (
-              <p className="text-sm text-muted">No channels connected</p>
-            ) : (
-              connectedChannels.map((ch) => (
-                <div key={ch.name} className="flex justify-between text-sm">
-                  <span className="text-foreground">{ch.name}</span>
-                  <span className="text-foreground font-[family-name:var(--font-mono)] text-xs capitalize">
-                    {ch.adapter}
-                  </span>
-                </div>
-              ))
-            )}
+          <div className="flex justify-between gap-4 text-sm">
+            <span className="text-muted">Registered</span>
+            <span className="text-foreground font-[family-name:var(--font-mono)] text-xs">
+              {new Date(agent.registeredAt).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Right column */}
-      <div className="flex-1">
-        <div className="bg-card-bg border border-border overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
-              Recent Activity
-            </span>
-          </div>
-          <div className="flex flex-col gap-0">
-            <div className="px-5 py-3 text-sm text-muted">No activity recorded.</div>
-          </div>
+      {/* Tools card */}
+      <ToolsCard tools={agent.config.tools ?? []} />
+
+      {/* Connected Channels card */}
+      <div className="bg-card-bg border border-border overflow-hidden">
+        <div className="px-5 py-3 border-b border-border flex items-center">
+          <span className="font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[2px] text-accent">
+            Connected Channels
+          </span>
+        </div>
+        <div className="p-5 flex flex-col gap-3">
+          {connectedChannels.length === 0 ? (
+            <p className="text-sm text-muted">No channels connected</p>
+          ) : (
+            connectedChannels.map((ch) => (
+              <div key={ch.name} className="flex justify-between text-sm">
+                <span className="text-foreground">{ch.name}</span>
+                <span className="text-foreground font-[family-name:var(--font-mono)] text-xs capitalize">
+                  {ch.adapter}
+                </span>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

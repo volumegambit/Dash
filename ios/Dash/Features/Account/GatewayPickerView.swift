@@ -208,6 +208,13 @@ struct GatewayPickerView: View {
         gatewayRow(gateway)
       }
       .listStyle(.insetGrouped)
+      // Matches `SignInView`'s 520pt measure. These two are adjacent screens
+      // in the same pre-connection flow, and this one stretched a single
+      // gateway row across ~790pt on an 11-inch iPad while the other was
+      // already constrained — the inconsistency is what reads as unfinished,
+      // more than either width on its own.
+      .frame(maxWidth: 520)
+      .frame(maxWidth: .infinity)
       // A gateway enrolled in Mission Control after this list loaded is
       // otherwise invisible until the app is relaunched. `retry()` is
       // re-entrancy-guarded, so an over-eager pull issues exactly one request.

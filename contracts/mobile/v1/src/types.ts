@@ -111,6 +111,31 @@ export interface MobileActionResponse {
   ok: true;
 }
 
+/** Agent memory (`GET`/`DELETE` only on mobile; writes stay loopback-only). */
+export type MobileMemoryType = 'user' | 'feedback' | 'project' | 'reference';
+
+export type MobileMemorySource = 'agent' | 'sweep' | 'user' | 'import';
+
+export interface MobileMemoryInfo {
+  name: string;
+  description: string;
+  type: MobileMemoryType;
+  source: MobileMemorySource;
+  /** Bare `YYYY-MM-DD` day, not an RFC 3339 timestamp. */
+  createdAt: string;
+  /** Bare `YYYY-MM-DD` day, not an RFC 3339 timestamp. */
+  updatedAt: string;
+  size: number;
+}
+
+export interface MobileMemoryRecord extends Omit<MobileMemoryInfo, 'size'> {
+  content: string;
+}
+
+export interface MobileMemoryDeleteResponse {
+  name: string;
+}
+
 export interface MobileModel {
   value: string;
   label: string;
@@ -135,9 +160,39 @@ export interface MobileAgentEvent {
   [key: string]: unknown;
 }
 
+/**
+ * What a notice is telling the user about. Clients pick an icon and a test id
+ * from this; `text` is already display-ready.
+ */
+export type ConversationNoticeKind = 'skill_learned' | 'memory_saved';
+
 export type ConversationContent =
   | { type: 'user'; text: string; images?: MobileImage[] }
-  | { type: 'assistant'; events: MobileAgentEvent[] };
+  | { type: 'assistant'; events: MobileAgentEvent[] }
+  /**
+   * A short, persistent note the gateway appends to the conversation for
+   * something that happened AFTER a turn was finalised — today, a skill learned
+   * or a memory saved by the post-turn review.
+   *
+   * It is a message rather than an event because a finished turn cannot accept
+   * further events (`appendTurnEvent` refuses once `activeTurnId` has cleared),
+   * and because a live-only signal would vanish on reload. Carrying it as a
+   * message means it replays with the rest of the conversation.
+   */
+  | { type: 'notice'; kind: ConversationNoticeKind; text: string };
+
+/**
+ * A skill as a mobile client sees it: read-only, and without the on-disk
+ * `location` (a remote client has no use for a gateway filesystem path) or the
+ * `editable` flag (nothing here is editable).
+ */
+export interface MobileSkill {
+  name: string;
+  description: string;
+  trigger?: string;
+  source: 'managed' | 'agent' | 'remote' | 'plugin';
+  content?: string;
+}
 
 export interface SubagentUsage {
   inputTokens: number;
@@ -316,6 +371,43 @@ export interface MobileApiError {
   details?: Record<string, unknown>;
 }
 
+/**
+ * A precise position. Present ONLY when the user opted in in-app AND the OS
+ * granted a location permission.
+ */
+export interface MobilePreciseLocation {
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  /** RFC 3339. May predate the message — clients may send a cached fix. */
+  capturedAt: string;
+  /** Reverse-geocoded place, when the client resolved one. Best-effort. */
+  place?: string;
+}
+
+/**
+ * Location context a client reports with a chat turn.
+ *
+ * The coarse fields need no OS permission on any platform: they come from
+ * `Intl`/`Locale`, which every locale-aware UI already reads.
+ */
+export interface MobileClientLocation {
+  /** IANA time zone id, e.g. "Asia/Singapore". */
+  timezone: string;
+  /**
+   * Minutes EAST of UTC at send time (Singapore = 480). Disambiguates DST.
+   * NOTE the sign: JS `Date.getTimezoneOffset()` is west-positive and MUST be
+   * negated by web/Electron clients; Swift's `TimeZone.secondsFromGMT()` is
+   * already east-positive and only needs dividing by 60.
+   */
+  utcOffsetMinutes: number;
+  /** BCP-47 language tag, e.g. "en-SG". */
+  locale: string;
+  /** ISO 3166-1 alpha-2 region when the platform exposes one. */
+  region?: string;
+  precise?: MobilePreciseLocation;
+}
+
 export type MobileWsClientFrame =
   | {
       type: 'message';
@@ -324,6 +416,7 @@ export type MobileWsClientFrame =
       channelId: string;
       conversationId: string;
       text: string;
+      location?: MobileClientLocation;
       images?: MobileImage[];
       streamingBehavior?: 'steer' | 'followUp';
       resumable?: boolean;

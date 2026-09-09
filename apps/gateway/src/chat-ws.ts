@@ -4,6 +4,7 @@ import { isTransientAgentEvent } from '@dash/swarm';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
+import { toClientLocation } from './client-location.js';
 import { toMobileApiError } from './conversation-routes.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
@@ -65,6 +66,7 @@ const STRUCTURAL_CLIENT_FIELDS = new Set([
   'text',
   'answer',
   'images',
+  'location',
 ]);
 
 /** Allowlist protocol metadata; never recursively serialize untrusted values. */
@@ -98,6 +100,13 @@ function summarizeInboundForLog(raw: string, value: unknown): Record<string, unk
   }
   if (typeof record.text === 'string') summary.textLength = record.text.length;
   if (typeof record.answer === 'string') summary.answerLength = record.answer.length;
+  // Presence only, NEVER values: a precise location is the most sensitive
+  // thing on this frame and verbose logs are not the place for coordinates.
+  if (record.location !== null && typeof record.location === 'object') {
+    summary.hasLocation = true;
+    const location = record.location as Record<string, unknown>;
+    summary.hasPreciseLocation = location.precise !== null && typeof location.precise === 'object';
+  }
   if (Array.isArray(record.images)) {
     summary.imageCount = record.images.length;
     summary.imageDataCharacters = record.images.reduce((total, image) => {
@@ -535,6 +544,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 channelId,
                 text,
                 images: images?.length ? images : undefined,
+                location: toClientLocation(msg.location),
                 messageId: msg.id,
                 signal: controller.signal,
               });

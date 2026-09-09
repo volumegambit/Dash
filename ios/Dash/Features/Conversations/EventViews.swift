@@ -69,67 +69,8 @@ struct AssistantEventViews: View {
         TypingIndicatorView()
       }
 
-      if !projection.thinking.isEmpty {
-        ThinkingView(
-          thinking: projection.thinking,
-          isCollapsed: projection.isThinkingCollapsed
-        )
-      }
-
-      if !projection.text.isEmpty {
-        HStack(alignment: .bottom, spacing: 2) {
-          if exposesResponseToAccessibility {
-            MarkdownTextView(text: projection.text)
-              .accessibilityElement(children: .combine)
-              .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: projection.text))
-              .accessibilityIdentifier("chat.final.response")
-          } else {
-            MarkdownTextView(text: projection.text)
-              .accessibilityHidden(true)
-          }
-
-          // Trailing caret (audit #6): a render-time-only adornment, never
-          // written into `projection.text` — that string also backs the
-          // a11y label above, `assistantContextMenuItems`' Copy/Share text
-          // in `MessageViews.swift`, and markdown re-parsing on every
-          // render, so mutating it would corrupt all three.
-          if status == .streaming {
-            StreamingCaretView()
-          }
-        }
-      }
-
-      ForEach(projection.toolCards) { tool in
-        ToolCardView(tool: tool, identifierPrefix: identifierPrefix)
-      }
-
-      // §8.2: children whose start events were adjacent in this message render
-      // inside one group container. `isAdjacentToPrevious` is computed in the
-      // fold, because adjacency needs the EVENT STREAM and the card list does
-      // not carry it; orphans never join a cluster.
-      ForEach(subagentClusters(projection.subagentCards), id: \.first!.id) { cluster in
-        SubagentGroupView(
-          cards: cluster,
-          nested: subagentRowIsNested(depth: subagentDepth),
-          depth: subagentDepth,
-          interaction: subagentInteraction
-        )
-      }
-
-      ForEach(projection.statusRows) { row in
-        if row.kind == .unknown {
-          UnknownEventView(type: row.unknownType ?? "unknown")
-        } else {
-          StatusRowView(row: row)
-        }
-      }
-
-      if let question = projection.pendingQuestion {
-        QuestionView(
-          question: question,
-          isAnsweringEnabled: isAnsweringEnabled,
-          onAnswer: onAnswer
-        )
+      ForEach(Array(projection.timeline.enumerated()), id: \.offset) { index, block in
+        timelineView(block, isLastText: index == lastTextIndex)
       }
 
       // Chrome trim (audit #17): usage is no longer rendered per-turn.
@@ -139,6 +80,66 @@ struct AssistantEventViews: View {
       if let terminal = projection.terminal, terminal.isChromeWorthy {
         TerminalView(terminal: terminal)
       }
+    }
+  }
+
+  private var lastTextIndex: Int? {
+    projection.timeline.lastIndex {
+      if case .text = $0 { return true }
+      return false
+    }
+  }
+
+  @ViewBuilder
+  private func timelineView(_ block: AssistantTimelineBlock, isLastText: Bool) -> some View {
+    switch block {
+    case let .thinking(thinking):
+      ThinkingView(thinking: thinking, isCollapsed: projection.isThinkingCollapsed)
+    case let .text(text):
+      HStack(alignment: .bottom, spacing: 2) {
+        if exposesResponseToAccessibility {
+          MarkdownTextView(text: text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(markdownPlainTextAccessibilityLabel(for: text))
+            .accessibilityIdentifier(isLastText ? "chat.final.response" : "chat.response.segment")
+        } else {
+          MarkdownTextView(text: text).accessibilityHidden(true)
+        }
+        if status == .streaming && isLastText { StreamingCaretView() }
+      }
+    case let .tool(tool):
+      // The prefix is what makes a CHILD's tool card addressable separately
+      // from its parent's (design §8.3); the timeline walk must not drop it.
+      ToolCardView(tool: tool, identifierPrefix: identifierPrefix)
+    case .subagents:
+      // §8.2: children whose start events were adjacent in this message render
+      // inside one group container. `isAdjacentToPrevious` is computed in the
+      // fold, because adjacency needs the EVENT STREAM and the card list does
+      // not carry it; orphans never join a cluster. Drawn at the marker the
+      // fold left at the first spawn, so the rows keep their place in the
+      // event order rather than sinking below a later text delta.
+      ForEach(subagentClusters(projection.subagentCards), id: \.first!.id) { cluster in
+        SubagentGroupView(
+          cards: cluster,
+          nested: subagentRowIsNested(depth: subagentDepth),
+          depth: subagentDepth,
+          interaction: subagentInteraction
+        )
+      }
+    case let .status(row):
+      if row.kind == .unknown {
+        UnknownEventView(type: row.unknownType ?? "unknown")
+      } else {
+        StatusRowView(row: row)
+      }
+    case let .question(question):
+      let current = projection.pendingQuestion?.id == question.id
+        ? projection.pendingQuestion ?? question : question
+      QuestionView(
+        question: current,
+        isAnsweringEnabled: isAnsweringEnabled && projection.pendingQuestion?.id == question.id,
+        onAnswer: onAnswer
+      )
     }
   }
 }
@@ -286,13 +287,34 @@ struct ToolCardView: View {
   /// See `AssistantEventViews.identifierPrefix`.
   let identifierPrefix: String
 
+  @State private var isExpanded: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// Task cards and failed cards open; every other tool card stays collapsed.
+  ///
+  /// The rest of the tool cards hide diagnostic detail — a command's
+  /// arguments, a file's contents — that you only want on demand. A task
+  /// list is the agent's plan for the turn, which is the one tool body you
+  /// read at a glance, and it was the only one whose contents you could not
+  /// see at all: `formatDetails` renders the `todos` array as the literal
+  /// string "[3 items]".
+  ///
+  /// A failure is the opposite case (tool-use UX 2026-09-05): it is the one
+  /// card whose body you always want, and until now it sat behind the same
+  /// tap as a successful `read`. Matches web's `ToolUseBlock` and MC's
+  /// `ToolBlock`.
   init(tool: ToolCardState, identifierPrefix: String = "chat") {
     self.tool = tool
     self.identifierPrefix = identifierPrefix
+    var expanded = ToolPresentation.isTodoWrite(tool.name) || tool.status == .failed
+    #if DEBUG
+      // Debug-only capture affordance: a tool BODY is behind a tap and
+      // `simctl` has no tap, so without this the per-tool result rendering
+      // cannot be seen on any iOS screen. See `UITestLaunchOptions`.
+      if UITestLaunchOptions.expandTools { expanded = true }
+    #endif
+    _isExpanded = State(initialValue: expanded)
   }
-
-  @State private var isExpanded = false
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -308,12 +330,38 @@ struct ToolCardView: View {
       .buttonStyle(.plain)
 
       if isExpanded {
-        expandedBody
-          .padding(.top, 6)
+        Group {
+          if let todos = ToolPresentation.parseTodos(tool.input) {
+            TodoListView(todos: todos)
+          } else {
+            expandedBody
+          }
+        }
+        .padding(.top, 6)
       }
     }
-    .padding(10)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
     .background(cardBackground, in: RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+    // A failed card's only signal was a `fillSubtle` (0.08) danger wash and
+    // an 8pt glyph, which is very close to invisible against a dark ground.
+    // A hairline in the same colour costs nothing on success and makes the
+    // failure legible at a glance.
+    .overlay {
+      if tool.status == .failed {
+        RoundedRectangle(cornerRadius: DashTheme.Radius.small)
+          .strokeBorder(DashTheme.danger.opacity(DashTheme.Opacity.fillEmphasis))
+      }
+    }
+    // `State(initialValue:)` in `init` is only read the first time SwiftUI
+    // creates this view's identity, and a tool card is first created while
+    // the call is still running. Without this, "failures open" would hold
+    // for a reloaded transcript and silently not hold live, which is the
+    // case that matters. Only fires on a transition INTO .failed, so a user
+    // who collapses a failed card keeps it collapsed.
+    .onChange(of: tool.status) { _, status in
+      if status == .failed { isExpanded = true }
+    }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool \(ToolPresentation.toolLabel(tool.name)), \(tool.status.title)")
     .accessibilityIdentifier("\(identifierPrefix).tool.\(tool.id)")
@@ -325,9 +373,20 @@ struct ToolCardView: View {
   private var header: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
       statusGlyph
+      // Was `.callout` — the tool name is the least variable thing on the
+      // row (it repeats down the whole run) and was set larger than the
+      // summary, which is the part that differs. Demoting it to `.caption`
+      // semibold hands those points to the summary.
+      if let namespace = ToolPresentation.toolNamespace(tool.name) {
+        Text(namespace)
+          .font(.caption.monospaced())
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+      }
       Text(ToolPresentation.toolLabel(tool.name))
-        .font(.callout.monospaced())
+        .font(.caption.monospaced().weight(.semibold))
         .foregroundStyle(.primary)
+        .lineLimit(1)
       if let summary = ToolPresentation.summarize(name: tool.name, input: tool.input) {
         Text(summary)
           .font(isBash ? .caption.monospaced() : .caption)
@@ -335,7 +394,40 @@ struct ToolCardView: View {
           .lineLimit(1)
           .truncationMode(.tail)
       }
-      Spacer(minLength: 0)
+      // A collapsed task card said "2/3 done", which is progress without
+      // subject. The in-progress item is the more useful half.
+      if isExpanded == false, let active = ToolPresentation.activeTodoContent(tool.input) {
+        Text(active)
+          .font(.caption)
+          .foregroundStyle(DashTheme.accent)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      // 8, not 4: on the captured 393pt phone the Edit row's path runs the
+      // full width and the outcome ends up almost touching it. The gap is
+      // what makes the outcome read as a separate column down a run of rows.
+      Spacer(minLength: 8)
+      // What the call returned, at the right edge — the half of the row
+      // `summarize` cannot answer. Only while collapsed: once open, the body
+      // below shows the result itself.
+      if let outcome = ToolPresentation.resultSummary(
+        name: tool.name, content: tool.content, isError: tool.status == .failed,
+        details: tool.details), !isExpanded
+      {
+        Text(outcome)
+          .font(.caption2)
+          .foregroundStyle(tool.status == .failed ? AnyShapeStyle(DashTheme.danger) : AnyShapeStyle(.tertiary))
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .layoutPriority(1)
+      }
+      // The cards were silently expandable: nothing on a collapsed row said
+      // so, and the whole-row Button gives no visual affordance of its own.
+      Image(systemName: "chevron.right")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(.tertiary)
+        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+        .layoutPriority(1)
     }
   }
 
@@ -380,6 +472,15 @@ struct ToolCardView: View {
     }
   }
 
+  /// Per-tool-type body (2026-09-05 per-type goal), replacing a branch that
+  /// keyed only on how many NEWLINES the result contained.
+  ///
+  /// Two defects that branch caused, both seen in `iphone-tools-*.png`:
+  /// a 1.6 KB single-line `web_fetch` body has no newlines, so it took the
+  /// "short" path — no height cap, no scroll — and consumed the whole screen,
+  /// pushing its sibling cards out of the transcript; and every long result
+  /// rendered `.primary` on the fixed dark `codeBackground`, i.e. black on
+  /// navy in light mode.
   @ViewBuilder
   private var resultView: some View {
     switch tool.status {
@@ -387,36 +488,254 @@ struct ToolCardView: View {
       EmptyView()
 
     case .failed:
-      Text(tool.content ?? "")
-        .font(.caption.monospaced())
-        .foregroundStyle(DashTheme.danger)
-        .textSelection(.enabled)
+      // An error is prose, not machine output: keep it on the card ground in
+      // the danger colour rather than in a code chip.
+      ToolScrollBox {
+        Text(tool.content ?? "")
+          .font(.caption.monospaced())
+          .foregroundStyle(DashTheme.danger)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
 
     case .succeeded:
-      let content = tool.content ?? ""
-      if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      succeededBody
+    }
+  }
+
+  @ViewBuilder
+  private var succeededBody: some View {
+    let raw = tool.content ?? ""
+    let normalized = ToolPresentation.normalizeTool(tool.name)
+
+    if let diff = ToolPresentation.diffLines(tool.details) {
+      // `edit`: the diff IS the result. It rode along in `details.diff` and
+      // was thrown away — the body used to read "ok".
+      ToolDiffView(lines: diff)
+    } else if normalized == "write", let written = ToolPresentation.writtenContent(tool.input) {
+      // `write`: what was written is the point. `content` is skipped as a
+      // detail row (too big for a key/value line) and nothing rendered it.
+      ToolCodeBlock(text: written)
+    } else if normalized == "ls", let entries = ToolPresentation.directoryEntries(raw) {
+      ToolDirectoryView(entries: entries)
+    } else if normalized == "grep" || normalized == "find",
+      let groups = ToolPresentation.grepGroups(raw)
+    {
+      ToolGrepView(groups: groups)
+    } else if normalized == "web_search", let results = ToolPresentation.searchResults(raw) {
+      ToolSearchResultsView(results: results)
+    } else if ToolPresentation.bodyIsRedundant(name: tool.name, content: raw) {
+      // `load_skill` and friends: a one-line confirmation that repeats the
+      // header is not worth a row.
+      EmptyView()
+    } else {
+      let body = ToolPresentation.displayBody(name: tool.name, content: raw)
+      if body.isEmpty {
         Text("No output")
           .font(.caption)
           .italic()
           .foregroundStyle(.secondary)
-      } else if content.components(separatedBy: "\n").count <= 3 {
-        Text(content)
+      } else if ToolPresentation.fitsInline(body) {
+        Text(body)
           .font(.caption.monospaced())
-          .foregroundStyle(DashTheme.success.opacity(DashTheme.Opacity.contentSecondary))
+          .foregroundStyle(.secondary)
           .textSelection(.enabled)
       } else {
-        ScrollView {
-          Text(content)
-            .font(.caption.monospaced())
-            .foregroundStyle(.primary.opacity(DashTheme.Opacity.contentSecondary))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-        }
-        .frame(maxHeight: 256)
-        .background(DashTheme.codeBackground)
+        ToolCodeBlock(text: body)
       }
     }
+  }
+}
+
+/// A height-capped, scrollable container for any tool body.
+///
+/// Capping on RENDERED height rather than on a line count is the point: the
+/// previous branch asked "does this have more than 3 newlines", which a long
+/// single-line page body answers with "no" — so a 1.6 KB one-line page body
+/// rendered at full height and pushed its sibling cards off the screen.
+///
+/// The height is MEASURED rather than left to `.frame(maxHeight:)` alone. A
+/// SwiftUI `ScrollView` is greedy along its scroll axis, so `maxHeight` is
+/// not a shrink-to-fit cap: a four-line Write body still reserved the whole
+/// 256pt and rendered as a mostly-empty black slab. Measuring the content and
+/// taking `min(measured, cap)` makes the box a cap when the content is tall
+/// and shrink-to-fit when it is not.
+private struct ToolScrollBox<Content: View>: View {
+  static var cap: CGFloat { 256 }
+
+  @ViewBuilder var content: Content
+  @State private var contentHeight: CGFloat = 0
+
+  var body: some View {
+    ScrollView {
+      content
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+          GeometryReader { proxy in
+            Color.clear
+              .preference(key: ToolBodyHeightKey.self, value: proxy.size.height)
+          }
+        )
+    }
+    .frame(height: min(max(contentHeight, 1), Self.cap))
+    .scrollDisabled(contentHeight <= Self.cap)
+    .onPreferenceChange(ToolBodyHeightKey.self) { contentHeight = $0 }
+  }
+}
+
+private struct ToolBodyHeightKey: PreferenceKey {
+  static let defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
+  }
+}
+
+/// Machine output on the fixed dark chip, in the fixed light foreground that
+/// pairs with it. See `DashTheme.codeForeground`.
+struct ToolCodeBlock: View {
+  let text: String
+
+  var body: some View {
+    ToolScrollBox {
+      Text(text)
+        .font(.caption.monospaced())
+        .foregroundStyle(DashTheme.codeForeground)
+        .textSelection(.enabled)
+        .padding(8)
+    }
+    .background(DashTheme.codeBackground)
+    .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+  }
+}
+
+/// A unified diff, coloured by line kind. File headers are dropped — the
+/// header row already names the file.
+struct ToolDiffView: View {
+  let lines: [ToolPresentation.DiffLine]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+          Text(line.text)
+            .font(.caption.monospaced())
+            .foregroundStyle(colour(for: line.kind))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .background(background(for: line.kind))
+        }
+      }
+      .padding(.vertical, 6)
+    }
+    .background(DashTheme.codeBackground)
+    .clipShape(RoundedRectangle(cornerRadius: DashTheme.Radius.small))
+    .accessibilityIdentifier("chat.tool.diff")
+  }
+
+  private func colour(for kind: ToolPresentation.DiffLine.Kind) -> Color {
+    switch kind {
+    case .added: DashTheme.success
+    case .removed: DashTheme.danger
+    case .hunk: DashTheme.codeForeground.opacity(DashTheme.Opacity.contentTertiary)
+    case .context: DashTheme.codeForeground
+    }
+  }
+
+  private func background(for kind: ToolPresentation.DiffLine.Kind) -> Color {
+    switch kind {
+    case .added: DashTheme.success.opacity(DashTheme.Opacity.fillMuted)
+    case .removed: DashTheme.danger.opacity(DashTheme.Opacity.fillMuted)
+    default: Color.clear
+    }
+  }
+}
+
+/// A directory listing, with folders distinguishable from files.
+struct ToolDirectoryView: View {
+  let entries: [ToolPresentation.DirectoryEntry]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 3) {
+        ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+          HStack(spacing: 6) {
+            Image(systemName: entry.isDirectory ? "folder.fill" : "doc")
+              .font(.system(size: 10))
+              .foregroundStyle(entry.isDirectory ? DashTheme.accent : Color.secondary)
+              .frame(width: 12)
+            Text(entry.name)
+              .font(.caption.monospaced())
+              .foregroundStyle(entry.isDirectory ? .primary : .secondary)
+          }
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel("\(entry.isDirectory ? "Folder" : "File"): \(entry.name)")
+        }
+      }
+    }
+    .accessibilityIdentifier("chat.tool.entries")
+  }
+}
+
+/// Grep matches grouped under their file, rather than repeating the full
+/// path on every row.
+struct ToolGrepView: View {
+  let groups: [ToolPresentation.GrepFileGroup]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+          VStack(alignment: .leading, spacing: 1) {
+            Text(group.path)
+              .font(.caption2.monospaced().weight(.medium))
+              .foregroundStyle(.primary)
+              .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(group.matches.enumerated()), id: \.offset) { _, match in
+              HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(match.line)
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(.tertiary)
+                  .frame(minWidth: 22, alignment: .trailing)
+                Text(match.text)
+                  .font(.caption2.monospaced())
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+              }
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+    .accessibilityIdentifier("chat.tool.grep")
+  }
+}
+
+/// Web-search hits as title + host, rather than the raw markdown list the
+/// tool emits.
+struct ToolSearchResultsView: View {
+  let results: [ToolPresentation.SearchResult]
+
+  var body: some View {
+    ToolScrollBox {
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(results.enumerated()), id: \.offset) { _, hit in
+          VStack(alignment: .leading, spacing: 1) {
+            Text(hit.title)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(.primary)
+              .lineLimit(2)
+            Text(hit.host)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityElement(children: .combine)
+        }
+      }
+    }
+    .accessibilityIdentifier("chat.tool.searchResults")
   }
 }
 
@@ -427,6 +746,71 @@ struct ToolCardView: View {
 private func capitalizedFirstLetter(_ s: String) -> String {
   guard let first = s.first else { return s }
   return first.uppercased() + s.dropFirst()
+}
+
+/// A TodoWrite tool's checklist (task cards 2026-09-05).
+///
+/// `ToolPresentation.parseTodos` has been ported and unit-tested since the
+/// original MC parity pass, but no iOS view ever called it — the checklist
+/// body was explicitly deferred (the web port carries the same note). So a
+/// task card showed "2/3 done" collapsed and the literal text
+/// "Todos: [3 items]" expanded, which is the agent's plan rendered as its
+/// own array length.
+///
+/// Glyph vocabulary matches Mission Control's `STATUS_INDICATOR` so the same
+/// plan reads identically on both clients.
+struct TodoListView: View {
+  let todos: [ToolPresentation.ToolTodoItem]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      ForEach(Array(todos.enumerated()), id: \.offset) { _, todo in
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Text(glyph(for: todo.status))
+            .font(.caption.monospaced())
+            .foregroundStyle(color(for: todo.status))
+          // Task text WRAPS — unlike every other tool card value, which is
+          // `lineLimit(1)`. A tool summary is a one-line identifier; a task
+          // is a sentence, and on a 393pt phone most of them take two lines.
+          // `fixedSize(vertical:)` stops the enclosing stack from
+          // compressing the wrapped text back to one clipped line.
+          Text(todo.content)
+            .font(.caption)
+            .strikethrough(todo.status == "completed")
+            .foregroundStyle(color(for: todo.status))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label(for: todo.status)): \(todo.content)")
+      }
+    }
+    .accessibilityIdentifier("chat.tool.todos")
+  }
+
+  private func glyph(for status: String) -> String {
+    switch status {
+    case "completed": "✓"
+    case "in_progress": "◉"
+    default: "○"
+    }
+  }
+
+  private func color(for status: String) -> Color {
+    switch status {
+    case "completed": .secondary
+    case "in_progress": DashTheme.accent
+    default: .primary
+    }
+  }
+
+  private func label(for status: String) -> String {
+    switch status {
+    case "completed": "Done"
+    case "in_progress": "In progress"
+    default: "Pending"
+    }
+  }
 }
 
 struct QuestionView: View {
@@ -517,7 +901,7 @@ struct StatusRowView: View {
   let row: StatusRowState
 
   var body: some View {
-    Label {
+    let content = Label {
       VStack(alignment: .leading, spacing: 2) {
         Text(row.title)
           .font(.callout.weight(.medium))
@@ -531,6 +915,12 @@ struct StatusRowView: View {
       Image(systemName: row.kind.systemImage)
     }
     .accessibilityElement(children: .combine)
+
+    if let identifier = row.kind.accessibilityIdentifier {
+      content.accessibilityIdentifier(identifier)
+    } else {
+      content
+    }
   }
 }
 
@@ -635,7 +1025,17 @@ extension StatusRowKind {
     case .skillLoaded: "books.vertical"
     case .skillCreated: "wand.and.stars"
     case .mcpError: "network.badge.shield.half.filled"
+    case .memorySaved, .memoryForgotten: "brain.head.profile"
     case .unknown: "questionmark.diamond"
+    }
+  }
+
+  /// Only the memory rows carry an identifier today; `StatusRowView` combines
+  /// its children into a single accessibility element, so this lands on a leaf.
+  fileprivate var accessibilityIdentifier: String? {
+    switch self {
+    case .memorySaved, .memoryForgotten: "chat.memoryChip"
+    default: nil
     }
   }
 }

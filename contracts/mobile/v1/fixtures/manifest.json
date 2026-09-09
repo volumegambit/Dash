@@ -56,6 +56,12 @@
       "valid": true
     },
     {
+      "file": "memory-list.json",
+      "document": "openapi",
+      "schema": "MemoryInfoList",
+      "valid": true
+    },
+    {
       "file": "models-list.json",
       "document": "openapi",
       "schema": "MobileModelsResponse",
@@ -111,6 +117,12 @@
     },
     {
       "file": "chat-send.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": true
+    },
+    {
+      "file": "chat-send-with-location.json",
       "document": "chat-ws",
       "schema": "ChatSend",
       "valid": true
@@ -485,9 +497,39 @@
       "valid": false
     },
     {
+      "file": "invalid/chat-send-latitude-out-of-range.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": false
+    },
+    {
       "file": "invalid/structured-error-missing-code.json",
       "document": "openapi",
       "schema": "MobileApiError",
+      "valid": false
+    },
+    {
+      "file": "conversation-messages-notice.json",
+      "document": "openapi",
+      "schema": "ConversationMessagePage",
+      "valid": true
+    },
+    {
+      "file": "invalid/conversation-messages-notice-bad-kind.json",
+      "document": "openapi",
+      "schema": "ConversationMessagePage",
+      "valid": false
+    },
+    {
+      "file": "agent-skills.json",
+      "document": "openapi",
+      "schema": "MobileSkillList",
+      "valid": true
+    },
+    {
+      "file": "invalid/agent-skills-bad-source.json",
+      "document": "openapi",
+      "schema": "MobileSkillList",
       "valid": false
     },
     {

@@ -1,5 +1,6 @@
 import hljs from 'highlight.js';
 import { useMemo } from 'react';
+import { fitsInline } from '../routes/chat.helpers.js';
 import { DiffView, detectLanguage } from './DiffView.js';
 
 /**
@@ -228,9 +229,13 @@ export function ToolResult({
     );
   }
 
-  // Short results (< 3 lines) — render inline
-  const lineCount = content.split('\n').length;
-  if (lineCount <= 3) {
+  // Short results render inline. `fitsInline` tests LENGTH as well as line
+  // count: keying off newlines alone — as this did until 2026-09-05, and as
+  // the web and iOS ports inherited — means a long single-line body (a fetched
+  // page, a minified JSON) counts as "short" and renders with no height cap
+  // and no scroll. On the phone client that body consumed the entire screen
+  // and pushed its sibling cards out of the transcript.
+  if (fitsInline(content)) {
     return <p className="whitespace-pre-wrap text-green/80">{content}</p>;
   }
 

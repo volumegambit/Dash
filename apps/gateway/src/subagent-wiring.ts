@@ -31,6 +31,14 @@ export interface ChildBackendBaseDeps {
   dataDir: string;
   /** Optional gateway logger, forwarded to the backend. */
   logger?: Logger;
+  /**
+   * The PARENT agent's memory dir, keyed by REGISTRY agent id. A child inherits
+   * it READ-ONLY: the dir reaches the `DashAgentConfig` with `tools: false`, so
+   * the prompt carries the memory index but `PiAgentBackend` registers no
+   * `save_memory` / `recall_memory` / `forget_memory` tool for the child.
+   * Undefined (or an unset resolver) = no memory for that agent at all.
+   */
+  memoryDir?: (agentId: string) => string | undefined;
 }
 
 /**
@@ -158,20 +166,21 @@ function mcpServersFor(mcpTools: string[]): string[] {
  * truth for both the backend's construction-time config and the `DashAgent`
  * config resolver the factory installs, so the two can never disagree.
  *
- * `workspace` is set from the spec. It is not cosmetic: `DashAgent.chat` gates
- * the MEMORY.md preamble on `config.workspace && config.memory?.enabled !==
- * false`, so without it the `memory` flag below would be inert and NO child —
- * general-purpose included — would ever see the project's memory.
+ * `workspace` is set from the spec: it is the cwd pi's hooks resolve against,
+ * and for an isolated child it is its worktree rather than the parent's dir.
  *
- * `memory.enabled` is `false` for children the definition marks `skipMemory`
+ * MEMORY is omitted entirely for a child the definition marks `skipMemory`
  * (Explore / Plan): they are turn-scoped researchers whose findings belong in
- * their report, not in the workspace MEMORY.md. Every other child READS memory
- * — `memory.readOnly` is always set, so no child is ever told to rewrite a file
- * its siblings are holding a snapshot of.
+ * their report. Every other child INHERITS the parent's memory read-only —
+ * `tools: false`, so the child sees the index and any recalled entries but
+ * holds no memory tool, and up to `maxConcurrentWorkers` children cannot race
+ * each other writing the parent's memory. A child never holds a tool its
+ * parent lacks, and this is the seam where that is true for memory.
  */
 export function buildChildAgentConfig(spec: WorkerSpec, deps: ChildBackendDeps): DashAgentConfig {
   const mcpTools = spec.mcpTools ?? [];
   const skillPaths = deps.getParentSkillDirs(spec);
+  const memoryDir = spec.skipMemory ? undefined : deps.memoryDir?.(spec.agentId);
   return {
     model: spec.model,
     systemPrompt: buildWorkerPreamble(spec),
@@ -180,12 +189,12 @@ export function buildChildAgentConfig(spec: WorkerSpec, deps: ChildBackendDeps):
     // Add it only when the resolved grant actually contains MCP tools, so a
     // child with none cannot reach the MCP registry at all.
     tools: mcpTools.length > 0 ? [...spec.tools, 'mcp'] : spec.tools,
-    // READ-only for every child: the default preamble tells its reader to
-    // rewrite MEMORY.md with `write_file` (a whole-file overwrite), and up to
-    // `maxConcurrentWorkers` children run at once on the SAME workspace, each
-    // holding a spawn-time snapshot. Children read the memory and put anything
-    // worth recording in the report they hand their parent.
-    memory: { enabled: !spec.skipMemory, readOnly: true },
+    // READ-ONLY for every child that gets memory at all, and NOTHING for a
+    // `skipMemory` type. `tools: false` is what keeps save/recall/forget out of
+    // the child's registry (`PiAgentBackend` gates on it), so a child can never
+    // rewrite memory several siblings are holding a snapshot of; anything worth
+    // recording goes in the report it hands its parent.
+    ...(memoryDir ? { memory: { dir: memoryDir, tools: false as const } } : {}),
     workspace: spec.workspace,
     // Read-only skill discovery: enough for `load_skill` (which every grant
     // carries) to resolve, without the managedSkillsDir that would also arm

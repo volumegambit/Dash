@@ -34,6 +34,20 @@ enum SubagentTerminalStatus: String, Codable, Hashable, Sendable {
   case maxTurns = "max_turns"
 }
 
+/// Agent memory: the wire field is `memoryType` (`type` carries the event
+/// discriminator). `CaseIterable` so the memory UI can enumerate the buckets.
+enum MemoryTypeDTO: String, Codable, Hashable, Sendable, CaseIterable {
+  case user
+  case feedback
+  case project
+  case reference
+}
+
+enum MemorySaveAction: String, Codable, Hashable, Sendable {
+  case created
+  case updated
+}
+
 enum AgentEvent: Codable, Hashable, Sendable {
   case textDelta(text: String)
   case thinkingDelta(text: String)
@@ -113,6 +127,13 @@ enum AgentEvent: Codable, Hashable, Sendable {
   case skillLoaded(name: String)
   case skillCreated(name: String, description: String)
   case mcpServerError(server: String, error: String)
+  case memorySaved(
+    name: String,
+    description: String,
+    memoryType: MemoryTypeDTO,
+    action: MemorySaveAction
+  )
+  case memoryForgotten(name: String)
   case unknown(type: String, raw: JSONValue)
 
   private enum CodingKeys: String, CodingKey {
@@ -144,6 +165,8 @@ enum AgentEvent: Codable, Hashable, Sendable {
     case options
     case description
     case server
+    case memoryType
+    case action
     case subagentId
     case subagentType
     case prompt
@@ -186,6 +209,8 @@ enum AgentEvent: Codable, Hashable, Sendable {
     let options: [String]?
     let description: String?
     let server: String?
+    let memoryType: String?
+    let action: String?
     let subagentId: String?
     let subagentType: String?
     let prompt: String?
@@ -227,6 +252,8 @@ enum AgentEvent: Codable, Hashable, Sendable {
       case options
       case description
       case server
+      case memoryType
+      case action
       case subagentId
       case subagentType
       case prompt
@@ -273,6 +300,8 @@ enum AgentEvent: Codable, Hashable, Sendable {
       "skill_loaded",
       "skill_created",
       "mcp_server_error",
+      "memory_saved",
+      "memory_forgotten",
     ]
     guard knownTypes.contains(type) else {
       self = .unknown(type: type, raw: raw)
@@ -449,6 +478,30 @@ enum AgentEvent: Codable, Hashable, Sendable {
         server: try required(payload.server, "server", type),
         error: try required(payload.error, "error", type)
       )
+    case "memory_saved":
+      // The memory bucket list is a product-level enum that is expected to grow,
+      // and every other client renders an unrecognised bucket rather than
+      // failing. Throwing here would be fatal far beyond this one chip: the
+      // frame decoder maps any DecodingError to GatewayError.updateRequired and
+      // tears down the whole receive loop, and a history page decodes
+      // [AgentEvent] as a unit. So degrade THE EVENT to .unknown instead — the
+      // raw object is preserved and re-encoded verbatim.
+      let memoryTypeValue: String = try required(payload.memoryType, "memoryType", type)
+      guard let memoryType = MemoryTypeDTO(rawValue: memoryTypeValue) else {
+        return .unknown(type: type, raw: raw)
+      }
+      let actionValue: String = try required(payload.action, "action", type)
+      guard let action = MemorySaveAction(rawValue: actionValue) else {
+        return .unknown(type: type, raw: raw)
+      }
+      return .memorySaved(
+        name: try required(payload.name, "name", type),
+        description: try required(payload.description, "description", type),
+        memoryType: memoryType,
+        action: action
+      )
+    case "memory_forgotten":
+      return .memoryForgotten(name: try required(payload.name, "name", type))
     default:
       preconditionFailure("known AgentEvent discriminator was not handled")
     }
@@ -580,6 +633,15 @@ enum AgentEvent: Codable, Hashable, Sendable {
       try container.encode("mcp_server_error", forKey: .type)
       try container.encode(server, forKey: .server)
       try container.encode(error, forKey: .error)
+    case let .memorySaved(name, description, memoryType, action):
+      try container.encode("memory_saved", forKey: .type)
+      try container.encode(name, forKey: .name)
+      try container.encode(description, forKey: .description)
+      try container.encode(memoryType, forKey: .memoryType)
+      try container.encode(action, forKey: .action)
+    case let .memoryForgotten(name):
+      try container.encode("memory_forgotten", forKey: .type)
+      try container.encode(name, forKey: .name)
     case .unknown:
       break
     }

@@ -3594,6 +3594,70 @@ struct ChatFeatureTests {
     }
   }
 
+  // MARK: - Host reference counting (whole-branch final review, blocking 1)
+  //
+  // Task 10 made ONE `ChatFeature` serve TWO hosts at once — the main
+  // window's detail column and the chat-only scene `ConversationWindowView`
+  // opens (see `ChatFeatureHostView`'s doc comment). The lifecycle
+  // bookkeeping did not follow: visibility was a single `Bool`, so the FIRST
+  // host to leave suspended the transport out from under a host that was
+  // still on screen. This is over the counter itself — plain model logic, no
+  // scene needed.
+
+  @Test("one host leaving does not detach a transcript another host is still showing")
+  func twoHostsShareOneAttachment() async {
+    let running = summary(status: .running, activeTurnID: "turn-1", lastSeq: 2)
+    let persistence = FakeChatPersistence(cursor: 2)
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 2)))
+    await sync.enqueueRefresh(.success(snapshot(summary: running, throughSeq: 2)))
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(persistence: persistence, sync: sync, chat: chat)
+    feature.setConnection(.online)
+
+    // Two hosts on the SAME feature: the main window's detail column, then
+    // the conversation window opened from "Open in New Window".
+    await feature.appear()
+    await feature.appear()
+    #expect(feature.hasVisibleHosts)
+    #expect(
+      await chat.calls.filter { $0 == .connect }.count == 1,
+      "the shared feature must really be connected, or the suspend assertions below are vacuous"
+    )
+
+    // The turn finishes while BOTH hosts are on screen, which leaves the
+    // feature connected AND idle — precisely the state in which `disappear()`
+    // suspends.
+    await chat.yield(
+      .frame(.done(id: "turn-1", conversationId: "conv-1", seq: 3, outcome: .completed))
+    )
+    await eventually { await feature.state.activeTurnID == nil }
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty)
+
+    await feature.disappear()
+
+    #expect(
+      await chat.calls.filter { $0 == .suspendForDetachment }.isEmpty,
+      "the other host is still on screen, so its transcript must stay attached"
+    )
+    #expect(feature.state.transport != .detached)
+    #expect(
+      feature.hasVisibleHosts,
+      "ChatView's onDisappear cleanup reads this to know the transcript is still shown somewhere"
+    )
+
+    await feature.disappear()
+
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
+    #expect(feature.hasVisibleHosts == false)
+
+    // An unbalanced extra teardown must not drive the count negative — that
+    // would leave the NEXT genuine departure unable to suspend at all.
+    await feature.disappear()
+    #expect(await chat.calls.filter { $0 == .suspendForDetachment }.count == 1)
+    #expect(feature.hasVisibleHosts == false)
+  }
+
   @Test("cursor persistence cannot roll back a newer composer edit")
   func cursorPersistencePreservesComposer() async {
     let cursorGate = TestGate()
@@ -5720,6 +5784,175 @@ struct ChatFeatureTests {
       report: nil,
       oneShot: oneShot
     )
+  }
+
+  @Test("scroll anchor is remembered across re-hosting and cleared on leave")
+  func scrollAnchorLifecycle() async {
+    let feature = makeFeature()
+    feature.scrollAnchorMessageID = "msg-7"
+    #expect(feature.scrollAnchorMessageID == "msg-7")
+    await feature.disappear()
+    #expect(feature.scrollAnchorMessageID == "msg-7", "re-hosting keeps the anchor")
+    feature.clearScrollAnchor()
+    #expect(feature.scrollAnchorMessageID == nil)
+  }
+
+  @Test(
+    "the pinned-to-bottom intent lives on the feature, so it survives a re-host too (Task 4 review fix, Important 2)"
+  )
+  func scrollPinnedIntentLifecycle() async {
+    let feature = makeFeature()
+    #expect(feature.scrollWasPinnedToBottom, "a transcript nobody scrolled is pinned")
+
+    feature.recordScrollPinnedToBottom(false)
+    feature.scrollAnchorMessageID = "msg-7"
+    await feature.disappear()
+    #expect(
+      feature.scrollWasPinnedToBottom == false,
+      "re-hosting must not resurrect the pinned default — that is what ChatView's own @State does"
+    )
+
+    feature.clearScrollAnchor()
+    #expect(feature.scrollWasPinnedToBottom, "genuinely leaving resets to the pinned default")
+    #expect(feature.scrollAnchorMessageID == nil)
+  }
+
+  // MARK: - lastAssistantText / canCopyLastAssistantText (Task 5 review fix, Important 1 & 3)
+  //
+  // `⌘⇧C` writes `lastAssistantText` straight to `UIPasteboard.general.string`
+  // with no guard, so if `canCopyLastAssistantText` (the predicate that
+  // enables the menu item) and `lastAssistantText` (what the action writes)
+  // ever disagree about what counts as "empty", the command is enabled and
+  // silently wipes the user's system clipboard — and, via Handoff, their
+  // Universal Clipboard. Before this fix that disagreement was reachable
+  // with no race at all: the predicate tested the RAW markdown for
+  // non-emptiness while the action flattened it through
+  // `markdownPlainTextAccessibilityLabel`, which drops thematic breaks
+  // entirely (`MarkdownBlocksTests.plainTextAccessibilityLabelDropsHorizontalRules`).
+  // A reply that is only `"---"` is non-empty raw markdown but flattens to
+  // `""`.
+
+  @Test(
+    "⌘⇧C's predicate agrees with what it would actually copy: a reply that is only a thematic break must not read as copyable (Task 5 review fix, Important 1)"
+  )
+  func copyLastResponsePredicateAgreesWithFlattenedEmptiness() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "---")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.state.messages.last?.assistant?.text == "---")
+    #expect(
+      feature.canCopyLastAssistantText == (feature.lastAssistantText?.isEmpty == false),
+      """
+      the predicate and the action disagreed about emptiness here before the \
+      Important 1 fix (canCopy == true, lastAssistantText == ""), which is \
+      exactly the shape of the clipboard-wiping bug
+      """
+    )
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == "")
+  }
+
+  @Test("⌘⇧C stays enabled and copies the flattened text for a reply with real content")
+  func copyLastResponsePredicateEnabledForRealText() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "**Ship it**")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText)
+    #expect(feature.lastAssistantText == "Ship it")
+  }
+
+  @Test("⌘⇧C stays disabled for a whitespace-only reply")
+  func copyLastResponsePredicateDisabledForWhitespaceOnlyReply() async {
+    let sync = FakeChatSynchronizer()
+    await sync.enqueueRefresh(
+      .success(
+        snapshot(
+          messages: [
+            message(
+              id: "assistant-1", role: .assistant, status: .completed,
+              events: [.textDelta(text: "   \n  ")], ordinal: 1
+            )
+          ],
+          throughSeq: 1
+        )
+      )
+    )
+    let feature = makeFeature(sync: sync)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == nil)
+  }
+
+  @Test("⌘⇧C stays disabled before any assistant message has produced text")
+  func copyLastResponsePredicateDisabledWithNoAssistantMessage() async {
+    let feature = makeFeature()
+    feature.setConnection(.online)
+    await feature.appear()
+
+    #expect(feature.canCopyLastAssistantText == false)
+    #expect(feature.lastAssistantText == nil)
+  }
+
+  // MARK: - ChatCommandActions identity Equatable (Task 5 review fix, Important 3)
+  //
+  // `ChatCommandActions` is `Equatable` on `feature`'s IDENTITY (`===`), not
+  // its stored closures, and deliberately so: `focusedSceneValue` re-applies
+  // — and thereby invalidates the scene's focus entry — every time the value
+  // it publishes changes, and a struct that also compared closures would be
+  // a fresh, uncomparable value on every `ChatView` body pass (closures
+  // don't conform to `Equatable`, so that variant wouldn't even compile —
+  // the realistic regression is someone reintroducing a comparable STORED
+  // snapshot field, like `let canSend: Bool`, which DOES compile and quietly
+  // reopens the composer-loses-focus bug). This test pins that two values
+  // built over the same feature compare equal regardless of which closures
+  // they carry.
+
+  @Test("two ChatCommandActions over the same feature compare equal regardless of closures")
+  func chatCommandActionsEqualOnFeatureIdentity() {
+    let feature = makeFeature()
+    let first = ChatCommandActions(feature: feature, focusComposer: {}, close: {})
+    let second = ChatCommandActions(
+      feature: feature,
+      focusComposer: { Issue.record("should never run") },
+      close: { Issue.record("should never run") }
+    )
+    #expect(first == second)
+
+    let otherFeature = makeFeature()
+    let third = ChatCommandActions(feature: otherFeature, focusComposer: {}, close: {})
+    #expect(first != third, "a different feature identity must compare unequal")
   }
 
   private func makeFeature(

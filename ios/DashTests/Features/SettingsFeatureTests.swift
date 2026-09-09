@@ -29,6 +29,60 @@ struct SettingsFeatureTests {
     #expect(feature.displayValues.contains("chat-secret") == false)
   }
 
+  // MARK: - Connection presentation (settings clarity 2026-09-05)
+
+  @Test(
+    "every connection state maps to a severity, so none can silently read as healthy",
+    arguments: [
+      (GatewayConnectionState.online, ConnectionSeverity.ok),
+      (.connecting, .warning),
+      (.reconnecting(attempt: 1, retryAt: .distantFuture), .warning),
+      (.offline, .warning),
+      (.gatewayOffline, .warning),
+      (.rateLimited(retryAt: .distantFuture), .warning),
+      (.repairRequired, .error),
+      (.updateRequired, .error),
+    ]
+  )
+  func connectionSeverity(state: GatewayConnectionState, expected: ConnectionSeverity) {
+    #expect(makeFeature(connection: state).connectionSeverity == expected)
+  }
+
+  @Test(
+    "every connection state has its own glyph",
+    arguments: [
+      GatewayConnectionState.online, .connecting,
+      .reconnecting(attempt: 1, retryAt: .distantFuture), .offline,
+      .gatewayOffline, .rateLimited(retryAt: .distantFuture),
+      .repairRequired, .updateRequired,
+    ]
+  )
+  func connectionSystemImageIsNonEmpty(state: GatewayConnectionState) {
+    #expect(makeFeature(connection: state).connectionSystemImage.isEmpty == false)
+  }
+
+  @Test("only the online state reads as healthy")
+  func onlyOnlineIsOK() {
+    // The row used to render every state as identical grey text, so
+    // "Rate limited" and "Online" were indistinguishable at a glance. The
+    // guarantee worth pinning is the narrow one: exactly one state is `ok`.
+    let states: [GatewayConnectionState] = [
+      .online, .connecting, .reconnecting(attempt: 1, retryAt: .distantFuture), .offline,
+      .gatewayOffline, .rateLimited(retryAt: .distantFuture), .repairRequired, .updateRequired,
+    ]
+    let healthy = states.filter { makeFeature(connection: $0).connectionSeverity == .ok }
+    #expect(healthy == [.online])
+  }
+
+  @Test("short public keys expose nothing to copy")
+  func shortPublicKeyHasNothingToCopy() {
+    // The row is tappable-to-copy; when the key is too short to fingerprint
+    // there is no value worth putting on the pasteboard.
+    #expect(makeFeature(publicKey: "short").copyablePublicKey == nil)
+    #expect(makeFeature(publicKey: "abcdef-public-key-uvwxyz").copyablePublicKey
+      == "abcdef-public-key-uvwxyz")
+  }
+
   @Test("short public keys are never echoed as a fingerprint")
   func shortPublicKeyIsMasked() {
     let feature = makeFeature(publicKey: "short")

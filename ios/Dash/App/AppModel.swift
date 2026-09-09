@@ -37,6 +37,10 @@ final class AppModel {
     return .paired(tab: selectedTab)
   }
 
+  /// Multi-window (design §3.2): whether any scene is currently active, from
+  /// the set `sceneChanged(id:isActive:)` tracks.
+  var isSceneForegrounded: Bool { activeSceneIDs.isEmpty == false }
+
   @ObservationIgnored private let dependencies: AppDependencies
   @ObservationIgnored private var syncEngine: (any AppSyncing)?
   @ObservationIgnored private var snapshotTask: Task<Void, Never>?
@@ -53,6 +57,8 @@ final class AppModel {
   @ObservationIgnored private var activeEngineSceneRevision: UInt64 = 0
   @ObservationIgnored private var isBackgrounded = false
   @ObservationIgnored private var isDisconnecting = false
+  @ObservationIgnored private var activeSceneIDs: Set<UUID> = []
+  @ObservationIgnored private var hasBackgroundedAllScenes = false
   /// The most recently minted, not-yet-installed account pairing grant (from
   /// `GatewayPickerView`'s connect attempts this session), tracked so
   /// `signOutOfAccount()` can best-effort revoke an abandoned mint. Cleared
@@ -96,8 +102,54 @@ final class AppModel {
     let chatRetirementTasks: [Task<Void, Never>]
   }
 
+  /// The tab to land on once a profile is active — `.conversations`,
+  /// unless a debug build was launched with an initial-tab override.
+  ///
+  /// The override has to be re-applied here rather than only in `init`:
+  /// profile activation is the last thing to write `selectedTab` during
+  /// launch, so an init-time assignment is always overwritten before the
+  /// first frame renders.
+  private var defaultTabAfterActivation: AppTab {
+    #if DEBUG
+      if let tab = UITestLaunchOptions.initialTab { return tab }
+    #endif
+    return .conversations
+  }
+
+  #if DEBUG
+    /// Opens a conversation named by a launch option, so the chat surface can
+    /// be captured without a test runner.
+    ///
+    /// Sets BOTH navigation states rather than routing through
+    /// `openConversation(_:presentation:)`: that needs a
+    /// `NavigationPresentation`, which only the view knows, and the whole
+    /// point here is to work before any view has laid out. `conversationPath`
+    /// drives compact, `splitConversationSelection` drives regular — writing
+    /// both means the same launch works on iPhone and iPad.
+    private func applyUITestInitialRoute() {
+      if let id = UITestLaunchOptions.initialAgentID {
+        let destination = AgentRoute.detail(id)
+        selectedTab = .agents
+        agentPath = [destination]
+        splitAgentSelection = destination
+        return
+      }
+      guard let id = UITestLaunchOptions.initialConversationID else { return }
+      let destination = ConversationRoute.transcript(id)
+      selectedTab = .conversations
+      conversationPath = [destination]
+      splitConversationSelection = destination
+    }
+  #endif
+
   init(dependencies: AppDependencies) {
     self.dependencies = dependencies
+    #if DEBUG
+      // Debug-only: lets `simctl launch` open straight onto a given tab so a
+      // surface can be captured without a test runner. See
+      // `UITestLaunchOptions`.
+      if let tab = UITestLaunchOptions.initialTab { selectedTab = tab }
+    #endif
   }
 
   func start() async {
@@ -356,6 +408,28 @@ final class AppModel {
     }
   }
 
+  /// iPad goal Phase A (design §1.3): the compact `NavigationStack` paths
+  /// and the regular split selections are two projections of one intent.
+  /// Called by `RootView` whenever `AdaptiveNavigationPolicy` flips
+  /// (rotation, Split View resize, Stage Manager) so neither projection is
+  /// stale when its column tree is mounted.
+  func reconcileNavigation(for presentation: NavigationPresentation) {
+    switch presentation {
+    case .compact:
+      conversationPath = splitConversationSelection.map { [$0] } ?? []
+      agentPath = splitAgentSelection.map { [$0] } ?? []
+    case .regular:
+      if let top = conversationPath.last {
+        splitConversationSelection = top
+        conversationPath = [top]
+      }
+      if let top = agentPath.last {
+        splitAgentSelection = top
+        agentPath = [top]
+      }
+    }
+  }
+
   func makePairingFeature() -> PairingFeature {
     dependencies.pairingFeatureFactory.make { [weak self] profile in
       guard
@@ -491,6 +565,18 @@ final class AppModel {
     }
   }
 
+  /// The canonical summary for one conversation id, preferring the live
+  /// conversation list over the raw sync snapshot (the list carries the
+  /// locally-projected title/status a rename or delete has already applied).
+  /// Lifted out of `RootView` in Task 10 so the chat-only window scene
+  /// (`ConversationWindowView`) resolves a conversation exactly the way the
+  /// main window's `.navigationDestination` does, rather than growing a
+  /// second, subtly different lookup.
+  func conversationSummary(id: String) -> ConversationSummaryDTO? {
+    conversationListFeature?.conversations.first { $0.id == id }?.summary
+      ?? snapshot?.conversations.first { $0.id == id }?.summary
+  }
+
   func makeChatFeature(_ conversation: ConversationSummaryDTO) async -> ChatFeature? {
     guard let profile = selectedProfile, conversation.status != .deleted else { return nil }
     let scope = chatScope(gatewayID: profile.gatewayID, conversationID: conversation.id)
@@ -559,6 +645,28 @@ final class AppModel {
     }
     chatFeatures[scope] = feature
     return feature
+  }
+
+  /// Multi-window (design §3.2): the sync engine is process-wide, so it
+  /// follows the SET of scenes, not any one of them. `sceneDidEnterBackground`/
+  /// `sceneWillEnterForeground` remain the single-scene primitives this
+  /// drives on the edges: background only when the LAST active scene leaves,
+  /// foreground only when the FIRST scene returns after a full background. A
+  /// `Set` makes a scene reporting the same state twice (e.g. `isActive:
+  /// true` while already active) or reporting inactive without ever having
+  /// been active harmless no-ops — the before/after emptiness comparison is
+  /// unaffected either way.
+  func sceneChanged(id: UUID, isActive: Bool) async {
+    let wasForegrounded = activeSceneIDs.isEmpty == false
+    if isActive { activeSceneIDs.insert(id) } else { activeSceneIDs.remove(id) }
+    let isForegrounded = activeSceneIDs.isEmpty == false
+    if wasForegrounded, isForegrounded == false {
+      hasBackgroundedAllScenes = true
+      await sceneDidEnterBackground()
+    } else if wasForegrounded == false, isForegrounded, hasBackgroundedAllScenes {
+      hasBackgroundedAllScenes = false
+      await sceneWillEnterForeground()
+    }
   }
 
   func sceneDidEnterBackground() async {
@@ -849,7 +957,14 @@ final class AppModel {
       }
     )
     self.settingsFeature = settingsFeature
-    selectedTab = .conversations
+    // Not a bare `.conversations`: activating a profile is the last thing
+    // to touch `selectedTab` on launch, so it is what overwrote the
+    // debug-only initial-tab override set in `init`. See
+    // `defaultTabAfterActivation`.
+    selectedTab = defaultTabAfterActivation
+    #if DEBUG
+      applyUITestInitialRoute()
+    #endif
     if previousGatewayID != nil, previousGatewayID != profile.gatewayID {
       conversationPath.removeAll()
       agentPath.removeAll()

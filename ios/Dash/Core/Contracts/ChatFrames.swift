@@ -10,6 +10,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     channelId: String,
     conversationId: String,
     text: String,
+    location: ClientLocation?,
     images: [MessageImage]?,
     resumable: Bool?,
     streamingBehavior: StreamingBehavior?
@@ -31,6 +32,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     case channelId
     case conversationId
     case text
+    case location
     case images
     case resumable
     case streamingBehavior
@@ -44,7 +46,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     agentId: String,
     conversationId: String,
     text: String,
-    images: [MessageImage]?
+    images: [MessageImage]?,
+    location: ClientLocation? = nil
   ) -> MobileWSClientFrame {
     .message(
       id: id,
@@ -52,6 +55,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       channelId: "ios",
       conversationId: conversationId,
       text: text,
+      location: location,
       images: images,
       resumable: true,
       streamingBehavior: nil
@@ -69,6 +73,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
         channelId: try container.decode(String.self, forKey: .channelId),
         conversationId: try container.decode(String.self, forKey: .conversationId),
         text: try container.decode(String.self, forKey: .text),
+        location: try container.decodeIfPresent(ClientLocation.self, forKey: .location),
         images: try container.decodeIfPresent([MessageImage].self, forKey: .images),
         resumable: try container.decodeIfPresent(Bool.self, forKey: .resumable),
         streamingBehavior: try container.decodeIfPresent(
@@ -121,6 +126,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       channelId,
       conversationId,
       text,
+      location,
       images,
       resumable,
       streamingBehavior
@@ -131,6 +137,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       try container.encode(channelId, forKey: .channelId)
       try container.encode(conversationId, forKey: .conversationId)
       try container.encode(text, forKey: .text)
+      try container.encodeIfPresent(location, forKey: .location)
       try container.encodeIfPresent(images, forKey: .images)
       try container.encodeIfPresent(resumable, forKey: .resumable)
       try container.encodeIfPresent(streamingBehavior, forKey: .streamingBehavior)

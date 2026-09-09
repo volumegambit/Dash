@@ -18,6 +18,7 @@ import {
   isOrchestratorRow,
 } from './blocks/OriginRows.js';
 import { mergeSubagentEventLists } from './blocks/subagents.js';
+import { insertNewlineAtSelection } from './composer.js';
 import { usePinnedScroll } from './hooks/usePinnedScroll.js';
 
 export interface ChatViewProps {
@@ -1098,6 +1099,26 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
               void addImageFiles(files);
             }}
             onKeyDown={(event) => {
+              // Shift+Tab inserts a newline instead of moving focus
+              // backwards. Plain Tab is deliberately left alone: overriding
+              // both would make the composer a focus trap for keyboard and
+              // screen-reader users, who would have no way out of it.
+              if (event.key === 'Tab' && event.shiftKey) {
+                event.preventDefault();
+                const field = event.currentTarget;
+                const next = insertNewlineAtSelection(
+                  field.value,
+                  field.selectionStart,
+                  field.selectionEnd,
+                );
+                updateDraft(next.value);
+                // React owns the value, so the caret has to be restored
+                // after it re-renders — otherwise it jumps to the end.
+                requestAnimationFrame(() => {
+                  field.setSelectionRange(next.caret, next.caret);
+                });
+                return;
+              }
               if (event.key !== 'Enter' || event.shiftKey) return;
               // IME composition (e.g. typing Japanese/Chinese/Korean via a
               // candidate window) fires `Enter` to confirm a candidate, not

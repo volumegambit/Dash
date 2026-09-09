@@ -133,6 +133,75 @@ final class AgentsUITests: DashUITestCase {
     waitUntilSelected(tab("tab.conversations", in: app))
   }
 
+  /// Agent detail refinement (2026-09-07, finding 3): a disabled agent keeps
+  /// its Start Chat button — a disabled control explains the state where a
+  /// missing one would not — but the button must not be actionable.
+  func testDisabledAgentCannotStartChat() {
+    let app = launch(scenario: "agents")
+    openAgent("sleeping-agent", in: app)
+    let startChat = element("agent.startChat", in: app)
+    XCTAssertFalse(startChat.isEnabled, "Start Chat must be disabled for a disabled agent")
+
+    openAgent("research-agent", in: app)
+    XCTAssertTrue(element("agent.startChat", in: app).isEnabled)
+  }
+
+  /// Finding 1: a section header is a promise that content follows. The
+  /// fixture agents carry none of the optional configuration values, so no
+  /// "Configuration" header may render for them.
+  func testDetailOmitsEmptyConfigurationSection() {
+    let app = launch(scenario: "agents")
+    openAgent("research-agent", in: app)
+    XCTAssertTrue(
+      app.descendants(matching: .any)["agent.tools.list"].waitForExistence(timeout: 5))
+    // iOS 18 upper-cases section headers, so match either rendering.
+    XCTAssertFalse(app.staticTexts["Configuration"].exists)
+    XCTAssertFalse(app.staticTexts["CONFIGURATION"].exists)
+  }
+
+  func testAgentMemorySectionListsAndDeletes() {
+    let app = launch(scenario: "agents")
+    openAgent("research-agent", in: app)
+
+    // The Memory section sits below Configuration and Integrations, and a
+    // SwiftUI `List` only realizes rows near the viewport, so scroll it into
+    // view before asserting anything.
+    let row = app.descendants(matching: .any)["agent.memory.row.user-timezone"]
+    scrollUntilHittable(row, in: app)
+    XCTAssertTrue(row.exists)
+    // The section anchor and the per-row identifiers coexist: the anchor is on
+    // the section header (a leaf), so it cannot swallow the row identifiers.
+    XCTAssertTrue(app.descendants(matching: .any)["agent.memory.list"].exists)
+    let other = app.descendants(matching: .any)["agent.memory.row.repo-pnpm"]
+    XCTAssertTrue(other.exists)
+
+    row.swipeLeft()
+    let delete = app.buttons["Delete"]
+    XCTAssertTrue(waitUntilHittable(delete, timeout: 5))
+    delete.tap()
+
+    XCTAssertFalse(row.waitForExistence(timeout: 3))
+    XCTAssertTrue(other.exists)
+  }
+
+  private func scrollUntilHittable(
+    _ target: XCUIElement,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    for _ in 0..<8 {
+      if target.exists && target.isHittable { return }
+      app.swipeUp()
+    }
+    XCTAssertTrue(
+      target.exists && target.isHittable,
+      "Expected \(target) to be scrolled into view",
+      file: file,
+      line: line
+    )
+  }
+
   func testIPadSplitNavigation() throws {
     let app = launch(scenario: "agents")
     try XCTSkipUnless(app.windows.firstMatch.frame.width >= 700, "Split navigation is iPad-only")

@@ -9,7 +9,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, '../../../.env') });
 
 import type { AgentClient, ExtraTool } from '@dash/agent';
-import { PiAgentBackend, createOAuthRefreshers } from '@dash/agent';
+import {
+  PiAgentBackend,
+  agentMemoryDir,
+  createGetLocationTool,
+  createOAuthRefreshers,
+} from '@dash/agent';
 import { TelegramAdapter, WhatsAppAdapter } from '@dash/channels';
 import type { ChannelAdapter } from '@dash/channels';
 import { createConsoleLogger } from '@dash/logging';
@@ -57,6 +62,8 @@ import { createLanMobileApp } from './lan-mobile-app.js';
 import { loadOrCreateLanTlsIdentity } from './lan-tls.js';
 import { createGatewayManagementApp } from './management-api.js';
 import { McpConfigStore } from './mcp-store.js';
+import { extractMemoriesWithModel, shouldSweepModel } from './memory-sweep-extract.js';
+import { createMemorySweepService } from './memory-sweep.js';
 import { migrateIncludeBundled } from './migrate-include-bundled.js';
 import { ModelsStore } from './models-store.js';
 import { createNotificationDriver } from './notification-driver.js';
@@ -70,7 +77,13 @@ import {
 } from './plugins-wiring.js';
 import { type RelayClient, startRelayClient } from './relay-client.js';
 import { type ResumableChatHub, createResumableChatHub } from './resumable-chat-hub.js';
-import { safeStep } from './shutdown.js';
+import { safeFlush, safeStep } from './shutdown.js';
+import {
+  DEFAULT_MIN_TOOL_CALLS,
+  extractLessonDeltas,
+  shouldReviewSkills,
+} from './skill-review-extract.js';
+import { createSkillReviewService } from './skill-review.js';
 import {
   buildChildDelegationSection,
   isSubagentsEnabled,
@@ -480,6 +493,14 @@ async function main() {
   const childBackendDeps: ChildBackendDeps = {
     credentialProvider: swarmCredentialProvider,
     dataDir,
+    // Children inherit the PARENT's memory read-only — the prompt only, never
+    // the memory tools (`buildChildAgentConfig` sets `tools: false`). Keyed by
+    // registry id, the same key the chat path uses, and off entirely for an
+    // agent that opted out with `memory.enabled === false`. A `skipMemory`
+    // child type (Explore / Plan) drops it a second time, per spec, in
+    // `buildChildAgentConfig`.
+    memoryDir: (id) =>
+      registry.get(id)?.config.memory?.enabled === false ? undefined : agentMemoryDir(dataDir, id),
     // No logger: the gateway's StructuredLogger (from @dash/logging) is not
     // assignable to @dash/agent's Logger (different `error` arity), and the
     // chat-path PiAgentBackend is likewise constructed with an undefined
@@ -694,6 +715,11 @@ async function main() {
     registry,
     poolMaxSize: Number(process.env.POOL_MAX_SIZE ?? '200'),
     managedSkillsDir: (config) => resolve(dataDir, 'skills', config.name),
+    // Per-agent memory dir, keyed by the REGISTRY id (immutable) rather than
+    // config.name (which skills/sessions use) so renaming an agent never
+    // orphans its memories. Supplying this resolver is what turns memory on:
+    // every agent gets it unless it opted out with `memory.enabled === false`.
+    memoryDir: (id) => agentMemoryDir(dataDir, id),
     // Same plugin inputs the backend factory injects (skill dirs merged into
     // `skills.paths`, command files as extra flat skills) so the HTTP skills
     // route (GET /agents/:id/skills) lists what chat can actually load. Plugin
@@ -969,6 +995,10 @@ async function main() {
             ...agentConfig.skills,
             paths: [...(agentConfig.skills?.paths ?? []), ...skillDirs],
           },
+          // The RESOLVED memory runtime object the coordinator computed
+          // (`{ dir }`), not the persisted `agentConfig.memory` flags.
+          // Undefined when memory is off for this agent.
+          memory: agentConfig.memoryRuntime,
         },
         credentialProvider,
         undefined,
@@ -1040,6 +1070,16 @@ async function main() {
             // would have loaded. Consulted only when a definition names skills.
             listSkills: () => backend.listSkills(),
           }) as unknown as ExtraTool[]),
+          // Reports the location the client attached to the current turn. Late-
+          // bound to the backend's in-flight run for the same reason as the
+          // session id above: the backend stays warm across turns, but the
+          // location changes every turn. Registered unless the agent has
+          // location disabled -- and `DashAgent.chat()` gates the prompt's
+          // "call get_location" sentence on the same condition, so the block
+          // never names a tool that is not here.
+          ...(agentConfig.location?.enabled === false
+            ? []
+            : [createGetLocationTool(() => backend.getCurrentLocation() ?? undefined)]),
         ],
         commandFiles,
         // Plugin hook engine — composes tool hooks onto pi's agent and fires
@@ -1081,10 +1121,121 @@ async function main() {
     onChanged: emitConversationChanged,
     logger,
   });
+  /**
+   * Append a notice to a conversation and tell subscribers to refetch.
+   *
+   * Post-turn work (the memory sweep, the skill review) finishes after the turn
+   * is terminal, and a finished turn refuses further events — so its result is
+   * carried as a message instead. Best-effort: a notice must never be able to
+   * break the work it is reporting on.
+   */
+  const publishNotice = (
+    conversationId: string,
+    kind: 'skill_learned' | 'memory_saved',
+    text: string,
+  ): void => {
+    try {
+      const appended = conversationService.appendNotice({ conversationId, kind, text });
+      if (!appended) return;
+      const summary = conversationService.get(conversationId);
+      if (summary) emitConversationChanged(summary);
+    } catch (error) {
+      logger.warn('could not append conversation notice', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  // Post-turn memory sweep. Extraction runs on the agent's OWN model (same
+  // resolution, provider allow-list and credentials as the chat loop), so turn
+  // text never leaves the provider the agent is already talking to.
+  const memorySweep = createMemorySweepService({
+    conversations: conversationService,
+    memoryStore: (agentId) => agents.memoryStore(agentId),
+    shouldSweep: (agentId) => {
+      const entry = registry.get(agentId);
+      if (!entry || entry.config.memory?.enabled === false) return false;
+      return shouldSweepModel(entry.config.memory?.sweep, entry.config.model);
+    },
+    async extract({ agentId, userText, assistantText, index }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      return extractMemoriesWithModel({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        userText,
+        assistantText,
+        index,
+      });
+    },
+    // The sweep runs after the turn is finalised, so a notice message is the
+    // only way its work becomes visible in the conversation.
+    onSaved: ({ conversationId, descriptions }) => {
+      publishNotice(conversationId, 'memory_saved', `Remembered: ${descriptions.join('; ')}`);
+    },
+    logger,
+  });
+  // Post-turn skill review. Like the memory sweep, extraction runs on the
+  // agent's OWN model with the agent's own credentials, so turn text never
+  // leaves the provider the agent is already talking to.
+  const skillReview = createSkillReviewService({
+    conversations: conversationService,
+    // Same resolver the chat coordinator uses, so a review writes into exactly
+    // the directory the agent already reads its managed skills from.
+    managedSkillsDir: (agentId) => {
+      const entry = registry.get(agentId);
+      return entry ? resolve(dataDir, 'skills', entry.config.name) : null;
+    },
+    shouldReview: (agentId) => {
+      const entry = registry.get(agentId);
+      if (!entry) return false;
+      return shouldReviewSkills(entry.config.skills?.learning);
+    },
+    minToolCalls: (agentId) => {
+      const configured = registry.get(agentId)?.config.skills?.minToolCalls;
+      return typeof configured === 'number' && configured >= 0
+        ? configured
+        : DEFAULT_MIN_TOOL_CALLS;
+    },
+    // The agent's whole catalogue, so a review cannot write a lesson book over
+    // a skill that is not one (or shadow a plugin skill by reusing its name).
+    existingSkillNames: async (agentId) =>
+      (await agents.listSkills(agentId)).map((skill) => skill.name),
+    onLearned: ({ conversationId, skills, created }) => {
+      const label = created.length > 0 ? 'Learned' : 'Updated skill';
+      publishNotice(conversationId, 'skill_learned', `${label}: ${skills.join(', ')}`);
+    },
+    async extract({ agentId, userText, assistantText, books, loadedSkills, existingSkills }) {
+      const entry = registry.get(agentId);
+      if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      await oauthRefreshCoordinator.refreshExpiring();
+      const storeKeys = await credentialStore.readProviderApiKeys();
+      return extractLessonDeltas({
+        modelStr: entry.config.model,
+        allowedProviders: entry.config.providers,
+        pluginModelCatalog: wiringState.pluginModelCatalog,
+        providerApiKeys: { ...storeKeys, ...(entry.config.providerApiKeys ?? {}) },
+        userText,
+        assistantText,
+        books,
+        loadedSkills,
+        existingSkills,
+      });
+    },
+    logger,
+  });
+
   const resumableChatHub = createResumableChatHub({
     conversations: conversationService,
     agents,
     autoTitle: conversationAutoTitle,
+    memorySweep,
+    skillReview,
     swarmCoordinator,
     onChanged: emitConversationChanged,
   });
@@ -1308,6 +1459,12 @@ async function main() {
     credentialStore,
     modelsStore,
     identity: mobileIdentity,
+    // Same resolver the review service uses, so the lesson routes read exactly
+    // the directory learning writes to.
+    managedSkillsDir: (agentId) => {
+      const entry = registry.get(agentId);
+      return entry ? resolve(dataDir, 'skills', entry.config.name) : null;
+    },
     // Plugin management routes (GET/PUT/DELETE /plugins, POST /plugins/reload,
     // GET /runtime/plugins). The wiring is read through a LIVE getter so the
     // routes always see the current state after a reload; the store + reload
@@ -1532,7 +1689,12 @@ async function main() {
     await safeStep('dialTokenManager.stop', () => dialTokenManager?.stop());
     await safeStep('mcpManager.stop', () => mcpManager.stop());
     await safeStep('resumableChatHub.stop', () => resumableChatHub.stop());
-    await safeStep('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
+    // Both flushes wait on provider completions that carry no AbortSignal, so
+    // they are deadline-bounded: a hung provider socket must not keep the
+    // process alive until SIGKILL with its databases still open.
+    await safeFlush('conversationAutoTitle.flush', () => conversationAutoTitle.flush());
+    await safeFlush('memorySweep.flush', () => memorySweep.flush());
+    await safeFlush('skillReview.flush', () => skillReview.flush());
     // Finalize every live swarm run (cancels in-flight workers, aborts their
     // orchestrators) BEFORE the chat coordinator tears down its warm backends,
     // so no worker outlives the pool it borrowed its identity from.

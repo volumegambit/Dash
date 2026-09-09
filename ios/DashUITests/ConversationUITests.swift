@@ -173,6 +173,10 @@ final class ConversationUITests: DashUITestCase {
     // 8.3) and the optimistic row it writes must render as an ORCHESTRATOR
     // row carrying the user's own sentence — not a user bubble, and not the
     // blank "from orchestrator" line an unreconciled row produces.
+    // Same reason as the parallel-group test: the body composer sits below the
+    // keyboard the parent composer raised, in a region the pinned transcript
+    // will not scroll past.
+    XCTAssertTrue(dismissKeyboard(in: app), "Expected the keyboard to be dismissible")
     let composer = element("chat.subagent.ui-subagent.composer", in: app)
     replaceText(in: composer, with: "keep going", clearExisting: false)
     element("chat.subagent.ui-subagent.composer.send", in: app).tap()
@@ -396,6 +400,11 @@ final class ConversationUITests: DashUITestCase {
       app.descendants(matching: .any)["chat.subagent.ui-subagent-2.composer"].exists,
       "The body composer belongs to the expanded body; only the reply is inline"
     )
+    // The composer still has focus from the send above, and the keyboard covers
+    // the bottom ~430pt of an 874pt transcript that `main`'s expanded tool
+    // bodies made taller — a region the pinned stream will not let a swipe
+    // reach. Retire it first; the row is then plainly on screen.
+    XCTAssertTrue(dismissKeyboard(in: app), "Expected the keyboard to be dismissible")
     let reply = scrollUntilHittable(
       element("chat.subagent.ui-subagent-2.reply", in: app),
       in: app
@@ -484,6 +493,142 @@ final class ConversationUITests: DashUITestCase {
     let final = element("chat.final.response", in: app, timeout: 8)
     XCTAssertEqual(final.label, "Recovered exactly once.")
     XCTAssertFalse(jumpButton.exists)
+  }
+
+  // MARK: - Transcript scrolling (goal 2026-09-05: smooth, no hiccups, in any state)
+  //
+  // All three run against `long-transcript`: 40 cached messages (ordinals
+  // 11–50), a 10-message page behind "Load earlier", and a send that streams
+  // 45 deltas over ~3s. See `UITestScenario.longTranscript`.
+
+  /// Launches straight into the long transcript (no tab/row taps — see
+  /// `launch(conversationID:)`) and waits for the chat surface to be usable.
+  private func openLongTranscript() -> XCUIApplication {
+    let app = launch(scenario: "long-transcript", conversationID: "shared-plan")
+    dismissSplitOverlayIfPresent(in: app)
+    _ = element("chat.transcript", in: app)
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(composer, timeout: 5),
+      "Expected the composer to be actionable after opening the conversation"
+    )
+    return app
+  }
+
+  func testOpeningALongConversationStartsAtTheLatestMessage() {
+    let app = openLongTranscript()
+
+    let transcript = element("chat.transcript", in: app)
+    let latest = element("chat.message.long-assistant-50", in: app, timeout: 5)
+    XCTAssertFalse(
+      app.keyboards.firstMatch.waitForExistence(timeout: 1.5),
+      "Opening an existing conversation must not raise the keyboard (keyboard-ready auto-focus is for never-used conversations only)"
+    )
+    XCTAssertTrue(
+      waitUntilHittable(latest, timeout: 3),
+      "The newest message must be on screen without any scrolling"
+    )
+    let frame = settledFrame(of: latest)
+    XCTAssertLessThanOrEqual(
+      frame.maxY, transcript.frame.maxY + 1,
+      "The newest message must be fully inside the transcript, not cut off below it"
+    )
+    XCTAssertFalse(app.descendants(matching: .any)["chat.jumpToBottom"].exists)
+  }
+
+  func testLoadEarlierKeepsTheFirstVisibleMessageInPlace() {
+    let app = openLongTranscript()
+
+    let loadOlder = app.descendants(matching: .any)["chat.loadOlder"]
+    for _ in 0..<24 where !(loadOlder.exists && loadOlder.isHittable) {
+      app.swipeDown()
+    }
+    XCTAssertTrue(waitUntilHittable(loadOlder, timeout: 2), "Expected to reach the top of the page")
+    let first = element("chat.message.long-user-11", in: app)
+    let before = settledFrame(of: first)
+
+    loadOlder.tap()
+    XCTAssertTrue(
+      waitUntilAbsent(loadOlder, timeout: 5),
+      "The control should disappear once the last page has loaded"
+    )
+    let after = settledFrame(of: first)
+    XCTAssertEqual(
+      after.minY, before.minY, accuracy: 2,
+      "Loading earlier messages must not move the message the user was reading"
+    )
+  }
+
+  func testDraggingUpMidStreamUnpinsUntilJumpToLatest() {
+    let app = openLongTranscript()
+
+    replaceText(
+      in: element("chat.composer", in: app),
+      with: "Stream a long reply",
+      clearExisting: false
+    )
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+    _ = element("chat.message.assistant-ui-turn", in: app, timeout: 5)
+
+    // A short drag — well under the old 100pt near-bottom threshold — with the
+    // finger moving DOWN, i.e. scrolling toward earlier messages.
+    let transcript = element("chat.transcript", in: app)
+    let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+    start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 60)))
+
+    let jump = app.descendants(matching: .any)["chat.jumpToBottom"]
+    XCTAssertTrue(
+      jump.waitForExistence(timeout: 2),
+      "Any deliberate drag away from the bottom must unpin the transcript, even a short one"
+    )
+    XCTAssertFalse(
+      waitUntilAbsent(jump, timeout: 1),
+      "Arriving tokens must not re-pin a transcript the user scrolled away from"
+    )
+
+    jump.tap()
+    XCTAssertTrue(waitUntilAbsent(jump, timeout: 2), "Jumping to the latest re-pins")
+    // Re-pinned means the reply's TAIL is inside the transcript once the
+    // stream completes. (Not `isHittable`: that tests the element's centre,
+    // which for a reply taller than the viewport is legitimately off-screen.)
+    // The streamed row, by message id: every completed reply in a long
+    // transcript carries `chat.final.response`, so that one is ambiguous.
+    XCTAssertTrue(
+      waitUntilAbsent(app.descendants(matching: .any)["chat.cancel"], timeout: 25),
+      "The stream should finish (Cancel gives way to Send)"
+    )
+    let final = element("chat.message.assistant-ui-turn", in: app)
+    let tail = settledFrame(of: final)
+    let transcriptFrame = transcript.frame
+    XCTAssertLessThanOrEqual(
+      tail.maxY, transcriptFrame.maxY + 1,
+      "After jumping to latest, the end of the reply must stay in view while it finishes streaming"
+    )
+    XCTAssertGreaterThan(tail.maxY, transcriptFrame.minY, "The reply's end must be on screen")
+  }
+
+  private func waitUntilAbsent(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// The element's frame once two reads 250ms apart agree — scroll
+  /// deceleration and layout settling otherwise make a single read a
+  /// snapshot of a moving target.
+  private func settledFrame(of element: XCUIElement) -> CGRect {
+    var previous = element.frame
+    for _ in 0..<12 {
+      Thread.sleep(forTimeInterval: 0.25)
+      let current = element.frame
+      if current == previous { return current }
+      previous = current
+    }
+    return previous
   }
 
   func testCancelReplacesSendAndProducesCancelledTerminalState() {
@@ -732,7 +877,9 @@ final class ConversationUITests: DashUITestCase {
     // hierarchy), so a strict single-match lookup throws "multiple matching
     // elements".
     let options = app.buttons.matching(identifier: "chat.options").firstMatch
-    XCTAssertTrue(options.waitForExistence(timeout: 5))
+    // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
+    // `hittable == false` yet taps fine; the wait is for a slow CI runner.
+    XCTAssertTrue(options.waitForExistence(timeout: 8))
     XCTAssertEqual(options.label, "Conversation options")
     XCTAssertTrue(options.isEnabled)
     options.tap()
@@ -740,7 +887,7 @@ final class ConversationUITests: DashUITestCase {
     let renameItem = app.buttons["Rename"].firstMatch
     let deleteItem = app.buttons["Delete"].firstMatch
     let shareItem = app.buttons["Share Transcript"].firstMatch
-    XCTAssertTrue(renameItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(renameItem.waitForExistence(timeout: 8))
     XCTAssertTrue(renameItem.isEnabled)
     XCTAssertTrue(deleteItem.exists)
     XCTAssertTrue(deleteItem.isEnabled)
@@ -757,9 +904,13 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    app.buttons.matching(identifier: "chat.options").firstMatch.tap()
+    let options = app.buttons.matching(identifier: "chat.options").firstMatch
+    // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
+    // `hittable == false` yet taps fine; the wait is for a slow CI runner.
+    XCTAssertTrue(options.waitForExistence(timeout: 8))
+    options.tap()
     let renameItem = app.buttons["Rename"].firstMatch
-    XCTAssertTrue(renameItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(renameItem.waitForExistence(timeout: 8))
     renameItem.tap()
 
     let renameAlert = app.alerts["Rename conversation"]
@@ -790,9 +941,13 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    app.buttons.matching(identifier: "chat.options").firstMatch.tap()
+    let options = app.buttons.matching(identifier: "chat.options").firstMatch
+    // Existence, not hittability: on iOS 18 a toolbar Menu's node reports
+    // `hittable == false` yet taps fine; the wait is for a slow CI runner.
+    XCTAssertTrue(options.waitForExistence(timeout: 8))
+    options.tap()
     let deleteItem = app.buttons["Delete"].firstMatch
-    XCTAssertTrue(deleteItem.waitForExistence(timeout: 3))
+    XCTAssertTrue(deleteItem.waitForExistence(timeout: 8))
     deleteItem.tap()
 
     // Final-review fix m6: the dialog's title is now the plan's verbatim,
@@ -806,11 +961,125 @@ final class ConversationUITests: DashUITestCase {
       "Expected the delete confirmation's destructive action to be available"
     )
 
-    let dismissRegion = app.otherElements.matching(identifier: "PopoverDismissRegion").firstMatch
-    XCTAssertTrue(dismissRegion.waitForExistence(timeout: 3))
-    dismissRegion.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
-    XCTAssertTrue(deleteConfirmation.waitForNonExistence(timeout: 5))
+    dismissConfirmation(deleteConfirmation, in: app)
     XCTAssertTrue(element("chat.transcript", in: app).exists)
+  }
+
+  /// iPad goal Phase C: the ONE assertion that observes what
+  /// `UIApplication.shared.supportsMultipleScenes` actually reports on each
+  /// device, rather than assuming it. This suite runs on BOTH the iPhone and
+  /// the iPad, and neither branch skips: the "Rename" item proves the menu
+  /// really opened, and "Open in New Window" is then required to be present
+  /// exactly on the wide (iPad) layout and absent on the narrow (iPhone)
+  /// one. An affordance offered where `openWindow` could do nothing would
+  /// fail this on iPhone; a missing affordance on iPad would fail it there.
+  func testOpenInNewWindowIsOfferedOnlyWhereASecondSceneCanExist() {
+    let app = launch(scenario: "paired-online")
+    let row = element("conversation.row.shared-plan", in: app)
+    XCTAssertTrue(row.waitForExistence(timeout: 5))
+    row.press(forDuration: 1.0)
+
+    XCTAssertTrue(
+      app.buttons["Rename"].waitForExistence(timeout: 3),
+      "Expected the conversation row's context menu to open. UI: \(app.debugDescription)"
+    )
+    let supportsMultipleScenes = app.windows.firstMatch.frame.width >= 700
+    XCTAssertEqual(
+      app.buttons["Open in New Window"].exists,
+      supportsMultipleScenes,
+      """
+      "Open in New Window" must appear exactly where a second scene can \
+      exist. Window width \(app.windows.firstMatch.frame.width).
+      """
+    )
+  }
+
+  /// Review fix round 1 (Task 10, "also required"): `.draggable` landed on
+  /// the SAME modifier chain as this row's two `.swipeActions` (leading
+  /// Rename, trailing Delete), and nothing exercised either gesture before
+  /// this task. If the drag interaction claimed the touch first, a swipe
+  /// would lift-and-snap-back like a failed drag instead of revealing its
+  /// action buttons. Runs on both iPhone and iPad — the drag is gated on
+  /// `supportsMultipleScenes` but the swipe actions must survive its mere
+  /// presence in the chain on iPad regardless.
+  func testConversationRowSwipeActionsStillWorkWithDraggableAttached() {
+    let app = launch(scenario: "paired-online")
+    revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
+    let row = element("conversation.row.shared-plan", in: app)
+
+    // Trailing edge: swiping the row left reveals "Delete".
+    row.swipeLeft()
+    let deleteAction = app.buttons["Delete"].firstMatch
+    XCTAssertTrue(
+      deleteAction.waitForExistence(timeout: 3),
+      "Expected the trailing swipe action to reveal Delete. UI: \(app.debugDescription)"
+    )
+    deleteAction.tap()
+    let deleteConfirmation = confirmationDialog(titled: "Delete this conversation?", in: app)
+    XCTAssertTrue(
+      waitUntilHittable(deleteConfirmation.buttons["Delete"].firstMatch, timeout: 5),
+      "Expected the delete confirmation's destructive action to be available"
+    )
+    dismissConfirmation(deleteConfirmation, in: app)
+
+    // Leading edge: swiping the row right reveals "Rename".
+    XCTAssertTrue(
+      waitUntilHittable(row, timeout: 3),
+      "Expected the conversation row to become actionable again after dismissing the confirmation"
+    )
+    row.swipeRight()
+    let renameAction = app.buttons["Rename"].firstMatch
+    XCTAssertTrue(
+      renameAction.waitForExistence(timeout: 3),
+      "Expected the leading swipe action to reveal Rename. UI: \(app.debugDescription)"
+    )
+    renameAction.tap()
+    let renameAlert = app.alerts["Rename conversation"]
+    XCTAssertTrue(renameAlert.waitForExistence(timeout: 3))
+    XCTAssertEqual(renameAlert.textFields.firstMatch.value as? String, "Shared launch plan")
+    let cancelRename = renameAlert.buttons["Cancel"].firstMatch
+    XCTAssertTrue(waitUntilHittable(cancelRename, timeout: 3))
+    cancelRename.tap()
+    XCTAssertTrue(renameAlert.waitForNonExistence(timeout: 3))
+  }
+
+  /// Review fix round 1 (Task 8, Important 1): `.draggable` and
+  /// `.contextMenu` on a user bubble used to be applied to DIFFERENT views —
+  /// `.draggable` inside `UserMessageView`'s own body, `.contextMenu` on the
+  /// ancestor `ChatMessageView.body`'s `.user` case wraps it in. A real
+  /// long-press is the only way `UIContextMenuInteraction` ever fires, and
+  /// nothing in this suite exercised that gesture on a message bubble
+  /// before this test — the only other `press(forDuration:)` coverage is
+  /// `testCachedOfflineHistoryAllowsDraftButBlocksRemoteMutations`'s
+  /// conversation-ROW long-press above, which is a different view entirely.
+  /// This would have FAILED had the inner drag interaction claimed the
+  /// touch before the outer context menu got it.
+  func testLongPressingAUserBubbleShowsItsContextMenu() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `cached-user` (text "Saved from your Mac") is the fixture's first
+    // user bubble — non-empty text, non-failed turn, so Copy/Share/Edit &
+    // Resend should all be offered and Retry should not. It also carries an
+    // attached image below the text (needed for the unrelated image-drag
+    // test above), so the press is aimed at a normalized offset over the
+    // TEXT row near the top of the bubble, not the element's raw center —
+    // the center of this particular bubble's frame falls over the image
+    // thumbnail, which has its own `.draggable`/tap handling and would
+    // confound this test with a second, unrelated interaction.
+    let bubble = element("chat.message.cached-user", in: app)
+    bubble.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).press(forDuration: 1)
+
+    XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3))
+    XCTAssertTrue(app.buttons["Share"].exists)
+    XCTAssertTrue(app.buttons["Edit & Resend"].exists)
+    XCTAssertFalse(app.buttons["Retry"].exists)
+
+    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+    XCTAssertTrue(
+      waitUntilHittable(bubble, timeout: 3),
+      "Expected the user bubble to become actionable again after dismissing its context menu"
+    )
   }
 
   /// Phase 4 Task 4 (audit #19): an attached image is no longer a dead
@@ -820,7 +1089,7 @@ final class ConversationUITests: DashUITestCase {
     let app = launch(scenario: "paired-online")
     openFirstConversation(in: app)
 
-    let thumbnail = element("chat.image.0", in: app)
+    let thumbnail = element("chat.message.image.0", in: app)
     XCTAssertTrue(waitUntilHittable(thumbnail, timeout: 5))
     thumbnail.tap()
 
@@ -851,6 +1120,88 @@ final class ConversationUITests: DashUITestCase {
     XCTAssertFalse(app.staticTexts["|:---|---:|"].exists, "Delimiter row must not render literally")
   }
 
+  /// Goal 2026-09-04: change the model from inside a conversation (MC
+  /// parity — `ChatModelPicker` there). The toolbar shows the agent's current
+  /// model; tapping it opens a provider-grouped picker; choosing a row
+  /// commits immediately, the label updates, and a toast confirms.
+  func testChatToolbarModelPickerChangesTheAgentModel() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    // `.buttons.matching(identifier:).firstMatch`, like the `chat.options`
+    // tests: a toolbar Button bridges to more than one accessibility node.
+    XCTAssertTrue(element("chat.model", in: app).waitForExistence(timeout: 5))
+    let modelButton = app.buttons.matching(identifier: "chat.model").firstMatch
+    XCTAssertTrue(
+      waitUntilHittable(modelButton, timeout: 5),
+      "Expected the model button to be hittable. UI: \(app.debugDescription)"
+    )
+    XCTAssertEqual(modelButton.label, "GPT-5")
+    modelButton.tap()
+
+    XCTAssertTrue(element("chat.modelPicker.sheet", in: app).waitForExistence(timeout: 5))
+    let row = element("chat.modelPicker.row.openai/gpt-5-mini", in: app)
+    XCTAssertTrue(waitUntilHittable(row, timeout: 5))
+    row.tap()
+
+    XCTAssertTrue(
+      app.descendants(matching: .any)["chat.modelPicker.sheet"].waitForNonExistence(timeout: 5)
+    )
+    XCTAssertTrue(app.staticTexts["Model changed to GPT-5 mini"].waitForExistence(timeout: 5))
+    let changed = app.buttons.matching(identifier: "chat.model").firstMatch
+    XCTAssertEqual(changed.label, "GPT-5 mini")
+  }
+
+  /// Task cards (2026-09-05): the checklist renders, it is open without a
+  /// tap, and completed/in-progress/pending items are all present. Before
+  /// this the card body was the literal string "Todos: [3 items]".
+  func testTaskCardShowsTheChecklistExpandedByDefault() {
+    let app = launch(scenario: "streaming-reconnect")
+    openFirstConversation(in: app)
+
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
+    composer.tap()
+    composer.typeText("go")
+    let send = element("chat.send", in: app)
+    waitUntilEnabled(send)
+    send.tap()
+
+    let todos = app.descendants(matching: .any)["chat.tool.todos"]
+    XCTAssertTrue(
+      todos.waitForExistence(timeout: 10),
+      "Expected the task checklist to render without expanding the card. UI: \(app.debugDescription)"
+    )
+    // Each item is its own combined a11y element, labelled by status.
+    XCTAssertTrue(app.staticTexts["Done: Draft the plan"].exists)
+    XCTAssertTrue(app.staticTexts["In progress: Check launch readiness"].exists)
+    XCTAssertTrue(app.staticTexts["Pending: Ship it"].exists)
+  }
+
+  /// Composer newline keys (2026-09-05). Verifies the two halves of the
+  /// change that no unit test can reach: that SwiftUI's `onKeyPress` fires
+  /// at all for a focused `TextField` (the risky assumption), and that
+  /// removing `.onSubmit` stopped Return from sending.
+  func testShiftTabInsertsANewlineInsteadOfSending() {
+    let app = launch(scenario: "paired-online")
+    openFirstConversation(in: app)
+
+    let composer = element("chat.composer", in: app)
+    XCTAssertTrue(waitUntilHittable(composer, timeout: 5))
+    composer.tap()
+    composer.typeText("first")
+    composer.typeKey(XCUIKeyboardKey.tab.rawValue, modifierFlags: .shift)
+    composer.typeText("second")
+
+    let value = composer.value as? String ?? ""
+    XCTAssertTrue(
+      value.contains("\n"),
+      "Expected Shift+Tab to insert a newline. Composer value: \(value)"
+    )
+    XCTAssertTrue(value.contains("first"), "Composer value: \(value)")
+    XCTAssertTrue(value.contains("second"), "Composer value: \(value)")
+  }
+
   func testConversationListSearchFiltersByTitleAndPreview() {
     let app = launch(scenario: "paired-online")
     selectTab("tab.conversations", in: app)
@@ -860,8 +1211,7 @@ final class ConversationUITests: DashUITestCase {
     // the identifier (which would fail its own existence assertion first).
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
 
@@ -901,8 +1251,7 @@ final class ConversationUITests: DashUITestCase {
     revealSidebarIfNeeded(toExpose: "conversation.row.shared-plan", in: app)
     let row = element("conversation.row.shared-plan", in: app)
 
-    let searchField = app.searchFields.firstMatch
-    XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+    let searchField = revealSearchField(in: app)
     searchField.tap()
     searchField.typeText("nonexistent conversation title")
     XCTAssertTrue(row.waitForNonExistence(timeout: 5))

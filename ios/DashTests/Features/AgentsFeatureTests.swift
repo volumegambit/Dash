@@ -335,6 +335,169 @@ struct AgentsFeatureTests {
     #expect(feature.startedConversationID == nil)
   }
 
+  // MARK: - Change model from a conversation (goal 2026-09-04)
+
+  @Test("changeModel patches only the model, updates the agent, and records the change for the toast")
+  func changeModelPatchesModel() async {
+    let before = agent(id: "agent-1", name: "Research", model: "openai/gpt-5")
+    let after = agent(id: "agent-1", name: "Research", model: "openai/gpt-5-mini")
+    let service = FakeAgentsService(
+      models: [ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI")]
+    )
+    await service.enqueueUpdate(.success(after))
+    let feature = makeOnlineFeature(service: service, agents: [before])
+    await feature.loadModels()
+
+    let changed = await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5-mini")
+
+    #expect(changed == true)
+    let calls = await service.updateCalls
+    #expect(calls.count == 1)
+    #expect(calls.first?.id == "agent-1")
+    #expect(calls.first?.request.model == "openai/gpt-5-mini")
+    #expect(calls.first?.request.systemPrompt == nil)
+    #expect(feature.agents.first(where: { $0.id == "agent-1" })?.config.model == "openai/gpt-5-mini")
+    #expect(feature.lastModelChange?.agentID == "agent-1")
+    #expect(feature.lastModelChange?.modelLabel == "GPT-5 mini")
+    #expect(feature.mutationError == nil)
+  }
+
+  @Test("changeModel to the model already in use is a no-op that reports success without a request")
+  func changeModelSameModelIsNoOp() async {
+    let current = agent(id: "agent-1", model: "openai/gpt-5")
+    let service = FakeAgentsService()
+    let feature = makeOnlineFeature(service: service, agents: [current])
+
+    #expect(await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5") == true)
+    #expect(await service.updateCalls.isEmpty)
+    #expect(feature.lastModelChange == nil)
+  }
+
+  @Test("changeModel fails closed offline and surfaces the mutation error")
+  func changeModelOffline() async {
+    let current = agent(id: "agent-1", model: "openai/gpt-5")
+    let service = FakeAgentsService()
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .offline, agents: [current]))
+
+    #expect(await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5-mini") == false)
+    #expect(await service.updateCalls.isEmpty)
+    #expect(feature.mutationError != nil)
+  }
+
+  @Test("changeModel reports failure and keeps the old model when the gateway rejects it")
+  func changeModelGatewayFailure() async {
+    let current = agent(id: "agent-1", model: "openai/gpt-5")
+    let service = FakeAgentsService()
+    // A validation refusal (not `.notFound`, which the feature treats as
+    // "agent deleted remotely" and drops from the list).
+    await service.enqueueUpdate(.failure(GatewayError.validation("model not supported")))
+    let feature = makeOnlineFeature(service: service, agents: [current])
+
+    #expect(await feature.changeModel(agentID: "agent-1", to: "openai/gpt-5-mini") == false)
+    #expect(feature.agents.first?.config.model == "openai/gpt-5")
+    #expect(feature.mutationError != nil)
+    #expect(feature.lastModelChange == nil)
+  }
+
+  @Test("loading memories keys the rows by agent")
+  func loadMemories() async {
+    let service = FakeAgentsService()
+    await service.setMemories([timezoneMemory, pnpmMemory], agentID: "a")
+    let feature = makeOnlineFeature(service: service, agents: [agent(id: "a")])
+
+    await feature.loadMemories(agentID: "a")
+
+    #expect(feature.memories["a"]?.map(\.name) == ["user-timezone", "repo-pnpm"])
+    #expect(feature.memories["b"] == nil)
+    #expect(feature.mutationError == nil)
+  }
+
+  @Test("a failed memory read degrades to an empty section without an alert")
+  func loadMemoriesFailureIsQuiet() async {
+    let service = FakeAgentsService(memoryError: GatewayError.gatewayOffline)
+    let feature = makeOnlineFeature(service: service, agents: [agent(id: "a")])
+
+    await feature.loadMemories(agentID: "a")
+
+    #expect(feature.memories["a"] == [])
+    // Opening an agent while the gateway is unreachable must not raise the
+    // shared "Agent update failed" alert.
+    #expect(feature.mutationError == nil)
+  }
+
+  @Test("deleting a memory removes the row before the gateway answers")
+  func deleteMemoryIsOptimistic() async {
+    let gate = TestGate()
+    let service = FakeAgentsService(memoryGate: gate)
+    await service.setMemories([timezoneMemory, pnpmMemory], agentID: "a")
+    let feature = makeOnlineFeature(service: service, agents: [agent(id: "a")])
+    await feature.loadMemories(agentID: "a")
+
+    let delete = Task { await feature.deleteMemory(agentID: "a", name: "user-timezone") }
+    await gate.waitUntilWaiting()
+
+    #expect(feature.memories["a"]?.map(\.name) == ["repo-pnpm"])
+
+    await gate.release()
+    let removed = await delete.value
+
+    #expect(removed)
+    #expect(await service.deletedMemories.map(\.name) == ["user-timezone"])
+    #expect(await service.deletedMemories.map(\.agentID) == ["a"])
+    #expect(feature.memories["a"]?.map(\.name) == ["repo-pnpm"])
+    #expect(feature.mutationError == nil)
+  }
+
+  @Test("a memory the gateway no longer has rolls back and reports the failure")
+  func deleteMemoryNotFoundRollsBack() async {
+    let service = FakeAgentsService()
+    await service.setMemories([timezoneMemory, pnpmMemory], agentID: "a")
+    await service.enqueueMemoryDeletion(.failure(GatewayError.notFound))
+    let feature = makeOnlineFeature(service: service, agents: [agent(id: "a")])
+    await feature.loadMemories(agentID: "a")
+
+    #expect(await feature.deleteMemory(agentID: "a", name: "user-timezone") == false)
+    #expect(feature.memories["a"]?.map(\.name) == ["user-timezone", "repo-pnpm"])
+    #expect(feature.mutationError != nil)
+  }
+
+  @Test("deleting a memory offline never reaches the gateway")
+  func deleteMemoryOffline() async {
+    let service = FakeAgentsService()
+    await service.setMemories([timezoneMemory], agentID: "a")
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .offline, agents: [agent(id: "a")]))
+
+    #expect(await feature.deleteMemory(agentID: "a", name: "user-timezone") == false)
+    #expect(await service.deletedMemories.isEmpty)
+    #expect(feature.mutationError != nil)
+  }
+
+  private var timezoneMemory: MemoryInfoDTO {
+    MemoryInfoDTO(
+      name: "user-timezone",
+      description: "Gerry is in Singapore (UTC+8)",
+      type: .user,
+      source: "agent",
+      createdAt: "2026-09-05",
+      updatedAt: "2026-09-05",
+      size: 24
+    )
+  }
+
+  private var pnpmMemory: MemoryInfoDTO {
+    MemoryInfoDTO(
+      name: "repo-pnpm",
+      description: "The repo uses pnpm",
+      type: .project,
+      source: "sweep",
+      createdAt: "2026-09-05",
+      updatedAt: "2026-09-05",
+      size: 18
+    )
+  }
+
   private func makeFeature(service: FakeAgentsService) -> AgentsFeature {
     AgentsFeature(gatewayID: "gateway", service: service)
   }
@@ -446,10 +609,20 @@ private actor FakeAgentsService: AgentsServicing {
     let enabled: Bool
   }
 
+  struct MemoryDeleteCall: Equatable, Sendable {
+    let agentID: String
+    let name: String
+  }
+
   private let cached: [RegisteredAgentDTO]
   private let modelValues: [ModelDTO]
   private let refreshGate: TestGate?
   private let actionGate: TestGate?
+  private let memoryGate: TestGate?
+  private let memoryError: GatewayError?
+  private var memoryValues: [String: [MemoryInfoDTO]] = [:]
+  private var memoryDeleteResults: [FakeAgentsResult<Bool>] = []
+  private(set) var deletedMemories: [MemoryDeleteCall] = []
   private var refreshResults: [FakeAgentsResult<[RegisteredAgentDTO]>] = []
   private var createResults: [FakeAgentsResult<RegisteredAgentDTO>] = []
   private var updateResults: [FakeAgentsResult<RegisteredAgentDTO>] = []
@@ -469,12 +642,16 @@ private actor FakeAgentsService: AgentsServicing {
     models: [ModelDTO] = [],
     refreshGate: TestGate? = nil,
     actionGate: TestGate? = nil,
+    memoryGate: TestGate? = nil,
+    memoryError: GatewayError? = nil,
     archivedConversationCount: Int = 0
   ) {
     self.cached = cached
     modelValues = models
     self.refreshGate = refreshGate
     self.actionGate = actionGate
+    self.memoryGate = memoryGate
+    self.memoryError = memoryError
     self.archivedConversationCount = archivedConversationCount
   }
 
@@ -541,6 +718,35 @@ private actor FakeAgentsService: AgentsServicing {
     startedAgentIDs.append(agentID)
     guard conversationResults.isEmpty == false else { throw GatewayError.updateRequired }
     return try conversationResults.removeFirst().get()
+  }
+
+  func setMemories(_ values: [MemoryInfoDTO], agentID: String) {
+    memoryValues[agentID] = values
+  }
+
+  func enqueueMemoryDeletion(_ result: FakeAgentsResult<Bool>) {
+    memoryDeleteResults.append(result)
+  }
+
+  func memories(for agentID: String) throws -> [MemoryInfoDTO] {
+    if let memoryError { throw memoryError }
+    return memoryValues[agentID] ?? []
+  }
+
+  func skills(for agentID: String) throws -> [SkillDTO] {
+    _ = agentID
+    return []
+  }
+
+  func deleteMemory(agentID: String, name: String) async throws {
+    deletedMemories.append(MemoryDeleteCall(agentID: agentID, name: name))
+    await memoryGate?.wait()
+    guard memoryDeleteResults.isEmpty == false else {
+      memoryValues[agentID]?.removeAll { $0.name == name }
+      return
+    }
+    _ = try memoryDeleteResults.removeFirst().get()
+    memoryValues[agentID]?.removeAll { $0.name == name }
   }
 
   func shutdown() {}
@@ -810,6 +1016,22 @@ private actor AgentServiceGatewayStub: AgentsGatewayServicing {
     throw GatewayError.updateRequired
   }
 
+  func listMemories(agentID: String) throws -> [MemoryInfoDTO] {
+    _ = agentID
+    throw GatewayError.updateRequired
+  }
+
+  func listSkills(agentId: String) throws -> [SkillDTO] {
+    _ = agentId
+    throw GatewayError.updateRequired
+  }
+
+  func deleteMemory(agentID: String, name: String) throws {
+    _ = agentID
+    _ = name
+    throw GatewayError.updateRequired
+  }
+
   func shutdown() {}
 }
 
@@ -989,5 +1211,180 @@ private actor AgentServiceConversationStub: ConversationListServicing {
 
   func retainedRequestID(agentID: String) -> String? {
     retainedRequestIDs[agentID]
+  }
+}
+
+/// `ModelCatalog` — the pure grouping/labeling shared by the agent editor and
+/// the chat toolbar's model picker (goal 2026-09-04).
+@Suite("ModelCatalog")
+struct ModelCatalogTests {
+  private let models = [
+    ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "OpenAI"),
+    ModelDTO(value: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5", provider: "Anthropic"),
+    ModelDTO(value: "openai/gpt-5-mini", label: "GPT-5 mini", provider: "OpenAI"),
+  ]
+
+  @Test("groups by provider, providers and labels sorted case-insensitively")
+  func groups() {
+    let groups = ModelCatalog.grouped(models, query: "")
+    #expect(groups.map(\.provider) == ["Anthropic", "OpenAI"])
+    #expect(groups[1].models.map(\.value) == ["openai/gpt-5", "openai/gpt-5-mini"])
+  }
+
+  @Test("filters by label, value, or provider, case-insensitively")
+  func filters() {
+    #expect(ModelCatalog.grouped(models, query: "MINI").flatMap(\.models).map(\.value) == ["openai/gpt-5-mini"])
+    #expect(ModelCatalog.grouped(models, query: "anthropic").flatMap(\.models).count == 1)
+    #expect(ModelCatalog.grouped(models, query: "zzz").isEmpty)
+  }
+
+  @Test("label(for:) uses the catalog label, else the value without its provider prefix")
+  func labels() {
+    #expect(ModelCatalog.label(for: "openai/gpt-5-mini", in: models) == "GPT-5 mini")
+    #expect(ModelCatalog.label(for: "vendor/new-model", in: models) == "new-model")
+    #expect(ModelCatalog.label(for: "bare", in: models) == "bare")
+  }
+
+  // MARK: - providerDisplayName (chat UI polish 2026-09-05)
+
+  @Test(
+    "providerDisplayName renders the bundled core providers the way their vendors write them",
+    arguments: [
+      ("anthropic", "Anthropic"),
+      ("openai", "OpenAI"),
+      ("google", "Google"),
+      ("moonshotai", "Moonshot AI"),
+      ("openrouter", "OpenRouter"),
+    ]
+  )
+  func providerDisplayNameCoreProviders(id: String, expected: String) {
+    #expect(ModelCatalog.providerDisplayName(id) == expected)
+  }
+
+  @Test("providerDisplayName capitalizes an unknown plugin provider")
+  func providerDisplayNameUnknownProvider() {
+    // Plugins register arbitrary provider ids at runtime (only the five in
+    // `RESERVED_PROVIDER_IDS`, packages/plugins/src/loader.ts, are reserved),
+    // so the map can never be exhaustive. An unmapped id still has to read as
+    // a name rather than a slug.
+    #expect(ModelCatalog.providerDisplayName("acme") == "Acme")
+  }
+
+  @Test("providerDisplayName is idempotent for an already-cased id")
+  func providerDisplayNameAlreadyCased() {
+    // The gateway sends whatever the catalog declares, which for some
+    // providers is already display-cased — running it through the map a
+    // second time must not mangle it.
+    #expect(ModelCatalog.providerDisplayName("OpenAI") == "OpenAI")
+    #expect(ModelCatalog.providerDisplayName("Anthropic") == "Anthropic")
+  }
+
+  @Test("providerDisplayName preserves dotted ids rather than mangling them")
+  func providerDisplayNameDottedID() {
+    #expect(ModelCatalog.providerDisplayName("z.ai") == "Z.ai")
+  }
+
+  @Test("providerDisplayName passes an empty id through unchanged")
+  func providerDisplayNameEmpty() {
+    #expect(ModelCatalog.providerDisplayName("") == "")
+  }
+
+  @Test("grouped orders providers by display name, not by raw id")
+  func groupedSortsByDisplayName() {
+    let mixed = [
+      ModelDTO(value: "z.ai/glm-5.2", label: "GLM 5.2", provider: "z.ai"),
+      ModelDTO(value: "openai/gpt-5", label: "GPT-5", provider: "openai"),
+      ModelDTO(value: "anthropic/claude-opus-5", label: "Claude Opus 5", provider: "anthropic"),
+    ]
+    #expect(ModelCatalog.grouped(mixed, query: "").map(\.provider) == ["anthropic", "openai", "z.ai"])
+  }
+
+  @Test("grouped filters on the provider's display name too")
+  func groupedFiltersOnDisplayName() {
+    // The section header on screen reads "Moonshot AI"; searching the words
+    // the user just read must not come back empty because the id is
+    // `moonshotai`.
+    let kimi = [ModelDTO(value: "moonshotai/kimi-k2.5", label: "Kimi K2.5", provider: "moonshotai")]
+    #expect(ModelCatalog.grouped(kimi, query: "Moonshot AI").map(\.provider) == ["moonshotai"])
+  }
+}
+
+/// `AgentDetailPresentation` — the pure decisions behind the agent detail
+/// screen (2026-09-07 refinement): which sections earn a header, whether
+/// Start Chat is offered, and when a system prompt needs a clamp.
+@Suite("AgentDetailPresentation")
+struct AgentDetailPresentationTests {
+  private func config(
+    fallbackModels: [String]? = nil,
+    workspace: String? = nil,
+    maxTokens: Int? = nil,
+    providers: [String]? = nil,
+    plugins: [String]? = nil
+  ) -> AgentConfigDTO {
+    AgentConfigDTO(
+      name: "Agent",
+      model: "openai/gpt-5",
+      systemPrompt: "Be brief",
+      fallbackModels: fallbackModels,
+      tools: ["read"],
+      skills: nil,
+      workspace: workspace,
+      maxTokens: maxTokens,
+      mcpServers: nil,
+      swarm: nil,
+      plugins: plugins,
+      providers: providers
+    )
+  }
+
+  @Test("Configuration section is omitted when every optional is absent or empty")
+  func configurationOmittedWhenEmpty() {
+    #expect(AgentDetailPresentation.hasConfiguration(config()) == false)
+    #expect(
+      AgentDetailPresentation.hasConfiguration(
+        config(fallbackModels: [], workspace: "", providers: [], plugins: [])
+      ) == false
+    )
+  }
+
+  @Test("Configuration section appears for any single populated value")
+  func configurationShownForAnyValue() {
+    #expect(AgentDetailPresentation.hasConfiguration(config(fallbackModels: ["openai/gpt-5-mini"])))
+    #expect(AgentDetailPresentation.hasConfiguration(config(workspace: "/srv/app")))
+    #expect(AgentDetailPresentation.hasConfiguration(config(maxTokens: 4096)))
+    #expect(AgentDetailPresentation.hasConfiguration(config(providers: ["openai"])))
+    #expect(AgentDetailPresentation.hasConfiguration(config(plugins: ["dash-core-providers"])))
+  }
+
+  @Test("Start Chat needs an online gateway and an agent that is not disabled")
+  func startChatGating() {
+    #expect(AgentDetailPresentation.canStartChat(status: .registered, online: true))
+    #expect(AgentDetailPresentation.canStartChat(status: .active, online: true))
+    #expect(AgentDetailPresentation.canStartChat(status: .disabled, online: true) == false)
+    #expect(AgentDetailPresentation.canStartChat(status: .registered, online: false) == false)
+  }
+
+  @Test("Start Chat hint explains the blocking condition, offline first")
+  func startChatHint() {
+    #expect(AgentDetailPresentation.startChatHint(status: .registered, online: true) == "")
+    #expect(
+      AgentDetailPresentation.startChatHint(status: .disabled, online: true)
+        == "Enable this agent to start a conversation"
+    )
+    #expect(
+      AgentDetailPresentation.startChatHint(status: .disabled, online: false)
+        == "Connect to the gateway to start a conversation"
+    )
+  }
+
+  @Test("System prompt is long when it has many lines or many characters")
+  func promptClamp() {
+    #expect(AgentDetailPresentation.isPromptLong("Research carefully") == false)
+    let fiveLines = Array(repeating: "line", count: 5).joined(separator: "\n")
+    #expect(AgentDetailPresentation.isPromptLong(fiveLines) == false)
+    let sevenLines = Array(repeating: "line", count: 7).joined(separator: "\n")
+    #expect(AgentDetailPresentation.isPromptLong(sevenLines))
+    let wall = String(repeating: "x", count: 400)
+    #expect(AgentDetailPresentation.isPromptLong(wall))
   }
 }

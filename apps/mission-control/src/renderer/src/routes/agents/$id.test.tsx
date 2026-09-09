@@ -97,4 +97,70 @@ describe('AgentDetail', () => {
       search: { agentId: 'Developer' },
     });
   });
+
+  // Agent-detail refinement (2026-09-07), findings 13 + 14.
+  describe('Overview tab', () => {
+    it('shows status once, in the header badge, never as a raw row', async () => {
+      const registered = { ...activeAgent, status: 'registered' as const };
+      mockApi.agentsList.mockResolvedValue([registered]);
+      useAgentsStore.setState({ agents: [registered], loading: false, error: null });
+      render(<AgentDetail />);
+      // The badge folds `registered` into "active"; the Agent Info card used
+      // to print the raw enum beside it, so the page disagreed with itself.
+      expect(await screen.findByText('active')).toBeInTheDocument();
+      expect(screen.queryByText('registered')).not.toBeInTheDocument();
+      expect(screen.queryByText('Status')).not.toBeInTheDocument();
+    });
+
+    it('has no permanent Recent Activity placeholder', async () => {
+      render(<AgentDetail />);
+      expect(await screen.findByText('Agent Info')).toBeInTheDocument();
+      expect(screen.queryByText('Recent Activity')).not.toBeInTheDocument();
+      expect(screen.queryByText('No activity recorded.')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Tools card', () => {
+    function renderWithTools(tools: string[]): void {
+      const agent = { ...activeAgent, config: { ...activeAgent.config, tools } };
+      mockApi.agentsList.mockResolvedValue([agent]);
+      useAgentsStore.setState({ agents: [agent], loading: false, error: null });
+      render(<AgentDetail />);
+    }
+
+    it('renders enabled tools grouped with friendly labels', async () => {
+      renderWithTools(['read', 'grep', 'bash', 'web_search']);
+      // Group headers the deploy wizard uses.
+      expect(await screen.findByText('Read & Search')).toBeInTheDocument();
+      expect(screen.getByText('Shell')).toBeInTheDocument();
+      expect(screen.getByText('Web')).toBeInTheDocument();
+      // Friendly labels, not raw ids.
+      expect(screen.getByText('Grep')).toBeInTheDocument();
+      expect(screen.getByText('Web Search')).toBeInTheDocument();
+      // A group with no enabled tools is omitted.
+      expect(screen.queryByText('Modify Files')).not.toBeInTheDocument();
+    });
+
+    it('shows a plain-language description on each group', async () => {
+      renderWithTools(['read']);
+      expect(await screen.findByText('Browse and search the project')).toBeInTheDocument();
+    });
+
+    it('surfaces the enabled tool count in the card header', async () => {
+      renderWithTools(['read', 'grep', 'bash']);
+      await screen.findByText('Read & Search');
+      expect(screen.getByText('3')).toBeInTheDocument();
+    });
+
+    it('collects unknown tool ids under an Other group with a humanized label', async () => {
+      renderWithTools(['read', 'linear_search_issues']);
+      expect(await screen.findByText('Other')).toBeInTheDocument();
+      expect(screen.getByText('Linear Search Issues')).toBeInTheDocument();
+    });
+
+    it('shows an empty state when no tools are enabled', async () => {
+      renderWithTools([]);
+      expect(await screen.findByText('No tools enabled')).toBeInTheDocument();
+    });
+  });
 });

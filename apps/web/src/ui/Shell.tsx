@@ -10,6 +10,7 @@ import { ChatView } from './ChatView.js';
 import { ConversationList } from './ConversationList.js';
 import { Devices } from './Devices.js';
 import { GatewayPicker } from './GatewayPicker.js';
+import { Skills } from './Skills.js';
 import { TasksPanel, countLiveSubagents } from './TasksPanel.js';
 
 /**
@@ -334,7 +335,7 @@ function ChatWorkspace({
   credentialStore,
   onGatewayForgotten,
 }: ChatWorkspaceProps) {
-  const [screen, setScreen] = useState<'conversations' | 'devices'>('conversations');
+  const [screen, setScreen] = useState<'conversations' | 'devices' | 'skills'>('conversations');
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /** The tasks panel (§8.4). Local, like `sidebarOpen`: it is this
@@ -344,6 +345,9 @@ function ChatWorkspace({
 
   const useAppStore = useWebAppStore();
   const cancelTurn = useAppStore((s) => s.cancelTurn);
+  // The store's own REST client, so the skills screen reuses this gateway's
+  // credentials rather than constructing a second client.
+  const skillsClient = useAppStore((s) => s.rest);
   // Same "streaming" definition `ChatView` uses for the same conversation
   // (`transcript?.streaming != null`) — recomputed here independently
   // because `ChatWorkspace` (not `ChatView`) is what owns this shortcut
@@ -545,6 +549,13 @@ function ChatWorkspace({
           </button>
           <button
             type="button"
+            onClick={() => setScreen('skills')}
+            aria-current={screen === 'skills' ? 'page' : undefined}
+          >
+            Skills
+          </button>
+          <button
+            type="button"
             onClick={() => setScreen('devices')}
             aria-current={screen === 'devices' ? 'page' : undefined}
           >
@@ -553,7 +564,9 @@ function ChatWorkspace({
         </nav>
       </div>
       <div className={tasksVisible ? 'app-body app-body--tasks' : 'app-body'}>
-        {screen === 'devices' ? (
+        {screen === 'skills' ? (
+          <Skills client={skillsClient} />
+        ) : screen === 'devices' ? (
           <Devices
             gatewayId={gateway.gatewayId}
             currentPairingId={currentPairingId}

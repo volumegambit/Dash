@@ -15,9 +15,14 @@ import type {
   IssueDetail,
   IssueEvent,
   IssueFilters,
+  LessonBookInfo,
   McpAddServerRequest,
   McpAddServerResponse,
   McpServerInfo,
+  MemoryConfig,
+  MemoryContent,
+  MemoryInfo,
+  MemoryType,
   PluginInstallResponse,
   PluginListResponse,
   PluginRecord,
@@ -130,6 +135,26 @@ export class ManagementClient {
     return this.request<SkillInfo[]>('GET', `/agents/${encodeURIComponent(agentName)}/skills`);
   }
 
+  /** The lessons behind a learned skill; 404s for a skill that is not one. */
+  async lessons(agentName: string, skillName: string): Promise<LessonBookInfo> {
+    return this.request<LessonBookInfo>(
+      'GET',
+      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}/lessons`,
+    );
+  }
+
+  /** Retire one lesson. It is kept in `retired`, not deleted. */
+  async retireLesson(
+    agentName: string,
+    skillName: string,
+    lessonId: string,
+  ): Promise<LessonBookInfo> {
+    return this.request<LessonBookInfo>(
+      'DELETE',
+      `/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skillName)}/lessons/${encodeURIComponent(lessonId)}`,
+    );
+  }
+
   async skill(agentName: string, skillName: string): Promise<SkillContent> {
     return this.request<SkillContent>(
       'GET',
@@ -189,6 +214,53 @@ export class ManagementClient {
     await this.request<{ name: string }>(
       'DELETE',
       `/agents/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillName)}`,
+    );
+  }
+
+  // --- Agent memory ---
+
+  async memories(agentId: string): Promise<MemoryInfo[]> {
+    return this.request<MemoryInfo[]>('GET', `/agents/${encodeURIComponent(agentId)}/memory`);
+  }
+
+  async memory(agentId: string, name: string): Promise<MemoryContent> {
+    return this.request<MemoryContent>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async putMemory(
+    agentId: string,
+    name: string,
+    input: { description: string; type: MemoryType; content: string },
+  ): Promise<{ record: MemoryContent; action: 'created' | 'updated' }> {
+    return this.requestWithBody<{ record: MemoryContent; action: 'created' | 'updated' }>(
+      'PUT',
+      `/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(name)}`,
+      input,
+    );
+  }
+
+  async removeMemory(agentId: string, name: string): Promise<void> {
+    await this.request<{ name: string }>(
+      'DELETE',
+      `/agents/${encodeURIComponent(agentId)}/memory/${encodeURIComponent(name)}`,
+    );
+  }
+
+  async memoryConfig(agentId: string): Promise<MemoryConfig> {
+    return this.request<MemoryConfig>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/memory/config`,
+    );
+  }
+
+  async updateMemoryConfig(agentId: string, patch: Partial<MemoryConfig>): Promise<MemoryConfig> {
+    return this.requestWithBody<MemoryConfig>(
+      'PATCH',
+      `/agents/${encodeURIComponent(agentId)}/memory/config`,
+      patch,
     );
   }
 

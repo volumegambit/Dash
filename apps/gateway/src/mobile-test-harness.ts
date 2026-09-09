@@ -296,6 +296,12 @@ export async function startMobileTestHarness(
   const agents = createAgentChatCoordinator({
     registry: agentRegistry,
     poolMaxSize: 32,
+    // Memory is ON for this harness (mirrors the production wiring in index.ts)
+    // so the mobile memory routes emit REAL store output — the contract-output
+    // suite validates those DTOs against the published schemas. Without a
+    // resolver the coordinator reports memory as disabled and every read
+    // degrades to an empty list, which would validate vacuously.
+    memoryDir: (agentId) => join(dataDir, 'memory', agentId),
     createBackend: async () => new ScriptedMobileBackend(scenario, slowEventRelease.promise),
   });
   gateway.registerAgent(registered.id, {

@@ -158,6 +158,9 @@ const api: MissionControlAPI = {
 
   // Skills
   skillsList: (agentId) => ipcRenderer.invoke('skills:list', agentId),
+  skillsLessons: (agentId, skillName) => ipcRenderer.invoke('skills:lessons', agentId, skillName),
+  skillsRetireLesson: (agentId, skillName, lessonId) =>
+    ipcRenderer.invoke('skills:retireLesson', agentId, skillName, lessonId),
   skillsGet: (agentId, skillName) => ipcRenderer.invoke('skills:get', agentId, skillName),
   skillsUpdateContent: (agentId, skillName, content) =>
     ipcRenderer.invoke('skills:updateContent', agentId, skillName, content),
@@ -169,6 +172,14 @@ const api: MissionControlAPI = {
   skillsInstall: (agentId, source, name) =>
     ipcRenderer.invoke('skills:install', agentId, source, name),
   skillsRemove: (agentId, skillName) => ipcRenderer.invoke('skills:remove', agentId, skillName),
+
+  // Agent memory
+  memoryList: (agentId) => ipcRenderer.invoke('memory:list', agentId),
+  memoryGet: (agentId, name) => ipcRenderer.invoke('memory:get', agentId, name),
+  memoryPut: (agentId, name, input) => ipcRenderer.invoke('memory:put', agentId, name, input),
+  memoryRemove: (agentId, name) => ipcRenderer.invoke('memory:remove', agentId, name),
+  memoryGetConfig: (agentId) => ipcRenderer.invoke('memory:getConfig', agentId),
+  memoryUpdateConfig: (agentId, patch) => ipcRenderer.invoke('memory:updateConfig', agentId, patch),
 
   // Swarm panel
   subagentsList: (conversationId) => ipcRenderer.invoke('subagents:list', conversationId),
