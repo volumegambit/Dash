@@ -1533,9 +1533,9 @@ struct ChatReducerTests {
     ChatReducer.reduce(state: &state, action: .frame(eventFrame(seq: seq, event: event)))
   }
 
-  private func chatState(cursor: Int = 0) -> ChatState {
+  private func chatState(cursor: Int = 0, conversationID: String = "conv-1") -> ChatState {
     ChatState(
-      conversation: summary(lastSeq: cursor),
+      conversation: summary(lastSeq: cursor, id: conversationID),
       messages: [],
       draft: "",
       attachments: [],
@@ -1723,10 +1723,11 @@ struct ChatReducerTests {
     status: ConversationStatus = .idle,
     activeTurnID: String? = nil,
     lastSeq: Int = 0,
-    title: String = "Chat"
+    title: String = "Chat",
+    id: String = "conv-1"
   ) -> ConversationSummaryDTO {
     ConversationSummaryDTO(
-      id: "conv-1",
+      id: id,
       agentId: "agent-1",
       agentName: "Dash",
       title: title,
@@ -1825,6 +1826,70 @@ struct ChatReducerTests {
   }
 
   /// The events of the FIRST turn in a captured `MobileWSServerFrame` stream.
+  // MARK: - D2: a notification turn re-anchoring a child that already has a card
+
+  /// D2 on iOS — every background child drew a SECOND card.
+  ///
+  /// Fixed on Mission Control by `01eae2ed` and on web beside this commit;
+  /// E3-x1 recorded iOS as affected and unfixed. The fold is per MESSAGE on
+  /// every client by construction — a card is anchored by the
+  /// `subagent_started` in its own message — so it cannot see that this child
+  /// already has a card earlier in the conversation, and §31.4/§32.8.4's rule
+  /// that an orphan terminal anchors its own card draws a second one.
+  ///
+  /// `subagent-notification-frames.jsonl` is one real conversation, captured
+  /// verbatim: an assistant turn that spawns a background `writer`, then the
+  /// server-initiated notification turn its completion wakes, which REPLAYS
+  /// the child's `subagent_finished`. Every frame is driven through the
+  /// reducer the way the socket drives it.
+  @Test("a notification turn draws no second card for a child that already has one")
+  func capturedNotificationTurnDrawsOneCard() throws {
+    let frames = try capturedFrames("subagent-notification-frames.jsonl")
+    // The capture's OWN conversation id: `reduceFrame` drops every frame for
+    // another conversation, so a mismatched fixture would assert on nothing.
+    var state = chatState(conversationID: "643362aa-97e0-4a2d-8f1f-1f9b7cdca560")
+    for frame in frames {
+      _ = ChatReducer.reduce(state: &state, action: .frame(frame))
+    }
+    // Two assistant messages, one child.
+    #expect(state.messages.filter { $0.role == .assistant }.count == 2)
+    let cards = state.messages.compactMap(\.assistant).flatMap(\.subagentCards)
+    #expect(cards.map(\.id) == ["sub_01M21PVS839FQA3STD22Z2BNKM"])
+    // A MERGE, not a suppression: the surviving card carries the terminal the
+    // notification turn delivered, and is still anchored by its OWN start.
+    #expect(cards.first?.status == .done)
+    #expect(cards.first?.endedAt != nil)
+    #expect(cards.first?.isOrphan == false)
+    #expect(cards.first?.background == true)
+  }
+
+  /// The crash-reconcile case §31.4 / §32.8.4 exist for: when only the orphan
+  /// terminal survives, it is the ONLY card anyone will ever draw and it keeps
+  /// its own anchor.
+  @Test("an orphan terminal with no earlier anchor still draws its own card")
+  func capturedOrphanTerminalKeepsItsCard() throws {
+    let frames = try capturedFrames("subagent-notification-frames.jsonl")
+    // Cursor 11 so the notification turn's own `seq: 12` is the NEXT frame:
+    // starting at 0 would trip the gap detector and park every frame.
+    var state = chatState(cursor: 11, conversationID: "643362aa-97e0-4a2d-8f1f-1f9b7cdca560")
+    // Everything from the notification turn's `accepted` onwards.
+    guard
+      let notificationStart = frames.firstIndex(where: { frame in
+        if case let .accepted(_, _, _, _, _, _, origin, _, _) = frame { return origin != nil }
+        return false
+      })
+    else {
+      Issue.record("the capture has no notification accepted")
+      return
+    }
+    for frame in frames[notificationStart...] {
+      _ = ChatReducer.reduce(state: &state, action: .frame(frame))
+    }
+    let cards = state.messages.compactMap(\.assistant).flatMap(\.subagentCards)
+    #expect(cards.map(\.id) == ["sub_01M21PVS839FQA3STD22Z2BNKM"])
+    #expect(cards.first?.isOrphan == true)
+  }
+
   private func capturedEvents(_ name: String) throws -> [AgentEvent] {
     let text = String(decoding: try FixtureLoader.data(name), as: UTF8.self)
     let decoder = ContractCoding.decoder()
@@ -1842,6 +1907,16 @@ struct ChatReducerTests {
       }
     }
     return events
+  }
+
+  /// Every frame in a capture, in order — `accepted`/`event`/`done` alike, so
+  /// a multi-TURN capture drives the reducer the way the socket does.
+  private func capturedFrames(_ name: String) throws -> [MobileWSServerFrame] {
+    let text = String(decoding: try FixtureLoader.data(name), as: UTF8.self)
+    let decoder = ContractCoding.decoder()
+    return try text.split(whereSeparator: \.isNewline)
+      .filter { $0.isEmpty == false }
+      .map { try decoder.decode(MobileWSServerFrame.self, from: Data($0.utf8)) }
   }
 
   private func foldCapture(_ name: String) throws -> [SubagentCardState] {

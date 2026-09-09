@@ -414,6 +414,34 @@ struct SubagentDraft: Equatable, Sendable {
   var progressToolCallCount: Int?
   var finishedToolCallCount: Int?
 
+  /// Take a LATER copy of the same child, keeping THIS draft's anchor.
+  ///
+  /// D2's merge rule: a notification turn re-reports a child that already has a
+  /// card, and the two copies disagree — the later one is better (it carries
+  /// the terminal, the end time and the final tool count). Field-wise
+  /// "later non-nil wins" is exactly what the message-scoped fold already does
+  /// when a second event for the same child lands in the same message; the
+  /// anchor fields (`anchorIndex`, `chromeRank`, `hasStart`, `isOrphan`) are
+  /// deliberately NOT taken, so the card does not move and does not become an
+  /// orphan.
+  mutating func merge(later other: SubagentDraft) {
+    name = other.name ?? name
+    type = other.type ?? type
+    descriptionText = other.descriptionText ?? descriptionText
+    background = other.background ?? background
+    depth = other.depth ?? depth
+    startedAt = other.startedAt ?? startedAt
+    endedAt = other.endedAt ?? endedAt
+    terminal = other.terminal ?? terminal
+    report = other.report ?? report
+    live = other.live ?? live
+    detail = other.detail ?? detail
+    question = other.question ?? question
+    usage = other.usage ?? usage
+    progressToolCallCount = other.progressToolCallCount ?? progressToolCallCount
+    finishedToolCallCount = other.finishedToolCallCount ?? finishedToolCallCount
+  }
+
   func resolve(isStreaming: Bool, previous: SubagentDraft?) -> SubagentCardState {
     let description = descriptionText ?? ""
     let latestDetail = detail
@@ -501,6 +529,7 @@ enum ChatReducer {
     switch action {
     case let .cachedMessagesLoaded(messages, cursor):
       state.messages = messages.sorted { $0.ordinal < $1.ordinal }.map(projectMessage)
+      reconcileSubagentAnchors(&state.messages)
       state.lastAppliedSeq = max(state.lastAppliedSeq, cursor)
       state.pendingGapFrame = nil
       return []
@@ -511,6 +540,7 @@ enum ChatReducer {
         byID[message.id] = projectMessage(message)
       }
       state.messages = byID.values.sorted(by: messageOrder)
+      reconcileSubagentAnchors(&state.messages)
       state.olderCursor = nextCursor
       state.isLoadingOlder = false
       return []
@@ -899,6 +929,10 @@ enum ChatReducer {
       project(event, onto: &assistant)
       state.messages[index].assistant = assistant
       state.messages[index].status = .streaming
+      // D2: only an event that names a child can create a duplicate card, so
+      // the conversation-scoped pass runs on those three and not on every
+      // token delta.
+      if namesSubagent(event) { reconcileSubagentAnchors(&state.messages) }
       return []
 
     case let .done(id, _, _, outcome):
@@ -1326,6 +1360,73 @@ enum ChatReducer {
 
   /// The tool whose call IS a child, so its own rows are the card, not content.
   private static let spawningToolName = "agent"
+
+  /// True for the three events that name a child and fold into a card.
+  private static func namesSubagent(_ event: AgentEvent) -> Bool {
+    switch event {
+    case .subagentStarted, .subagentProgress, .subagentFinished: true
+    default: false
+    }
+  }
+
+  /// Fold every message's sub-agent drafts back onto the message that ANCHORED
+  /// each child (D2). The iOS twin of MC's `mergeSubagentEventLists`
+  /// (`chat.swarm.ts`) and web's (`blocks/subagents.ts`).
+  ///
+  /// The fold is message-scoped, and it must be: a card is anchored by the
+  /// `subagent_started` in its own message. But a CONVERSATION is not. A
+  /// background child's completion wakes the conversation with a
+  /// server-initiated notification turn that REPLAYS its `subagent_finished`,
+  /// and the rule that an orphan terminal still anchors its own card (§31.4,
+  /// §32.8.4) — correct in isolation, and asserted on purpose by
+  /// `subagents:e2e` — then draws a SECOND card for a child that already has
+  /// one. `subagent-notification-frames.jsonl` is exactly that, captured.
+  ///
+  /// A merge and not a suppression: the later copy carries the terminal, and
+  /// dropping it would leave the first card `running` for ever, since a
+  /// background child is exempt from end-of-stream terminalization by design.
+  ///
+  /// A child with no EARLIER anchor is left exactly where it is — the
+  /// crash-reconcile case §31.4 exists for, where the orphan terminal is the
+  /// only card anyone will ever draw.
+  ///
+  /// Scoped to the conversation being viewed, matching MC, which merged
+  /// `selectedMessages` only: a nested child transcript (`applyChildFrame`)
+  /// still folds per message.
+  static func reconcileSubagentAnchors(_ rows: inout [ChatMessageState]) {
+    var anchorOf: [String: Int] = [:]
+    for (index, row) in rows.enumerated() {
+      guard let assistant = row.assistant else { continue }
+      for draft in assistant.subagentDrafts where draft.hasStart {
+        if anchorOf[draft.subagentID] == nil { anchorOf[draft.subagentID] = index }
+      }
+    }
+    guard anchorOf.isEmpty == false else { return }
+
+    for index in rows.indices {
+      guard var assistant = rows[index].assistant,
+        assistant.subagentDrafts.isEmpty == false
+      else { continue }
+      var moved: [SubagentDraft] = []
+      assistant.subagentDrafts.removeAll { draft in
+        guard let anchor = anchorOf[draft.subagentID], anchor != index else { return false }
+        moved.append(draft)
+        return true
+      }
+      guard moved.isEmpty == false else { continue }
+      rows[index].assistant = assistant
+      for draft in moved {
+        guard let anchor = anchorOf[draft.subagentID],
+          var target = rows[anchor].assistant,
+          let slot = target.subagentDrafts.firstIndex(where: {
+            $0.subagentID == draft.subagentID
+          })
+        else { continue }
+        target.subagentDrafts[slot].merge(later: draft)
+        rows[anchor].assistant = target
+      }
+    }
+  }
 
   private static func upsertSubagent(
     id: String,
