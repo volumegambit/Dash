@@ -708,6 +708,75 @@ describe('canonical chat store', () => {
     expect(useChatStore.getState().streamingFrames['gateway:shared-id']).toEqual([]);
   });
 
+  /**
+   * D9 — "cancelling a turn leaves the child's card spinning with a ticking
+   * clock", filed as a second mechanism. It is a CONSEQUENCE of D5.
+   *
+   * A card resolves `running` while `isStreaming`, and `isStreaming` follows
+   * `streamingFrames[key]`, which only `refreshTerminal` empties — and
+   * `refreshTerminal` runs only from the turn's `done`/`error` frame. X1's
+   * `sleep 200` child emitted a heartbeat at 10s, D5's `invalidFrame()`
+   * terminalized the turn on it, and no `done` ever arrived: the cards had
+   * nothing to end them. The pinned strip vanished anyway because it reads the
+   * purely local `sending`, which `cancelMessage` clears synchronously — which
+   * is exactly why the report says "the fold believed the stream had ended".
+   *
+   * This pins the repaired path end to end: cancel, then the `done` the
+   * transport can now deliver, and the live stream is gone.
+   */
+  it('ends the live stream when a cancelled turn reaches its done frame', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const key = 'gateway:shared-id';
+    const running = { ...gatewayConversation, status: 'running' as const, activeTurnId: 'turn-9' };
+    mockApi.chatGetConversation.mockResolvedValue({
+      ...running,
+      status: 'idle',
+      activeTurnId: null,
+    });
+    mockApi.chatGetMessages.mockResolvedValue({ items: [], nextCursor: null, throughSeq: 3 });
+    useChatStore.setState({
+      conversations: [running],
+      localTurnIds: { [key]: 'turn-9' },
+      sending: { [key]: true },
+      lastSeq: { [key]: 2 },
+      streamingFrames: {
+        [key]: [
+          {
+            type: 'event',
+            id: 'turn-9',
+            conversationId: ref.id,
+            seq: 2,
+            event: {
+              type: 'subagent_started',
+              subagentId: 'sub_slow',
+              subagentType: 'general-purpose',
+              description: 'sleep 200',
+              startedAt: '2026-09-09T00:00:00.000Z',
+            },
+          },
+        ],
+      },
+      gatewayOnline: true,
+    });
+
+    useChatStore.getState().cancelMessage(ref);
+    expect(mockApi.chatCancel).toHaveBeenCalledWith(ref, 'turn-9');
+
+    await useChatStore.getState().applyFrame({
+      type: 'done',
+      id: 'turn-9',
+      conversationId: ref.id,
+      seq: 3,
+      outcome: 'cancelled',
+    });
+
+    // No live frames left, so the fold's end-of-stream terminalization runs and
+    // the card can no longer resolve `running` (§31.9.2). §32.2.2's frozen
+    // meta follows from the same fact.
+    expect(useChatStore.getState().streamingFrames[key]).toEqual([]);
+    expect(useChatStore.getState().sending[key]).toBe(false);
+  });
+
   it('contains rejected invalidation listener work instead of detaching an unhandled promise', async () => {
     let listener!: (event: {
       type: 'changed';
