@@ -79,6 +79,7 @@ import {
   groupSubagentEvents,
   isSubagentEvent,
   isTerminalSubagentStatus,
+  mergeSubagentEventLists,
   resolveSubagentQuestion,
   resolveSubagentStatus,
   subagentElapsedMs,
@@ -2280,7 +2281,28 @@ export function Chat(): JSX.Element {
   }, []);
 
   // Scroll to bottom on new messages
-  const selectedMessages = selectedKey ? (messages[selectedKey] ?? []) : [];
+  const rawSelectedMessages = selectedKey ? (messages[selectedKey] ?? []) : [];
+  // D2: a background child's completion wakes the conversation with a
+  // server-initiated turn that REPLAYS its `subagent_finished`, and the rule
+  // that an orphan terminal anchors its own card then draws a SECOND card for
+  // a child that already has one. The fold is per message and must stay that
+  // way; the conversation is what knows better, so the reconciliation happens
+  // here, once, before any message renders.
+  const selectedMessages = useMemo(() => {
+    const merged = mergeSubagentEventLists(
+      rawSelectedMessages.map((message) =>
+        message.content.type === 'assistant' ? (message.content.events as McAgentEvent[]) : null,
+      ),
+    );
+    return rawSelectedMessages.map((message, index) => {
+      const events = merged[index];
+      if (!events || message.content.type !== 'assistant') return message;
+      if (events === message.content.events) return message;
+      return { ...message, content: { ...message.content, events } } as RenderableMessage;
+    });
+    // `rawSelectedMessages` is rebuilt on every render by the `??` above, so
+    // the memo keys on the store slice it is derived from.
+  }, [rawSelectedMessages]);
   const isStreaming = selectedKey ? (sending[selectedKey] ?? false) : false;
   const liveFrames = selectedKey ? (streamingFrames[selectedKey] ?? []) : [];
   const liveEvents = useMemo(() => eventsFromFrames(liveFrames), [liveFrames]);

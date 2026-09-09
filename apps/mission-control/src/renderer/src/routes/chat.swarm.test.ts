@@ -12,6 +12,7 @@ import {
   groupSubagentEvents,
   isSubagentEvent,
   isTerminalSubagentStatus,
+  mergeSubagentEventLists,
   resolveSubagentQuestion,
   resolveSubagentStatus,
   rowStatusOf,
@@ -800,5 +801,70 @@ describe('subagentReportSummary', () => {
 
   it('returns nothing for a report that is only whitespace and chrome', () => {
     expect(subagentReportSummary('\n\n---\n  \n')).toBe('');
+  });
+});
+
+/**
+ * D2 — every background child drew a SECOND card.
+ *
+ * `subagent-notification-frames.jsonl` is one real conversation: an assistant
+ * turn that spawns a background `writer`, then the server-initiated
+ * notification turn its completion wakes. Both messages name the same child,
+ * so the message-scoped fold — which cannot see that this child already has a
+ * card earlier in the conversation — anchors a card in each.
+ */
+describe('captured gateway streams — D2 duplicate cards', () => {
+  const messageEventLists = (file: string): McAgentEvent[][] => {
+    const frames = readFileSync(
+      resolve(__dirname, '../../../../../../contracts/mobile/v1/fixtures', file),
+      'utf8',
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: McAgentEvent });
+    const byTurn = new Map<string, McAgentEvent[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      const list = byTurn.get(frame.id) ?? [];
+      list.push(frame.event);
+      byTurn.set(frame.id, list);
+    }
+    return [...byTurn.values()];
+  };
+
+  const cardsPerMessage = (lists: readonly (McAgentEvent[] | null)[]): string[][] =>
+    lists.map((list) => (list ? groupSubagentEvents(list, false).map((g) => g.subagentId) : []));
+
+  it('the real stream anchors the same child in two messages', () => {
+    const lists = messageEventLists('subagent-notification-frames.jsonl');
+    expect(lists).toHaveLength(2);
+    const cards = cardsPerMessage(lists);
+    // The defect, stated as the fixture states it.
+    expect(cards[0]).toHaveLength(1);
+    expect(cards[1]).toEqual(cards[0]);
+  });
+
+  it('merges the notification turn back into the message that anchored the child', () => {
+    const lists = messageEventLists('subagent-notification-frames.jsonl');
+    const merged = mergeSubagentEventLists(lists);
+    const cards = cardsPerMessage(merged);
+    expect(cards[0]).toHaveLength(1);
+    expect(cards[1]).toEqual([]);
+    // Nothing is lost: the surviving card carries the terminal the
+    // notification turn delivered.
+    const group = groupSubagentEvents(merged[0] as McAgentEvent[], false)[0];
+    expect(group.status).toBe('done');
+    expect(group.endedAt).toBeDefined();
+    // Still anchored by its OWN start, not re-anchored by the moved terminal.
+    expect(group.startedAt).not.toBe('');
+    expect(group.background).toBe(true);
+  });
+
+  it('leaves a child with no earlier anchor where it is', () => {
+    // Crash-reconcile: only the terminal survives, in its own message. §31.4 /
+    // §32.8.4 keep that card, because nothing else will ever draw it.
+    const lists = messageEventLists('subagent-notification-frames.jsonl');
+    const orphanOnly = [lists[1]];
+    expect(cardsPerMessage(mergeSubagentEventLists(orphanOnly))[0]).toHaveLength(1);
   });
 });

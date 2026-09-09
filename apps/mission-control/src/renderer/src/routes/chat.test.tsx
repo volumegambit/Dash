@@ -1,4 +1,6 @@
 import '@testing-library/jest-dom/vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { ConversationRef, McConversationView } from '@dash/mc';
 import type {
   ConversationMessage,
@@ -534,6 +536,62 @@ describe('canonical conversation UI', () => {
     const orchestrator = screen.getByTestId('orchestrator-row');
     expect(orchestrator).toHaveTextContent('from orchestrator');
     expect(orchestrator).toHaveTextContent('reply with exactly the word WRITTEN');
+  });
+
+  /**
+   * D2 — a background child drew a SECOND card. On replay of one conversation
+   * with five children, `subagent-card-toggle-*` returned TEN elements
+   * (`x1-screens/32.8-replay-duplicate-cards.png`). The two copies also
+   * disagreed, one reading `0 tool uses` and the other `1 tool use · 3s`.
+   *
+   * Driven by `subagent-notification-frames.jsonl`: one real conversation, an
+   * assistant turn that spawns a background `writer` and the server-initiated
+   * notification turn its completion wakes.
+   */
+  it('draws one card for a child the notification turn reports again', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const frames = readFileSync(
+      resolve(
+        __dirname,
+        '../../../../../../contracts/mobile/v1/fixtures/subagent-notification-frames.jsonl',
+      ),
+      'utf8',
+    )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; id: string; event?: McAgentEvent });
+    const byTurn = new Map<string, McAgentEvent[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      byTurn.set(frame.id, [...(byTurn.get(frame.id) ?? []), frame.event]);
+    }
+    const turns = [...byTurn.entries()];
+    expect(turns).toHaveLength(2);
+
+    setCanonicalState([gatewayConversation], ref);
+    useChatStore.setState({
+      messages: {
+        [conversationKey(ref)]: turns.map(
+          ([turnId, events], index) =>
+            ({
+              id: turnId,
+              role: 'assistant',
+              status: 'complete',
+              seq: index + 1,
+              createdAt: `2026-09-09T00:00:0${index}.000Z`,
+              content: { type: 'assistant', events },
+            }) as unknown as ConversationMessage,
+        ),
+      },
+    });
+
+    render(<Chat />);
+
+    const started = turns[0][1].find((e) => e.type === 'subagent_started') as
+      | { subagentId: string }
+      | undefined;
+    expect(started).toBeDefined();
+    expect(screen.getAllByTestId(`subagent-card-toggle-${started?.subagentId}`)).toHaveLength(1);
   });
 
   it('keeps archived history readable and marks it archived while locking mutations', async () => {
