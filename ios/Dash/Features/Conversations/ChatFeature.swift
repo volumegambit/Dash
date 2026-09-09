@@ -1638,19 +1638,19 @@ final class ChatFeature {
     guard isShutdown == false else { return }
     guard readSeq > appliedSubagentReadSeq else { return }
     appliedSubagentReadSeq = readSeq
-    // No "did anything change?" skip here, and that is a MEASURED decision
-    // rather than an oversight. Web needed one (its D3 I3a): every read there
-    // allocates a fresh `facts` object per child, its store subscribers compare
-    // by reference, and an identical read re-rendered every mounted row and its
-    // whole nested transcript. Swift Observation compares by VALUE — assigning
-    // a value equal to the current one notifies NOBODY. Proven by probe rather
-    // than assumed, in three shapes: the same array buffer, an assignment after
-    // a suspension, and an equal array of `SubagentListEntryDTO`; none fired,
-    // while a genuinely different value in the same probe did. A guard here
-    // would be dead code, and the test that "covered" it could not have failed
-    // — the exact pattern this branch keeps catching. The property it would
-    // have protected is real and IS pinned, by
-    // `anIdenticalListReadInvalidatesNothing`, which owns a positive control.
+    // The "did anything change?" skip below is here for the TOOLCHAIN, not for
+    // web's reason. Web needed one (its D3 I3a) because its store subscribers
+    // compare by reference and an identical read re-rendered every mounted row.
+    // This branch first measured Swift Observation de-duplicating an equal
+    // write — three probe shapes, none fired, a different value did — and
+    // recorded "no guard; it would be dead code". That probe ran on Xcode 26.
+    // CI builds with Xcode 16.3, whose Observation notifies on an equal write,
+    // and `anIdenticalListReadInvalidatesNothing` failed there on code
+    // byte-identical to the local green (merge report §6.1). So: dead under
+    // Xcode 26, load-bearing under 16.3. The property it protects — an
+    // identical read invalidates nobody — is what that test pins, and CI is
+    // the toolchain on which it can fail. Plan amendment 34.
+    guard entries != subagents else { return }
     subagents = entries
   }
 
