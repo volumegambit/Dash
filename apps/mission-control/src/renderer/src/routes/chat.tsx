@@ -5,7 +5,9 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import {
+  ArrowDownToLine,
   Ban,
+  Bell,
   Check,
   ChevronDown,
   ChevronUp,
@@ -28,6 +30,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { notificationRowLabel } from './chat.notification.js';
 
 hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
@@ -1381,6 +1384,39 @@ export const MessageBubble = memo(function MessageBubble({
   if (isUser && message) {
     const userText =
       message.content.type === 'user' && message.content.text ? message.content.text : '';
+    // The two `role: 'user'` rows the USER did not write (§8.5). Both are
+    // already handled inside a CHILD's transcript (`SubagentTranscript`); the
+    // orchestrator's own transcript had neither, so a notification turn drew
+    // its `[SYSTEM NOTIFICATION - NOT USER INPUT]` prompt as a full user
+    // bubble — with Copy, and the same affordances as something the human
+    // typed. `origin` reaches here because `RenderableMessage` includes
+    // `ConversationMessage`.
+    const origin = 'origin' in message ? message.origin : undefined;
+    if (origin === 'notification') {
+      return (
+        <div
+          className="mb-6 flex items-center gap-1.5 text-xs text-muted"
+          data-testid="notification-row"
+          data-role="notification"
+        >
+          <Bell size={12} />
+          <span>{notificationRowLabel(userText)}</span>
+        </div>
+      );
+    }
+    if (origin === 'parent') {
+      return (
+        <div
+          className="mb-6 flex items-start gap-1.5 text-xs text-muted"
+          data-testid="orchestrator-row"
+          data-role="parent"
+        >
+          <ArrowDownToLine size={12} className="mt-0.5 shrink-0" />
+          <span className="not-italic">from orchestrator</span>
+          <span className="italic whitespace-pre-wrap">{userText}</span>
+        </div>
+      );
+    }
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
       <div className="group mb-6 flex items-start justify-end gap-1">

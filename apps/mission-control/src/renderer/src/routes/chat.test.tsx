@@ -479,6 +479,63 @@ describe('canonical conversation UI', () => {
     expect(useChatStore.getState().sending[conversationKey(ref)]).toBe(false);
   });
 
+  /**
+   * D6 — the notification prompt rendered raw.
+   *
+   * A background child's completion wakes the conversation with a
+   * server-initiated turn whose user-side row is the block
+   * `packages/swarm/src/notifications.ts` composes. MC drew that block as a
+   * full user bubble, `[SYSTEM NOTIFICATION - NOT USER INPUT]` and all
+   * (`x1-screens/32.1-cards-and-meta.png`). Design §8.5 says a row.
+   */
+  it('summarizes a notification turn instead of drawing its raw prompt', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    const raw =
+      '[SYSTEM NOTIFICATION - NOT USER INPUT]\n\n' +
+      '<task-notification>\n<task-id>sub_01M21PVS</task-id>\n' +
+      '<agent-name>writer</agent-name>\n<status>done</status>\n' +
+      '<summary>Agent "reply with WRITTEN" finished</summary>\n' +
+      '<result>\nWRITTEN\n</result>\n</task-notification>';
+    setCanonicalState([gatewayConversation], ref);
+    useChatStore.setState({
+      messages: {
+        [conversationKey(ref)]: [
+          {
+            id: 'notif-user',
+            role: 'user',
+            origin: 'notification',
+            status: 'complete',
+            seq: 12,
+            createdAt: '2026-09-09T00:00:00.000Z',
+            content: { type: 'user', text: raw },
+          } as unknown as ConversationMessage,
+          {
+            id: 'parent-user',
+            role: 'user',
+            origin: 'parent',
+            status: 'complete',
+            seq: 13,
+            createdAt: '2026-09-09T00:00:01.000Z',
+            content: { type: 'user', text: 'reply with exactly the word WRITTEN' },
+          } as unknown as ConversationMessage,
+        ],
+      },
+    });
+
+    render(<Chat />);
+
+    expect(screen.getByTestId('notification-row')).toHaveTextContent(
+      'Agent "reply with WRITTEN" finished',
+    );
+    expect(screen.queryByText(/SYSTEM NOTIFICATION - NOT USER INPUT/)).toBeNull();
+    // §8.5's other row: `origin: 'parent'` keeps its TEXT, because that text is
+    // the instruction the child is working from — it must not collapse to the
+    // notification label, and it must not be a user bubble either.
+    const orchestrator = screen.getByTestId('orchestrator-row');
+    expect(orchestrator).toHaveTextContent('from orchestrator');
+    expect(orchestrator).toHaveTextContent('reply with exactly the word WRITTEN');
+  });
+
   it('keeps archived history readable and marks it archived while locking mutations', async () => {
     const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
     const archived = { ...gatewayConversation, status: 'archived' as const };
