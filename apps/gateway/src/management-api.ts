@@ -32,6 +32,11 @@ import type { ModelsStore } from './models-store.js';
 import type { PluginWiringState } from './plugins-wiring.js';
 import type { ResumableChatHub } from './resumable-chat-hub.js';
 import { retireLesson } from './skill-review.js';
+import type { SubagentDefinitionRegistry } from './subagent-definitions.js';
+import {
+  mountSubagentDefinitionRoutes,
+  mountSubagentRuntimeRoutes,
+} from './subagent-management.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
 const MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
@@ -63,6 +68,14 @@ export interface GatewayManagementOptions {
    * swarms still construct the app; the swarm routes simply aren't mounted.
    */
   swarmCoordinator?: SwarmCoordinator;
+  /**
+   * The sub-agent definition registry. When present, mounts the definition
+   * routes (`/agents/:id/subagent-types`, `/agents/:id/subagent-definitions…`)
+   * on BOTH the loopback app and `/mobile/v1`, and threads cache invalidation
+   * into the agent update/delete handlers. Optional so tests/embedders that
+   * don't wire sub-agents still construct the app.
+   */
+  subagentDefinitions?: SubagentDefinitionRegistry;
   /**
    * Resolves an agent's managed skills directory. Supplying it mounts the
    * lesson-level routes for learned skills; without it they are absent, so
@@ -190,6 +203,7 @@ const AGENT_CREATE_KEYS = new Set([
   'maxTokens',
   'mcpServers',
   'swarm',
+  'subagents',
   'plugins',
   'providers',
 ]);
@@ -268,6 +282,67 @@ function validateAgentSwarm(value: unknown): void {
   }
 }
 
+function validateAgentSubagents(value: unknown): void {
+  const allowed = new Set([
+    'enabled',
+    'delegation',
+    'allowedTypes',
+    'allowedModels',
+    'maxConcurrent',
+    'maxPerTurn',
+    'maxRunSeconds',
+    'maxDepth',
+    'modelAliases',
+  ]);
+  if (!isPlainRecord(value) || Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error('subagents contains unknown or invalid fields');
+  }
+  if (value.modelAliases !== undefined) {
+    // A flat `{ alias: 'provider/model' }` map. An alias with a `/` in it can
+    // never be reached — `resolveChildModel` treats a value containing `/` as
+    // a provider id and never looks it up — so it is refused rather than
+    // silently ignored.
+    if (!isPlainRecord(value.modelAliases)) {
+      throw new Error('subagents.modelAliases must be an object of alias → model id');
+    }
+    for (const [alias, target] of Object.entries(value.modelAliases)) {
+      if (!alias || alias.includes('/')) {
+        throw new Error(`subagents.modelAliases key "${alias}" must be a bare name (no "/")`);
+      }
+      if (typeof target !== 'string' || target.length === 0) {
+        throw new Error(`subagents.modelAliases.${alias} must be a non-empty model id`);
+      }
+    }
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    throw new Error('subagents.enabled must be a boolean');
+  }
+  if (
+    value.delegation !== undefined &&
+    value.delegation !== 'auto' &&
+    value.delegation !== 'explicit'
+  ) {
+    throw new Error('subagents.delegation must be "auto" or "explicit"');
+  }
+  for (const key of ['maxConcurrent', 'maxPerTurn', 'maxRunSeconds'] as const) {
+    const item = value[key];
+    if (item !== undefined && (!Number.isInteger(item) || (item as number) < 1)) {
+      throw new Error(`subagents.${key} must be a positive integer`);
+    }
+  }
+  // 0 is meaningful here (unlike the caps above): "this agent may not nest at
+  // all". Mirrors swarm.maxSteersPerWorker.
+  if (
+    value.maxDepth !== undefined &&
+    (!Number.isInteger(value.maxDepth) || (value.maxDepth as number) < 0)
+  ) {
+    throw new Error('subagents.maxDepth must be a non-negative integer');
+  }
+  for (const key of ['allowedTypes', 'allowedModels'] as const) {
+    if (value[key] !== undefined) requireAgentStringArray(value[key], `subagents.${key}`);
+  }
+}
+
 function validateAgentField(key: string, value: unknown): void {
   if (key === 'name' || key === 'model') {
     if (typeof value !== 'string' || value.trim().length === 0) {
@@ -307,6 +382,7 @@ function validateAgentField(key: string, value: unknown): void {
     return;
   }
   if (key === 'swarm') validateAgentSwarm(value);
+  if (key === 'subagents') validateAgentSubagents(value);
 }
 
 function parseAgentCreateRequest(
@@ -701,11 +777,14 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           400,
         );
       }
-      // Snapshot the pre-update swarm block so we can detect a swarm-config change
-      // after the update and evict warm backends (a running orchestrator caches
-      // its swarm gate/caps; eviction forces the next chat to rebuild with the new
-      // config). Deep-compared via JSON.stringify — the block is plain data.
-      const oldSwarm = JSON.stringify(entry.config.swarm);
+      // Snapshot the pre-update swarm AND subagents blocks so we can detect a
+      // sub-agent config change after the update and evict warm backends (a
+      // running orchestrator caches its gate/caps and its injected tools;
+      // eviction forces the next chat to rebuild with the new config). BOTH
+      // blocks must be covered — a `subagents`-only edit (delegation mode,
+      // caps, allowedTypes) would otherwise silently not take effect on a warm
+      // conversation. Deep-compared via JSON.stringify — both are plain data.
+      const oldSubagentBlocks = JSON.stringify([entry.config.swarm, entry.config.subagents]);
       let updated: RegisteredAgent;
       try {
         updated = agentRegistry.update(id, body);
@@ -717,12 +796,20 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
       }
       try {
         await agentRegistry.save();
+        // Drop this agent's cached sub-agent roster. Unconditional rather than
+        // diffed: the registry snapshots `workspace`, `plugins`, `name` AND the
+        // `subagents` block, so any narrower condition is one new key away from
+        // silently serving a stale roster until the next restart. A rebuild is
+        // one directory scan, and it only happens on an explicit config write.
+        options.subagentDefinitions?.invalidate(id);
         eventBus?.emit({
           type: 'agent:config-changed',
           agent: entry.name,
           fields: Object.keys(body),
         });
-        if (JSON.stringify(updated.config.swarm) !== oldSwarm) {
+        if (
+          JSON.stringify([updated.config.swarm, updated.config.subagents]) !== oldSubagentBlocks
+        ) {
           await agents.evict(id);
         }
         return c.json(stripSecrets(updated));
@@ -761,6 +848,9 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
           await agents.evict(id);
           const archived = options.conversationService.archiveAgentConversations(id);
           agentRegistry.remove(id);
+          // Drop the deleted agent's cached roster so the entry does not
+          // outlive the agent (and so a re-registered id starts from disk).
+          options.subagentDefinitions?.invalidate(id);
           await agentRegistry.save();
           await channelRegistry.save();
           for (const conversation of archived) {
@@ -1549,7 +1639,46 @@ export function createGatewayManagementApp(options: GatewayManagementOptions): H
     mountSwarmRoutes(app, {
       swarmCoordinator: options.swarmCoordinator,
       agentRegistry,
+      conversations: options.conversationService,
     });
+  }
+
+  // --- Sub-agent definition routes ---
+  // Mounted behind the bearer middleware on BOTH namespaces (the same dual
+  // mount `mountConversationRoutes` uses) so MC/web and the iOS app read and
+  // write definitions through one implementation. Conditional on the registry
+  // dep so tests/embedders that don't wire sub-agents still construct the app.
+  if (options.subagentDefinitions) {
+    const definitions = options.subagentDefinitions;
+    mountSubagentDefinitionRoutes(app, { agentRegistry, definitions });
+    mountSubagentDefinitionRoutes(mobileV1, {
+      agentRegistry,
+      definitions,
+      // `/mobile/v1` is a frozen contract: `MobileApiError` is
+      // `additionalProperties: false, required: [code, error, retryable]`, and
+      // the 401 from the middleware above is already typed. Handing the same
+      // namespace a second, untyped error shape makes a strict client decoder
+      // throw on exactly the paths it needs to handle.
+      errorBody: (kind, message) =>
+        kind === 'not_found'
+          ? ({ code: 'not_found', error: message, retryable: false } satisfies MobileApiError)
+          : mobileValidationError(message),
+    });
+  }
+
+  // --- Sub-agent runtime routes (design §7.7) ---
+  // The tasks-panel surface: list a conversation's children, stop one, resume
+  // one. Dual-mounted like the definition routes above, and conditional on the
+  // coordinator dep for the same reason the swarm routes are — `stop` and
+  // `resume` have nothing to talk to without one. Both mounts return the typed
+  // `MobileApiError` envelope (see `mountSubagentRuntimeRoutes`).
+  if (options.swarmCoordinator) {
+    const runtimeDeps = {
+      conversations: options.conversationService,
+      coordinator: options.swarmCoordinator,
+    };
+    mountSubagentRuntimeRoutes(app, runtimeDeps);
+    mountSubagentRuntimeRoutes(mobileV1, runtimeDeps);
   }
 
   // --- MCP routes ---

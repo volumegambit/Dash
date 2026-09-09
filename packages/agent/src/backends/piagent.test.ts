@@ -1624,6 +1624,254 @@ describe('PiAgentBackend skill tool registration', () => {
   });
 });
 
+/**
+ * A pi session mock whose `setActiveToolsByName` is observable: the names it
+ * receives are the built-in allow-list plus EVERY custom tool the backend
+ * registered, so it is the cheapest true read of `buildCustomTools()`.
+ */
+async function mockSessionCapturingActiveTools(): Promise<ReturnType<typeof vi.fn>> {
+  const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+  const setActiveToolsByName = vi.fn();
+  vi.mocked(createAgentSession).mockResolvedValueOnce({
+    session: {
+      dispose: vi.fn(),
+      subscribe: vi.fn(),
+      prompt: vi.fn(),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      agent: { setSystemPrompt: vi.fn() },
+      getActiveToolNames: vi.fn(() => []),
+      setActiveToolsByName,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+    } as any,
+    // biome-ignore lint/suspicious/noExplicitAny: test mock
+    extensionsResult: {} as any,
+  });
+  return setActiveToolsByName;
+}
+
+/** An McpManager stub exposing two `github` tools and one from another server. */
+function fakeMcpManager() {
+  const tool = (name: string) => ({
+    name,
+    label: name,
+    description: name,
+    parameters: {},
+    execute: async () => ({ content: [{ type: 'text', text: 'ok' }], details: undefined }),
+  });
+  return {
+    getTools: () => [tool('github__pr'), tool('github__merge'), tool('linear__issue')],
+    // biome-ignore lint/suspicious/noExplicitAny: structural stub for the McpManager slot
+  } as any;
+}
+
+describe('PiAgentBackend.fromOptions', () => {
+  const config = { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: 'You are helpful.' };
+  const extraTool = {
+    name: 'ask_orchestrator',
+    label: 'Ask',
+    description: 'Ask the parent.',
+    parameters: {},
+    execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }], details: undefined }),
+  };
+
+  it('constructs the same backend the positional form does', async () => {
+    const positional = new PiAgentBackend(
+      config,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [extraTool],
+    );
+    const viaOptions = PiAgentBackend.fromOptions({
+      config,
+      providerApiKeysSource: {},
+      extraTools: [extraTool],
+    });
+    expect(viaOptions).toBeInstanceOf(PiAgentBackend);
+    expect(viaOptions.name).toBe(positional.name);
+    expect(viaOptions.listExtraToolNames()).toEqual(positional.listExtraToolNames());
+  });
+
+  it('start() is callable on a fromOptions backend', async () => {
+    const setActiveToolsByName = await mockSessionCapturingActiveTools();
+    const backend = PiAgentBackend.fromOptions({ config, providerApiKeysSource: {} });
+    await expect(backend.start('/tmp/test')).resolves.toBeUndefined();
+    expect(setActiveToolsByName).toHaveBeenCalled();
+  });
+
+  it('omitted slots default exactly like the positional defaults', () => {
+    const backend = PiAgentBackend.fromOptions({ config, providerApiKeysSource: {} });
+    expect(backend.listExtraToolNames()).toEqual([]);
+  });
+});
+
+describe('mcpToolAllowlist', () => {
+  const base = {
+    model: 'anthropic/claude-sonnet-4-20250514',
+    systemPrompt: '',
+    tools: ['read', 'mcp'],
+  };
+
+  async function activeToolsFor(config: Record<string, unknown>): Promise<string[]> {
+    const setActiveToolsByName = await mockSessionCapturingActiveTools();
+    const backend = PiAgentBackend.fromOptions({
+      // biome-ignore lint/suspicious/noExplicitAny: partial DashAgentConfig in a table-driven test
+      config: config as any,
+      providerApiKeysSource: {},
+      mcpManager: fakeMcpManager(),
+    });
+    await backend.start('/tmp/test');
+    return setActiveToolsByName.mock.calls[0]?.[0] as string[];
+  }
+
+  it('narrows an assigned server to the exact tools the allowlist names', async () => {
+    const active = await activeToolsFor({
+      ...base,
+      assignedMcpServers: ['github'],
+      mcpToolAllowlist: ['github__pr'],
+    });
+    expect(active).toContain('github__pr');
+    expect(active).not.toContain('github__merge');
+    expect(active).not.toContain('linear__issue');
+  });
+
+  it('cannot re-admit a server the agent was not assigned', async () => {
+    const active = await activeToolsFor({
+      ...base,
+      assignedMcpServers: ['github'],
+      mcpToolAllowlist: ['github__pr', 'linear__issue'],
+    });
+    expect(active).toContain('github__pr');
+    expect(active).not.toContain('linear__issue');
+  });
+
+  it('an empty allowlist grants no MCP tool at all', async () => {
+    const active = await activeToolsFor({
+      ...base,
+      assignedMcpServers: ['github'],
+      mcpToolAllowlist: [],
+    });
+    expect(active).not.toContain('github__pr');
+    expect(active).not.toContain('github__merge');
+  });
+
+  it('no allowlist leaves the server filter alone', async () => {
+    const active = await activeToolsFor({ ...base, assignedMcpServers: ['github'] });
+    expect(active).toContain('github__pr');
+    expect(active).toContain('github__merge');
+    expect(active).not.toContain('linear__issue');
+  });
+
+  it('applies to the unassigned (legacy) mode too', async () => {
+    const active = await activeToolsFor({ ...base, mcpToolAllowlist: ['linear__issue'] });
+    expect(active).toEqual(expect.arrayContaining(['linear__issue']));
+    expect(active).not.toContain('github__pr');
+  });
+});
+
+/**
+ * `refreshCustomTools` is the ONLY way a tool whose schema is rendered lazily
+ * reaches the model after `start()`. pi's `AgentSession` freezes `customTools`
+ * at construction and `buildCustomTools` copies each tool's `parameters` BY
+ * VALUE while wrapping it — so a host that mutates a roster (the gateway's
+ * sub-agent definition registry) or the tool set (`mcp_add_server`) is invisible
+ * until the list is rebuilt and poked back into the session's registry.
+ */
+describe('PiAgentBackend.refreshCustomTools', () => {
+  /** A session stub that records what gets poked into its private slots. */
+  async function mockSessionCapturingCustomTools(): Promise<Record<string, unknown>> {
+    const { createAgentSession } = await import('@earendil-works/pi-coding-agent');
+    const session: Record<string, unknown> = {
+      dispose: vi.fn(),
+      subscribe: vi.fn(),
+      prompt: vi.fn(),
+      abort: vi.fn(),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      agent: { setSystemPrompt: vi.fn() },
+      getActiveToolNames: vi.fn(() => []),
+      setActiveToolsByName: vi.fn(),
+      _refreshToolRegistry: vi.fn(),
+    };
+    vi.mocked(createAgentSession).mockResolvedValueOnce({
+      // biome-ignore lint/suspicious/noExplicitAny: test mock for partial session object
+      session: session as any,
+      // biome-ignore lint/suspicious/noExplicitAny: test mock
+      extensionsResult: {} as any,
+    });
+    return session;
+  }
+
+  /** An extra tool whose `parameters` is a GETTER, as the `agent` tool's is. */
+  function rosterTool(roster: { text: string }) {
+    return {
+      name: 'agent',
+      label: 'Agent',
+      description: 'delegate',
+      get parameters() {
+        return { type: 'object', properties: { subagent_type: { description: roster.text } } };
+      },
+      execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }], details: {} }),
+    };
+  }
+
+  function rosterOf(session: Record<string, unknown>): string | undefined {
+    const tools = session._customTools as Array<{ name: string; parameters: unknown }> | undefined;
+    const agent = tools?.find((t) => t.name === 'agent');
+    const params = agent?.parameters as
+      | { properties?: { subagent_type?: { description?: string } } }
+      | undefined;
+    return params?.properties?.subagent_type?.description;
+  }
+
+  it('re-renders a lazily-built tool schema into the live session', async () => {
+    const roster = { text: 'general-purpose' };
+    const session = await mockSessionCapturingCustomTools();
+    const backend = PiAgentBackend.fromOptions({
+      config: { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: '' },
+      providerApiKeysSource: {},
+      // biome-ignore lint/suspicious/noExplicitAny: structural ExtraTool in a test
+      extraTools: [rosterTool(roster) as any],
+    });
+    await backend.start('/tmp/test');
+
+    // The roster the definition registry serves changes...
+    roster.text = 'general-purpose, reviewer';
+    backend.refreshCustomTools();
+
+    expect(session._refreshToolRegistry).toHaveBeenCalledTimes(1);
+    expect(rosterOf(session)).toBe('general-purpose, reviewer');
+  });
+
+  it("pi's AgentSession really has the private _refreshToolRegistry we poke", async () => {
+    // The session stub above defines `_refreshToolRegistry` itself, so nothing
+    // in this file observes pi's REAL surface: a pi upgrade that renamed the
+    // method would leave every test green and surface only as a silent
+    // roster-refresh failure at runtime. Assert against the actual prototype
+    // (importActual — the module is mocked for the rest of this file).
+    const pi = await vi.importActual<typeof import('@earendil-works/pi-coding-agent')>(
+      '@earendil-works/pi-coding-agent',
+    );
+    const prototype = (pi.AgentSession as unknown as { prototype: Record<string, unknown> })
+      .prototype;
+    expect(typeof prototype._refreshToolRegistry).toBe('function');
+    // Generous timeout: this is the only test in the file that loads pi's real
+    // module graph (every other one runs against the top-level `vi.mock`).
+  }, 60_000);
+
+  it('is a no-op before start() (there is no session to poke)', () => {
+    const backend = PiAgentBackend.fromOptions({
+      config: { model: 'anthropic/claude-sonnet-4-20250514', systemPrompt: '' },
+      providerApiKeysSource: {},
+    });
+    expect(() => backend.refreshCustomTools()).not.toThrow();
+  });
+});
+
 describe('PiAgentBackend memory tools registration', () => {
   function memoryBackend(memory?: { dir: string; tools?: boolean }) {
     return new PiAgentBackend(

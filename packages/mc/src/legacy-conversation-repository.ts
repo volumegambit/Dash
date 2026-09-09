@@ -27,6 +27,9 @@ function summary(record: McConversation, agentName: string): ConversationSummary
     lastMessagePreview: '',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    // The legacy store predates sub-agent conversations and only ever held
+    // user ones; `kind` became required on `ConversationSummary` with them.
+    kind: 'user',
   };
 }
 

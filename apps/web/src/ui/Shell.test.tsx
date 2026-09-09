@@ -1,5 +1,5 @@
 import type { ConversationMessage, ConversationSummary } from '@dash/mobile-contract';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { create } from 'zustand';
 import { ChatSocket } from '../api/chat-socket.js';
 import { MobileRestClient } from '../api/rest.js';
@@ -7,6 +7,7 @@ import type { GatewayInfo } from '../auth/control-plane.js';
 import type { StoredCredential } from '../auth/credential-store.js';
 import type { WebAppState, WebAppStoreDeps } from '../state/store.js';
 import {
+  CONVERSATION_SKELETON_TESTID,
   DELETE_ACTION_LABEL,
   DELETE_CONFIRM_COPY,
   NEW_CONVERSATION_LABEL,
@@ -34,6 +35,8 @@ function fakeWebAppState() {
     rest: { listAgents: vi.fn(async () => []), listAgentSkills: vi.fn(async () => []) } as never,
     conversations: [],
     transcripts: {},
+    subagents: {},
+    subagentIds: {},
     connection: 'connected',
     listAgents: vi.fn(async () => []),
     startConversation: vi.fn(async () => {
@@ -46,6 +49,14 @@ function fakeWebAppState() {
     renameConversation: vi.fn(async () => undefined),
     deleteConversation: vi.fn(async () => undefined),
     cancelTurn: vi.fn(),
+    patchSubagent: vi.fn(),
+    loadSubagentTranscript: vi.fn(async () => undefined),
+    subscribeSubagent: vi.fn(),
+    unsubscribeSubagent: vi.fn(),
+    isSubagentSubscribed: vi.fn(() => false),
+    sendToSubagent: vi.fn(async () => undefined),
+    refreshSubagents: vi.fn(async () => undefined),
+    stopSubagent: vi.fn(async () => undefined),
     dispose: vi.fn(),
   }));
 }
@@ -108,6 +119,7 @@ function conversationSummary(overrides: Partial<ConversationSummary> = {}): Conv
     lastMessagePreview: null,
     createdAt: '2026-08-01T00:00:00.000Z',
     updatedAt: '2026-08-01T00:00:00.000Z',
+    kind: 'user',
     ...overrides,
   };
 }
@@ -148,6 +160,19 @@ async function renderChatWorkspace(): Promise<void> {
   );
 
   await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+  // And then until the conversation list has actually loaded. `chat-workspace`
+  // appears while `ConversationList` is still rendering its skeleton, so
+  // returning here left every caller free to `act(setState({ conversations }))`
+  // and immediately `getByText('Chat about the roadmap')` against a DOM that
+  // still held only skeleton rows — a load-sensitive race that failed ~1 full
+  // `apps/web` run in 5 on this machine (2 of 10) and ~1 in 7 for the reviewer
+  // (3 of 22). Every observed failure was inside `tasks panel (D3)`, but the
+  // exposure is NOT confined to it: the keyboard-shortcut describe clicks the
+  // same title unwrapped (see the `fireEvent.click(screen.getByText('Chat
+  // about the roadmap'))` in the edit-and-resend test) and fails identically
+  // under a forced delay. Waiting once, here, fixes every such call site at
+  // the source rather than one at a time.
+  await waitFor(() => expect(screen.queryByTestId(CONVERSATION_SKELETON_TESTID)).toBeNull());
 }
 
 describe('Shell', () => {
@@ -478,6 +503,240 @@ describe('Shell', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  /**
+   * The tasks panel (D3, design §8.4). `Shell` owns the toggle, the badge and
+   * the third grid column; the panel itself owns its rows. Everything here is
+   * about the wiring: the panel is only reachable with a conversation open,
+   * the badge counts what the store says is still running, and under 768px it
+   * behaves like the sidebar drawer does.
+   */
+  describe('tasks panel (D3)', () => {
+    function withChildren(states: string[]): void {
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          subagentIds: { 'conv-1': states.map((_, index) => `child-${index}`) },
+          subagents: Object.fromEntries(
+            states.map((status, index) => [
+              `child-${index}`,
+              {
+                facts: {
+                  type: 'Explore',
+                  description: 'Map gateway internals',
+                  status,
+                  background: false,
+                  depth: 1,
+                  startedAt: '2026-09-04T10:00:00.000Z',
+                  toolCallCount: 1,
+                  oneShot: false,
+                },
+              },
+            ]),
+          ),
+        } as never);
+      });
+    }
+
+    it('offers no tasks toggle until a conversation is open', async () => {
+      await renderChatWorkspace();
+
+      expect(screen.queryByTestId('tasks-panel-toggle')).toBeNull();
+
+      act(() => {
+        createdStores[0].setState({ conversations: [conversationSummary()] });
+      });
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+
+      expect(screen.getByTestId('tasks-panel-toggle')).toBeTruthy();
+    });
+
+    it('badges the toggle with the number of children still running', async () => {
+      await renderChatWorkspace();
+      withChildren(['running', 'waiting_input', 'done']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+
+      const toggle = screen.getByTestId('tasks-panel-toggle');
+      expect(within(toggle).getByTestId('tasks-panel-count').textContent).toBe('2');
+
+      // The badge is LIVE: a finish takes it down without a remount.
+      act(() => {
+        createdStores[0].setState({
+          subagents: {
+            ...createdStores[0].getState().subagents,
+            'child-0': {
+              ...createdStores[0].getState().subagents['child-0'],
+              facts: {
+                ...createdStores[0].getState().subagents['child-0'].facts,
+                status: 'done',
+              },
+            },
+          },
+        } as never);
+      });
+
+      expect(within(toggle).getByTestId('tasks-panel-count').textContent).toBe('1');
+    });
+
+    it('shows no badge at all when nothing is running', async () => {
+      await renderChatWorkspace();
+      withChildren(['done']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+
+      expect(screen.queryByTestId('tasks-panel-count')).toBeNull();
+    });
+
+    it('opens and closes the panel, marking the overlay and its backdrop', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      const toggle = screen.getByTestId('tasks-panel-toggle');
+      const panel = screen.getByTestId('subagent-tasks-panel');
+
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(panel.className).not.toContain('tasks-panel--open');
+      expect(screen.queryByRole('button', { name: 'Close tasks panel' })).toBeNull();
+
+      fireEvent.click(toggle);
+
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(panel.className).toContain('tasks-panel--open');
+      // The third grid column only exists while the panel does; the same
+      // modifier is what turns it into an overlay under 768px.
+      expect(document.querySelector('.app-body')?.className).toContain('app-body--tasks');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close tasks panel' }));
+
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(panel.className).not.toContain('tasks-panel--open');
+      expect(document.querySelector('.app-body')?.className).not.toContain('app-body--tasks');
+    });
+
+    /**
+     * The panel unmounts with the conversation it belongs to, but
+     * `tasksOpen` is `ChatWorkspace`'s own state and outlives it. Left
+     * alone, deleting the open conversation — or tabbing to Devices — keeps
+     * the third grid column reserved beside an empty state, 320px of
+     * nothing.
+     */
+    it('gives the column back when the open conversation is deleted underneath it', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      expect(document.querySelector('.app-body')?.className).toContain('app-body--tasks');
+
+      // What `ConversationList` does on a successful delete of the open row.
+      fireEvent.click(screen.getByLabelText(DELETE_ACTION_LABEL));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() =>
+        expect(document.querySelector('.app-body')?.className).not.toContain('app-body--tasks'),
+      );
+      expect(screen.queryByTestId('subagent-tasks-panel')).toBeNull();
+    });
+
+    it('gives the column back on the Devices tab', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Devices' }));
+
+      expect(document.querySelector('.app-body')?.className).not.toContain('app-body--tasks');
+    });
+
+    /** Parity with the sidebar drawer, whose overlay Escape already closes
+     * (see `ChatWorkspace`'s doc comment on the precedence). */
+    it('closes on Escape', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(screen.getByTestId('tasks-panel-toggle').getAttribute('aria-expanded')).toBe('false');
+      expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Fix M2. The test above used to be called "closes on Escape, without
+     * disturbing a streaming turn" and never put a `streaming` content on the
+     * transcript — so `isStreaming` was `false` and `cancelTurn` could not
+     * have fired under ANY implementation. The precedence it named
+     * (stop-generation outranks close-panel, for the same reason the sidebar
+     * ranks below it: a user watching a turn run means the stop) needs a real
+     * streaming turn to be observable at all.
+     */
+    it('leaves the panel open and stops the turn when Escape lands mid-stream', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      act(() => {
+        createdStores[0].setState({
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        } as never);
+      });
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).toHaveBeenCalledWith('conv-1');
+      expect(screen.getByTestId('tasks-panel-toggle').getAttribute('aria-expanded')).toBe('true');
+    });
+
+    /**
+     * Fix M1. `tasksVisible` (not `tasksOpen`) is what decides whether the
+     * panel EXISTS, and `tasksOpen` is only cleared on a conversation switch
+     * — never on `setScreen('devices')` and never when the open conversation
+     * is deleted. Gated on `tasksOpen`, the Escape handler therefore consumed
+     * a keypress clearing an invisible flag, and the drawer the user was
+     * actually looking at stayed open until a SECOND Escape.
+     */
+    it('does not swallow Escape for an invisible panel on the Devices tab', async () => {
+      await renderChatWorkspace();
+      withChildren(['running']);
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      fireEvent.click(screen.getByRole('button', { name: 'Devices' }));
+      expect(screen.queryByTestId('subagent-tasks-panel')).toBeNull();
+
+      const hamburger = screen.getByLabelText('Toggle conversations menu');
+      fireEvent.click(hamburger);
+      expect(hamburger.getAttribute('aria-expanded')).toBe('true');
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(hamburger.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    /** Switching conversations must not leave the previous one's panel open
+     * over a list that now belongs to a different conversation. */
+    it('closes the panel when the conversation changes', async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [
+            conversationSummary(),
+            conversationSummary({ id: 'conv-2', title: 'Another thread' }),
+          ],
+        });
+      });
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+      fireEvent.click(screen.getByTestId('tasks-panel-toggle'));
+      expect(screen.getByTestId('subagent-tasks-panel').className).toContain('tasks-panel--open');
+
+      fireEvent.click(screen.getByText('Another thread'));
+
+      expect(screen.getByTestId('subagent-tasks-panel').className).not.toContain(
+        'tasks-panel--open',
+      );
+    });
   });
 
   it('disposes the store on unmount', async () => {

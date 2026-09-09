@@ -13,6 +13,26 @@ enum MessageRole: String, Codable, Hashable, Sendable {
   case assistant
 }
 
+/// Who caused a turn (sub-agents design 7.6). `notification` is a turn the
+/// GATEWAY started to wake this conversation's orchestrator with a background
+/// child's result; `parent` is an orchestrator message inside a child
+/// transcript. Absent means `user` for a live turn, and UNKNOWN for a replayed
+/// one — hence every use site keeps it optional rather than defaulting.
+enum MessageOrigin: String, Codable, Hashable, Sendable {
+  case user
+  case notification
+  case parent
+}
+
+/// `subagent` conversations are sub-agent children (sub-agents design 7.4).
+/// Absent means `user`: an older gateway does not send the field at all, and a
+/// client that read absence as "not a user conversation" would hide every
+/// conversation it has (see `ConversationSummaryDTO.conversationKind`).
+enum ConversationKind: String, Codable, Hashable, Sendable {
+  case user
+  case subagent
+}
+
 enum MessageStatus: String, Codable, Hashable, Sendable {
   case accepted
   case streaming
@@ -124,6 +144,42 @@ struct ConversationSummaryDTO: Codable, Hashable, Identifiable, Sendable {
   let createdAt: Date
   let updatedAt: Date
   let deletedAt: Date?
+  /// Raw so an unrecognized kind from a newer gateway degrades to "treat it as
+  /// a user conversation" instead of failing the decode of the whole page.
+  /// Read `conversationKind`, never this.
+  var kind: String? = nil
+  var parentConversationId: String? = nil
+  var parentTurnId: String? = nil
+  var subagent: SubagentInfoDTO? = nil
+
+  /// Ruling: absent `kind` means `.user`. A `kind == .user` test written
+  /// against the raw field would silently drop every conversation returned by
+  /// a gateway that predates the field.
+  var conversationKind: ConversationKind {
+    kind.flatMap(ConversationKind.init(rawValue:)) ?? .user
+  }
+}
+
+/// The sub-agent facts a child conversation's summary carries (sub-agents
+/// design 7.4). `status` and `isolation` are plain strings for the same
+/// forward-compatibility reason as `SubagentListEntryDTO.status`.
+struct SubagentInfoDTO: Codable, Hashable, Sendable {
+  let type: String
+  let name: String?
+  let status: String
+  let description: String
+  let prompt: String
+  let model: String
+  let background: Bool
+  let isolation: String?
+  let depth: Int
+  let startedAt: Date
+  let endedAt: Date?
+  let usage: SubagentUsageDTO?
+  let toolCallCount: Int
+  let report: String?
+  let oneShot: Bool
+  let workspace: String?
 }
 
 struct ConversationMessageDTO: Codable, Hashable, Identifiable, Sendable {
@@ -136,6 +192,13 @@ struct ConversationMessageDTO: Codable, Hashable, Identifiable, Sendable {
   let content: MessageContent
   let createdAt: Date
   let updatedAt: Date
+  /// Raw for forward compatibility (see `ConversationSummaryDTO.kind`); read
+  /// `messageOrigin`. Absent on a row written before origins existed.
+  var origin: String? = nil
+
+  var messageOrigin: MessageOrigin? {
+    origin.flatMap(MessageOrigin.init(rawValue:))
+  }
 }
 
 struct ConversationPageDTO: Codable, Hashable, Sendable {
@@ -147,6 +210,103 @@ struct ConversationMessagePageDTO: Codable, Hashable, Sendable {
   let items: [ConversationMessageDTO]
   let nextCursor: String?
   let throughSeq: Int
+}
+
+/// One child of a conversation, as `GET /conversations/{id}/subagents` reports
+/// it (sub-agents design 7.7). `status` is a plain `String` rather than an enum
+/// because the sub-agent UX (phase D) has not landed on iOS yet and a new
+/// status shipped by a newer gateway must not fail the decode of the whole
+/// page — the tasks list is read-only here.
+struct SubagentListEntryDTO: Codable, Hashable, Identifiable, Sendable {
+  let id: String
+  let name: String?
+  let type: String
+  let description: String
+  let status: String
+  let background: Bool
+  let depth: Int
+  let startedAt: Date
+  let endedAt: Date?
+  let usage: SubagentUsageDTO?
+  let toolCallCount: Int
+  let report: String?
+  let oneShot: Bool
+}
+
+struct SubagentUsageDTO: Codable, Hashable, Sendable {
+  let inputTokens: Int
+  let outputTokens: Int
+}
+
+struct SubagentListResponseDTO: Codable, Hashable, Sendable {
+  let subagents: [SubagentListEntryDTO]
+}
+
+/// Response of `POST /subagents/{id}/stop`.
+///
+/// `status` is a plain `String` for the same forward-compatibility reason as
+/// `SubagentListEntryDTO.status`, and it is ALWAYS terminal. It is also
+/// authoritative rather than guessable: when the depth-first cascade reaches a
+/// child this gateway process no longer holds a handle for (after a restart),
+/// the route terminalizes the row itself and answers `cancelled`, which is not
+/// the status a client tracking the child's own events would have predicted
+/// (`apps/gateway/src/subagent-management.ts:421-459`).
+///
+/// A child that is ALREADY terminal is a 409 rather than a silent success, so
+/// a client that raced the child's own finish learns which of the two won.
+struct SubagentStopResponseDTO: Codable, Hashable, Sendable {
+  let ok: Bool
+  let status: String
+}
+
+/// Body of `POST /subagents/{id}/resume` (sub-agents design 7.7) — the ONLY
+/// way to type into a child.
+///
+/// It is not interchangeable with a `message` WS frame, and the difference is
+/// not stylistic: a `message` frame reaches `hub.start` → `acceptTurn` and can
+/// never reach `ChildHandle.answerQuestion`, which is the only thing that
+/// resolves a child parked on `ask_orchestrator`. Against a busy child it is
+/// refused as `conversation_busy`; against an idle one it opens a SECOND turn
+/// while the question stays blocked until `waitForQuestion` times out ten
+/// minutes later. It also bypasses the coordinator's one-shot, steer-cap and
+/// grant checks, all of which live behind `sendToChild`
+/// (`apps/gateway/src/subagent-management.ts:462-530`).
+struct SubagentResumeRequest: Codable, Hashable, Sendable {
+  let message: String
+  /// Client-chosen correlation id, echoed on `MobileWSServerFrame.accepted`.
+  ///
+  /// Nothing else can do this job: the SERVER picks the turn id for a resume,
+  /// and `SubagentResumeResponse` carries none — for `mode: "queued"` no turn
+  /// has started yet, so there is genuinely nothing to return. Encoded only
+  /// when present, because the gateway rejects a blank one with a 400.
+  ///
+  /// NOT `CreateConversationRequest.requestId`, despite the shared name: that
+  /// one is an idempotency key the gateway persists and de-duplicates against.
+  /// This one is never stored and de-duplicates nothing — re-sending it starts
+  /// a second turn.
+  let requestId: String?
+
+  init(message: String, requestId: String? = nil) {
+    self.message = message
+    self.requestId = requestId
+  }
+}
+
+/// Response of `POST /subagents/{id}/resume`.
+///
+/// `status` and `mode` are plain strings for the same forward-compatibility
+/// reason as `SubagentListEntryDTO.status`: a newer gateway's value must not
+/// fail the decode and strand the composer with an unexplained error.
+///
+/// **`mode` does not tell an answer from a steer.** A queued STEER produces an
+/// `accepted` once the child's current turn ends; an ANSWER to a parked
+/// question resolves inside the running turn and produces none, ever. Both
+/// come back as `mode: "queued"`, `status: "running"`. A client that treats
+/// `queued` as "an accepted is coming" leaves a permanent optimistic row.
+struct SubagentResumeResponseDTO: Codable, Hashable, Sendable {
+  let ok: Bool
+  let status: String
+  let mode: String
 }
 
 struct CreateConversationRequest: Codable, Hashable, Sendable {

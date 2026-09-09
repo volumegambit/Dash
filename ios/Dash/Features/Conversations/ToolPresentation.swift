@@ -48,6 +48,12 @@ enum ToolPresentation {
     "task": "Task",
     "load_skill": "Load Skill",
     "create_skill": "Create Skill",
+    // Sub-agent tools (sub-agents design §8.7). `agent` would already
+    // capitalize to "Agent" via the fallback below; it is listed explicitly so
+    // the mapping is stated in one place on both platforms rather than
+    // falling out of a rule.
+    "agent": "Agent",
+    "send_message": "Send Message",
   ]
 
   /// Human-friendly label for a tool name. Unknown tools fall back to their
@@ -220,6 +226,11 @@ enum ToolPresentation {
     "task": ["todos"],
     "load_skill": ["name"],
     "create_skill": ["name"],
+    // The `agent` tool's collapsed header shows WHAT the child was asked to
+    // do, not which type ran it. Stated explicitly rather than left to the
+    // alphabetical first-string fallback, which happens to pick `description`
+    // today only because it sorts before `prompt` and `subagent_type`.
+    "agent": ["description"],
   ]
 
   /// One-line inline summary for a tool's collapsed header, or `nil` when

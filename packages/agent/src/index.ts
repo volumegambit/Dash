@@ -3,7 +3,9 @@ export type {
   AgentState,
   AgentEvent,
   ExtraTool,
+  HookRunner,
   ImageBlock,
+  PiAgentBackendOptions,
   PluginModelCatalog,
   RunOptions,
   DashAgentConfig,
@@ -51,6 +53,12 @@ export type {
 export * from './memory/index.js';
 export * from './location/index.js';
 export * from './skills/learning/index.js';
+export type { AgentDefinition, ParseDefinitionResult } from './agents/definition.js';
+export {
+  parseAgentDefinition,
+  type SplitToolListResult,
+  splitToolList,
+} from './agents/definition.js';
 
 /**
  * Canonical list of user-configurable tool names supported by PiAgentBackend.

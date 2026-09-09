@@ -8,6 +8,16 @@ export type ConversationMessageStatus =
   | 'failed'
   | 'interrupted';
 export type ConversationRole = 'user' | 'assistant';
+export type ConversationKind = 'user' | 'subagent';
+export type ConversationMessageOrigin = 'user' | 'notification' | 'parent';
+export type SubagentStatus =
+  | 'running'
+  | 'waiting_input'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+  | 'max_turns';
 export type MobileImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 
 export interface FixtureManifest {
@@ -184,6 +194,105 @@ export interface MobileSkill {
   content?: string;
 }
 
+export interface SubagentUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Everything a client needs to render a sub-agent row without fetching the
+ * child transcript. `depth` is 1 for a child of a user conversation.
+ */
+export interface SubagentInfo {
+  type: string;
+  name?: string;
+  status: SubagentStatus;
+  description: string;
+  prompt: string;
+  model: string;
+  background: boolean;
+  isolation?: 'worktree';
+  depth: number;
+  startedAt: string;
+  endedAt?: string;
+  usage?: SubagentUsage;
+  toolCallCount: number;
+  report?: string;
+  oneShot: boolean;
+  /**
+   * The directory the child ACTUALLY ran in — its own checkout when
+   * `isolation: 'worktree'` gave it one, the shared workspace otherwise.
+   * Optional: it is only known once the child's backend has been built, so a
+   * row read between `createSubagent` and the first turn has none.
+   */
+  workspace?: string;
+}
+
+/**
+ * One child as `GET /conversations/:id/subagents` reports it (design §7.7) — a
+ * trimmed {@link SubagentInfo} for the tasks panel. `prompt`, `model`,
+ * `isolation` and `workspace` are deliberately absent: fetch the child
+ * conversation for those.
+ */
+export interface SubagentListEntry {
+  id: string;
+  name?: string;
+  type: string;
+  description: string;
+  status: SubagentStatus;
+  background: boolean;
+  depth: number;
+  startedAt: string;
+  endedAt?: string;
+  usage?: SubagentUsage;
+  toolCallCount: number;
+  /** Scanned sub-agent output; absent until the child is terminal. */
+  report?: string;
+  /** Explore / Plan: `POST /subagents/:id/resume` 409s. */
+  oneShot: boolean;
+}
+
+export interface SubagentListResponse {
+  subagents: SubagentListEntry[];
+}
+
+export interface SubagentStopResponse {
+  ok: true;
+  status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
+}
+
+export interface SubagentResumeRequest {
+  message: string;
+  /**
+   * Client-chosen correlation id, echoed verbatim on the `accepted` frame of
+   * the turn this message becomes (see `MobileWsServerFrame`'s `accepted`
+   * variant). The server picks the turn id for a resume, so without this the
+   * client has no way to tell WHICH later `accepted` belongs to WHICH of its
+   * own in-flight follow-ups, and a positional guess mis-pairs the moment one
+   * `accepted` is missed.
+   *
+   * Optional on BOTH sides: an older client omits it, and an older gateway
+   * accepts it and never echoes it. A client that sends one and gets an
+   * `accepted` back without one must treat that turn as UNCORRELATED rather
+   * than assuming it is its own.
+   *
+   * NOT the same thing as `ConversationCreateRequest`'s `requestId`, despite
+   * the shared name: that one is an IDEMPOTENCY key the gateway persists and
+   * de-duplicates conversation creation against, so re-sending it returns the
+   * existing conversation. This one is never stored, is echoed once on a
+   * single frame, and de-duplicates nothing — re-sending it starts a second
+   * turn.
+   */
+  requestId?: string;
+}
+
+export interface SubagentResumeResponse {
+  ok: boolean;
+  status: SubagentStatus | 'spawning';
+  /** `queued` — the child was running; `resumed` — a new turn was started on it. */
+  mode: 'queued' | 'resumed';
+}
+
 export interface ConversationSummary {
   id: string;
   agentId: string;
@@ -199,6 +308,11 @@ export interface ConversationSummary {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
+  /** `'subagent'` rows are children; the conversation list shows `'user'` only. */
+  kind: ConversationKind;
+  parentConversationId?: string;
+  parentTurnId?: string;
+  subagent?: SubagentInfo;
 }
 
 export interface ConversationMessage {
@@ -211,6 +325,8 @@ export interface ConversationMessage {
   content: ConversationContent;
   createdAt: string;
   updatedAt: string;
+  /** Who caused this turn. Absent on pre-`origin` clients; treat as `'user'`. */
+  origin?: ConversationMessageOrigin;
 }
 
 export interface ConversationPage {
@@ -307,7 +423,15 @@ export type MobileWsClientFrame =
     }
   | { type: 'resume'; id: string; agentId: string; conversationId: string; sinceSeq: number }
   | { type: 'answer'; id: string; questionId: string; answer: string }
-  | { type: 'cancel'; id: string };
+  | { type: 'cancel'; id: string }
+  /**
+   * Watch a conversation the socket did not start a turn on, so server-initiated
+   * turns (`accepted` with `origin: 'notification'`) and sub-agent child turns
+   * reach it. `message` and `resume` subscribe implicitly; this frame is only
+   * needed for a conversation the socket has not otherwise touched.
+   */
+  | { type: 'subscribe'; id: string; agentId: string; conversationId: string }
+  | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string };
 
 export type MobileWsServerFrame =
   | {
@@ -318,6 +442,36 @@ export type MobileWsServerFrame =
       assistantMessageId: string;
       revision: number;
       seq: number;
+      /**
+       * Who caused this turn. On a LIVE frame it is omitted for an ordinary
+       * user turn on a user conversation — so a pre-subscription client sees
+       * the same bytes it always did — and absent therefore means `'user'`.
+       *
+       * On the REPLAY path (`/conversations/:id/replay`, and any `accepted`
+       * rebuilt from the event log) it is never emitted at all, because the
+       * durable payload does not carry it yet: absent there means UNKNOWN, not
+       * `'user'`. Read `ConversationMessage.origin` for a replayed turn.
+       */
+      origin?: ConversationMessageOrigin;
+      /**
+       * Conversation kind, omitted alongside `origin` and under the same
+       * live-versus-replay rule. For a replayed turn read
+       * `ConversationSummary.kind`.
+       */
+      kind?: ConversationKind;
+      /**
+       * Echo of `SubagentResumeRequest.requestId` for the turn that request
+       * became — the client's only way to pair one of its own in-flight
+       * follow-ups with the `accepted` it produced.
+       *
+       * LIVE-ONLY, and unlike `origin`/`kind` it is deliberately NOT declared
+       * on `ReplayPayload`: the durable event log stores server state, and a
+       * client's correlation id is not that. It is also emitted only by a
+       * message that STARTS a turn — an answer to a parked `ask_orchestrator`
+       * question resolves inside the running turn, so no `accepted` carries
+       * its id, ever.
+       */
+      requestId?: string;
     }
   | {
       type: 'event';

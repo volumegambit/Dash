@@ -15,6 +15,7 @@ import {
   ConversationLifecycleEpoch,
   GatewayEventStreamManager,
   activatePendingConversationRuntime,
+  applySubagentWatch,
   assertLocalPairingSource,
   configurePendingConversationRuntime,
   conversationContextFromOfflineProfile,
@@ -228,6 +229,66 @@ describe('canonical chat IPC boundary', () => {
         },
       });
     }
+  });
+});
+
+describe('sub-agent watch channel', () => {
+  function spies() {
+    return {
+      subscribeConversation: vi.fn(),
+      unsubscribeConversation: vi.fn(),
+      rewatchConversation: vi.fn(),
+    };
+  }
+
+  // The holder rides through both halves. A hold belongs to the renderer that
+  // took it — `event.sender.id` in `registerIpcHandlers` — so a release from
+  // anything else must not be able to take it off that renderer's count, and a
+  // renderer navigating away must be able to give back exactly its own.
+  it('takes and releases a hold over one channel, for the holder that asked', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, agentId: 'agent-1', conversationId: 'child-1' }, 11);
+    applySubagentWatch(service, { watch: false, conversationId: 'child-1' }, 11);
+
+    expect(service.subscribeConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1', 11);
+    expect(service.unsubscribeConversation).toHaveBeenCalledExactlyOnceWith('child-1', 11);
+  });
+
+  it('drops a hold with no agent id rather than taking one the release would unbalance', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, conversationId: 'child-1' });
+
+    expect(service.subscribeConversation).not.toHaveBeenCalled();
+    expect(service.unsubscribeConversation).not.toHaveBeenCalled();
+  });
+
+  // C2/F2. A hold that is already counted asking for a socket back, on the
+  // same channel so it cannot overtake the pair. It must NOT take a hold: the
+  // renderer's count did not move either, and a second `subscribeConversation`
+  // here would leave main one hold ahead for the rest of the session.
+  it('asks for a fresh socket without taking a hold', () => {
+    const service = spies();
+
+    applySubagentWatch(service, {
+      watch: true,
+      rewatch: true,
+      agentId: 'agent-1',
+      conversationId: 'child-1',
+    });
+
+    expect(service.rewatchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', 'child-1');
+    expect(service.subscribeConversation).not.toHaveBeenCalled();
+    expect(service.unsubscribeConversation).not.toHaveBeenCalled();
+  });
+
+  it('drops a rewatch with no agent id, for the same reason a hold is dropped', () => {
+    const service = spies();
+
+    applySubagentWatch(service, { watch: true, rewatch: true, conversationId: 'child-1' });
+
+    expect(service.rewatchConversation).not.toHaveBeenCalled();
   });
 });
 
@@ -666,6 +727,24 @@ describe('gateway event stream lifecycle', () => {
       } as never),
     ).toBeNull();
     expect(transport.closeAll).toHaveBeenCalledOnce();
+  });
+
+  // M6: `closeAll` sets `closed = true`, and every entry point on the
+  // transport goes through `assertOpen()`. Leaving `ChatService` pointing at
+  // it meant a `subagents:watch` arriving after `before-quit` threw
+  // "Chat transport closed" inside an `ipcMain.on` listener, which is
+  // unhandled. Detaching it in the same breath is what closes that.
+  it('detaches the disposed transport from the chat service', () => {
+    const transport = { closeAll: vi.fn() };
+    const setResumableTransport = vi.fn();
+
+    disposePendingConversationRuntime(
+      { gatewayId: 'gateway-1', repository: { offline: false }, transport } as never,
+      { setResumableTransport } as never,
+    );
+
+    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(setResumableTransport).toHaveBeenCalledExactlyOnceWith(undefined);
   });
 });
 

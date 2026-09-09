@@ -11,6 +11,7 @@ import { ConversationList } from './ConversationList.js';
 import { Devices } from './Devices.js';
 import { GatewayPicker } from './GatewayPicker.js';
 import { Skills } from './Skills.js';
+import { TasksPanel, countLiveSubagents } from './TasksPanel.js';
 
 /**
  * The app's top-level view state. `'sign-in'` is included for completeness
@@ -337,6 +338,10 @@ function ChatWorkspace({
   const [screen, setScreen] = useState<'conversations' | 'devices' | 'skills'>('conversations');
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** The tasks panel (§8.4). Local, like `sidebarOpen`: it is this
+   * component's own navigation, and unlike the sub-agent rows nothing
+   * remounts `ChatWorkspace` out from under the user. */
+  const [tasksOpen, setTasksOpen] = useState(false);
 
   const useAppStore = useWebAppStore();
   const cancelTurn = useAppStore((s) => s.cancelTurn);
@@ -352,6 +357,19 @@ function ChatWorkspace({
       ? (s.transcripts[selectedConversationId]?.streaming ?? null) !== null
       : false,
   );
+  // The toggle's live badge (§8.4). A NUMBER, deliberately: zustand
+  // re-renders on referential inequality, so subscribing to the id array or
+  // the entry map would re-render this whole shell on every draft keystroke
+  // in a sub-agent composer.
+  const liveTaskCount = useAppStore((s) => countLiveSubagents(s, selectedConversationId));
+  /**
+   * DERIVED, not just `tasksOpen`: the panel belongs to one conversation on
+   * one screen, and `tasksOpen` outlives both. Deleting the open
+   * conversation (which nulls `selectedConversationId`) or tabbing to
+   * Devices unmounts the panel while leaving the flag set — and the third
+   * grid column with it, 320px reserved beside an empty state.
+   */
+  const tasksVisible = tasksOpen && screen === 'conversations' && selectedConversationId !== null;
 
   // Imperative handles into `ConversationList`, which owns both the search
   // input and the "New conversation" flow — Cmd/Ctrl+K and
@@ -426,6 +444,21 @@ function ChatWorkspace({
           cancelTurn(selectedConversationId);
           return;
         }
+        // Parity with the sidebar drawer below: under 768px the tasks panel
+        // is the same kind of overlay, and an overlay Escape cannot dismiss
+        // is a trap. Ranked below "stop generation" for the same reason the
+        // sidebar is — a user watching a turn run means the stop.
+        // `tasksVisible`, not `tasksOpen` (fix M1): the flag outlives the
+        // panel — it is cleared on a conversation switch but not on
+        // `setScreen('devices')` and not when the open conversation is
+        // deleted — so gating on it swallowed a keypress clearing something
+        // the user could not see, leaving the drawer they WERE looking at
+        // open until a second Escape.
+        if (tasksVisible) {
+          event.preventDefault();
+          setTasksOpen(false);
+          return;
+        }
         if (sidebarOpen) {
           event.preventDefault();
           setSidebarOpen(false);
@@ -434,7 +467,7 @@ function ChatWorkspace({
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [screen, sidebarOpen, isStreaming, selectedConversationId, cancelTurn]);
+  }, [screen, sidebarOpen, tasksVisible, isStreaming, selectedConversationId, cancelTurn]);
 
   // Runs a shortcut action deferred above, once the render it asked for has
   // actually committed (`screen`/`sidebarOpen` reaching the state the
@@ -458,6 +491,11 @@ function ChatWorkspace({
     setSelectedConversationId(conversationId);
     // Harmless when the drawer isn't open (desktop widths never set it true).
     setSidebarOpen(false);
+    // The panel lists ONE conversation's children, so leaving it open across
+    // a switch would show the new conversation's list under the old one's
+    // scroll position — or, for the moment before the store's own refresh
+    // lands, the old conversation's children over the new transcript.
+    setTasksOpen(false);
   }
 
   // Conversation management (chat-ux Phase 3 Task 1, audit #8): the store's
@@ -486,6 +524,22 @@ function ChatWorkspace({
         </button>
         <strong className="app-topbar-title">{gateway.subdomain}</strong>
         <nav className="app-topbar-nav">
+          {screen === 'conversations' && selectedConversationId ? (
+            <button
+              type="button"
+              className="app-tasks-toggle"
+              data-testid="tasks-panel-toggle"
+              aria-expanded={tasksOpen}
+              onClick={() => setTasksOpen((open) => !open)}
+            >
+              Tasks
+              {liveTaskCount > 0 ? (
+                <span className="app-tasks-count" data-testid="tasks-panel-count">
+                  {liveTaskCount}
+                </span>
+              ) : null}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setScreen('conversations')}
@@ -509,7 +563,7 @@ function ChatWorkspace({
           </button>
         </nav>
       </div>
-      <div className="app-body">
+      <div className={tasksVisible ? 'app-body app-body--tasks' : 'app-body'}>
         {screen === 'skills' ? (
           <Skills client={skillsClient} />
         ) : screen === 'devices' ? (
@@ -540,6 +594,13 @@ function ChatWorkspace({
               />
             </aside>
             <ChatView conversationId={selectedConversationId} gatewayLabel={gateway.subdomain} />
+            {selectedConversationId ? (
+              <TasksPanel
+                conversationId={selectedConversationId}
+                open={tasksVisible}
+                onClose={() => setTasksOpen(false)}
+              />
+            ) : null}
           </>
         )}
       </div>

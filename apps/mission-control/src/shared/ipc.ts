@@ -12,9 +12,8 @@ import type {
   SkillContent,
   SkillInfo,
   SkillsConfig,
-  SwarmRunSnapshot,
-  SwarmRunSummary,
-  SwarmWorkerActionResult,
+  SubagentResumeResult,
+  SubagentStopResult,
 } from '@dash/management';
 import type {
   ConversationRef,
@@ -33,6 +32,7 @@ import type {
   MobileApiError,
   MobileImage,
   MobileWsServerFrame,
+  SubagentListEntry,
 } from '@dash/mobile-contract';
 import type {
   CreateIssueInput,
@@ -63,7 +63,11 @@ export type SetupStatus =
   | { state: 'gateway-failed'; error: string };
 
 // Serializable AgentEvent (error is string, not Error object, for IPC transport).
-// The worker_* variants mirror @dash/agent's AgentEvent exactly — they carry no
+// @deprecated The worker_* variants are the mirrors D8 retired. Nothing emits
+// one; they stay for ONE release because a PERSISTED pre-D8 transcript still
+// contains them and the renderer must recognise them rather than draw
+// "Activity from a newer Dash version". They mirror @dash/agent's AgentEvent
+// exactly — they carry no
 // Error objects, so their fields are copied as-is (the error-as-string
 // convention only applies to the `error` variant above).
 export type McAgentEvent =
@@ -113,10 +117,58 @@ export type McAgentEvent =
       workerId: string;
       runId: string;
       role: string;
-      status: 'done' | 'failed' | 'cancelled';
+      status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
       report: string;
       usage?: { inputTokens: number; outputTokens: number };
     }
+  // The canonical sub-agent family (design §7.2), mirroring @dash/agent's
+  // AgentEvent exactly. The gateway emitted these alongside the retired
+  // `worker_*`
+  // variants above for every child until task D8 retires the mirrors; the
+  // child's conversation id IS its worker id, so both families name the same
+  // string and `chat.swarm.ts` folds them onto ONE card.
+  | {
+      type: 'subagent_started';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      prompt: string;
+      model: string;
+      background: boolean;
+      depth: number;
+      startedAt: string;
+      isolation?: 'worktree';
+      parentTurnId?: string;
+    }
+  | {
+      type: 'subagent_progress';
+      subagentId: string;
+      status: 'running' | 'waiting_input';
+      toolCallCount: number;
+      elapsedMs: number;
+      detail?: string;
+      question?: string;
+    }
+  | {
+      type: 'subagent_finished';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
+      report: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      toolCallCount: number;
+      startedAt: string;
+      endedAt: string;
+    }
+  // The coordinator's name-only spawn announcement, pushed between a child's
+  // `agent_spawned` and its `subagent_started`. It renders nothing of its own
+  // — the sub-agent card is the announcement — but it has to be MODELLED, or
+  // the transcript draws "Activity from a newer Dash version" beside every
+  // child this gateway spawns.
+  | { type: 'agent_spawned'; name: string }
   | { type: 'error'; error: string; timestamp: string }
   // Transient provider failure the backend is auto-retrying (pi auto-retry).
   // Rendered as a "Retrying…" notice, not a terminal error.
@@ -201,6 +253,21 @@ export async function captureChatIpcResult<T>(
     return { ok: false, error: { message } };
   }
 }
+
+/**
+ * The two channels a watched child's stream lifecycle rides on (§7.6, C2).
+ *
+ * Constants rather than literals on both sides because a typo in either one
+ * ships GREEN: nothing crosses this boundary in a test, `tsc` cannot compare
+ * two string literals in two files, and biome has no opinion about them. In
+ * production a mistyped name would silently disable the whole C2 fix —
+ * `markSubagentWatchLost` would never fire, `live` would stay `true`, and the
+ * permanent duplicate row would be back. With one exported constant there is
+ * only one string, and a mistyped IDENTIFIER is a compile error.
+ */
+export const CHAT_SUBAGENT_WATCH_LOST = 'chat:subagentWatchLost';
+/** @see CHAT_SUBAGENT_WATCH_LOST */
+export const CHAT_SUBAGENT_RESUBSCRIBED = 'chat:subagentResubscribed';
 
 export function unwrapChatIpcResult<T>(result: ChatIpcResult<T>): T {
   if (result.ok) return result.value;
@@ -498,6 +565,24 @@ export interface MissionControlAPI {
   onChatDone(callback: (conversationId: string) => void): () => void;
   onChatError(callback: (conversationId: string, error: string) => void): () => void;
   onChatConversationRenamed(callback: (conversationId: string, title: string) => void): () => void;
+  /**
+   * A watched child conversation's stream dropped and came back. Subscribing
+   * replays NOTHING (`apps/gateway/src/chat-ws.ts:425-427`), so everything the
+   * child emitted while the socket was down is only recoverable by re-reading
+   * its transcript over REST — which is what this asks for.
+   */
+  onSubagentResubscribed(callback: (conversationId: string) => void): () => void;
+  /**
+   * The socket behind a watch this renderer holds is NOT OPEN — the factory
+   * threw, the socket closed, an older gateway refused the `subscribe` frame,
+   * or the hold was taken while main had no transport at all.
+   *
+   * A hold is bookkeeping; only an open socket can carry an `accepted`. The
+   * store answers by turning optimism off for that child, and keeps the hold
+   * so the subscribe/unsubscribe pairing stays 1:1. `onSubagentResubscribed`
+   * is the only thing that takes it back.
+   */
+  onSubagentWatchLost(callback: (conversationId: string) => void): () => void;
 
   // Skills (gateway passthrough)
   skillsList(agentId: string): Promise<SkillInfo[]>;
@@ -530,23 +615,56 @@ export interface MissionControlAPI {
   memoryGetConfig(agentId: string): Promise<MemoryConfig>;
   memoryUpdateConfig(agentId: string, patch: Partial<MemoryConfig>): Promise<MemoryConfig>;
 
-  // Swarm panel (gateway passthrough). `cancelWorker`/`swarmSend` resolve to
-  // `{ok, reason?}`: the underlying client surfaces the gateway's 409
-  // (run finalized / worker terminal) as `{ok:false, reason}` rather than a
-  // rejection, so the panel can render the reason.
-  swarmListRuns(agentId: string): Promise<SwarmRunSummary[]>;
-  swarmGetRun(agentId: string, runId: string): Promise<SwarmRunSnapshot>;
-  swarmCancelWorker(
-    agentId: string,
-    runId: string,
-    workerId: string,
-  ): Promise<SwarmWorkerActionResult>;
-  swarmSend(
-    agentId: string,
-    runId: string,
-    workerId: string,
+  // Sub-agents (gateway passthrough, design §7.7). The children-of-conversation
+  // family that replaces the run-scoped calls above.
+  //
+  // `subagentStop`/`subagentResume` resolve to `{ok:true, …}` or
+  // `{ok:false, reason}`: the gateway's three actionable refusals (one-shot
+  // type, unrebuildable grant, steer cap) are 409s, and a rejected
+  // `ipcMain.handle` reaches the renderer as an Error the bridge has rewritten,
+  // so a refusal a human has to read must be a VALUE. Everything else (a 404,
+  // a malformed request) still rejects.
+  /** This conversation's DEPTH-0 children. A grandchild is not in the list. */
+  subagentsList(conversationId: string): Promise<SubagentListEntry[]>;
+  subagentStop(subagentId: string): Promise<SubagentStopResult>;
+  /**
+   * Send a message to a child from its parent. `requestId` is echoed on the
+   * `accepted` frame of the turn this becomes — for a client subscribed to the
+   * CHILD's stream, which Mission Control is not; it is sent because the
+   * correlation is the server's to offer and cannot be claimed later.
+   */
+  subagentResume(
+    subagentId: string,
     message: string,
-  ): Promise<SwarmWorkerActionResult>;
+    requestId?: string,
+  ): Promise<SubagentResumeResult>;
+  /** One page of any conversation's messages — the child transcript a card expands into. */
+  conversationMessages(conversationId: string, before?: string): Promise<ConversationMessagePage>;
+  /**
+   * Take one hold on a child conversation's live stream (design §7.6, §8.3),
+   * so its frames reach `onChatFrame` while a card is expanded or the panel is
+   * open. `agentId` is the PARENT's — a child belongs to the same agent, and
+   * the gateway's hub keys its watcher registry on that pair.
+   *
+   * Both halves ride ONE channel rather than two, so the pair can never
+   * arrive out of order and leave main holding a watch nobody wants. Main
+   * refcounts; the renderer must send exactly one release per hold.
+   */
+  subagentSubscribe(agentId: string, conversationId: string): void;
+  /** Release one hold. The last one out sends `unsubscribe` and closes. */
+  subagentUnsubscribe(conversationId: string): void;
+  /**
+   * Ask for a fresh socket on a hold that is ALREADY counted, because the one
+   * behind it died (§7.6, C2). Takes no hold and releases none — the count is
+   * exactly what it was — so the 1:1 subscribe/unsubscribe pairing main
+   * refcounts on is untouched.
+   *
+   * This exists because the renderer is the only side that knows a watch is
+   * dead: `subagentSubscribe` on a conversation already held never reaches
+   * main at all (the store returns on the existing entry), so with two holders
+   * — the panel open AND a card expanded — nothing could revive it.
+   */
+  subagentRewatch(agentId: string, conversationId: string): void;
 
   // Settings
   settingsGet(): Promise<AppSettings>;

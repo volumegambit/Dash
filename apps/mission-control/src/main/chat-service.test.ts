@@ -19,7 +19,8 @@ import { WebSocketServer } from 'ws';
 import type { GatewayConnection } from './chat-service.js';
 import { ChatService } from './chat-service.js';
 import { ConversationController } from './conversation-controller.js';
-import type { ResumableChatTransport } from './resumable-chat-transport.js';
+import type { ChatSocket } from './resumable-chat-transport.js';
+import { ResumableChatTransport } from './resumable-chat-transport.js';
 import { FixtureGatewayConversationRepository } from './test-support/fixture-gateway-conversation-repository.js';
 
 const BASE_PORT = 19700 + Math.floor(Math.random() * 200);
@@ -28,6 +29,21 @@ const LEGACY_TURN_ID = 'legacy-turn';
 
 function localRef(id: string): ConversationRef {
   return { id, origin: 'local' };
+}
+
+/**
+ * A socket that is created and simply never opens — an ordinary slow connect.
+ * The transport holds it in `state.socket` with no `open`, no `close` and no
+ * reconnect scheduled, which is exactly the window a transport swap leaves
+ * between `closeAll()` and the replacement's first open.
+ */
+function neverOpeningSocket(): ChatSocket {
+  return {
+    readyState: 0,
+    addEventListener: () => undefined,
+    send: () => undefined,
+    close: () => undefined,
+  };
 }
 
 function createLocal(service: ChatService, agentId: string) {
@@ -842,6 +858,9 @@ describe('ChatService gateway conversations', () => {
     cancel: ReturnType<typeof vi.fn>;
     answer: ReturnType<typeof vi.fn>;
     closeAll: ReturnType<typeof vi.fn>;
+    watchConversation: ReturnType<typeof vi.fn>;
+    unwatchConversation: ReturnType<typeof vi.fn>;
+    watchedConversations: ReturnType<typeof vi.fn>;
   };
   let service: ChatService;
 
@@ -859,12 +878,24 @@ describe('ChatService gateway conversations', () => {
       capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
       repository: gateway,
     });
+    // The registry is tracked rather than stubbed flat, because the service
+    // now READS it: a hold taken on a bucket the transport is not watching
+    // puts a socket back. A stub that always answered `[]` would claim every
+    // second holder needs one.
+    const watched = new Set<string>();
     resumable = {
       send: vi.fn(),
       subscribe: vi.fn().mockResolvedValue(undefined),
       cancel: vi.fn(),
       answer: vi.fn(),
       closeAll: vi.fn(),
+      watchConversation: vi.fn((_agentId: string, conversationId: string) => {
+        watched.add(conversationId);
+      }),
+      unwatchConversation: vi.fn((conversationId: string) => {
+        watched.delete(conversationId);
+      }),
+      watchedConversations: vi.fn(() => [...watched]),
     };
     service = new ChatService(
       store,
@@ -1026,6 +1057,324 @@ describe('ChatService gateway conversations', () => {
     service.setResumableTransport(replacement);
 
     expect(resumable.closeAll).toHaveBeenCalledOnce();
+  });
+
+  describe('child conversation subscriptions', () => {
+    const childId = 'child-conversation-1';
+
+    it('watches once however many holders ask, and releases on the last one out', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-1', childId);
+
+      expect(resumable.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId);
+
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    it('ignores a release nobody holds, so the count cannot go negative', () => {
+      service.unsubscribeConversation(childId);
+      service.subscribeConversation('agent-1', childId);
+      service.unsubscribeConversation(childId);
+      resumable.unwatchConversation.mockClear();
+      // The renderer's card and panel effects can both release on the way out
+      // of a conversation switch that already released every hold.
+      service.unsubscribeConversation(childId);
+
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    // F2's main half. The renderer is the only side that can ask: its own
+    // `subscribeSubagent` returns on an existing entry before any IPC, so
+    // `subscribeConversation` below is never re-entered for a conversation
+    // already held, and with two holders the count never reaches 0 either.
+    it('puts a socket back under a held watch without moving the count', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-1', childId);
+      resumable.watchConversation.mockClear();
+      // The watch died: the transport dropped it from its own registry
+      // (`abandonSubscription`) and left the count here alone, which is what
+      // lets it be re-watched at all.
+      resumable.watchedConversations.mockReturnValue([]);
+
+      service.rewatchConversation('agent-1', childId);
+
+      // `reopened`, because the restore on the new socket's open is the only
+      // thing that puts the holder's optimism back and forces its re-read.
+      expect(resumable.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId, {
+        reopened: true,
+      });
+      // Both holds still stand: one release does not drop the watch.
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    it('asks for nothing when the transport is already watching', () => {
+      service.subscribeConversation('agent-1', childId);
+      resumable.watchConversation.mockClear();
+      // A reconnect in flight: the state is still in the transport's map and
+      // its own re-open fires the restore.
+      resumable.watchedConversations.mockReturnValue([childId]);
+
+      service.rewatchConversation('agent-1', childId);
+
+      expect(resumable.watchConversation).not.toHaveBeenCalled();
+    });
+
+    it('asks for nothing for a conversation nothing holds', () => {
+      resumable.watchedConversations.mockReturnValue([]);
+
+      service.rewatchConversation('agent-1', childId);
+
+      expect(resumable.watchConversation).not.toHaveBeenCalled();
+    });
+
+    // F3. A renderer RELOAD — ⌘R, which Electron's default menu offers in a
+    // packaged build because nothing in `src/main/` ever calls
+    // `Menu.setApplicationMenu` — does not fire `closed`, so the holds the
+    // pre-reload renderer took were never released. The fresh renderer's own
+    // subscribe then found the leaked bucket, incremented, and returned, and
+    // its release could never take the count to 0.
+    //
+    // Holds are keyed by their HOLDER for this: the release is scoped to the
+    // renderer that is going, so a second holder — the companion window, or
+    // whatever comes next — keeps its own.
+    it('releases the holds of one renderer and leaves another holder its own', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+      service.subscribeConversation('agent-1', childId, 11);
+      service.subscribeConversation('agent-1', childId, 22);
+
+      service.releaseConversationWatches(11);
+
+      // 22 still holds it, so the socket stays.
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+      service.unsubscribeConversation(childId, 22);
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    it('drops the watch when the last holder is released', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+      service.subscribeConversation('agent-1', childId, 11);
+
+      service.releaseConversationWatches(11);
+
+      expect(resumable.unwatchConversation).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    // A release from a holder that holds nothing must not take somebody
+    // else's. Before the holds were keyed, one count served everybody and a
+    // stray release from a reloaded renderer would have dropped a live watch.
+    it('ignores a release from a holder that holds nothing', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+
+      service.unsubscribeConversation(childId, 22);
+
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    // The other half of F3, and what makes a SURVIVING leaked bucket safe:
+    // a bucket can outlive the socket under it, because the transport drops a
+    // dead watch from its own registry and leaves the count here alone. A
+    // renderer asking for a hold on one used to be answered with silence — its
+    // optimistic `live: true` was never contradicted and nothing re-watched.
+    it('puts a socket back when a hold is taken on a bucket nothing is watching', () => {
+      service.subscribeConversation('agent-1', childId, 11);
+      resumable.watchConversation.mockClear();
+      // The watch died while the leaked bucket stood.
+      resumable.watchedConversations.mockReturnValue([]);
+
+      service.subscribeConversation('agent-1', childId, 22);
+
+      expect(resumable.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId, {
+        reopened: true,
+      });
+    });
+
+    it('re-watches every held conversation on a replacement transport, and says a re-read is owed', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-2', 'child-conversation-2');
+
+      const replacement = {
+        closeAll: vi.fn(),
+        watchConversation: vi.fn(),
+        unwatchConversation: vi.fn(),
+      };
+      service.setResumableTransport(replacement as unknown as ResumableChatTransport);
+
+      // The old transport's `closeAll` dropped both sockets and the new one's
+      // registry is empty, while the renderer still holds both. `reopened`
+      // is how the re-read is owed: the transport fires the restore when the
+      // socket actually OPENS, rather than this service claiming it here
+      // before anything has connected — and before it can even know whether
+      // the socket will connect at all.
+      expect(replacement.watchConversation.mock.calls).toEqual([
+        ['agent-1', childId, { reopened: true }],
+        ['agent-2', 'child-conversation-2', { reopened: true }],
+      ]);
+    });
+
+    // I1. Closing the window on macOS quits nothing: `window-all-closed` only
+    // calls `app.quit()` off darwin, so without this every child socket stays
+    // open, and the fresh renderer a dock-icon click builds holds them again
+    // — one leaked socket per window cycle.
+    it('releases every watch when the renderer holding them goes away', () => {
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-2', 'child-conversation-2');
+
+      service.releaseAllConversationWatches();
+
+      expect(resumable.unwatchConversation.mock.calls).toEqual([
+        [childId],
+        ['child-conversation-2'],
+      ]);
+      // The whole bucket goes, however many holders it had: a released
+      // renderer's holds cannot be released one at a time by anybody.
+      resumable.unwatchConversation.mockClear();
+      service.unsubscribeConversation(childId);
+      expect(resumable.unwatchConversation).not.toHaveBeenCalled();
+    });
+
+    // The hole this seam had, driven through a REAL transport rather than a
+    // stub, because it is an ORDERING defect and a stub has no ordering. The
+    // swap loop used to announce the restore itself, next to the re-watch —
+    // so when the replacement's socket factory threw, the transport fired
+    // `lost` synchronously inside `watchConversation` and the loop's own
+    // `restored` landed on top of it. The renderer ended up believing a watch
+    // that will never have a socket is live, which is C2 again, one layer up.
+    it('announces no restore for a swap whose socket never opens', () => {
+      const lost = vi.fn();
+      const restored = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.subscribeConversation('agent-1', childId);
+      const replacement = new ResumableChatTransport({
+        connection: { url: 'wss://gateway.example.com/ws/chat?token=chat-token' },
+        channelId: 'mission-control',
+        replay: vi.fn().mockResolvedValue([]),
+        onFrame: vi.fn(),
+        onConnectionError: vi.fn(),
+        onProtocolError: vi.fn(),
+        onSubscriptionRestored: restored,
+        onSubscriptionLost: lost,
+        socketFactory: () => {
+          throw new Error('no socket for you');
+        },
+      });
+
+      service.setResumableTransport(replacement);
+
+      expect(lost).toHaveBeenCalledWith(childId);
+      expect(restored).not.toHaveBeenCalled();
+    });
+
+    // The MIRROR of the ordering `2878a1f4` fixed. That one stopped this
+    // service claiming a restore before the socket opened; this one is the
+    // silence on the other side of the same window. `closeAll()` above has
+    // just dropped every child socket and the replacement's has not connected
+    // yet, so NOTHING is watching — and the renderer still reads `live: true`,
+    // writes an optimistic row for anything typed into an expanded child card,
+    // and never gets the `accepted` that would pair it. That is the condition
+    // the ordinary 1006 close already fires a `lost` for; a swap has it too.
+    //
+    // A never-opening socket, deliberately: the test above uses a THROWING
+    // factory, which fires `lost` from `abandonSubscription`, so it cannot see
+    // this window at all.
+    it('says the watch is lost while a replacement transport is still connecting', () => {
+      const lost = vi.fn();
+      const restored = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.subscribeConversation('agent-1', childId);
+      lost.mockClear();
+      const replacement = new ResumableChatTransport({
+        connection: { url: 'wss://gateway.example.com/ws/chat?token=chat-token' },
+        channelId: 'mission-control',
+        replay: vi.fn().mockResolvedValue([]),
+        onFrame: vi.fn(),
+        onConnectionError: vi.fn(),
+        onProtocolError: vi.fn(),
+        onSubscriptionRestored: restored,
+        onSubscriptionLost: lost,
+        socketFactory: () => neverOpeningSocket(),
+      });
+
+      service.setResumableTransport(replacement);
+
+      expect(lost).toHaveBeenCalledWith(childId);
+      // Told, not dropped: the watch is still on its way, and the
+      // replacement's own open is what takes the flag back.
+      expect(replacement.watchedConversations()).toEqual([childId]);
+      expect(restored).not.toHaveBeenCalled();
+      replacement.closeAll();
+    });
+
+    // C2 path 4. The count is right to record — a transport arriving watches
+    // it — but nothing is watching NOW, and the renderer's `isSubagentSubscribed`
+    // is the only gate on showing an optimistic row.
+    it('says the watch is lost when a hold is taken with no transport', () => {
+      const lost = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.setResumableTransport(undefined);
+
+      service.subscribeConversation('agent-1', childId);
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    // D7b M3 review, Minor 2. A SECOND hold on a bucket that outlived the
+    // transport used to return in silence, so the asker's optimistic
+    // `live: true` stood with nothing watching — while the FIRST-hold path
+    // two lines below had always fired `lost` for exactly that condition.
+    it('says the watch is lost for a SECOND hold taken with no transport', () => {
+      const lost = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.setResumableTransport(undefined);
+      service.subscribeConversation('agent-1', childId);
+      lost.mockClear();
+
+      // The bucket now exists with a count of 1 and no transport under it.
+      service.subscribeConversation('agent-1', childId);
+
+      expect(lost).toHaveBeenCalledExactlyOnceWith(childId);
+    });
+
+    // C2 path 4b, the mirror of the re-watch loop above: going OFFLINE
+    // `closeAll`s every child socket and the replacement is `undefined`, so
+    // nothing fires the transport's own lost signal for them.
+    it('says every held watch is lost when the transport goes away', () => {
+      const lost = vi.fn();
+      service.setSubscriptionLostListener(lost);
+      service.subscribeConversation('agent-1', childId);
+      service.subscribeConversation('agent-2', 'child-conversation-2');
+
+      service.setResumableTransport(undefined);
+
+      expect(lost.mock.calls).toEqual([[childId], ['child-conversation-2']]);
+    });
+
+    it('holds the count while there is no transport, and watches when one arrives', () => {
+      service.setResumableTransport(undefined);
+      service.subscribeConversation('agent-1', childId);
+
+      const arriving = {
+        closeAll: vi.fn(),
+        watchConversation: vi.fn(),
+        unwatchConversation: vi.fn(),
+      };
+      service.setResumableTransport(arriving as unknown as ResumableChatTransport);
+
+      // `reopened` here too, and it is not cosmetic: the renderer was told
+      // this hold was LOST when it was taken with no transport, so it needs
+      // the restore signal to start treating the stream as live again. A
+      // plain first watch fires nothing and would leave optimism off forever.
+      expect(arriving.watchConversation).toHaveBeenCalledExactlyOnceWith('agent-1', childId, {
+        reopened: true,
+      });
+    });
   });
 
   it('starts gateway title and task bookkeeping only after durable acceptance', async () => {

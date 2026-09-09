@@ -34,6 +34,7 @@ function summary(overrides: Partial<ConversationSummary> = {}): ConversationSumm
     lastMessagePreview: 'Ready from the gateway.',
     createdAt: '2026-07-12T00:00:00.000Z',
     updatedAt: '2026-07-12T00:00:00.000Z',
+    kind: 'user',
     ...overrides,
   };
 }

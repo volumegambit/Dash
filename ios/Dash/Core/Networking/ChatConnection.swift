@@ -96,6 +96,16 @@ actor ChatConnection {
   private var reconnectAttempt = 0
   private var turnSubscriptions: [String: TurnSubscription] = [:]
   private var turnSubscriptionOrder: [String] = []
+  /// Conversations this socket watches, `conversationID -> agentID`
+  /// (sub-agents design 7.6). Server-initiated turns arrive with a turn id
+  /// this client never issued; without this set `receiveLoop` would drop them
+  /// for exactly that reason. Cleared with the turn subscriptions whenever the
+  /// socket's state is gone (connect, suspend, detach, terminal failure), and
+  /// re-sent by `replayTurnSubscriptions` after a transient reconnect — a
+  /// blip must not silently stop the notifications for the rest of the
+  /// session.
+  private var conversationSubscriptions: [String: String] = [:]
+  private var conversationSubscriptionOrder: [String] = []
   private var state: ChatTransportState = .idle
   private var streamFinished = false
   private let locationProvider: @Sendable () -> ClientLocation?
@@ -202,6 +212,39 @@ actor ChatConnection {
     }
   }
 
+  /// Watch `conversationID` so turns this socket did not start — the
+  /// server-initiated notification turns of sub-agents design 7.6 — are
+  /// accepted by `receiveLoop` instead of dropped for having an unknown turn
+  /// id.
+  func subscribe(agentID: String, conversationID: String) async throws {
+    registerConversation(agentID: agentID, conversationID: conversationID)
+    do {
+      try await send(
+        .subscribe(
+          id: UUID().uuidString.lowercased(),
+          agentId: agentID,
+          conversationId: conversationID
+        )
+      )
+    } catch {
+      // The gateway never saw the frame, so nothing is watching over there —
+      // do not leave this side believing otherwise.
+      clearConversation(conversationID: conversationID)
+      throw error
+    }
+  }
+
+  func unsubscribe(agentID: String, conversationID: String) async throws {
+    clearConversation(conversationID: conversationID)
+    try await send(
+      .unsubscribe(
+        id: UUID().uuidString.lowercased(),
+        agentId: agentID,
+        conversationId: conversationID
+      )
+    )
+  }
+
   func answer(turnID: String, questionID: String, answer: String) async throws {
     try await send(.answer(id: turnID, questionId: questionID, answer: answer))
   }
@@ -306,6 +349,26 @@ actor ChatConnection {
         let message = try await task.receive()
         guard loopGeneration == generation, state != .detached else { return }
         let frame = try decodedFrame(from: message)
+        // A turn this client never started, on a conversation it watches: the
+        // server-initiated notification turns and child turns of sub-agents
+        // design 7.6. Register the turn from its `accepted` so the rest of its
+        // frames follow the ordinary path; anything else with an unknown turn
+        // id is still dropped.
+        if turnSubscriptions[frame.id] == nil,
+          frame.isAccepted,
+          let conversationID = frame.acceptedConversationID,
+          let agentID = conversationSubscriptions[conversationID]
+        {
+          turnOperationGeneration += 1
+          registerTurn(
+            id: frame.id,
+            agentID: agentID,
+            conversationID: conversationID,
+            sinceSeq: 0,
+            capable: true,
+            operationGeneration: turnOperationGeneration
+          )
+        }
         guard var subscription = turnSubscriptions[frame.id] else { continue }
         let capable = subscription.capable || frame.isAccepted
         _ = try validatedFrame(frame, capable: capable)
@@ -543,9 +606,35 @@ actor ChatConnection {
     turnOperationGeneration += 1
     turnSubscriptions.removeAll()
     turnSubscriptionOrder.removeAll()
+    conversationSubscriptions.removeAll()
+    conversationSubscriptionOrder.removeAll()
+  }
+
+  private func registerConversation(agentID: String, conversationID: String) {
+    if conversationSubscriptions[conversationID] == nil {
+      conversationSubscriptionOrder.append(conversationID)
+    }
+    conversationSubscriptions[conversationID] = agentID
+  }
+
+  private func clearConversation(conversationID: String) {
+    conversationSubscriptions[conversationID] = nil
+    conversationSubscriptionOrder.removeAll { $0 == conversationID }
   }
 
   private func replayTurnSubscriptions() async throws {
+    // Conversation subscriptions first: the fresh socket must be watching
+    // before any turn traffic resumes over it.
+    for conversationID in conversationSubscriptionOrder {
+      guard let agentID = conversationSubscriptions[conversationID] else { continue }
+      try await send(
+        .subscribe(
+          id: UUID().uuidString.lowercased(),
+          agentId: agentID,
+          conversationId: conversationID
+        )
+      )
+    }
     for id in turnSubscriptionOrder {
       guard let subscription = turnSubscriptions[id] else { continue }
       if var current = turnSubscriptions[id],
@@ -590,7 +679,7 @@ actor ChatConnection {
 extension MobileWSServerFrame {
   fileprivate var id: String {
     switch self {
-    case .accepted(let id, _, _, _, _, _),
+    case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
       .error(let id, _, _, _, _, _, _):
@@ -603,9 +692,18 @@ extension MobileWSServerFrame {
     return false
   }
 
+  /// Only an `accepted` frame carries a non-optional conversation id, which is
+  /// exactly the frame a conversation subscription can register a turn from.
+  fileprivate var acceptedConversationID: String? {
+    if case .accepted(_, let conversationId, _, _, _, _, _, _, _) = self {
+      return conversationId
+    }
+    return nil
+  }
+
   fileprivate var seq: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let seq):
+    case .accepted(_, _, _, _, _, let seq, _, _, _):
       return seq
     case .event(_, _, let seq, _),
       .done(_, _, let seq, _),

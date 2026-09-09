@@ -30,6 +30,12 @@ import type {
 } from '@dash/agent';
 import type { SwarmCoordinator } from '@dash/swarm';
 import type { AgentRegistry, GatewayAgentConfig } from './agent-registry.js';
+import {
+  buildDelegationSection,
+  effectiveDelegation,
+  isSubagentsEnabled,
+  subagentCapsFromConfig,
+} from './subagent-config.js';
 
 /**
  * The config handed to `createBackend`: the persisted agent config plus the
@@ -66,6 +72,13 @@ export type BackendFactory = (
 export interface AgentChatCoordinatorSwarm {
   coordinator: SwarmCoordinator;
   isEnabled(agentId: string): boolean;
+  /**
+   * The fully-qualified `server__tool` names this orchestrator holds, read PER
+   * TURN. Bounds every MCP grant a spawn may request (`validateMcpTools`) and
+   * MUST be the same list the `agent` tool's `ParentToolContext.mcpTools`
+   * reports — see `orchestratorMcpToolNames`. Omitted → no child gets MCP.
+   */
+  orchestratorMcpTools?(agentId: string): string[];
 }
 
 export interface AgentChatCoordinatorOptions {
@@ -90,11 +103,15 @@ export interface AgentChatCoordinatorOptions {
    */
   getPluginSkillDirs?: () => string[];
   /**
-   * Live getter for the trusted-plugin command/agent files (flat `.md`,
-   * namespaced `<plugin>:<name>`). Loaded via `loadFlatSkills` and merged into
+   * Live getter for the trusted-plugin command files (flat `.md`, namespaced
+   * `<plugin>:<command>`). Loaded via `loadFlatSkills` and merged into
    * `listSkills` so the HTTP skills API matches what chat can load — mirroring
    * `PiAgentBackend.listSkills`. Read PER CALL (not captured) so a plugin
    * hot-reload is reflected without a restart. Undefined → none.
+   *
+   * Commands ONLY. Plugin `agents/*.md` are sub-agent definitions, not loadable
+   * skills (spec §6.2), so the gateway keeps them out of this channel and they
+   * do not appear in `GET /agents/:id/skills`.
    */
   getPluginCommandFiles?: () => FlatSkillFile[];
   /**
@@ -103,6 +120,70 @@ export interface AgentChatCoordinatorOptions {
    * returns true. Undefined → swarm is off for every agent (plain fast path).
    */
   swarm?: AgentChatCoordinatorSwarm;
+  /**
+   * Resolve a model id's provider-catalog tier (0 = frontier). Drives the
+   * DEFAULT delegation mode for an agent that did not set
+   * `subagents.delegation`. Undefined (or an unknown model) → treated as
+   * non-frontier, i.e. `'explicit'`. Read per turn so a model change — or a
+   * catalog reload — is reflected without a pool eviction.
+   */
+  modelTier?: (model: string) => number | undefined;
+  /**
+   * The child runtime for a `kind: 'subagent'` conversation, or `undefined`
+   * for an ordinary one. Children ride the SHARED `ConversationPool` (design
+   * §7.1): the pool asks for a backend exactly as it does for a user
+   * conversation, and only THIS hook decides that the answer is a
+   * definition-driven child backend instead of the agent's normal one. Routing
+   * them through the pool is what removes a second backend-ownership path and
+   * makes nesting fall out of the ordinary `chat()` merge wrapper.
+   *
+   * The backend it returns is already STARTED on `workspace` (which may be the
+   * child's own worktree). Its config comes back as a RESOLVER, not a value:
+   * the child's model, prompt and tools are fixed for its life, but a nesting
+   * child's delegation roster names its own children, which change within its
+   * conversation exactly as a parent's do.
+   */
+  childRuntime?: (
+    agentId: string,
+    conversationId: string,
+  ) => Promise<
+    { backend: AgentBackend; resolveConfig: () => DashAgentConfig; workspace: string } | undefined
+  >;
+  /**
+   * Per-turn `attach()` overrides for a child conversation: the child's OWN
+   * model, tool grant, MCP grant and workspace. Without them a nested spawn
+   * would be validated against the top-level agent's grant, so a grandchild
+   * could hold tools its parent was never given.
+   *
+   * THROWING is the fail-closed answer for a child conversation that cannot be
+   * bounded, and `chat()` calls this BEFORE it warms or pins a pool entry — so
+   * whether the guard fires can never depend on whether the child's backend
+   * happens to still be cached.
+   */
+  childAttachOptions?: (
+    agentId: string,
+    conversationId: string,
+  ) => Partial<AgentChatAttachOverrides> | undefined;
+}
+
+/** The `attach()` fields a child turn overrides. See `childAttachOptions`. */
+export interface AgentChatAttachOverrides {
+  orchestratorModel: string;
+  /**
+   * Set it — including to `undefined`. Leaving the key OUT lets the top-level
+   * agent's fallback chain stay in force, which widens a child's nested spawn
+   * past the model its own definition pinned.
+   */
+  orchestratorFallbackModels?: string[] | undefined;
+  /**
+   * Same contract as the fallback chain, for the same reason: the agent-level
+   * `subagents.allowedModels` is an operator grant to the TOP-LEVEL agent, so
+   * leaving the key out would let a grandchild request any model on it.
+   */
+  allowedModels?: string[] | undefined;
+  orchestratorTools?: string[];
+  orchestratorMcpTools?: string[];
+  workspace?: string;
 }
 
 export interface ChatRequest {
@@ -190,6 +271,21 @@ export interface AgentChatCoordinator {
    * while mid-stream conversations finish on their old wiring undisturbed.
    */
   evictAll(): Promise<void>;
+  /**
+   * Re-render the custom tools of every WARM backend for `agentId`, in place.
+   *
+   * Unlike `evict`, this keeps the conversation (and its pi session) alive: the
+   * backend rebuilds its tool list and pokes it back into the live session, so
+   * a schema that is rendered lazily — the sub-agent roster in the `agent`
+   * tool's `subagent_type` description — picks up a definition change without
+   * losing the conversation. Backends that do not implement
+   * `refreshCustomTools` are skipped.
+   *
+   * TAKES EFFECT ON THE NEXT MODEL TURN: a turn already in flight keeps the
+   * tools it started with. Pinned (mid-stream) entries are refreshed too — the
+   * poke is a registry swap, not an interruption.
+   */
+  refreshCustomTools(agentId: string): Promise<void>;
   /** List the skills available to an agent (plugin + per-agent). */
   listSkills(agentId: string): Promise<SkillDiscoveryResult[]>;
   /** Get one skill (with content) by name, or null. */
@@ -232,6 +328,22 @@ export interface AgentChatCoordinator {
   removeMemory(agentId: string, name: string): Promise<boolean>;
   stats(): AgentChatCoordinatorStats;
   stop(): Promise<void>;
+}
+
+/**
+ * The fields of a child's per-turn overrides that its BACKEND is built from.
+ * Two turns with the same signature can share one warm backend; anything else
+ * has to rebuild. Deliberately not the whole object: `orchestratorFallbackModels`
+ * and `allowedModels` bound what a nested spawn may ask for, not what this
+ * child's own backend holds.
+ */
+function signatureOf(overrides: Partial<AgentChatAttachOverrides>): string {
+  return JSON.stringify([
+    overrides.orchestratorModel ?? null,
+    overrides.orchestratorTools ?? null,
+    overrides.orchestratorMcpTools ?? null,
+    overrides.workspace ?? null,
+  ]);
 }
 
 /**
@@ -301,12 +413,26 @@ export function createAgentChatCoordinator(
    *
    * Throws if the agent no longer exists — the caller (either the
    * factory or the resolver) decides how to handle that.
+   *
+   * `conversationId` scopes the delegation roster: the "your agents" list only
+   * ever names children of THIS conversation, which are exactly the valid
+   * `send_message` targets.
    */
-  function buildDashConfig(agentId: string): DashAgentConfig {
+  function buildDashConfig(agentId: string, conversationId: string): DashAgentConfig {
     const entry = registry.get(agentId);
     if (!entry) throw new Error(`Agent '${agentId}' not found`);
     // Prepend agent identity so the model knows its name
-    const systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
+    let systemPrompt = `You are "${entry.config.name}".\n\n${entry.config.systemPrompt}`;
+    // Append the delegation section LAST, rebuilt on every turn: it carries the
+    // live child roster, which changes within a conversation as children spawn
+    // and finish, and the delegation mode, which follows a live model change.
+    // Gated on the agent's own config so a mid-conversation
+    // `subagents.enabled: false` stops advertising the tools immediately.
+    if (options.swarm && isSubagentsEnabled(entry.config)) {
+      const mode = effectiveDelegation(entry.config, options.modelTier?.(entry.config.model));
+      const roster = options.swarm.coordinator.rosterFor(agentId, conversationId);
+      systemPrompt = `${systemPrompt}\n\n${buildDelegationSection(mode, roster)}`;
+    }
     // `workspace` is intentionally NOT included here: it's passed to
     // `backend.start(workspace)` at pool-entry creation time (so the
     // backend can set up its tools against the right dir). It no longer
@@ -352,6 +478,18 @@ export function createAgentChatCoordinator(
     backendFactory: async (agentId, conversationId) => {
       const entry = registry.get(agentId);
       if (!entry) throw new Error(`Agent '${agentId}' not found`);
+      // A sub-agent conversation gets its own definition-driven backend, built
+      // and started by the caller (it owns worktree isolation and the child's
+      // session dir). Everything else about the pool entry — pinning,
+      // eviction, LRU — is identical to a user conversation's.
+      const child = await options.childRuntime?.(agentId, conversationId);
+      if (child) {
+        registry.setActive(agentId);
+        return {
+          backend: child.backend,
+          agent: new DashAgent(child.backend, async () => child.resolveConfig()),
+        };
+      }
       // Thread the registry `agentId` (not `entry.config.name`) into the
       // factory: it is the key the pool and the SwarmCoordinator address a turn
       // by, so swarm-tool injection must use it to stay consistent with the
@@ -402,7 +540,7 @@ export function createAgentChatCoordinator(
       // (pi session's registered tools, MCP managers) still requires
       // eviction — that's an acceptable trade-off because those
       // changes are infrequent and the warm pool protects throughput.
-      const agent = new DashAgent(backend, async () => buildDashConfig(agentId));
+      const agent = new DashAgent(backend, async () => buildDashConfig(agentId, conversationId));
       registry.setActive(agentId);
       return { backend, agent };
     },
@@ -424,8 +562,8 @@ export function createAgentChatCoordinator(
       pluginSkillDirs.some((dir) => location.startsWith(dir.endsWith(sep) ? dir : dir + sep));
     // Mirror PiAgentBackend.listSkills so the HTTP skills API returns exactly
     // what chat can load. Discovery precedence (first wins by name): managed >
-    // config paths > plugin skill dirs. Plugin command/agent files are appended
-    // flat and lose name collisions to discovered skills.
+    // config paths > plugin skill dirs. Plugin command files are appended flat
+    // and lose name collisions to discovered skills.
     const discovered = await discoverSkills({
       managedSkillsDir: options.managedSkillsDir?.(entry.config),
       paths: [...(entry.config.skills?.paths ?? []), ...pluginSkillDirs],
@@ -433,7 +571,7 @@ export function createAgentChatCoordinator(
     const flat = await loadFlatSkills(pluginCommandFiles);
     const seen = new Set(discovered.map((s) => s.name));
     const merged = [...discovered, ...flat.filter((s) => !seen.has(s.name))];
-    // Badge plugin-contributed skills (skill dirs + command/agent files) as
+    // Badge plugin-contributed skills (skill dirs + command files) as
     // 'plugin' and force read-only: a user can't edit/remove them via the
     // managed dir, so MC must not render those affordances (scanned skill dirs
     // default to editable: true, which would otherwise be misleading).
@@ -466,7 +604,76 @@ export function createAgentChatCoordinator(
         return;
       }
 
+      // The child bound, resolved BEFORE anything is warmed or pinned. The
+      // ordering is the point, not a nicety: `childRuntime` only runs on a pool
+      // MISS, so a finished child whose entry is still warm would otherwise
+      // reach `attach()` with the TOP-LEVEL agent's grant — and a grandchild
+      // spawned from that turn would be sandboxed in the agent's real
+      // workspace rather than inside its parent's worktree isolation.
+      let childOverrides: Partial<AgentChatAttachOverrides> | undefined;
+      try {
+        childOverrides = options.childAttachOptions?.(request.agentId, request.conversationId);
+      } catch (error) {
+        yield { type: 'error', error: error instanceof Error ? error : new Error(String(error)) };
+        return;
+      }
+
+      // A CHILD's warm backend was built from the grant it last ran under, and
+      // a backend binds its tool set at `start()` — re-resolving its config per
+      // turn cannot take a tool away. That grant is re-intersected against its
+      // parent's CURRENT one on every turn (`childAttachOptions`), so an entry
+      // built from a WIDER one must not be reused: the attachment would bound a
+      // grandchild correctly while the child itself still held the removed
+      // tool. `releaseChild` deliberately leaves a finished child warm and
+      // `childRuntime` only runs on a pool miss, so this is the only place that
+      // can notice.
+      const childSignature = childOverrides && signatureOf(childOverrides);
+      if (childSignature) {
+        const warm = pool.get(request.agentId, request.conversationId);
+        if (warm && warm.signature !== childSignature) {
+          // REFUSED means a turn is still streaming on the wide backend, and
+          // the only two answers that are safe are "run it on a rebuilt
+          // backend" or "do not run it". Labelling the entry with the narrow
+          // signature anyway — while leaving the wide backend in place — turns
+          // a transient overlap into a permanent one: every later turn would
+          // match the label and never rebuild.
+          if (!pool.dropConversation(request.agentId, request.conversationId)) {
+            yield {
+              type: 'error',
+              error: new Error(
+                `sub-agent ${request.conversationId} is still running under an earlier grant`,
+              ),
+            };
+            return;
+          }
+        }
+      }
+
       const poolEntry = await pool.getOrCreate(request.agentId, request.conversationId);
+      if (childSignature) {
+        // `getOrCreate` DEDUPES concurrent creates, which leaves a window the
+        // check above cannot see: a turn that arrives while an earlier one's
+        // backend is still being built finds NO entry to compare against, joins
+        // that create, and receives a backend built from the EARLIER grant.
+        // Labelling it with ours is the same permanent staleness the check
+        // above exists to prevent, so a signature that is already set and
+        // different is treated exactly like a stale entry — refused. (Which of
+        // the two overlapping turns loses depends on which resumes first; both
+        // are safe, and the loser succeeds on a retry.)
+        if (poolEntry.signature !== undefined && poolEntry.signature !== childSignature) {
+          yield {
+            type: 'error',
+            error: new Error(
+              `sub-agent ${request.conversationId} is still running under an earlier grant`,
+            ),
+          };
+          return;
+        }
+        // Only ever labels an entry this turn is entitled to label: it was just
+        // created, it already carried this signature, or the stale one was
+        // actually dropped above.
+        poolEntry.signature = childSignature;
+      }
       pool.pin(request.agentId, request.conversationId);
 
       const swarmEnabled = options.swarm?.isEnabled(request.agentId) ?? false;
@@ -489,8 +696,9 @@ export function createAgentChatCoordinator(
       // --- Swarm merge path ---
       //
       // Merge the orchestrator's own event stream (`gen`) with the swarm run's
-      // event channel (`attachment.channel`) so worker events (worker_spawned,
-      // worker_status, worker_done) interleave into the single AgentEvent
+      // event channel (`attachment.channel`) so child events (agent_spawned,
+      // subagent_started / _progress / _finished) interleave into the single
+      // AgentEvent
       // stream the consumer iterates. The retained-promise invariant is the
       // whole point: exactly ONE outstanding `gen.next()` and ONE outstanding
       // `channel.take()` are kept across race iterations, and a settled loser is
@@ -503,26 +711,51 @@ export function createAgentChatCoordinator(
         agentName: entry.config.name,
         conversationId: request.conversationId,
         messageId: request.messageId,
+        // Ruling 5 of design §7.3: a `notification` turn carries the
+        // `subagent_finished` events for the children it reports, and they must
+        // reach the parent's log BEFORE the orchestrator's own output.
+        // `attach` pushes them onto the channel first. The hub's turn id IS
+        // `messageId`, which is the key the coordinator filed them under.
+        initialEvents: request.messageId
+          ? swarm.coordinator.takeInitialEvents(request.messageId)
+          : undefined,
         // Cooperative abort of the orchestrator (pool-entry backend.abort).
         orchestratorAbort: () => poolEntry.backend.abort(),
-        // Live registry read of the agent's swarm-enabled + disabled gate so a
+        // Live registry read of the agent's sub-agent + disabled gate so a
         // mid-turn PUT /agents/:id that flips either takes effect on the next
         // spawn (the coordinator re-reads this per spawn).
+        //
+        // MUST use the SAME predicate as the tool injection and the delegation
+        // section (`isSubagentsEnabled`). `swarm?.enabled === true` here would
+        // reject every spawn from an agent that has no `swarm` block — i.e.
+        // every agent registered before this feature, the exact population
+        // sub-agents-on-by-default targets — after having told it to delegate.
         getAgentGate: () => {
           const e = registry.get(request.agentId);
           return {
-            enabled: e?.config.swarm?.enabled === true,
+            enabled: !!e && isSubagentsEnabled(e.config),
             disabled: e?.status === 'disabled',
           };
         },
-        caps: entry.config.swarm,
-        allowedModels: entry.config.swarm?.allowedModels,
+        // Caps come from the `subagents` block first, falling back to the legacy
+        // `swarm` names (see subagentCapsFromConfig). Passing the raw swarm block
+        // here would silently ignore every `subagents.max*` an operator set.
+        caps: subagentCapsFromConfig(entry.config),
+        allowedModels: entry.config.subagents?.allowedModels ?? entry.config.swarm?.allowedModels,
         orchestratorModel: entry.config.model,
         orchestratorFallbackModels: entry.config.fallbackModels,
         orchestratorTools: entry.config.tools,
+        // The orchestrator's MCP grant, bounding what a spawn may request. Read
+        // per turn from the same helper the `agent` tool's parent context uses,
+        // so the roster, the resolved grant and this re-check cannot diverge.
+        orchestratorMcpTools: swarm.orchestratorMcpTools?.(request.agentId),
         // Workers sandbox to the orchestrator's workspace (not the gateway's
         // process cwd). Absent → spawnWorker falls back to process.cwd().
         workspace: entry.config.workspace,
+        // A CHILD's turn spawning grandchildren is bounded by the CHILD's own
+        // grant, not the top-level agent's. Applied last so it wins over the
+        // registry reads above; absent for an ordinary conversation.
+        ...(childOverrides ?? {}),
       });
 
       const gen = poolEntry.agent.chat(
@@ -586,7 +819,7 @@ export function createAgentChatCoordinator(
 
         // Normal-completion path finishes INSIDE the try (controller mandate):
         // finalize FIRST (cancels stragglers and pushes their
-        // worker_done{cancelled} into the channel, then closes it), THEN drain —
+        // subagent_finished{cancelled} into the channel, then closes it), THEN drain —
         // so those straggler events are yielded and durably logged
         // (teardown-before-drain). The drain starts from any retained
         // `chanNext` (a settled loser must not be discarded).
@@ -613,7 +846,7 @@ export function createAgentChatCoordinator(
         // path `completedNormally` is false, so it runs as
         // finalize({consumerAlive:false}) — cancelling workers, aborting the
         // orchestrator, and (inside the coordinator) appending straggler
-        // worker_done events out-of-band to the event log. The abort listener
+        // subagent_finished events out-of-band to the event log. The abort listener
         // is `once` and self-cleaning, so there is nothing to remove here.
         attachment.finalize({ consumerAlive: completedNormally });
         pool.unpin(request.agentId, request.conversationId);
@@ -731,6 +964,12 @@ export function createAgentChatCoordinator(
 
     async evictAll() {
       await pool.evictIdle();
+    },
+
+    async refreshCustomTools(agentId) {
+      await pool.forAgent(agentId, async (entry) => {
+        entry.backend.refreshCustomTools?.();
+      });
     },
 
     stats() {

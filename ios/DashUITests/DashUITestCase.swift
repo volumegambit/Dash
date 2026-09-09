@@ -219,6 +219,52 @@ class DashUITestCase: XCTestCase {
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
   }
 
+  /// Wait for an element's accessible LABEL to settle on a value.
+  ///
+  /// Needed wherever the value a test asserts arrives from a round trip the
+  /// app made after the tap — a stopped row's status comes back from the stop
+  /// route and then again from the list re-read, so reading the label straight
+  /// after the tap is a race the test would lose intermittently.
+  func waitForLabel(
+    _ element: XCUIElement,
+    _ expected: String,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label == %@", expected),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// The same, for an element's `value`.
+  func waitForValue(
+    _ element: XCUIElement,
+    _ expected: String,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", expected),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Wait until a text field no longer carries `text` — an empty `TextField`
+  /// reports its PLACEHOLDER as its value, so "cleared" cannot be asserted as
+  /// an empty string.
+  func waitForClearedValue(
+    _ element: XCUIElement,
+    _ text: String,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value != %@", text),
+      object: element
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
   func waitUntilEnabled(
     _ element: XCUIElement,
     timeout: TimeInterval = 5,
@@ -676,6 +722,254 @@ class DashUITestCase: XCTestCase {
     let frame = element.frame
     XCTAssertGreaterThanOrEqual(frame.minX, appFrame.minX - 1, file: file, line: line)
     XCTAssertLessThanOrEqual(frame.maxX, appFrame.maxX + 1, file: file, line: line)
+  }
+
+  /// Wait for an element to STOP existing.
+  ///
+  /// `XCTAssertFalse(element.exists)` straight after a tap is a race with the
+  /// disclosure animation and with whatever relayout the tap caused; it passed
+  /// on one run of this suite and failed on the next once a second scripted
+  /// child made the transcript taller. Asserting the absence rather than
+  /// sampling it is the fix.
+  func waitForNoElement(
+    _ identifier: String,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 5
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"),
+      object: app.descendants(matching: .any)[identifier]
+    )
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Swipe the transcript until an element that ALREADY EXISTS becomes
+  /// hittable.
+  ///
+  /// `scrollToElement` swipes only while the element does not exist, which is
+  /// the wrong condition for a row that is mounted but sits below the visible
+  /// viewport: XCUITest then reports "Activation point invalid and no suggested
+  /// hit points based on element frame" rather than "does not exist". A second
+  /// scripted child pushed the transcript past one screen, so this is the
+  /// difference between a deterministic test and one whose result depends on
+  /// how much text had streamed when it looked.
+  @discardableResult
+  func scrollUntilHittable(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    maxSwipes: Int = 6,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> XCUIElement {
+    XCTAssertTrue(element.waitForExistence(timeout: 8), file: file, line: line)
+    // Swipe the TRANSCRIPT, not the app. `app.swipeUp()` starts its gesture in
+    // the middle of the screen, which is inside the keyboard whenever the
+    // composer has focus — the swipe then scrolls nothing at all, and the loop
+    // below burns all its attempts without moving. That is not hypothetical:
+    // this test passed in isolation and failed inside the full suite, where the
+    // keyboard is up from `openFirstConversation`.
+    let scroller = app.descendants(matching: .any)["chat.transcript"]
+    let surface = scroller.exists ? scroller : app
+    // **The scroller's frame is not the visible band.** `chat.transcript` is a
+    // full-screen `ScrollView` — measured `(0, 0, 402, 874)` — and everything
+    // that covers its bottom (the composer, §8.4's tasks strip, and the
+    // software keyboard whenever the composer has focus) sits INSIDE that frame
+    // while hiding what is under it. A midpoint inside `surface.frame` is
+    // therefore not enough, which is exactly how this helper failed once the
+    // frame loop was in place: `Expected chat.subagent.ui-subagent.header to be
+    // hittable once inside (0.0, 0.0, 402.0, 874.0)`. The band below is the
+    // scroller minus whatever is actually on top of it.
+    //
+    // **Re-sampled inside the loop below, because a swipe can change it.** The
+    // keyboard is the occluder that moves — a swipe on the transcript dismisses
+    // it and a later tap raises it again — and a band measured once before the
+    // loop is one the loop goes on steering into after it has stopped matching
+    // the screen. Costs one extra `visibleBand` per swipe actually taken, and
+    // nothing at all for a row that is already in view.
+    var visible = visibleBand(of: surface, in: app)
+
+    // **`isHittable` is not a predicate on an off-screen row — it RAISES.**
+    // Measured, not inferred: on a fresh iOS 26.5 simulator this helper failed
+    // at its first loop CONDITION, before a single swipe, with `Failed to
+    // determine hittability of "chat.subagent.ui-subagent-2.reply" TextField:
+    // Activation point invalid and no suggested hit points based on element
+    // frame`. A row that is mounted but outside the scroller has no activation
+    // point, so asking whether it is hittable fails the test instead of
+    // answering. It reproduces on the UNTOUCHED tree, so it is a property of
+    // the device instance and the layout, not of any one change.
+    //
+    // So the scrolling is driven by the element's FRAME, which is always
+    // readable, and hittability is asked exactly once, at the end, when the row
+    // is known to be inside the scroller. One loop rather than an up pass
+    // followed by a down pass, because the direction can CHANGE between two
+    // checks while a turn is still streaming — and a pass structure cannot go
+    // back, which is how the same helper once burned twelve swipes travelling
+    // away from its target.
+    for _ in 0..<(maxSwipes * 3) {
+      let frame = element.frame
+      if frame.height > 0, visible.contains(CGPoint(x: frame.midX, y: frame.midY)) { break }
+      // An unreadable (zero) frame is treated as "below", which is the common
+      // case for a row the transcript has grown under.
+      if frame.height == 0 || frame.midY >= visible.midY {
+        surface.swipeUp()
+      } else {
+        surface.swipeDown()
+      }
+      visible = visibleBand(of: surface, in: app)
+    }
+
+    let frame = element.frame
+    // `isHittable` is only SAFE to ask once the row is where a tap can reach it
+    // — anywhere else it raises rather than answering.
+    //
+    // The BAND, not `surface.frame`: the whole point of the loop above is that
+    // a midpoint inside the scroller can still be behind the keyboard, and a
+    // guard on the frame lets exactly that case through to `isHittable`, which
+    // is the call this helper exists to protect. It fails either way — false,
+    // or a raise with no explanation — so this is the diagnostic, not a
+    // strengthening: the loop's own break condition and this guard now ask the
+    // same question.
+    guard frame.height > 0, visible.contains(CGPoint(x: frame.midX, y: frame.midY)) else {
+      XCTFail(
+        """
+        Expected \(element.identifier) to be scrolled into the visible band \(visible);         its frame is \(frame) and the scroller's is \(surface.frame)
+        """,
+        file: file,
+        line: line
+      )
+      return element
+    }
+    XCTAssertTrue(
+      element.isHittable,
+      "Expected \(element.identifier) at \(frame) to be hittable inside the visible band \(visible)",
+      file: file,
+      line: line
+    )
+    return element
+  }
+
+  /// The part of `surface` a tap can actually reach: its own frame, minus the
+  /// chrome that overlays it.
+  ///
+  /// Every occluder here overlays the transcript rather than sitting outside
+  /// it: the software KEYBOARD (up whenever the composer has focus, which
+  /// `openFirstConversation` leaves it with), the COMPOSER and §8.4's tasks
+  /// STRIP in the bottom safe area, and the NAVIGATION BAR at the top. The
+  /// keyboard and the composer are the two that have actually cost a run; the
+  /// strip and the bar are here because they are the same shape of thing and
+  /// cost nothing to exclude. Each is looked up by existence, so a screen
+  /// without one is unaffected.
+  private func visibleBand(of surface: XCUIElement, in app: XCUIApplication) -> CGRect {
+    let bounds = surface.frame
+    var top = bounds.minY
+    var bottom = bounds.maxY
+    let navigationBar = app.navigationBars.firstMatch
+    if navigationBar.exists, navigationBar.frame.height > 0 {
+      top = max(top, navigationBar.frame.maxY)
+    }
+    let occluders = [
+      app.keyboards.firstMatch,
+      app.descendants(matching: .any)["chat.tasks.strip"],
+      app.descendants(matching: .any)["chat.composer"],
+    ]
+    for occluder in occluders where occluder.exists && occluder.frame.height > 0 {
+      bottom = min(bottom, occluder.frame.minY)
+    }
+    guard bottom > top else { return bounds }
+    return CGRect(x: bounds.minX, y: top, width: bounds.width, height: bottom - top)
+  }
+
+  /// Retire the software keyboard so the transcript's visible band is the whole
+  /// scroller again.
+  ///
+  /// Why this is needed at all, and why it appeared with the `main` merge: with
+  /// the keyboard up the band `visibleBand` computes is ~330pt of an 874pt
+  /// transcript, and a row inside the covered region cannot be swiped out from
+  /// under it while the transcript is pinned to the end of a STREAMING turn —
+  /// every swipe up is undone by the re-pin. Main's per-type tool bodies (an
+  /// auto-expanded TodoWrite checklist) added enough height above the sub-agent
+  /// rows to push `chat.subagent.<id>.reply` and the expanded body composer
+  /// into exactly that region, which is a real thing a user meets too: they
+  /// dismiss the keyboard, and so does this.
+  ///
+  /// `ChatView` answers `.scrollDismissesKeyboard(.interactively)`, so this is a
+  /// slow drag DOWN rather than a tap, repeated until the keyboard is actually
+  /// gone — one flick sometimes only moves it. Returns whether it went, so a
+  /// caller can assert rather than assume.
+  ///
+  /// **Sending takes the keyboard down and the end of the turn brings it back,
+  /// so this waits for it before retiring it.** `ComposerView` writes
+  /// `.disabled(feature.draftEditingAllowed == false)` on the draft field, and
+  /// `ChatFeature.draftEditingAllowed` is false for the whole of a send
+  /// (`isSending`, then `state.activeTurnID != nil`). A DISABLED `TextField`
+  /// resigns first responder — the keyboard genuinely goes away — and when the
+  /// turn ends the field re-enables with `@FocusState` still `true`, so it
+  /// comes straight back at the frame it left (`{0, 583, 402, 233}`, measured
+  /// 1.2s to 7s after the tap, varying with load). A helper that samples
+  /// inside that gap retires nothing, returns `true`, and the keyboard then
+  /// arrives on top of the row the caller wanted to reach — which is how the
+  /// two sub-agent tests passed in isolation and failed in the full suite,
+  /// twice.
+  ///
+  /// So: wait for the composer to be usable again (the same edge that
+  /// re-presents the keyboard), then drag UNCONDITIONALLY. A drag with no
+  /// keyboard up costs a scroll the caller's `scrollUntilHittable` undoes; a
+  /// skipped drag costs the assertion its meaning.
+  @discardableResult
+  func dismissKeyboard(in app: XCUIApplication, attempts: Int = 4) -> Bool {
+    let scroller = app.descendants(matching: .any)["chat.transcript"]
+    guard scroller.exists else { return keyboardStaysGone(in: app) }
+    waitForTheKeyboardSendTookDown(in: app)
+    for attempt in 0..<attempts {
+      if attempt > 0, keyboardStaysGone(in: app) { return true }
+      scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+        .press(
+          forDuration: 0.25,
+          thenDragTo: scroller.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        )
+    }
+    return keyboardStaysGone(in: app)
+  }
+
+  /// Wait out the window in which `chat.send` has taken the keyboard down and
+  /// the composer has not yet re-enabled, because the keyboard comes back with
+  /// it. No wait at all when the field is already usable — that is the case
+  /// where the keyboard is up and there is nothing to wait for.
+  private func waitForTheKeyboardSendTookDown(
+    in app: XCUIApplication,
+    timeout: TimeInterval = 10
+  ) {
+    let composer = app.descendants(matching: .any)["chat.composer"]
+    guard composer.exists, composer.isEnabled == false else { return }
+    let usable = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: composer
+    )
+    guard XCTWaiter().wait(for: [usable], timeout: timeout) == .completed else { return }
+    _ = app.keyboards.firstMatch.waitForExistence(timeout: 3)
+  }
+
+  /// The keyboard is gone AND stays gone for `settle` seconds.
+  ///
+  /// Measured on this simulator, in the failing runs' own logs: absent at
+  /// t=27.16s (right after `chat.send`), back at {0, 583} by t=29.94s in one
+  /// run; absent from t=27.21s and back at t=34.10s in another. The settle is
+  /// 4s so that a keyboard on its way back is seen returning rather than
+  /// reported gone — and because it cannot cover the 7s case, it is a stop
+  /// condition only, never the reason a drag is skipped.
+  ///
+  /// An INVERTED predicate expectation waited on a standalone `XCTWaiter`:
+  /// inverted so that "never became true" is the success, standalone so a
+  /// return records nothing against the test — the caller decides what a
+  /// returning keyboard means.
+  private func keyboardStaysGone(in app: XCUIApplication, settle: TimeInterval = 4) -> Bool {
+    guard app.keyboards.firstMatch.exists == false else { return false }
+    let returns = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == true"),
+      object: app.keyboards.firstMatch
+    )
+    returns.isInverted = true
+    return XCTWaiter().wait(for: [returns], timeout: settle) == .completed
   }
 
   /// Asserts that every glyph `element` renders lies inside the window

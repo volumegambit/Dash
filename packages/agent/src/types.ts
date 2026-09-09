@@ -35,6 +35,8 @@ export interface ImageBlock {
 
 // --- Agent types ---
 
+export type SubagentTerminalStatus = 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
+
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -61,6 +63,15 @@ export type AgentEvent =
   | { type: 'error'; error: Error; timestamp?: string }
   | { type: 'file_changed'; files: string[] }
   | { type: 'agent_spawned'; name: string }
+  /**
+   * @deprecated D8 retired the `worker_*` mirrors: nothing emits one any more
+   * (`ChildHandle`, `SwarmCoordinator`, `SwarmRun` and the gateway's boot
+   * recovery all emit the `subagent_*` family alone). The three variants stay
+   * for ONE release so a PERSISTED pre-D8 transcript still decodes — every
+   * client drops them from its fold instead of failing the frame. Delete them,
+   * and the clients' drop cases, one release after D8. `agent_spawned` is NOT
+   * deprecated: it is the only sub-agent event Android decodes.
+   */
   | {
       type: 'worker_spawned';
       workerId: string;
@@ -69,6 +80,7 @@ export type AgentEvent =
       brief: string;
       model: string;
     }
+  /** @deprecated See `worker_spawned`. */
   | {
       type: 'worker_status';
       workerId: string;
@@ -78,14 +90,51 @@ export type AgentEvent =
       detail?: string;
       question?: string;
     }
+  /** @deprecated See `worker_spawned`. */
   | {
       type: 'worker_done';
       workerId: string;
       runId: string;
       role: string;
-      status: 'done' | 'failed' | 'cancelled';
+      status: 'done' | 'failed' | 'cancelled' | 'interrupted' | 'max_turns';
       report: string;
       usage?: { inputTokens: number; outputTokens: number };
+    }
+  | {
+      type: 'subagent_started';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      prompt: string;
+      model: string;
+      background: boolean;
+      depth: number;
+      startedAt: string;
+      isolation?: 'worktree';
+      parentTurnId?: string;
+    }
+  | {
+      type: 'subagent_progress';
+      subagentId: string;
+      status: 'running' | 'waiting_input';
+      toolCallCount: number;
+      elapsedMs: number;
+      detail?: string;
+      question?: string;
+    }
+  | {
+      type: 'subagent_finished';
+      subagentId: string;
+      name?: string;
+      subagentType: string;
+      description: string;
+      status: SubagentTerminalStatus;
+      report: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      toolCallCount: number;
+      startedAt: string;
+      endedAt: string;
     }
   | { type: 'agent_retry'; attempt: number; reason: string }
   | { type: 'context_compacted'; overflow: boolean }
@@ -149,6 +198,17 @@ export interface DashAgentConfig {
   mcpServers?: import('@dash/mcp').McpServerConfig[];
   /** Names of MCP servers assigned to this agent from the gateway pool */
   assignedMcpServers?: string[];
+  /**
+   * Exact `server__tool` names this agent may call, applied AFTER the
+   * `assignedMcpServers` filter. `undefined` = no per-tool narrowing (every
+   * tool of every assigned server); `[]` = no MCP tool at all.
+   *
+   * Because it is an intersection applied after the server gate, naming a tool
+   * from an unassigned server grants nothing — it cannot widen the grant, only
+   * narrow it. Used for spawned sub-agents, whose definition may grant
+   * `github__pr` without also handing over `github__merge`.
+   */
+  mcpToolAllowlist?: string[];
 }
 
 export interface AgentState {
@@ -278,4 +338,43 @@ export interface AgentBackend {
   abort(): void;
   answerQuestion?(id: string, answers: string[][]): Promise<void>;
   listSkills?(): Promise<import('./skills/types.js').SkillDiscoveryResult[]>;
+  /**
+   * Re-render the backend's custom tool list into its LIVE session, for
+   * backends whose host can change a tool's schema mid-conversation (the
+   * sub-agent roster in the `agent` tool's `subagent_type` description, an MCP
+   * server added by `mcp_add_server`). Optional: a backend that freezes its
+   * tools at start has nothing to do, and every caller treats absence as a
+   * no-op. Takes effect on the NEXT model turn, never the in-flight one.
+   */
+  refreshCustomTools?(): void;
+}
+
+/**
+ * Every `PiAgentBackend` construction input as a NAMED slot.
+ *
+ * The positional constructor takes twelve arguments, eight of them optional —
+ * a caller that wants only the last one has to spell out a run of `undefined`s,
+ * and the meaning of each slot lives in its position rather than its name. That
+ * is exactly how the gateway's stripped worker backend ended up silently
+ * shipping `undefined` for the MCP, skills and hook slots. `fromOptions`
+ * consumes this shape; the positional form stays for its existing callers.
+ *
+ * The MCP / logger / skill-file types are referenced through inline `import()`
+ * types so this module keeps its zero top-level imports and @dash/agent gains
+ * no new runtime dependency edge.
+ */
+export interface PiAgentBackendOptions {
+  config: DashAgentConfig;
+  providerApiKeysSource: import('./backends/piagent.js').ProviderApiKeysSource;
+  logger?: import('./logger.js').Logger;
+  sessionDir?: string;
+  /** Writable managed-skills dir. Grants create_skill/install_skill/remove_skill. */
+  managedSkillsDir?: string;
+  mcpManager?: import('@dash/mcp').McpManager;
+  mcpConfigStore?: import('@dash/mcp').McpConfigStoreInterface;
+  mcpAgentContext?: import('@dash/mcp').McpAgentContext;
+  extraTools?: ExtraTool[];
+  extraSkillFiles?: import('./skills/index.js').FlatSkillFile[];
+  hookRunner?: HookRunner;
+  pluginModelCatalog?: PluginModelCatalog;
 }

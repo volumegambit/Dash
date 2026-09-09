@@ -48,6 +48,7 @@ import type {
   DashAgentConfig,
   ExtraTool,
   HookRunner,
+  PiAgentBackendOptions,
   PluginModelCatalog,
   RunOptions,
 } from '../types.js';
@@ -350,6 +351,34 @@ export class PiAgentBackend implements AgentBackend {
   ) {
     this.extraTools = extraTools;
     this.extraSkillFiles = extraSkillFiles;
+  }
+
+  /**
+   * Named-slot constructor. Identical to the twelve-argument positional form —
+   * it simply forwards each option to its slot — but a caller only spells out
+   * the capabilities it actually grants, instead of a run of `undefined`s whose
+   * meaning lives in their position.
+   *
+   * This matters for hosts that build a RESTRICTED backend (the gateway's
+   * spawned sub-agents): "no managed skills dir, but yes to the parent's MCP
+   * manager and hook runner" is expressible as a value, reviewable in a diff,
+   * and unit-testable without booting pi.
+   */
+  static fromOptions(o: PiAgentBackendOptions): PiAgentBackend {
+    return new PiAgentBackend(
+      o.config,
+      o.providerApiKeysSource,
+      o.logger,
+      o.sessionDir,
+      o.managedSkillsDir,
+      o.mcpManager,
+      o.mcpConfigStore,
+      o.mcpAgentContext,
+      o.extraTools ?? [],
+      o.extraSkillFiles ?? [],
+      o.hookRunner,
+      o.pluginModelCatalog,
+    );
   }
 
   /** Current conversation/session id for the in-flight run, or null when idle. */
@@ -656,24 +685,36 @@ export class PiAgentBackend implements AgentBackend {
     // MCP server tools (from connected MCP servers, filtered by agent's assigned servers)
     if (allowedNames.has('mcp') && this.mcpManager) {
       const assigned = this.config.assignedMcpServers;
+      // biome-ignore lint/suspicious/noExplicitAny: MCP tool type from the SDK is not exported here
+      let mcpTools: any[] = [];
       if (assigned && assigned.length > 0) {
         const assignedSet = new Set(assigned);
-        customs.push(
-          ...this.mcpManager.getTools().filter((t) => {
-            const serverName = t.name.split('__')[0];
-            return assignedSet.has(serverName);
-          }),
-        );
+        mcpTools = this.mcpManager.getTools().filter((t) => {
+          const serverName = t.name.split('__')[0];
+          return assignedSet.has(serverName);
+        });
       } else if (!assigned) {
         // No assignedMcpServers field = legacy/standalone mode, show all
-        customs.push(...this.mcpManager.getTools());
+        mcpTools = this.mcpManager.getTools();
       }
       // assignedMcpServers = [] means explicitly no servers assigned
+
+      // Per-tool narrowing, applied AFTER the server gate so it can only
+      // subtract. A spawned child granted `github__pr` must not also inherit
+      // `github__merge`, and naming `linear__issue` here cannot re-admit a
+      // server the agent was never assigned. `undefined` = no narrowing;
+      // `[]` = nothing at all.
+      const allowlist = this.config.mcpToolAllowlist;
+      if (allowlist) {
+        const allowSet = new Set(allowlist);
+        mcpTools = mcpTools.filter((t: { name: string }) => allowSet.has(t.name));
+      }
+      customs.push(...mcpTools);
     }
 
     // MCP management tools (add/remove/list servers)
     if (this.mcpManager && this.mcpConfigStore && this.mcpAgentContext) {
-      const onToolsChanged = () => this.syncMcpToolsToSession();
+      const onToolsChanged = () => this.refreshCustomTools();
 
       if (allowedNames.has('mcp_add_server')) {
         customs.push(
@@ -725,14 +766,24 @@ export class PiAgentBackend implements AgentBackend {
   }
 
   /**
-   * Sync MCP tools into the live Pi session after mcp_add_server / mcp_remove_server.
+   * Re-render every custom tool into the LIVE Pi session.
    *
-   * Pi's AgentSession freezes customTools at construction time. When the agent
-   * adds or removes an MCP server mid-conversation, the new tools aren't visible
-   * to the LLM. This method rebuilds the custom tool list and pokes it into the
-   * session's internal registry so tools are available on the next LLM turn.
+   * Pi's AgentSession freezes `customTools` at construction, and
+   * `buildCustomTools` copies each tool's `parameters` BY VALUE while wrapping
+   * it — so anything that changes a tool's schema or the set of tools after
+   * `start()` is invisible to the model until the list is rebuilt and poked
+   * back in. Two hosts need that:
+   *
+   *   - `mcp_add_server` / `mcp_remove_server`, which change WHICH tools exist;
+   *   - the gateway's sub-agent definition registry, which changes the roster
+   *     rendered into the `agent` tool's `subagent_type` description (that
+   *     `parameters` is a getter precisely so this rebuild re-reads it).
+   *
+   * TIMING: the rebuilt registry is consulted when the session assembles the
+   * NEXT model turn. A turn already in flight keeps the tools it started with.
+   * No-op before `start()` (there is no session to poke).
    */
-  private syncMcpToolsToSession(): void {
+  refreshCustomTools(): void {
     if (!this.session) return;
 
     const customTools = this.buildCustomTools();
@@ -741,7 +792,7 @@ export class PiAgentBackend implements AgentBackend {
     );
 
     // Pi's _customTools and _refreshToolRegistry are private, but we need to
-    // update them at runtime to register dynamically-added MCP server tools.
+    // update them at runtime to re-register the rebuilt tool list.
     // biome-ignore lint/suspicious/noExplicitAny: accessing private Pi session internals for dynamic tool sync
     const session = this.session as any;
     session._customTools = customTools;

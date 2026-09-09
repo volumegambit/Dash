@@ -445,53 +445,119 @@ Something not working? Here are the most common issues and how to fix them.
   </Accordion>
 </AccordionGroup>
 
-## Swarm
+## Sub-agents
 
 <AccordionGroup>
-  <Accordion title="A worker didn't spawn (cap reached)">
-    An agent with [Swarm](/configuration#swarm) enabled tried to spawn a worker and got an error instead. In chat this appears as a **red error tool block** on the `spawn_worker` call.
+  <Accordion title="A sub-agent didn't start (cap reached)">
+    An agent tried to launch a sub-agent and got an error instead. In chat this appears as a **red error tool block** on the `agent` (or `spawn_worker`) call.
 
     **This is a cap doing its job.** The message tells you which one:
 
-    - `too many workers running at once (max N) — wait for workers to finish` — the agent's **concurrent** limit. It should `wait_workers` before spawning more.
+    - `too many workers running at once (max N) — wait for workers to finish` — the agent's **concurrent** limit.
     - `swarm run reached its worker limit (N workers per run)` — the **total-per-turn** limit.
     - `the gateway is at its global worker limit (N) — wait for workers to finish` — the gateway-wide ceiling across **all** agents.
 
-    Raise the relevant cap on the agent's **Swarm** card if the work genuinely needs more workers — see [Configuration → Swarm](/configuration#swarm). The change takes effect on the agent's next message. The gateway-wide ceiling across all agents (default `16`) is raised by setting the `SWARM_MAX_CONCURRENT_WORKERS_GLOBAL` environment variable where the gateway runs and restarting it — see [Configuration → Gateway swarm defaults](/configuration#gateway-swarm-defaults).
+    Raise the relevant cap in the agent's `subagents` block if the work genuinely needs more — see [Configuration → Sub-agents](/configuration#sub-agents). The change takes effect on the agent's next message. The gateway-wide ceiling (default `16`) is raised by setting `SUBAGENTS_MAX_CONCURRENT_GLOBAL` where the gateway runs and restarting it — see [Configuration → Gateway defaults](/configuration#gateway-defaults).
   </Accordion>
 
-  <Accordion title="The swarm stopped partway (wall-clock limit)">
-    Workers were cut off and the agent finalized the turn earlier than expected.
-
-    **Fix:** A swarm turn has a wall-clock cap (`maxRunSeconds`, default **1800** = 30 minutes). When it's hit, the run closes, any in-flight workers are settled, and their cards terminalize. New spawns into a closed turn fail with `swarm turn is closed — cannot spawn`. If your workloads legitimately run longer, raise `maxRunSeconds` on the agent's **Swarm** card.
-  </Accordion>
-
-  <Accordion title="The gateway restarted mid-swarm-run">
-    The gateway process died (crash, force-quit, machine reboot) while workers were still running.
-
-    **Recovery is automatic.** On its next start the gateway detects the interrupted run and closes it out: every worker that never finished is marked **Cancelled** with the note `Gateway restarted while this worker was running.`, and the chat turn ends with the error `Gateway restarted while this swarm run was in progress — remaining workers were cancelled.` Once Mission Control reconnects, the conversation's worker cards stop spinning and show those terminal states, and the run appears as finished in the swarm supervision panel.
-
-    Workers do not resume after a restart — re-send the prompt to run the swarm again.
-  </Accordion>
-
-  <Accordion title="Where are the worker transcripts?">
-    Each worker runs its own session, stored **separately** from the agent's normal conversations so it doesn't clutter the conversation list:
-
+  <Accordion title="Agent would be spawned with zero tools">
+    **Error:**
     ```
-    ~/.dash/gateway/sessions/<agent-name>/.swarm/<runId>/<workerId>/
+    Agent would be spawned with zero tools: mcp__github, write
     ```
 
-    These transcripts are kept for inspection and are **never auto-deleted** — Dash does not garbage-collect them. If you want to reclaim space, remove old `.swarm/` run directories by hand:
+    A sub-agent type asked for tools that its parent does not have, so the intersection came out empty — and Dash refuses to run a tool-less agent rather than launching one that can do nothing. The message names the entries that resolved to nothing.
 
-    ```bash
-    rm -rf ~/.dash/gateway/sessions/<agent-name>/.swarm
-    ```
+    **Fix:** either give the parent agent those tools (Mission Control → the agent's **Configuration** tab → **Tools**, and its assigned MCP servers for `mcp__…` entries), or edit the type's `tools:` frontmatter to ask for something the parent has. A sub-agent can never hold a tool or MCP server its parent lacks — see [Configuration → Sub-agent types](/configuration#sub-agent-types).
   </Accordion>
 
-  <Accordion title="No swarm progress on Telegram / WhatsApp">
-    You chat with a swarm-enabled agent over a messaging app and see only the final answer — no per-worker updates.
+  <Accordion title="depth limit reached">
+    **Error:**
+    ```
+    depth limit reached (maxDepth 3) — an agent at depth 3 cannot spawn a depth-4 agent
+    ```
 
-    **This is by design.** Live worker cards, the pinned strip, and the supervision panel are **Mission Control** features. Messaging channels deliver only the agent's **final response** (the answer it synthesizes from its workers), not the intermediate swarm events. To watch and steer a run in real time, chat with the agent in Mission Control.
+    Sub-agents may nest, but only so far. A direct child is depth 1, and the ceiling is `subagents.maxDepth` (default `3`).
+
+    **Fix:** raise `maxDepth` for that agent, or have the work done one level up. Note that an agent already at the ceiling is not given the `agent` tool at all, so in most cases it simply won't try. Separately, chat shows **one level** of nesting: expanding a sub-agent shows its transcript, and a row inside that transcript reads *"Nested agents this deep are not opened here."* — that is the display limit, not the run limit.
+  </Accordion>
+
+  <Accordion title='alias "opus" is not configured (subagents.modelAliases)'>
+    **Note on the tool result:**
+    ```
+    Note: alias "opus" is not configured (subagents.modelAliases); using the parent model
+    ```
+
+    The `agent` tool's `model` parameter accepts short alias names as well as full model ids. An alias is looked up in the agent's `subagents.modelAliases`, and **no aliases are configured by default** — which model `opus` should mean depends on which provider the agent uses, so nothing is assumed. An alias that isn't in the map resolves to nothing, the sub-agent runs on the parent's model, and the note above is appended to the tool result. Nothing failed.
+
+    **Fix:** add the alias to the agent's `subagents.modelAliases` (for example `{"opus": "anthropic/claude-opus-4-6"}`), or pass a full `provider/model` id (or `inherit`) instead. Either way, if the id isn't the parent's model or one of its fallbacks, add it to the agent's `subagents.allowedModels` first — see [Configuration → Sub-agents](/configuration#sub-agents).
+  </Accordion>
+
+  <Accordion title="My sub-agent stopped waiting for an answer">
+    A sub-agent asked a question with `ask_orchestrator`, showed as **waiting for input**, and then carried on — or finished — without anyone answering. Its own transcript shows the call coming back as `ask_orchestrator aborted`.
+
+    **A question lives only as long as the turn that launched the sub-agent.** When that turn ends, any question still open is dropped so the sub-agent is not left waiting on a conversation that has moved on. A foreground sub-agent holds its parent's turn open until it finishes, so there is time to answer from the reply box on its row. A **background** sub-agent usually outlives the turn that launched it, so a question it asks after that turn has ended has nobody to answer it.
+
+    **Fix:** answer while the turn is still running, or launch the sub-agent in the foreground when you expect it to need a decision. A brief that tells the sub-agent what to assume when it cannot ask is the sturdier fix for background work.
+  </Accordion>
+
+  <Accordion title="isolation: worktree requires a git workspace">
+    **Error:**
+    ```
+    isolation: worktree requires a git workspace
+    ```
+
+    `isolation: worktree` gives a sub-agent its own checkout of the workspace, cut from whatever commit the workspace is on right now. That needs the workspace to be inside a git repository.
+
+    **Fix:** run `git init` in the agent's working directory (or point the agent at a directory that is already a repo), or drop `isolation` and let the sub-agent share the parent's workspace.
+  </Accordion>
+
+  <Accordion title="My sub-agent's worktree wasn't removed">
+    A directory is still sitting under `~/.dash/gateway/worktrees/<agent-name>/<subagent-id>/` after the sub-agent finished.
+
+    **This is by design when the worktree holds work.** Cleanup removes a worktree only when there is nothing to lose: uncommitted changes, untracked files, and commits that no branch or tag would keep alive all keep it. (Regenerable litter — `node_modules/`, `dist/`, `build/`, `.next/`, `coverage/`, `*.log`, `.DS_Store` — does not count.) The path is not handed back to you in the chat: to find it, either fill in the template above with the sub-agent's id, or look in the gateway log, where every kept worktree is recorded with a line containing `keeping` and the path, and why it was kept.
+
+    **Fix:** look at what's inside and keep or merge what you want. Once the checkout is clean, `git worktree remove <path>` from the parent repository takes it down; git refuses while there are changes in it, so commit or discard them first (or pass `--force` if you are sure).
+  </Accordion>
+
+  <Accordion title="The gateway restarted while sub-agents were running">
+    The gateway process died (crash, force-quit, machine reboot) while sub-agents were still working.
+
+    **Recovery is automatic.** On its next start the gateway marks every sub-agent that was still running as **interrupted**, keeps its transcript, and tells its parent agent — as a notification turn delivered as soon as the gateway is serving again (or with the parent's next turn, if it's busy). The rows stop spinning and show `interrupted`.
+
+    Unlike earlier releases, an interrupted sub-agent is **not lost**: press **Resume** on its row — from the web tasks panel, the iOS tasks sheet, or `POST /subagents/:id/resume`; Mission Control greys the button once a sub-agent is terminal — or have the parent `send_message` it, and it picks up with its context intact. Orphaned worktrees are swept at the same time, except ones holding work.
+  </Accordion>
+
+  <Accordion title="Resume is refused or greyed out">
+    A **Resume** — from a row, from the tasks list, or from the parent's own `send_message` — comes back with an error instead. There are three common reasons, and a resume also counts against the launch caps, so the two cap messages described under *"A sub-agent didn't start (cap reached)"* above can arrive here too:
+
+    - `Agent "..." is a one-shot Explore agent and cannot be resumed.` — `Explore` and `Plan` are read-only, one-shot types, so they cannot be given a new task. **Fix:** launch a new one with the follow-up task. (If the agent is still running and asking a question, that is an *answer*, not a resume, and it goes through: the parent's `send_message`, the reply box on its row and the legacy `send_to_worker` all reach a paused one-shot.)
+    - `steer cap reached for "..." (max 10 per agent).` — you've hit the per-child message cap, which counts across resumes for as long as the gateway holds that child in memory (a restart resets it to zero). **Fix:** raise `swarm.maxSteersPerWorker` for the agent, or start a fresh sub-agent.
+    - `Agent "..." cannot be resumed: its grant cannot be rebuilt.` — the parent's grant could not be re-established. Either **sub-agents have been turned off** on the parent agent (or the agent itself was **deleted** — its conversations survive the delete, but nothing under them can run again), or the parent conversation (or one above it) was **deleted** — deleting a conversation stops everything under it from running again. A sub-agent created by an **older gateway build**, before the grant was stored beside the row, has the same symptom. **Fix:** re-enable sub-agents on the parent agent — see [Configuration → Per-agent settings](/configuration#per-agent-settings). A deleted parent, a deleted agent and a grant that was never stored cannot be recovered, so launch a new sub-agent instead.
+
+    A resume also **silently** re-intersects the child's tools and MCP servers with what its parent holds now, so a resumed sub-agent can come back with fewer tools than it had, without any message saying so. Its **model** is not re-checked: a child keeps the model it was launched with even if that model has since been removed from the parent's allowed set.
+
+    Mission Control's panel also greys **Resume** out for a sub-agent that has already finished; use the web tasks panel or `POST /subagents/:id/resume` to resume one from there.
+  </Accordion>
+
+  <Accordion title="Where are the sub-agent transcripts?">
+    A sub-agent is a conversation of its own, so its transcript is where every other conversation is:
+
+    ```
+    ~/.dash/gateway/sessions/<agent-name>/<subagent-id>/
+    ```
+
+    Read it in the app instead: expand the sub-agent's row in chat, or open it from the tasks panel. Transcripts are **never auto-deleted**. Older releases wrote workers under `~/.dash/gateway/sessions/<agent-name>/.swarm/<runId>/`; those directories are no longer written to and are left alone — remove them by hand if you want the space.
+  </Accordion>
+
+  <Accordion title="No sub-agent progress on Telegram / WhatsApp">
+    You chat with an agent over a messaging app and see only the final answer — no per-sub-agent updates.
+
+    **This is by design.** Sub-agent rows, the tasks panel and sheet, and Mission Control's **Sub-agents** panel are chat-app features (iOS, the web client, and Mission Control). Messaging channels deliver only the agent's **final response**, not the intermediate sub-agent events. To watch and steer sub-agents in real time, chat with the agent in one of those clients.
+  </Accordion>
+
+  <Accordion title="An old conversation's cancelled worker lost its reason">
+    Conversations recorded before this release replay fine — each worker still draws exactly one card, in the same place, with the same status. One narrow case loses detail: a worker that was **cancelled after its viewer had already gone away** recorded its reason only on an event type that no longer exists, so its card now settles on `cancelled` without the explanatory note. Nothing else about the replay changed, and nothing needs fixing.
   </Accordion>
 </AccordionGroup>
 

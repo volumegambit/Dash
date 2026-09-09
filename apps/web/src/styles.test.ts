@@ -138,6 +138,90 @@ describe('styles.css design tokens (chat-ux Phase 2 Task 1)', () => {
   });
 });
 
+/**
+ * Everything declared BEFORE the `@media (max-width: 768px)` block — the
+ * DESKTOP half of any selector that is declared twice (`.tasks-panel`,
+ * `.tasks-panel--open`, `.app-tasks-backdrop`), the same disambiguation
+ * `mobileDrawerBlock` exists for, from the other side.
+ *
+ * Scoping the desktop lookups to this slice does two jobs, and the second is
+ * the point. A `@media` query adds NO specificity, so two rules with the same
+ * selector are decided purely by SOURCE ORDER: a base rule declared *after*
+ * the media block beats the mobile override at every width. Fix I1 is exactly
+ * that mistake — `.app-tasks-backdrop { display: none }` sat at the end of the
+ * file, so the mobile `display: block` never applied and the phone-width panel
+ * had no scrim and no tap-outside-to-dismiss. Asserting each rule's text
+ * INDEPENDENTLY (which is what the previous `tasksPanelSection` helper did)
+ * cannot see that: both strings are present either way. Requiring the base
+ * rule to live in this slice makes the cascade the test's subject.
+ */
+function beforeMobileBlock(): string {
+  return css.slice(0, mobileBlockIndex());
+}
+
+/** Offset of the actual `@media (max-width: 768px) { … }` rule. Matched at a
+ * line start and with its opening brace, because styles.css also MENTIONS the
+ * query in prose (the comment fix I1 left on the moved rules) and a bare
+ * `indexOf` finds that first. */
+function mobileBlockIndex(): number {
+  const at = css.indexOf('\n@media (max-width: 768px) {');
+  if (at === -1) throw new Error('styles.css has no mobile drawer block');
+  return at;
+}
+
+describe('tasks panel (sub-agents D3, design §8.4)', () => {
+  it('adds a third grid column only while the panel is open', () => {
+    // The base `.app-body` stays two columns: an always-declared third track
+    // would leave a 320px gutter on every conversation that has no children.
+    expect(ruleBlock('.app-body')).toMatch(/grid-template-columns:\s*280px 1fr;/);
+    expect(ruleBlock('.app-body--tasks')).toMatch(/grid-template-columns:\s*280px 1fr \d+px;/);
+  });
+
+  it('hides the closed panel outright rather than merely off-screen', () => {
+    // Same reasoning as fix I2 for the sidebar drawer: a panel that is only
+    // moved out of the viewport keeps its rows — and their stop and resume
+    // buttons — in the accessibility tree and the tab order.
+    const desktop = beforeMobileBlock();
+    expect(ruleBlock('.tasks-panel', desktop)).toMatch(/display:\s*none/);
+    expect(ruleBlock('.tasks-panel--open', desktop)).toMatch(/display:\s*flex/);
+  });
+
+  it('overlays the panel with a backdrop under 768px, like the sidebar drawer', () => {
+    const mobile = mobileDrawerBlock();
+    expect(ruleBlock('.tasks-panel--open', mobile)).toMatch(/position:\s*fixed/);
+    expect(ruleBlock('.app-tasks-backdrop', mobile)).toMatch(/display:\s*block/);
+    // The backdrop is desktop-invisible: at full width the panel is a column,
+    // and a full-screen scrim over the transcript would be nonsense.
+    expect(ruleBlock('.app-tasks-backdrop', beforeMobileBlock())).toMatch(/display:\s*none/);
+    // Fix I1, and the whole reason the assertion above is scoped to
+    // `beforeMobileBlock()`: source order, not specificity, decides between
+    // those two `display` declarations. Stated separately as well so a future
+    // edit that moves the base rule back down the file fails with "source
+    // order" rather than with "styles.css has no rule for .app-tasks-backdrop".
+    // The same holds for the panel's own two rules, which the mobile block
+    // likewise overrides (`position: fixed` on `.tasks-panel--open`).
+    //
+    // `lastIndexOf`, not `indexOf`, and the difference is the whole point.
+    // Taking the FIRST declaration catches a rule that was MOVED below the
+    // media block but not one that was RE-DECLARED there with the original
+    // left in place — and re-declaration is the likelier regression, because
+    // §8.4 now carries a comment saying these rules live earlier in the file,
+    // which invites someone to "restore" them locally. Mutation-checked:
+    // moving the rule to the end of the file fails either way; DUPLICATING it
+    // at the end passes with `indexOf` (bug live, suite green) and fails with
+    // `lastIndexOf`.
+    const mobileAt = mobileBlockIndex();
+    const declaredAt = ['.app-tasks-backdrop', '.tasks-panel', '.tasks-panel--open'].map(
+      (selector) => [selector, css.lastIndexOf(`\n${selector} {`)] as const,
+    );
+    expect(declaredAt.filter(([, at]) => at === -1 || at > mobileAt)).toEqual([]);
+    // And the body stays ONE column while it is open, stated rather than
+    // left to source order — `.app-body--tasks` and the mobile `.app-body`
+    // have the same specificity.
+    expect(ruleBlock('.app-body--tasks', mobile)).toMatch(/grid-template-columns:\s*1fr;/);
+  });
+});
+
 describe('final-review fix wave', () => {
   it('fix I2: the CLOSED mobile drawer is visibility:hidden (not just translated off-screen), ' +
     'so it drops out of the accessibility tree/tab order rather than merely off the visible ' +

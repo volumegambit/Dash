@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   type ConversationRef,
   ConversationRepositoryOfflineError,
@@ -59,6 +60,31 @@ export interface ResumableChatTransportOptions {
   onFrame(frame: MobileWsServerFrame): void;
   onConnectionError(conversationId: string, error: ResumableChatTransportError): void;
   onProtocolError(conversationId: string, message: string): void;
+  /**
+   * A conversation subscription's socket came back after a drop and the
+   * `subscribe` frame has been re-sent. NEVER fired for the first connect.
+   *
+   * It exists because the gateway replays NOTHING on a subscribe
+   * (`apps/gateway/src/chat-ws.ts:425-427`, "Bookkeeping only: no
+   * acknowledgement frame"), so every frame emitted while the socket was down
+   * is gone. Re-subscribing restores the future; only a REST re-read of the
+   * conversation restores the gap, and this is the signal that one is owed.
+   */
+  onSubscriptionRestored?(conversationId: string): void;
+  /**
+   * The socket behind a conversation watch is NOT OPEN. Fired for every way
+   * that happens: the factory throwing, an ordinary close on the way to a
+   * reconnect, an auth/rate-limit close that will not reconnect, and an older
+   * gateway refusing the `subscribe` frame it does not understand.
+   *
+   * The reader's own record of what it holds is not evidence that anything is
+   * watching. Without this signal a renderer keeps believing it is subscribed,
+   * shows an optimistic row for a message whose `accepted` can never arrive,
+   * and the transcript merge then keeps that row forever — iOS D5's Critical
+   * 2, and web's before it. Paired with {@link onSubscriptionRestored}, which
+   * is the only thing that takes it back.
+   */
+  onSubscriptionLost?(conversationId: string): void;
   socketFactory?: ChatSocketFactory;
 }
 
@@ -81,6 +107,35 @@ interface TurnState {
   rejectAccepted?: (error: Error) => void;
   cancelRequested: boolean;
   queuedFrames: MobileWsClientFrame[];
+}
+
+/**
+ * A conversation the client watches for its own sake (design §7.6), rather
+ * than for one turn it started. Deliberately NOT a {@link TurnState}: every
+ * field of that one is turn-scoped — it is constructed with a `turnId`, writes
+ * `resume` on open, and is destroyed when its turn reaches `done`, which is
+ * exactly the moment a background sub-agent is still working.
+ */
+interface SubscriptionState {
+  conversationId: string;
+  agentId: string;
+  socket: ChatSocket | null;
+  reconnectAttempt: number;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  delivery: Promise<void>;
+  /**
+   * The newest seq delivered, or 0 when nothing has been. A subscription may
+   * begin in the middle of a live turn, so there is no `lastSeq + 1` to gate
+   * on: the FIRST frame is delivered whatever its seq, and only strictly
+   * newer ones after it. That drops duplicates across a reconnect and lets a
+   * hole through, which is correct here — nothing can replay a subscription,
+   * and `onSubscriptionRestored` is how the reader learns to re-read.
+   */
+  lastSeq: number;
+  /** True once this state has had a socket open, so a restore is a RE-open. */
+  everOpened: boolean;
+  /** Correlation ids of the subscribe/unsubscribe frames sent on this state. */
+  frameIds: Set<string>;
 }
 
 const API_ERROR_CODES = new Set<MobileApiErrorCode>([
@@ -139,9 +194,17 @@ export function parseCapableServerFrame(value: unknown): MobileWsServerFrame {
       }
       break;
     case 'event':
+      // `seq` is OPTIONAL on an event frame, and the gateway means it: a
+      // TRANSIENT event (spec §7.2 — `subagent_progress` today) is
+      // live-broadcast and never appended to the durable log, so
+      // `resumable-chat-hub.ts:382-390` emits it with no sequence at all.
+      // Requiring one here rejected every heartbeat a real child sends, which
+      // is the whole of D5 and the first half of D3. Present-but-malformed is
+      // still a reject — the relaxation is "absent is legal", not "anything
+      // goes".
       if (
         !isNonblankString(value.conversationId) ||
-        !isPositiveInteger(value.seq) ||
+        (value.seq !== undefined && !isPositiveInteger(value.seq)) ||
         !isRecord(value.event) ||
         !isNonblankString(value.event.type)
       ) {
@@ -305,6 +368,12 @@ const defaultSocketFactory: ChatSocketFactory = (url, options) =>
 
 export class ResumableChatTransport {
   private readonly turns = new Map<string, TurnState>();
+  /**
+   * The SECOND registry (design §7.6), keyed by conversation id like
+   * {@link turns} but living on a different clock: a turn state dies at
+   * `done`, a subscription dies when its last holder releases it.
+   */
+  private readonly subscriptions = new Map<string, SubscriptionState>();
   private readonly socketFactory: ChatSocketFactory;
   private closed = false;
 
@@ -413,6 +482,74 @@ export class ResumableChatTransport {
     this.connect(state);
   }
 
+  /**
+   * Watch `conversationId` for as long as somebody holds it (design §7.6):
+   * one socket, one `subscribe` frame, no turn id and no terminal state.
+   *
+   * Idempotent, and NOT refcounted — {@link ChatService} owns the count, so
+   * a second watch of a conversation already watched is a no-op rather than a
+   * second socket. That is ruling 5's "at most one socket per subscribed
+   * conversation", enforced structurally by the map.
+   *
+   * Pass `{ reopened: true }` when this conversation was already being watched
+   * on a transport that has just been replaced: the first open then counts as
+   * a RESTORE and the reader is told a REST re-read is owed, because a
+   * subscribe replays nothing.
+   */
+  watchConversation(
+    agentId: string,
+    conversationId: string,
+    options?: { reopened?: boolean },
+  ): void {
+    this.assertOpen();
+    if (this.subscriptions.has(conversationId)) return;
+    const state: SubscriptionState = {
+      conversationId,
+      agentId,
+      socket: null,
+      reconnectAttempt: 0,
+      reconnectTimer: null,
+      delivery: Promise.resolve(),
+      lastSeq: 0,
+      // `reopened` says this conversation was ALREADY being watched, on a
+      // transport that has just been replaced. Pre-seeding `everOpened` makes
+      // the first `open` on the new socket fire `onSubscriptionRestored` — so
+      // "restored" keeps meaning "the socket is open", which is the whole
+      // point of the pair, rather than "somebody asked for one".
+      everOpened: options?.reopened === true,
+      frameIds: new Set(),
+    };
+    this.subscriptions.set(conversationId, state);
+    this.connectSubscription(state);
+  }
+
+  /** Drop the watch: `unsubscribe` over the socket that holds it, then close. */
+  unwatchConversation(conversationId: string): void {
+    const state = this.subscriptions.get(conversationId);
+    if (!state) return;
+    this.subscriptions.delete(conversationId);
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    const socket = state.socket;
+    state.socket = null;
+    if (socket?.readyState === 1) {
+      // Best-effort: the gateway drops a closed sink's watchers on its own
+      // (`resumableChatHub`), so a failed write costs nothing but a tidy
+      // server-side release.
+      try {
+        this.write(socket, this.subscriptionFrame(state, 'unsubscribe'));
+      } catch {
+        // The close below is the real release.
+      }
+    }
+    socket?.close();
+  }
+
+  /** The conversations this transport currently watches. */
+  watchedConversations(): string[] {
+    return [...this.subscriptions.keys()];
+  }
+
   cancel(conversationId: string, turnId: string): void {
     const state = this.turns.get(conversationId);
     if (!state || state.turnId !== turnId || state.terminal) return;
@@ -446,6 +583,166 @@ export class ResumableChatTransport {
       state.socket = null;
       socket?.close();
     }
+    for (const conversationId of [...this.subscriptions.keys()]) {
+      this.unwatchConversation(conversationId);
+    }
+  }
+
+  private subscriptionFrame(
+    state: SubscriptionState,
+    type: 'subscribe' | 'unsubscribe',
+  ): MobileWsClientFrame {
+    const frame = {
+      type,
+      id: randomUUID(),
+      agentId: state.agentId,
+      conversationId: state.conversationId,
+    } satisfies MobileWsClientFrame;
+    state.frameIds.add(frame.id);
+    return frame;
+  }
+
+  /**
+   * Tear a watch down for good and say so. The three callers are the paths
+   * that leave NO open socket and NO reconnect behind, so the hold the reader
+   * still believes in is watching nothing until something else revives it.
+   */
+  private abandonSubscription(state: SubscriptionState): void {
+    if (this.subscriptions.get(state.conversationId) !== state) return;
+    this.subscriptions.delete(state.conversationId);
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    const socket = state.socket;
+    state.socket = null;
+    socket?.close();
+    this.options.onSubscriptionLost?.(state.conversationId);
+  }
+
+  private connectSubscription(state: SubscriptionState): void {
+    if (this.closed || this.subscriptions.get(state.conversationId) !== state) return;
+    let socket: ChatSocket;
+    try {
+      socket = this.socketFactory(this.options.connection.url, {
+        headers: this.options.connection.headers,
+      });
+    } catch {
+      // No socket, no subscription. Nothing is bannered: the parent's own
+      // turn socket is what tells a user the gateway is unreachable. The
+      // holder IS told, because it is about to behave as though a stream it
+      // does not have will answer it.
+      this.abandonSubscription(state);
+      return;
+    }
+    state.socket = socket;
+    socket.addEventListener('open', () => {
+      if (state.socket !== socket || this.closed) return;
+      if (this.subscriptions.get(state.conversationId) !== state) return;
+      state.reconnectAttempt = 0;
+      // Only the ids still outstanding are ever needed, and a previous
+      // socket's are not: it is closed, so its `error` can no longer arrive.
+      // Without this the set grew by one per reconnect for the life of the
+      // watch.
+      state.frameIds.clear();
+      this.write(socket, this.subscriptionFrame(state, 'subscribe'));
+      const reopened = state.everOpened;
+      state.everOpened = true;
+      if (reopened) this.options.onSubscriptionRestored?.(state.conversationId);
+    });
+    socket.addEventListener('message', (rawEvent) => {
+      if (state.socket !== socket || this.closed) return;
+      state.delivery = state.delivery
+        .then(() => {
+          if (this.subscriptions.get(state.conversationId) !== state) return;
+          let value: unknown;
+          try {
+            const data = typeof rawEvent.data === 'string' ? rawEvent.data : String(rawEvent.data);
+            value = JSON.parse(data) as unknown;
+          } catch {
+            return;
+          }
+          let frame: MobileWsServerFrame;
+          try {
+            frame = parseCapableServerFrame(value);
+          } catch {
+            // An unparseable frame on a WATCH is not grounds to tear the app's
+            // chat down: the turn path's `invalidFrame()` raises
+            // "Update Dash", which belongs to a turn the user started.
+            return;
+          }
+          this.deliverSubscribed(state, frame);
+        })
+        .catch(() => undefined);
+    });
+    socket.addEventListener('close', (closeEvent) => {
+      if (state.socket !== socket) return;
+      state.socket = null;
+      if (this.closed) return;
+      if (this.subscriptions.get(state.conversationId) !== state) return;
+      const closeCode = closeEvent.code ?? 1006;
+      // Authorization and rate limiting are the SOCKET's verdict on this
+      // client, not this conversation's: reconnecting would hammer it and
+      // `onConnectionError` would put the app-wide banner over the parent's
+      // transcript for a child nobody is looking at. Drop the watch; the
+      // parent's own turn socket reports the condition.
+      if (closeCode === 4001 || closeCode === 4401 || closeCode === 4429) {
+        this.abandonSubscription(state);
+        return;
+      }
+      // An ordinary close reconnects, and the holder is told anyway: until the
+      // new socket opens nothing is watching, and a message sent in that
+      // window earns no `accepted` either. `onSubscriptionRestored` on the
+      // re-open is what takes this back.
+      this.options.onSubscriptionLost?.(state.conversationId);
+      this.scheduleSubscriptionReconnect(state);
+    });
+  }
+
+  private deliverSubscribed(state: SubscriptionState, frame: MobileWsServerFrame): void {
+    // An OLDER gateway does not know `subscribe`/`unsubscribe`:
+    // `parseChatClientFrame` returns null and it answers
+    // `{type:'error', id: <our frame id>, code:'validation_failed'}`. Forwarded
+    // that would finalize a row that never started. Swallowed by id, so a
+    // genuine error frame for a real turn is untouched.
+    if (frame.type === 'error' && state.frameIds.delete(frame.id)) {
+      // Still swallowed, and `11c2974c`'s reason for that stands. What was
+      // missing is the consequence: the gateway registered NOTHING, so this
+      // watch is dead while its socket stays open. Tear it down and say so.
+      //
+      // Safe for the `unsubscribe` frame's echo too: `unwatchConversation`
+      // removes the state from `subscriptions` before writing that frame, and
+      // the message listener drops anything for a state the map no longer
+      // holds, so an unsubscribe echo never reaches this line on a live state.
+      this.abandonSubscription(state);
+      return;
+    }
+    if ('conversationId' in frame && frame.conversationId !== state.conversationId) return;
+    const seq = sequence(frame);
+    if (seq === null) {
+      // A turn-level `error` carries no seq. Forwarded, because the reader has
+      // a streaming row to finalize; never through `onConnectionError`, which
+      // is the app-wide banner.
+      if (frame.type === 'error' && 'conversationId' in frame) this.options.onFrame(frame);
+      // So does a TRANSIENT event (spec §7.2). Dropping it here is why a
+      // WATCHED conversation — every background child, §7.6 — showed a card
+      // that never moved off `0 tool uses`: the heartbeat is the only thing
+      // that carries a running child's tool count between its start and its
+      // finish. Never advances `lastSeq`; it is not a position in the log.
+      if (frame.type === 'event') this.options.onFrame(frame);
+      return;
+    }
+    if (seq <= state.lastSeq) return;
+    state.lastSeq = seq;
+    this.options.onFrame(frame);
+  }
+
+  private scheduleSubscriptionReconnect(state: SubscriptionState): void {
+    if (state.reconnectTimer || this.closed) return;
+    const delay = reconnectDelay(state.reconnectAttempt);
+    state.reconnectAttempt += 1;
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      this.connectSubscription(state);
+    }, delay);
   }
 
   private assertOpen(): void {
@@ -561,6 +858,14 @@ export class ResumableChatTransport {
         if (state.accepted && frame.conversationId === undefined) return;
         state.terminal = true;
         this.finish(state.conversation.id);
+        return;
+      }
+      // A TRANSIENT event (spec §7.2): live-only, never persisted, therefore
+      // no cursor. Delivered, and deliberately WITHOUT touching `lastSeq` —
+      // it is not a position in the log, so it must neither advance the
+      // cursor nor be read as a gap the replay path has to fill.
+      if (frame.type === 'event') {
+        this.options.onFrame(frame);
         return;
       }
       return invalidFrame();

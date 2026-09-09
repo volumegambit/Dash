@@ -1756,7 +1756,7 @@ Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the
 1. With swarm enabled, send the swarm prompt.
 2. **Verify:** as the run proceeds, one **worker card** appears per spawned worker, anchored at its spawn point in the assistant message. Each card header shows the worker's **role** (monospace), a status icon, and a one-line latest detail.
 3. **Verify:** while running, a card shows **Running** with a spinning loader; a worker that pauses to ask shows **Waiting for input** with a spinner.
-4. **Verify:** when a worker finishes, its card shows **Done** (green check). Expand it. **Verify:** the expanded card shows the brief, the status trail, and the worker's **Report** rendered as Markdown, plus its model and token usage.
+4. **Verify:** when a worker finishes, its card shows **Done** (green check). Expand it. **Verify:** the expanded card shows the status, the description, the child's own transcript, and its **Report** rendered as Markdown, plus its model and token usage. (The card is the sub-agent card — see Section 32 for its meta line, its composer, and the nesting rule. The per-status trail the old worker card listed is gone; the child's transcript replaced it.)
 5. **Verify:** the orchestrator's final synthesized answer appears after the worker cards (one answer built from the workers' reports).
 
 ### 31.3 Cards render identically from history after app restart
@@ -1765,17 +1765,20 @@ Covers the per-agent **Swarm** feature: the enable toggle in agent settings, the
 3. **Verify:** any worker that reached **Done** live still shows **Done** from history (it is not re-derived as cancelled).
 
 ### 31.4 Orphan card after a forced crash-reconcile
-An **orphan** card is a worker whose terminal event landed in a *different* persisted message than its spawn (e.g. the gateway restarted mid-run, so the spawn is in message A and the `worker_done` reconciled into message B).
+An **orphan** card is a worker whose terminal event landed in a *different* persisted message than its spawn (e.g. the gateway restarted mid-run, so the spawn is in message A and the `subagent_finished` reconciled into message B).
 1. Start a swarm turn, then force a crash-reconcile: kill/restart the gateway (or MC's gateway child) while workers are still running, then let MC reconnect and reconcile.
-2. Re-open the conversation. **Verify:** the split worker renders as a **compact standalone card** whose collapsed summary reads **"worker done"** / **"worker failed"** / **"worker cancelled"** (lowercase status), sourced from the terminal event's self-describing role — it is not dropped and does not error the message render.
+2. Re-open the conversation. **Verify:** the split worker renders as a **compact standalone card** whose collapsed summary reads **"worker done"** / **"worker failed"** / **"worker cancelled"** (lowercase status), sourced from the terminal event's self-describing role — it is not dropped and does not error the message render. **Not re-verified — those three summary strings date from before `e5ea76a6` replaced `WorkerCard` with `SubagentCard`; the mechanism (an orphan terminal still anchors its own card) is current, the wording is not. See the note under 31.4B.**
 3. **Verify:** an orphan card is **not** counted in the pinned strip (it represents a finished worker from a prior message, not live work).
 
 ### 31.4B Gateway dies mid-run → boot-time terminalization
-When the gateway process is killed hard mid-run, nothing gets to write the turn's terminal state: the event log ends with `worker_spawned` events that have no `worker_done` and no done/error stream marker. On its **next boot** the gateway repairs this: it appends a synthesized `worker_done` (**Cancelled**, report `Gateway restarted while this worker was running.`) per dangling worker plus a terminal turn error, and restores the interrupted run into the swarm panel history.
+When the gateway process is killed hard mid-run, nothing gets to write the turn's terminal state: the event log ends with `subagent_started` events that have no matching `subagent_finished` and no done/error stream marker. On its **next boot** the gateway repairs this: the generic conversation recovery appends exactly one terminal marker for the turn and flips the child conversations to `interrupted`, and the sub-agent pass appends a synthesized `subagent_finished` with status **`interrupted`** and the report `The gateway restarted while this agent was running. Its transcript is intact and it can be resumed with send_message.` per dangling child, then queues the parent a notification about each (the parent sees it as a `<task-notification>` on its next turn). Since D6 it does **not** rebuild a `RunSnapshot` — the panel reads child conversations.
 1. Start a swarm turn and, while workers are still **Running**, kill the gateway process hard (`kill -9`; for MC's managed gateway, force-quit MC too so its own reconcile can't run first).
-2. Restart the gateway (relaunch MC) and let MC reconnect and reconcile. **Verify:** the gateway boot log contains a `[swarm-recovery] terminalized N dangling worker(s)…` line.
-3. Re-open the conversation. **Verify:** no worker card or `wait_workers` tool block is left spinning — every worker that never finished shows **Cancelled** (typically as orphan "worker cancelled" cards in a recovered message, per 31.4), and the turn surfaces the error **"Gateway restarted while this swarm run was in progress — remaining workers were cancelled."**
-4. Open the swarm supervision panel. **Verify:** it does **not** read "No swarm runs yet" — the interrupted run is listed as **" · finished"**, and its worker table shows the dangling workers as **Cancelled** (workers that finished before the crash keep their real status, e.g. **Done** with their report).
+   > **Mission Control does not bring the gateway back on its own, and is not meant to (D8).** With MC still running, a `kill -9` on the managed gateway leaves `Gateway offline — cached conversations are read-only.` and nothing respawns: the supervisor spawns `detached: true` + `unref()` and subscribes no `'exit'` listener (`packages/mc/src/runtime/process.ts:543-560`), and the 5s poller is deliberately wired to the **read-only** `getClient()` rather than `ensureRunning()` — `apps/mission-control/src/main/ipc.ts:1435-1442` records why ("every transient hiccup … would trigger a respawn cascade — the root cause of the EADDRINUSE loop we hit"). Respawn is **lazy**: any IPC through `getRequiredGatewayManagementClient` calls `ensureRunning()`, the port probes `free`, and a fresh gateway is spawned reusing the keychain token (`process.test.ts:641`). Sitting in Chat cannot trigger it — the renderer gates chat actions on `gatewayOnline` **before** dispatching IPC (`stores/chat.ts:341, 846, 960`). So **this step's own relaunch of MC is what restores the gateway**, and that is by design, not a defect. The one arguable gap, recorded and not fixed: `classifyConversationGatewayFailure` sets `retryable: true` for the offline case but the banner (`routes/chat.tsx:2948`) exposes no retry control; the only restart affordance in the app is Settings → General → **Restart Gateway**.
+2. Restart the gateway (relaunch MC) and let MC reconnect and reconcile. **Verify:** the gateway boot log contains a `[conversation-recovery] interrupted N conversation(s), appended M terminal(s)` line and a `[subagent-recovery] terminalized N parent-side child(ren), marked M child conversation(s) interrupted, queued K notification(s)` line.
+3. Re-open the conversation. **Verify:** no sub-agent card and no `wait_workers` tool block is left spinning — every child that never finished shows a terminal state carrying the restart report above (typically as orphan cards in a recovered message, per 31.4), and the turn carries a terminal error.
+4. Open the swarm supervision panel. **Verify:** it does **not** read "No swarm runs yet" — the crashed run's children are listed with their post-recovery statuses (children that finished before the crash keep their real status, e.g. **Done** with their report).
+
+> **Not re-verified.** §31.4 step 2 and §31.4B steps 3–4 describe UI wording that the sub-agent migration changed (`66f4630b` for the gateway side, `e5ea76a6` for the card) and that the `worker_*` retirement did not re-run against a live gateway. The event-level facts in the preamble and in step 2 above are read from `apps/gateway/src/swarm-log-recovery.ts` and `apps/gateway/src/index.ts:651/661`; the card and panel labels are the last known wording and should be corrected the first time these sections are actually executed.
 5. Restart the gateway once more. **Verify:** nothing changes — the repair is idempotent (no duplicate cancelled cards, no extra error).
 6. **Non-swarm turns are untouched:** cancel a plain (non-swarm) turn mid-stream, then restart the gateway. **Verify:** that conversation gets **no** synthesized error appended — boot recovery only repairs turns with dangling workers.
 
@@ -1784,20 +1787,11 @@ When the gateway process is killed hard mid-run, nothing gets to write the turn'
 2. **Verify:** a row of small status dots follows, one per non-orphan worker, colored by state (running=accent, waiting=yellow, done=green, failed=red, cancelled=muted). Hovering a dot shows **"{role}: {status}"**.
 3. **Verify:** once **every** worker reaches a terminal state, the pinned strip disappears (it only renders while there is non-terminal live work).
 
-### 31.6 Swarm panel — run list, worker detail, cancel, send
-The panel is the right-side **swarm supervision** drawer. Its affordance is a **people icon** in the chat header (`title="Swarm supervision"`), shown when the agent has swarm enabled **or** has historical runs.
-1. Click the swarm-supervision icon. **Verify:** a right drawer opens headed **"Swarm runs"**. With no runs yet it reads **"No swarm runs yet. When this agent spawns workers, runs appear here."**
-2. Run a swarm turn (30.2), then open/refresh the panel. **Verify:** the run list shows the run — a live run has a green pulsing dot; a finalized run shows **" · finished"** and a muted dot. Active runs sort above finalized ones, newest first.
-3. Click a run. **Verify:** the header becomes **"Workers"** and a worker table lists each worker with columns Role, Status (colored dot + label: Spawning / Running / Waiting for input / Done / Failed / Cancelled), Tokens, and Elapsed.
-4. Click a worker. **Verify:** the header becomes the worker's role and the detail view shows a status/model/tokens/elapsed meta row, the **Brief**, and (once present) the **Report** as Markdown.
-5. **Cancel a running worker:** while a worker is still running, click **Cancel worker** (button briefly reads **Cancelling…**). **Verify:** the worker transitions to **Cancelled** in the table and its chat card also reaches a **Cancelled** terminal state.
-6. **Send to a waiting worker:** drive a worker into **Waiting for input** (a worker that calls `ask_orchestrator`; steer the prompt to make one ask a question if needed). In its detail view, type into the **"Send a message to steer this worker…"** box and click **Send** (button reads **Sending…**). **Verify:** the message is delivered (200), the box clears, and the worker resumes — no error notice appears.
-7. **Verify:** for a worker that has already finished, the detail view shows **"This worker has finished — no further actions available."** with no Send/Cancel controls.
+### 31.6 Supervision panel → moved
+The right drawer is no longer a run list. It lists the open **conversation's children** and its actions go through the sub-agent routes. See **Section 32.4–32.6**.
 
-### 31.7 409 handling (cancel an already-finished worker → visible notice, no crash)
-1. Open the panel on a run whose workers have finished, or cancel a worker and then immediately try to act on it again.
-2. Attempt to **Cancel** (or **Send** to) a worker that is already terminal, or a worker in a run that has been finalized.
-3. **Verify:** the gateway returns **409** and the panel shows a dismissable red **action notice** (`data-testid="swarm-action-notice"`) with the coordinator's reason — **"worker terminal"** (already-finished worker) or **"run finalized"** (dead run) — falling back to **"Could not cancel this worker."** / **"Could not send to this worker."** The app does **not** crash or throw; the notice can be dismissed with its X.
+### 31.7 409 handling → moved
+Stop/resume refusals and the `swarm-action-notice` element are covered by **Section 32.6**.
 
 ### 31.8 Caps error rendering in chat (spawn beyond cap → isError tool result)
 1. Set a tight cap to force the error quickly: on the agent's **Swarm** card, set **max workers per run** to **1** (or **max concurrent workers** to **1**) and **Save**.
@@ -1811,7 +1805,155 @@ The panel is the right-side **swarm supervision** drawer. Its affordance is a **
 3. **Verify:** the pinned strip disappears once all cards are terminal.
 4. Re-open the conversation from history. **Verify:** those cards still read **Cancelled** (the end-of-stream terminalization is stable across replay).
 
-## Section 32: Agent Memory — Memory Tab
+## Section 32: Sub-agents
+
+Covers the **sub-agent** model that replaced the run-scoped worker model in the
+chat transcript and in the right drawer: the **sub-agent card** (collapsed row,
+meta line, expanded body with the child's own transcript and an inline
+composer), the **sub-agent panel** (children of the open conversation, stop,
+resume), refusal handling, and the re-read behaviour that keeps every surface
+describing the run the child is actually on.
+
+**Preconditions:** Gateway running and MC connected (Sections 1–2), a provider
+connected with a **cheap** model (Section 3), and an agent with sub-agents
+enabled (Section 31.1 — the same **Swarm** card). These tests make real, small
+LLM calls.
+
+**Bootstrap:** open a chat with that agent and use the prompt
+`spawn two sub-agents, have each list files in a subdirectory, then summarize`.
+
+### 32.1 The card, its meta line, and its glyphs
+1. Send the bootstrap prompt.
+2. **Verify:** one card appears per child, anchored where the child started in the assistant message. The header reads: status glyph, the child's **type** in monospace, its newest one-line detail, and — right-aligned, monospace — `N tool uses · 45s`.
+3. **Verify:** the elapsed segment **ticks once a second while the child is running** and freezes when it finishes.
+4. **Verify:** the glyphs are: spinner (running and waiting), green check (done), red X (failed and max turns), ban (cancelled and interrupted).
+5. **Verify:** no card renders **"Activity from a newer Dash version"** anywhere in the turn. That string is the regression this section exists to catch: before this work every child drew one.
+6. **Verify:** the pinned strip above the composer reads `N agents · R running · W waiting` while any child is live, and disappears when they are all terminal.
+
+### 32.2 A finished child with no end timestamp shows no elapsed
+1. Send the bootstrap prompt and cancel the turn while a child is still running (chat stop control).
+2. **Verify:** the child's card terminalizes to **Cancelled** and its meta line shows **only** the tool count — no elapsed, and no trailing `·` separator.
+3. Re-open the conversation an hour later. **Verify:** the meta line is unchanged. It must never show the card's own age (that number would grow every time the conversation is reopened).
+
+### 32.3 Expanding a card: the child's transcript, its report, its composer
+1. After a completed run, click a card header. **Verify:** `aria-expanded` flips and the body opens.
+2. **Verify:** the body fetches the child's conversation and renders its transcript with the same components as the parent's — text, thinking, tool cards — inside a nesting rail. **Verify:** it is re-fetched on a **re-expand**, and *not* on any other re-render. (Collapsing releases the child's live stream, which is exactly when a `done` can be missed, so the next expansion owes itself a read. A **live** child's body is also re-read when its turn ends — see 32.10.)
+3. **Verify:** the child's final **report** renders as Markdown at the bottom of the body.
+4. **Verify:** a message the orchestrator sent to the child renders as a muted **"from orchestrator:"** row, not as one of your own bubbles.
+5. **Nesting depth is 1.** If a child spawned a grandchild, **verify:** the grandchild renders as a card inside the child's transcript but has **no toggle** — it cannot be expanded, and clicking it does nothing. (Web and iOS cap nesting the same way; the design doc's "unlimited by the renderer" is a deliberate, matched divergence on all three clients.)
+6. **Verify:** a **finished** child's body shows no composer, and says *"This sub-agent has finished — no further messages."*
+
+### 32.4 The panel lists the conversation's children
+1. Click the sub-agent toolbar icon. **Verify:** a right drawer opens headed **"Sub-agents"**. With no children it reads *"No sub-agents in this conversation yet…"*.
+2. Run the bootstrap prompt. **Verify:** one row per child, each showing the child's type, description, `N tool uses · 45s`, a status dot, and the status label (Running / Waiting for input / Done / Failed / Cancelled / Interrupted / Max turns reached).
+3. **Verify:** the panel is scoped to the **conversation**, not the agent: switch to another conversation with the same agent and the list changes to that conversation's children (empty if it has none).
+4. **Verify:** a terminal child with no end timestamp shows only its tool count here too (same rule as 32.2).
+5. Click a row. **Verify:** that child's card expands in the transcript.
+6. **Verify:** the affordance is present when the agent has sub-agents enabled **or** the conversation already has children — turn the agent's toggle off and re-open the conversation, and the drawer is still reachable so the children can still be stopped.
+
+### 32.5 Stop, and the re-read that follows it
+1. With a child **Running**, click **Stop** on its panel row.
+2. **Verify:** the child (and every descendant) stops, and the row re-reads to **Cancelled** without any manual refresh.
+3. **Verify:** the child's card in the transcript also reads **Cancelled**, and its inline reply box is gone — even though no new event reached the parent (its turn is over). This is the server's status winning over the card's own fold.
+4. **Verify:** a child that has already finished shows **no Stop button** at all.
+
+### 32.6 Resume, and the three refusals
+1. Drive a child into **Waiting for input**. **Verify:** its card shows the question with an inline reply box, and the panel row offers **Resume**.
+2. Reply from the card. **Verify:** the box clears, the child resumes, and the row's **elapsed and tool count reset to the new run** — not the previous one's totals. (Without the re-read this step exists for, every surface would keep the pre-resume numbers for the whole new run.)
+3. Resume from the panel instead (**Resume** → type → **Send**). **Verify:** the same thing happens. Both paths go through `POST /subagents/:id/resume`; there is no second client-side path.
+4. **Refusal 1 — one-shot type.** Use an `Explore` or `Plan` child, which is one-shot. **Verify:** its **Resume** button is disabled and the row says *"one-shot — cannot be resumed"*; in the card's expanded body the composer is disabled and says *"This sub-agent type is one-shot and cannot be resumed."*
+5. **Refusal 1B — the exception.** A one-shot child **parked on a question** can still be answered: **verify** its reply box is enabled and the answer is delivered.
+6. **Refusal 2 — steer cap.** Set **max steers per worker** to 1 (Section 31.1), then send a child two steers. **Verify:** the second is refused and the gateway's own sentence appears in a dismissable red notice (`data-testid="swarm-action-notice"`) **on the row you clicked**, and in the card's own notice when sent from the card.
+7. **Refusal 3 — unrebuildable grant.** Remove a tool the child was granted (agent Configuration → tools) and then resume it. **Verify:** the refusal appears in the same place with the gateway's reason.
+8. **Verify:** in every refusal case the sentence you typed is **still in the box** — a refused message is not thrown away — and the notice dismisses with its X.
+
+### 32.7 The list stays correct without you touching it
+1. Spawn a **background** child (one that outlives the turn). **Verify:** when the parent turn ends, that child's card does **not** flip to **Cancelled** — a background child is exempt from end-of-stream terminalization.
+2. Let the background child finish while you are on a different conversation. Switch back. **Verify:** the panel and the card both show its true final status. (Reading the list on conversation selection is the only trigger that fires here — no live turn means no event ever reaches the parent.)
+3. With a child live, leave the panel open and do nothing for a minute. **Verify:** the row's status keeps up (a 20s poll runs while any child is non-terminal). Once every child is terminal, **verify** the polling stops — no further `GET /conversations/:id/subagents` requests in the gateway log.
+   Then repeat with the panel **closed**, watching an expanded card in the transcript instead. **Verify:** the same 20s re-read happens — the poll follows the children, not the drawer. This is what a reopened conversation with a background child depends on: without it that card's spinner and elapsed counter tick upward forever.
+4. Switch conversations rapidly back and forth while a list read is in flight. **Verify:** the panel never shows another conversation's children, and never briefly flashes them.
+5. With children showing, **close the selected tab** (the × on it, or ⌘W) so a different tab takes over. **Verify:** the panel does not keep the closed conversation's children for a moment — it empties and then fills with the new selection's, exactly as picking that tab would have done. Closing any **other** tab must leave the panel untouched.
+6. Repeat step 5 with **deletion** instead of closing: with children showing, **delete the selected conversation** so a different tab takes over. **Verify:** the same thing — the panel empties and fills with the new selection's children, not the deleted conversation's. Then have another client (iOS, or a second Mission Control) delete the conversation you are looking at, so the switch arrives as a pushed invalidation rather than your own click. **Verify:** the same again. Deleting any conversation that is **not** selected must leave the panel untouched.
+
+### 32.8 The retired `worker_*` events are invisible on replay
+The gateway no longer emits `worker_spawned` / `worker_status` / `worker_done` — `subagent_started` is the only thing that anchors a card. A conversation recorded **before** that change still holds the retired events in its log; the decision taken there was that **clients drop them and the gateway does not rewrite them on replay**.
+1. Run any sub-agent turn and re-open the conversation from history.
+2. **Verify:** each child renders as **exactly one** card — never two, and never a card plus an "Activity from a newer Dash version" block.
+3. Open a conversation recorded before this change (needs an archived pre-change event log — you cannot produce one with the current gateway). **Verify:** each child still renders **one** card, anchored at its `subagent_started`, and the retired events beside it draw **nothing at all** — no second card, no placeholder row, no unknown-activity block. A child that has **only** retired events and nothing canonical draws no card at all.
+4. **Verify:** the one case that loses information is a pre-change child cancelled after its consumer was gone — the only case whose terminal was logged as `worker_done` alone. Its card has no terminal event left in the fold, so it is terminalized at end of stream instead: same **Cancelled** status, but without the cancel reason the retired event carried as its report.
+
+### 32.9 The parallel group container (design §8.2)
+1. Send the bootstrap prompt, which spawns two children back to back.
+2. **Verify:** the two cards sit inside **one group container** headed by a summary line — `2 agents · 2 running`, becoming e.g. `2 agents · 1 running · 1 done` and then `2 agents · 2 done` — with one status dot per child on the right of that line.
+3. Click the summary line. **Verify:** both cards collapse **as a unit** and the summary line stays; click again and they come back. An expanded card inside the group keeps its expansion across the collapse.
+4. Prompt the agent to spawn one child, say something, then spawn another (so ordinary text sits between the two starts). **Verify:** they render as **two** separate rows with **no** group chrome — a group is adjacent children only.
+5. **Verify:** a lone child never draws a summary line or dot strip.
+6. Open the same conversation from a project task's own session view (Section 27, a task with a linked session), with **no turn running there** and the session **not** the Chat route's current selection. **Verify:** the cards there are read-only and marked `snapshot` — no expand toggle, no group toggle, no reply box, no yellow question, and no ticking elapsed (a child the fold saw finish shows its recorded duration; a still-running one shows none). The sub-agent list belongs to the conversation the **Chat** route has selected, so on a settled transcript nothing here is ever re-read: a card must not claim to describe a child it cannot re-read, and must not keep asking a question that may have been answered hours ago.
+6a. Now send a message from that session view's own composer and let it spawn a child. **Verify:** while the turn is streaming the cards there are **live** — spinning glyph, ticking elapsed, and a yellow question the moment a child parks on one (there is still no expand toggle and no reply box, so this row is the only place that question can appear). The panel's own conversation is subscribed while it runs, so its fold moves in real time. **Verify:** when the turn ends the same cards settle into step 6's snapshot, and no question survives onto a card that has gone terminal.
+6b. Click the session view's **Open in Chat** button, then navigate back to the task. **Verify:** with the session now the Chat route's selection the cards are fully interactive — toggle, reply box, and no `snapshot` marker — because the list on this surface is now its own.
+7. Spawn **two `background: true` children** back to back, let the parent turn end, and wait for both to finish (no event reaches the parent after its turn ends, so the cards flip on the next list re-read, within 20 s). **Verify:** the summary line and both dots follow the cards — `2 agents · 2 done`, not `2 agents · 2 running`. The header counts the same resolved statuses its cards do; it never keeps counting this message's own fold while the cards beneath it read the server.
+
+### 32.10 A live child's transcript, streaming (design §8.3)
+
+The card body used to be whatever the fetch caught at the moment you opened
+it: a running child's transcript sat still until you acted on it. This section
+covers the conversation-scoped subscription that fixed that. Everything here
+needs a **running** child, so start from the bootstrap prompt and open the card
+while it works.
+
+1. Expand a **running** child's card and leave it open, touching nothing.
+   **Verify:** new text, thinking and tool cards appear in the body **as the
+   child produces them**, without any click and without the spinner
+   restarting. This is the whole of this section — if the body is static, stop
+   and file it.
+2. **Verify:** the parent's own transcript above the card is undisturbed: no
+   duplicated bubble, no new message, no scroll jump. The child's frames must
+   reach only the child's body.
+3. Let the child finish with the card still open. **Verify:** the last row
+   settles from streaming into its finished form, the report renders beneath
+   it, and the header's status and meta line follow — all without a manual
+   refresh.
+4. **Collapse the card while the child is still running**, wait a few seconds,
+   and expand it again. **Verify:** the body catches up — the lines produced
+   while it was shut are there. (Nothing replays a subscription, so this is a
+   fresh read; if the gap is missing, the read is not happening.)
+5. **Type into a running child from the open card.** **Verify:** your sentence
+   appears in the body **immediately**, and does **not** appear twice once the
+   child's turn is persisted.
+6. **Answer a child parked on a question**, from the card's yellow reply box,
+   **as soon as the question appears** — do not wait, and do not stop or
+   resume anything first. **Verify:** the child resumes and your answer is
+   **not** left in the body as a row of its own.
+   The timing is the test. The yellow box is drawn by the parent's event
+   stream, which reports `waiting_input` immediately; the sub-agent LIST is
+   not re-read on that event, so for up to 20 s the two disagree about
+   whether this child is parked. An answer completes the child's current turn
+   rather than starting a new one, so the server persists no copy of it and
+   sends no `accepted` — a row added in that window would sit there for the
+   rest of the session with nothing to pair it with and nothing to replace
+   it. Answering *after* the list has caught up must behave identically.
+7. **Refusal.** Reply to a one-shot child, or blow the steer cap. **Verify:**
+   the gateway's sentence appears on the card, your draft is still in the box,
+   and the optimistic row is **gone** from the body — it must not claim the
+   child received something it refused.
+8. **The panel counts too.** Close every card, open the **Sub-agents** drawer
+   while a child is running, and leave it open. **Verify:** the row's status,
+   elapsed and tool count move on their own. Close the drawer: the row stops
+   being watched, and the 20 s backstop poll takes over (see 32.7).
+9. **Conversation switch.** With a card open on a running child, switch to
+   another conversation and back. **Verify:** the card is collapsed (expansion
+   is not kept across a switch — a known divergence from web), and expanding
+   it again shows a current transcript rather than a stale one.
+10. **Reconnect.** With a card open on a running child, stop the gateway for
+    ~15 s and start it again. **Verify:** the body catches up with what the
+    child did while the connection was down, and no red connection banner
+    appears over the **parent's** transcript on account of the child's socket.
+11. **Quit.** With several cards open, quit Mission Control. **Verify:** it
+    exits without hanging. (Every watch is released with the transport at
+    `before-quit`; a leaked socket would show as a slow or stuck quit.)
+
+## Section 33: Agent Memory — Memory Tab
 
 Covers the per-agent **Memory** tab on the agent detail page: the grouped memory list, editing and deleting a memory, the **Automatic memory** / **Post-turn sweep** config strip, per-agent isolation when switching agents, and the chat chip shown when the agent remembers or forgets something.
 
@@ -1820,10 +1962,10 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 **Bootstrap (fastest path):**
 1. Create or open an agent (Section 4).
 2. Open a chat with that agent (Section 6) and send: `Remember that my favorite color is teal.` Wait for the reply.
-3. Go to the agent detail page → **Memory** tab (the last tab, after Overview / Configuration / Channels / Skills). **Verify:** at least one memory now appears (see 32.1) — this is the memory used by the rest of this section.
-4. Create a **second** agent (Section 4), left with no memories, for the per-agent isolation check in 32.7.
+3. Go to the agent detail page → **Memory** tab (the last tab, after Overview / Configuration / Channels / Skills). **Verify:** at least one memory now appears (see 33.1) — this is the memory used by the rest of this section.
+4. Create a **second** agent (Section 4), left with no memories, for the per-agent isolation check in 33.7.
 
-### 32.1 Opening the tab & the grouped list
+### 33.1 Opening the tab & the grouped list
 1. Open an agent that already has at least one memory (Bootstrap) and click the **Memory** tab.
 2. **Verify:** briefly, the tab shows only a **"Loading…"** indicator — no memory list and no config strip (Automatic memory / Post-turn sweep) are visible yet.
 3. **Verify:** once loaded, the heading reads **"Memory (N)"** where N is the memory count. An agent with zero memories still shows **"Memory (0)"** once loaded — that's distinct from the loading state's bare **"Memory"** with no count.
@@ -1831,7 +1973,7 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 5. **Verify:** each row shows, left to right: the memory's machine-generated name (monospace) with its one-line description next to it, then on the right its **source** (one of `agent`, `sweep`, `user`, `import`) and its last-updated timestamp (an ISO-8601 date/time string, e.g. `2026-09-05T00:00:00.000Z` — not a friendly relative date like "2 days ago"), and a **Delete** button.
 6. **Verify:** the memory saved by the agent in the Bootstrap step shows source `agent`.
 
-### 32.2 Editing a memory
+### 33.2 Editing a memory
 1. Click anywhere on a memory row (not its **Delete** button).
 2. **Verify:** an editor opens below the list, inline in the same tab (not a popup/modal), showing the memory's name (read-only, monospace), an editable **Description** field, a **Type** dropdown (User / Feedback / Project / Reference), a multi-line **Content** field, and **Save** / **Cancel** buttons.
 3. Change the description, pick a different **Type**, edit the content, then click **Save**.
@@ -1839,41 +1981,41 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 5. Open the same memory again, change nothing, and click **Cancel**.
 6. **Verify:** the editor closes with no change to the row.
 
-### 32.3 Deleting a memory
+### 33.3 Deleting a memory
 1. Note a memory's name, then click its **Delete** button.
 2. **Verify:** the row disappears immediately with **no confirmation prompt**, and the heading count decreases by one. If that was the last memory of its type, that type's group heading also disappears.
 
-### 32.4 Deleting the memory that is open in the editor
-1. Click a memory row to open its editor (32.2).
+### 33.4 Deleting the memory that is open in the editor
+1. Click a memory row to open its editor (33.2).
 2. With the editor still open, click that same memory's **Delete** button in the list above.
 3. **Verify:** the memory is removed from the list AND the open editor closes automatically — no stray **Save** button is left on screen (saving after this point would otherwise recreate the memory you just deleted).
 
-### 32.5 Automatic memory toggle
+### 33.5 Automatic memory toggle
 1. On the Memory tab, note the **"Automatic memory"** checkbox — checked by default.
 2. Uncheck it.
 3. Reload the agent detail page and re-open the Memory tab. **Verify:** the memory list still shows the same memories as before (e.g. the "favorite color" memory from Bootstrap) — unchecking does **not** clear or empty the list. This is intentional: the files are still on disk, and the tab deliberately keeps them visible and deletable while memory is off, so you can clean them up (or copy their content) before deleting the agent.
 4. Go to **Chat** with this agent and, in a **new** conversation, ask it something only the memory could answer, e.g. `What's my favorite color?`. **Verify:** it does not answer correctly and does not claim to recall anything from memory — memory stopped being used starting with the very next message after step 2, with no app restart needed.
 5. In that same conversation, ask it to remember something new, e.g. `Remember that I use vim.` **Verify:** no memory chip appears for that turn and the agent does not claim to have saved anything.
-6. Return to the Memory tab, open one of the still-listed memories (32.2), and click **Save** (change nothing or change something — either way). **Verify:** the save fails: an error banner appears above the list (its text names the agent's memory as disabled) and the editor stays open rather than closing — a disabled agent's memory can still be read and deleted, but not written. This is expected behavior, not a bug to file.
+6. Return to the Memory tab, open one of the still-listed memories (33.2), and click **Save** (change nothing or change something — either way). **Verify:** the save fails: an error banner appears above the list (its text names the agent's memory as disabled) and the editor stays open rather than closing — a disabled agent's memory can still be read and deleted, but not written. This is expected behavior, not a bug to file.
 7. Re-check **"Automatic memory"**. **Verify:** the memory list and its contents are unchanged from before step 2 (nothing was lost while the toggle was off), the edit from step 6 now saves successfully when you click **Save** again, and repeating the recall question from step 4 in a new conversation now gets the correct answer — memory is back in the prompt.
 
-### 32.6 Post-turn sweep setting
+### 33.6 Post-turn sweep setting
 1. On the Memory tab, note the **"Post-turn sweep"** dropdown — it offers **Auto (non-frontier models)**, **On**, and **Off**, defaulting to Auto.
 2. Change it to **Off**, then reload the agent detail page and re-open the Memory tab. **Verify:** the dropdown still reads **Off** (the change persisted).
 3. Change it to **On** and reload again. **Verify:** that also persists.
-4. **Verify:** toggling the sweep setting never visibly changes the **Automatic memory** checkbox, and toggling that checkbox (32.5) never changes the sweep dropdown's selection — the two settings save independently.
+4. **Verify:** toggling the sweep setting never visibly changes the **Automatic memory** checkbox, and toggling that checkbox (33.5) never changes the sweep dropdown's selection — the two settings save independently.
 
 > Background, for context when reading results: the sweep is what lets the agent pick up new memories from a conversation without it explicitly deciding to save one — it's a pass that runs after each turn. A memory a human created or last edited from this tab (source `user`) is never silently overwritten by the sweep.
 
-### 32.7 Switching agents — no bleed-through
+### 33.7 Switching agents — no bleed-through
 1. Open the first agent's Memory tab (with its memories from Bootstrap) and confirm its memories are visible.
 2. Navigate directly to the second agent's Memory tab (created in Bootstrap step 4 — no memories, default config).
-3. **Verify:** at no point — including the brief loading moment — do the first agent's memory rows appear under the second agent. The second agent's tab settles on its own state: **"No memories yet. The agent saves them as it learns."** and default config (**Automatic memory** checked, sweep **Auto**), even though you changed those settings for the first agent in 32.5/32.6.
+3. **Verify:** at no point — including the brief loading moment — do the first agent's memory rows appear under the second agent. The second agent's tab settles on its own state: **"No memories yet. The agent saves them as it learns."** and default config (**Automatic memory** checked, sweep **Auto**), even though you changed those settings for the first agent in 33.5/33.6.
 4. Navigate back to the first agent's Memory tab.
-5. **Verify:** its memories and whatever config values you last saved for it (32.5/32.6) are still exactly as you left them — switching away and back does not reset or mix state between agents.
+5. **Verify:** its memories and whatever config values you last saved for it (33.5/33.6) are still exactly as you left them — switching away and back does not reset or mix state between agents.
 
-### 32.8 Chat chip after asking the agent to remember something
-1. With **Automatic memory** back on (32.5) for an agent, open a chat with it (Section 6).
+### 33.8 Chat chip after asking the agent to remember something
+1. With **Automatic memory** back on (33.5) for an agent, open a chat with it (Section 6).
 2. Send a message asking it to remember a new, distinct fact, e.g. `Remember that my dog's name is Biscuit.`
 3. **Verify:** a normal tool-use block for saving the memory appears in the transcript like any other tool call, and — separately — a small pill-shaped chip with a brain icon appears reading **"Remembered: <description>"**, where the description is the agent's own short summary of the fact (exact wording varies by model).
 4. Later in the same conversation, correct that same fact, e.g. `Actually, my dog's name is Waffles.`
@@ -1882,11 +2024,11 @@ Covers the per-agent **Memory** tab on the agent detail page: the grouped memory
 7. **Verify:** a chip reading **"Forgot: <name>"** appears, where `<name>` is the memory's machine-generated name, not its description.
 8. Open the Memory tab for this agent. **Verify:** the forgotten memory is gone from the list.
 
-### 32.9 200-memory cap (optional — expensive to set up)
+### 33.9 200-memory cap (optional — expensive to set up)
 **Precondition:** an agent already at the 200-memory cap. There is no bulk-create shortcut in the UI — reaching 200 means asking the agent to remember roughly 200 distinct one-line facts over chat (or reusing an agent left over from a long-running prior QA pass that is already there). Skip this section if no such agent is available.
 1. With the agent at 200 memories, ask it to remember one more new fact.
 2. **Verify:** no "Remembered" chip appears for that turn. Expand the tool-use block for the save attempt — it still renders in the normal (non-error) style, since the failure is carried in the tool's own reply text rather than as a red error block — and confirm the text reads **"Error: This agent already has 200 memories; update or forget one first"** — the `Error: ` prefix is part of the tool's literal reply text, not an indication of error styling (there is none here).
-3. Open the Memory tab and edit an *existing* memory (32.2 — same name, not a new one), then Save.
+3. Open the Memory tab and edit an *existing* memory (33.2 — same name, not a new one), then Save.
 4. **Verify:** editing an existing memory at the cap still succeeds — the cap only blocks creating a 201st memory, not updating one of the 200 that already exist.
 
 ## Appendix: Test Run Log

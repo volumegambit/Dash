@@ -123,6 +123,12 @@ struct ChatView: View {
   /// original comment here over-claimed the mechanism).
   @State private var isDropTargeted = false
 
+  /// §8.4's tasks sheet. `ChatView` owns the presentation flag but deliberately
+  /// never reads the live COUNT: `TasksToolbarButton` and `TasksStrip` read it
+  /// from inside their own bodies, so a list re-read on every parent turn's
+  /// `done` invalidates those two views and not this whole screen.
+  @State private var isTasksPresented = false
+
   var body: some View {
     VStack(spacing: 0) {
       if showsAgentChip {
@@ -164,7 +170,12 @@ struct ChatView: View {
       return true
     } isTargeted: { isDropTargeted = $0 }
     .safeAreaInset(edge: .bottom, spacing: 0) {
-      ComposerView(focusRequest: composerFocusRequest, isDropTargeted: $isDropTargeted)
+      VStack(spacing: 0) {
+        // §8.4's pinned strip. It renders nothing while no child is live, so
+        // placing it costs no read of the count here.
+        TasksStrip { isTasksPresented = true }
+        ComposerView(focusRequest: composerFocusRequest, isDropTargeted: $isDropTargeted)
+      }
     }
     // Applied AFTER `.safeAreaInset`, not before, so the dashed highlight's
     // frame is the WHOLE chat surface — transcript AND composer — rather
@@ -203,6 +214,11 @@ struct ChatView: View {
     .toolbar {
       ToolbarItem(placement: .principal) {
         conversationHeader
+      }
+      // §8.4: "a toolbar item beside `chat.options` that shows a badge with the
+      // live count".
+      ToolbarItem(placement: .topBarTrailing) {
+        TasksToolbarButton { isTasksPresented = true }
       }
       ToolbarItem(placement: .topBarTrailing) {
         conversationOptionsMenu
@@ -361,6 +377,12 @@ struct ChatView: View {
         onResendSucceeded: { editingMessage = nil },
         onCancel: { editingMessage = nil }
       )
+    }
+    .sheet(isPresented: $isTasksPresented) {
+      TasksSheet { childID in
+        feature.revealSubagent(childID)
+      }
+      .environment(feature)
     }
     .sheet(isPresented: $isAgentPickerPresented) {
       AgentPickerSheet(
@@ -806,7 +828,40 @@ struct ChatView: View {
               guard let text = feature.state.messages.first(where: { $0.id == id })?.user?.text
               else { return }
               editingMessage = EditingMessage(id: id, text: text)
-            }
+            },
+            subagentInteraction: SubagentInteraction(
+              state: { feature.state.subagentUI[$0] ?? SubagentUIState() },
+              // Called synchronously, INSIDE the row's `withAnimation` — the
+              // state write has to land in that transaction or the disclosure
+              // does not animate. `setSubagentExpanded` writes the reducer
+              // straight through and returns its network follow-up.
+              setExpanded: { childID, isExpanded, loadsTranscript in
+                feature.setSubagentExpanded(
+                  childID,
+                  isExpanded,
+                  loadsTranscript: loadsTranscript
+                )
+              },
+              send: { childID, text in
+                await feature.sendToSubagent(childID, text: text)
+              },
+              // Read INSIDE `SubagentComposer.body`, never here: constructing a
+              // closure is not an access, so `ChatView.body` never subscribes
+              // to `subagentComposerDrafts` and the per-keystroke fan-out
+              // stays at one composer.
+              draft: { feature.subagentComposerDraft($0) },
+              setDraft: { feature.setSubagentComposerDraft($0, $1) },
+              // Gated on `unauthorized` ALONE, never on socket state: the send
+              // is REST, and a reconnect must not stop the user answering a
+              // child parked in `waiting_input`, whose `waitForQuestion` fails
+              // the child's tool call ten minutes later.
+              isEnabled: feature.connection != .repairRequired,
+              // Read inside `SubagentCardView.body`, never here, for the same
+              // reason as `draft`: constructing a closure is not an access, so
+              // a list re-read invalidates the sub-agent ROWS and not
+              // `ChatView.body`'s whole transcript.
+              restStatus: { feature.restSubagentStatus($0) }
+            )
           )
         }
 
@@ -1165,9 +1220,12 @@ struct ChatTranscriptSignature: Equatable {
     let textCount: Int = assistant?.text.count ?? 0
     let thinkingCount: Int = assistant?.thinking.count ?? 0
     let toolCount: Int = assistant?.toolCards.count ?? 0
-    let workerCount: Int = assistant?.workerCards.count ?? 0
+    // The DRAFT count, not `subagentCards.count`: they are always equal, and
+    // this signature runs on every transcript change, so it must not pay for
+    // the fold's sort.
+    let subagentCount: Int = assistant?.subagentDrafts.count ?? 0
     let statusCount: Int = assistant?.statusRows.count ?? 0
-    let contentCount = textCount + thinkingCount + toolCount + workerCount + statusCount
+    let contentCount = textCount + thinkingCount + toolCount + subagentCount + statusCount
     return ChatTranscriptSignature(
       messageID: last.id,
       status: last.status,

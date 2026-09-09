@@ -60,6 +60,10 @@
   --tool-red: #dc2626;
   --tool-red-bg: rgb(220 38 38 / 10%);
   --tool-red-border: rgb(220 38 38 / 45%);
+  /* Sub-agent nesting rail (design §8.3): the vertical line an expanded
+   * child's transcript is indented behind. Aliased off `--border` so both
+   * colour schemes track it — the rail is structural, not a status colour. */
+  --subagent-rail: var(--border);
 
   /* Fixed-dark chips — see file header. Never overridden in the dark
    * media query below. */
@@ -213,6 +217,13 @@ textarea:focus-visible {
   min-height: 0;
 }
 
+/* The tasks panel's column exists only while the panel does (sub-agents
+ * design §8.4). Declaring the third track unconditionally would leave a
+ * 320px gutter beside every conversation that never spawned a child. */
+.app-body--tasks {
+  grid-template-columns: 280px 1fr 320px;
+}
+
 .app-sidebar {
   min-height: 0;
   overflow-y: auto;
@@ -221,6 +232,36 @@ textarea:focus-visible {
 }
 
 .app-sidebar-backdrop {
+  display: none;
+}
+
+/* Tasks panel (§8.4) base state, declared HERE — beside the sidebar
+ * backdrop and BEFORE the `@media (max-width: 768px)` block — rather than
+ * down with the rest of the panel's chrome. Fix I1: a media query adds no
+ * specificity, so between two rules with the same selector the LATER one
+ * wins at every width. With these three at the end of the file the mobile
+ * block's `display: block` for `.app-tasks-backdrop` never applied, and the
+ * phone-width panel opened as a fixed overlay with no scrim and no
+ * tap-outside-to-dismiss. The sidebar has always had it this way round
+ * (`.app-sidebar-backdrop` immediately above); the panel now matches.
+ *
+ * `.tasks-panel` is hidden outright rather than translated away, so a closed
+ * panel's stop and resume buttons leave the accessibility tree and the tab
+ * order with it. */
+.tasks-panel {
+  display: none;
+}
+
+.tasks-panel--open {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.app-tasks-backdrop {
   display: none;
 }
 
@@ -508,6 +549,14 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  /* Explicit rather than relying on source order to beat `.app-body--tasks`
+   * (same specificity, declared earlier): under 768px the panel is a fixed
+   * overlay, so the body must stay a single column whether it is open or
+   * not. */
+  .app-body--tasks {
+    grid-template-columns: 1fr;
+  }
+
   .app-sidebar {
     position: fixed;
     z-index: 20;
@@ -532,6 +581,31 @@ textarea:focus-visible {
   }
 
   .app-sidebar-backdrop {
+    position: fixed;
+    z-index: 10;
+    display: block;
+    border: none;
+    background: rgb(0 0 0 / 40%);
+    cursor: default;
+    inset: 0;
+  }
+
+  /* The tasks panel takes the sidebar's overlay-and-backdrop treatment from
+   * the other edge (§8.4: "reusing the sidebar's overlay-and-backdrop
+   * pattern under 768px"). Unlike the sidebar it is never translated
+   * off-screen while closed — `.tasks-panel`'s `display: none` already keeps
+   * it out of the accessibility tree and the tab order, which is what fix I2
+   * had to add `visibility: hidden` for over there. */
+  .tasks-panel--open {
+    position: fixed;
+    z-index: 20;
+    inset: 0 0 0 20%;
+    max-width: 360px;
+    margin-left: auto;
+    border-left: 1px solid var(--border);
+  }
+
+  .app-tasks-backdrop {
     position: fixed;
     z-index: 10;
     display: block;
@@ -1382,6 +1456,23 @@ textarea:focus-visible {
 }
 
 /* ---------------------------------------------------------------------
+ * Notification row (sub-agents design 8.5, task C7): the user-side row of a
+ * turn the GATEWAY started to deliver a background sub-agent's result. A
+ * compact muted line with a bell glyph — deliberately NOT the user bubble
+ * treatment, because nobody typed it. No animation of its own: it inherits
+ * `.chat-message-enter`'s reduced-motion-gated entrance from its container.
+ * ------------------------------------------------------------------- */
+
+.chat-notification-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+}
+
+/* ---------------------------------------------------------------------
  * Message actions toolbar: retry / edit & resend (chat-ux Phase 2 Task 4,
  * audit #5) — shares the copy button's hover/focus-within reveal pattern.
  * ------------------------------------------------------------------- */
@@ -1754,4 +1845,529 @@ textarea:focus-visible {
   padding: 4px 10px;
   font-size: 12px;
   opacity: 0.75;
+}
+
+/* ---------------------------------------------------------------------
+ * Sub-agent rows, parallel groups and nested transcripts (sub-agents
+ * design §8.1–§8.3). Deliberately the tool card's chrome — same border,
+ * same `--tool-card-bg` surface, same 12px mono label, same
+ * `aria-expanded` header button — because a child IS part of this
+ * transcript, not a second visual language beside it.
+ *
+ * Every animation here sits behind `prefers-reduced-motion: no-preference`
+ * (§8.6), including the running glyph's spin: `.tool-status-spinner`
+ * above predates that sweep and is intentionally left alone, so this
+ * cannot borrow it.
+ * ------------------------------------------------------------------- */
+
+.subagent-cluster {
+  margin: 12px 0;
+}
+
+.subagent-cluster-multi {
+  border: 1px solid var(--border);
+  background: var(--tool-card-bg);
+}
+
+.subagent-group-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-group-header:hover {
+  color: var(--text);
+}
+
+.subagent-group-summary {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-group-dots {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.subagent-group-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.subagent-group-dot[data-status="running"],
+.subagent-group-dot[data-status="waiting"] {
+  background: var(--accent);
+}
+
+.subagent-group-dot[data-status="done"] {
+  background: var(--tool-green);
+}
+
+.subagent-group-dot[data-status="failed"] {
+  background: var(--tool-red);
+}
+
+.subagent-cluster-multi .subagent-cluster-rows {
+  padding: 4px 8px 8px;
+}
+
+.subagent-cluster-multi .subagent-block {
+  background: none;
+}
+
+/* The row itself */
+
+.subagent-block {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  background: var(--tool-card-bg);
+  font-size: 12px;
+}
+
+.subagent-block[data-status="failed"] {
+  border-color: var(--tool-red-border);
+  background: var(--tool-red-bg);
+}
+
+.subagent-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  border: none;
+  background: none;
+  padding: 6px 12px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-header:hover {
+  color: var(--text);
+}
+
+.subagent-type {
+  flex-shrink: 0;
+  font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+.subagent-name {
+  flex-shrink: 0;
+  color: var(--text-muted-strong);
+}
+
+.subagent-description {
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-detail,
+.subagent-question {
+  margin: 0;
+  padding: 0 12px 6px 32px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.subagent-question {
+  color: var(--text);
+  white-space: normal;
+}
+
+.subagent-waiting {
+  padding-bottom: 4px;
+}
+
+.subagent-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+/* Nested transcript: the child's own turns, behind an indent rail. */
+
+.subagent-transcript {
+  border-left: 2px solid var(--subagent-rail);
+  padding-left: 10px;
+}
+
+.subagent-transcript-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.subagent-message {
+  margin: 0 0 6px;
+}
+
+.subagent-message[data-role="user"] {
+  color: var(--text-muted-strong);
+}
+
+.subagent-report {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+/* Composer (expanded body) and the waiting-input reply form. */
+
+.subagent-composer {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.subagent-waiting .subagent-composer {
+  margin: 0;
+  padding: 0 12px 4px 32px;
+}
+
+.subagent-composer-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.subagent-composer-input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.subagent-composer-send {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: none;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted-strong);
+  cursor: pointer;
+}
+
+.subagent-composer-send:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.subagent-composer-send:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A refusal from the resume route — the one-shot/steer-cap/grant text the
+ * gateway sends back, or generic copy. Sits under the composer, which keeps
+ * the text the user typed. */
+.subagent-composer-error {
+  margin: 4px 0 0;
+  color: var(--tool-red);
+}
+
+.subagent-waiting .subagent-composer-error {
+  padding: 0 12px 4px 32px;
+}
+
+.subagent-message[data-status="failed"] {
+  opacity: 0.75;
+}
+
+/* Status glyphs (§8.1). */
+
+.subagent-glyph {
+  flex-shrink: 0;
+}
+
+.subagent-glyph-running {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+}
+
+.subagent-glyph-waiting {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.subagent-glyph-done {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tool-green);
+}
+
+.subagent-glyph-failed {
+  color: var(--tool-red);
+}
+
+.subagent-glyph-muted {
+  color: var(--text-muted);
+}
+
+/* Motion (§8.6): the expand reveal, the running ring and the waiting pulse
+ * only ever run when the reader has not asked for less. */
+@media (prefers-reduced-motion: no-preference) {
+  .subagent-body {
+    animation: subagent-expand 0.18s ease-out;
+  }
+
+  .subagent-glyph-running {
+    animation: subagent-spin 0.8s linear infinite;
+  }
+
+  .subagent-glyph-waiting,
+  .subagent-group-dot[data-status="running"],
+  .subagent-group-dot[data-status="waiting"] {
+    animation: subagent-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes subagent-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes subagent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes subagent-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------
+ * Orchestrator row (§8.5): an `origin: 'parent'` message inside a CHILD's
+ * transcript — the instruction it is working from. Muted like the
+ * notification row above it, but it keeps its text, because that text is
+ * the point.
+ * ------------------------------------------------------------------- */
+
+.chat-orchestrator-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+}
+
+.chat-orchestrator-label {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.85em;
+}
+
+.chat-orchestrator-text {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* ---------------------------------------------------------------------
+ * Tasks panel (sub-agents design §8.4): a third column listing the open
+ * conversation's children, with stop and resume. Built from the same
+ * primitives as the sub-agent rows above so the two read as one surface.
+ *
+ * The panel's three OVERRIDABLE rules (`.tasks-panel`, `.tasks-panel--open`
+ * and `.app-tasks-backdrop`) are deliberately NOT here: the 768px block
+ * redeclares all three, and a rule declared after that block beats it at
+ * every width. They live beside `.app-sidebar-backdrop` near the top of the
+ * file — see fix I1's comment there. Everything below is declared once.
+ * ------------------------------------------------------------------- */
+
+.app-tasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.app-tasks-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.app-tasks-count {
+  min-width: 18px;
+  border: 1px solid var(--accent);
+  background: var(--surface-raised);
+  padding: 0 5px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.tasks-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+.tasks-panel-close {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tasks-panel-empty {
+  margin: 0;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tasks-panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tasks-row-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+}
+
+.tasks-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tasks-row-type {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.tasks-row-name {
+  color: var(--text-muted-strong);
+  font-family: var(--font-mono);
+}
+
+.tasks-row-description {
+  flex: 1 1 100%;
+  color: var(--text-muted);
+}
+
+.tasks-row-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tasks-row-status[data-status="failed"] {
+  color: var(--tool-red);
+}
+
+.tasks-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tasks-row-stop,
+.tasks-row-resume {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 3px 8px;
+  color: var(--text-muted-strong);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tasks-row-stop:hover:not(:disabled) {
+  border-color: var(--tool-red-border);
+  color: var(--tool-red);
+}
+
+.tasks-row-stop:disabled,
+.tasks-row-resume:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tasks-row-error {
+  margin: 0;
+  color: var(--tool-red);
+  font-size: 11px;
 }

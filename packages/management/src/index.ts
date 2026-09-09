@@ -49,6 +49,8 @@ export type {
   SwarmRunSnapshot,
   SwarmRunsResponse,
   SwarmWorkerActionResult,
+  SubagentStopResult,
+  SubagentResumeResult,
 } from './types.js';
 export { createManagementApp, startManagementServer } from './server.js';
 export type { ManagementServerOptions, SkillsHandlers } from './server.js';

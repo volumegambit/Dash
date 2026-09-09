@@ -1,20 +1,26 @@
 import type { ConversationRef, McConversationView, McMessage } from '@dash/mc';
+import { subagentsEnabledFor } from '@dash/mc/gateway-client';
 import type { ConversationMessage, MobileImage, MobileWsServerFrame } from '@dash/mobile-contract';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import {
+  ArrowDownToLine,
   Ban,
+  Bell,
   Brain,
   Check,
   ChevronDown,
   ChevronUp,
   Circle,
   Copy,
+  FolderOpen,
   GraduationCap,
+  Hourglass,
   List,
   Loader,
   Paperclip,
+  Pause,
   Pencil,
   Plus,
   Search,
@@ -26,6 +32,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { notificationRowLabel } from './chat.notification.js';
 
 hljs.registerLanguage('bash', bash);
 import type { McAgentEvent } from '../../../shared/ipc.js';
@@ -68,11 +75,20 @@ import {
 } from './chat.helpers.js';
 import { ChatModelPicker } from './chat.model-picker.js';
 import {
-  type WorkerCardStatus,
-  type WorkerGroup,
-  deriveWorkerStatus,
-  groupWorkerEvents,
-  latestWorkerDetail,
+  SUBAGENT_STATUS_LABEL,
+  type SubagentGroup,
+  type SubagentStatus,
+  clusterAdjacent,
+  formatClusterSummary,
+  formatElapsed as formatSubagentElapsed,
+  formatToolCount,
+  groupSubagentEvents,
+  isSubagentEvent,
+  isTerminalSubagentStatus,
+  mergeSubagentEventLists,
+  resolveSubagentQuestion,
+  resolveSubagentStatus,
+  subagentElapsedMs,
   summarizeSwarmStrip,
 } from './chat.swarm.js';
 import { ChatWorkspacePicker } from './chat.workspace-picker.js';
@@ -91,14 +107,54 @@ function eventsFromFrames(frames: MobileWsServerFrame[]): McAgentEvent[] {
 
 // --- Event rendering helpers ---
 
-function renderEvents(
+/**
+ * Options for {@link renderEventsToElements}. Extracted from the old positional
+ * parameter list when the walk gained a second caller: an expanded sub-agent
+ * card renders the CHILD's transcript with the very same function, one nesting
+ * level deeper.
+ */
+interface RenderEventsOptions {
+  navigateToLogs?: (timestamp: string) => void;
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  answeredQuestions?: Record<string, string>;
+  onNavigateToConnections?: () => void;
+  isStreaming?: boolean;
+  /**
+   * 0 in the parent transcript, 1 inside an expanded child. A card at depth 1
+   * renders collapsed and WITHOUT a toggle: both other clients cap nesting at
+   * one level, and an expandable grandchild would fetch a fresh transcript on
+   * every expansion with nothing bounding the cascade. §8.3 says the renderer
+   * imposes no limit; all three clients diverge from it the same way.
+   */
+  depth?: number;
+  /**
+   * The `ConversationKey` of the conversation this transcript belongs to, so a
+   * card can tell whether the store's REST list — which belongs to ONE
+   * conversation, the selected one — is its own list or somebody else's.
+   *
+   * `undefined` means "not stated", and a card that cannot state its
+   * conversation renders fold-only. It is a KEY and not an id because the
+   * store deliberately models a local and a gateway conversation sharing one
+   * id; matching on the id alone would hand the gateway conversation's
+   * children to the local one, which is the same defect `clearSubagents`'s
+   * read-cursor bump exists to stop.
+   */
+  conversationKey?: ConversationKey;
+}
+
+function renderEventsToElements(
   events: Record<string, unknown>[],
-  navigateToLogs?: (timestamp: string) => void,
-  onAnswerQuestion?: (questionId: string, answer: string) => void,
-  answeredQuestions?: Record<string, string>,
-  onNavigateToConnections?: () => void,
-  isStreaming = false,
+  options: RenderEventsOptions = {},
 ): JSX.Element[] {
+  const {
+    navigateToLogs,
+    onAnswerQuestion,
+    answeredQuestions,
+    onNavigateToConnections,
+    isStreaming = false,
+    depth = 0,
+    conversationKey: surfaceKey,
+  } = options;
   const elements: JSX.Element[] = [];
   let blockCount = 0;
   let textBuffer = '';
@@ -114,10 +170,16 @@ function renderEvents(
   // can fold the transient error it supersedes into the retry notice.
   let lastErrorElementIndex: number | null = null;
 
-  // Pre-scan: group all worker_* events by workerId so we can render one card
-  // per worker at its spawn position and let the status/done events fall
-  // through without touching the text/thinking/tool fold buffers.
-  const workerGroups = groupWorkerEvents(events);
+  // Pre-scan: fold every sub-agent event — BOTH families — into one group per
+  // child, and adjacent children into one parallel cluster (§8.2), so we can
+  // render one container at the cluster's anchor position and let the rest
+  // fall through without touching the text/thinking/tool fold buffers.
+  const clusterByAnchor = new Map<number, SubagentGroup[]>();
+  for (const cluster of clusterAdjacent(
+    groupSubagentEvents(events as McAgentEvent[], isStreaming),
+  )) {
+    clusterByAnchor.set(cluster[0].anchorIndex, cluster);
+  }
 
   // Flush any pending text/thinking so a worker card lands in reading order.
   const flushProse = (): void => {
@@ -138,31 +200,36 @@ function renderEvents(
   for (let i = 0; i < events.length; i++) {
     const event = events[i] as McAgentEvent;
 
-    if (
-      event.type === 'worker_spawned' ||
-      event.type === 'worker_status' ||
-      event.type === 'worker_done'
-    ) {
-      const group = workerGroups.get(event.workerId);
-      // Render a card only at the group's anchor position (spawn, or the
-      // orphan terminal's own position); every other worker event is folded
-      // into that single card and renders nothing standalone.
-      if (group && group.anchorIndex === i) {
+    if (isSubagentEvent(event.type)) {
+      // Render a container only at the cluster's anchor position (its first
+      // child's first start event, or an orphan terminal's own position);
+      // every other event for those children is folded into the cards and
+      // renders nothing standalone. Both families anchor cards, so neither may
+      // fall through to the unknown-activity fallback while the legacy mirrors
+      // are still on the wire (task D8 removes them).
+      const cluster = clusterByAnchor.get(i);
+      if (cluster) {
         flushProse();
-        if (group.orphan) {
-          elements.push(<OrphanWorkerCard key={`worker-${blockCount++}`} group={group} />);
-        } else {
-          elements.push(
-            <WorkerCard
-              key={`worker-${blockCount++}`}
-              group={group}
-              status={deriveWorkerStatus(group, isStreaming)}
-            />,
-          );
-        }
+        elements.push(
+          // Keyed by the first child's id, never by the render counter: a
+          // container keyed by position is remounted the moment the number of
+          // nodes emitted before it changes.
+          <SubagentCluster
+            key={`subagent-${cluster[0].subagentId}`}
+            groups={cluster}
+            depth={depth}
+            conversationKey={surfaceKey}
+            isStreaming={isStreaming}
+          />,
+        );
       }
       continue;
     }
+
+    // The coordinator's name-only spawn announcement. The card IS the
+    // announcement, so this renders nothing — but it has to be claimed here,
+    // or it lands in the unknown-activity fallback beside every child.
+    if (event.type === 'agent_spawned') continue;
 
     if (event.type === 'thinking_delta') {
       thinkingBuffer += event.text;
@@ -773,101 +840,443 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-/** Status icon for a swarm worker card header, mirroring ToolBlock's inline icon. */
-function WorkerStatusIcon({ status }: { status: WorkerCardStatus }): JSX.Element {
+/** Status glyph for a sub-agent card header, mirroring ToolBlock's inline icon. */
+function SubagentStatusIcon({
+  status,
+  live = true,
+}: {
+  status: SubagentStatus;
+  live?: boolean;
+}): JSX.Element {
   switch (status) {
     case 'running':
     case 'waiting':
-      return <Loader size={10} className="inline animate-spin text-accent mr-1.5" />;
+      // The spin is the canonical "this is happening right now". On a card
+      // with no live source nothing is happening that this client can see, so
+      // the glyph keeps the status the fold recorded and drops the animation.
+      return (
+        <Loader size={10} className={`inline text-accent mr-1.5 ${live ? 'animate-spin' : ''}`} />
+      );
     case 'done':
       return <Check size={10} className="inline text-green mr-1.5" />;
     case 'failed':
       return <XCircle size={10} className="inline text-red mr-1.5" />;
+    // §8.1 names a distinct glyph for each of these two, and both other clients
+    // draw them: an interrupted child was paused by something outside itself,
+    // and a max-turns child ran out of budget. Neither is a cancellation.
+    case 'interrupted':
+      return <Pause size={10} className="inline text-muted mr-1.5" />;
+    case 'max_turns':
+      return <Hourglass size={10} className="inline text-muted mr-1.5" />;
     default:
       return <Ban size={10} className="inline text-muted mr-1.5" />;
   }
 }
 
-const WORKER_STATUS_LABEL: Record<WorkerCardStatus, string> = {
-  running: 'Running',
-  waiting: 'Waiting for input',
-  done: 'Done',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-};
+/**
+ * Wall-clock age of a child run, in milliseconds, ticking once a second while
+ * it is live and frozen the moment it is not. `null` means the row renders NO
+ * elapsed segment — see `subagentElapsedMs`, which owns that rule.
+ */
+function useSubagentElapsed(
+  startedAt: string,
+  endedAt: string | undefined,
+  running: boolean,
+): number | null {
+  const live = running && endedAt === undefined && startedAt !== '';
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    // Re-read the clock rather than counting ticks: a window that was hidden
+    // (throttled timers) and comes back must show the true age.
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [live]);
+  return subagentElapsedMs(startedAt, endedAt, running, now);
+}
 
 /**
- * A swarm worker card — cloned from ToolBlock's open-state/header pattern.
- * Collapsed shows the status icon + role + one-line latest detail; expanded
- * shows the brief, the status trail, the report as Markdown, and model +
- * token count from the terminal event's usage.
+ * One cluster of children (design §8.2). A cluster of one renders as a bare
+ * card; two or more gain the group chrome — a summary line, a dot strip, and a
+ * collapse-as-a-unit toggle.
+ *
+ * The wrapper is rendered UNCONDITIONALLY, and the cards always sit in the
+ * same inner container at the same child position, so a lone card that becomes
+ * a group mid-stream (its neighbour spawning a moment later) keeps its DOM
+ * position. Both of web's guards are kept, and they earn their place here for
+ * a Mission-Control-specific reason: card expansion lives in the store, so a
+ * remount would not lose it — but it WOULD unmount the composer inside an
+ * expanded card, taking the caret and the focus with it while the user types.
  */
-function WorkerCard({
-  group,
-  status,
+function SubagentCluster({
+  groups,
+  depth,
+  conversationKey: surfaceKey,
+  isStreaming,
 }: {
-  group: WorkerGroup;
-  status: WorkerCardStatus;
+  groups: SubagentGroup[];
+  depth: number;
+  conversationKey?: ConversationKey;
+  isStreaming: boolean;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const detail = latestWorkerDetail(group);
-  const report = group.done?.report;
-  const usage = group.done?.usage;
+  const anchorId = groups[0].subagentId;
+  const toggleSubagentGroup = useChatStore((state) => state.toggleSubagentGroup);
+  const selectedKey = useChatStore((state) =>
+    state.selectedConversationRef ? conversationKey(state.selectedConversationRef) : null,
+  );
+  // The header is an affordance one level above the card, and it obeys the
+  // card's rule for the same reason: collapsing writes `subagentUi`, which
+  // describes the SELECTED conversation's children. Off that conversation the
+  // summary line still renders — it is a statement about this message, which
+  // is honest anywhere — but nothing is clickable and the stored collapse,
+  // which belongs to somebody else's card record, is not read.
+  const interactive = surfaceKey !== undefined && surfaceKey === selectedKey;
+  // Groups default to OPEN, so the stored value reads as "collapsed unless
+  // told otherwise" — an unvisited group has no record at all.
+  const collapsed =
+    useChatStore((state) => state.subagentUi[anchorId]?.groupCollapsed === true) && interactive;
+  // The summary line and the dots count the RESOLVED statuses, through the
+  // same list and the same gate as the cards beneath them, so the header can
+  // never disagree with what it heads. `interactive` here is exactly the
+  // card's `onSelectedConversation` (a group is never nested-only), which is
+  // what gates the card's own list lookup. The lock is on
+  // `formatClusterSummary`, not on its argument: the function is untouched.
+  const entries = useChatStore((state) => (interactive ? state.subagents : undefined));
+  const shown = entries
+    ? groups.map((group) => ({
+        ...group,
+        status: resolveSubagentStatus(
+          group,
+          entries.find((entry) => entry.id === group.subagentId),
+        ),
+      }))
+    : groups;
+  const multi = groups.length > 1;
+  const showCards = !multi || !collapsed;
+  const summary = (
+    <>
+      <Users size={10} className="shrink-0" />
+      <span className="min-w-0 truncate">{formatClusterSummary(shown)}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {shown.map((group) => (
+          <span
+            key={group.subagentId}
+            className={`inline-block h-1.5 w-1.5 rounded-full ${SUBAGENT_DOT_COLOR[group.status]}`}
+            title={`${group.type}: ${group.status}`}
+            data-testid={`subagent-group-dot-${group.subagentId}`}
+          />
+        ))}
+      </span>
+    </>
+  );
+  const headerClass = 'mb-1 flex w-full items-center gap-2 px-3 py-1 text-left text-[11px]';
+
+  return (
+    <div data-testid={multi ? 'subagent-group' : undefined}>
+      {multi &&
+        (interactive ? (
+          <button
+            type="button"
+            onClick={() => toggleSubagentGroup(anchorId)}
+            aria-expanded={!collapsed}
+            className={`${headerClass} text-muted hover:text-foreground`}
+            data-testid={`subagent-group-toggle-${anchorId}`}
+          >
+            {summary}
+          </button>
+        ) : (
+          <div className={`${headerClass} text-muted`}>{summary}</div>
+        ))}
+      {showCards && (
+        <div>
+          {groups.map((group) => (
+            <SubagentCard
+              key={group.subagentId}
+              group={group}
+              depth={depth}
+              conversationKey={surfaceKey}
+              isStreaming={isStreaming}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A sub-agent card (design §8.1 collapsed row, §8.3 expanded body) — the card
+ * that replaced the run-scoped worker card. Collapsed: status glyph, the
+ * child's type in mono, its newest one-line detail, and right-aligned
+ * `12 tool uses · 45s`. Expanded: the child's own transcript, rendered by the
+ * parent's own renderer one level deeper, its report as Markdown, and a
+ * composer that sends a user turn to the child.
+ *
+ * The card reads the CHILD's row from the store's REST list where there is one
+ * and falls back to this message's fold where there is not — see
+ * `resolveSubagentStatus`. Every question/terminal decision here goes through
+ * the resolved value, never `group.status`.
+ *
+ * A card with no live source renders as the SNAPSHOT it is: the fold's status
+ * and the fold's tool count, a frozen elapsed (only a run the fold saw finish
+ * has one), no pending question and a `snapshot` marker saying so — anything
+ * live there would be a claim this client cannot stand behind.
+ *
+ * There are TWO sources, and "off the selected conversation" only removes one
+ * of them. The REST list (`state.subagents`) describes the selected
+ * conversation, so off it `entry` is always `undefined` and the poll, the frame
+ * triggers and a resume all address somebody else. But the fold of this
+ * message's own events is live whenever the message is STREAMING, on any
+ * conversation: `applyFrame` appends to `streamingFrames[key]` for every
+ * conversation id with no selection gate, and main subscribes a running
+ * conversation on `getMessages`, which `SessionPanel` calls on mount. So the
+ * snapshot is a property of `!live`, not of `!onSelectedConversation`; a
+ * persisted panel message is a snapshot, and a live panel turn is not.
+ *
+ * ACTIONS are a narrower question than liveness, and keep the narrower gate. A
+ * card at `depth >= 1` is inside another child's transcript: no toggle, no
+ * composer, no actions. So is a card whose `conversationKey` is not the
+ * store's selected conversation, live or not — `subagents` and `subagentUi` describe ONE
+ * conversation, and `MessageBubble` has a second caller (`SessionPanel`) that
+ * draws a different one's transcript. There the REST enhancement is not
+ * merely absent: a stop or a resume would address the child correctly and
+ * then refresh a different conversation's list, so the row the user is
+ * looking at never moves. A card that cannot state its conversation, or
+ * states one that is not selected, renders the fold and nothing else.
+ */
+function SubagentCard({
+  group,
+  depth,
+  conversationKey: surfaceKey,
+  isStreaming,
+}: {
+  group: SubagentGroup;
+  depth: number;
+  conversationKey?: ConversationKey;
+  isStreaming: boolean;
+}): JSX.Element {
+  const selectedKey = useChatStore((state) =>
+    state.selectedConversationRef ? conversationKey(state.selectedConversationRef) : null,
+  );
+  const onSelectedConversation = surfaceKey !== undefined && surfaceKey === selectedKey;
+  const entry = useChatStore((state) =>
+    onSelectedConversation ? state.subagents.find((e) => e.id === group.subagentId) : undefined,
+  );
+  const ui = useChatStore((state) => state.subagentUi[group.subagentId]);
+  const toggleSubagent = useChatStore((state) => state.toggleSubagent);
+  const loadSubagentTranscript = useChatStore((state) => state.loadSubagentTranscript);
+  const setSubagentDraft = useChatStore((state) => state.setSubagentDraft);
+  const dismissSubagentNotice = useChatStore((state) => state.dismissSubagentNotice);
+  const resumeSubagent = useChatStore((state) => state.resumeSubagent);
+  const subscribeSubagent = useChatStore((state) => state.subscribeSubagent);
+  const unsubscribeSubagent = useChatStore((state) => state.unsubscribeSubagent);
+
+  const nested = depth >= 1;
+  // Everything that acts on the child, or stores state about it, is gated on
+  // this: the card is the top level of THIS conversation's transcript.
+  const interactive = !nested && onSelectedConversation;
+  // …and everything that CLAIMS the row is moving is gated on this: does the
+  // card have a live source at all. Two can feed it. The REST list feeds the
+  // selected conversation. The fold of this message's own events feeds a
+  // STREAMING bubble on any conversation — `applyFrame` writes
+  // `streamingFrames[key]` for every conversation id, ungated by the selection
+  // (`applyFrame`'s two `set` calls, `stores/chat.ts:938` and `:956`), and main
+  // subscribes a running conversation the moment somebody reads its messages
+  // (`ChatService.getMessages`, `chat-service.ts:452-459`), which `SessionPanel`
+  // does on mount. A persisted message has neither, and is the snapshot below.
+  //
+  // Line numbers are cited beside the SYMBOL they belong to: these two have
+  // moved three times, and a bare number is a citation that rots silently.
+  const live = onSelectedConversation || isStreaming;
+  const status = resolveSubagentStatus(group, entry);
+  const question = resolveSubagentQuestion(group, entry);
+  const terminal = isTerminalSubagentStatus(status);
+  const open = interactive && ui?.expanded === true;
+  // The clock is live only where something can move this row: the selected
+  // conversation's list read (the poll, the frame triggers, a resume) or a
+  // stream still arriving. With neither, a running child would tick upward
+  // forever and `3h 00m` would be the age of the message rather than the
+  // length of the run. `live`, not `interactive`: a nested grandchild is
+  // redrawn from the transcript its parent card fetches, so its clock stays.
+  const elapsed = useSubagentElapsed(group.startedAt, group.endedAt, !terminal && live);
   const isError = status === 'failed';
+  const detail = group.detail;
+  // A one-shot child (Explore, Plan) refuses a resume — EXCEPT when it is
+  // parked on a question, which is an ANSWER rather than a steer and is the
+  // one thing the gateway still lets through.
+  const oneShotBlocked = entry?.oneShot === true && status !== 'waiting';
+  const canSend = interactive && !terminal && !oneShotBlocked;
+
+  useEffect(() => {
+    if (open) void loadSubagentTranscript(group.subagentId);
+  }, [open, group.subagentId, loadSubagentTranscript]);
+
+  // §8.3: subscribe while the row is expanded, so the body below grows on its
+  // own instead of showing whatever the last fetch happened to catch. Gated on
+  // `open`, which already carries `!nested` and "on the selected conversation"
+  // — a grandchild has no toggle and a card on somebody else's transcript has
+  // no list to address. The store refcounts and defers the release, so the
+  // remount this component goes through when the parent's turn ends costs
+  // nothing.
+  useEffect(() => {
+    if (!open) return;
+    subscribeSubagent(group.subagentId);
+    return () => unsubscribeSubagent(group.subagentId);
+  }, [open, group.subagentId, subscribeSubagent, unsubscribeSubagent]);
+
+  const meta = [formatToolCount(group.toolCallCount)];
+  if (elapsed !== null) meta.push(formatSubagentElapsed(elapsed));
+
+  const header = (
+    <>
+      <SubagentStatusIcon status={status} live={live} />
+      <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
+      <span className="font-mono shrink-0">{group.type || group.name || 'sub-agent'}</span>
+      {detail && <span className="ml-2 min-w-0 truncate text-muted">{detail}</span>}
+      {!nested && !live && (
+        <span
+          className="ml-2 shrink-0 rounded-sm border border-border px-1 text-[10px] uppercase tracking-wide text-muted"
+          data-testid={`subagent-card-snapshot-${group.subagentId}`}
+          title="A snapshot of this message — this child is not being re-read here"
+        >
+          snapshot
+        </span>
+      )}
+      <span
+        className="ml-auto shrink-0 pl-2 font-[family-name:var(--font-mono)] text-[10px] text-muted"
+        data-testid="subagent-card-meta"
+      >
+        {meta.join(' · ')}
+      </span>
+    </>
+  );
 
   return (
     <div
       className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
+      data-testid={`subagent-card-${group.subagentId}`}
+      data-status={status}
+      data-depth={depth}
     >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
-      >
-        <WorkerStatusIcon status={status} />
-        <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
-        <span className="font-mono shrink-0">{group.role}</span>
-        {detail && <span className="ml-2 truncate text-muted">{detail}</span>}
-      </button>
+      {!interactive ? (
+        <div className="flex w-full items-center px-3 py-1.5 text-left">{header}</div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => toggleSubagent(group.subagentId)}
+          aria-expanded={open}
+          className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
+          data-testid={`subagent-card-toggle-${group.subagentId}`}
+        >
+          {header}
+        </button>
+      )}
+
+      {/* The pending question sits on the COLLAPSED row (§8.1): a child waiting
+          on input is the one thing a user must not have to expand a card to
+          discover — and on a card with no toggle this row is the ONLY place it
+          could appear. Gated on `live`, which is `interactive || (isStreaming
+          && !nested)` written the short way: a stream can retract the question
+          it set — a running `subagent_progress` clears it and the finalizer
+          drops it on any terminal status — so it is current while it shows. A
+          card with no live source has no retraction: the fold holds the
+          question of the last event that reached the parent, and a child
+          stopped or answered elsewhere keeps it for the life of the
+          conversation. That row must not ask a question that may have been
+          answered hours ago; it says `snapshot` instead. The reply box stays
+          on `interactive`: answering needs this conversation's list. */}
+      {question && !nested && live && (
+        <div className="border-t border-border px-3 py-1.5">
+          <p
+            className="mb-1.5 text-yellow-400"
+            data-testid={`subagent-question-${group.subagentId}`}
+          >
+            {question}
+          </p>
+          {interactive && (
+            <SubagentComposer
+              subagentId={group.subagentId}
+              testIdPrefix="subagent-reply"
+              placeholder="Answer this sub-agent…"
+              draft={ui?.draft ?? ''}
+              sending={ui?.sending === true}
+              disabled={!canSend}
+              onDraft={setSubagentDraft}
+              // THIS composer is an answer, and it is the only site that can
+              // say so: the box is drawn from the fold's question, which
+              // arrives up to a list-read ahead of the REST status the store
+              // would otherwise have to infer it from.
+              onSend={(id, text) => resumeSubagent(id, text, { answering: true })}
+            />
+          )}
+        </div>
+      )}
+
+      {ui?.notice && interactive && (
+        // biome-ignore lint/a11y/useSemanticElements: the wrapper carries the test id the panel's notice also uses
+        <div
+          role="status"
+          data-testid={`subagent-card-notice-${group.subagentId}`}
+          className="flex items-start gap-2 border-t border-red bg-red/15 px-3 py-2 text-xs text-red"
+        >
+          <span className="min-w-0 flex-1">{ui.notice}</span>
+          <button
+            type="button"
+            onClick={() => dismissSubagentNotice(group.subagentId)}
+            className="shrink-0 text-red/80 hover:text-red"
+            aria-label="Dismiss"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {open && (
         <div className="space-y-2 border-t border-border px-3 pb-2 pt-1.5">
           <p className="text-muted">
-            <span className="capitalize">Status:</span> {WORKER_STATUS_LABEL[status]}
+            <span className="capitalize">Status:</span> {SUBAGENT_STATUS_LABEL[status]}
           </p>
-          {group.brief && (
-            <p className="text-muted">
-              <span className="capitalize">Brief:</span> {group.brief}
-            </p>
-          )}
-          {group.statuses.length > 0 && (
-            <div className="space-y-0.5">
-              {group.statuses.map((s, idx) => {
-                const line = s.status === 'waiting_input' ? (s.question ?? s.detail) : s.detail;
-                if (!line) return null;
-                return (
-                  <p
-                    key={`${s.workerId}-trail-${idx}`}
-                    className="flex items-start gap-1.5 text-muted"
-                  >
-                    <span className="text-muted/60">·</span>
-                    <span>{line}</span>
-                  </p>
-                );
-              })}
-            </div>
-          )}
-          {report && (
+          {group.description && <p className="text-muted">{group.description}</p>}
+          <SubagentTranscript
+            messages={ui?.transcript}
+            depth={depth}
+            conversationKey={surfaceKey}
+          />
+          {group.report && (
             <div className="max-h-64 overflow-auto prose-sm">
-              <Markdown>{report}</Markdown>
+              <Markdown>{group.report}</Markdown>
             </div>
           )}
-          {(group.model || usage) && (
+          {!question && (
+            <div>
+              <SubagentComposer
+                subagentId={group.subagentId}
+                testIdPrefix="subagent-compose"
+                placeholder="Type into this sub-agent's transcript…"
+                draft={ui?.draft ?? ''}
+                sending={ui?.sending === true}
+                disabled={!canSend}
+                onDraft={setSubagentDraft}
+                onSend={resumeSubagent}
+              />
+              {!canSend && (
+                <p className="mt-1 text-[11px] text-muted">
+                  {terminal
+                    ? 'This sub-agent has finished — no further messages.'
+                    : 'This sub-agent type is one-shot and cannot be resumed.'}
+                </p>
+              )}
+            </div>
+          )}
+          {(group.model || group.usage) && (
             <div className="flex items-center gap-2 pt-0.5 font-[family-name:var(--font-mono)] text-[10px] text-muted opacity-60">
               {group.model && <span>{formatModelName(group.model)}</span>}
-              {group.model && usage && <span>·</span>}
-              {usage && (
+              {group.model && group.usage && <span>·</span>}
+              {group.usage && (
                 <span>
-                  {formatTokens(usage.inputTokens)} in · {formatTokens(usage.outputTokens)} out
+                  {formatTokens(group.usage.inputTokens)} in ·{' '}
+                  {formatTokens(group.usage.outputTokens)} out
                 </span>
               )}
             </div>
@@ -879,39 +1288,124 @@ function WorkerCard({
 }
 
 /**
- * Compact standalone "worker finished" card for an orphan terminal event — a
- * worker_done/worker_status whose spawn landed in a previous message (crash
- * reconcile split the run). Sources everything from the self-describing event.
+ * The child's own transcript inside an expanded card (§8.3), rendered by the
+ * parent's own event walk one nesting level deeper.
+ *
+ * `origin: 'parent'` and `origin: 'notification'` user turns are the
+ * orchestrator talking to the child (§8.5); they render as muted rows rather
+ * than as the user's own bubbles, because the human did not send them.
  */
-function OrphanWorkerCard({ group }: { group: WorkerGroup }): JSX.Element {
-  const status: WorkerCardStatus = group.done ? group.done.status : 'cancelled';
-  const isError = status === 'failed';
-  const [open, setOpen] = useState(false);
-  const report = group.done?.report;
-
+function SubagentTranscript({
+  messages,
+  depth,
+  conversationKey: surfaceKey,
+}: {
+  messages?: ConversationMessage[];
+  depth: number;
+  conversationKey?: ConversationKey;
+}): JSX.Element {
+  if (!messages) {
+    return (
+      <div className="flex items-center gap-2 py-1 text-muted">
+        <Loader size={12} className="animate-spin" />
+        <span>Loading transcript…</span>
+      </div>
+    );
+  }
+  if (messages.length === 0) {
+    return <p className="py-1 text-muted">This sub-agent has no transcript yet.</p>;
+  }
   return (
-    <div
-      className={`mb-3 border text-xs ${isError ? 'border-red-900/50 bg-red-900/10' : 'border-border bg-sidebar-hover'}`}
-    >
+    <div className="border-l border-border pl-3" data-testid="subagent-transcript">
+      {messages.map((message) => {
+        if (message.content.type === 'assistant') {
+          return (
+            <div key={message.id}>
+              {renderEventsToElements(message.content.events as Record<string, unknown>[], {
+                depth: depth + 1,
+                // A card only expands on the selected conversation, so this
+                // subtree is inside it: a group nested one level down keeps
+                // its collapse toggle, while its CARDS stay read-only under
+                // the depth cap.
+                conversationKey: surfaceKey,
+                // A message the child has not finished is LIVE. Without this
+                // the walk's tail-flush draws its in-flight tool call as
+                // "interrupted" and the fold terminalizes a grandchild to
+                // `cancelled` — both because the walk was told the stream had
+                // ended when it had not.
+                isStreaming: message.status === 'streaming',
+              })}
+            </div>
+          );
+        }
+        const fromOrchestrator = message.origin === 'parent' || message.origin === 'notification';
+        return (
+          <p
+            key={message.id}
+            className={`mb-2 whitespace-pre-wrap ${fromOrchestrator ? 'text-muted italic' : 'text-foreground'}`}
+            data-origin={message.origin ?? 'user'}
+          >
+            {fromOrchestrator && <span className="mr-1.5 not-italic">from orchestrator:</span>}
+            {message.content.text}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The inline composer shared by a card's question reply and its body. */
+function SubagentComposer({
+  subagentId,
+  testIdPrefix,
+  placeholder,
+  draft,
+  sending,
+  disabled,
+  onDraft,
+  onSend,
+}: {
+  subagentId: string;
+  testIdPrefix: string;
+  placeholder: string;
+  draft: string;
+  sending: boolean;
+  disabled: boolean;
+  onDraft: (subagentId: string, draft: string) => void;
+  onSend: (subagentId: string, message: string) => Promise<boolean>;
+}): JSX.Element {
+  const submit = (): void => {
+    const trimmed = draft.trim();
+    if (!trimmed || sending || disabled) return;
+    void onSend(subagentId, trimmed);
+  };
+  return (
+    <div className="flex items-end gap-2">
+      <textarea
+        value={draft}
+        onChange={(e) => onDraft(subagentId, e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        rows={2}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 resize-y rounded border border-border bg-card-bg p-2 text-xs text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+        data-testid={`${testIdPrefix}-input-${subagentId}`}
+      />
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center px-3 py-1.5 text-left hover:text-foreground"
+        onClick={submit}
+        disabled={disabled || sending || !draft.trim()}
+        className="flex shrink-0 items-center gap-1 rounded-lg bg-accent px-3 py-2 text-xs text-white hover:bg-primary-hover disabled:opacity-50"
+        data-testid={`${testIdPrefix}-button-${subagentId}`}
       >
-        <WorkerStatusIcon status={status} />
-        <Users size={10} className="mr-1.5 inline shrink-0 text-muted" />
-        <span className="font-mono shrink-0">{group.role}</span>
-        <span className="ml-2 truncate text-muted">
-          worker {WORKER_STATUS_LABEL[status].toLowerCase()}
-        </span>
+        <Send size={12} />
+        {sending ? 'Sending…' : 'Send'}
       </button>
-      {open && report && (
-        <div className="border-t border-border px-3 pb-2 pt-1.5">
-          <div className="max-h-64 overflow-auto prose-sm">
-            <Markdown>{report}</Markdown>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -956,7 +1450,12 @@ function CopyButton({ text }: { text: string }): JSX.Element {
   );
 }
 
-// Exported for reuse by the task page's embedded session panel.
+// Exported for reuse by the task page's embedded session panel — which is why
+// `conversationKey` is a prop and not a store read: the second caller draws a
+// DIFFERENT conversation's transcript, and a sub-agent card inside it must not
+// take the selected conversation's children for its own. Pass the key of the
+// conversation whose transcript this is; a bubble that omits it draws
+// read-only cards.
 export const MessageBubble = memo(function MessageBubble({
   message,
   streamingEvents,
@@ -964,6 +1463,7 @@ export const MessageBubble = memo(function MessageBubble({
   onAnswerQuestion,
   answeredQuestions,
   onNavigateToConnections,
+  conversationKey: surfaceKey,
 }: {
   message?: RenderableMessage;
   streamingEvents?: McAgentEvent[];
@@ -971,12 +1471,46 @@ export const MessageBubble = memo(function MessageBubble({
   onAnswerQuestion?: (questionId: string, answer: string) => void;
   answeredQuestions?: Record<string, string>;
   onNavigateToConnections?: () => void;
+  conversationKey?: ConversationKey;
 }): JSX.Element {
   const isUser = message?.role === 'user';
 
   if (isUser && message) {
     const userText =
       message.content.type === 'user' && message.content.text ? message.content.text : '';
+    // The two `role: 'user'` rows the USER did not write (§8.5). Both are
+    // already handled inside a CHILD's transcript (`SubagentTranscript`); the
+    // orchestrator's own transcript had neither, so a notification turn drew
+    // its `[SYSTEM NOTIFICATION - NOT USER INPUT]` prompt as a full user
+    // bubble — with Copy, and the same affordances as something the human
+    // typed. `origin` reaches here because `RenderableMessage` includes
+    // `ConversationMessage`.
+    const origin = 'origin' in message ? message.origin : undefined;
+    if (origin === 'notification') {
+      return (
+        <div
+          className="mb-6 flex items-center gap-1.5 text-xs text-muted"
+          data-testid="notification-row"
+          data-role="notification"
+        >
+          <Bell size={12} />
+          <span>{notificationRowLabel(userText)}</span>
+        </div>
+      );
+    }
+    if (origin === 'parent') {
+      return (
+        <div
+          className="mb-6 flex items-start gap-1.5 text-xs text-muted"
+          data-testid="orchestrator-row"
+          data-role="parent"
+        >
+          <ArrowDownToLine size={12} className="mt-0.5 shrink-0" />
+          <span className="not-italic">from orchestrator</span>
+          <span className="italic whitespace-pre-wrap">{userText}</span>
+        </div>
+      );
+    }
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
     return (
       <div className="group mb-6 flex items-start justify-end gap-1">
@@ -1031,14 +1565,14 @@ export const MessageBubble = memo(function MessageBubble({
   // that never reached a terminal event terminalizes to `cancelled`; a live
   // stream (streamingEvents present) renders with isStreaming=true.
   const isLive = streamingEvents != null;
-  const rendered = renderEvents(
-    events,
+  const rendered = renderEventsToElements(events, {
     navigateToLogs,
     onAnswerQuestion,
     answeredQuestions,
     onNavigateToConnections,
-    isLive,
-  );
+    isStreaming: isLive,
+    conversationKey: surfaceKey,
+  });
   const usage = extractUsage(events);
   const assistantText = extractTextFromEvents(events);
 
@@ -1216,26 +1750,32 @@ function PinnedTodoPanel({ todos }: { todos: TodoItem[] }): JSX.Element {
   );
 }
 
-/** Dot color for a worker's status in the pinned strip. */
-const WORKER_DOT_COLOR: Record<WorkerCardStatus, string> = {
+/** Dot color for a child's status in the pinned strip. */
+const SUBAGENT_DOT_COLOR: Record<SubagentStatus, string> = {
   running: 'bg-accent',
   waiting: 'bg-yellow-400',
   done: 'bg-green',
   failed: 'bg-red',
   cancelled: 'bg-muted',
+  interrupted: 'bg-muted',
+  max_turns: 'bg-red',
 };
 
 /**
- * Pinned strip shown while the live stream contains any non-terminal worker
- * group — mirrors PinnedTodoPanel's placement/styling. Derived from the same
- * groupWorkerEvents fold via summarizeSwarmStrip; the parent only renders this
- * when the summary is non-null, so `events` here always has live work.
+ * Pinned strip shown while the live stream contains any non-terminal child —
+ * mirrors PinnedTodoPanel's placement/styling. Derived from the same
+ * `groupSubagentEvents` fold via `summarizeSwarmStrip`; the parent only renders
+ * this when the summary is non-null, so `events` here always has live work.
+ *
+ * Reads the fold ALONE, not the REST list: the strip belongs to the message
+ * that is streaming, so its children are exactly the ones whose events are
+ * arriving, and a list read's round trip must not make it flicker.
  */
 function PinnedSwarmStrip({ events }: { events: McAgentEvent[] }): JSX.Element {
   const summary = summarizeSwarmStrip(events, true);
   if (!summary) return <></>;
 
-  const parts = [`${summary.total} ${summary.total === 1 ? 'worker' : 'workers'}`];
+  const parts = [`${summary.total} ${summary.total === 1 ? 'agent' : 'agents'}`];
   if (summary.running > 0) parts.push(`${summary.running} running`);
   if (summary.waiting > 0) parts.push(`${summary.waiting} waiting`);
 
@@ -1247,9 +1787,9 @@ function PinnedSwarmStrip({ events }: { events: McAgentEvent[] }): JSX.Element {
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           {summary.workers.map((w) => (
             <span
-              key={w.workerId}
-              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${WORKER_DOT_COLOR[w.status]}`}
-              title={`${w.role}: ${w.status}`}
+              key={w.subagentId}
+              className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${SUBAGENT_DOT_COLOR[w.status]}`}
+              title={`${w.type}: ${w.status}`}
             />
           ))}
         </div>
@@ -1718,6 +2258,8 @@ export function Chat(): JSX.Element {
     deleteConversation,
     sendMessage,
     cancelMessage,
+    subagents,
+    refreshSubagents,
   } = useChatStore();
 
   const connectors = useConnectorsStore((s) => s.connectors);
@@ -1732,14 +2274,9 @@ export function Chat(): JSX.Element {
   const [imageError, setImageError] = useState<string | null>(null);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
-  // Swarm supervision panel (right drawer). `swarmPanelOpen` toggles it;
-  // `swarmRefreshToken` is bumped to force the panel to refetch — on a
-  // `swarm:run-changed` poke for the open agent and on gateway SSE (re)connect.
+  // Sub-agent panel (right drawer). The list it renders lives in the store,
+  // which owns the reads and their guards; this flag only opens the drawer.
   const [swarmPanelOpen, setSwarmPanelOpen] = useState(false);
-  const [swarmRefreshToken, setSwarmRefreshToken] = useState(0);
-  // True once we've observed at least one run for the selected agent, so the
-  // affordance shows even when swarm.enabled is off but historical runs exist.
-  const [swarmHasRuns, setSwarmHasRuns] = useState(false);
   const [renamingTitle, setRenamingTitle] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [inlineRenameTabId, setInlineRenameTabId] = useState<string | null>(null);
@@ -1860,7 +2397,28 @@ export function Chat(): JSX.Element {
   }, []);
 
   // Scroll to bottom on new messages
-  const selectedMessages = selectedKey ? (messages[selectedKey] ?? []) : [];
+  const rawSelectedMessages = selectedKey ? (messages[selectedKey] ?? []) : [];
+  // D2: a background child's completion wakes the conversation with a
+  // server-initiated turn that REPLAYS its `subagent_finished`, and the rule
+  // that an orphan terminal anchors its own card then draws a SECOND card for
+  // a child that already has one. The fold is per message and must stay that
+  // way; the conversation is what knows better, so the reconciliation happens
+  // here, once, before any message renders.
+  const selectedMessages = useMemo(() => {
+    const merged = mergeSubagentEventLists(
+      rawSelectedMessages.map((message) =>
+        message.content.type === 'assistant' ? (message.content.events as McAgentEvent[]) : null,
+      ),
+    );
+    return rawSelectedMessages.map((message, index) => {
+      const events = merged[index];
+      if (!events || message.content.type !== 'assistant') return message;
+      if (events === message.content.events) return message;
+      return { ...message, content: { ...message.content, events } } as RenderableMessage;
+    });
+    // `rawSelectedMessages` is rebuilt on every render by the `??` above, so
+    // the memo keys on the store slice it is derived from.
+  }, [rawSelectedMessages]);
   const isStreaming = selectedKey ? (sending[selectedKey] ?? false) : false;
   const liveFrames = selectedKey ? (streamingFrames[selectedKey] ?? []) : [];
   const liveEvents = useMemo(() => eventsFromFrames(liveFrames), [liveFrames]);
@@ -2118,34 +2676,29 @@ export function Chat(): JSX.Element {
   const activeModel = selectedAgent?.config.model;
   const activeWorkspace = selectedAgent?.config.workspace;
 
-  // Swarm affordance: visible when the agent has swarm enabled OR has runs.
-  const swarmEnabled = selectedAgent?.config.swarm?.enabled === true;
-  const showSwarmAffordance = Boolean(selectedAgentId) && (swarmEnabled || swarmHasRuns);
+  // Panel affordance: visible when the agent has sub-agents enabled OR this
+  // conversation already has children. The second half is what makes the
+  // drawer reachable on a conversation whose agent has since had the feature
+  // turned off — the children are still there and still stoppable.
+  // The gateway's precedence, not the legacy block alone: an agent with
+  // neither block has sub-agents ON, so reading `swarm?.enabled === true` hid
+  // this affordance from the whole default population until a child happened
+  // to exist — and after the Swarm card started writing `subagents.enabled`,
+  // turning the feature on in the UI would not have brought it back.
+  const swarmEnabled = subagentsEnabledFor(selectedAgent?.config);
+  const showSwarmAffordance =
+    Boolean(selectedConversationRef) && (swarmEnabled || subagents.length > 0);
 
-  // Probe whether the selected agent has any swarm runs (so the affordance can
-  // show even when swarm.enabled is off but historical runs exist). Re-probes
-  // when the agent changes; cheap listing call, guarded against races.
-  useEffect(() => {
-    let cancelled = false;
-    setSwarmHasRuns(false);
-    if (!selectedAgentId) return;
-    window.api
-      .swarmListRuns(selectedAgentId)
-      .then((list) => {
-        if (!cancelled) setSwarmHasRuns(list.length > 0);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedAgentId]);
-
-  // Close the panel when switching to an agent that has no swarm affordance.
+  // Close the panel when the affordance goes away (a different agent, or no
+  // conversation at all).
   useEffect(() => {
     if (swarmPanelOpen && !showSwarmAffordance) setSwarmPanelOpen(false);
   }, [swarmPanelOpen, showSwarmAffordance]);
 
-  // Refresh (a): a `swarm:run-changed` poke for the OPEN agent bumps the token.
+  // Re-read on the coordinator's own poke for the open agent. The poke is
+  // throttled to one per run per second with no trailing emit, so it is a HINT,
+  // not a guarantee — the panel's own 20s poll and the store's frame trigger
+  // are what make a missed poke recoverable.
   useEffect(() => {
     if (!selectedAgentId) return;
     const unsub = window.api.onGatewayEvent((eventType, data) => {
@@ -2156,23 +2709,19 @@ export function Chat(): JSX.Element {
       } catch {
         return;
       }
-      if (agentIdInEvent === selectedAgentId) {
-        // The affordance may need to appear on the first-ever run.
-        setSwarmHasRuns(true);
-        setSwarmRefreshToken((t) => t + 1);
-      }
+      if (agentIdInEvent === selectedAgentId) void refreshSubagents();
     });
     return unsub;
-  }, [selectedAgentId]);
+  }, [selectedAgentId, refreshSubagents]);
 
-  // Refresh (b): gateway SSE (re)connect. The main process re-opens the event
-  // stream on every 'healthy' poll tick, so a 'healthy' status is our
-  // reconnect signal — bump the token to resync after any dropped stream.
+  // Gateway SSE (re)connect. The main process re-opens the event stream on
+  // every 'healthy' poll tick, so a 'healthy' status is our reconnect signal —
+  // re-read to resync after any dropped stream.
   useEffect(() => {
     return window.api.gatewayOnStatus((status) => {
-      if (status === 'healthy') setSwarmRefreshToken((t) => t + 1);
+      if (status === 'healthy') void refreshSubagents();
     });
-  }, []);
+  }, [refreshSubagents]);
 
   const latestTodos = useMemo(
     () => extractLatestTodos(selectedMessages, liveEvents),
@@ -2488,8 +3037,8 @@ export function Chat(): JSX.Element {
                     className={`flex items-center gap-1 rounded p-1 transition-colors ${
                       swarmPanelOpen ? 'text-accent' : 'text-muted hover:text-foreground'
                     }`}
-                    title="Swarm supervision"
-                    aria-label="Toggle swarm supervision panel"
+                    title="Sub-agents"
+                    aria-label="Toggle sub-agent panel"
                     aria-pressed={swarmPanelOpen}
                     data-testid="swarm-panel-toggle"
                   >
@@ -2617,6 +3166,7 @@ export function Chat(): JSX.Element {
                   <MessageBubble
                     key={msg.id}
                     message={msg}
+                    conversationKey={selectedKey ?? undefined}
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                     answeredQuestions={answeredQuestions}
@@ -2627,6 +3177,7 @@ export function Chat(): JSX.Element {
                 {liveEvents.length > 0 && (
                   <MessageBubble
                     streamingEvents={liveEvents}
+                    conversationKey={selectedKey ?? undefined}
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                     answeredQuestions={answeredQuestions}
@@ -2770,7 +3321,16 @@ export function Chat(): JSX.Element {
                 >
                   <Paperclip size={16} />
                 </button>
-                {selectedConversation?.activeTurnId ? (
+                {/*
+                  Stop renders for a LOCAL `sending` too, not just a canonical
+                  `activeTurnId`. Those two predicates used to disagree while
+                  the composer's lock read both — `activeTurnId !== null ||
+                  isStreaming` — so a turn whose `done` was lost disabled the
+                  composer and offered no control at all (D3). The rule is now
+                  the invariant it should always have been: whatever locks the
+                  composer must also offer the way out of it.
+                */}
+                {selectedConversation?.activeTurnId || isStreaming ? (
                   <button
                     type="button"
                     onClick={() =>
@@ -2795,13 +3355,8 @@ export function Chat(): JSX.Element {
           </div>
         </div>
         {/* Swarm supervision panel (right drawer) */}
-        {swarmPanelOpen && selectedAgentId && showSwarmAffordance && (
-          <SwarmPanel
-            key={selectedAgentId}
-            agentId={selectedAgentId}
-            refreshToken={swarmRefreshToken}
-            onClose={() => setSwarmPanelOpen(false)}
-          />
+        {swarmPanelOpen && showSwarmAffordance && (
+          <SwarmPanel onClose={() => setSwarmPanelOpen(false)} />
         )}
       </div>
     </div>

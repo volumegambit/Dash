@@ -28,7 +28,7 @@ describe('PiAgentBackend MCP integration', () => {
     const echoTool = tools.find((t) => t.name === 'test__echo');
     expect(echoTool).toBeDefined();
     const result = await echoTool?.execute('call-1', { input: 'integration-test' });
-    const text = result?.content.find((c) => c.type === 'text') as { text: string } | undefined;
+    const text = result?.content.find((c) => c.type === 'text') as { text: string };
     expect(text.text).toContain('integration-test');
 
     await manager.stop();

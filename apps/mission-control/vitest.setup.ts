@@ -145,10 +145,15 @@ function createMockApi(): MockApi {
     memoryUpdateConfig: vi.fn().mockResolvedValue({ enabled: true, sweep: 'auto' }),
 
     // Swarm panel (gateway passthrough)
-    swarmListRuns: vi.fn().mockResolvedValue([]),
-    swarmGetRun: vi.fn().mockResolvedValue(null),
-    swarmCancelWorker: vi.fn().mockResolvedValue({ ok: true }),
-    swarmSend: vi.fn().mockResolvedValue({ ok: true }),
+    subagentsList: vi.fn().mockResolvedValue([]),
+    subagentStop: vi.fn().mockResolvedValue({ ok: true, status: 'cancelled' }),
+    subagentResume: vi.fn().mockResolvedValue({ ok: true, status: 'running', mode: 'queued' }),
+    subagentSubscribe: vi.fn(),
+    subagentUnsubscribe: vi.fn(),
+    subagentRewatch: vi.fn(),
+    onSubagentResubscribed: vi.fn().mockReturnValue(() => {}),
+    onSubagentWatchLost: vi.fn().mockReturnValue(() => {}),
+    conversationMessages: vi.fn().mockResolvedValue({ items: [], nextCursor: null, throughSeq: 0 }),
 
     // Settings
     settingsGet: vi.fn().mockResolvedValue({}),

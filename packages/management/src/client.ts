@@ -1,4 +1,9 @@
 import type {
+  ConversationMessagePage,
+  SubagentListEntry,
+  SubagentListResponse,
+} from '@dash/mobile-contract';
+import type {
   ChannelHealthEntry,
   CreateIssueInput,
   CreateProjectInput,
@@ -30,6 +35,8 @@ import type {
   SkillContent,
   SkillInfo,
   SkillsConfig,
+  SubagentResumeResult,
+  SubagentStopResult,
   SwarmRunSnapshot,
   SwarmRunSummary,
   SwarmRunsResponse,
@@ -589,5 +596,121 @@ export class ManagementClient {
     }
 
     return response.json() as Promise<SwarmWorkerActionResult>;
+  }
+
+  // --- Sub-agent runtime (children of a conversation) ---
+  //
+  // The gateway mounts these on the loopback management app AND on
+  // `/mobile/v1` (`mountSubagentRuntimeRoutes`), so this client and the phone
+  // reach one implementation. Unlike the run-scoped swarm actions above they
+  // answer with the typed `MobileApiError` envelope on every error path, so a
+  // refusal's sentence has to be lifted out of `error` rather than read off an
+  // `{ok:false, reason}` body the server never sends.
+
+  /**
+   * The conversation's children, newest state first-hand from the child rows.
+   *
+   * DEPTH-0 CHILDREN ONLY: a grandchild has no entry here, which is why a
+   * client that folds sub-agent rows out of the transcript must keep that fold
+   * as the fallback rather than replacing it with this list.
+   */
+  async listSubagents(conversationId: string): Promise<SubagentListEntry[]> {
+    const result = await this.request<SubagentListResponse>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}/subagents`,
+    );
+    return result.subagents;
+  }
+
+  /**
+   * One page of a conversation's messages. Named for the route rather than for
+   * sub-agents because that is all it is — but the caller this exists for is a
+   * client expanding a child row, which needs the CHILD's transcript and has
+   * no other way to ask for it.
+   */
+  async conversationMessages(
+    conversationId: string,
+    before?: string,
+  ): Promise<ConversationMessagePage> {
+    const query = before !== undefined ? `?${new URLSearchParams({ before }).toString()}` : '';
+    return this.request<ConversationMessagePage>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}/messages${query}`,
+    );
+  }
+
+  /**
+   * Stop a child and every descendant. 409 (already terminal) comes back as
+   * `{ok:false, reason}`; every other non-2xx throws.
+   */
+  async stopSubagent(subagentId: string): Promise<SubagentStopResult> {
+    return this.requestSubagentAction<SubagentStopResult>(
+      `/subagents/${encodeURIComponent(subagentId)}/stop`,
+      undefined,
+    );
+  }
+
+  /**
+   * Send a message to a child from its parent — the ONLY client path to
+   * `ChildHandle.answerQuestion`, and therefore the only one that enforces the
+   * one-shot rule, the steer cap and the tool-grant rebuild. All three of those
+   * refusals are 409s and arrive as `{ok:false, reason}`.
+   *
+   * `requestId` is echoed verbatim on the `accepted` frame of the turn this
+   * message becomes — for a client that is subscribed to the child's stream.
+   * It is sent regardless, because the correlation is the server's to offer and
+   * a client that omits it can never gain the echo later.
+   */
+  async resumeSubagent(
+    subagentId: string,
+    message: string,
+    requestId?: string,
+  ): Promise<SubagentResumeResult> {
+    return this.requestSubagentAction<SubagentResumeResult>(
+      `/subagents/${encodeURIComponent(subagentId)}/resume`,
+      { message, ...(requestId !== undefined ? { requestId } : {}) },
+    );
+  }
+
+  /**
+   * POST a sub-agent action, turning HTTP 409 into `{ok:false, reason}`.
+   *
+   * Only 409. A 400 is a malformed request this client built (blank message,
+   * over-long correlation id) and a 404 is an id that names nothing — neither
+   * is something to show a user as a refusal, and both should reach a
+   * developer as the thrown `Management API error` every other method throws.
+   *
+   * The 409 body is the typed `MobileApiError` envelope, so the sentence is in
+   * `error`. A non-JSON body (a proxy page, a truncated response) falls back to
+   * the raw text rather than throwing a `SyntaxError` from the catch handler.
+   */
+  private async requestSubagentAction<T extends { ok: false; reason: string } | { ok: true }>(
+    path: string,
+    body: unknown,
+  ): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: 'POST',
+      headers: this.headers(body !== undefined),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+
+    if (response.status === 409) {
+      const text = await response.text();
+      let reason = text.trim();
+      try {
+        const parsed = JSON.parse(text) as { error?: unknown };
+        if (typeof parsed.error === 'string' && parsed.error.length > 0) reason = parsed.error;
+      } catch {
+        // Non-JSON body: the raw text is the best sentence available.
+      }
+      return { ok: false, reason: reason || 'the sub-agent refused this action (409)' } as T;
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Management API error ${response.status}: ${text}`);
+    }
+
+    return response.json() as Promise<T>;
   }
 }

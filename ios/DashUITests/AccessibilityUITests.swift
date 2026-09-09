@@ -86,6 +86,15 @@ final class AccessibilityUITests: DashUITestCase {
     send.tap()
 
     XCTAssertTrue(app.staticTexts["Reconnecting"].waitForExistence(timeout: 5))
+    // Task D5: the sub-agent row's disclosure is state, not animation timing —
+    // it must open under reduce-motion exactly as it does without it
+    // (§8.6). `withAnimation(reduceMotion ? nil : .snappy)` is the mechanism;
+    // this is the assertion that it did not become "animate or nothing".
+    element("chat.subagent.ui-subagent.header", in: app).tap()
+    XCTAssertTrue(element("chat.subagent.ui-subagent.tool.ui-tool", in: app).exists)
+    XCTAssertEqual(
+      element("chat.subagent.ui-subagent", in: app).label, "Agent researcher, Running")
+
     XCTAssertEqual(
       element("chat.final.response", in: app, timeout: 8).label, "Recovered exactly once.")
   }
@@ -107,8 +116,12 @@ final class AccessibilityUITests: DashUITestCase {
     XCTAssertFalse(app.descendants(matching: .any)["chat.final.response"].exists)
     XCTAssertTrue(element("chat.question.ui-question", in: app).buttons["Ship it"].isEnabled)
     XCTAssertEqual(element("chat.tool.ui-tool", in: app).label, "Tool Search, Tool succeeded")
+    // Renamed in task D4 with the sub-agent row: `chat.worker.<runId+workerId>`
+    // → `chat.subagent.<subagentId>` (sub-agents design §8.6). The scenario
+    // emits both event families for one child, and this is the canonical
+    // family's type and status.
     XCTAssertEqual(
-      element("chat.worker.ui-worker", in: app).label, "Worker researcher, Worker running")
+      element("chat.subagent.ui-subagent", in: app).label, "Agent researcher, Running")
 
     let final = element("chat.final.response", in: app, timeout: 8)
     XCTAssertEqual(final.label, "Recovered exactly once.")

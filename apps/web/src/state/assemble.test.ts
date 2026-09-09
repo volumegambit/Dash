@@ -30,6 +30,9 @@ const error = readFixture<MobileWsServerFrame>('chat-error.json');
 // The full happy-path turn: accepted -> event -> event -> event -> done.
 // Real fixture, format: jsonl, schema: MobileWsServerFrame (Task 8's manifest).
 const stream = readJsonl<MobileWsServerFrame>('chat-stream.jsonl');
+// A server-initiated turn: the gateway started it to deliver a background
+// sub-agent's completion notification (sub-agents design 7.3/7.6).
+const acceptedNotification = readFixture<MobileWsServerFrame>('chat-accepted-notification.json');
 
 describe('applyServerFrame', () => {
   describe('accepted', () => {
@@ -183,7 +186,148 @@ describe('applyServerFrame', () => {
       expect(assistantMessages).toHaveLength(1);
       expect(assistantMessages[0].status).toBe('completed'); // not stuck at 'streaming'
       expect(assistantMessages[0].id).toBe('server-assistant-1');
+      // The REST row's `partial ` is the server's mid-turn snapshot; this
+      // client's live stream is the better copy and MUST win. This is the
+      // exemption `keepExistingContent`'s `existing.status !== 'streaming'`
+      // conjunct exists for — without it the row keeps `partial ` forever,
+      // marked `completed`.
+      expect(assistantMessages[0].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'Ready ' }],
+      });
       expect(t.messages[0]).toBe(userRow); // untouched
+    });
+
+    /**
+     * Fix round 4, ruling 1 guard 2 — a PRE-EXISTING race, independent of the
+     * `fetchChildTranscript` clear that guard 1 adds.
+     *
+     * A REST read (reconnect replay, or a child re-expansion) can land the
+     * server's FINALIZED assistant row while this client holds no `pending`
+     * for that turn — it never saw the `accepted`, or the turn finished
+     * during the fetch. The turn's `done` then arrives anyway: `pending`
+     * falls back to `fallbackPending`, `finalizeAssistantMessage` matches the
+     * REST row by `turnId`, and its correct, complete content is overwritten
+     * with an EMPTY stream. The user's reply is blanked.
+     */
+    it('does not blank a finalized assistant row when a late done arrives with nothing streamed', () => {
+      const turnId = accepted.type === 'accepted' ? accepted.id : '';
+      const restRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId,
+        ordinal: 2,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'the whole reply' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      // No `pending`, no `streaming`: exactly the state a REST-only read leaves.
+      const t = applyServerFrame({ messages: [restRow], streaming: null }, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].content).toEqual(restRow.content);
+      expect(t.messages[0].status).toBe('completed');
+      expect(t.streaming).toBeNull();
+    });
+
+    /**
+     * The straggler variant of the same race: one late `event` frame beats the
+     * `done`, so the stream is no longer empty — but it holds a single
+     * fragment of a reply the server has already finalized in full. Keyed off
+     * the fallback path plus the row's own non-`streaming` status, so the
+     * mid-turn-open case above (whose REST row IS `status: 'streaming'`) is
+     * untouched and still gets its content replaced.
+     */
+    it('does not replace a server-finalized row with a straggler event that arrives after it', () => {
+      const turnId = accepted.type === 'accepted' ? accepted.id : '';
+      const restRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId,
+        ordinal: 2,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'the whole reply' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      let t = applyServerFrame({ messages: [restRow], streaming: null }, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].content).toEqual(restRow.content);
+      expect(t.streaming).toBeNull();
+    });
+
+    /**
+     * The confinement half of that guard: arm 2 is gated on the FALLBACK path
+     * so it can never fire on a turn this client actually watched. Here the
+     * real `accepted` arrives, so `pending.fallback` is false and the stream
+     * is authoritative however the matched row got into `messages` — a REST
+     * read that landed a copy of the row mid-turn does not get to freeze it.
+     * Drop the `fallback` conjunct and this row keeps the REST copy instead.
+     */
+    it('replaces the matched row from a real accepted-driven turn, off the fallback path', () => {
+      const restRow: ConversationMessage = {
+        id: accepted.type === 'accepted' ? accepted.assistantMessageId : '',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId: accepted.type === 'accepted' ? accepted.id : '',
+        ordinal: 2,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events: [{ type: 'text_delta', text: 'a stale copy' }] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      let t = applyServerFrame({ messages: [restRow], streaming: null }, accepted);
+      t = applyServerFrame(t, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].status).toBe('completed');
+      expect(t.messages[0].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'Ready ' }],
+      });
+    });
+
+    /**
+     * A GUARD AGAINST A FUTURE CALLER, not a live path: today an `interrupted`
+     * row's turn emits no further frames, so nothing reaches this shape. It is
+     * pinned because the two guards above are written to PRESERVE content, and
+     * the row here has none to preserve — an empty, non-`streaming` row on the
+     * fallback path satisfies arm 2 on its face. Without `keepExistingContent`'s
+     * `held.length === 0` early return the empty content wins over a real
+     * stream and the user gets a blank bubble: the exact harm the function
+     * exists to prevent, inflicted by the function itself.
+     */
+    it('replaces an EMPTY non-streaming row rather than keeping its blank content', () => {
+      const emptyRow: ConversationMessage = {
+        id: 'server-assistant-1',
+        conversationId: '018f0f4a-5c42-7a8b-9c01-1234567890ab',
+        turnId: accepted.type === 'accepted' ? accepted.id : '',
+        ordinal: 2,
+        role: 'assistant',
+        status: 'interrupted',
+        content: { type: 'assistant', events: [] },
+        createdAt: '2026-07-12T00:00:02.000Z',
+        updatedAt: '2026-07-12T00:00:03.000Z',
+      };
+
+      // No `pending`: `event`/`done` take the fallback path and match by turnId.
+      let t = applyServerFrame({ messages: [emptyRow], streaming: null }, event);
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].content).toEqual({
+        type: 'assistant',
+        events: [{ type: 'text_delta', text: 'Ready ' }],
+      });
     });
   });
 
@@ -222,6 +366,34 @@ describe('applyServerFrame', () => {
       const result = applyServerFrame(t, null as unknown as MobileWsServerFrame);
 
       expect(result).toBe(t);
+    });
+  });
+
+  describe('origin (task C7, sub-agents design 7.6/8.5)', () => {
+    it("carries the accepted frame's origin onto the finalized assistant message", () => {
+      let t = applyServerFrame(emptyTranscript(), acceptedNotification);
+      expect(t.pending?.origin).toBe('notification');
+
+      t = applyServerFrame(t, {
+        type: 'done',
+        id: t.pending?.turnId ?? '',
+        conversationId: t.pending?.conversationId,
+        seq: 10,
+        outcome: 'completed',
+      });
+
+      expect(t.messages).toHaveLength(1);
+      expect(t.messages[0].origin).toBe('notification');
+    });
+
+    it("leaves origin absent for an ordinary turn, so a pre-origin gateway's turns look unchanged", () => {
+      let t = applyServerFrame(emptyTranscript(), accepted);
+      expect(t.pending?.origin).toBeUndefined();
+
+      t = applyServerFrame(t, done);
+
+      expect(t.messages).toHaveLength(1);
+      expect('origin' in t.messages[0]).toBe(false);
     });
   });
 

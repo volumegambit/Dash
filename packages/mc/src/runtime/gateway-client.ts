@@ -11,9 +11,11 @@ import type {
 /**
  * Per-agent swarm caps + gating. Mirror of the gateway's `AgentSwarmConfig`
  * (`apps/gateway/src/agent-registry.ts`). `enabled` gates whether the agent may
- * spawn workers at all; the numeric caps and `allowedModels` (when set) override
- * the gateway defaults. All fields optional — an omitted field falls back to the
- * gateway `swarm.defaults`.
+ * spawn workers at all and the numeric caps override the gateway defaults.
+ * `allowedModels` ADDS to what a worker may be given — the gateway's allowed
+ * set is the union of the orchestrator's model, its fallbacks and this list, so
+ * it cannot withhold the parent's model. All fields optional — an omitted field
+ * falls back to the gateway `swarm.defaults`.
  */
 export interface AgentSwarmConfig {
   enabled?: boolean;
@@ -22,6 +24,45 @@ export interface AgentSwarmConfig {
   maxSteersPerWorker?: number;
   maxRunSeconds?: number;
   allowedModels?: string[];
+}
+
+/**
+ * Per-agent sub-agent gating + caps. Mirror of the gateway's
+ * `AgentSubagentsConfig` (`apps/gateway/src/agent-registry.ts`), which
+ * SUPERSEDES the legacy `swarm` block.
+ *
+ * `enabled` unset is meaningful: the gateway reads
+ * `subagents?.enabled ?? swarm?.enabled ?? true`, so an agent registered before
+ * either block existed has sub-agents ON. A client that renders an unset value
+ * as OFF misreports the agent, and saving that view turns the feature off.
+ */
+export interface AgentSubagentsConfig {
+  enabled?: boolean;
+  delegation?: 'auto' | 'explicit';
+  allowedTypes?: string[];
+  allowedModels?: string[];
+  maxConcurrent?: number;
+  maxPerTurn?: number;
+  maxRunSeconds?: number;
+  maxDepth?: number;
+  /** Bare model name → model id, for a definition's `model:` or a per-call one. */
+  modelAliases?: Record<string, string>;
+}
+
+/**
+ * The gateway's own sub-agent gate, mirrored for the renderer:
+ * `subagents?.enabled ?? swarm?.enabled ?? true`
+ * (`apps/gateway/src/subagent-config.ts` `isSubagentsEnabled`).
+ *
+ * It lives here, next to the mirrored config, because reading only one of the
+ * two blocks has now been a defect twice in Mission Control: the Swarm card
+ * rendered every default agent as OFF, and the chat route hid the Sub-agents
+ * panel for the same population. `undefined` (no agent selected) is `false` —
+ * an absent agent is not an agent with the feature on.
+ */
+export function subagentsEnabledFor(config: GatewayAgent['config'] | undefined): boolean {
+  if (!config) return false;
+  return config.subagents?.enabled ?? config.swarm?.enabled ?? true;
 }
 
 export interface GatewayAgent {
@@ -51,6 +92,8 @@ export interface GatewayAgent {
     providers?: string[];
     /** Per-agent swarm caps + gating. See {@link AgentSwarmConfig}. */
     swarm?: AgentSwarmConfig;
+    /** Per-agent sub-agent gating + caps. See {@link AgentSubagentsConfig}. */
+    subagents?: AgentSubagentsConfig;
   };
   status: 'registered' | 'active' | 'disabled';
   registeredAt: string;

@@ -216,19 +216,24 @@ describe('isValidConversationId (chat-ws conversationId hardening)', () => {
 });
 
 describe('parseChatClientFrame', () => {
-  it.each(['chat-send.json', 'chat-resume.json', 'chat-answer.json', 'chat-cancel.json'])(
-    'accepts frozen client fixture %s and preserves unknown fields',
-    (name) => {
-      const value = { ...(fixture(name) as Record<string, unknown>), futureField: 'preserved' };
-      expect(parseChatClientFrame(value)).toEqual(value);
-    },
-  );
+  it.each([
+    'chat-send.json',
+    'chat-resume.json',
+    'chat-answer.json',
+    'chat-cancel.json',
+    'chat-subscribe.json',
+    'chat-unsubscribe.json',
+  ])('accepts frozen client fixture %s and preserves unknown fields', (name) => {
+    const value = { ...(fixture(name) as Record<string, unknown>), futureField: 'preserved' };
+    expect(parseChatClientFrame(value)).toEqual(value);
+  });
 
   it.each([
     'invalid/chat-send-missing-turn-id.json',
     'invalid/chat-resume-negative-seq.json',
     'invalid/chat-answer-missing-question-id.json',
     'invalid/chat-cancel-missing-id.json',
+    'invalid/chat-subscribe-missing-conversation-id.json',
   ])('rejects frozen invalid client fixture %s', (name) => {
     expect(parseChatClientFrame(fixture(name))).toBeNull();
   });
@@ -314,6 +319,26 @@ describe('parseChatClientFrame', () => {
     expect(
       parseChatClientFrame({ ...base, images: [{ mediaType: 'image/png', data: 'not base64' }] }),
     ).toBeNull();
+  });
+
+  it('rejects subscription frames that omit or corrupt the conversation identity', () => {
+    for (const type of ['subscribe', 'unsubscribe'] as const) {
+      expect(parseChatClientFrame({ type, id: 'sub-01', agentId: 'agent-01' })).toBeNull();
+      expect(parseChatClientFrame({ type, id: 'sub-01', conversationId: 'conversation-01' })).toBe(
+        null,
+      );
+      expect(
+        parseChatClientFrame({
+          type,
+          id: 'sub-01',
+          agentId: 'agent-01',
+          conversationId: '../escape',
+        }),
+      ).toBeNull();
+      expect(
+        parseChatClientFrame({ type, agentId: 'agent-01', conversationId: 'conversation-01' }),
+      ).toBeNull();
+    }
   });
 
   it('preserves permissive legacy image handling for non-resumable messages', () => {
@@ -413,17 +438,41 @@ function makeResumableHub() {
   const cancelAgent = vi.fn<ResumableChatHub['cancelAgent']>().mockResolvedValue(undefined);
   const allowAgent = vi.fn<ResumableChatHub['allowAgent']>();
   const stop = vi.fn<ResumableChatHub['stop']>().mockResolvedValue(undefined);
+  const subscribe = vi.fn<ResumableChatHub['subscribe']>();
+  const unsubscribe = vi.fn<ResumableChatHub['unsubscribe']>();
+  const startSystemTurn = vi
+    .fn<ResumableChatHub['startSystemTurn']>()
+    .mockReturnValue({ turnId: 'turn-system' });
+  const addObserver = vi.fn<ResumableChatHub['addObserver']>().mockReturnValue(() => {});
   const hub: ResumableChatHub = {
     start,
     resume,
     answer,
     cancel,
     detach,
+    subscribe,
+    unsubscribe,
+    startSystemTurn,
+    addObserver,
     cancelAgent,
     allowAgent,
     stop,
   };
-  return { hub, start, resume, answer, cancel, detach, cancelAgent, allowAgent, stop };
+  return {
+    hub,
+    start,
+    resume,
+    answer,
+    cancel,
+    detach,
+    subscribe,
+    unsubscribe,
+    startSystemTurn,
+    addObserver,
+    cancelAgent,
+    allowAgent,
+    stop,
+  };
 }
 
 function makeSocket(): TestSocket {
@@ -687,6 +736,53 @@ describe('mountChatWs protocol ownership', () => {
     }
   });
 
+  it('broadcasts transient subagent_progress live but never appends it to the log', async () => {
+    const append = vi.fn(() => 7);
+    const eventLogStore = { append } as unknown as EventLogStore;
+    const harness = makeWsHarness({
+      eventLogStore,
+      streamFactory: () =>
+        makeScriptedStream([
+          {
+            type: 'subagent_progress',
+            subagentId: 'w-1',
+            status: 'running',
+            toolCallCount: 1,
+            elapsedMs: 12,
+          },
+          { type: 'text_delta', text: 'durable' },
+        ]),
+    });
+    const connection = harness.connect();
+
+    dispatch(connection, { ...RESUMABLE_MESSAGE, resumable: false });
+
+    await vi.waitFor(() =>
+      expect(sentFrames(connection.socket)).toContainEqual(
+        expect.objectContaining({ type: 'done' }),
+      ),
+    );
+    // Live delivery is unaffected — but the transient frame carries no seq
+    // because nothing was persisted for it.
+    const frames = sentFrames(connection.socket);
+    const progress = frames.find(
+      (frame) => frame.type === 'event' && frame.event.type === 'subagent_progress',
+    );
+    expect(progress).toBeDefined();
+    expect((progress as { seq?: number }).seq).toBeUndefined();
+    expect(
+      frames.some((frame) => frame.type === 'event' && frame.event.type === 'text_delta'),
+    ).toBe(true);
+
+    const payloads = append.mock.calls.map(
+      (call) => (call as unknown[])[3] as { type: string; event?: AgentEvent },
+    );
+    expect(payloads.some((p) => p.type === 'event' && p.event?.type === 'subagent_progress')).toBe(
+      false,
+    );
+    expect(payloads.some((p) => p.type === 'event' && p.event?.type === 'text_delta')).toBe(true);
+  });
+
   it('preserves the /ws/chat token route and unauthorized 4001 close', () => {
     const harness = makeWsHarness({ token: 'secret' });
     expect(harness.app.routes).toEqual(
@@ -848,6 +944,39 @@ describe('mountChatWs protocol ownership', () => {
     expect(harness.hub.cancel).not.toHaveBeenCalled();
     expect(harness.agents.cancel).not.toHaveBeenCalled();
     expect(harness.swarmCancel).not.toHaveBeenCalled();
+  });
+
+  it('routes subscribe and unsubscribe frames to the hub on the connection sink', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+    connection.handlers.onOpen?.({}, connection.socket);
+
+    dispatch(connection, {
+      type: 'subscribe',
+      id: 'sub-01',
+      agentId: 'agent-01',
+      conversationId: 'conversation-01',
+    });
+    dispatch(connection, {
+      type: 'unsubscribe',
+      id: 'sub-02',
+      agentId: 'agent-01',
+      conversationId: 'conversation-01',
+    });
+
+    expect(harness.hub.subscribe).toHaveBeenCalledOnce();
+    expect(harness.hub.unsubscribe).toHaveBeenCalledOnce();
+    expect(harness.hub.subscribe.mock.calls[0]?.slice(0, 2)).toEqual([
+      'agent-01',
+      'conversation-01',
+    ]);
+    const sink = harness.hub.subscribe.mock.calls[0]?.[2];
+    expect(harness.hub.unsubscribe.mock.calls[0]?.[2]).toBe(sink);
+    // Subscription bookkeeping is silent: no frame is written back.
+    expect(sentFrames(connection.socket)).toEqual([]);
+
+    connection.handlers.onClose?.({}, connection.socket);
+    expect(harness.hub.detach).toHaveBeenCalledWith(sink);
   });
 
   it('maps an authenticated synthetic resume probe to a nonsequenced not-found frame', () => {

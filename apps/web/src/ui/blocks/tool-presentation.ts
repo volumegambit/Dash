@@ -90,6 +90,11 @@ const TOOL_LABELS: Record<string, string> = {
   task: 'Task',
   load_skill: 'Load Skill',
   create_skill: 'Create Skill',
+  // Sub-agent tools (design §8.7). `agent` would already capitalize to
+  // 'Agent' via the fallback below; it is listed explicitly so the mapping is
+  // stated in one place on both platforms rather than falling out of a rule.
+  agent: 'Agent',
+  send_message: 'Send Message',
 };
 
 /** Human-friendly label for a tool name; unknown tools fall back to their
@@ -112,6 +117,9 @@ const PRIMARY_KEYS: Record<string, string[]> = {
   task: ['todos'],
   load_skill: ['name'],
   create_skill: ['name'],
+  // The `agent` tool's collapsed header shows WHAT the child was asked to do,
+  // not which type ran it — `subagent_type` is already the row's mono label.
+  agent: ['description'],
 };
 
 function isPathLike(s: string): boolean {

@@ -155,7 +155,9 @@ describe('createSkillReviewService', () => {
   });
 
   it('tells the reviewer which skills were loaded during the turn', async () => {
-    const extract = vi.fn(async () => []);
+    // Typed against the real option so `mock.calls[0][0]` is the review input
+    // rather than `never` — the assertions below read fields off it.
+    const extract = vi.fn(async (_input: Parameters<SkillReviewOptions['extract']>[0]) => []);
     const service = createSkillReviewService({
       conversations: fakeConversations(turnWith(5, ['dash-dev'])),
       managedSkillsDir: () => dir,
@@ -175,7 +177,9 @@ describe('createSkillReviewService', () => {
     service.schedule({ agentId: 'a', conversationId: 'c', turnId: 't1' });
     await service.flush();
 
-    const extract = vi.fn(async () => []);
+    // Typed against the real option so `mock.calls[0][0]` is the review input
+    // rather than `never` — the assertions below read fields off it.
+    const extract = vi.fn(async (_input: Parameters<SkillReviewOptions['extract']>[0]) => []);
     const second = createSkillReviewService({
       conversations: fakeConversations(turnWith(5)),
       managedSkillsDir: () => dir,

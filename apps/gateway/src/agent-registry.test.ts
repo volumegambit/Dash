@@ -282,7 +282,8 @@ describe('AgentRegistry (file-backed)', () => {
         plugins: ['alpha'],
       });
       reg.update(entry.id, { plugins: null });
-      const config = reg.get(entry.id)?.config ?? {};
+      const config = reg.get(entry.id)?.config;
+      if (!config) throw new Error('expected the agent to still be registered');
       expect(config.plugins).toBeUndefined();
       // The key must be genuinely absent, not present-and-null.
       expect('plugins' in config).toBe(false);
@@ -351,7 +352,8 @@ describe('AgentRegistry (file-backed)', () => {
         providers: ['anthropic'],
       });
       reg.update(entry.id, { providers: null });
-      const config = reg.get(entry.id)?.config ?? {};
+      const config = reg.get(entry.id)?.config;
+      if (!config) throw new Error('expected the agent to still be registered');
       expect(config.providers).toBeUndefined();
       // The key must be genuinely absent, not present-and-null.
       expect('providers' in config).toBe(false);
@@ -369,7 +371,8 @@ describe('AgentRegistry (file-backed)', () => {
         providers: ['anthropic'],
       });
       reg.update(entry.id, { providers: null });
-      const config = reg.get(entry.id)?.config ?? {};
+      const config = reg.get(entry.id)?.config;
+      if (!config) throw new Error('expected the agent to still be registered');
       expect('providers' in config).toBe(false);
       expect(config.plugins).toEqual(['alpha']);
     });

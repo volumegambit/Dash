@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   ConversationMessage,
   ConversationPage,
@@ -56,6 +57,7 @@ function summary(overrides: Partial<ConversationSummary> = {}): ConversationSumm
     lastMessagePreview: null,
     createdAt: '2026-07-12T00:00:00.000Z',
     updatedAt: '2026-07-12T00:00:00.000Z',
+    kind: 'user',
     ...overrides,
   };
 }
@@ -92,6 +94,13 @@ class ScriptedChatSocket {
       throw new Error('ChatSocket: cannot send while the socket is not open');
     }
     this.sent.push(frame);
+  }
+
+  /** Frames excluding the `subscribe`/`unsubscribe` bookkeeping the store now
+   * sends on every connect and conversation switch (task C7) — this is the
+   * turn traffic a test means when it asserts on "what was sent". */
+  get turnFrames(): MobileWsClientFrame[] {
+    return this.sent.filter((f) => f.type !== 'subscribe' && f.type !== 'unsubscribe');
   }
 
   close(): void {
@@ -188,8 +197,8 @@ describe('ChatView', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -230,8 +239,8 @@ describe('ChatView', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     // Right after `accepted`, before any `event` frame: `streaming` is a
     // non-null empty-events shell (`assemble.ts`) — this is exactly the
@@ -280,8 +289,8 @@ describe('ChatView', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -428,22 +437,22 @@ describe('ChatView', () => {
         });
 
         if (testCase.web === 'send') {
-          await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+          await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
           expect(input.value).not.toContain('\n');
         } else if (testCase.web === 'newline' && testCase.mechanism?.web === 'native') {
           // The platform inserts the break, so there is nothing in the draft
           // to assert — a synthetic keydown performs no default action. What
           // IS assertable, and what actually broke on iOS, is that the
           // handler declined the key: nothing sent, default not prevented.
-          expect(sockets[0].sent).toHaveLength(0);
+          expect(sockets[0].turnFrames).toHaveLength(0);
           expect(notCancelled).toBe(true);
         } else if (testCase.web === 'newline') {
           await waitFor(() => expect(input.value).toContain('\n'));
-          expect(sockets[0].sent).toHaveLength(0);
+          expect(sockets[0].turnFrames).toHaveLength(0);
         } else {
           // `focus`: the handler must not touch the draft or submit.
           expect(input.value).toBe('draft');
-          expect(sockets[0].sent).toHaveLength(0);
+          expect(sockets[0].turnFrames).toHaveLength(0);
         }
       });
     }
@@ -459,7 +468,7 @@ describe('ChatView', () => {
 
     await waitFor(() => expect(input.value).toBe('first\n'));
     // The point of the change: it must not have sent.
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('splits at the caret on Shift+Tab rather than appending', async () => {
@@ -490,8 +499,8 @@ describe('ChatView', () => {
     fireEvent.change(input, { target: { value: 'hello there' } });
     fireEvent.click(screen.getByText('Send'));
 
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'hello there' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'hello there' });
     await waitFor(() => expect(input.value).toBe(''));
   });
 
@@ -784,11 +793,11 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.change(textarea, { target: { value: 'hello' } });
     fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
 
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'hello' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'hello' });
   });
 
   it('ignores Enter while an IME composition is in progress (isComposing, and the legacy keyCode 229 fallback)', async () => {
@@ -799,7 +808,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
     fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
 
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('autogrows the textarea by matching its scrollHeight on every keystroke', async () => {
@@ -822,8 +831,8 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -842,7 +851,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.click(stopButton);
     await waitFor(() =>
-      expect(sockets[0].sent).toContainEqual(
+      expect(sockets[0].turnFrames).toContainEqual(
         expect.objectContaining({ type: 'cancel', id: turnId }),
       ),
     );
@@ -934,7 +943,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'sent from A' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
     await waitFor(() =>
       expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe(''),
     );
@@ -1018,7 +1027,7 @@ describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remain
 
     const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
     expect(textarea.value).toBe(STARTER_PROMPTS[0]);
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('hides the greeting once the conversation has a message', async () => {
@@ -1034,13 +1043,13 @@ describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remain
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
     // A brand-new optimistic user message already makes `messages.length`
     // nonzero here, but assert the greeting is gone regardless — belt and
     // suspenders against a future change to how the optimistic send works.
     expect(screen.queryByTestId('chat-empty-state')).toBeNull();
 
-    const turnId = sockets[0].sent[0].id;
+    const turnId = sockets[0].turnFrames[0].id;
     act(() => {
       onFrames[0]({
         type: 'accepted',
@@ -1135,8 +1144,8 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     fireEvent.click(screen.getByLabelText('Retry sending this message'));
 
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Retry me' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'Retry me' });
     // The failed message is gone, replaced by the fresh optimistic send.
     await waitFor(() => expect(screen.queryByText('Failed to send')).toBeNull());
   });
@@ -1156,8 +1165,8 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
     fireEvent.change(editor, { target: { value: 'Edited version' } });
     fireEvent.keyDown(editor, { key: 'Enter' });
 
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({ type: 'message', text: 'Edited version' });
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({ type: 'message', text: 'Edited version' });
   });
 
   it('Edit & resend: Shift+Enter does not submit, Escape cancels back to the rendered bubble', async () => {
@@ -1172,12 +1181,12 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     fireEvent.change(editor, { target: { value: 'Original\nmore' } });
     fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true });
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
 
     fireEvent.keyDown(editor, { key: 'Escape' });
     expect(screen.queryByLabelText('Edit message')).toBeNull();
     expect(screen.getByText('Original')).toBeTruthy();
-    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].turnFrames).toHaveLength(0);
   });
 
   it('Edit & resend: the Resend button is disabled for empty/whitespace-only text', async () => {
@@ -1259,8 +1268,8 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
     // reachable via :focus-within) throughout the whole stream.
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'newer message' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -1279,7 +1288,7 @@ describe('ChatView message actions (chat-ux Phase 2 Task 4, audit #5)', () => {
 
     // A stray click can't reach a button that isn't rendered — the
     // regression this guards against.
-    expect(sockets[0].sent).toHaveLength(1);
+    expect(sockets[0].turnFrames).toHaveLength(1);
 
     act(() => {
       onFrames[0]({
@@ -1320,7 +1329,7 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
 
     await waitFor(() => expect(screen.getAllByTestId('chat-message')).toHaveLength(3));
     const rows = screen.getAllByTestId('chat-message');
@@ -1383,8 +1392,8 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
     const { sockets, onFrames } = await renderConnected();
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
     expect(screen.getAllByTestId('chat-message')[0].classList.contains('chat-message-enter')).toBe(
       true,
     );
@@ -1452,8 +1461,8 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
     expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    expect(sockets[0].sent[0]).toMatchObject({
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    expect(sockets[0].turnFrames[0]).toMatchObject({
       type: 'message',
       text: '',
       images: [{ mediaType: 'image/png', data: 'aGk=' }],
@@ -1668,8 +1677,8 @@ describe('ChatView message row memoization', () => {
 
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
     fireEvent.click(screen.getByText('Send'));
-    await waitFor(() => expect(sockets[0].sent).toHaveLength(1));
-    const turnId = sockets[0].sent[0].id;
+    await waitFor(() => expect(sockets[0].turnFrames).toHaveLength(1));
+    const turnId = sockets[0].turnFrames[0].id;
 
     act(() => {
       onFrames[0]({
@@ -1717,5 +1726,144 @@ describe('ChatView message row memoization', () => {
     // reference never changed — a memoized row must not have re-rendered
     // for it.
     expect(confirmedMessageRenderCount()).toBe(before);
+  });
+});
+
+/**
+ * Task C7 (sub-agents design 8.5): the user-side row of a server-initiated
+ * turn carries `origin: 'notification'` and renders as a compact system row,
+ * NOT a user bubble — its text is the `[SYSTEM NOTIFICATION …]` block the
+ * orchestrator was fed, which must never look like something the user typed
+ * (and must never be resendable).
+ */
+describe('ChatView notification rows (C7)', () => {
+  const NOTIFICATION_TEXT = [
+    '[SYSTEM NOTIFICATION - NOT USER INPUT]',
+    '',
+    '<task-notification>',
+    '<summary>Agent "Map gateway internals" finished</summary>',
+    '</task-notification>',
+  ].join('\n');
+
+  function notificationMessage(): ConversationMessage {
+    return message({
+      id: 'notif-user-1',
+      turnId: 'turn-notification-1',
+      role: 'user',
+      origin: 'notification',
+      content: { type: 'user', text: NOTIFICATION_TEXT },
+    });
+  }
+
+  it('renders the notification as a compact system row instead of a user bubble', async () => {
+    await renderConnected({ messages: [notificationMessage()] });
+
+    const row = screen.getByTestId('notification-row');
+    expect(row.textContent).toContain('Agent "Map gateway internals" finished');
+    expect(row.textContent).not.toContain('[SYSTEM NOTIFICATION - NOT USER INPUT]');
+    expect(screen.queryByTestId('chat-message')).toBeNull();
+  });
+
+  it('offers no edit/retry affordance on a notification row', async () => {
+    await renderConnected({ messages: [notificationMessage()] });
+
+    expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
+    expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+
+  it('still renders an ordinary user message as a bubble', async () => {
+    await renderConnected({
+      messages: [message({ content: { type: 'user', text: 'Ping' } })],
+    });
+
+    expect(screen.queryByTestId('notification-row')).toBeNull();
+    expect(screen.getByTestId('chat-message').getAttribute('data-role')).toBe('user');
+  });
+});
+
+/**
+ * Task D2, ruling 6 (sub-agents design 8.5): `origin: 'parent'` is NOT a
+ * notification. C7 left `isNotificationRow` true for it, which would collapse
+ * an orchestrator message inside a child transcript to the generic bell label
+ * and lose its text. §8.5 wants a distinct muted "from orchestrator" row.
+ */
+describe('ChatView orchestrator rows (D2)', () => {
+  function orchestratorMessage(): ConversationMessage {
+    return message({
+      id: 'parent-user-1',
+      turnId: 'turn-parent-1',
+      role: 'user',
+      origin: 'parent',
+      content: { type: 'user', text: 'Also check the relay handshake.' },
+    });
+  }
+
+  it('renders an orchestrator message as its own muted row, keeping its text', async () => {
+    await renderConnected({ messages: [orchestratorMessage()] });
+
+    const row = screen.getByTestId('orchestrator-row');
+    expect(row.textContent).toContain('from orchestrator');
+    expect(row.textContent).toContain('Also check the relay handshake.');
+    expect(screen.queryByTestId('notification-row')).toBeNull();
+    expect(screen.queryByTestId('chat-message')).toBeNull();
+  });
+
+  it('offers no edit/retry affordance on an orchestrator row', async () => {
+    await renderConnected({ messages: [orchestratorMessage()] });
+
+    expect(screen.queryByLabelText('Edit and resend this message')).toBeNull();
+    expect(screen.queryByLabelText('Retry sending this message')).toBeNull();
+  });
+});
+
+/**
+ * D2 on web — a notification turn drew a SECOND card for a child that had one.
+ *
+ * Fixed on Mission Control by `01eae2ed` and recorded there as affecting web
+ * and iOS too. `subagent-notification-frames.jsonl` is the captured stream
+ * that reddens it: one real conversation, an assistant turn that spawns a
+ * background `writer`, then the server-initiated notification turn its
+ * completion wakes. Both messages name the same child.
+ */
+describe('ChatView duplicate sub-agent cards (D2)', () => {
+  function capturedMessages(): ConversationMessage[] {
+    const path = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../contracts/mobile/v1/fixtures/subagent-notification-frames.jsonl',
+    );
+    const frames = readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map(
+        (line) => JSON.parse(line) as { type: string; id: string; event?: Record<string, unknown> },
+      );
+    const byTurn = new Map<string, Record<string, unknown>[]>();
+    for (const frame of frames) {
+      if (frame.type !== 'event' || !frame.event) continue;
+      byTurn.set(frame.id, [...(byTurn.get(frame.id) ?? []), frame.event]);
+    }
+    const turns = [...byTurn.entries()];
+    expect(turns).toHaveLength(2);
+    return turns.map(([turnId, events], index) =>
+      message({
+        id: `assistant-${index}`,
+        turnId,
+        ordinal: index + 1,
+        role: 'assistant',
+        status: 'completed',
+        content: { type: 'assistant', events } as ConversationMessage['content'],
+      }),
+    );
+  }
+
+  it('draws one card for a child the notification turn reports again', async () => {
+    await renderConnected({ messages: capturedMessages() });
+
+    const cards = [...document.querySelectorAll('[data-testid="subagent-block"]')];
+    expect(cards.map((c) => c.getAttribute('data-subagent-id'))).toEqual([
+      'sub_01M21PVS839FQA3STD22Z2BNKM',
+    ]);
+    // The merge keeps the LATER copy's data: the surviving card is terminal.
+    expect(cards[0].getAttribute('data-status')).toBe('done');
   });
 });

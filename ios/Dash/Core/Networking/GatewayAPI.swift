@@ -216,6 +216,52 @@ actor GatewayAPI {
     )
   }
 
+  /// Children of a conversation (sub-agents design 7.7).
+  func subagents(conversationID: String) async throws -> SubagentListResponseDTO {
+    try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("conversations", conversationID, "subagents")
+      )
+    )
+  }
+
+  /// Cancel a child and, depth-first, every descendant this gateway still
+  /// holds a handle for (sub-agents design 7.7).
+  ///
+  /// No body, and no `resourceID`/`requestID` on the descriptor: the route is
+  /// idempotent in effect but not in reporting — a second call against a child
+  /// the first one terminalized is a 409 `validation_failed`, which is
+  /// deliberate (it tells a caller that raced the child's own finish which of
+  /// the two won) and is exactly why a blind retry would be wrong.
+  func stopSubagent(id: String) async throws -> SubagentStopResponseDTO {
+    try await transport.send(
+      GatewayRequest(method: .post, path: mobilePath("subagents", id, "stop"))
+    )
+  }
+
+  /// Type into a child (sub-agents design 7.7). See `SubagentResumeRequest`
+  /// for why this is a REST call and not a `message` frame.
+  ///
+  /// `resourceID`/`requestID` are deliberately left nil on the descriptor.
+  /// They exist so an ambiguous mutation timeout can be RETRIED or reconciled
+  /// against a persisted idempotency key, and a resume has neither property:
+  /// the gateway stores nothing under `requestId`, so replaying one would
+  /// simply start a second turn on the child. `HTTPTransport.transportError`
+  /// still classifies a timeout here as `mutationOutcomeUnknown`, with both
+  /// fields nil — which is the honest answer, and the composer surfaces it
+  /// rather than retrying.
+  func resumeSubagent(
+    id: String,
+    message: String,
+    requestID: String?
+  ) async throws -> SubagentResumeResponseDTO {
+    try await transport.send(
+      GatewayRequest(method: .post, path: mobilePath("subagents", id, "resume")),
+      body: SubagentResumeRequest(message: message, requestId: requestID)
+    )
+  }
+
   private func validate(limit: Int) throws {
     guard (1...100).contains(limit) else {
       throw GatewayError.validation("limit must be between 1 and 100")

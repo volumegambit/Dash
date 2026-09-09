@@ -212,6 +212,39 @@ describe('swarmOverridesFromEnv', () => {
     );
   });
 
+  it('reads the SUBAGENTS_* aliases, which win over their SWARM_* equivalents', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SUBAGENTS_MAX_CONCURRENT_GLOBAL: '20',
+      SUBAGENTS_MAX_CONCURRENT: '3',
+      SUBAGENTS_MAX_PER_TURN: '12',
+      SUBAGENTS_MAX_RUN_SECONDS: '600',
+    });
+    expect(overrides).toEqual({
+      maxConcurrentWorkersGlobal: 20,
+      defaults: { maxConcurrentWorkers: 3, maxWorkersPerRun: 12, maxRunSeconds: 600 },
+    });
+    expect(warnings).toEqual([]);
+
+    // Both set → SUBAGENTS wins; a SWARM-only cap is still read.
+    expect(
+      swarmOverridesFromEnv({
+        SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: '32',
+        SUBAGENTS_MAX_CONCURRENT_GLOBAL: '20',
+        SWARM_DEFAULT_MAX_STEERS_PER_WORKER: '7',
+      }).overrides,
+    ).toEqual({ maxConcurrentWorkersGlobal: 20, defaults: { maxSteersPerWorker: 7 } });
+  });
+
+  it('leaves the SWARM_* value in place when its SUBAGENTS_* alias is invalid', () => {
+    const { overrides, warnings } = swarmOverridesFromEnv({
+      SWARM_DEFAULT_MAX_RUN_SECONDS: '900',
+      SUBAGENTS_MAX_RUN_SECONDS: 'nope',
+    });
+    expect(overrides).toEqual({ defaults: { maxRunSeconds: 900 } });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('SUBAGENTS_MAX_RUN_SECONDS');
+  });
+
   it('rejects non-numeric values with a warning naming the variable', () => {
     const { overrides, warnings } = swarmOverridesFromEnv({
       SWARM_MAX_CONCURRENT_WORKERS_GLOBAL: 'lots',

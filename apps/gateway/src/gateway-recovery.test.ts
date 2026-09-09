@@ -5,26 +5,50 @@ import type { EventLogStore } from './event-log-store.js';
 import { recoverGatewayTurns } from './gateway-recovery.js';
 
 describe('recoverGatewayTurns', () => {
-  it('repairs swarm state before canonical conversation leases and returns both results', () => {
+  it('orders the three passes: parent tails, generic leases, then child notifications', () => {
+    // The order is load-bearing. The tail pass appends `subagent_finished`, so
+    // it MUST precede the generic pass that writes the terminal marker — an
+    // event after that marker leaves the log non-terminal and the conversation
+    // comes back "interrupted" on every boot. The child pass MUST follow it,
+    // because the generic pass is what sets `subagent_status = 'interrupted'`.
     const calls: string[] = [];
     const eventLog = {
       listInterrupted: vi.fn(() => {
-        calls.push('swarm');
+        calls.push('tails');
         return [];
       }),
     } as unknown as EventLogStore;
     const conversations = {
       recoverInterruptedTurns: vi.fn(() => {
-        calls.push('conversation');
-        return { conversationsInterrupted: 2, terminalsAppended: 1 };
+        calls.push('conversations');
+        return { conversationsInterrupted: 2, terminalsAppended: 1, subagentsInterrupted: 3 };
       }),
-    } as Pick<ConversationService, 'recoverInterruptedTurns'>;
+      listInterruptedSubagents: vi.fn(() => {
+        calls.push('children');
+        return [];
+      }),
+      updateSubagent: vi.fn(),
+      enqueueNotification: vi.fn(),
+      peekNotifications: vi.fn(() => []),
+      get: vi.fn(() => null),
+    } as unknown as ConversationService;
 
     expect(recoverGatewayTurns({ eventLog, conversations })).toEqual({
-      swarm: { conversationsRepaired: 0, workersCancelled: 0 },
-      conversations: { conversationsInterrupted: 2, terminalsAppended: 1 },
+      subagents: {
+        conversationsRepaired: 0,
+        childrenTerminalized: 0,
+        notificationsQueued: 0,
+        pendingDelivery: [],
+      },
+      conversations: {
+        conversationsInterrupted: 2,
+        terminalsAppended: 1,
+        subagentsInterrupted: 3,
+      },
+      notifiedChildren: { childrenNotified: 0, pendingDelivery: [] },
+      pendingDelivery: [],
     });
-    expect(calls).toEqual(['swarm', 'conversation']);
+    expect(calls).toEqual(['tails', 'conversations', 'children']);
   });
 });
 
@@ -39,6 +63,13 @@ describe('gateway conversation composition', () => {
     expect(source).toContain('autoTitle: conversationAutoTitle');
     expect(source).toContain('recoverGatewayTurns({');
     expect(source).not.toContain('recoverInterruptedSwarmTurns({');
+    expect(source).not.toContain('restoreFinalizedRun');
+    // §7.5: what recovery queued has to be DELIVERED once the hub exists.
+    expect(source).toContain('recoveredNotificationTargets');
+    expect(source).toContain('deliverPending(target.agentId, target.conversationId)');
+    // A throw inside recovery must not take boot down (the child sweep is one
+    // unguarded UPDATE inside its transaction).
+    expect(source).toContain('[recovery] boot recovery failed');
 
     const managementMount = source.slice(
       source.indexOf('createGatewayManagementApp({'),

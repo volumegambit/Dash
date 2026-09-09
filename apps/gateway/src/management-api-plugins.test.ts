@@ -12,6 +12,8 @@ import type { ChannelRegistry } from './channel-registry.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus, type GatewayEvent } from './event-bus.js';
 import type { DynamicGateway } from './gateway.js';
+import type { JsonBody } from './json-body.test-helpers.js';
+import type { GatewayManagementOptions } from './management-api.js';
 import { createGatewayManagementApp, mapPluginError } from './management-api.js';
 import type { ModelsStore } from './models-store.js';
 import type { PluginStatusRecord, PluginWiringState } from './plugins-wiring.js';
@@ -81,6 +83,9 @@ function stubModelsStore(): ModelsStore {
 // --- Wiring-state builders ---
 
 function record(over: Partial<PluginStatusRecord> & { name: string }): PluginStatusRecord {
+  // A builder over Partial<> cannot prove the record's REQUIRED optional-typed
+  // fields (builtin, failure, …) are present; the spread supplies whatever the
+  // case under test needs.
   return {
     status: 'loaded',
     enabled: true,
@@ -89,13 +94,14 @@ function record(over: Partial<PluginStatusRecord> & { name: string }): PluginSta
     activated: [],
     noop: [],
     ...over,
-  };
+  } as PluginStatusRecord;
 }
 
 function wiring(over: Partial<PluginWiringState> = {}): PluginWiringState {
   return {
     skillDirs: [],
     commandFiles: [],
+    agentDefFiles: [],
     hookEngine: { hasHooks: false } as unknown as PluginWiringState['hookEngine'],
     pluginModelCatalog: {} as unknown as PluginWiringState['pluginModelCatalog'],
     mcpConfigs: [],
@@ -103,7 +109,8 @@ function wiring(over: Partial<PluginWiringState> = {}): PluginWiringState {
     droppedProviderCollisions: [],
     pluginRecords: {},
     ...over,
-  };
+    // The spread over Partial<> re-widens every required field to `| undefined`.
+  } as PluginWiringState;
 }
 
 // A PluginConfigStore stub backed by an in-memory map (so persistence is real,
@@ -163,7 +170,9 @@ function createApp(opts: AppOpts = {}) {
     reloadPlugins: opts.reloadPlugins,
     pluginsDir: opts.pluginsDir,
     dataDir: opts.dataDir,
-  });
+    // identity / conversationService / resumableChatHub are required by the app
+    // but unreachable from the /plugins routes this file exercises.
+  } as GatewayManagementOptions);
   return { app, events };
 }
 
@@ -205,10 +214,11 @@ describe('plugin management routes', () => {
         credentialStore: stubCredentialStore(),
         modelsStore: stubModelsStore(),
         token: 'test-token',
-      });
+        // Same omission as createApp(): the /plugins routes never read them.
+      } as GatewayManagementOptions);
       const res = await app.request('/plugins', { headers: AUTH });
       expect(res.status).toBe(500);
-      expect((await res.json()).error).toBe('plugins not configured');
+      expect(((await res.json()) as JsonBody).error).toBe('plugins not configured');
     });
   });
 
@@ -305,7 +315,7 @@ describe('plugin management routes', () => {
         body: JSON.stringify({ enabled: true }),
       });
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toMatchObject({ plugin: 'disco', note: 'config persisted; wiring unchanged' });
       expect(body.error).toContain('discovery exploded');
       // Config write already happened (documented risk); wiring untouched.
@@ -333,7 +343,7 @@ describe('plugin management routes', () => {
         body: JSON.stringify({ enabled: true }),
       });
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       // A real JSON body, not c.json(undefined).
       expect(body).toMatchObject({ plugin: 'disco' });
       expect(typeof body.error).toBe('string');
@@ -352,7 +362,7 @@ describe('plugin management routes', () => {
       });
       const res = await app.request('/plugins/disco', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toEqual({ ok: true });
       expect(body.path).toBeUndefined();
       expect(store.remove).toHaveBeenCalledWith('disco');
@@ -384,7 +394,7 @@ describe('plugin management routes', () => {
       const { app } = createApp({ configStore: store, reloadPlugins, pluginsDir: dir });
       const res = await app.request('/plugins/disco', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(true);
       expect(body.path).toBe(pluginDir);
       // Directory actually gone.
@@ -408,7 +418,7 @@ describe('plugin management routes', () => {
 
       const res = await app.request('/plugins/disco', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body).toMatchObject({ ok: true, removed: true, plugin: 'disco', path: pluginDir });
       expect(body.error).toContain('reload exploded');
       expect(typeof body.note).toBe('string');
@@ -439,7 +449,7 @@ describe('plugin management routes', () => {
       });
       // Entry still removed from the store, but the dir is NOT deleted.
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(true);
       expect(body.path).toBeUndefined();
       // The outside dir survives the realpath guard.
@@ -709,7 +719,7 @@ describe('plugin management routes', () => {
       });
       const res = await app.request('/plugins/dash-dev', { method: 'DELETE', headers: AUTH });
       expect(res.status).toBe(400);
-      expect((await res.json()).error).toMatch(/built-in plugins cannot be removed/);
+      expect(((await res.json()) as JsonBody).error).toMatch(/built-in plugins cannot be removed/);
       expect(store.remove).not.toHaveBeenCalled();
     });
 
@@ -756,7 +766,7 @@ describe('plugin management routes', () => {
           body: JSON.stringify({ source: collidingSourceDir }),
         });
         expect(res.status).toBe(409);
-        expect((await res.json()).error).toMatch(/built-in plugin name/);
+        expect(((await res.json()) as JsonBody).error).toMatch(/built-in plugin name/);
         // Rolled back: neither persisted nor left on disk under pluginsDir.
         expect(store.setEnabled).not.toHaveBeenCalled();
         await expect(stat(join(pluginsDir, 'dash-dev'))).rejects.toBeTruthy();
@@ -773,10 +783,10 @@ describe('plugin management routes', () => {
       const before = Date.now();
       const res = await app.request('/plugins/reload', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(true);
       // A real ISO timestamp, not a fixed/mocked value.
-      const parsed = Date.parse(body.reloadedAt);
+      const parsed = Date.parse(String(body.reloadedAt));
       expect(Number.isNaN(parsed)).toBe(false);
       expect(parsed).toBeGreaterThanOrEqual(before - 1000);
       expect(reloadPlugins).toHaveBeenCalledTimes(1);
@@ -788,7 +798,7 @@ describe('plugin management routes', () => {
       const { app, events } = createApp({ reloadPlugins });
       const res = await app.request('/plugins/reload', { method: 'POST', headers: AUTH });
       expect(res.status).toBe(500);
-      expect((await res.json()).error).toContain('kaboom');
+      expect(((await res.json()) as JsonBody).error).toContain('kaboom');
       expect(events.find((e) => e.type === 'plugin:reloaded')).toBeFalsy();
     });
   });

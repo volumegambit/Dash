@@ -92,6 +92,12 @@
       "valid": true
     },
     {
+      "file": "conversation-summary-subagent.json",
+      "document": "openapi",
+      "schema": "ConversationSummary",
+      "valid": true
+    },
+    {
       "file": "conversations-page.json",
       "document": "openapi",
       "schema": "ConversationPage",
@@ -146,6 +152,30 @@
       "valid": true
     },
     {
+      "file": "chat-subscribe.json",
+      "document": "chat-ws",
+      "schema": "ChatSubscribe",
+      "valid": true
+    },
+    {
+      "file": "chat-unsubscribe.json",
+      "document": "chat-ws",
+      "schema": "ChatUnsubscribe",
+      "valid": true
+    },
+    {
+      "file": "chat-accepted-notification.json",
+      "document": "chat-ws",
+      "schema": "ChatAccepted",
+      "valid": true
+    },
+    {
+      "file": "chat-accepted-subagent.json",
+      "document": "chat-ws",
+      "schema": "ChatAccepted",
+      "valid": true
+    },
+    {
       "file": "chat-event.json",
       "document": "chat-ws",
       "schema": "ChatEvent",
@@ -174,6 +204,41 @@
       "file": "chat-resume.jsonl",
       "document": "chat-ws",
       "schema": "MobileWsFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-events.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-parallel-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-background-pair-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-progress-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
+      "valid": true,
+      "format": "jsonl"
+    },
+    {
+      "file": "subagent-notification-frames.jsonl",
+      "document": "chat-ws",
+      "schema": "MobileWsServerFrame",
       "valid": true,
       "format": "jsonl"
     },
@@ -348,6 +413,12 @@
       "valid": false
     },
     {
+      "file": "invalid/conversation-summary-bad-subagent-status.json",
+      "document": "openapi",
+      "schema": "ConversationSummary",
+      "valid": false
+    },
+    {
       "file": "invalid/conversations-page-missing-items.json",
       "document": "openapi",
       "schema": "ConversationPage",
@@ -390,7 +461,19 @@
       "valid": false
     },
     {
+      "file": "invalid/chat-subscribe-missing-conversation-id.json",
+      "document": "chat-ws",
+      "schema": "ChatSubscribe",
+      "valid": false
+    },
+    {
       "file": "invalid/chat-accepted-missing-seq.json",
+      "document": "chat-ws",
+      "schema": "ChatAccepted",
+      "valid": false
+    },
+    {
+      "file": "invalid/chat-accepted-bad-origin.json",
       "document": "chat-ws",
       "schema": "ChatAccepted",
       "valid": false
@@ -448,6 +531,12 @@
       "document": "openapi",
       "schema": "MobileSkillList",
       "valid": false
+    },
+    {
+      "file": "subagents-list.json",
+      "document": "openapi",
+      "schema": "SubagentListResponse",
+      "valid": true
     }
   ]
 }

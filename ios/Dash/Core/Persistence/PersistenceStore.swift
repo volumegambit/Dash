@@ -409,6 +409,7 @@ actor PersistenceStore {
         record.contentData = content
         record.createdAt = value.createdAt
         record.updatedAt = value.updatedAt
+        record.originRaw = value.origin
       } else {
         modelContext.insert(
           MessageRecord(
@@ -422,7 +423,8 @@ actor PersistenceStore {
             statusRaw: value.status.rawValue,
             contentData: content,
             createdAt: value.createdAt,
-            updatedAt: value.updatedAt
+            updatedAt: value.updatedAt,
+            originRaw: value.origin
           )
         )
       }
@@ -466,7 +468,8 @@ actor PersistenceStore {
           from: record.contentData
         ),
         createdAt: record.createdAt,
-        updatedAt: record.updatedAt
+        updatedAt: record.updatedAt,
+        origin: record.originRaw
       )
     }
   }

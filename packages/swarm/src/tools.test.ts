@@ -1,9 +1,16 @@
 import type { AgentEvent } from '@dash/agent';
+import { createAgentTools, createChildSpawnSeam } from './agent-tool.js';
+import { ChildHandle } from './child-handle.js';
 import { SwarmCoordinator } from './coordinator.js';
 import type { AttachOptions } from './coordinator.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
+import { builtinSubagentTypes, createStaticResolver } from './subagent-types.js';
 import { createAskOrchestratorTool, createSwarmTools } from './tools.js';
-import type { SwarmExtraTool, WorkerBackend, WorkerFactory, WorkerSpec } from './types.js';
-import { WorkerHandle } from './worker-handle.js';
+import type { ChildSpec, ChildTurnDriver, SwarmExtraTool, WorkerSpec } from './types.js';
 
 const AGENT_ID = 'agent-1';
 const CONVO_ID = 'convo-1';
@@ -58,16 +65,28 @@ function baseAttach(overrides: Partial<AttachOptions> = {}): AttachOptions {
   };
 }
 
-/** Build a coordinator + live attachment + the orchestrator tools over it. */
-function setup(overrides: Partial<AttachOptions> = {}) {
-  const { factory, backends, specs } = makeFactory();
-  const coord = new SwarmCoordinator({ workerFactory: factory });
-  const attachment = coord.attach(baseAttach(overrides));
-  const tools = createSwarmTools({
+/**
+ * The §5.2 facade wiring every caller of `createSwarmTools` now supplies: the
+ * legacy four resolve `general-purpose` and its grant through the SAME seam
+ * `agent` uses, so they need the same inputs.
+ */
+function facadeOptions(coord: SwarmCoordinator) {
+  return {
     coordinator: coord,
     agentId: AGENT_ID,
     conversationId: () => CONVO_ID,
-  });
+    resolver: createStaticResolver(builtinSubagentTypes()),
+    backgroundMode: 'detached' as const,
+    parentModel: () => 'orch-model',
+  };
+}
+
+/** Build a coordinator + live attachment + the orchestrator tools over it. */
+function setup(overrides: Partial<AttachOptions> = {}) {
+  const { factory, backends, specs } = makeFactory();
+  const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+  const attachment = coord.attach(baseAttach(overrides));
+  const tools = createSwarmTools(facadeOptions(coord));
   const byName = new Map(tools.map((t) => [t.name, t]));
   return { coord, attachment, tools, byName, backends, specs };
 }
@@ -128,26 +147,27 @@ describe('createSwarmTools', () => {
       await waitForBackends(backends, 1);
     });
 
-    it('emits worker_spawned synchronously into the run channel (observed via getLiveRun)', async () => {
+    it('emits agent_spawned then subagent_started synchronously into the run channel', async () => {
       const { coord, byName } = setup();
       await tool(byName, 'spawn_worker').execute('call-1', { role: 'r', brief: 'b' });
       const run = coord.getLiveRun(AGENT_ID, CONVO_ID);
       if (!run) throw new Error('expected a live run');
-      // The synchronously-pushed worker_spawned event is the first channel item.
+      // `agent_spawned` is pushed by `spawnChild` before the handle starts and
+      // is still the first item; `subagent_started` follows synchronously from
+      // `ChildHandle.start()`. The `worker_spawned` mirror that used to lead
+      // was retired in D8.
       const first = await run.channel.take();
       expect(first.done).toBe(false);
-      expect((first.value as AgentEvent).type).toBe('worker_spawned');
+      expect((first.value as AgentEvent).type).toBe('agent_spawned');
+      const second = await run.channel.take();
+      expect((second.value as AgentEvent).type).toBe('subagent_started');
     });
 
     it('throws when a per-run cap is exceeded (maxWorkersPerRun)', async () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
       coord.attach(baseAttach({ caps: { maxWorkersPerRun: 1 } }));
-      const tools = createSwarmTools({
-        coordinator: coord,
-        agentId: AGENT_ID,
-        conversationId: () => CONVO_ID,
-      });
+      const tools = createSwarmTools(facadeOptions(coord));
       const spawn = tools.find((t) => t.name === 'spawn_worker') as SwarmExtraTool;
       await spawn.execute('c1', { role: 'r1', brief: 'b1' });
       await expect(spawn.execute('c2', { role: 'r2', brief: 'b2' })).rejects.toThrow(/limit/);
@@ -155,16 +175,217 @@ describe('createSwarmTools', () => {
 
     it('throws when the swarm turn is closed (no live attachment)', async () => {
       const { factory } = makeFactory();
-      const coord = new SwarmCoordinator({ workerFactory: factory });
-      const tools = createSwarmTools({
-        coordinator: coord,
-        agentId: AGENT_ID,
-        conversationId: () => CONVO_ID,
-      });
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      const tools = createSwarmTools(facadeOptions(coord));
       const spawn = tools.find((t) => t.name === 'spawn_worker') as SwarmExtraTool;
       await expect(spawn.execute('c1', { role: 'r', brief: 'b' })).rejects.toThrow(
         /swarm turn is closed/,
       );
+    });
+  });
+
+  /**
+   * Design §5.2: the legacy four are FACADES over the `agent` machinery —
+   * `spawn_worker` = `agent(subagent_type: general-purpose, tools: <subset>,
+   * run_in_background: true)` with the role as `name` and the brief as
+   * `prompt`; `send_to_worker` = `send_message`. Before D8 they called the
+   * coordinator directly with a raw `{role, brief, tools, model}`.
+   */
+  describe('§5.2 facades', () => {
+    /** Wait until the driver has been handed `n` child specs. */
+    async function waitForSpecs(specs: WorkerSpec[], n: number): Promise<void> {
+      const deadline = Date.now() + 1000;
+      while (specs.length < n) {
+        if (Date.now() > deadline) throw new Error(`only ${specs.length}/${n} specs appeared`);
+        await new Promise((r) => setTimeout(r, 1));
+      }
+    }
+
+    it('spawn_worker resolves the general-purpose DEFINITION: type, prompt, name, description', async () => {
+      const { byName, specs } = setup();
+      await tool(byName, 'spawn_worker').execute('c1', {
+        role: 'researcher',
+        brief: 'investigate the auth flow',
+      });
+      await waitForSpecs(specs, 1);
+      const spec = specs[0];
+      expect(spec.subagentType).toBe('general-purpose');
+      expect(spec.name).toBe('researcher');
+      expect(spec.description).toBe('researcher');
+      expect(spec.brief).toBe('investigate the auth flow');
+      // The definition body, which the pre-D8 raw spawn never carried.
+      expect(spec.systemPrompt).toBe(
+        builtinSubagentTypes().find((t) => t.name === 'general-purpose')?.systemPrompt,
+      );
+    });
+
+    it('spawn_worker runs the child in the BACKGROUND (run_in_background: true)', async () => {
+      const { byName, specs } = setup();
+      await tool(byName, 'spawn_worker').execute('c1', { role: 'r', brief: 'b' });
+      await waitForSpecs(specs, 1);
+      expect(specs[0].background).toBe(true);
+    });
+
+    it('spawn_worker with no tools still grants only the documented read-only default', async () => {
+      const { byName, specs } = setup();
+      await tool(byName, 'spawn_worker').execute('c1', { role: 'r', brief: 'b' });
+      await waitForSpecs(specs, 1);
+      // The parent holds bash/edit/write by default, and `general-purpose` has
+      // no `tools:` key (so its grant is the parent's WHOLE set) — routing the
+      // facade through it unqualified would hand a legacy worker `bash`.
+      expect(specs[0].tools).toEqual(['read', 'grep', 'find', 'ls']);
+      expect(specs[0].tools).not.toContain('bash');
+    });
+
+    it('spawn_worker passes an EXPLICIT subset through, and a tool the parent lacks still throws', async () => {
+      const { byName, specs } = setup();
+      await tool(byName, 'spawn_worker').execute('c1', {
+        role: 'r',
+        brief: 'b',
+        tools: ['read', 'bash'],
+      });
+      await waitForSpecs(specs, 1);
+      expect(specs[0].tools).toEqual(['read', 'bash']);
+
+      const narrow = setup({ orchestratorTools: ['read'] });
+      await expect(
+        tool(narrow.byName, 'spawn_worker').execute('c2', {
+          role: 'r',
+          brief: 'b',
+          tools: ['bash'],
+        }),
+      ).rejects.toThrow(/the orchestrator does not have it/);
+    });
+
+    it('spawn_worker CANNOT re-admit a tool the shadowing definition disallows', async () => {
+      // B3 lets a workspace or plugin definition shadow a built-in by name, and
+      // `definitionToType` maps `disallowed-tools:` through. The denial is
+      // subtracted while the grant is built, but the facade's explicit `tools`
+      // REPLACES that grant — so without the subtraction the operator's policy
+      // holds on the `agent` path and is ignored here.
+      const { factory, specs } = makeFactory();
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      coord.attach(baseAttach());
+      const shadowed = builtinSubagentTypes().map((t) =>
+        t.name === 'general-purpose' ? { ...t, disallowedTools: ['bash'] } : t,
+      );
+      const tools = createSwarmTools({
+        ...facadeOptions(coord),
+        resolver: createStaticResolver(shadowed),
+      });
+      const byName = new Map(tools.map((t) => [t.name, t]));
+      await tool(byName, 'spawn_worker').execute('c1', {
+        role: 'r',
+        brief: 'b',
+        tools: ['read', 'bash'],
+      });
+      await waitForSpecs(specs, 1);
+      expect(specs[0].tools).toEqual(['read']);
+      expect(specs[0].tools).not.toContain('bash');
+    });
+
+    it('spawn_worker keeps its legacy result shape (E1 assertion 8 reads it)', async () => {
+      const { byName } = setup();
+      const res = await tool(byName, 'spawn_worker').execute('c1', {
+        role: 'researcher',
+        brief: 'b',
+      });
+      const details = res.details as { workerId: string; runId: string; status: string };
+      expect(details.status).toBe('spawning');
+      expect(details.runId).toBeTruthy();
+      expect(res.content[0].text).toBe(`spawned ${details.workerId} (researcher)`);
+    });
+
+    it('a role that cannot be a `name` still spawns — it is simply not named', async () => {
+      const { byName, specs } = setup();
+      const res = await tool(byName, 'spawn_worker').execute('c1', {
+        role: 'test writer',
+        brief: 'b',
+      });
+      await waitForSpecs(specs, 1);
+      expect(specs[0].name).toBeUndefined();
+      expect(specs[0].role).toBe('test writer');
+      expect(res.content[0].text).toBe(
+        `spawned ${(res.details as { workerId: string }).workerId} (test writer)`,
+      );
+    });
+
+    it('send_to_worker RESUMES a finished child, as send_message does', async () => {
+      const { factory } = makeFactory();
+      const base = createFakeChildDriver(factory);
+      // Stands in for the gateway's rebuild-from-the-row: the coordinator drops
+      // a finished child's spec, so a resume always goes back to persistence.
+      const prepared = new Map<string, ChildSpec>();
+      const driver: ChildTurnDriver = {
+        ...base,
+        prepareChild: (spec) => {
+          prepared.set(spec.childConversationId, spec);
+          base.prepareChild(spec);
+        },
+      };
+      const coord = new SwarmCoordinator({
+        childDriver: driver,
+        reconstructChildSpec: (id) => {
+          const spec = prepared.get(id);
+          if (!spec) return undefined;
+          const { extraTools: _extraTools, ...rest } = spec;
+          return rest;
+        },
+      });
+      coord.attach(baseAttach());
+      const legacy = createSwarmTools(facadeOptions(coord));
+      const byName = new Map(legacy.map((t) => [t.name, t]));
+
+      const spawn = await tool(byName, 'spawn_worker').execute('c1', { role: 'r', brief: 'b' });
+      const workerId = (spawn.details as { workerId: string }).workerId;
+      await coord.cancelChild(workerId, 'done for now');
+
+      const res = await tool(byName, 'send_to_worker').execute('c2', {
+        workerId,
+        message: 'one more thing',
+      });
+      const details = res.details as { ok: boolean; status: string; workerId: string };
+      // Pre-D8 `coordinator.sendToWorker` could only steer a LIVE handle and
+      // answered `ok: false` for a terminal child; `send_message` resumes it.
+      expect(details.ok).toBe(true);
+      expect(details.workerId).toBe(workerId);
+      expect(res.content[0].text).toBe(`delivered to ${workerId} (${details.status})`);
+    });
+
+    it('a legacy straggler now DETACHES at turn end instead of being cancelled', async () => {
+      const { coord, byName, specs } = setup();
+      const spawn = await tool(byName, 'spawn_worker').execute('c1', { role: 'r', brief: 'b' });
+      const workerId = (spawn.details as { workerId: string }).workerId;
+      await waitForSpecs(specs, 1);
+      // Finalize the turn without ever calling wait_workers.
+      coord.stop();
+      // `SwarmRun.cancelAll` skips background children by design (§5.2: "you
+      // will be notified when it completes"), so the worker outlives the turn.
+      // Pre-D8 a legacy worker was FOREGROUND and this was `cancelled`.
+      const child = coord.childrenOf(CONVO_ID).find((c) => c.subagentId === workerId);
+      expect(child?.status).toBe('running');
+    });
+
+    it('the legacy tools and `agent` share ONE cap budget (one coordinator)', async () => {
+      const { factory } = makeFactory();
+      const coord = new SwarmCoordinator({ childDriver: createFakeChildDriver(factory) });
+      coord.attach(baseAttach({ caps: { maxWorkersPerRun: 1 } }));
+      const seam = createChildSpawnSeam(facadeOptions(coord));
+      const shared = { ...facadeOptions(coord), seam };
+      const legacy = createSwarmTools(shared);
+      const modern = createAgentTools(shared);
+      const agentTool = modern.find((t) => t.name === 'agent') as SwarmExtraTool;
+      await (legacy.find((t) => t.name === 'spawn_worker') as SwarmExtraTool).execute('c1', {
+        role: 'r',
+        brief: 'b',
+      });
+      await expect(
+        agentTool.execute('c2', {
+          prompt: 'p',
+          description: 'd',
+          run_in_background: true,
+        }),
+      ).rejects.toThrow(/limit/);
     });
   });
 
@@ -251,24 +472,28 @@ describe('createSwarmTools', () => {
   });
 });
 
-/** A minimal WorkerHandle harness for the worker-side ask_orchestrator tool. */
+/** A minimal ChildHandle harness for the child-side ask_orchestrator tool. */
 function makeHandle() {
   const emitted: AgentEvent[] = [];
   let terminalCalls = 0;
-  const handle = new WorkerHandle({
+  // Never started: the child stays 'spawning', which is all the question path
+  // needs (and keeps the driver out of it entirely).
+  const handle = new ChildHandle({
     spec: {
       agentId: AGENT_ID,
       agentName: 'Agent One',
       runId: 'run-1',
       workerId: 'w-1',
+      childConversationId: 'w-1',
+      parentConversationId: CONVO_ID,
+      parentTurnId: 'turn-1',
       role: 'worker',
       brief: 'do the thing',
       model: 'orch-model',
       workspace: '/tmp',
       tools: [],
     },
-    // Never resolves: the worker stays 'spawning' until start()/cancel drive it.
-    backendPromise: new Promise<WorkerBackend>(() => {}),
+    driver: createFakeChildDriver(() => Promise.resolve(new IdleBackend())),
     emit: (e) => emitted.push(e),
     maxSteers: 10,
     onTerminal: () => {

@@ -1,9 +1,25 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryStore } from './store.js';
 import { createForgetMemoryTool, createRecallMemoryTool, createSaveMemoryTool } from './tools.js';
+import type { MemoryToolDetails } from './tools.js';
+
+/**
+ * Every memory tool answers with exactly one text block, but the pi tool-result
+ * content type is a text/image union — narrow it once here rather than casting
+ * at each assertion. Throwing on anything else is the point: a tool that
+ * stopped answering with text should fail this file, not silently pass.
+ */
+function toolText(result: AgentToolResult<MemoryToolDetails>): string {
+  const first = result.content[0];
+  if (first === undefined || first.type !== 'text') {
+    throw new Error(`expected a text tool result, got ${first?.type ?? 'nothing'}`);
+  }
+  return first.text;
+}
 
 describe('memory tools', () => {
   let dir: string;
@@ -25,7 +41,7 @@ describe('memory tools', () => {
       type: 'user',
       content: 'UTC+8',
     });
-    expect(created.content[0].text).toBe('Saved memory "user-timezone" (created).');
+    expect(toolText(created)).toBe('Saved memory "user-timezone" (created).');
     expect(created.details).toEqual({
       memory: {
         name: 'user-timezone',
@@ -52,7 +68,7 @@ describe('memory tools', () => {
       type: 'user',
       content: 'c',
     });
-    expect(r.content[0].text.startsWith('Error:')).toBe(true);
+    expect(toolText(r).startsWith('Error:')).toBe(true);
     expect(r.details).toEqual({});
   });
 
@@ -65,11 +81,9 @@ describe('memory tools', () => {
       source: 'agent',
     });
     const recall = createRecallMemoryTool(store);
-    expect((await recall.execute('t', { name: 'a' })).content[0].text).toBe(
-      '# a (project)\nd\n\nthe body',
-    );
+    expect(toolText(await recall.execute('t', { name: 'a' }))).toBe('# a (project)\nd\n\nthe body');
     const missing = await recall.execute('t', { name: 'zzz' });
-    expect(missing.content[0].text).toBe('Memory "zzz" not found. Known memories: a');
+    expect(toolText(missing)).toBe('Memory "zzz" not found. Known memories: a');
   });
 
   it('forget_memory deletes and reports, or says not found', async () => {
@@ -82,11 +96,9 @@ describe('memory tools', () => {
     });
     const forget = createForgetMemoryTool(store);
     const r = await forget.execute('t', { name: 'a' });
-    expect(r.content[0].text).toBe('Forgot memory "a".');
+    expect(toolText(r)).toBe('Forgot memory "a".');
     expect(r.details).toEqual({ memory: { name: 'a', action: 'forgotten' } });
-    expect((await forget.execute('t', { name: 'a' })).content[0].text).toBe(
-      'Memory "a" not found.',
-    );
+    expect(toolText(await forget.execute('t', { name: 'a' }))).toBe('Memory "a" not found.');
   });
 
   it.each(['user', 'import'] as const)(
@@ -101,8 +113,8 @@ describe('memory tools', () => {
       });
       const forget = createForgetMemoryTool(store);
       const r = await forget.execute('t', { name: 'deploy-policy' });
-      expect(r.content[0].text).toMatch(/written by the user/i);
-      expect(r.content[0].text).toMatch(/raise it with them/i);
+      expect(toolText(r)).toMatch(/written by the user/i);
+      expect(toolText(r)).toMatch(/raise it with them/i);
       expect(r.details).toEqual({});
       expect(await store.get('deploy-policy')).not.toBeNull();
     },

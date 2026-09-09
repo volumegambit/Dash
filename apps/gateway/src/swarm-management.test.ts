@@ -2,12 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
-import {
-  type SwarmAttachment,
-  SwarmCoordinator,
-  type WorkerBackend,
-  type WorkerSpec,
-} from '@dash/swarm';
+import { type SwarmAttachment, SwarmCoordinator, type WorkerSpec } from '@dash/swarm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
@@ -18,7 +13,13 @@ import { SqliteConversationService } from './conversation-service-sqlite.js';
 import type { ConversationService } from './conversation-service.js';
 import type { GatewayCredentialStore } from './credential-store.js';
 import { EventBus } from './event-bus.js';
+import {
+  type WorkerBackend,
+  type WorkerFactory,
+  createFakeChildDriver,
+} from './fake-child-driver.js';
 import type { DynamicGateway } from './gateway.js';
+import type { JsonBody } from './json-body.test-helpers.js';
 import { createGatewayManagementApp } from './management-api.js';
 
 // --- Mock factories (mirrors management-api-server.test.ts) ---
@@ -286,7 +287,7 @@ function spawnRun(
     role: 'Scout',
     brief: 'do a thing',
   });
-  const runs = coordinator.getRuns(agentId);
+  const runs = coordinator.runsForConversation(agentId, conversationId);
   const runId = runs[0].runId;
   return { attachment, runId, workerId };
 }
@@ -299,7 +300,7 @@ describe('swarm management routes', () => {
     agentIdCounter = 0;
     const fake = makeFakeWorkerFactory();
     workers = fake.workers;
-    coordinator = new SwarmCoordinator({ workerFactory: fake.factory });
+    coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(fake.factory) });
   });
 
   afterEach(() => {
@@ -333,7 +334,7 @@ describe('swarm management routes', () => {
 
       const res = await app.request(`/agents/${id}/swarm/runs`, { headers: AUTH });
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(Array.isArray(body.runs)).toBe(true);
       expect(body.runs).toHaveLength(1);
       expect(body.runs[0].runId).toBe(runId);
@@ -345,14 +346,96 @@ describe('swarm management routes', () => {
       const id = registerAgent(agentRegistry);
       const res = await app.request(`/agents/${id}/swarm/runs`, { headers: AUTH });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ runs: [] });
+      expect((await res.json()) as JsonBody).toEqual({ runs: [] });
     });
 
     it('404s for an unknown agent', async () => {
       const { app } = createApp({ swarmCoordinator: coordinator });
       const res = await app.request('/agents/ghost/swarm/runs', { headers: AUTH });
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'not found' });
+      expect((await res.json()) as JsonBody).toEqual({ error: 'not found' });
+    });
+  });
+
+  // --- Restart: runs are a VIEW over child conversations, not a ring buffer ---
+  describe('runs that predate this process', () => {
+    it('groups persisted children by parentTurnId, with no live handle at all', async () => {
+      // Exactly the post-restart shape: the coordinator holds nothing, the
+      // store holds the children, and the panel still lists the run.
+      const driver = createFakeChildDriver(() => Promise.reject(new Error('never built')));
+      driver.persisted.push(
+        {
+          subagentId: 'sub_a',
+          workerId: 'sub_a',
+          parentConversationId: 'conv-restarted',
+          parentTurnId: 'turn-9',
+          role: 'Scout',
+          status: 'interrupted',
+          brief: 'survey',
+          model: MODEL,
+          report: 'interrupted by a restart',
+          usage: { inputTokens: 1, outputTokens: 2 },
+          startedAt: 1000,
+          endedAt: 2000,
+          subagentType: 'general-purpose',
+          description: 'survey the repo',
+          toolCallCount: 3,
+          background: true,
+          oneShot: false,
+          depth: 1,
+        },
+        {
+          subagentId: 'sub_b',
+          workerId: 'sub_b',
+          parentConversationId: 'conv-restarted',
+          parentTurnId: 'turn-9',
+          role: 'Scribe',
+          status: 'done',
+          brief: 'write',
+          model: MODEL,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          startedAt: 1500,
+          endedAt: 2500,
+          subagentType: 'general-purpose',
+          description: 'write it up',
+          toolCallCount: 1,
+          background: false,
+          oneShot: false,
+          depth: 1,
+        },
+      );
+      const restarted = new SwarmCoordinator({ childDriver: driver });
+      const conversationService = makeConversationService();
+      const { app, agentRegistry } = createApp({
+        swarmCoordinator: restarted,
+        conversationService,
+      });
+      const id = registerAgent(agentRegistry);
+      (conversationService.list as ReturnType<typeof vi.fn>).mockReturnValue({
+        items: [
+          { id: 'sub_a', parentConversationId: 'conv-restarted' },
+          { id: 'sub_b', parentConversationId: 'conv-restarted' },
+        ],
+        nextCursor: null,
+      });
+
+      const res = await app.request(`/agents/${id}/swarm/runs`, { headers: AUTH });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.runs).toHaveLength(1);
+      expect(body.runs[0]).toMatchObject({
+        runId: 'turn-9',
+        conversationId: 'conv-restarted',
+        workerCount: 2,
+        activeCount: 0,
+        finalized: true,
+      });
+
+      const snap = await app.request(`/agents/${id}/swarm/runs/turn-9`, { headers: AUTH });
+      expect(snap.status).toBe(200);
+      const detail = (await snap.json()) as { workers: Array<Record<string, unknown>> };
+      expect(detail.workers.map((worker) => worker.workerId)).toEqual(['sub_a', 'sub_b']);
+      expect(detail.workers[0]).toMatchObject({ status: 'interrupted' });
     });
   });
 
@@ -365,7 +448,7 @@ describe('swarm management routes', () => {
 
       const res = await app.request(`/agents/${id}/swarm/runs/${runId}`, { headers: AUTH });
       expect(res.status).toBe(200);
-      const snap = await res.json();
+      const snap = (await res.json()) as JsonBody;
       expect(snap.runId).toBe(runId);
       expect(snap.workers).toHaveLength(1);
       expect(snap.workers[0].workerId).toBe(workerId);
@@ -382,7 +465,7 @@ describe('swarm management routes', () => {
       const id = registerAgent(agentRegistry);
       const res = await app.request(`/agents/${id}/swarm/runs/nope`, { headers: AUTH });
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'not found' });
+      expect((await res.json()) as JsonBody).toEqual({ error: 'not found' });
     });
   });
 
@@ -398,7 +481,7 @@ describe('swarm management routes', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ cancelled: true });
+      expect((await res.json()) as JsonBody).toEqual({ cancelled: true });
       // The turn is finalized: spawning again for the same conversation throws.
       expect(() => coordinator.spawnWorker(id, 'conv-cancel', { role: 'r', brief: 'b' })).toThrow();
 
@@ -407,7 +490,7 @@ describe('swarm management routes', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(await again.json()).toEqual({ cancelled: false });
+      expect((await again.json()) as JsonBody).toEqual({ cancelled: false });
     });
 
     it('returns {cancelled:false} when the conversation has no live turn', async () => {
@@ -418,7 +501,7 @@ describe('swarm management routes', () => {
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ cancelled: false });
+      expect((await res.json()) as JsonBody).toEqual({ cancelled: false });
     });
 
     it('404s for an unknown agent', async () => {
@@ -442,7 +525,7 @@ describe('swarm management routes', () => {
         { method: 'POST', headers: AUTH },
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true });
+      expect((await res.json()) as JsonBody).toEqual({ ok: true });
     });
 
     it('404s for an unknown agent', async () => {
@@ -466,9 +549,11 @@ describe('swarm management routes', () => {
         { method: 'POST', headers: AUTH },
       );
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
-      expect(body.reason).toBe('run finalized');
+      // Finalizing the turn cancelled the worker, so the truthful reason is
+      // that the WORKER is terminal — `:runId` no longer resolves anything.
+      expect(body.reason).toBe('worker terminal');
     });
 
     it('409s when the worker is already terminal', async () => {
@@ -485,7 +570,7 @@ describe('swarm management routes', () => {
         { method: 'POST', headers: AUTH },
       );
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
       expect(body.reason).toBe('worker terminal');
     });
@@ -504,7 +589,7 @@ describe('swarm management routes', () => {
         body: JSON.stringify({ message: 'refocus on X' }),
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true });
+      expect((await res.json()) as JsonBody).toEqual({ ok: true });
     });
 
     it('400s on a missing message', async () => {
@@ -553,9 +638,11 @@ describe('swarm management routes', () => {
         body: JSON.stringify({ message: 'hi' }),
       });
       expect(res.status).toBe(409);
-      const body = await res.json();
+      const body = (await res.json()) as JsonBody;
       expect(body.ok).toBe(false);
-      expect(body.reason).toBe('run finalized');
+      // Finalizing the turn cancelled the worker, so the truthful reason is
+      // that the WORKER is terminal — `:runId` no longer resolves anything.
+      expect(body.reason).toBe('worker terminal');
     });
 
     it('409s when the worker is already terminal', async () => {
@@ -571,7 +658,7 @@ describe('swarm management routes', () => {
         body: JSON.stringify({ message: 'hi' }),
       });
       expect(res.status).toBe(409);
-      expect((await res.json()).reason).toBe('worker terminal');
+      expect(((await res.json()) as JsonBody).reason).toBe('worker terminal');
     });
   });
 
@@ -642,7 +729,7 @@ describe('lifecycle cascades', () => {
   beforeEach(() => {
     agentIdCounter = 0;
     const fake = makeFakeWorkerFactory();
-    coordinator = new SwarmCoordinator({ workerFactory: fake.factory });
+    coordinator = new SwarmCoordinator({ childDriver: createFakeChildDriver(fake.factory) });
   });
 
   afterEach(() => {
@@ -791,15 +878,20 @@ describe('lifecycle cascades', () => {
         orchestratorModel: MODEL,
       });
       coordinator.spawnWorker(entry.id, 'c1', { role: 'Scout', brief: 'b' });
-      expect(coordinator.getRuns(entry.id).some((r) => !r.finalized)).toBe(true);
+      expect(coordinator.runsForConversation(entry.id, 'c1').some((run) => !run.finalized)).toBe(
+        true,
+      );
 
       const res = await app.request(`/agents/${entry.id}/disable`, {
         method: 'POST',
         headers: AUTH,
       });
       expect(res.status).toBe(200);
-      // After disable the run is finalized (in history, not live).
-      expect(coordinator.getRuns(entry.id).every((r) => r.finalized)).toBe(true);
+      // After disable every worker of the run is terminal, so the grouping
+      // reports it finalized.
+      expect(coordinator.runsForConversation(entry.id, 'c1').every((run) => run.finalized)).toBe(
+        true,
+      );
     });
   });
 
