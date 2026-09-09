@@ -1057,6 +1057,44 @@ export const useChatStore = create<ChatState>((set, get) => {
         keyOrNull(get().selectedConversationRef) === key ||
         Object.hasOwn(get().messages, key) ||
         get().conversations.some((conversation) => sameConversation(conversation, ref));
+      // A TRANSIENT event (spec §7.2 — `subagent_progress` today) carries no
+      // `seq`: the hub broadcasts it and never appends it to the durable log
+      // (`resumable-chat-hub.ts:382-390`, `isTransientAgentEvent`). D5 taught
+      // this to the MAIN-process transport (`98ec7e11`); the RENDERER's own
+      // sequencer still dropped it one layer down, because `applySequencedFrame`
+      // returns the state UNCHANGED for a frame with no `seq` and the
+      // `applied.state === current` guard below then reads that as "nothing to
+      // do". The frame never reached `streamingFrames`, which is the array the
+      // card fold walks — so a child parked on `ask_orchestrator` showed no
+      // waiting glyph, no question and no reply box on its COLLAPSED row (the
+      // one live §32.6 FAIL), and no card's tool count or elapsed detail ever
+      // moved. Every store test for progress minted a synthetic `seq`, and none
+      // of the four captured gateway streams contains a `waiting_input` frame,
+      // so nothing was red about it.
+      //
+      // Delivered, but NOT sequenced: a transient event is not a position in
+      // the log, so it must neither move `lastSeq` nor read as a gap — the same
+      // rule `98ec7e11` states for the transport. It must also not write the
+      // conversation's `status`/`activeTurnId` the way the sequenced path
+      // below does; a background child's heartbeat outlives its launching turn
+      // and would mark an idle parent `running` again.
+      //
+      // Gated on there BEING a live stream on screen. `refreshTerminal` empties
+      // `streamingFrames[key]` on the turn's `done`, and a background child
+      // goes on emitting after that; appending to the emptied array would
+      // rebuild `liveEvents` and draw a ghost card for a child whose real card
+      // is already in a confirmed message. A transient frame updates the stream
+      // it belongs to or it is dropped.
+      if (frame.type === 'event' && frame.seq === undefined) {
+        if (current.frames.length === 0) return;
+        set((state) => ({
+          streamingFrames: {
+            ...state.streamingFrames,
+            [key]: [...(state.streamingFrames[key] ?? []), frame],
+          },
+        }));
+        return;
+      }
       const applied = applySequencedFrame(current, frame);
       if (applied.gapAfter !== null) {
         if (recoverable) await refreshTerminal(ref);

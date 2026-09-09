@@ -1214,6 +1214,110 @@ describe('sub-agent list triggers', () => {
   });
 });
 
+describe('a TRANSIENT sub-agent frame on the parent stream', () => {
+  // Spec §7.2: `subagent_progress` is live-broadcast and never appended to the
+  // durable log, so the gateway sends it with NO `seq` at all. Every other
+  // progress test in this file mints one through `eventFrame`, which hard-codes
+  // `seq: 1` — which is why the renderer's own sequencer could drop every real
+  // heartbeat while the suite stayed green, and why the one live §32.6 FAIL was
+  // a collapsed row that showed no question and no reply box for three minutes.
+  const parentKey = conversationKey(parentRef);
+
+  function started(seq: number): MobileWsServerFrame {
+    return {
+      type: 'event',
+      id: 'turn-1',
+      conversationId: 'shared-id',
+      seq,
+      event: {
+        type: 'subagent_started',
+        subagentId: 'sub_a',
+        subagentType: 'general-purpose',
+        description: 'Explore workspace files',
+        background: false,
+        depth: 1,
+        startedAt: '2026-09-09T00:00:00Z',
+      },
+    } as unknown as MobileWsServerFrame;
+  }
+
+  /** The real wire shape: no `seq`. */
+  function parked(): MobileWsServerFrame {
+    return {
+      type: 'event',
+      id: 'turn-1',
+      conversationId: 'shared-id',
+      event: {
+        type: 'subagent_progress',
+        subagentId: 'sub_a',
+        status: 'waiting_input',
+        question: 'which file should I read, src/alpha.ts or src/beta.ts?',
+        toolCallCount: 0,
+        elapsedMs: 30000,
+      },
+    } as unknown as MobileWsServerFrame;
+  }
+
+  function frameTypes(): string[] {
+    return (useChatStore.getState().streamingFrames[parentKey] ?? []).map((f) =>
+      f.type === 'event' ? (f.event as unknown as { type: string }).type : f.type,
+    );
+  }
+
+  it("delivers a seq-less waiting_input frame to the parent's streaming events", async () => {
+    await selectParent();
+    await useChatStore.getState().applyFrame(started(1));
+    await useChatStore.getState().applyFrame(parked());
+
+    expect(frameTypes()).toEqual(['subagent_started', 'subagent_progress']);
+  });
+
+  it('does not move the sequence cursor for it — a transient event is not a position in the log', async () => {
+    await selectParent();
+    await useChatStore.getState().applyFrame(started(1));
+    await useChatStore.getState().applyFrame(parked());
+
+    expect(useChatStore.getState().lastSeq[parentKey]).toBe(1);
+
+    // …and the NEXT sequenced frame is still contiguous, so it is not a gap.
+    await useChatStore.getState().applyFrame(started(2));
+    expect(frameTypes()).toHaveLength(3);
+    expect(useChatStore.getState().lastSeq[parentKey]).toBe(2);
+  });
+
+  it('does not rebuild an emptied stream — a background child outlives its launching turn', async () => {
+    await selectParent();
+    await useChatStore.getState().applyFrame(started(1));
+    // What the turn's `done` does, via `refreshTerminal`.
+    useChatStore.setState((state) => ({
+      streamingFrames: { ...state.streamingFrames, [parentKey]: [] },
+    }));
+
+    await useChatStore.getState().applyFrame(parked());
+
+    // A ghost card, otherwise: `liveEvents` is rebuilt from this array and the
+    // child's real card is already in a confirmed message (D2's class).
+    expect(useChatStore.getState().streamingFrames[parentKey]).toEqual([]);
+  });
+
+  it('leaves the conversation status alone — it must not mark an idle parent running', async () => {
+    await selectParentWithAgent();
+    await useChatStore.getState().applyFrame(started(1));
+    const before = useChatStore
+      .getState()
+      .conversations.find((conversation) => conversation.id === 'shared-id');
+
+    await useChatStore.getState().applyFrame(parked());
+
+    const after = useChatStore
+      .getState()
+      .conversations.find((conversation) => conversation.id === 'shared-id');
+    expect(after?.status).toBe(before?.status);
+    expect(after?.activeTurnId).toBe(before?.activeTurnId);
+    expect(after?.lastSeq).toBe(before?.lastSeq);
+  });
+});
+
 describe('sub-agent live poll', () => {
   // The poll used to live in `SwarmPanel`, so it ran only while the panel was
   // open — and an expanded card of a background child in a reopened
