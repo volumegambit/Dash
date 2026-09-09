@@ -665,6 +665,49 @@ describe('canonical chat store', () => {
     expect(useChatStore.getState().sending['gateway:shared-id']).toBe(false);
   });
 
+  /**
+   * D3 — the composer wedged with no way out.
+   *
+   * `sending[key]` is set optimistically by `sendMessage` and cleared ONLY by
+   * `refreshTerminal`, which runs only from a `done`/`error` frame or a seq
+   * gap. Lose that frame — which is exactly what D5's `invalidFrame()` did to
+   * every turn that spawned a child — and a later authoritative read then puts
+   * `activeTurnId` back to `null`. The composer is locked on
+   * `activeTurnId !== null || sending[key]`, the Stop control renders on
+   * `activeTurnId` ALONE, and those two predicates disagree: disabled
+   * composer, disabled Send, no Stop, gateway idle, reload the only exit.
+   */
+  it('cancels a locally-stuck turn the server no longer considers active', () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    useChatStore.setState({
+      // What the server says: idle. What the renderer still believes: sending.
+      conversations: [{ ...gatewayConversation, status: 'idle', activeTurnId: null }],
+      localTurnIds: {},
+      sending: { 'gateway:shared-id': true },
+      streamingFrames: {
+        'gateway:shared-id': [
+          {
+            type: 'event',
+            id: 'lost-turn',
+            conversationId: gatewayConversation.id,
+            seq: 2,
+            event: { type: 'text_delta', text: 'half a turn' },
+          },
+        ],
+      },
+      gatewayOnline: true,
+    });
+
+    useChatStore.getState().cancelMessage(ref);
+
+    // Nothing to cancel on the server, and that is the point: the local
+    // wedge must still clear, because it is the only thing still locking the
+    // composer.
+    expect(mockApi.chatCancel).not.toHaveBeenCalled();
+    expect(useChatStore.getState().sending['gateway:shared-id']).toBe(false);
+    expect(useChatStore.getState().streamingFrames['gateway:shared-id']).toEqual([]);
+  });
+
   it('contains rejected invalidation listener work instead of detaching an unhandled promise', async () => {
     let listener!: (event: {
       type: 'changed';

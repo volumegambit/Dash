@@ -949,7 +949,26 @@ export const useChatStore = create<ChatState>((set, get) => {
       const key = conversationKey(ref);
       const conversation = exactConversation(ref);
       const turnId = conversation?.activeTurnId ?? get().localTurnIds[key];
-      if (!conversation || !turnId) return;
+      if (!conversation) return;
+      if (!turnId) {
+        // D3's exit. `sending[key]` is optimistic and `refreshTerminal` — the
+        // only thing that clears it — runs only from a `done`/`error` frame or
+        // a seq gap. Lose that frame and a later authoritative read puts
+        // `activeTurnId` back to `null`, leaving the composer locked on a flag
+        // nothing can now clear: disabled composer, disabled Send, gateway
+        // idle, window reload the only way out.
+        //
+        // There is nothing to cancel on the server, and that is precisely why
+        // this branch must still run: the wedge is entirely local, so clearing
+        // it locally is the whole repair. Safe against a genuinely in-flight
+        // turn, which by definition has a `turnId` and takes the branch below.
+        set((state) => ({
+          sending: { ...state.sending, [key]: false },
+          streamingFrames: { ...state.streamingFrames, [key]: [] },
+          localTurnIds: { ...state.localTurnIds, [key]: undefined },
+        }));
+        return;
+      }
       window.api.chatCancel(ref, turnId);
       set((state) => ({ sending: { ...state.sending, [key]: false } }));
     },

@@ -3122,7 +3122,16 @@ export function Chat(): JSX.Element {
                 >
                   <Paperclip size={16} />
                 </button>
-                {selectedConversation?.activeTurnId ? (
+                {/*
+                  Stop renders for a LOCAL `sending` too, not just a canonical
+                  `activeTurnId`. Those two predicates used to disagree while
+                  the composer's lock read both — `activeTurnId !== null ||
+                  isStreaming` — so a turn whose `done` was lost disabled the
+                  composer and offered no control at all (D3). The rule is now
+                  the invariant it should always have been: whatever locks the
+                  composer must also offer the way out of it.
+                */}
+                {selectedConversation?.activeTurnId || isStreaming ? (
                   <button
                     type="button"
                     onClick={() =>

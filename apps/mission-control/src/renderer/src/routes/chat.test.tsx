@@ -455,6 +455,30 @@ describe('canonical conversation UI', () => {
     expect(screen.getByTestId('status-bar-delete')).toBeDisabled();
   });
 
+  /**
+   * D3 — the wedge. `sending[key]` is optimistic and only `refreshTerminal`
+   * clears it; lose the turn's `done` (which D5 did to every turn that spawned
+   * a child) and a later authoritative read puts `activeTurnId` back to
+   * `null`. The composer locked on `activeTurnId !== null || isStreaming`
+   * while Stop rendered on `activeTurnId` alone, so the two predicates
+   * disagreed and left no control at all.
+   */
+  it('offers Stop for a local turn the server no longer considers active', async () => {
+    const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
+    // The gateway's own answer at that moment was `{ status: 'idle',
+    // activeTurnId: null }` — see `x1-screens/32.7-wedged-composer-server-idle.png`.
+    const idle = { ...gatewayConversation, status: 'idle' as const, activeTurnId: null };
+    setCanonicalState([idle], ref);
+    useChatStore.setState({ sending: { [conversationKey(ref)]: true } });
+
+    render(<Chat />);
+
+    const stop = screen.getByLabelText('Stop active turn');
+    expect(stop).toBeEnabled();
+    await userEvent.click(stop);
+    expect(useChatStore.getState().sending[conversationKey(ref)]).toBe(false);
+  });
+
   it('keeps archived history readable and marks it archived while locking mutations', async () => {
     const ref = { id: gatewayConversation.id, origin: 'gateway' as const };
     const archived = { ...gatewayConversation, status: 'archived' as const };
