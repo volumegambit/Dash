@@ -598,7 +598,10 @@ describe('createGatewayManagementApp', () => {
       try {
         const { app } = createApp({ speech, speechConfigStore, logger: { info } });
 
-        await app.request('/speech/transcriptions', {
+        // Each response must actually succeed (200) — otherwise this test
+        // would pass just as well if /speech/* were never mounted at all
+        // (a 404 also carries no hasJsonBody, which would be a false green).
+        const transcriptionRes = await app.request('/speech/transcriptions', {
           method: 'POST',
           headers: JSON_HEADERS,
           body: JSON.stringify({
@@ -606,7 +609,9 @@ describe('createGatewayManagementApp', () => {
             format: 'wav',
           }),
         });
-        await app.request('/mobile/v1/speech/transcriptions', {
+        expect(transcriptionRes.status).toBe(200);
+
+        const mobileTranscriptionRes = await app.request('/mobile/v1/speech/transcriptions', {
           method: 'POST',
           headers: MOBILE_JSON_HEADERS,
           body: JSON.stringify({
@@ -614,16 +619,21 @@ describe('createGatewayManagementApp', () => {
             format: 'wav',
           }),
         });
-        await app.request('/speech/speech', {
+        expect(mobileTranscriptionRes.status).toBe(200);
+
+        const speechRes = await app.request('/speech/speech', {
           method: 'POST',
           headers: JSON_HEADERS,
           body: JSON.stringify({ text: 'private dictated text' }),
         });
-        await app.request('/mobile/v1/speech/speech', {
+        expect(speechRes.status).toBe(200);
+
+        const mobileSpeechRes = await app.request('/mobile/v1/speech/speech', {
           method: 'POST',
           headers: MOBILE_JSON_HEADERS,
           body: JSON.stringify({ text: 'private dictated text 2' }),
         });
+        expect(mobileSpeechRes.status).toBe(200);
 
         for (const path of [
           '/speech/transcriptions',

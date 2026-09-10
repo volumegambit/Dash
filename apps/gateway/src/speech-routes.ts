@@ -44,7 +44,7 @@ async function parseJsonBody<T = unknown>(
     const body = (await c.req.json()) as T;
     return { ok: true, body };
   } catch {
-    return { ok: false, response: c.json({ error: 'Invalid JSON' }, 400) };
+    return { ok: false, response: validationFailed(c, 'Invalid JSON') };
   }
 }
 
@@ -114,6 +114,19 @@ function streamFromAsyncIterable(
         return;
       }
       controller.enqueue(next.value);
+    },
+    // `@hono/node-server` calls `cancel()` on client disconnect (or any
+    // other abandonment before the stream drains) instead of pulling to
+    // completion. Without this, `iterator` — which may be mid-`for await`
+    // inside a provider (e.g. openrouter.ts's `for await (const chunk of
+    // res.body)`) — is left suspended forever, pinning the upstream fetch
+    // response body open and leaking its socket, once per abandoned
+    // playback. `.return()` is the standard signal that unwinds a `for
+    // await`'s generator/iterator, running any of its cleanup (e.g. the
+    // response body's own reader release). Applies whether or not `first`
+    // was ever enqueued — the iterator itself is live either way.
+    async cancel() {
+      await iterator.return?.();
     },
   });
 }

@@ -253,6 +253,19 @@ describe('createSpeechRoutes', () => {
       expect(res.status).toBe(400);
     });
 
+    it('rejects truncated/unparseable JSON with the shared validation_failed envelope', async () => {
+      const speech = makeSpeechService();
+      const app = createSpeechRoutes({ speech, store });
+      const res = await app.request('/transcriptions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"audio": "abc", "format": "wav"',
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as JsonBody;
+      expect(body).toEqual({ code: 'validation_failed', error: 'Invalid JSON', retryable: false });
+    });
+
     it('rejects a format outside the AudioFormat set with 400', async () => {
       const speech = makeSpeechService();
       const app = createSpeechRoutes({ speech, store });
@@ -387,6 +400,36 @@ describe('createSpeechRoutes', () => {
       expect(second?.value).toEqual(new Uint8Array([0xbb]));
       const third = await reader?.read();
       expect(third?.done).toBe(true);
+    });
+
+    it('calls the source iterator return() when the client cancels mid-stream', async () => {
+      const returnSpy = vi.fn().mockResolvedValue({ done: true, value: undefined });
+      const audio: AsyncIterable<Uint8Array> = {
+        [Symbol.asyncIterator]() {
+          return {
+            next: vi.fn().mockResolvedValue({ done: false, value: new Uint8Array([1]) }),
+            return: returnSpy,
+          };
+        },
+      };
+      const speech = makeSpeechService({
+        synthesize: vi.fn().mockResolvedValue({ format: 'mp3', audio }),
+      });
+      const app = createSpeechRoutes({ speech, store });
+
+      const res = await app.request('/speech', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello' }),
+      });
+      expect(res.status).toBe(200);
+
+      const reader = res.body?.getReader();
+      await reader?.read();
+      expect(returnSpy).not.toHaveBeenCalled();
+
+      await reader?.cancel();
+      expect(returnSpy).toHaveBeenCalledTimes(1);
     });
 
     it('rejects empty text with 400', async () => {
