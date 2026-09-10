@@ -732,6 +732,13 @@ final class ConversationListFeature {
 
   var mutationsAllowed: Bool { connection == .online }
 
+  /// The liminal state between activation/foreground and the first
+  /// authoritative sync: mutations are blocked (`mutationsAllowed` is false)
+  /// but no offline banner is shown (`AppModel.consume` deliberately maps
+  /// `.connecting` to no banner). Compose surfaces use this to show a
+  /// progress affordance instead of an unexplained disabled button.
+  var isConnecting: Bool { connection == .connecting }
+
   @ObservationIgnored private let gatewayID: String
   @ObservationIgnored private let service: any ConversationListServicing
   @ObservationIgnored private let recoveryService: any ConversationRecoveryServicing
