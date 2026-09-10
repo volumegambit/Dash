@@ -30,3 +30,5 @@ export type {
 } from './service.js';
 export { VoiceActivityDetector } from './vad.js';
 export type { VadEvent, VadOptions } from './vad.js';
+export { speakable, SentenceChunker } from './chunker.js';
+export type { SentenceChunkerOptions } from './chunker.js';
