@@ -1,6 +1,6 @@
 import type { SpeechConfig } from './config.js';
 import { SpeechError } from './errors.js';
-import { pcmFormatFor } from './pcm-formats.js';
+import { parsePcmContentType, pcmFormatFor, speechRequestFormat } from './pcm-formats.js';
 import { createOpenRouterSpeechProvider } from './providers/openrouter.js';
 import type {
   AudioFormat,
@@ -38,11 +38,19 @@ export interface SpeechService {
   /** Cached 1h per (provider, kind). */
   listModels(kind: SpeechModelKind): Promise<SpeechModel[]>;
   transcribe(audio: Uint8Array, format: AudioFormat, language?: string): Promise<Transcription>;
-  /** Derived from pcmFormatFor(config.tts.model). */
+  /**
+   * Derived from speechRequestFormat(config.tts.model, 'pcm16'), with the
+   * sampleRate (when applicable) coming from the static pcmFormatFor table
+   * — there's no live response yet to declare one.
+   */
   speechFormat(): Promise<{ format: 'pcm16' | 'mp3'; sampleRate?: number }>;
   /**
-   * `format` is an optional override: omitted, it comes from speechFormat();
-   * given, it is used as-is (e.g. a route that always wants 'mp3').
+   * `format` is the caller's WANTED format: omitted, it defaults to
+   * 'pcm16'; given, it's still resolved through speechRequestFormat against
+   * the configured model rather than used as-is — a PCM-only model (e.g.
+   * Gemini TTS) upgrades an 'mp3' request to 'pcm16' since it would
+   * otherwise reject the request outright, and a non-PCM model downgrades
+   * a 'pcm16' request to 'mp3'.
    */
   synthesize(
     text: string,
@@ -139,8 +147,10 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
 
   async function speechFormat(): Promise<{ format: 'pcm16' | 'mp3'; sampleRate?: number }> {
     const config = await opts.config();
+    const format = speechRequestFormat(config.tts.model, 'pcm16');
+    if (format !== 'pcm16') return { format: 'mp3' };
     const pcm = pcmFormatFor(config.tts.model);
-    return pcm ? { format: 'pcm16', sampleRate: pcm.sampleRate } : { format: 'mp3' };
+    return pcm ? { format: 'pcm16', sampleRate: pcm.sampleRate } : { format: 'pcm16' };
   }
 
   async function synthesize(
@@ -157,18 +167,32 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
       throw new SpeechError('unavailable', 'No speech provider is configured');
     }
 
-    const resolved = format ?? (await speechFormat()).format;
-    const sampleRate =
-      resolved === 'pcm16' ? pcmFormatFor(config.tts.model)?.sampleRate : undefined;
+    // format is an override of what the CALLER wants; speechRequestFormat
+    // still has final say, since a PCM-only model (e.g. Gemini) rejects an
+    // 'mp3' request outright and a non-PCM model can't honor 'pcm16'.
+    const resolved = speechRequestFormat(config.tts.model, format ?? 'pcm16');
 
-    const audio = provider.synthesize(text, {
+    const stream = await provider.synthesize(text, {
       model: config.tts.model,
       voice: config.tts.voice,
       format: resolved,
       speed: config.tts.speed,
     });
 
-    return { format: resolved, sampleRate, audio };
+    let sampleRate: number | undefined;
+    if (resolved === 'pcm16') {
+      // The provider's declared content-type beats the static table — it
+      // reflects what THIS response actually is; the table is only a
+      // fallback for a provider that omits the rate.
+      sampleRate =
+        parsePcmContentType(stream.contentType)?.sampleRate ??
+        pcmFormatFor(config.tts.model)?.sampleRate;
+      if (sampleRate === undefined) {
+        throw new SpeechError('provider', 'provider returned PCM without a sample rate');
+      }
+    }
+
+    return { format: resolved, sampleRate, audio: stream.audio };
   }
 
   async function available(): Promise<boolean> {

@@ -35,14 +35,18 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function streamResponse(status: number, chunks: Uint8Array[]): Response {
+function streamResponse(
+  status: number,
+  chunks: Uint8Array[],
+  headers?: Record<string, string>,
+): Response {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
       controller.close();
     },
   });
-  return new Response(stream, { status });
+  return new Response(stream, { status, headers });
 }
 
 async function drain(audio: AsyncIterable<Uint8Array>): Promise<number> {
@@ -339,6 +343,96 @@ describe('createSpeechService', () => {
       await drain(result.audio);
       const body = calls[0]?.body as { response_format?: string };
       expect(body.response_format).toBe('mp3');
+    });
+
+    it('prefers the provider-declared sample rate over the static table', async () => {
+      const { impl } = queueFetch([
+        streamResponse(200, [new Uint8Array([1, 2])], {
+          'content-type': 'audio/pcm;rate=22050;channels=1',
+        }),
+      ]);
+      const service = createSpeechService({
+        config: configOf(PCM16_CONFIG), // table says 24000 for hexgrad/kokoro-82m
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      const result = await service.synthesize('hello');
+      expect(result.format).toBe('pcm16');
+      expect(result.sampleRate).toBe(22050);
+    });
+
+    it('falls back to the static table when the provider declares no rate', async () => {
+      const { impl } = queueFetch([
+        streamResponse(200, [new Uint8Array([1, 2])], { 'content-type': 'audio/pcm' }),
+      ]);
+      const service = createSpeechService({
+        config: configOf(PCM16_CONFIG),
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      const result = await service.synthesize('hello');
+      expect(result.format).toBe('pcm16');
+      expect(result.sampleRate).toBe(24000);
+    });
+
+    it('downgrades the MiniMax default from pcm16 wanted to mp3', async () => {
+      const { impl, calls } = queueFetch([
+        streamResponse(200, [new Uint8Array([1])], { 'content-type': 'audio/mpeg' }),
+      ]);
+      const service = createSpeechService({
+        config: configOf(DEFAULT_SPEECH_CONFIG), // tts.model is minimax/speech-2.8-turbo
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      const result = await service.synthesize('hello'); // format omitted -> pcm16 wanted
+      expect(result.format).toBe('mp3');
+      expect(result.sampleRate).toBeUndefined();
+      const body = calls[0]?.body as { response_format?: string };
+      expect(body.response_format).toBe('mp3');
+    });
+
+    it('upgrades the Gemini TTS id from mp3 wanted to pcm16, using the declared rate', async () => {
+      const { impl, calls } = queueFetch([
+        streamResponse(200, [new Uint8Array([1, 2])], {
+          'content-type': 'audio/pcm;rate=24000;channels=1',
+        }),
+      ]);
+      const config: SpeechConfig = {
+        ...DEFAULT_SPEECH_CONFIG,
+        tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'google/gemini-3.1-flash-tts-preview' },
+      };
+      const service = createSpeechService({
+        config: configOf(config),
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      const result = await service.synthesize('hello', 'mp3'); // caller wants mp3
+      expect(result.format).toBe('pcm16');
+      expect(result.sampleRate).toBe(24000);
+      const body = calls[0]?.body as { response_format?: string };
+      expect(body.response_format).toBe('pcm');
+    });
+
+    it('throws a provider error when pcm16 is required but neither the provider nor the static table declares a rate', async () => {
+      const { impl } = queueFetch([streamResponse(200, [new Uint8Array([1])], {})]);
+      const config: SpeechConfig = {
+        ...DEFAULT_SPEECH_CONFIG,
+        tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'google/gemini-3.1-flash-tts-preview' },
+      };
+      const service = createSpeechService({
+        config: configOf(config),
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      await expect(service.synthesize('hello', 'mp3')).rejects.toMatchObject({
+        code: 'provider',
+        message: 'provider returned PCM without a sample rate',
+      });
     });
   });
 });

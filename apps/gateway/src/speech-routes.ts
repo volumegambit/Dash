@@ -4,6 +4,7 @@ import {
   httpStatusFor,
   mergeSpeechConfig,
   validateSpeechConfigPatch,
+  wavFromPcm16,
 } from '@dash/speech';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
@@ -132,6 +133,28 @@ function streamFromAsyncIterable(
 }
 
 /**
+ * Fully drains a PCM audio stream into one buffer. Only used for a PCM-only
+ * model's response (Gemini TTS today) — safe to buffer in full because TTS
+ * input is capped at `MAX_TTS_CHARS` (4,000 chars), so the resulting PCM
+ * clip is bounded.
+ */
+async function bufferAudio(audio: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+  for await (const chunk of audio) {
+    chunks.push(chunk);
+    totalLength += chunk.byteLength;
+  }
+  const buffer = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return buffer;
+}
+
+/**
  * Routes mounted at `/speech` on both the loopback admin app and
  * `/mobile/v1` (see `management-api.ts`). Both mounts share this exact
  * implementation — the two namespaces differ only in which bearer token
@@ -247,8 +270,30 @@ export function createSpeechRoutes(opts: SpeechRoutesOptions): Hono {
       // This route always feeds a file player, so the format is pinned to
       // 'mp3' explicitly rather than deferring to speechFormat()'s
       // pcm16-for-realtime default (controller ruling, task-A5-brief.md).
-      const { audio } = await speech.synthesize(text, 'mp3');
-      const iterator = audio[Symbol.asyncIterator]();
+      // A PCM-only model (e.g. Gemini TTS) can't honor that and comes back
+      // with format: 'pcm16' instead — handled below by buffering into WAV.
+      const result = await speech.synthesize(text, 'mp3');
+      if (result.format === 'pcm16') {
+        if (result.sampleRate === undefined) {
+          throw new SpeechError('provider', 'pcm16 result is missing a sample rate');
+        }
+        const pcm = await bufferAudio(result.audio);
+        const wav = wavFromPcm16(pcm, result.sampleRate);
+        // Pass a plain ArrayBuffer rather than the Uint8Array view: under
+        // some tsconfigs (e.g. apps/web's, which transitively typechecks
+        // this file via mobile-test-harness.ts) TS's generic
+        // `Uint8Array<ArrayBufferLike>` doesn't structurally match DOM's
+        // `BodyInit`, while a bare `ArrayBuffer` always does. Sliced to
+        // `wav`'s own byteOffset/byteLength rather than handed back as
+        // `wav.buffer` directly, so this doesn't depend on wavFromPcm16
+        // never returning a view over a larger/shared buffer.
+        const wavBuffer = wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength);
+        return new Response(wavBuffer as ArrayBuffer, {
+          headers: { 'content-type': 'audio/wav' },
+        });
+      }
+
+      const iterator = result.audio[Symbol.asyncIterator]();
       // Await the first chunk BEFORE constructing the Response: a
       // SpeechError thrown here (e.g. no provider configured) must still
       // become a JSON error, not a broken audio/mpeg stream.

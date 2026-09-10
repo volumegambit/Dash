@@ -32,10 +32,21 @@ export interface SpeechCapabilities {
   realtime: boolean;
 }
 
+/**
+ * A provider's raw synthesis response: the audio stream plus the raw
+ * upstream `content-type` header (`null` if the provider didn't send one),
+ * so a caller can recover PCM shape (sample rate, channels) that a provider
+ * like OpenRouter declares there rather than in the response body.
+ */
+export interface SynthesisStream {
+  contentType: string | null;
+  audio: AsyncIterable<Uint8Array>;
+}
+
 export interface SpeechProvider {
   readonly id: string;
   readonly capabilities: SpeechCapabilities;
   listModels(kind: SpeechModelKind): Promise<SpeechModel[]>;
   transcribe(audio: Uint8Array, opts: TranscribeOptions): Promise<Transcription>;
-  synthesize(text: string, opts: SynthesizeOptions): AsyncIterable<Uint8Array>;
+  synthesize(text: string, opts: SynthesizeOptions): Promise<SynthesisStream>;
 }

@@ -356,7 +356,7 @@ Dictation and read-aloud support. Mounted on both the unprefixed administrative 
 | `PATCH` | `/speech/config` | Merge a partial configuration and return the merged result |
 | `GET` | `/speech/models?kind=transcription\|speech` | Models the configured provider offers for one kind |
 | `POST` | `/speech/transcriptions` | Transcribe one recorded clip |
-| `POST` | `/speech/speech` | Synthesize speech, streamed as `audio/mpeg` |
+| `POST` | `/speech/speech` | Synthesize speech, streamed as `audio/mpeg` (or `audio/wav` for a PCM-only model) |
 
 `GET /health` advertises the `speech-v1` capability only while a speech provider can actually
 transcribe and speak; a gateway without a configured provider omits it, and older clients must
@@ -389,7 +389,9 @@ seconds. The gateway also fast-rejects on a `Content-Length` above 12 MB before 
 all, so an oversized upload is refused without being buffered.
 
 `POST /speech/speech` is the only operation in this namespace whose success body isn't JSON — it
-streams MPEG audio. `text` is capped at 4,000 characters (`413 too_long`):
+streams MPEG audio, except for a PCM-only model (currently Google's Gemini TTS), which comes back
+as a complete `audio/wav` file instead of a stream. `text` is capped at 4,000 characters
+(`413 too_long`):
 
 ```bash
 curl -i -X POST "$MOBILE_URL/mobile/v1/speech/speech" \
@@ -400,7 +402,7 @@ curl -i -X POST "$MOBILE_URL/mobile/v1/speech/speech" \
 ```
 
 An error raised before the first audio chunk is still a JSON `MobileApiError`, so a client must
-accept both `audio/mpeg` and `application/json` on this route.
+accept `audio/mpeg`, `audio/wav`, and `application/json` on this route.
 
 `/speech/*` reuses the `MobileApiError` envelope but passes the provider-level error code through
 untranslated: `unauthorized` (the provider rejected the API key), `unavailable` (no provider is

@@ -560,5 +560,71 @@ describe('createSpeechRoutes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    it('buffers a PCM-only model (e.g. Gemini TTS) into a WAV response', async () => {
+      const pcmChunk1 = new Uint8Array([1, 2, 3, 4]);
+      const pcmChunk2 = new Uint8Array([5, 6]);
+      const speech = makeSpeechService({
+        synthesize: vi.fn().mockResolvedValue({
+          format: 'pcm16',
+          sampleRate: 24000,
+          audio: (async function* () {
+            yield pcmChunk1;
+            yield pcmChunk2;
+          })(),
+        }),
+      });
+      const app = createSpeechRoutes({ speech, store });
+
+      const res = await app.request('/speech', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('audio/wav');
+      const buf = new Uint8Array(await res.arrayBuffer());
+      expect(String.fromCharCode(...buf.slice(0, 4))).toBe('RIFF');
+      const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      // Canonical WAV header: sample rate is a little-endian uint32 at offset 24.
+      expect(view.getUint32(24, true)).toBe(24000);
+      expect(buf.length).toBe(44 + pcmChunk1.length + pcmChunk2.length);
+    });
+
+    it('maps a SpeechError thrown mid-PCM-buffering to the JSON error envelope', async () => {
+      const throwingAudio: AsyncIterable<Uint8Array> = {
+        [Symbol.asyncIterator]() {
+          let called = false;
+          return {
+            next(): Promise<IteratorResult<Uint8Array>> {
+              if (!called) {
+                called = true;
+                return Promise.resolve({ done: false, value: new Uint8Array([1]) });
+              }
+              return Promise.reject(new SpeechError('provider', 'upstream exploded mid-stream'));
+            },
+          };
+        },
+      };
+      const speech = makeSpeechService({
+        synthesize: vi.fn().mockResolvedValue({
+          format: 'pcm16',
+          sampleRate: 24000,
+          audio: throwingAudio,
+        }),
+      });
+      const app = createSpeechRoutes({ speech, store });
+
+      const res = await app.request('/speech', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello' }),
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as JsonBody;
+      expect(body.code).toBe('provider');
+    });
   });
 });

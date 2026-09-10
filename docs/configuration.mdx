@@ -216,6 +216,9 @@ Speech doesn't introduce a new credential type — it reads the same `openrouter
 your LLM configuration already stores. Add or update that credential and speech becomes available
 without any extra setup.
 
+PCM-only models (currently Google's Gemini TTS) are served to Read aloud as WAV; MP3-only models
+(MiniMax) are never asked for PCM.
+
 The configuration always reports a `realtime` slot for live back-and-forth conversation, alongside
 the transcription and speech providers. Today it's always unavailable — no configured provider
 offers realtime speech yet — but its presence in the config and API responses is intentional,

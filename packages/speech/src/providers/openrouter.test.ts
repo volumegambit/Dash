@@ -39,14 +39,18 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function streamResponse(status: number, chunks: Uint8Array[]): Response {
+function streamResponse(
+  status: number,
+  chunks: Uint8Array[],
+  headers?: Record<string, string>,
+): Response {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
       controller.close();
     },
   });
-  return new Response(stream, { status });
+  return new Response(stream, { status, headers });
 }
 
 describe('createOpenRouterSpeechProvider', () => {
@@ -175,21 +179,25 @@ describe('createOpenRouterSpeechProvider', () => {
   });
 
   describe('synthesize', () => {
-    it('maps pcm16 -> response_format "pcm" and streams chunks in order', async () => {
+    it('maps pcm16 -> response_format "pcm", resolves the declared content-type, and streams chunks in order', async () => {
       const chunk1 = new Uint8Array([1, 2]);
       const chunk2 = new Uint8Array([3, 4]);
-      const { impl, calls } = queueFetch([streamResponse(200, [chunk1, chunk2])]);
+      const { impl, calls } = queueFetch([
+        streamResponse(200, [chunk1, chunk2], {
+          'content-type': 'audio/pcm;rate=24000;channels=1',
+        }),
+      ]);
       const provider = createOpenRouterSpeechProvider({ apiKey: 'sk-or-test', fetch: impl });
 
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of provider.synthesize('hello', {
+      const { contentType, audio } = await provider.synthesize('hello', {
         model: 'minimax/speech-2.8-turbo',
         voice: 'English_expressive_narrator',
         format: 'pcm16',
-      })) {
-        chunks.push(chunk);
-      }
+      });
 
+      expect(contentType).toBe('audio/pcm;rate=24000;channels=1');
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of audio) chunks.push(chunk);
       expect(chunks).toEqual([chunk1, chunk2]);
       expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/audio/speech');
       expect(calls[0]?.method).toBe('POST');
@@ -204,33 +212,46 @@ describe('createOpenRouterSpeechProvider', () => {
       });
     });
 
-    it('maps mp3 -> response_format "mp3" and includes speed when given', async () => {
-      const { impl, calls } = queueFetch([streamResponse(200, [new Uint8Array([9])])]);
+    it('maps mp3 -> response_format "mp3", includes speed when given, and resolves that content-type', async () => {
+      const { impl, calls } = queueFetch([
+        streamResponse(200, [new Uint8Array([9])], { 'content-type': 'audio/mpeg' }),
+      ]);
       const provider = createOpenRouterSpeechProvider({ apiKey: 'sk-or-test', fetch: impl });
 
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of provider.synthesize('hi', {
+      const { contentType, audio } = await provider.synthesize('hi', {
         model: 'm',
         voice: 'v',
         format: 'mp3',
         speed: 1.5,
-      })) {
-        chunks.push(chunk);
-      }
+      });
 
+      expect(contentType).toBe('audio/mpeg');
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of audio) chunks.push(chunk);
       expect(chunks.length).toBe(1);
       expect(calls[0]?.body).toMatchObject({ response_format: 'mp3', speed: 1.5 });
     });
 
-    it('throws on a non-ok response before yielding any chunk', async () => {
+    it('resolves contentType null when the upstream response has no content-type', async () => {
+      const { impl } = queueFetch([streamResponse(200, [new Uint8Array([1])])]);
+      const provider = createOpenRouterSpeechProvider({ apiKey: 'sk-or-test', fetch: impl });
+
+      const { contentType } = await provider.synthesize('hi', {
+        model: 'm',
+        voice: 'v',
+        format: 'pcm16',
+      });
+
+      expect(contentType).toBeNull();
+    });
+
+    it('rejects the returned promise (not the stream) on a non-ok response', async () => {
       const { impl } = queueFetch([jsonResponse(401, { error: { message: 'no key' } })]);
       const provider = createOpenRouterSpeechProvider({ apiKey: 'bad', fetch: impl });
 
-      const iter = provider
-        .synthesize('hi', { model: 'm', voice: 'v', format: 'mp3' })
-        [Symbol.asyncIterator]();
-
-      await expect(iter.next()).rejects.toMatchObject({ code: 'unauthorized' });
+      await expect(
+        provider.synthesize('hi', { model: 'm', voice: 'v', format: 'mp3' }),
+      ).rejects.toMatchObject({ code: 'unauthorized' });
     });
   });
 

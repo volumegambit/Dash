@@ -4,6 +4,7 @@ import type {
   SpeechModel,
   SpeechModelKind,
   SpeechProvider,
+  SynthesisStream,
   SynthesizeOptions,
   TranscribeOptions,
   Transcription,
@@ -170,7 +171,7 @@ export function createOpenRouterSpeechProvider(
     };
   }
 
-  async function* synthesize(text: string, opts: SynthesizeOptions): AsyncGenerator<Uint8Array> {
+  async function synthesize(text: string, opts: SynthesizeOptions): Promise<SynthesisStream> {
     const body: Record<string, unknown> = {
       model: opts.model,
       input: text,
@@ -183,9 +184,21 @@ export function createOpenRouterSpeechProvider(
     if (!res.ok) throw await errorFromResponse(res);
     if (!res.body) throw new SpeechError('provider', 'openrouter returned no response body');
 
-    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-      yield chunk;
+    const contentType = res.headers.get('content-type');
+    const responseBody = res.body as unknown as AsyncIterable<Uint8Array>;
+
+    // Wraps the response body in our own generator (rather than handing the
+    // body back directly) so a non-ok response or a missing body is caught
+    // and thrown by THIS async function before it ever resolves — the
+    // caller awaits synthesize() itself for that, not the first pull of the
+    // returned iterable.
+    async function* audio(): AsyncGenerator<Uint8Array> {
+      for await (const chunk of responseBody) {
+        yield chunk;
+      }
     }
+
+    return { contentType, audio: audio() };
   }
 
   return {
