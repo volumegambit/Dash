@@ -6,12 +6,27 @@ import {
   composerKeyMechanism,
   formatDetails,
   formatVisibleDetails,
+  inputDeliveryPresentation,
   insertNewlineAtSelection,
   resultSummary,
   shortenCommand,
   summarize,
   truncate,
 } from './chat.helpers.js';
+
+describe('inputDeliveryPresentation', () => {
+  it.each([
+    ['pending', 'Steered, pending', 'Steered · Pending', false],
+    ['delivered', 'Steered, delivered', 'Steered', false],
+    ['not_delivered', 'Steer, not delivered', 'Steer · Not delivered', true],
+  ] as const)('describes a %s Steer', (status, ariaLabel, label, alert) => {
+    expect(inputDeliveryPresentation('steer', status)).toEqual({ ariaLabel, label, alert });
+  });
+
+  it('does not decorate normal input', () => {
+    expect(inputDeliveryPresentation('normal', undefined)).toBeNull();
+  });
+});
 
 describe('summarize', () => {
   it('extracts command for bash', () => {

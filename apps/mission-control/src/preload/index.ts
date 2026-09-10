@@ -74,9 +74,19 @@ const api: MissionControlAPI = {
     invokeChat<ApiResult<'chatGetConversation'>>('chat:getConversation', conversation),
   chatGetMessages: (conversation, before) =>
     invokeChat<ApiResult<'chatGetMessages'>>('chat:getMessages', conversation, before),
+  chatGetInitialState: (conversation) =>
+    invokeChat<ApiResult<'chatGetInitialState'>>('chat:getInitialState', conversation),
+  chatGetOlderMessages: (conversation, before, limit) =>
+    invokeChat<ApiResult<'chatGetOlderMessages'>>(
+      'chat:getOlderMessages',
+      conversation,
+      before,
+      limit,
+    ),
   chatSend: (conversation, turnId, text, images) =>
     invokeChat<ApiResult<'chatSend'>>('chat:sendMessage', conversation, turnId, text, images),
-  chatCancel: (conversation, turnId) => ipcRenderer.send('chat:cancel', conversation, turnId),
+  chatCancel: (conversation, turnId, localDispatchToken) =>
+    ipcRenderer.send('chat:cancel', conversation, turnId, localDispatchToken),
   chatRenameConversation: (conversation, revision, title) =>
     invokeChat<ApiResult<'chatRenameConversation'>>(
       'chat:renameConversation',
@@ -90,8 +100,38 @@ const api: MissionControlAPI = {
       conversation,
       revision,
     ),
-  chatAnswerQuestion: (conversation, turnId, questionId, answer) =>
-    ipcRenderer.send('chat:answer-question', conversation, turnId, questionId, answer),
+  chatAnswerQuestion: (conversation, turnId, questionId, answer, localDispatchToken) =>
+    ipcRenderer.send(
+      'chat:answer-question',
+      conversation,
+      turnId,
+      questionId,
+      answer,
+      localDispatchToken,
+    ),
+  chatSubscribeV2: (conversation, sinceV2Seq) =>
+    invokeChat<ApiResult<'chatSubscribeV2'>>('chat:subscribeV2', conversation, sinceV2Seq),
+  chatUnsubscribeV2: (conversation) =>
+    invokeChat<ApiResult<'chatUnsubscribeV2'>>('chat:unsubscribeV2', conversation),
+  chatEnqueueInput: (conversation, request) =>
+    invokeChat<ApiResult<'chatEnqueueInput'>>('chat:enqueueInput', conversation, request),
+  chatEditFollowUp: (conversation, request) =>
+    invokeChat<ApiResult<'chatEditFollowUp'>>('chat:editFollowUp', conversation, request),
+  chatRemoveFollowUp: (conversation, commandId, inputId, expectedRevision) =>
+    invokeChat<ApiResult<'chatRemoveFollowUp'>>(
+      'chat:removeFollowUp',
+      conversation,
+      commandId,
+      inputId,
+      expectedRevision,
+    ),
+  chatResumeFollowUps: (conversation, commandId, expectedQueueRevision) =>
+    invokeChat<ApiResult<'chatResumeFollowUps'>>(
+      'chat:resumeFollowUps',
+      conversation,
+      commandId,
+      expectedQueueRevision,
+    ),
 
   // Events
   onChatFrame: (callback) => {
@@ -99,6 +139,18 @@ const api: MissionControlAPI = {
       callback(frame);
     ipcRenderer.on('chat:frame', listener);
     return () => ipcRenderer.removeListener('chat:frame', listener);
+  },
+  onChatV2Frame: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, frame: Parameters<typeof callback>[0]) =>
+      callback(frame);
+    ipcRenderer.on('chat:v2Frame', listener);
+    return () => ipcRenderer.removeListener('chat:v2Frame', listener);
+  },
+  onChatV2CommandError: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, issue: Parameters<typeof callback>[0]) =>
+      callback(issue);
+    ipcRenderer.on('chat:v2CommandError', listener);
+    return () => ipcRenderer.removeListener('chat:v2CommandError', listener);
   },
   onChatConnectionError: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, issue: Parameters<typeof callback>[0]) =>

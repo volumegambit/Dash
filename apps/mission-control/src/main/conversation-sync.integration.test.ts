@@ -82,8 +82,11 @@ describe('Mission Control mobile-v1 conversation sync', () => {
       'ship the sync',
     );
     expect(accepted).toEqual({
-      ...(await harness.fixture('chat-accepted.json')),
-      id: 'turn-request-1',
+      protocol: 'v1',
+      frame: {
+        ...(await harness.fixture('chat-accepted.json')),
+        id: 'turn-request-1',
+      },
     });
     expect(await harness.readLegacyDirectory()).toEqual(before);
   });
@@ -188,9 +191,10 @@ describe('Mission Control mobile-v1 conversation sync', () => {
 
     const result = await harness.retrySameTurn();
 
+    const accepted = await harness.fixture('chat-accepted.json');
     expect(result.acceptances).toEqual([
-      await harness.fixture('chat-accepted.json'),
-      await harness.fixture('chat-accepted.json'),
+      { protocol: 'v1', frame: accepted },
+      { protocol: 'v1', frame: accepted },
     ]);
     expect(result.userMessages).toHaveLength(1);
     expect(result.userMessages[0]).toMatchObject({

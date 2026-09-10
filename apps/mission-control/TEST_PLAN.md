@@ -371,6 +371,74 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 5. Start another slow turn, click Stop in Mission Control, and watch iOS.
 6. **Verify:** both clients show the durable cancelled outcome and no swarm worker remains active.
 
+### 6.12 Capable-v2 Send, Steer, and Follow Up chooser
+1. Open an idle gateway conversation whose negotiated capabilities include `chat-input-queue-v1`.
+2. Send `ordinary capable send`. **Verify:** it appears once as a normal user message and the
+   assistant response streams in the correct timeline segment.
+3. Start a slow response, then type `focus on reconnect handling` while it is still running.
+4. **Verify:** the composer remains editable and shows both **Send message** and
+   **Cancel response** controls.
+5. Click **Send message**. **Verify:** a dialog titled **A response is in progress** offers
+   **Steer — Guide the response in progress** and
+   **Follow Up — Send after this response finishes**.
+6. Press Escape. **Verify:** the dialog closes, the text and any attached images remain, and focus
+   returns to the message field. Repeat with a backdrop click.
+7. Reopen the chooser and select **Steer**. **Verify:** the draft clears only after acknowledgement.
+   Its visible transcript label changes from **Steered · Pending** to **Steered**, while its
+   accessible name changes from **Steered, pending** to **Steered, delivered** (or **Steer · Not
+   delivered** / **Steer, not delivered** with an actionable sanitized error).
+8. During another slow response, select **Follow Up**. **Verify:** the acknowledged item appears in
+   the queue rather than starting a competing response.
+
+### 6.13 FIFO queue mutation, pause, Stop, and promotion
+1. During a slow capable-v2 response, enqueue `first follow up` and then `second follow up`.
+2. **Verify:** cards remain FIFO and expose the exact accessible names
+   **Follow Up, position 1 of 2** and **Follow Up, position 2 of 2**, with item-specific Edit and
+   Remove controls.
+3. Edit the second item, including its text and image, and save. **Verify:** it stays second and the
+   editor closes only after acknowledgement. Remove the first item and verify focus moves to the
+   remaining item.
+4. Drive the head item into `delivering`. **Verify:** its Edit/Remove controls disappear until the
+   delivery resolves.
+5. Pause the queue from the test gateway. **Verify:** the queue announces **Follow Ups paused** and
+   the composer begins **Follow Ups paused. Resume or remove them before sending.** Text/images
+   remain editable but Send is disabled.
+6. Click **Resume Follow Ups**. **Verify:** resume uses the current queue revision and Send re-enables
+   after acknowledgement.
+7. With a queued item present, click **Cancel response**. **Verify:** the queue remains visible and
+   canonical cancellation is shown; queued work is neither dropped nor duplicated.
+8. Let a response finish normally. **Verify:** the FIFO head promotes automatically, its user row
+   and new assistant segment appear once, and the next queued item becomes position 1.
+
+### 6.14 Main Chat and project SessionPanel parity
+1. Exercise 6.12–6.13 in the main Chat page, then open the same capable gateway conversation from a
+   project's SessionPanel.
+2. **Verify:** both surfaces have file picker, paste/drop, previews/removal, IME-safe keyboard Send,
+   chooser, Stop, FIFO queue editing, pause/resume, transcript labels, and error dismissal.
+3. Open an active `v1` gateway conversation and an **On this Mac** local conversation in each
+   surface. **Verify:** the composer remains disabled with Stop-only behavior during the active
+   response; no Steer/Follow Up chooser or queue UI appears.
+
+### 6.15 Conversation ownership while navigating
+1. Open a capable-v2 conversation in main Chat and confirm live events arrive once.
+2. Open the same conversation in a project SessionPanel, then navigate away from main Chat while the
+   panel still owns it. **Verify:** the live subscription stays open and no event is duplicated.
+3. Close/navigate away from the SessionPanel too. **Verify:** with no surface owner, the conversation
+   subscription closes.
+4. Return to main Chat. **Verify:** it reopens exactly once from the canonical sequence, with no
+   duplicated replay.
+5. Start a slow create or deep-link lookup, navigate away before it resolves, and then let it finish.
+   **Verify:** the absent main Chat does not steal selection or open a late socket. Returning later
+   performs one fresh selection/open.
+
+### 6.16 Draft acknowledgement races
+1. Throttle the test gateway so ordinary Send acknowledgement is delayed. Submit conversation A,
+   edit/replace an attachment before acknowledgement, switch to B, and type/attach a different draft.
+2. Release A's acknowledgement. **Verify:** B is unchanged and A retains the newer edit/attachment;
+   only the exact captured A draft may clear when its revision and payload still match.
+3. Repeat with delayed **Steer** and **Follow Up** acknowledgements in both main Chat and SessionPanel.
+4. Reject an attempt. **Verify:** its original text/images remain available for retry.
+
 ---
 
 ## Section 7: Chat — Text & Markdown Rendering
@@ -580,6 +648,31 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 3. Answer the question in Mission Control.
 4. **Verify:** the answer appears once on both clients, the shared turn continues, and iOS cannot submit a second answer to the completed question.
 
+### 12.4 Tentative capable-v2 answers and retry
+1. In a capable-v2 conversation, answer a multiple-choice or free-text question from Mission Control.
+2. **Verify:** the attempted answer shows **Answer sent — waiting for response** and never shows the
+   green success check (the v2 wire has no positive answer acknowledgement).
+3. Deliver an unrelated model event for the same run. **Verify:** the attempted answer remains
+   tentative and the response keeps streaming.
+4. Reject the answer command from the test gateway. **Verify:** the controls return, the attempted
+   text remains visible/prefilled, and **Retry answer: _answer_** retries only that item.
+5. **Verify:** the command error remains a separate nonterminal alert until its own Dismiss button is
+   used; dismissing it does not remove the answer retry state.
+
+### 12.5 Neutral terminal answer treatment
+1. Repeat 12.4 and terminate the same run with each outcome: completed, cancelled, error/failed, and
+   a terminal frame received before the history message is persisted.
+2. **Verify:** every tentative/rejected attempt becomes neutral **Interaction ended** copy, with no
+   green check; already-rendered question/model events remain visible and no spinner remains.
+3. Repeat with a `v1`/local question. **Verify:** its existing optimistic selected-answer + green
+   check behavior is unchanged.
+
+### 12.6 Promoted-run question targeting
+1. Queue a Follow Up behind a capable-v2 response and let it promote into a new run.
+2. Have the promoted run ask a question, then answer and cancel it from Mission Control.
+3. **Verify:** both commands target the promoted run/segment rather than the previous active turn;
+   other queued items and question attempts are unchanged.
+
 ---
 
 ## Section 13: Chat — Image Handling
@@ -631,6 +724,24 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 1. If the direct download fails (e.g., Electron save dialog issue):
 2. **Verify:** The app falls back to opening the image in the system browser via `openExternal`
 3. **Verify:** No error is shown to the user — the fallback is seamless
+
+### 13.8 Capable queue and SessionPanel image parity
+1. During an active capable-v2 response, attach PNG/JPEG/GIF/WebP images by file picker, paste, and
+   drag/drop in main Chat; repeat in a project SessionPanel.
+2. **Verify:** both surfaces enforce the same 4-image/5MB/type rules, previews, removal labels, and
+   preserve text/images when the Steer/Follow Up chooser is dismissed.
+3. Choose **Follow Up**. **Verify:** images appear on its queue card and are preserved after durable
+   acknowledgement.
+4. Edit the queued item, remove one image, attach a replacement, and save. **Verify:** the canonical
+   card updates only after acknowledgement and the replacement is retained on conflict/retry.
+5. Let the item promote. **Verify:** its delivered transcript row displays each image once.
+
+### 13.9 Attachment edits during delayed acknowledgement
+1. Delay an ordinary Send acknowledgement, submit an image, then replace it before the ack arrives.
+2. Release the acknowledgement. **Verify:** the replacement remains in the draft and is not cleared
+   by the older captured payload.
+3. Repeat for Steer and Follow Up, switch conversations while pending, and verify each conversation's
+   text/image draft remains isolated in main Chat and SessionPanel.
 
 ---
 
@@ -691,6 +802,33 @@ under a Node version missing a required symbol, or otherwise force the gateway s
 2. Start or resume a turn.
 3. **Verify:** chat shows **Update Dash** instead of silently dropping the frame, corrupting the transcript, or clearing history.
 4. Update Mission Control and reopen the conversation. **Verify:** the canonical history is still present and can resume normally.
+
+### 14.10 Nonterminal v2 command issues
+1. Use the test gateway to reject a capable-v2 Steer, Follow Up mutation, cancel, and answer command
+   with distinct sanitized messages.
+2. **Verify:** each message renders in `role="alert"` without hiding the composer, queue, or running
+   response; an answer rejection also restores only its question's retry controls.
+3. Dismiss one alert. **Verify:** only that conversation's current issue clears; other conversation
+   alerts, queue items, and rejected answer state remain.
+4. Retry successfully. **Verify:** the issue clears after durable acknowledgement and the timeline
+   contains exactly one delivered operation.
+
+### 14.11 Protocol mismatch recovery
+1. Open a conversation bootstrapped as v2, then make the test gateway return a v1 older-message page
+   or otherwise change protocol for that open epoch (repeat v1→v2).
+2. **Verify:** Mission Control reports a conversation protocol mismatch, rejects the incompatible
+   page/frame, and preserves the existing transcript/queue instead of mixing protocols.
+3. Reopen after restoring the original protocol. **Verify:** one clean bootstrap/subscription restores
+   canonical state.
+
+### 14.12 Failures preserve drafts and queue editors
+1. Delay, then reject, ordinary Send and Steer/Follow Up enqueue while text and images are present.
+2. **Verify:** the exact draft remains after rejection, including edits made while the request was
+   pending; switching conversations does not move or clear it.
+3. Force a queue edit revision conflict. **Verify:** editor text/images and the attempted revision
+   remain available for an explicit retry after canonical refresh.
+4. Reject cancel and answer independently. **Verify:** both alerts remain nonterminal and can be
+   dismissed independently without clearing the queue or replacing the active run.
 
 ---
 
@@ -1304,6 +1442,21 @@ Take screenshots of every page and evaluate against these criteria. This section
 2. **Verify:** **Cached**, **Archived**, and **On this Mac** badges use consistent compact sizing, typography, spacing, and muted/read-only treatment.
 3. Disconnect a saved capable gateway. **Verify:** the nonmodal **Gateway offline — cached conversations are read-only.** banner remains visible without covering the conversation list, transcript, or navigation.
 4. **Verify:** the banner and badges do not use destructive error styling, and disabled conversation actions look consistent in every state.
+
+### 23.12 Follow Up accessibility, focus, and reduced motion
+1. During an active capable-v2 response, open the chooser from **Send message**.
+2. **Verify:** assistive technology announces dialog **A response is in progress**, buttons
+   **Steer** and **Follow Up**, and their explanatory descriptions. Escape/backdrop dismissal returns
+   focus to **Message** without changing the draft or attachments.
+3. Queue two items. **Verify:** they announce **Follow Up, position 1 of 2** / **2 of 2** and
+   item-specific **Edit Follow Up…** / **Remove Follow Up…** labels; delivering items expose neither
+   mutation control.
+4. Remove the first item. **Verify:** focus moves to the next item's Edit control; removing the last
+   item moves focus to **Message**.
+5. Verify pending/rejected question text and command errors are announced without placing streaming
+   token output in an `aria-live` region.
+6. Enable the OS **Reduce motion** preference and reopen both chat surfaces. **Verify:** queue cards
+   and chooser use no transition/entry motion while all focus and status behavior remains intact.
 
 ---
 

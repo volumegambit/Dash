@@ -242,8 +242,11 @@ export async function startMissionControlAcceptanceClient(
           updatedAt: now,
         },
       ]);
-      const accepted = await chat.sendMessage(ref(conversation), turnId, text);
-      if (!accepted) throw new Error('Capable Mission Control send was not durably accepted');
+      const result = await chat.sendMessage(ref(conversation), turnId, text);
+      if (!result || result.protocol !== 'v1') {
+        throw new Error('Capable Mission Control send was not durably accepted through v1');
+      }
+      const accepted = result.frame;
       assertDurableFrameIdentity(accepted, { conversationId: conversation.id, turnId });
       assertHealthy();
       projectedMessages.set(

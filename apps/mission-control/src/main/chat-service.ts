@@ -19,8 +19,22 @@ import type {
   MobileImage,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
+import type { MobileV2SequencedFrame } from '@dash/mobile-contract-v2';
 import WebSocket from 'ws';
-import type { McAgentEvent } from '../shared/ipc.js';
+import {
+  type ChatAcceptedFrame,
+  type ChatEditFollowUpRequest,
+  type ChatEnqueueInputRequest,
+  type ChatInitialState,
+  type ChatOlderMessagePage,
+  type ChatV2CommandIssue,
+  ConversationChatSupersededError,
+  type McAgentEvent,
+} from '../shared/ipc.js';
+import {
+  type ConversationChatCommandError,
+  ConversationChatTransport,
+} from './conversation-chat-transport.js';
 import type { ConversationController } from './conversation-controller.js';
 import type { ResumableChatTransport } from './resumable-chat-transport.js';
 import type { SessionStatus } from './session-status-sync.js';
@@ -72,6 +86,27 @@ interface ReplayedEventLogEntry {
     | { type: 'error'; error: string };
 }
 
+export type GatewayChatTransport = ResumableChatTransport | ConversationChatTransport;
+
+interface V2CommandDispatchContext {
+  conversation: ConversationRef;
+  commandId: string;
+  kind: 'cancel' | 'answer';
+  localDispatchToken: string;
+  questionId?: string;
+  runId: string;
+  transport: ConversationChatTransport;
+  transportGeneration: number;
+  lifecycleGeneration: number;
+  subscribeAttemptGeneration: number;
+}
+
+interface V2TransportSnapshot {
+  transport: ConversationChatTransport;
+  transportGeneration: number;
+  lifecycleGeneration: number;
+}
+
 function legacyView(record: McConversation): McConversationView {
   return {
     id: record.id,
@@ -96,6 +131,17 @@ function legacyView(record: McConversation): McConversationView {
 export class ChatService {
   private activeStreams = new Map<string, { ws: WebSocket; msgId: string }>();
   private readonly backgroundTasks = new Set<Promise<void>>();
+  private resumable?: ResumableChatTransport;
+  private conversationV2?: ConversationChatTransport;
+  private conversationTransportGeneration = 0;
+  private readonly v2LifecycleGeneration = new Map<string, number>();
+  private readonly v2SubscribeAttemptGeneration = new Map<string, number>();
+  private readonly v2RebasePromise = new Map<string, Promise<void>>();
+  private readonly v2CommandDispatches = new Map<
+    string,
+    Map<string, Map<string, V2CommandDispatchContext>>
+  >();
+  private v2CommandIssueListener?: (issue: ChatV2CommandIssue) => void;
 
   /**
    * Attached by the main process (where the projects client is in scope)
@@ -113,8 +159,10 @@ export class ChatService {
     private gatewayConnection?: GatewayConnection,
     private onConversationRenamed?: (conversation: ConversationRef, title: string) => void,
     private conversations?: ConversationController,
-    private resumable?: ResumableChatTransport,
-  ) {}
+    initialTransport?: GatewayChatTransport,
+  ) {
+    if (initialTransport) this.installGatewayChatTransport(initialTransport);
+  }
 
   /**
    * Supplies the coarse client location for outgoing turns. A settable hook
@@ -128,9 +176,236 @@ export class ChatService {
     this.locationProvider = provider;
   }
 
+  private installGatewayChatTransport(transport: GatewayChatTransport | undefined): void {
+    if (transport instanceof ConversationChatTransport) this.conversationV2 = transport;
+    else this.resumable = transport;
+  }
+
+  setGatewayChatTransport(transport: GatewayChatTransport | undefined): void {
+    const previous = this.conversationV2 ?? this.resumable;
+    if (previous === transport) return;
+    this.conversationTransportGeneration += 1;
+    this.resumable = undefined;
+    this.conversationV2 = undefined;
+    this.v2RebasePromise.clear();
+    this.v2CommandDispatches.clear();
+    previous?.closeAll();
+    this.installGatewayChatTransport(transport);
+  }
+
+  /** @deprecated Use setGatewayChatTransport so transport ownership stays centralized. */
   setResumableTransport(transport: ResumableChatTransport | undefined): void {
-    if (this.resumable !== transport) this.resumable?.closeAll();
-    this.resumable = transport;
+    this.setGatewayChatTransport(transport);
+  }
+
+  setV2CommandIssueListener(listener: ((issue: ChatV2CommandIssue) => void) | undefined): void {
+    this.v2CommandIssueListener = listener;
+  }
+
+  private v2LifecycleFor(conversationId: string): number {
+    return this.v2LifecycleGeneration.get(conversationId) ?? 0;
+  }
+
+  private v2SubscribeAttemptFor(conversationId: string): number {
+    return this.v2SubscribeAttemptGeneration.get(conversationId) ?? 0;
+  }
+
+  private captureV2Transport(ref: ConversationRef): V2TransportSnapshot {
+    const transport = this.conversationV2;
+    if (!transport) throw new Error('Conversation input queue unavailable');
+    return {
+      transport,
+      transportGeneration: this.conversationTransportGeneration,
+      lifecycleGeneration: this.v2LifecycleFor(ref.id),
+    };
+  }
+
+  private isV2TransportCurrent(ref: ConversationRef, snapshot: V2TransportSnapshot): boolean {
+    return (
+      this.conversationV2 === snapshot.transport &&
+      this.conversationTransportGeneration === snapshot.transportGeneration &&
+      this.v2LifecycleFor(ref.id) === snapshot.lifecycleGeneration
+    );
+  }
+
+  private assertV2TransportCurrent(ref: ConversationRef, snapshot: V2TransportSnapshot): void {
+    if (!this.isV2TransportCurrent(ref, snapshot)) {
+      throw new ConversationChatSupersededError();
+    }
+  }
+
+  private async awaitCurrentV2Acknowledgement<T>(
+    ref: ConversationRef,
+    snapshot: V2TransportSnapshot,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      const acknowledgement = await operation();
+      this.assertV2TransportCurrent(ref, snapshot);
+      return acknowledgement;
+    } catch (error) {
+      if (!this.isV2TransportCurrent(ref, snapshot)) {
+        throw new ConversationChatSupersededError();
+      }
+      throw error;
+    }
+  }
+
+  private async requireWritableGatewayConversation(
+    ref: ConversationRef,
+  ): Promise<McConversationView> {
+    if (!this.conversations || ref.origin !== 'gateway') {
+      throw new Error('Conversation input queue unavailable');
+    }
+    const conversation = await this.conversations.find(ref);
+    if (!conversation || conversation.origin !== 'gateway') {
+      throw new Error(`Conversation "${ref.id}" not found`);
+    }
+    if (conversation.offline || conversation.readOnly) {
+      throw new ConversationRepositoryOfflineError();
+    }
+    return conversation;
+  }
+
+  private async stableV2Conversation(
+    ref: ConversationRef,
+    snapshot: V2TransportSnapshot,
+  ): Promise<{ conversation: McConversationView; subscribeAttemptGeneration: number }> {
+    for (;;) {
+      this.assertV2TransportCurrent(ref, snapshot);
+      const barrier = this.v2RebasePromise.get(ref.id);
+      if (barrier) {
+        const barrierAttempt = this.v2SubscribeAttemptFor(ref.id);
+        try {
+          await barrier;
+        } catch (error) {
+          this.assertV2TransportCurrent(ref, snapshot);
+          if (
+            this.v2RebasePromise.get(ref.id) !== barrier ||
+            this.v2SubscribeAttemptFor(ref.id) !== barrierAttempt
+          ) {
+            continue;
+          }
+          throw error;
+        }
+        continue;
+      }
+
+      const attempt = this.v2SubscribeAttemptFor(ref.id);
+      const conversation = await this.requireWritableGatewayConversation(ref);
+      this.assertV2TransportCurrent(ref, snapshot);
+      const latestBarrier = this.v2RebasePromise.get(ref.id);
+      if (latestBarrier || this.v2SubscribeAttemptFor(ref.id) !== attempt) {
+        if (latestBarrier) {
+          const barrierAttempt = this.v2SubscribeAttemptFor(ref.id);
+          try {
+            await latestBarrier;
+          } catch (error) {
+            this.assertV2TransportCurrent(ref, snapshot);
+            if (
+              this.v2RebasePromise.get(ref.id) !== latestBarrier ||
+              this.v2SubscribeAttemptFor(ref.id) !== barrierAttempt
+            ) {
+              continue;
+            }
+            throw error;
+          }
+        }
+        continue;
+      }
+      return { conversation, subscribeAttemptGeneration: attempt };
+    }
+  }
+
+  private registerV2CommandDispatch(context: V2CommandDispatchContext): void {
+    let byRun = this.v2CommandDispatches.get(context.conversation.id);
+    if (!byRun) {
+      byRun = new Map();
+      this.v2CommandDispatches.set(context.conversation.id, byRun);
+    }
+    let byToken = byRun.get(context.runId);
+    if (!byToken) {
+      byToken = new Map();
+      byRun.set(context.runId, byToken);
+    }
+    byToken.set(context.localDispatchToken, context);
+  }
+
+  private removeV2CommandDispatch(
+    conversationId: string,
+    runId: string,
+    localDispatchToken: string,
+  ): void {
+    const byRun = this.v2CommandDispatches.get(conversationId);
+    const byToken = byRun?.get(runId);
+    byToken?.delete(localDispatchToken);
+    if (byToken?.size === 0) byRun?.delete(runId);
+    if (byRun?.size === 0) this.v2CommandDispatches.delete(conversationId);
+  }
+
+  private rebaseV2CommandDispatches(
+    ref: ConversationRef,
+    activeTurnId: string | null,
+    generation: V2TransportSnapshot & { subscribeAttemptGeneration: number },
+  ): void {
+    const byRun = this.v2CommandDispatches.get(ref.id);
+    if (!byRun) return;
+    for (const [runId, byToken] of [...byRun]) {
+      if (runId !== activeTurnId) {
+        byRun.delete(runId);
+        continue;
+      }
+      for (const [token, context] of [...byToken]) {
+        if (
+          context.transport !== generation.transport ||
+          context.transportGeneration !== generation.transportGeneration ||
+          context.lifecycleGeneration !== generation.lifecycleGeneration
+        ) {
+          byToken.delete(token);
+          continue;
+        }
+        byToken.set(token, {
+          ...context,
+          subscribeAttemptGeneration: generation.subscribeAttemptGeneration,
+        });
+      }
+      if (byToken.size === 0) byRun.delete(runId);
+    }
+    if (byRun.size === 0) this.v2CommandDispatches.delete(ref.id);
+  }
+
+  handleV2CommandError(
+    sourceTransport: ConversationChatTransport,
+    conversationId: string,
+    error: ConversationChatCommandError,
+  ): void {
+    if (this.conversationV2 !== sourceTransport) return;
+    const byRun = this.v2CommandDispatches.get(conversationId);
+    const byToken = byRun?.get(error.commandId);
+    if (!byToken) return;
+    const currentAttempt = this.v2SubscribeAttemptFor(conversationId);
+    const currentLifecycle = this.v2LifecycleFor(conversationId);
+    const viable = [...byToken.values()].filter(
+      (context) =>
+        context.transport === sourceTransport &&
+        context.transportGeneration === this.conversationTransportGeneration &&
+        context.lifecycleGeneration === currentLifecycle &&
+        context.subscribeAttemptGeneration === currentAttempt,
+    );
+    if (viable.length === 0) return;
+    const ambiguousCorrelation = viable.length > 1;
+    for (const context of viable) {
+      this.removeV2CommandDispatch(conversationId, context.runId, context.localDispatchToken);
+      this.v2CommandIssueListener?.({
+        conversation: context.conversation,
+        commandId: context.commandId,
+        kind: context.kind,
+        localDispatchToken: context.localDispatchToken,
+        ...(context.questionId ? { questionId: context.questionId } : {}),
+        ambiguousCorrelation,
+        apiError: error.apiError,
+      });
+    }
   }
 
   setSessionStatusListener(
@@ -413,6 +688,117 @@ export class ChatService {
     return page;
   }
 
+  async getInitialState(ref: ConversationRef): Promise<ChatInitialState> {
+    const bootstrap = await this.conversations?.bootstrap(ref);
+    if (bootstrap) return { protocol: 'v2', bootstrap };
+    return { protocol: 'v1', page: await this.getMessages(ref) };
+  }
+
+  async getOlderMessages(
+    ref: ConversationRef,
+    before: string,
+    limit = 100,
+  ): Promise<ChatOlderMessagePage> {
+    const page = await this.conversations?.messagesV2(ref, { limit, before });
+    if (page) return { protocol: 'v2', page };
+    return { protocol: 'v1', page: await this.getMessages(ref, before) };
+  }
+
+  async subscribeV2(ref: ConversationRef, sinceV2Seq: number): Promise<void> {
+    const snapshot = this.captureV2Transport(ref);
+    const attempt = this.v2SubscribeAttemptFor(ref.id) + 1;
+    this.v2SubscribeAttemptGeneration.set(ref.id, attempt);
+
+    const attemptTask = (async () => {
+      const conversation = await this.requireWritableGatewayConversation(ref);
+      if (
+        !this.isV2TransportCurrent(ref, snapshot) ||
+        this.v2SubscribeAttemptFor(ref.id) !== attempt
+      ) {
+        return;
+      }
+      this.rebaseV2CommandDispatches(ref, conversation.activeTurnId, {
+        ...snapshot,
+        subscribeAttemptGeneration: attempt,
+      });
+      await snapshot.transport.open(conversation, sinceV2Seq);
+    })();
+    this.v2RebasePromise.set(ref.id, attemptTask);
+    try {
+      await attemptTask;
+    } catch (error) {
+      if (
+        !this.isV2TransportCurrent(ref, snapshot) ||
+        this.v2SubscribeAttemptFor(ref.id) !== attempt
+      ) {
+        return;
+      }
+      throw error;
+    } finally {
+      if (this.v2RebasePromise.get(ref.id) === attemptTask) {
+        this.v2RebasePromise.delete(ref.id);
+      }
+    }
+  }
+
+  unsubscribeV2(ref: ConversationRef): void {
+    this.v2LifecycleGeneration.set(ref.id, this.v2LifecycleFor(ref.id) + 1);
+    this.v2SubscribeAttemptGeneration.set(ref.id, this.v2SubscribeAttemptFor(ref.id) + 1);
+    this.v2CommandDispatches.delete(ref.id);
+    this.conversationV2?.closeConversation(ref.id);
+  }
+
+  async enqueueInput(
+    ref: ConversationRef,
+    request: ChatEnqueueInputRequest,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>> {
+    const snapshot = this.captureV2Transport(ref);
+    const { conversation } = await this.stableV2Conversation(ref, snapshot);
+    this.assertV2TransportCurrent(ref, snapshot);
+    return this.awaitCurrentV2Acknowledgement(ref, snapshot, () =>
+      snapshot.transport.enqueueInput(conversation, request),
+    );
+  }
+
+  async editFollowUp(
+    ref: ConversationRef,
+    request: ChatEditFollowUpRequest,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'input_updated' }>> {
+    const snapshot = this.captureV2Transport(ref);
+    const { conversation } = await this.stableV2Conversation(ref, snapshot);
+    this.assertV2TransportCurrent(ref, snapshot);
+    return this.awaitCurrentV2Acknowledgement(ref, snapshot, () =>
+      snapshot.transport.editFollowUp(conversation, request),
+    );
+  }
+
+  async removeFollowUp(
+    ref: ConversationRef,
+    commandId: string,
+    inputId: string,
+    expectedRevision: number,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'input_removed' }>> {
+    const snapshot = this.captureV2Transport(ref);
+    const { conversation } = await this.stableV2Conversation(ref, snapshot);
+    this.assertV2TransportCurrent(ref, snapshot);
+    return this.awaitCurrentV2Acknowledgement(ref, snapshot, () =>
+      snapshot.transport.removeFollowUp(conversation, commandId, inputId, expectedRevision),
+    );
+  }
+
+  async resumeFollowUps(
+    ref: ConversationRef,
+    commandId: string,
+    expectedQueueRevision: number,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'queue_resumed' }>> {
+    const snapshot = this.captureV2Transport(ref);
+    const { conversation } = await this.stableV2Conversation(ref, snapshot);
+    this.assertV2TransportCurrent(ref, snapshot);
+    return this.awaitCurrentV2Acknowledgement(ref, snapshot, () =>
+      snapshot.transport.resumeFollowUps(conversation, commandId, expectedQueueRevision),
+    );
+  }
+
   async renameConversation(
     ref: ConversationRef,
     revision: number,
@@ -442,7 +828,7 @@ export class ChatService {
     turnId: string,
     text: string,
     images?: MobileImage[],
-  ): Promise<Extract<MobileWsServerFrame, { type: 'accepted' }> | undefined> {
+  ): Promise<ChatAcceptedFrame | undefined> {
     if (ref.origin === 'local') {
       if (this.conversations) {
         const conversation = await this.conversations.find(ref);
@@ -455,6 +841,18 @@ export class ChatService {
       }
       await this.sendLegacyMessage(ref.id, text, images);
       return undefined;
+    }
+    if (this.conversationV2) {
+      const snapshot = this.captureV2Transport(ref);
+      const { conversation } = await this.stableV2Conversation(ref, snapshot);
+      this.assertV2TransportCurrent(ref, snapshot);
+      const accepted = await this.awaitCurrentV2Acknowledgement(ref, snapshot, () =>
+        snapshot.transport.send(conversation, turnId, text, images, this.locationProvider?.()),
+      );
+      if (conversation.title === 'New Conversation') {
+        this.runInBackground(this.titleAndFileTask(conversation, text));
+      }
+      return { protocol: 'v2', frame: accepted };
     }
     if (!this.conversations || !this.resumable) {
       throw new Error('Conversation sync unavailable');
@@ -476,7 +874,7 @@ export class ChatService {
     if (conversation.title === 'New Conversation') {
       this.runInBackground(this.titleAndFileTask(conversation, text));
     }
-    return accepted;
+    return { protocol: 'v1', frame: accepted };
   }
 
   private async listLegacyConversations(): Promise<McConversationListResult> {
@@ -696,9 +1094,44 @@ export class ChatService {
     });
   }
 
-  async cancel(ref: ConversationRef, turnId?: string): Promise<void> {
+  async cancel(ref: ConversationRef, turnId?: string, localDispatchToken?: string): Promise<void> {
     if (ref.origin === 'local') {
       this.cancelLegacy(ref.id);
+      return;
+    }
+    if (this.conversationV2) {
+      const snapshot = this.captureV2Transport(ref);
+      try {
+        if (!turnId || !localDispatchToken) {
+          throw new Error('Conversation input queue cancel requires dispatch identity');
+        }
+        const { conversation, subscribeAttemptGeneration } = await this.stableV2Conversation(
+          ref,
+          snapshot,
+        );
+        if (conversation.activeTurnId !== turnId) {
+          throw new Error(`Conversation "${ref.id}" does not have active turn "${turnId}"`);
+        }
+        this.assertV2TransportCurrent(ref, snapshot);
+        this.registerV2CommandDispatch({
+          conversation: ref,
+          commandId: turnId,
+          kind: 'cancel',
+          localDispatchToken,
+          runId: turnId,
+          ...snapshot,
+          subscribeAttemptGeneration,
+        });
+        try {
+          snapshot.transport.cancel(ref.id, turnId);
+        } catch (error) {
+          this.removeV2CommandDispatch(ref.id, turnId, localDispatchToken);
+          throw error;
+        }
+      } catch (error) {
+        if (error instanceof ConversationChatSupersededError) return;
+        throw error;
+      }
       return;
     }
     if (!this.conversations || !this.resumable || !turnId) {
@@ -756,8 +1189,45 @@ export class ChatService {
     turnId: string | undefined,
     questionId: string,
     answer: string,
+    localDispatchToken?: string,
   ): Promise<void> {
     if (ref.origin === 'gateway') {
+      if (this.conversationV2) {
+        const snapshot = this.captureV2Transport(ref);
+        try {
+          if (!turnId || !localDispatchToken) {
+            throw new Error('Conversation input queue answer requires dispatch identity');
+          }
+          const { conversation, subscribeAttemptGeneration } = await this.stableV2Conversation(
+            ref,
+            snapshot,
+          );
+          if (conversation.activeTurnId !== turnId) {
+            throw new Error(`Conversation "${ref.id}" does not have active turn "${turnId}"`);
+          }
+          this.assertV2TransportCurrent(ref, snapshot);
+          this.registerV2CommandDispatch({
+            conversation: ref,
+            commandId: turnId,
+            kind: 'answer',
+            localDispatchToken,
+            questionId,
+            runId: turnId,
+            ...snapshot,
+            subscribeAttemptGeneration,
+          });
+          try {
+            snapshot.transport.answer(ref.id, turnId, questionId, answer);
+          } catch (error) {
+            this.removeV2CommandDispatch(ref.id, turnId, localDispatchToken);
+            throw error;
+          }
+        } catch (error) {
+          if (error instanceof ConversationChatSupersededError) return;
+          throw error;
+        }
+        return;
+      }
       if (!this.conversations || !this.resumable || !turnId) {
         throw new Error('Conversation sync unavailable for gateway answer');
       }

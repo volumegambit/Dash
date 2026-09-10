@@ -7,9 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // We need to import makePackagedSpawner — it doesn't exist yet, so this will fail
 // Import it from ipc.ts after you implement it
-import { InMemoryKeychainStore } from '@dash/mc';
+import { GatewayHttpError, InMemoryKeychainStore } from '@dash/mc';
 import type { GatewaySupervisorOptions, ProcessSpawner } from '@dash/mc';
-import { captureChatIpcResult, unwrapChatIpcResult } from '../shared/ipc.js';
+import {
+  ConversationChatSupersededError,
+  captureChatIpcResult,
+  isMobileApiError,
+  unwrapChatIpcResult,
+} from '../shared/ipc.js';
+import type { ChatV2CommandIssue } from '../shared/ipc.js';
+import { ConversationChatCommandError } from './conversation-chat-transport.js';
 import { verifyConversationGateway } from './gateway-connection.js';
 import {
   ConversationLifecycleEpoch,
@@ -21,7 +28,9 @@ import {
   createCanonicalChatHandlers,
   createGatewaySubscriptionLifecycle,
   createLegacyWireChatAdapter,
+  dispatchChatV2FireAndForget,
   disposePendingConversationRuntime,
+  emitChatV2CommandIssue,
   enrollGateway,
   getGatewaySupervisor,
   healEnrolledGatewayChatToken,
@@ -229,6 +238,182 @@ describe('canonical chat IPC boundary', () => {
       });
     }
   });
+
+  it.each([
+    { code: 'unauthorized', error: 'No', retryable: false },
+    { code: 'not_found', error: 'Missing', retryable: false, details: { nested: { open: true } } },
+    { code: 'validation_failed', error: 'Bad', retryable: false },
+    { code: 'revision_conflict', error: 'Conflict', retryable: true },
+    { code: 'conversation_busy', error: 'Busy', retryable: true },
+    { code: 'rate_limited', error: 'Slow down', retryable: true },
+    { code: 'gateway_offline', error: 'Offline', retryable: true },
+    { code: 'capability_required', error: 'Upgrade', retryable: false },
+  ])('accepts the closed MobileApiError envelope %#', (value) => {
+    expect(isMobileApiError(value)).toBe(true);
+  });
+
+  it.each([
+    null,
+    [],
+    { code: 'not_found', error: 'Missing' },
+    { code: 'future_code', error: 'Unknown', retryable: false },
+    { code: 'not_found', error: '', retryable: false },
+    { code: 'not_found', error: 'Missing', retryable: 0 },
+    { code: 'not_found', error: 'Missing', retryable: false, details: null },
+    { code: 'not_found', error: 'Missing', retryable: false, details: [] },
+    { code: 'not_found', error: 'Missing', retryable: false, extra: true },
+    Object.create({ code: 'not_found', error: 'Missing', retryable: false }),
+  ])('rejects malformed MobileApiError envelope %#', (value) => {
+    expect(isMobileApiError(value)).toBe(false);
+  });
+
+  it('does not attach a malformed apiError during capture or unwrap', async () => {
+    const wire = await captureChatIpcResult(async () => {
+      throw Object.assign(new Error('bad envelope'), {
+        apiError: { code: 'future_code', error: 'raw secret', retryable: false },
+      });
+    });
+    expect(wire).toEqual({ ok: false, error: { message: 'bad envelope' } });
+
+    expect(() =>
+      unwrapChatIpcResult({
+        ok: false,
+        error: {
+          message: 'still bad',
+          apiError: { code: 'future_code', error: 'raw secret', retryable: false } as never,
+        },
+      }),
+    ).toThrowError(expect.not.objectContaining({ apiError: expect.anything() }));
+  });
+
+  it('round-trips protocol-tagged v1 and v2 accepted acknowledgements', async () => {
+    const v1 = await fixture<Record<string, unknown>>('chat-accepted.json');
+    const v2 = JSON.parse(
+      await readFile(
+        resolve(
+          dirname(fileURLToPath(import.meta.url)),
+          '../../../../contracts/mobile/v2/fixtures/chat-accepted.json',
+        ),
+        'utf8',
+      ),
+    ) as Record<string, unknown>;
+
+    for (const tagged of [
+      { protocol: 'v1', frame: v1 },
+      { protocol: 'v2', frame: v2 },
+    ] as const) {
+      const wire = structuredClone(await captureChatIpcResult(async () => tagged));
+      expect(unwrapChatIpcResult(wire)).toEqual(tagged);
+    }
+  });
+
+  it('serializes and reconstructs ConversationChatSupersededError without an apiError', async () => {
+    const wire = structuredClone(
+      await captureChatIpcResult(async () => {
+        throw new ConversationChatSupersededError();
+      }),
+    );
+
+    expect(wire).toEqual({
+      ok: false,
+      error: {
+        kind: 'superseded',
+        message: 'Conversation subscription changed before the command was acknowledged',
+      },
+    });
+    expect(() => unwrapChatIpcResult(wire)).toThrow(ConversationChatSupersededError);
+  });
+
+  it('emits only validated command errors and sanitizes every other failure', () => {
+    const send = vi.fn();
+    const context: Omit<ChatV2CommandIssue, 'apiError'> = {
+      conversation: { id: 'conversation-1', origin: 'gateway' },
+      commandId: 'turn-01',
+      kind: 'answer',
+      localDispatchToken: 'answer-token',
+      questionId: 'question-1',
+      ambiguousCorrelation: false,
+    };
+    const apiError = {
+      code: 'conversation_busy' as const,
+      error: 'The run already ended.',
+      retryable: false,
+    };
+
+    emitChatV2CommandIssue(send, context, new ConversationChatCommandError('turn-01', apiError));
+    emitChatV2CommandIssue(send, context, new GatewayHttpError(409, 'answer', '', apiError));
+    emitChatV2CommandIssue(send, context, Object.assign(new Error('raw secret'), { apiError }));
+    emitChatV2CommandIssue(send, context, {
+      code: 'future_code',
+      error: 'raw secret',
+      retryable: false,
+    });
+
+    expect(send).toHaveBeenNthCalledWith(1, { ...context, apiError });
+    expect(send).toHaveBeenNthCalledWith(2, { ...context, apiError });
+    expect(send).toHaveBeenNthCalledWith(3, {
+      ...context,
+      apiError: {
+        code: 'validation_failed',
+        error: 'Chat command could not be applied.',
+        retryable: false,
+      },
+    });
+    expect(send).toHaveBeenNthCalledWith(4, {
+      ...context,
+      apiError: {
+        code: 'validation_failed',
+        error: 'Chat command could not be applied.',
+        retryable: false,
+      },
+    });
+  });
+
+  it('catches fire-and-forget cancel and answer failures with their local contexts', async () => {
+    const send = vi.fn();
+    const conversation = { id: 'conversation-1', origin: 'gateway' as const };
+
+    dispatchChatV2FireAndForget(() => Promise.reject(new Error('private cancel failure')), send, {
+      conversation,
+      commandId: 'turn-01',
+      kind: 'cancel',
+      localDispatchToken: 'cancel-token',
+      ambiguousCorrelation: false,
+    });
+    dispatchChatV2FireAndForget(() => Promise.reject(new Error('private answer failure')), send, {
+      conversation,
+      commandId: 'turn-01',
+      kind: 'answer',
+      localDispatchToken: 'answer-token',
+      questionId: 'question-1',
+      ambiguousCorrelation: false,
+    });
+
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls.map(([issue]) => issue)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'cancel',
+          localDispatchToken: 'cancel-token',
+          apiError: {
+            code: 'validation_failed',
+            error: 'Chat command could not be applied.',
+            retryable: false,
+          },
+        }),
+        expect.objectContaining({
+          kind: 'answer',
+          localDispatchToken: 'answer-token',
+          questionId: 'question-1',
+          apiError: {
+            code: 'validation_failed',
+            error: 'Chat command could not be applied.',
+            retryable: false,
+          },
+        }),
+      ]),
+    );
+  });
 });
 
 describe('conversation sync lifecycle selection', () => {
@@ -256,6 +441,9 @@ describe('conversation sync lifecycle selection', () => {
       gatewayId: identity.gatewayId,
       apiVersion: health.apiVersion,
       capabilities: health.capabilities,
+      conversationApiVersions: [1, 2],
+      chatCapabilities: ['chat-input-queue-v1', 'future-capability'],
+      queueInputCapable: true,
     });
     expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
       client.getIdentity.mock.invocationCallOrder[0],
@@ -265,22 +453,22 @@ describe('conversation sync lifecycle selection', () => {
     );
   });
 
-  it('activates and detaches the pending resumable transport atomically', () => {
-    const setResumableTransport = vi.fn();
+  it('activates and detaches the pending gateway transport atomically', () => {
+    const setGatewayChatTransport = vi.fn();
     const transport = { closeAll: vi.fn() };
 
     activatePendingConversationRuntime(
-      { setResumableTransport } as never,
+      { setGatewayChatTransport } as never,
       {
         gatewayId: 'gateway-1',
         repository: { offline: false },
         transport,
       } as never,
     );
-    activatePendingConversationRuntime({ setResumableTransport } as never, null);
+    activatePendingConversationRuntime({ setGatewayChatTransport } as never, null);
 
-    expect(setResumableTransport).toHaveBeenNthCalledWith(1, transport);
-    expect(setResumableTransport).toHaveBeenNthCalledWith(2, undefined);
+    expect(setGatewayChatTransport).toHaveBeenNthCalledWith(1, transport);
+    expect(setGatewayChatTransport).toHaveBeenNthCalledWith(2, undefined);
   });
 
   it('forwards canonical refs, cursors, revisions, and turn IDs through handler bodies', async () => {
@@ -289,11 +477,19 @@ describe('conversation sync lifecycle selection', () => {
       listConversations: vi.fn(),
       createConversation: vi.fn(),
       getMessages: vi.fn(),
+      getInitialState: vi.fn(),
+      getOlderMessages: vi.fn(),
       sendMessage: vi.fn(),
       renameConversation: vi.fn(),
       deleteConversation: vi.fn(),
       cancel: vi.fn(),
       answerQuestion: vi.fn(),
+      subscribeV2: vi.fn(),
+      unsubscribeV2: vi.fn(),
+      enqueueInput: vi.fn(),
+      editFollowUp: vi.fn(),
+      removeFollowUp: vi.fn(),
+      resumeFollowUps: vi.fn(),
     };
     const controller = { find: vi.fn() };
     const handlers = createCanonicalChatHandlers(chat as never, controller as never);
@@ -303,21 +499,56 @@ describe('conversation sync lifecycle selection', () => {
     await handlers.getConversation(ref);
     await handlers.createConversation('agent-1', 'request-1');
     await handlers.getMessages(ref, 'before-1');
+    await handlers.getInitialState(ref);
+    await handlers.getOlderMessages(ref, 'before-v2', 40);
     await handlers.sendMessage(ref, 'turn-1', 'hello', images);
     await handlers.renameConversation(ref, 4, 'Renamed');
     await handlers.deleteConversation(ref, 5);
-    handlers.cancel(ref, 'turn-1');
-    handlers.answerQuestion(ref, 'turn-1', 'question-1', 'Yes');
+    handlers.cancel(ref, 'turn-1', 'cancel-token');
+    handlers.answerQuestion(ref, 'turn-1', 'question-1', 'Yes', 'answer-token');
+    await handlers.subscribeV2(ref, 12);
+    await handlers.unsubscribeV2(ref);
+    const enqueue = {
+      commandId: '00000000-0000-4000-8000-000000000301',
+      inputId: '00000000-0000-4000-8000-000000000302',
+      behavior: 'steer' as const,
+      expectedActiveTurnId: 'turn-1',
+      text: 'focus',
+      images,
+    };
+    await handlers.enqueueInput(ref, enqueue);
+    await handlers.editFollowUp(ref, {
+      commandId: enqueue.commandId,
+      inputId: enqueue.inputId,
+      expectedRevision: 1,
+      text: 'edit',
+      images,
+    });
+    await handlers.removeFollowUp(ref, enqueue.commandId, enqueue.inputId, 2);
+    await handlers.resumeFollowUps(ref, enqueue.commandId, 3);
 
     expect(chat.listConversations).toHaveBeenCalledWith('cursor-1');
     expect(controller.find).toHaveBeenCalledWith(ref);
     expect(chat.createConversation).toHaveBeenCalledWith('agent-1', 'request-1');
     expect(chat.getMessages).toHaveBeenCalledWith(ref, 'before-1');
+    expect(chat.getInitialState).toHaveBeenCalledWith(ref);
+    expect(chat.getOlderMessages).toHaveBeenCalledWith(ref, 'before-v2', 40);
     expect(chat.sendMessage).toHaveBeenCalledWith(ref, 'turn-1', 'hello', images);
     expect(chat.renameConversation).toHaveBeenCalledWith(ref, 4, 'Renamed');
     expect(chat.deleteConversation).toHaveBeenCalledWith(ref, 5);
-    expect(chat.cancel).toHaveBeenCalledWith(ref, 'turn-1');
-    expect(chat.answerQuestion).toHaveBeenCalledWith(ref, 'turn-1', 'question-1', 'Yes');
+    expect(chat.cancel).toHaveBeenCalledWith(ref, 'turn-1', 'cancel-token');
+    expect(chat.answerQuestion).toHaveBeenCalledWith(
+      ref,
+      'turn-1',
+      'question-1',
+      'Yes',
+      'answer-token',
+    );
+    expect(chat.subscribeV2).toHaveBeenCalledWith(ref, 12);
+    expect(chat.unsubscribeV2).toHaveBeenCalledWith(ref);
+    expect(chat.enqueueInput).toHaveBeenCalledWith(ref, enqueue);
+    expect(chat.removeFollowUp).toHaveBeenCalledWith(ref, enqueue.commandId, enqueue.inputId, 2);
+    expect(chat.resumeFollowUps).toHaveBeenCalledWith(ref, enqueue.commandId, 3);
   });
 
   it('selects explicit legacy authority without requiring an identity route', async () => {
@@ -337,6 +568,9 @@ describe('conversation sync lifecycle selection', () => {
       gatewayId: null,
       apiVersion: 0,
       capabilities: [],
+      conversationApiVersions: [1],
+      chatCapabilities: [],
+      queueInputCapable: false,
     });
     expect(client.getIdentity).not.toHaveBeenCalled();
   });
@@ -360,7 +594,7 @@ describe('conversation sync lifecycle selection', () => {
     const repository = { offline: false };
     const transport = { closeAll: vi.fn() };
     const controller = { configure: vi.fn() };
-    const activeChatService = { setResumableTransport: vi.fn() };
+    const activeChatService = { setGatewayChatTransport: vi.fn() };
     const createRepository = vi.fn(() => repository);
     const createTransport = vi.fn(() => transport);
 
@@ -383,7 +617,7 @@ describe('conversation sync lifecycle selection', () => {
       capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
       repository,
     });
-    expect(activeChatService.setResumableTransport).not.toHaveBeenCalled();
+    expect(activeChatService.setGatewayChatTransport).not.toHaveBeenCalled();
   });
 
   it('restores a known capable pending repository read-only while offline', () => {
@@ -404,7 +638,7 @@ describe('conversation sync lifecycle selection', () => {
       createTransport: vi.fn() as never,
     });
 
-    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(transport.closeAll).not.toHaveBeenCalled();
     expect(pending).toEqual({ gatewayId: 'gateway-1', repository, transport: null });
     expect(controller.configure).toHaveBeenCalledWith({
       gatewayId: 'gateway-1',
@@ -434,7 +668,7 @@ describe('conversation sync lifecycle selection', () => {
       createTransport: vi.fn(() => ({ closeAll: vi.fn() })) as never,
     });
 
-    expect(previousTransport.closeAll).toHaveBeenCalledOnce();
+    expect(previousTransport.closeAll).not.toHaveBeenCalled();
     expect(pending?.repository).toBe(nextRepository);
   });
 
@@ -462,7 +696,7 @@ describe('conversation sync lifecycle selection', () => {
 
     expect(createRepository).toHaveBeenCalledOnce();
     expect(pending?.repository).toBe(nextRepository);
-    expect(previousTransport.closeAll).toHaveBeenCalledOnce();
+    expect(previousTransport.closeAll).not.toHaveBeenCalled();
   });
 
   it('selects explicit legacy authority without touching the active ChatService transport', () => {
@@ -663,7 +897,7 @@ describe('gateway event stream lifecycle', () => {
     expect(controls.disconnectProjects).toHaveBeenCalledTimes(2);
   });
 
-  it('disposes the pending resumable transport during shutdown', () => {
+  it('leaves pending runtime transport closure to ChatService during shutdown', () => {
     const transport = { closeAll: vi.fn() };
 
     expect(
@@ -673,7 +907,7 @@ describe('gateway event stream lifecycle', () => {
         transport,
       } as never),
     ).toBeNull();
-    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(transport.closeAll).not.toHaveBeenCalled();
   });
 });
 

@@ -21,6 +21,7 @@ import {
   ConversationStore,
   GatewayConversationCache,
   GatewayConversationRepository,
+  GatewayHttpError,
   GatewayManagementClient,
   GatewayStateStore,
   GatewaySupervisor,
@@ -49,13 +50,21 @@ import type {
   RemoteGatewaySecrets,
   VpsGatewayDeployRequest,
 } from '@dash/mc';
-import type { MobileCapability, MobileImage, MobileImageMediaType } from '@dash/mobile-contract';
+import type {
+  MobileApiError,
+  MobileCapability,
+  MobileImage,
+  MobileImageMediaType,
+} from '@dash/mobile-contract';
 import { desktopDir, gatewayDir, logsDir, migrateLegacyLayout } from '@dash/paths';
 import { app, dialog, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import type {
   ChatConnectionIssue,
+  ChatEditFollowUpRequest,
+  ChatEnqueueInputRequest,
+  ChatV2CommandIssue,
   CompanionAgentStatus,
   CompanionSelection,
   ControlPlaneStatus,
@@ -66,8 +75,8 @@ import type {
   PairingInfo,
   SetupStatus,
 } from '../shared/ipc.js';
-import { captureChatIpcResult } from '../shared/ipc.js';
-import { ChatService } from './chat-service.js';
+import { captureChatIpcResult, isMobileApiError } from '../shared/ipc.js';
+import { ChatService, type GatewayChatTransport } from './chat-service.js';
 import { completeClaudeOAuth, prepareClaudeOAuth } from './claude-auth.js';
 import { readCoarseLocation } from './client-location.js';
 import { startCodexOAuth } from './codex-auth.js';
@@ -78,6 +87,10 @@ import {
   forwardStatuses,
 } from './companion-window.js';
 import { createControlPlaneRuntime, readControlPlaneConfig } from './control-plane.js';
+import {
+  ConversationChatCommandError,
+  ConversationChatTransport,
+} from './conversation-chat-transport.js';
 import { ConversationController } from './conversation-controller.js';
 import {
   REMOTE_GATEWAY_TEST_FAILURE,
@@ -110,17 +123,28 @@ export interface ConversationInvalidation {
 export interface PendingConversationRuntime {
   gatewayId: string;
   repository: ConversationRepository;
-  transport: ResumableChatTransport | null;
+  transport: GatewayChatTransport | null;
 }
 
 export async function verifiedConversationContext(
-  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'>,
-): Promise<{ gatewayId: string | null; apiVersion: number; capabilities: MobileCapability[] }> {
+  client: Pick<GatewayManagementClient, 'health' | 'getIdentity'> &
+    Partial<Pick<GatewayManagementClient, 'info'>>,
+): Promise<{
+  gatewayId: string | null;
+  apiVersion: number;
+  capabilities: MobileCapability[];
+  conversationApiVersions: number[];
+  chatCapabilities: string[];
+  queueInputCapable: boolean;
+}> {
   const verified = await verifyConversationGateway(client);
   return {
     gatewayId: verified.identity?.gatewayId ?? null,
     apiVersion: verified.apiVersion,
     capabilities: verified.capabilities,
+    conversationApiVersions: verified.conversationApiVersions,
+    chatCapabilities: verified.chatCapabilities,
+    queueInputCapable: verified.queueInputCapable,
   };
 }
 
@@ -142,15 +166,17 @@ export function configurePendingConversationRuntime(options: {
     gatewayId: string | null;
     online: boolean;
     capabilities: MobileCapability[] | null;
+    conversationApiVersions?: number[];
+    chatCapabilities?: string[];
+    queueInputCapable?: boolean;
   };
   existing: PendingConversationRuntime | null;
   createRepository(): ConversationRepository;
-  createTransport(): ResumableChatTransport;
+  createTransport(): GatewayChatTransport;
 }): PendingConversationRuntime | null {
   const { controller, context, existing } = options;
   const capable = context.capabilities?.includes('conversation-sync-v1') ?? false;
   if (!capable || !context.gatewayId) {
-    existing?.transport?.closeAll();
     controller.configure({
       gatewayId: context.gatewayId,
       online: context.online,
@@ -165,12 +191,10 @@ export function configurePendingConversationRuntime(options: {
       ? existing.repository
       : options.createRepository();
   if (!context.online) {
-    existing?.transport?.closeAll();
     controller.configure({ ...context, repository });
     return { gatewayId: context.gatewayId, repository, transport: null };
   }
 
-  existing?.transport?.closeAll();
   const transport = options.createTransport();
   controller.configure({ ...context, repository });
   return { gatewayId: context.gatewayId, repository, transport };
@@ -179,16 +203,36 @@ export function configurePendingConversationRuntime(options: {
 export function disposePendingConversationRuntime(
   runtime: PendingConversationRuntime | null,
 ): null {
-  runtime?.transport?.closeAll();
+  void runtime;
   return null;
 }
 
 export function activatePendingConversationRuntime(
-  service: Pick<ChatService, 'setResumableTransport'>,
+  service: Pick<ChatService, 'setGatewayChatTransport'>,
   runtime: PendingConversationRuntime | null,
 ): void {
-  service.setResumableTransport(runtime?.transport ?? undefined);
+  service.setGatewayChatTransport(runtime?.transport ?? undefined);
 }
+
+type CanonicalChatHandlers = Pick<
+  ChatService,
+  | 'listConversations'
+  | 'createConversation'
+  | 'getMessages'
+  | 'getInitialState'
+  | 'getOlderMessages'
+  | 'sendMessage'
+  | 'renameConversation'
+  | 'deleteConversation'
+  | 'cancel'
+  | 'answerQuestion'
+  | 'subscribeV2'
+  | 'unsubscribeV2'
+  | 'enqueueInput'
+  | 'editFollowUp'
+  | 'removeFollowUp'
+  | 'resumeFollowUps'
+> & { getConversation: ConversationController['find'] };
 
 export function createCanonicalChatHandlers(
   chat: Pick<
@@ -196,14 +240,22 @@ export function createCanonicalChatHandlers(
     | 'listConversations'
     | 'createConversation'
     | 'getMessages'
+    | 'getInitialState'
+    | 'getOlderMessages'
     | 'sendMessage'
     | 'renameConversation'
     | 'deleteConversation'
     | 'cancel'
     | 'answerQuestion'
+    | 'subscribeV2'
+    | 'unsubscribeV2'
+    | 'enqueueInput'
+    | 'editFollowUp'
+    | 'removeFollowUp'
+    | 'resumeFollowUps'
   >,
   controller: Pick<ConversationController, 'find'>,
-) {
+): CanonicalChatHandlers {
   return {
     listConversations: (cursor?: string) => chat.listConversations(cursor),
     getConversation: (conversation: ConversationRef) => controller.find(conversation),
@@ -211,6 +263,9 @@ export function createCanonicalChatHandlers(
       chat.createConversation(agentId, requestId),
     getMessages: (conversation: ConversationRef, before?: string) =>
       chat.getMessages(conversation, before),
+    getInitialState: (conversation: ConversationRef) => chat.getInitialState(conversation),
+    getOlderMessages: (conversation: ConversationRef, before: string, limit?: number) =>
+      chat.getOlderMessages(conversation, before, limit),
     sendMessage: (
       conversation: ConversationRef,
       turnId: string,
@@ -221,14 +276,65 @@ export function createCanonicalChatHandlers(
       chat.renameConversation(conversation, revision, title),
     deleteConversation: (conversation: ConversationRef, revision: number) =>
       chat.deleteConversation(conversation, revision),
-    cancel: (conversation: ConversationRef, turnId: string) => chat.cancel(conversation, turnId),
+    cancel: (conversation: ConversationRef, turnId: string, localDispatchToken: string) =>
+      chat.cancel(conversation, turnId, localDispatchToken),
     answerQuestion: (
       conversation: ConversationRef,
       turnId: string,
       questionId: string,
       answer: string,
-    ) => chat.answerQuestion(conversation, turnId, questionId, answer),
+      localDispatchToken: string,
+    ) => chat.answerQuestion(conversation, turnId, questionId, answer, localDispatchToken),
+    subscribeV2: (conversation: ConversationRef, sinceV2Seq: number) =>
+      chat.subscribeV2(conversation, sinceV2Seq),
+    unsubscribeV2: (conversation: ConversationRef) => chat.unsubscribeV2(conversation),
+    enqueueInput: (conversation: ConversationRef, request: ChatEnqueueInputRequest) =>
+      chat.enqueueInput(conversation, request),
+    editFollowUp: (conversation: ConversationRef, request: ChatEditFollowUpRequest) =>
+      chat.editFollowUp(conversation, request),
+    removeFollowUp: (
+      conversation: ConversationRef,
+      commandId: string,
+      inputId: string,
+      expectedRevision: number,
+    ) => chat.removeFollowUp(conversation, commandId, inputId, expectedRevision),
+    resumeFollowUps: (
+      conversation: ConversationRef,
+      commandId: string,
+      expectedQueueRevision: number,
+    ) => chat.resumeFollowUps(conversation, commandId, expectedQueueRevision),
   };
+}
+
+const SANITIZED_CHAT_COMMAND_ERROR = {
+  code: 'validation_failed',
+  error: 'Chat command could not be applied.',
+  retryable: false,
+} as const;
+
+export function emitChatV2CommandIssue(
+  send: (issue: ChatV2CommandIssue) => void,
+  context: Omit<ChatV2CommandIssue, 'apiError'>,
+  error: unknown,
+): void {
+  let apiError: MobileApiError = SANITIZED_CHAT_COMMAND_ERROR;
+  if (isMobileApiError(error)) {
+    apiError = error;
+  } else if (
+    (error instanceof ConversationChatCommandError || error instanceof GatewayHttpError) &&
+    isMobileApiError(error.apiError)
+  ) {
+    apiError = error.apiError;
+  }
+  send({ ...context, apiError });
+}
+
+export function dispatchChatV2FireAndForget(
+  operation: () => Promise<void>,
+  send: (issue: ChatV2CommandIssue) => void,
+  context: Omit<ChatV2CommandIssue, 'apiError'>,
+): void {
+  void operation().catch((error) => emitChatV2CommandIssue(send, context, error));
 }
 
 export function parseConversationInvalidations(value: string): ConversationInvalidation[] {
@@ -879,7 +985,6 @@ function getChatService(getWindow: () => BrowserWindow | undefined): ChatService
           win.webContents.send('chat:conversationRenamed', conversation.id, title);
       },
       conversationController,
-      pendingConversationRuntime?.transport ?? undefined,
     );
     // Coarse location only -- Mission Control is coarse-only by decision (see
     // docs/plans/specs/2026-09-06-client-location-awareness-design.md). Read
@@ -1095,6 +1200,9 @@ export async function registerIpcHandlers(
       gatewayId: string | null;
       online: boolean;
       capabilities: MobileCapability[] | null;
+      conversationApiVersions?: number[];
+      chatCapabilities?: string[];
+      queueInputCapable?: boolean;
     },
     client: GatewayManagementClient,
     endpoint: ActiveGatewayEndpoint,
@@ -1113,8 +1221,32 @@ export async function registerIpcHandlers(
           (conversation) => sendConversationInvalidation({ type: 'deleted', conversation }),
         );
       },
-      createTransport: () =>
-        new ResumableChatTransport({
+      createTransport: () => {
+        if (context.queueInputCapable) {
+          const transport = new ConversationChatTransport({
+            connection: { url: chatUrl(endpoint), headers: endpoint.headers },
+            channelId: 'mission-control',
+            onFrame: (frame) => {
+              const win = getWindow();
+              if (win && !win.isDestroyed()) win.webContents.send('chat:v2Frame', frame);
+            },
+            onConnectionError: (conversationId, error) => {
+              sendChatConnectionIssue({
+                conversation: { id: conversationId, origin: 'gateway' },
+                kind: error.kind,
+                message: error.message,
+                retryable: error.retryable ?? false,
+                ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+                ...(error.closeCode !== undefined ? { closeCode: error.closeCode } : {}),
+              });
+            },
+            onCommandError: (conversationId, error) => {
+              getChatService(getWindow).handleV2CommandError(transport, conversationId, error);
+            },
+          });
+          return transport;
+        }
+        return new ResumableChatTransport({
           connection: { url: chatUrl(endpoint), headers: endpoint.headers },
           channelId: 'mission-control',
           replay: (ref, agentId, sinceSeq) => conversationController.replay(ref, agentId, sinceSeq),
@@ -1137,7 +1269,8 @@ export async function registerIpcHandlers(
             if (win && !win.isDestroyed())
               win.webContents.send('chat:error', conversationId, message);
           },
-        }),
+        });
+      },
     });
     if (chatService) activatePendingConversationRuntime(chatService, pendingConversationRuntime);
   };
@@ -1247,8 +1380,6 @@ export async function registerIpcHandlers(
       }
       return false;
     }
-    // The renderer still uses the legacy wire until Tasks 8-9, so the
-    // pending capable runtime is deliberately not installed on ChatService.
     svc.reconcileAllConversations().catch((err) => {
       console.error(
         '[ChatService] Startup reconciliation failed:',
@@ -1866,6 +1997,14 @@ export async function registerIpcHandlers(
   let conversationsMigrated = false;
   const getCanonicalChat = () =>
     createCanonicalChatHandlers(getChatService(getWindow), conversationController);
+  const publishChatV2CommandIssue = (issue: ChatV2CommandIssue): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('chat:v2CommandError', issue);
+  };
+  getChatService(getWindow).setV2CommandIssueListener((issue) => {
+    const { apiError, ...context } = issue;
+    emitChatV2CommandIssue(publishChatV2CommandIssue, context, apiError);
+  });
   ipcMain.handle('chat:listConversations', async (_event, cursor?: string) => {
     return captureChatIpcResult(async () => {
       if (!conversationsMigrated) {
@@ -1898,6 +2037,58 @@ export async function registerIpcHandlers(
     captureChatIpcResult(() => getCanonicalChat().getMessages(conversation, before)),
   );
 
+  ipcMain.handle('chat:getInitialState', (_event, conversation: ConversationRef) =>
+    captureChatIpcResult(() => getCanonicalChat().getInitialState(conversation)),
+  );
+
+  ipcMain.handle(
+    'chat:getOlderMessages',
+    (_event, conversation: ConversationRef, before: string, limit?: number) =>
+      captureChatIpcResult(() => getCanonicalChat().getOlderMessages(conversation, before, limit)),
+  );
+
+  ipcMain.handle('chat:subscribeV2', (_event, conversation: ConversationRef, sinceV2Seq: number) =>
+    captureChatIpcResult(() => getCanonicalChat().subscribeV2(conversation, sinceV2Seq)),
+  );
+
+  ipcMain.handle('chat:unsubscribeV2', (_event, conversation: ConversationRef) =>
+    captureChatIpcResult(async () => getCanonicalChat().unsubscribeV2(conversation)),
+  );
+
+  ipcMain.handle(
+    'chat:enqueueInput',
+    (_event, conversation: ConversationRef, request: ChatEnqueueInputRequest) =>
+      captureChatIpcResult(() => getCanonicalChat().enqueueInput(conversation, request)),
+  );
+
+  ipcMain.handle(
+    'chat:editFollowUp',
+    (_event, conversation: ConversationRef, request: ChatEditFollowUpRequest) =>
+      captureChatIpcResult(() => getCanonicalChat().editFollowUp(conversation, request)),
+  );
+
+  ipcMain.handle(
+    'chat:removeFollowUp',
+    (
+      _event,
+      conversation: ConversationRef,
+      commandId: string,
+      inputId: string,
+      expectedRevision: number,
+    ) =>
+      captureChatIpcResult(() =>
+        getCanonicalChat().removeFollowUp(conversation, commandId, inputId, expectedRevision),
+      ),
+  );
+
+  ipcMain.handle(
+    'chat:resumeFollowUps',
+    (_event, conversation: ConversationRef, commandId: string, expectedQueueRevision: number) =>
+      captureChatIpcResult(() =>
+        getCanonicalChat().resumeFollowUps(conversation, commandId, expectedQueueRevision),
+      ),
+  );
+
   ipcMain.handle(
     'chat:renameConversation',
     (_event, conversation: ConversationRef, revision: number, title: string) =>
@@ -1926,14 +2117,52 @@ export async function registerIpcHandlers(
   // answers `invoke` and silently drops `send` messages. That mismatch made
   // the chat stop button a renderer-side no-op (swarm workers kept running
   // after "stop"; see TEST_PLAN 31.9).
-  ipcMain.on('chat:cancel', (_event, conversation: ConversationRef, turnId: string) => {
-    void getCanonicalChat().cancel(conversation, turnId);
-  });
+  ipcMain.on(
+    'chat:cancel',
+    (_event, conversation: ConversationRef, turnId: string, localDispatchToken: string) => {
+      dispatchChatV2FireAndForget(
+        () => getCanonicalChat().cancel(conversation, turnId, localDispatchToken),
+        publishChatV2CommandIssue,
+        {
+          conversation,
+          commandId: turnId,
+          kind: 'cancel',
+          localDispatchToken,
+          ambiguousCorrelation: false,
+        },
+      );
+    },
+  );
 
   ipcMain.on(
     'chat:answer-question',
-    (_event, conversation: ConversationRef, turnId: string, questionId: string, answer: string) => {
-      void getCanonicalChat().answerQuestion(conversation, turnId, questionId, answer);
+    (
+      _event,
+      conversation: ConversationRef,
+      turnId: string,
+      questionId: string,
+      answer: string,
+      localDispatchToken: string,
+    ) => {
+      dispatchChatV2FireAndForget(
+        () =>
+          getCanonicalChat().answerQuestion(
+            conversation,
+            turnId,
+            questionId,
+            answer,
+            localDispatchToken,
+          ),
+        publishChatV2CommandIssue,
+        {
+          conversation,
+          commandId: turnId,
+          kind: 'answer',
+          localDispatchToken,
+          questionId,
+          ambiguousCorrelation: false,
+        },
+      );
     },
   );
 
@@ -2491,6 +2720,7 @@ export async function registerIpcHandlers(
     shuttingDown = true;
     conversationLifecycle.invalidate();
     gatewaySubscriptions.stop();
+    chatService?.setGatewayChatTransport(undefined);
     pendingConversationRuntime = disposePendingConversationRuntime(pendingConversationRuntime);
     gatewayPoller?.stop();
     await chatService?.drainBackgroundTasks();

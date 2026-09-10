@@ -34,6 +34,12 @@ import type {
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
 import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+  MobileV2SequencedFrame,
+  MobileV2WsServerFrame,
+} from '@dash/mobile-contract-v2';
+import type {
   CreateIssueInput,
   CreateProjectInput,
   InboxItem,
@@ -133,7 +139,58 @@ export interface AppSettings {
 
 export type GatewayStatus = 'starting' | 'healthy' | 'unhealthy';
 
-export type ChatAcceptedFrame = Extract<MobileWsServerFrame, { type: 'accepted' }>;
+export type ChatInitialState =
+  | { protocol: 'v1'; page: ConversationMessagePage }
+  | { protocol: 'v2'; bootstrap: MobileV2ConversationBootstrap };
+
+export type ChatOlderMessagePage =
+  | { protocol: 'v1'; page: ConversationMessagePage }
+  | { protocol: 'v2'; page: MobileV2ConversationMessagePage };
+
+export type ChatAcceptedFrame =
+  | {
+      protocol: 'v1';
+      frame: Extract<MobileWsServerFrame, { type: 'accepted' }>;
+    }
+  | {
+      protocol: 'v2';
+      frame: Extract<MobileV2SequencedFrame, { type: 'accepted' }>;
+    };
+
+export interface ChatEnqueueInputRequest {
+  commandId: string;
+  inputId: string;
+  behavior: 'steer' | 'followUp';
+  expectedActiveTurnId?: string;
+  text: string;
+  images?: MobileImage[];
+}
+
+export interface ChatEditFollowUpRequest {
+  commandId: string;
+  inputId: string;
+  expectedRevision: number;
+  text: string;
+  images?: MobileImage[];
+}
+
+export interface ChatV2CommandIssue {
+  conversation: ConversationRef;
+  commandId: string;
+  kind: 'cancel' | 'answer';
+  localDispatchToken: string;
+  questionId?: string;
+  ambiguousCorrelation: boolean;
+  apiError: MobileApiError;
+}
+
+export class ConversationChatSupersededError extends Error {
+  readonly name = 'ConversationChatSupersededError';
+
+  constructor() {
+    super('Conversation subscription changed before the command was acknowledged');
+  }
+}
 
 export interface ConversationInvalidation {
   type: 'changed' | 'deleted';
@@ -161,22 +218,55 @@ export interface ChatConnectionIssue extends GatewayConnectionIssue {
 
 export type ChatIpcResult<T> =
   | { ok: true; value: T }
-  | { ok: false; error: { message: string; apiError?: MobileApiError } };
+  | {
+      ok: false;
+      error: { message: string; kind?: 'superseded'; apiError?: MobileApiError };
+    };
+
+const MOBILE_API_ERROR_CODES: Record<MobileApiError['code'], true> = {
+  unauthorized: true,
+  not_found: true,
+  validation_failed: true,
+  revision_conflict: true,
+  conversation_busy: true,
+  rate_limited: true,
+  gateway_offline: true,
+  capability_required: true,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isMobileApiError(value: unknown): value is MobileApiError {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (
+    keys.length < 3 ||
+    keys.length > 4 ||
+    !keys.every((key) => ['code', 'error', 'retryable', 'details'].includes(key))
+  ) {
+    return false;
+  }
+  if (
+    !Object.hasOwn(value, 'code') ||
+    !Object.hasOwn(value, 'error') ||
+    !Object.hasOwn(value, 'retryable') ||
+    typeof value.code !== 'string' ||
+    !Object.hasOwn(MOBILE_API_ERROR_CODES, value.code) ||
+    typeof value.error !== 'string' ||
+    value.error.length === 0 ||
+    typeof value.retryable !== 'boolean'
+  ) {
+    return false;
+  }
+  return !Object.hasOwn(value, 'details') || isRecord(value.details);
+}
 
 function structuredMobileError(error: unknown): MobileApiError | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const candidate = 'apiError' in error ? error.apiError : error;
-  if (
-    !candidate ||
-    typeof candidate !== 'object' ||
-    !('code' in candidate) ||
-    typeof candidate.code !== 'string' ||
-    !('error' in candidate) ||
-    typeof candidate.error !== 'string'
-  ) {
-    return undefined;
-  }
-  return candidate as MobileApiError;
+  if (!isRecord(error)) return undefined;
+  const candidate = Object.hasOwn(error, 'apiError') ? error.apiError : error;
+  return isMobileApiError(candidate) ? candidate : undefined;
 }
 
 export async function captureChatIpcResult<T>(
@@ -186,6 +276,9 @@ export async function captureChatIpcResult<T>(
     return { ok: true, value: await operation() };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof ConversationChatSupersededError) {
+      return { ok: false, error: { kind: 'superseded', message } };
+    }
     const apiError = structuredMobileError(error);
     if (apiError) return { ok: false, error: { message, apiError } };
     if (error instanceof Error && error.name === 'ConversationRepositoryOfflineError') {
@@ -203,8 +296,11 @@ export async function captureChatIpcResult<T>(
 
 export function unwrapChatIpcResult<T>(result: ChatIpcResult<T>): T {
   if (result.ok) return result.value;
+  if (result.error.kind === 'superseded') throw new ConversationChatSupersededError();
   const error = new Error(result.error.message);
-  if (result.error.apiError) Object.assign(error, { apiError: result.error.apiError });
+  if (isMobileApiError(result.error.apiError)) {
+    Object.assign(error, { apiError: result.error.apiError });
+  }
   throw error;
 }
 
@@ -469,13 +565,19 @@ export interface MissionControlAPI {
   chatListConversations(cursor?: string): Promise<McConversationListResult>;
   chatGetConversation(conversation: ConversationRef): Promise<McConversationView | null>;
   chatGetMessages(conversation: ConversationRef, before?: string): Promise<ConversationMessagePage>;
+  chatGetInitialState(conversation: ConversationRef): Promise<ChatInitialState>;
+  chatGetOlderMessages(
+    conversation: ConversationRef,
+    before: string,
+    limit?: number,
+  ): Promise<ChatOlderMessagePage>;
   chatSend(
     conversation: ConversationRef,
     turnId: string,
     text: string,
     images?: MobileImage[],
   ): Promise<ChatAcceptedFrame | undefined>;
-  chatCancel(conversation: ConversationRef, turnId: string): void;
+  chatCancel(conversation: ConversationRef, turnId: string, localDispatchToken: string): void;
   chatRenameConversation(
     conversation: ConversationRef,
     revision: number,
@@ -487,10 +589,34 @@ export interface MissionControlAPI {
     turnId: string,
     questionId: string,
     answer: string,
+    localDispatchToken: string,
   ): void;
+  chatSubscribeV2(conversation: ConversationRef, sinceV2Seq: number): Promise<void>;
+  chatUnsubscribeV2(conversation: ConversationRef): Promise<void>;
+  chatEnqueueInput(
+    conversation: ConversationRef,
+    request: ChatEnqueueInputRequest,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>;
+  chatEditFollowUp(
+    conversation: ConversationRef,
+    request: ChatEditFollowUpRequest,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'input_updated' }>>;
+  chatRemoveFollowUp(
+    conversation: ConversationRef,
+    commandId: string,
+    inputId: string,
+    expectedRevision: number,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'input_removed' }>>;
+  chatResumeFollowUps(
+    conversation: ConversationRef,
+    commandId: string,
+    expectedQueueRevision: number,
+  ): Promise<Extract<MobileV2SequencedFrame, { type: 'queue_resumed' }>>;
 
   // Events (push from main -> renderer)
   onChatFrame(callback: (frame: MobileWsServerFrame) => void): () => void;
+  onChatV2Frame(callback: (frame: MobileV2WsServerFrame) => void): () => void;
+  onChatV2CommandError(callback: (issue: ChatV2CommandIssue) => void): () => void;
   onChatConnectionError(callback: (issue: ChatConnectionIssue) => void): () => void;
   onChatConversationInvalidated(callback: (event: ConversationInvalidation) => void): () => void;
   onAgentEvent(callback: (conversationId: string, event: McAgentEvent) => void): () => void;

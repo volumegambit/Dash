@@ -1,5 +1,6 @@
 import type { ConversationRef, McConversationView, McMessage } from '@dash/mc';
-import type { ConversationMessage, MobileImage, MobileWsServerFrame } from '@dash/mobile-contract';
+import type { ConversationMessage, MobileWsServerFrame } from '@dash/mobile-contract';
+import type { MobileV2ConversationMessage, MobileV2PendingInput } from '@dash/mobile-contract-v2';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
@@ -14,12 +15,9 @@ import {
   FolderOpen,
   List,
   Loader,
-  Paperclip,
   Pencil,
   Plus,
   Search,
-  Send,
-  Square,
   Trash2,
   Users,
   X,
@@ -33,12 +31,17 @@ import { detectLanguage } from '../components/DiffView.js';
 import { Markdown } from '../components/Markdown.js';
 import { SwarmPanel } from '../components/SwarmPanel.js';
 import { HighlightedCode, ToolResult } from '../components/ToolResult.js';
+import { ChatComposer, type ChatComposerAttempt } from '../components/chat/ChatComposer.js';
+import { FollowUpQueue } from '../components/chat/FollowUpQueue.js';
 import { useAvailableModels } from '../hooks/useAvailableModels.js';
 import { useAgentsStore } from '../stores/agents.js';
 import {
   type ConversationKey,
+  type V2AnswerAttempt,
+  type V2ConversationProjection,
   conversationKey,
   conversationRefFromKey,
+  conversationSourceFor,
   isRevisionConflict,
   useChatStore,
 } from '../stores/chat.js';
@@ -55,9 +58,8 @@ import {
 import { EmptyChatState } from './chat.empty-state.js';
 import {
   type TodoItem,
-  composerKeyAction,
   formatVisibleDetails,
-  insertNewlineAtSelection,
+  inputDeliveryPresentation,
   isTodoWrite,
   parseTodos,
   resultSummary,
@@ -95,6 +97,7 @@ function renderEvents(
   navigateToLogs?: (timestamp: string) => void,
   onAnswerQuestion?: (questionId: string, answer: string) => void,
   answeredQuestions?: Record<string, string>,
+  answerAttempts?: Record<string, V2AnswerAttempt>,
   onNavigateToConnections?: () => void,
   isStreaming = false,
 ): JSX.Element[] {
@@ -215,6 +218,7 @@ function renderEvents(
           question={event.question}
           options={event.options ?? []}
           answer={answeredQuestions?.[event.id]}
+          answerAttempt={answerAttempts?.[event.id]}
           onAnswer={onAnswerQuestion}
         />,
       );
@@ -413,16 +417,42 @@ function QuestionBlock({
   question,
   options,
   answer,
+  answerAttempt,
   onAnswer,
 }: {
   id: string;
   question: string;
   options: string[];
   answer?: string;
+  answerAttempt?: V2AnswerAttempt;
   onAnswer?: (questionId: string, answer: string) => void;
 }): JSX.Element {
   const [inputValue, setInputValue] = useState('');
-  const answered = answer != null;
+  const answered = answer != null && !answerAttempt;
+
+  useEffect(() => {
+    if (answerAttempt?.state === 'rejected') setInputValue(answerAttempt.answer);
+  }, [answerAttempt?.answer, answerAttempt?.state]);
+
+  if (answerAttempt?.state === 'pending') {
+    return (
+      <div className="mb-2 border border-border bg-sidebar-hover px-3 py-2 text-xs">
+        <p className="mb-1 text-muted">Question</p>
+        <p>{answerAttempt.answer}</p>
+        <p className="mt-1 text-muted">Answer sent — waiting for response</p>
+      </div>
+    );
+  }
+
+  if (answerAttempt?.state === 'ended') {
+    return (
+      <div className="mb-2 border border-border bg-sidebar-hover px-3 py-2 text-xs">
+        <p className="mb-1 text-muted">Question</p>
+        <p>{answerAttempt.answer}</p>
+        <p className="mt-1 text-muted">Interaction ended</p>
+      </div>
+    );
+  }
 
   if (answered) {
     return (
@@ -437,6 +467,20 @@ function QuestionBlock({
   return (
     <div className="mb-2 border border-accent/50 bg-accent/5 px-3 py-2 text-sm">
       <p className="mb-2">❓ {question}</p>
+      {answerAttempt?.state === 'rejected' && (
+        <div className="mb-2 flex items-center justify-between gap-3 text-xs text-red" role="alert">
+          <span>Answer was not delivered: {answerAttempt.answer}</span>
+          <button
+            type="button"
+            aria-label={`Retry answer: ${answerAttempt.answer}`}
+            onClick={() => onAnswer?.(id, answerAttempt.answer)}
+            disabled={!onAnswer}
+            className="border border-red/40 px-2 py-1 hover:bg-red-900/30 disabled:opacity-50"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {options.length > 0 ? (
         <div className="flex flex-wrap gap-2">
           {options.map((opt) => (
@@ -920,31 +964,97 @@ function CopyButton({ text }: { text: string }): JSX.Element {
 // Exported for reuse by the task page's embedded session panel.
 export const MessageBubble = memo(function MessageBubble({
   message,
+  input,
   streamingEvents,
+  isStreaming,
   navigateToLogs,
   onAnswerQuestion,
   answeredQuestions,
+  answerAttempts,
   onNavigateToConnections,
 }: {
   message?: RenderableMessage;
+  input?: MobileV2PendingInput;
   streamingEvents?: McAgentEvent[];
+  isStreaming?: boolean;
   navigateToLogs?: (timestamp: string) => void;
   onAnswerQuestion?: (questionId: string, answer: string) => void;
   answeredQuestions?: Record<string, string>;
+  answerAttempts?: Record<string, V2AnswerAttempt>;
   onNavigateToConnections?: () => void;
 }): JSX.Element {
+  if (input) {
+    const deliveryStatus =
+      input.state === 'failed'
+        ? 'not_delivered'
+        : input.state === 'delivered'
+          ? 'delivered'
+          : 'pending';
+    const presentation = inputDeliveryPresentation(
+      input.kind === 'follow_up' ? 'follow_up' : 'steer',
+      deliveryStatus,
+    );
+    return (
+      <div className="group mb-6 flex items-start justify-end gap-1">
+        <div
+          aria-label={presentation?.ariaLabel}
+          className="max-w-[85%] border-l-[3px] border-l-accent bg-[#141414] p-3 text-sm text-foreground"
+        >
+          {presentation && (
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
+              {presentation.label}
+            </p>
+          )}
+          {input.text && <p className="whitespace-pre-wrap">{input.text}</p>}
+          {input.images && input.images.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {input.images.map((image, index) => (
+                <img
+                  key={`${image.mediaType}-${image.data.slice(0, 16)}-${index}`}
+                  src={`data:${image.mediaType};base64,${image.data}`}
+                  alt={`Attached ${index + 1}`}
+                  className="max-h-48 max-w-full"
+                />
+              ))}
+            </div>
+          )}
+          {presentation?.alert && (
+            <p className="mt-2 text-xs text-red" role="alert">
+              {input.failureMessage || 'This input was not delivered. Try again from the composer.'}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const isUser = message?.role === 'user';
 
   if (isUser && message) {
     const userText =
       message.content.type === 'user' && message.content.text ? message.content.text : '';
     const userImages = message.content.type === 'user' ? message.content.images : undefined;
+    const presentation =
+      'deliveryKind' in message
+        ? inputDeliveryPresentation(
+            (message as MobileV2ConversationMessage).deliveryKind,
+            (message as MobileV2ConversationMessage).deliveryStatus,
+          )
+        : null;
     return (
       <div className="group mb-6 flex items-start justify-end gap-1">
         <div className="opacity-0 group-hover:opacity-100 transition-opacity mt-3">
           {userText && <CopyButton text={userText} />}
         </div>
-        <div className="bg-[#141414] border-l-[3px] border-l-accent text-foreground p-3 max-w-[85%] text-sm">
+        <div
+          aria-label={presentation?.ariaLabel}
+          className="bg-[#141414] border-l-[3px] border-l-accent text-foreground p-3 max-w-[85%] text-sm"
+        >
+          {presentation && (
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
+              {presentation.label}
+            </p>
+          )}
           {userText && <p className="whitespace-pre-wrap">{userText}</p>}
           {userImages && userImages.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
@@ -958,6 +1068,11 @@ export const MessageBubble = memo(function MessageBubble({
               ))}
             </div>
           )}
+          {presentation?.alert && (
+            <p className="mt-2 text-xs text-red" role="alert">
+              This input was not delivered. Try again from the composer.
+            </p>
+          )}
         </div>
       </div>
     );
@@ -968,12 +1083,13 @@ export const MessageBubble = memo(function MessageBubble({
   // A persisted message renders with isStreaming=false so any worker group
   // that never reached a terminal event terminalizes to `cancelled`; a live
   // stream (streamingEvents present) renders with isStreaming=true.
-  const isLive = streamingEvents != null;
+  const isLive = isStreaming ?? streamingEvents != null;
   const rendered = renderEvents(
     events,
     navigateToLogs,
     onAnswerQuestion,
     answeredQuestions,
+    answerAttempts,
     onNavigateToConnections,
     isLive,
   );
@@ -1014,6 +1130,62 @@ export const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+export function V2ConversationTimeline({
+  projection,
+  onAnswerQuestion,
+  answerAttempts,
+  navigateToLogs,
+  onNavigateToConnections,
+}: {
+  projection: V2ConversationProjection;
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  answerAttempts?: Record<string, V2AnswerAttempt>;
+  navigateToLogs?: (timestamp: string) => void;
+  onNavigateToConnections?: () => void;
+}): JSX.Element {
+  return (
+    <>
+      {projection.timeline.map((entry) => {
+        if (entry.kind === 'input') {
+          const input = projection.inputs[entry.inputId];
+          return input ? <MessageBubble key={`input:${entry.inputId}`} input={input} /> : null;
+        }
+        if (entry.kind === 'message') {
+          const message = projection.messages[entry.messageId];
+          return message ? (
+            <MessageBubble
+              key={`message:${entry.messageId}`}
+              message={message}
+              onAnswerQuestion={onAnswerQuestion}
+              answerAttempts={answerAttempts}
+              navigateToLogs={navigateToLogs}
+              onNavigateToConnections={onNavigateToConnections}
+            />
+          ) : null;
+        }
+        const segment = projection.liveSegments[entry.assistantMessageId];
+        const message = projection.messages[entry.assistantMessageId];
+        if (!segment && !message) return null;
+        if (segment?.status === 'streaming' && segment.events.length === 0) {
+          return <ThinkingIndicator key={`segment:${entry.assistantMessageId}`} />;
+        }
+        return (
+          <MessageBubble
+            key={`segment:${entry.assistantMessageId}`}
+            message={message}
+            streamingEvents={segment?.events}
+            isStreaming={segment?.status === 'streaming'}
+            onAnswerQuestion={onAnswerQuestion}
+            answerAttempts={answerAttempts}
+            navigateToLogs={navigateToLogs}
+            onNavigateToConnections={onNavigateToConnections}
+          />
+        );
+      })}
+    </>
+  );
+}
 
 /** Extract the latest TodoWrite state from messages and live streaming events */
 function extractLatestTodos(
@@ -1632,6 +1804,7 @@ export function Chat(): JSX.Element {
   const search = Route.useSearch();
   const { agents, loadAgents, updateAgent } = useAgentsStore();
   const { models: availableModels } = useAvailableModels();
+  const chatState = useChatStore();
   const {
     conversations,
     nextConversationCursor,
@@ -1646,6 +1819,10 @@ export function Chat(): JSX.Element {
     unreadConversations,
     conversationError,
     connectionIssue,
+    protocolByConversation,
+    v2Projections,
+    commandIssuesByConversation,
+    answerAttemptsByConversation,
     loadConversations,
     loadMoreConversations,
     ensureConversation,
@@ -1655,19 +1832,21 @@ export function Chat(): JSX.Element {
     renameConversation,
     deleteConversation,
     sendMessage,
+    enqueueInput,
+    editFollowUp,
+    removeFollowUp,
+    resumeFollowUps,
     cancelMessage,
-  } = useChatStore();
+    clearCommandIssue,
+    retainMainChatSurface,
+    reserveMainChatSelection,
+  } = chatState;
 
   const connectors = useConnectorsStore((s) => s.connectors);
 
   const navigate = useNavigate();
   const activeAgents = agents.filter((a) => a.status === 'active' || a.status === 'registered');
-  const [input, setInput] = useState('');
-  const [attachedImages, setAttachedImages] = useState<
-    { id: string; preview: string; mediaType: MobileImage['mediaType']; data: string }[]
-  >([]);
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
-  const [imageError, setImageError] = useState<string | null>(null);
   const [showAgentModal, setShowAgentModal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
   // Swarm supervision panel (right drawer). `swarmPanelOpen` toggles it;
@@ -1694,8 +1873,6 @@ export function Chat(): JSX.Element {
     state: 'pending' | 'conflict';
   } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Resolve the agent for the selected conversation
   const selectedKey = selectedConversationRef ? conversationKey(selectedConversationRef) : null;
@@ -1704,20 +1881,37 @@ export function Chat(): JSX.Element {
         (c) => c.id === selectedConversationRef.id && c.origin === selectedConversationRef.origin,
       )
     : null;
-  const selectedAgentId = selectedConversation?.agentId ?? '';
+  const selectedSource = selectedConversationRef
+    ? conversationSourceFor(chatState, selectedConversationRef)
+    : null;
+  const selectedRuntimeConversation = selectedSource?.summary ?? null;
+  const selectedProjection = selectedKey ? v2Projections[selectedKey] : undefined;
+  const queueCapable = Boolean(
+    selectedConversationRef?.origin === 'gateway' &&
+      selectedKey &&
+      protocolByConversation[selectedKey] === 'v2',
+  );
+  const selectedAgentId =
+    selectedRuntimeConversation?.agentId ?? selectedConversation?.agentId ?? '';
   const selectedLocalTurnId = selectedKey ? localTurnIds[selectedKey] : undefined;
   const remoteActive = Boolean(
-    selectedConversation?.activeTurnId && selectedConversation.activeTurnId !== selectedLocalTurnId,
+    selectedRuntimeConversation?.activeTurnId &&
+      selectedRuntimeConversation.activeTurnId !== selectedLocalTurnId,
+  );
+  const editable = Boolean(
+    selectedConversation &&
+      selectedRuntimeConversation &&
+      gatewayOnline &&
+      !selectedConversation.offline &&
+      !selectedConversation.readOnly &&
+      selectedRuntimeConversation.status !== 'archived' &&
+      selectedRuntimeConversation.status !== 'deleted',
   );
   const mutationLocked = Boolean(
-    !selectedConversation ||
-      selectedConversation.readOnly ||
-      selectedConversation.offline ||
-      selectedConversation.status === 'archived' ||
-      selectedConversation.status === 'deleted' ||
-      selectedConversation.status === 'running' ||
-      selectedConversation.activeTurnId !== null ||
-      !gatewayOnline,
+    !editable ||
+      !selectedRuntimeConversation ||
+      selectedRuntimeConversation.status === 'running' ||
+      selectedRuntimeConversation.activeTurnId !== null,
   );
   const questionLocked = Boolean(
     !selectedConversation ||
@@ -1739,16 +1933,18 @@ export function Chat(): JSX.Element {
   );
 
   const handleAnswerQuestion = useCallback(
-    async (questionId: string, answer: string) => {
+    (questionId: string, answer: string) => {
       if (!selectedConversationRef || questionLocked) return;
-      setAnsweredQuestions((prev) => ({ ...prev, [questionId]: answer }));
       try {
         useChatStore.getState().answerQuestion(selectedConversationRef, questionId, answer);
+        if (selectedSource?.protocol !== 'v2') {
+          setAnsweredQuestions((prev) => ({ ...prev, [questionId]: answer }));
+        }
       } catch (err) {
         console.error('[Chat] Failed to answer question:', err);
       }
     },
-    [selectedConversationRef, questionLocked],
+    [selectedConversationRef, selectedSource?.protocol, questionLocked],
   );
 
   const commitStatusRename = useCallback(
@@ -1790,6 +1986,9 @@ export function Chat(): JSX.Element {
     void loadConversations().catch(() => {});
   }, [loadConversations]);
 
+  // The route owns the selected conversation only while this surface is mounted.
+  useEffect(() => retainMainChatSurface(), [retainMainChatSurface]);
+
   // Load connectors and subscribe to status changes
   useEffect(() => {
     useConnectorsStore.getState().loadConnectors();
@@ -1798,25 +1997,85 @@ export function Chat(): JSX.Element {
   }, []);
 
   // Scroll to bottom on new messages
-  const selectedMessages = selectedKey ? (messages[selectedKey] ?? []) : [];
-  const isStreaming = selectedKey ? (sending[selectedKey] ?? false) : false;
+  const selectedMessages: RenderableMessage[] =
+    selectedSource?.protocol === 'v2' && selectedProjection
+      ? selectedProjection.timeline.flatMap((entry) => {
+          if (entry.kind === 'message') {
+            const message = selectedProjection.messages[entry.messageId];
+            return message ? [message] : [];
+          }
+          if (entry.kind === 'assistant_segment') {
+            const message = selectedProjection.messages[entry.assistantMessageId];
+            return message ? [message] : [];
+          }
+          return [];
+        })
+      : selectedKey
+        ? (messages[selectedKey] ?? [])
+        : [];
+  const isStreaming =
+    selectedSource?.protocol === 'v2'
+      ? Boolean(selectedRuntimeConversation?.activeTurnId)
+      : selectedKey
+        ? (sending[selectedKey] ?? false)
+        : false;
   const liveFrames = selectedKey ? (streamingFrames[selectedKey] ?? []) : [];
-  const liveEvents = useMemo(() => eventsFromFrames(liveFrames), [liveFrames]);
-  const composerLocked = mutationLocked || remoteActive || isStreaming;
+  const legacyLiveEvents = useMemo(() => eventsFromFrames(liveFrames), [liveFrames]);
+  const liveEvents =
+    selectedSource?.protocol === 'v2' && selectedProjection
+      ? Object.values(selectedProjection.liveSegments)
+          .filter(
+            (segment) =>
+              segment.status === 'streaming' &&
+              segment.runId === selectedRuntimeConversation?.activeTurnId,
+          )
+          .flatMap((segment) => segment.events)
+      : legacyLiveEvents;
   const composerPlaceholder = !selectedConversation
     ? 'Select a conversation first'
     : selectedConversation.offline || !gatewayOnline
       ? 'Reconnect to send a message'
-      : selectedConversation.readOnly || selectedConversation.status === 'archived'
+      : selectedConversation.readOnly || selectedRuntimeConversation?.status === 'archived'
         ? 'This conversation is read-only'
-        : remoteActive
+        : remoteActive && !queueCapable
           ? 'Conversation active on another device'
           : 'Type a message…';
+  const selectedCommandIssue = selectedKey ? commandIssuesByConversation[selectedKey] : undefined;
+  const selectedAnswerAttempts = selectedKey
+    ? answerAttemptsByConversation[selectedKey]
+    : undefined;
+  const queueItems = selectedProjection
+    ? selectedProjection.queueOrder.flatMap((inputId) => {
+        const item = selectedProjection.inputs[inputId];
+        return item ? [item] : [];
+      })
+    : [];
+
+  const handleComposerSend = useCallback(
+    (attempt: ChatComposerAttempt) => {
+      const ref = conversationRefFromKey(attempt.conversationKey as ConversationKey);
+      return sendMessage(ref, attempt.payload.text, attempt.payload.images, attempt.draftRevision);
+    },
+    [sendMessage],
+  );
+
+  const handleComposerEnqueue = useCallback(
+    async (behavior: 'steer' | 'followUp', attempt: ChatComposerAttempt) => {
+      const ref = conversationRefFromKey(attempt.conversationKey as ConversationKey);
+      await enqueueInput(ref, {
+        behavior,
+        text: attempt.payload.text,
+        ...(attempt.payload.images ? { images: attempt.payload.images } : {}),
+      });
+    },
+    [enqueueInput],
+  );
 
   // Track previous message count to distinguish bulk loads from incremental updates
   const prevMessageCount = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   // Track whether user is scrolled near the bottom of the message area
   const handleScroll = useCallback(() => {
@@ -1867,14 +2126,14 @@ export function Chat(): JSX.Element {
   const handleAgentSelected = useCallback(
     async (agentId: string) => {
       setShowAgentModal(false);
+      const reservation = reserveMainChatSelection();
       try {
-        const conv = await createConversation(agentId);
-        await selectConversation({ id: conv.id, origin: conv.origin });
+        await createConversation(agentId, reservation);
       } catch (err) {
         console.error('[Chat] Failed to create conversation:', err);
       }
     },
-    [createConversation, selectConversation],
+    [createConversation, reserveMainChatSelection],
   );
 
   // Keyboard shortcuts: Cmd+T/Cmd+N new tab, Cmd+W close tab,
@@ -1916,12 +2175,23 @@ export function Chat(): JSX.Element {
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally run once on mount
   useEffect(() => {
     if (search.conversationId) {
+      const reservation = reserveMainChatSelection();
+      const reservationIsCurrent = (): boolean => {
+        const state = useChatStore.getState();
+        return (
+          state.mainChatSurfaceActive &&
+          state.mainChatSurfaceGeneration === reservation.surfaceGeneration &&
+          state.mainChatSelectionGeneration === reservation.selectionGeneration
+        );
+      };
       const openDeepLink = async (): Promise<void> => {
         if (search.origin) {
           const ref = { id: search.conversationId as string, origin: search.origin };
           const conversation = await ensureConversation(ref);
-          if (conversation) await selectConversation(ref);
-          else useChatStore.setState({ conversationError: 'Conversation not found' });
+          if (conversation) await selectConversation(ref, reservation);
+          else if (reservationIsCurrent()) {
+            useChatStore.setState({ conversationError: 'Conversation not found' });
+          }
           return;
         }
         const refs = [
@@ -1939,10 +2209,10 @@ export function Chat(): JSX.Element {
             }),
           )
         ).filter((ref): ref is ConversationRef => ref !== null);
-        if (found.length === 1) await selectConversation(found[0]);
-        else if (found.length === 2) {
+        if (found.length === 1) await selectConversation(found[0], reservation);
+        else if (found.length === 2 && reservationIsCurrent()) {
           useChatStore.setState({ conversationError: 'Choose Gateway or On this Mac' });
-        } else {
+        } else if (reservationIsCurrent()) {
           useChatStore.setState({ conversationError: 'Conversation not found' });
         }
       };
@@ -1950,91 +2220,12 @@ export function Chat(): JSX.Element {
         console.error('[Chat] Failed to open conversation from search:', err),
       );
     } else if (search.agentId) {
-      createConversation(search.agentId)
-        .then((conv) => selectConversation({ id: conv.id, origin: conv.origin }))
-        .catch((err) => console.error('[Chat] Failed to create conversation from search:', err));
+      const reservation = reserveMainChatSelection();
+      createConversation(search.agentId, reservation).catch((err) =>
+        console.error('[Chat] Failed to create conversation from search:', err),
+      );
     }
   }, []);
-
-  // Auto-focus textarea when a conversation is selected (e.g. after creating a new one)
-  useEffect(() => {
-    if (selectedConversationRef) {
-      // Small delay to ensure the textarea is enabled after render
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    }
-  }, [selectedConversationRef]);
-
-  const resizeTextarea = useCallback(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
-  }, []);
-
-  const addImageFiles = useCallback((files: FileList | File[]) => {
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    const maxSize = 5 * 1024 * 1024;
-    setImageError(null);
-    const valid = Array.from(files).filter((f) => allowedTypes.includes(f.type));
-    if (valid.length === 0 && files.length > 0) {
-      setImageError('Unsupported image type. Use PNG, JPG, GIF, or WebP.');
-      return;
-    }
-    for (const file of valid) {
-      if (file.size > maxSize) {
-        setImageError('Image must be under 5MB.');
-        continue;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        const base64 = dataUrl.split(',')[1];
-        setAttachedImages((prev) => {
-          if (prev.length >= 4) {
-            setImageError('Maximum 4 images per message.');
-            return prev;
-          }
-          return [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              preview: dataUrl,
-              mediaType: file.type as MobileImage['mediaType'],
-              data: base64,
-            },
-          ];
-        });
-      };
-      reader.readAsDataURL(file);
-    }
-  }, []);
-
-  const removeImage = useCallback((id: string) => {
-    setAttachedImages((prev) => prev.filter((img) => img.id !== id));
-    setImageError(null);
-  }, []);
-
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text && attachedImages.length === 0) return;
-    if (!selectedConversationRef || composerLocked) return;
-    const images =
-      attachedImages.length > 0
-        ? attachedImages.map(({ mediaType, data }) => ({ mediaType, data }))
-        : undefined;
-    setInput('');
-    setAttachedImages([]);
-    setImageError(null);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-    try {
-      await sendMessage(selectedConversationRef, text, images);
-    } catch (err) {
-      console.error('[Chat] Failed to send message:', err);
-      // Note: store already clears sending flag on error
-    }
-  }, [input, attachedImages, selectedConversationRef, composerLocked, sendMessage]);
 
   // Resolve model for the selected conversation's agent
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
@@ -2362,14 +2553,7 @@ export function Chat(): JSX.Element {
       {/* Chat + optional swarm panel (horizontal split) */}
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {/* Chat Panel */}
-        <div
-          className="relative flex flex-1 flex-col min-h-0 min-w-0"
-          onDrop={(e) => {
-            e.preventDefault();
-            if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-          }}
-          onDragOver={(e) => e.preventDefault()}
-        >
+        <div className="relative flex flex-1 flex-col min-h-0 min-w-0">
           {compactionToast && (
             <CompactionToast key={compactionToast.key} overflow={compactionToast.overflow} />
           )}
@@ -2549,25 +2733,37 @@ export function Chat(): JSX.Element {
               />
             ) : (
               <>
-                {selectedMessages.map((msg) => (
-                  <MessageBubble
-                    key={msg.id}
-                    message={msg}
+                {selectedSource?.protocol === 'v2' && selectedProjection ? (
+                  <V2ConversationTimeline
+                    projection={selectedProjection}
                     navigateToLogs={navigateToLogs}
                     onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
-                    answeredQuestions={answeredQuestions}
+                    answerAttempts={selectedAnswerAttempts}
                     onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
                   />
-                ))}
-                {isStreaming && liveEvents.length === 0 && <ThinkingIndicator />}
-                {liveEvents.length > 0 && (
-                  <MessageBubble
-                    streamingEvents={liveEvents}
-                    navigateToLogs={navigateToLogs}
-                    onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
-                    answeredQuestions={answeredQuestions}
-                    onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
-                  />
+                ) : (
+                  <>
+                    {selectedMessages.map((msg) => (
+                      <MessageBubble
+                        key={msg.id}
+                        message={msg}
+                        navigateToLogs={navigateToLogs}
+                        onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
+                        answeredQuestions={answeredQuestions}
+                        onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
+                      />
+                    ))}
+                    {isStreaming && liveEvents.length === 0 && <ThinkingIndicator />}
+                    {liveEvents.length > 0 && (
+                      <MessageBubble
+                        streamingEvents={liveEvents}
+                        navigateToLogs={navigateToLogs}
+                        onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
+                        answeredQuestions={answeredQuestions}
+                        onNavigateToConnections={() => navigate({ to: '/settings/ai-providers' })}
+                      />
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -2602,133 +2798,51 @@ export function Chat(): JSX.Element {
             </div>
           )}
 
-          {/* Input bar */}
-          <div className="bg-surface border-t border-border px-6 py-4 flex items-center gap-3 shrink-0">
-            <div className="flex-1 flex flex-col gap-2">
-              {attachedImages.length > 0 && (
-                <div className="flex gap-2">
-                  {attachedImages.map((img) => (
-                    <div key={img.id} className="relative">
-                      <img
-                        src={img.preview}
-                        alt="Attached"
-                        className="h-16 w-16 border border-border object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => removeImage(img.id)}
-                        className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-900 text-[10px] text-white hover:bg-red-700"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {imageError && <p className="text-xs text-red">{imageError}</p>}
-              <form
-                className="flex items-center gap-3"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSend();
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (e.dataTransfer.files.length > 0) addImageFiles(e.dataTransfer.files);
-                }}
-                onDragOver={(e) => e.preventDefault()}
-              >
-                <textarea
-                  ref={textareaRef}
-                  rows={1}
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    resizeTextarea();
-                  }}
-                  onKeyDown={(e) => {
-                    // Shift+Tab inserts a newline instead of moving focus
-                    // backwards. Plain Tab is left alone on purpose:
-                    // overriding both would make the composer a focus trap
-                    // for keyboard and screen-reader users.
-                    // Through the contract, so the declaration in
-                    // chat.helpers.ts is load-bearing rather than a comment
-                    // that can drift from this handler.
-                    const keyAction = composerKeyAction(e.key, e.shiftKey, e.metaKey);
-                    if (e.key === 'Tab' && keyAction === 'newline') {
-                      e.preventDefault();
-                      const field = e.currentTarget;
-                      const next = insertNewlineAtSelection(
-                        field.value,
-                        field.selectionStart,
-                        field.selectionEnd,
-                      );
-                      setInput(next.value);
-                      requestAnimationFrame(() => {
-                        field.setSelectionRange(next.caret, next.caret);
-                        resizeTextarea();
-                      });
-                      return;
-                    }
-                    if (e.key === 'Enter' && keyAction === 'send') {
-                      e.preventDefault();
-                      handleSend();
-                    }
-                  }}
-                  onPaste={(e) => {
-                    const files = Array.from(e.clipboardData.items)
-                      .filter((item) => item.kind === 'file')
-                      .map((item) => item.getAsFile())
-                      .filter((f): f is File => f !== null);
-                    if (files.length > 0) addImageFiles(files);
-                  }}
-                  placeholder={composerPlaceholder}
-                  disabled={composerLocked}
-                  className="flex-1 bg-[#141414] border border-border px-4 py-3 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 resize-none"
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    if (e.target.files) addImageFiles(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={composerLocked}
-                  className="border border-border p-2.5 text-muted transition-colors hover:bg-sidebar-hover hover:text-foreground disabled:opacity-50 shrink-0"
-                  title="Attach image"
-                >
-                  <Paperclip size={16} />
-                </button>
-                {selectedConversation?.activeTurnId ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      selectedConversationRef && cancelMessage(selectedConversationRef)
-                    }
-                    className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70 shrink-0"
-                    aria-label="Stop active turn"
-                  >
-                    <Square size={16} />
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={(!input.trim() && attachedImages.length === 0) || composerLocked}
-                    className="bg-accent text-white p-2.5 hover:bg-primary-hover disabled:opacity-50 transition-colors shrink-0"
-                  >
-                    <Send size={16} />
-                  </button>
-                )}
-              </form>
-            </div>
-          </div>
+          {selectedSource?.protocol === 'v2' && selectedProjection && (
+            <FollowUpQueue
+              conversationKey={selectedKey ?? 'gateway:no-conversation'}
+              items={queueItems}
+              paused={selectedProjection.queuePaused}
+              composerRef={composerRef}
+              onEdit={(inputId, revision, payload) => {
+                if (!selectedConversationRef) return Promise.reject(new Error('No conversation'));
+                return editFollowUp(
+                  selectedConversationRef,
+                  inputId,
+                  revision,
+                  payload.text,
+                  payload.images,
+                ).then(() => undefined);
+              }}
+              onRemove={(inputId, revision) => {
+                if (!selectedConversationRef) return Promise.reject(new Error('No conversation'));
+                return removeFollowUp(selectedConversationRef, inputId, revision);
+              }}
+              onResume={() => {
+                if (!selectedConversationRef) return Promise.reject(new Error('No conversation'));
+                return resumeFollowUps(selectedConversationRef);
+              }}
+            />
+          )}
+
+          <ChatComposer
+            conversationKey={selectedKey ?? 'gateway:no-conversation'}
+            composerRef={composerRef}
+            activeTurnId={selectedRuntimeConversation?.activeTurnId ?? null}
+            queueCapable={queueCapable}
+            editable={editable}
+            queuePaused={selectedProjection?.queuePaused ?? false}
+            placeholder={composerPlaceholder}
+            commandError={selectedCommandIssue?.apiError.error}
+            onDismissCommandError={() => {
+              if (selectedConversationRef) clearCommandIssue(selectedConversationRef);
+            }}
+            onSend={handleComposerSend}
+            onEnqueue={handleComposerEnqueue}
+            onStop={() => {
+              if (selectedConversationRef) cancelMessage(selectedConversationRef);
+            }}
+          />
         </div>
         {/* Swarm supervision panel (right drawer) */}
         {swarmPanelOpen && selectedAgentId && showSwarmAffordance && (

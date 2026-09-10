@@ -14,10 +14,20 @@ import {
 } from '@dash/mc';
 import type { ConversationRef, McConversationView } from '@dash/mc';
 import type { MobileWsServerFrame } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+  MobileV2SequencedFrame,
+} from '@dash/mobile-contract-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
+import { ConversationChatSupersededError } from '../shared/ipc.js';
 import type { GatewayConnection } from './chat-service.js';
 import { ChatService } from './chat-service.js';
+import {
+  ConversationChatCommandError,
+  ConversationChatTransport,
+} from './conversation-chat-transport.js';
 import { ConversationController } from './conversation-controller.js';
 import type { ResumableChatTransport } from './resumable-chat-transport.js';
 import { FixtureGatewayConversationRepository } from './test-support/fixture-gateway-conversation-repository.js';
@@ -53,6 +63,28 @@ async function fixture<T>(name: string): Promise<T> {
     '../../../../contracts/mobile/v1/fixtures',
   );
   return JSON.parse(await readFile(resolve(root, name), 'utf8')) as T;
+}
+
+async function fixtureV2<T>(name: string): Promise<T> {
+  const root = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../../contracts/mobile/v2/fixtures',
+  );
+  return JSON.parse(await readFile(resolve(root, name), 'utf8')) as T;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('ChatService', () => {
@@ -902,7 +934,7 @@ describe('ChatService gateway conversations', () => {
         accepted.id,
         'hello from Mission Control',
       ),
-    ).resolves.toEqual(accepted);
+    ).resolves.toEqual({ protocol: 'v1', frame: accepted });
     expect(resumable.send).toHaveBeenCalledWith(
       conversation,
       accepted.id,
@@ -1132,6 +1164,701 @@ describe('ChatService gateway conversations', () => {
       3,
       { owningIssueId: 'issue-retry', projectId: 'project-retry' },
     ]);
+  });
+});
+
+describe('ChatService conversation v2', () => {
+  let dataDir: string;
+  let store: ConversationStore;
+  let bootstrap: MobileV2ConversationBootstrap;
+  let olderPage: MobileV2ConversationMessagePage;
+  let accepted: Extract<MobileV2SequencedFrame, { type: 'accepted' }>;
+  let controller: {
+    bootstrap: ReturnType<typeof vi.fn>;
+    messagesV2: ReturnType<typeof vi.fn>;
+    messages: ReturnType<typeof vi.fn>;
+    find: ReturnType<typeof vi.fn>;
+  };
+  let transport: ConversationChatTransport;
+  let service: ChatService;
+  let onEvent: ReturnType<typeof vi.fn>;
+  let onDone: ReturnType<typeof vi.fn>;
+  let onError: ReturnType<typeof vi.fn>;
+
+  function mockTransport(): ConversationChatTransport {
+    const value = new ConversationChatTransport({
+      connection: { url: 'ws://chat.test' },
+      channelId: 'mission-control',
+      onFrame: vi.fn(),
+      onConnectionError: vi.fn(),
+      onCommandError: vi.fn(),
+      socketFactory: vi.fn() as never,
+    });
+    vi.spyOn(value, 'open').mockResolvedValue(undefined);
+    vi.spyOn(value, 'send').mockResolvedValue(accepted);
+    vi.spyOn(value, 'enqueueInput').mockResolvedValue(undefined as never);
+    vi.spyOn(value, 'editFollowUp').mockResolvedValue(undefined as never);
+    vi.spyOn(value, 'removeFollowUp').mockResolvedValue(undefined as never);
+    vi.spyOn(value, 'resumeFollowUps').mockResolvedValue(undefined as never);
+    vi.spyOn(value, 'cancel').mockImplementation(() => {});
+    vi.spyOn(value, 'answer').mockImplementation(() => {});
+    vi.spyOn(value, 'closeConversation').mockImplementation(() => {});
+    vi.spyOn(value, 'closeAll').mockImplementation(() => {});
+    return value;
+  }
+
+  beforeEach(async () => {
+    dataDir = join(tmpdir(), `chat-service-v2-${Date.now()}-${Math.random()}`);
+    await mkdir(dataDir, { recursive: true });
+    store = new ConversationStore(dataDir);
+    bootstrap = await fixtureV2<MobileV2ConversationBootstrap>('conversation-bootstrap.json');
+    olderPage = await fixtureV2<MobileV2ConversationMessagePage>('conversation-message-page.json');
+    accepted =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'accepted' }>>('chat-accepted.json');
+    controller = {
+      bootstrap: vi.fn().mockResolvedValue(bootstrap),
+      messagesV2: vi.fn().mockResolvedValue(olderPage),
+      messages: vi.fn(),
+      find: vi.fn().mockResolvedValue({
+        ...bootstrap.conversation,
+        origin: 'gateway',
+        offline: false,
+        readOnly: false,
+      }),
+    };
+    onEvent = vi.fn();
+    onDone = vi.fn();
+    onError = vi.fn();
+    service = new ChatService(
+      store,
+      onEvent,
+      onDone,
+      onError,
+      undefined,
+      undefined,
+      controller as never,
+    );
+    transport = mockTransport();
+    service.setGatewayChatTransport(transport);
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  const ref = {
+    id: '00000000-0000-4000-8000-000000000001',
+    origin: 'gateway' as const,
+  };
+
+  it('returns v2 bootstrap and subscribes only after the renderer supplies its cursor', async () => {
+    await expect(service.getInitialState(ref)).resolves.toEqual({ protocol: 'v2', bootstrap });
+    expect(transport.open).not.toHaveBeenCalled();
+
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+
+    expect(transport.open).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      bootstrap.v2ThroughSeq,
+    );
+  });
+
+  it('returns older history through the negotiated v2 page shape', async () => {
+    await expect(service.getOlderMessages(ref, 'older-cursor')).resolves.toEqual({
+      protocol: 'v2',
+      page: olderPage,
+    });
+    expect(controller.messagesV2).toHaveBeenCalledWith(ref, {
+      limit: 100,
+      before: 'older-cursor',
+    });
+    expect(controller.messages).not.toHaveBeenCalled();
+  });
+
+  it('forwards queue identities unchanged and protocol-tags accepted sends', async () => {
+    const inputAccepted =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>(
+        'input-accepted.json',
+      );
+    vi.mocked(transport.enqueueInput).mockResolvedValue(inputAccepted);
+    const request = {
+      commandId: inputAccepted.id,
+      inputId: inputAccepted.input.inputId,
+      behavior: 'steer' as const,
+      expectedActiveTurnId: bootstrap.conversation.activeTurnId ?? undefined,
+      text: inputAccepted.input.text,
+      images: [],
+    };
+
+    await expect(service.enqueueInput(ref, request)).resolves.toEqual(inputAccepted);
+    await expect(service.sendMessage(ref, accepted.id, 'hello')).resolves.toEqual({
+      protocol: 'v2',
+      frame: accepted,
+    });
+
+    expect(transport.enqueueInput).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      request,
+    );
+    expect(transport.send).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      accepted.id,
+      'hello',
+      undefined,
+      undefined,
+    );
+  });
+
+  it('forwards edit, remove, and resume identities without starting title bookkeeping', async () => {
+    const updated =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'input_updated' }>>(
+        'input-updated.json',
+      );
+    const removed =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'input_removed' }>>(
+        'input-removed.json',
+      );
+    const resumed =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'queue_resumed' }>>(
+        'queue-resumed.json',
+      );
+    vi.mocked(transport.editFollowUp).mockResolvedValue(updated);
+    vi.mocked(transport.removeFollowUp).mockResolvedValue(removed);
+    vi.mocked(transport.resumeFollowUps).mockResolvedValue(resumed);
+    const edit = {
+      commandId: updated.id,
+      inputId: updated.input.inputId,
+      expectedRevision: 0,
+      text: updated.input.text,
+      images: [],
+    };
+
+    await expect(service.editFollowUp(ref, edit)).resolves.toEqual(updated);
+    await expect(
+      service.removeFollowUp(ref, removed.id, removed.input.inputId, 0),
+    ).resolves.toEqual(removed);
+    await expect(service.resumeFollowUps(ref, resumed.id ?? 'missing', 6)).resolves.toEqual(
+      resumed,
+    );
+
+    expect(transport.editFollowUp).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      edit,
+    );
+    expect(transport.removeFollowUp).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      removed.id,
+      removed.input.inputId,
+      0,
+    );
+    expect(transport.resumeFollowUps).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      resumed.id,
+      6,
+    );
+  });
+
+  it('keeps non-UUID legacy run correlations opaque', async () => {
+    const issues = vi.fn();
+    service.setV2CommandIssueListener(issues);
+    controller.find.mockResolvedValue({
+      ...bootstrap.conversation,
+      activeTurnId: 'turn-01',
+      origin: 'gateway',
+      offline: false,
+      readOnly: false,
+    });
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+
+    await service.answerQuestion(ref, 'turn-01', 'question-legacy', 'Yes', 'legacy-token');
+    service.handleV2CommandError(
+      transport,
+      ref.id,
+      new ConversationChatCommandError('turn-01', {
+        code: 'conversation_busy',
+        error: 'Already done',
+        retryable: false,
+      }),
+    );
+
+    expect(transport.answer).toHaveBeenCalledWith(ref.id, 'turn-01', 'question-legacy', 'Yes');
+    expect(issues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commandId: 'turn-01',
+        kind: 'answer',
+        questionId: 'question-legacy',
+        localDispatchToken: 'legacy-token',
+      }),
+    );
+  });
+
+  it('keeps cancel and answer dispatch identities collision-safe for one opaque run ID', async () => {
+    const issues = vi.fn();
+    service.setV2CommandIssueListener(issues);
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    const runId = bootstrap.conversation.activeTurnId as string;
+
+    await service.cancel(ref, runId, 'cancel-token');
+    await service.answerQuestion(ref, runId, 'question-1', 'Yes', 'answer-token');
+    service.handleV2CommandError(
+      transport,
+      ref.id,
+      new ConversationChatCommandError(runId, {
+        code: 'conversation_busy',
+        error: 'Already terminal',
+        retryable: false,
+      }),
+    );
+
+    expect(transport.cancel).toHaveBeenCalledWith(ref.id, runId);
+    expect(transport.answer).toHaveBeenCalledWith(ref.id, runId, 'question-1', 'Yes');
+    expect(issues).toHaveBeenCalledTimes(2);
+    expect(issues.mock.calls.map(([issue]) => issue)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commandId: runId,
+          kind: 'cancel',
+          localDispatchToken: 'cancel-token',
+          ambiguousCorrelation: true,
+        }),
+        expect.objectContaining({
+          commandId: runId,
+          kind: 'answer',
+          localDispatchToken: 'answer-token',
+          questionId: 'question-1',
+          ambiguousCorrelation: true,
+        }),
+      ]),
+    );
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+
+    service.handleV2CommandError(
+      transport,
+      ref.id,
+      new ConversationChatCommandError(runId, {
+        code: 'conversation_busy',
+        error: 'Duplicate callback',
+        retryable: false,
+      }),
+    );
+    expect(issues).toHaveBeenCalledTimes(2);
+  });
+
+  it('suppresses unknown, unsubscribed, and replaced-transport command callbacks', async () => {
+    const issues = vi.fn();
+    service.setV2CommandIssueListener(issues);
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    const runId = bootstrap.conversation.activeTurnId as string;
+    const error = new ConversationChatCommandError(runId, {
+      code: 'conversation_busy',
+      error: 'Rejected',
+      retryable: false,
+    });
+
+    service.handleV2CommandError(transport, ref.id, error);
+    await service.cancel(ref, runId, 'cancel-token');
+    service.unsubscribeV2(ref);
+    service.handleV2CommandError(transport, ref.id, error);
+
+    const replacement = mockTransport();
+    service.setGatewayChatTransport(replacement);
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    await service.cancel(ref, runId, 'replacement-token');
+    service.handleV2CommandError(transport, ref.id, error);
+
+    expect(issues).not.toHaveBeenCalled();
+  });
+
+  it('carries current command context across a same-run rebase and drops it after run promotion', async () => {
+    const issues = vi.fn();
+    service.setV2CommandIssueListener(issues);
+    const runId = bootstrap.conversation.activeTurnId as string;
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    await service.cancel(ref, runId, 'same-run-token');
+
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    service.handleV2CommandError(
+      transport,
+      ref.id,
+      new ConversationChatCommandError(runId, {
+        code: 'conversation_busy',
+        error: 'Same run rejection',
+        retryable: false,
+      }),
+    );
+    expect(issues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        localDispatchToken: 'same-run-token',
+        ambiguousCorrelation: false,
+      }),
+    );
+
+    issues.mockClear();
+    await service.cancel(ref, runId, 'old-run-token');
+    controller.find.mockResolvedValue({
+      ...bootstrap.conversation,
+      activeTurnId: 'promoted-run',
+      origin: 'gateway',
+      offline: false,
+      readOnly: false,
+    });
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    service.handleV2CommandError(
+      transport,
+      ref.id,
+      new ConversationChatCommandError(runId, {
+        code: 'conversation_busy',
+        error: 'Old run rejection',
+        retryable: false,
+      }),
+    );
+    expect(issues).not.toHaveBeenCalled();
+  });
+
+  it('does not open a stale subscription whose lookup outlives unsubscribe', async () => {
+    const lookup = deferred<McConversationView>();
+    controller.find.mockReturnValueOnce(lookup.promise);
+
+    const pending = service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    service.unsubscribeV2(ref);
+    lookup.resolve({
+      ...bootstrap.conversation,
+      origin: 'gateway',
+      offline: false,
+      readOnly: false,
+    });
+
+    await expect(pending).resolves.toBeUndefined();
+    expect(transport.open).not.toHaveBeenCalled();
+    expect(transport.closeConversation).toHaveBeenCalledWith(ref.id);
+  });
+
+  it('does not dispatch a delayed cancel or answer through a replacement transport', async () => {
+    const issues = vi.fn();
+    service.setV2CommandIssueListener(issues);
+    const cancelLookup = deferred<McConversationView>();
+    const answerLookup = deferred<McConversationView>();
+    controller.find
+      .mockReturnValueOnce(cancelLookup.promise)
+      .mockReturnValueOnce(answerLookup.promise);
+    const runId = bootstrap.conversation.activeTurnId as string;
+
+    const cancel = service.cancel(ref, runId, 'cancel-token');
+    const answer = service.answerQuestion(ref, runId, 'question-1', 'Yes', 'answer-token');
+    const replacement = mockTransport();
+    service.setGatewayChatTransport(replacement);
+    const current = {
+      ...bootstrap.conversation,
+      origin: 'gateway' as const,
+      offline: false,
+      readOnly: false,
+    };
+    cancelLookup.resolve(current);
+    answerLookup.resolve(current);
+
+    await expect(cancel).resolves.toBeUndefined();
+    await expect(answer).resolves.toBeUndefined();
+    expect(transport.cancel).not.toHaveBeenCalled();
+    expect(transport.answer).not.toHaveBeenCalled();
+    expect(replacement.cancel).not.toHaveBeenCalled();
+    expect(replacement.answer).not.toHaveBeenCalled();
+    expect(issues).not.toHaveBeenCalled();
+  });
+
+  it('closes an in-flight open on unsubscribe and permits a fresh later subscription', async () => {
+    const opening = deferred<void>();
+    vi.mocked(transport.open).mockReturnValueOnce(opening.promise);
+
+    const first = service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    await vi.waitFor(() => expect(transport.open).toHaveBeenCalledOnce());
+    service.unsubscribeV2(ref);
+    opening.resolve(undefined);
+    await expect(first).resolves.toBeUndefined();
+
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    expect(transport.open).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects stale acknowledgement-returning sends with ConversationChatSupersededError', async () => {
+    const lookup = deferred<McConversationView>();
+    controller.find.mockReturnValueOnce(lookup.promise);
+    const pending = service.sendMessage(ref, accepted.id, 'keep this draft');
+
+    service.unsubscribeV2(ref);
+    lookup.resolve({
+      ...bootstrap.conversation,
+      origin: 'gateway',
+      offline: false,
+      readOnly: false,
+    });
+
+    await expect(pending).rejects.toBeInstanceOf(ConversationChatSupersededError);
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
+  it('rejects a queue acknowledgement that arrives after unsubscribe', async () => {
+    const acknowledgement = deferred<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>();
+    vi.mocked(transport.enqueueInput).mockReturnValueOnce(acknowledgement.promise);
+    const request = {
+      commandId: '00000000-0000-4000-8000-000000000301',
+      inputId: '00000000-0000-4000-8000-000000000302',
+      behavior: 'followUp' as const,
+      text: 'preserve this editor',
+    };
+    const pending = service.enqueueInput(ref, request);
+    await vi.waitFor(() => expect(transport.enqueueInput).toHaveBeenCalledOnce());
+    service.unsubscribeV2(ref);
+    acknowledgement.resolve(
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>(
+        'input-accepted.json',
+      ),
+    );
+
+    await expect(pending).rejects.toBeInstanceOf(ConversationChatSupersededError);
+  });
+
+  it('translates a pending send close rejection after unsubscribe into superseded', async () => {
+    const acknowledgement = deferred<Extract<MobileV2SequencedFrame, { type: 'accepted' }>>();
+    vi.mocked(transport.send).mockReturnValueOnce(acknowledgement.promise);
+    const pending = service.sendMessage(ref, accepted.id, 'preserve this composer');
+    const rejection = expect(pending).rejects.toBeInstanceOf(ConversationChatSupersededError);
+    await vi.waitFor(() => expect(transport.send).toHaveBeenCalledOnce());
+
+    service.unsubscribeV2(ref);
+    acknowledgement.reject(new Error('socket closed while send was pending'));
+
+    await rejection;
+  });
+
+  it('translates a pending queue close rejection after transport replacement into superseded', async () => {
+    const acknowledgement = deferred<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>();
+    vi.mocked(transport.enqueueInput).mockReturnValueOnce(acknowledgement.promise);
+    const request = {
+      commandId: '00000000-0000-4000-8000-000000000301',
+      inputId: '00000000-0000-4000-8000-000000000302',
+      behavior: 'followUp' as const,
+      text: 'preserve this editor',
+    };
+    const pending = service.enqueueInput(ref, request);
+    const rejection = expect(pending).rejects.toBeInstanceOf(ConversationChatSupersededError);
+    await vi.waitFor(() => expect(transport.enqueueInput).toHaveBeenCalledOnce());
+
+    const replacement = mockTransport();
+    service.setGatewayChatTransport(replacement);
+    acknowledgement.reject(new Error('socket closed while queue command was pending'));
+
+    await rejection;
+    expect(replacement.enqueueInput).not.toHaveBeenCalled();
+  });
+
+  it('preserves a genuine current-generation queue transport rejection', async () => {
+    const currentFailure = new Error('current queue domain failure');
+    vi.mocked(transport.editFollowUp).mockRejectedValueOnce(currentFailure);
+
+    await expect(
+      service.editFollowUp(ref, {
+        commandId: '00000000-0000-4000-8000-000000000301',
+        inputId: '00000000-0000-4000-8000-000000000302',
+        expectedRevision: 2,
+        text: 'keep this failure identity',
+      }),
+    ).rejects.toBe(currentFailure);
+  });
+
+  it('revalidates a delayed cancel after a same-run rebase and dispatches exactly once', async () => {
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    const delayedCommandLookup = deferred<McConversationView>();
+    const rebaseLookup = deferred<McConversationView>();
+    const current = {
+      ...bootstrap.conversation,
+      origin: 'gateway' as const,
+      offline: false,
+      readOnly: false,
+    };
+    controller.find
+      .mockReturnValueOnce(delayedCommandLookup.promise)
+      .mockReturnValueOnce(rebaseLookup.promise)
+      .mockResolvedValue(current);
+    const runId = bootstrap.conversation.activeTurnId as string;
+
+    const cancel = service.cancel(ref, runId, 'rebased-cancel');
+    const rebase = service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    delayedCommandLookup.resolve(current);
+    await Promise.resolve();
+    expect(transport.cancel).not.toHaveBeenCalled();
+    rebaseLookup.resolve(current);
+
+    await rebase;
+    await cancel;
+    expect(transport.cancel).toHaveBeenCalledOnce();
+    expect(transport.cancel).toHaveBeenCalledWith(ref.id, runId);
+  });
+
+  it('rejects a delayed answer when a rebase promotes a different active run', async () => {
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    const delayedCommandLookup = deferred<McConversationView>();
+    const rebaseLookup = deferred<McConversationView>();
+    const oldRun = bootstrap.conversation.activeTurnId as string;
+    const promoted = {
+      ...bootstrap.conversation,
+      activeTurnId: 'promoted-run',
+      origin: 'gateway' as const,
+      offline: false,
+      readOnly: false,
+    };
+    controller.find
+      .mockReturnValueOnce(delayedCommandLookup.promise)
+      .mockReturnValueOnce(rebaseLookup.promise)
+      .mockResolvedValue(promoted);
+
+    const answer = service.answerQuestion(ref, oldRun, 'question-1', 'Yes', 'promoted-answer');
+    const rebase = service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    delayedCommandLookup.resolve(promoted);
+    rebaseLookup.resolve(promoted);
+
+    await rebase;
+    await expect(answer).rejects.toThrow('does not have active turn');
+    expect(transport.answer).not.toHaveBeenCalled();
+  });
+
+  it('waits for a synchronously registered rebase barrier before dispatching a queue command', async () => {
+    await service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    vi.mocked(transport.open).mockClear();
+    const rebaseLookup = deferred<McConversationView>();
+    controller.find.mockReturnValueOnce(rebaseLookup.promise);
+    const rebase = service.subscribeV2(ref, bootstrap.v2ThroughSeq);
+    const enqueue = service.enqueueInput(ref, {
+      commandId: '00000000-0000-4000-8000-000000000301',
+      inputId: '00000000-0000-4000-8000-000000000302',
+      behavior: 'followUp',
+      text: 'after the rebase',
+    });
+
+    await Promise.resolve();
+    expect(controller.find).toHaveBeenCalledTimes(2);
+    expect(transport.enqueueInput).not.toHaveBeenCalled();
+
+    rebaseLookup.resolve({
+      ...bootstrap.conversation,
+      origin: 'gateway',
+      offline: false,
+      readOnly: false,
+    });
+    await rebase;
+    await enqueue;
+
+    expect(transport.open).toHaveBeenCalledOnce();
+    expect(transport.enqueueInput).toHaveBeenCalledOnce();
+  });
+
+  it('follows a newer same-run subscribe barrier after the enqueue waiter sees the prior barrier reject', async () => {
+    const firstOpen = deferred<void>();
+    const secondOpen = deferred<void>();
+    const inputAccepted =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>(
+        'input-accepted.json',
+      );
+    vi.mocked(transport.open)
+      .mockReturnValueOnce(firstOpen.promise)
+      .mockReturnValueOnce(secondOpen.promise);
+    vi.mocked(transport.enqueueInput).mockResolvedValue(inputAccepted);
+    const request = {
+      commandId: inputAccepted.id,
+      inputId: inputAccepted.input.inputId,
+      behavior: 'followUp' as const,
+      expectedActiveTurnId: bootstrap.conversation.activeTurnId ?? undefined,
+      text: 'keep these exact identities',
+      images: [],
+    };
+
+    const firstSubscribe = service.subscribeV2(ref, 10);
+    await vi.waitFor(() => expect(transport.open).toHaveBeenCalledTimes(1));
+    const enqueue = service.enqueueInput(ref, request);
+    const enqueueAssertion = expect(enqueue).resolves.toEqual(inputAccepted);
+    const secondSubscribe = service.subscribeV2(ref, 11);
+    await vi.waitFor(() => expect(transport.open).toHaveBeenCalledTimes(2));
+
+    firstOpen.reject(new Error('prior subscribe was superseded'));
+    secondOpen.resolve(undefined);
+
+    await expect(firstSubscribe).resolves.toBeUndefined();
+    await expect(secondSubscribe).resolves.toBeUndefined();
+    await enqueueAssertion;
+    expect(transport.enqueueInput).toHaveBeenCalledOnce();
+    expect(transport.enqueueInput).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id, activeTurnId: request.expectedActiveTurnId }),
+      request,
+    );
+  });
+
+  it('follows a newer same-run subscribe barrier before dispatching a waiting cancel once', async () => {
+    const firstOpen = deferred<void>();
+    const secondOpen = deferred<void>();
+    vi.mocked(transport.open)
+      .mockReturnValueOnce(firstOpen.promise)
+      .mockReturnValueOnce(secondOpen.promise);
+    const runId = bootstrap.conversation.activeTurnId as string;
+
+    const firstSubscribe = service.subscribeV2(ref, 10);
+    await vi.waitFor(() => expect(transport.open).toHaveBeenCalledTimes(1));
+    const cancel = service.cancel(ref, runId, 'barrier-cancel-token');
+    const cancelAssertion = expect(cancel).resolves.toBeUndefined();
+    const secondSubscribe = service.subscribeV2(ref, 11);
+    await vi.waitFor(() => expect(transport.open).toHaveBeenCalledTimes(2));
+
+    firstOpen.reject(new Error('prior subscribe was superseded'));
+    secondOpen.resolve(undefined);
+
+    await expect(firstSubscribe).resolves.toBeUndefined();
+    await expect(secondSubscribe).resolves.toBeUndefined();
+    await cancelAssertion;
+    expect(transport.cancel).toHaveBeenCalledOnce();
+    expect(transport.cancel).toHaveBeenCalledWith(ref.id, runId);
+  });
+
+  it('does not expose a pending old-transport subscribe barrier to replacement commands', async () => {
+    const oldOpen = deferred<void>();
+    vi.mocked(transport.open).mockReturnValueOnce(oldOpen.promise);
+    const oldSubscribe = service.subscribeV2(ref, 10);
+    await vi.waitFor(() => expect(transport.open).toHaveBeenCalledOnce());
+
+    const replacement = mockTransport();
+    const inputAccepted =
+      await fixtureV2<Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>>(
+        'input-accepted.json',
+      );
+    vi.mocked(replacement.enqueueInput).mockResolvedValue(inputAccepted);
+    service.setGatewayChatTransport(replacement);
+    const request = {
+      commandId: inputAccepted.id,
+      inputId: inputAccepted.input.inputId,
+      behavior: 'followUp' as const,
+      text: 'dispatch on replacement',
+    };
+    const enqueue = service.enqueueInput(ref, request);
+    const enqueueAssertion = expect(enqueue).resolves.toEqual(inputAccepted);
+
+    oldOpen.reject(new Error('old transport closed'));
+
+    await expect(oldSubscribe).resolves.toBeUndefined();
+    await enqueueAssertion;
+    expect(replacement.enqueueInput).toHaveBeenCalledOnce();
+    expect(replacement.enqueueInput).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ref.id }),
+      request,
+    );
+  });
+
+  it('makes ChatService the sole owner of transport replacement closure', () => {
+    const replacement = mockTransport();
+
+    service.setGatewayChatTransport(replacement);
+    service.setGatewayChatTransport(replacement);
+    service.setGatewayChatTransport(undefined);
+
+    expect(transport.closeAll).toHaveBeenCalledOnce();
+    expect(replacement.closeAll).toHaveBeenCalledOnce();
   });
 });
 

@@ -1,10 +1,18 @@
 import type { ConversationRef } from '@dash/mc';
 import type { MobileWsServerFrame } from '@dash/mobile-contract';
-import { Loader2, Square } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { McAgentEvent } from '../../../../../shared/ipc.js';
-import { conversationKey, useChatStore } from '../../../stores/chat.js';
-import { MessageBubble } from '../../chat.js';
+import { ChatComposer, type ChatComposerAttempt } from '../../../components/chat/ChatComposer.js';
+import { FollowUpQueue } from '../../../components/chat/FollowUpQueue.js';
+import {
+  type ConversationKey,
+  conversationKey,
+  conversationRefFromKey,
+  conversationSourceFor,
+  useChatStore,
+} from '../../../stores/chat.js';
+import { MessageBubble, V2ConversationTimeline } from '../../chat.js';
 
 const EMPTY_FRAMES: MobileWsServerFrame[] = [];
 
@@ -23,79 +31,122 @@ export function SessionPanel({
 }: {
   conversationRef: ConversationRef;
 }): JSX.Element {
-  const key = conversationKey(conversationRef);
-  const conversation = useChatStore((state) =>
-    state.conversations.find(
-      (item) => item.id === conversationRef.id && item.origin === conversationRef.origin,
-    ),
+  const reactId = useId();
+  const ownerId = useMemo(() => `session-panel:${reactId}`, [reactId]);
+  const stableRef = useMemo<ConversationRef>(
+    () => ({ id: conversationRef.id, origin: conversationRef.origin }),
+    [conversationRef.id, conversationRef.origin],
   );
-  const messages = useChatStore((state) => state.messages[key]);
-  const streamingFrames = useChatStore((state) => state.streamingFrames[key] ?? EMPTY_FRAMES);
-  const sending = useChatStore((state) => state.sending[key] ?? false);
-  const localTurnId = useChatStore((state) => state.localTurnIds[key]);
-  const gatewayOnline = useChatStore((state) => state.gatewayOnline);
-  const ensureMessages = useChatStore((state) => state.ensureMessages);
-  const sendMessage = useChatStore((state) => state.sendMessage);
-  const cancelMessage = useChatStore((state) => state.cancelMessage);
-  const answerQuestion = useChatStore((state) => state.answerQuestion);
-
-  const [draft, setDraft] = useState('');
+  const key = conversationKey(stableRef);
+  const chatState = useChatStore();
+  const {
+    conversations,
+    gatewayOnline,
+    messages,
+    streamingFrames,
+    localTurnIds,
+    sending,
+    protocolByConversation,
+    v2Projections,
+    commandIssuesByConversation,
+    answerAttemptsByConversation,
+    openConversation,
+    closeConversation,
+    sendMessage,
+    enqueueInput,
+    editFollowUp,
+    removeFollowUp,
+    resumeFollowUps,
+    cancelMessage,
+    answerQuestion,
+    clearCommandIssue,
+  } = chatState;
+  const conversation = conversations.find(
+    (item) => item.id === stableRef.id && item.origin === stableRef.origin,
+  );
+  const source = conversationSourceFor(chatState, stableRef);
+  const runtimeConversation = source?.summary ?? null;
+  const projection = v2Projections[key];
+  const protocol = protocolByConversation[key] ?? 'v1';
+  const queueCapable = stableRef.origin === 'gateway' && protocol === 'v2';
+  const legacyMessages = messages[key];
+  const legacyFrames = streamingFrames[key] ?? EMPTY_FRAMES;
+  const legacyEvents = useMemo(() => eventsFromFrames(legacyFrames), [legacyFrames]);
   const [answeredQuestions, setAnsweredQuestions] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
-  const streamingEvents = useMemo(() => eventsFromFrames(streamingFrames), [streamingFrames]);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const offline = Boolean(conversation?.offline || !gatewayOnline);
   const readOnly = Boolean(
     !conversation ||
+      !runtimeConversation ||
       conversation.readOnly ||
-      conversation.status === 'archived' ||
-      conversation.status === 'deleted',
+      runtimeConversation.status === 'archived' ||
+      runtimeConversation.status === 'deleted',
   );
+  const editable = Boolean(conversation && runtimeConversation && !offline && !readOnly);
   const remoteActive = Boolean(
-    conversation?.activeTurnId && conversation.activeTurnId !== localTurnId,
-  );
-  const composerLocked = Boolean(
-    offline ||
-      readOnly ||
-      remoteActive ||
-      sending ||
-      conversation?.status === 'running' ||
-      conversation?.activeTurnId,
+    runtimeConversation?.activeTurnId && runtimeConversation.activeTurnId !== localTurnIds[key],
   );
   const questionLocked = offline || readOnly;
   const placeholder = offline
     ? 'Reconnect to send a message'
     : readOnly
       ? 'This conversation is read-only'
-      : remoteActive
+      : remoteActive && !queueCapable
         ? 'Conversation active on another device'
         : 'Reply to the agent…';
+  const queueItems = projection
+    ? projection.queueOrder.flatMap((inputId) => {
+        const item = projection.inputs[inputId];
+        return item ? [item] : [];
+      })
+    : [];
 
   useEffect(() => {
-    void ensureMessages(conversationRef).catch(() => {});
-  }, [ensureMessages, conversationRef]);
+    void openConversation(stableRef, ownerId).catch(() => {});
+    return () => {
+      void closeConversation(stableRef, ownerId).catch(() => {});
+    };
+  }, [closeConversation, openConversation, ownerId, stableRef]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only when transcript content grows
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages?.length, streamingEvents.length]);
-
-  const submit = async (): Promise<void> => {
-    const text = draft.trim();
-    if (!text || composerLocked) return;
-    setDraft('');
-    try {
-      await sendMessage(conversationRef, text);
-    } catch {
-      // The store owns the optimistic record and error reconciliation.
-    }
-  };
+  }, [
+    legacyMessages?.length,
+    legacyEvents.length,
+    projection?.timeline.length,
+    projection?.lastAppliedV2Seq,
+  ]);
 
   const handleAnswerQuestion = (questionId: string, answer: string): void => {
     if (questionLocked) return;
-    answerQuestion(conversationRef, questionId, answer);
-    setAnsweredQuestions((current) => ({ ...current, [questionId]: answer }));
+    answerQuestion(stableRef, questionId, answer);
+    if (source?.protocol !== 'v2') {
+      setAnsweredQuestions((current) => ({ ...current, [questionId]: answer }));
+    }
   };
+
+  const handleSend = (attempt: ChatComposerAttempt): Promise<void> => {
+    const ref = conversationRefFromKey(attempt.conversationKey as ConversationKey);
+    return sendMessage(ref, attempt.payload.text, attempt.payload.images, attempt.draftRevision);
+  };
+
+  const handleEnqueue = async (
+    behavior: 'steer' | 'followUp',
+    attempt: ChatComposerAttempt,
+  ): Promise<void> => {
+    const ref = conversationRefFromKey(attempt.conversationKey as ConversationKey);
+    await enqueueInput(ref, {
+      behavior,
+      text: attempt.payload.text,
+      ...(attempt.payload.images ? { images: attempt.payload.images } : {}),
+    });
+  };
+
+  const transcriptLoaded =
+    source?.protocol === 'v2' ? Boolean(projection) : Boolean(legacyMessages);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -110,13 +161,19 @@ export function SessionPanel({
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
-        {!messages ? (
+        {!transcriptLoaded ? (
           <div className="flex items-center gap-2 text-xs text-muted">
             <Loader2 size={12} className="animate-spin" /> Loading session…
           </div>
+        ) : source?.protocol === 'v2' && projection ? (
+          <V2ConversationTimeline
+            projection={projection}
+            onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
+            answerAttempts={answerAttemptsByConversation[key]}
+          />
         ) : (
           <>
-            {messages.map((message) => (
+            {legacyMessages?.map((message) => (
               <MessageBubble
                 key={message.id}
                 message={message}
@@ -124,45 +181,53 @@ export function SessionPanel({
                 answeredQuestions={answeredQuestions}
               />
             ))}
-            {streamingEvents.length > 0 && (
+            {Boolean(sending[key]) && legacyEvents.length === 0 && (
+              <div className="mb-4 flex items-center gap-2 py-2 text-xs text-muted">
+                <Loader2 size={12} className="animate-spin" /> Thinking…
+              </div>
+            )}
+            {legacyEvents.length > 0 && (
               <MessageBubble
-                streamingEvents={streamingEvents}
+                streamingEvents={legacyEvents}
                 onAnswerQuestion={questionLocked ? undefined : handleAnswerQuestion}
                 answeredQuestions={answeredQuestions}
               />
             )}
-            <div ref={bottomRef} />
           </>
         )}
+        <div ref={bottomRef} />
       </div>
-      <div className="shrink-0 border-t border-border p-3">
-        <div className="flex items-end gap-2">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            placeholder={placeholder}
-            rows={2}
-            disabled={composerLocked}
-            className="w-full border border-border bg-background p-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
-          />
-          {conversation?.activeTurnId && (
-            <button
-              type="button"
-              onClick={() => cancelMessage(conversationRef)}
-              aria-label="Stop active turn"
-              className="bg-red-900/50 p-2.5 text-red transition-colors hover:bg-red-900/70"
-            >
-              <Square size={16} />
-            </button>
-          )}
-        </div>
-      </div>
+
+      {source?.protocol === 'v2' && projection && (
+        <FollowUpQueue
+          conversationKey={key}
+          items={queueItems}
+          paused={projection.queuePaused}
+          composerRef={composerRef}
+          onEdit={(inputId, revision, payload) =>
+            editFollowUp(stableRef, inputId, revision, payload.text, payload.images).then(
+              () => undefined,
+            )
+          }
+          onRemove={(inputId, revision) => removeFollowUp(stableRef, inputId, revision)}
+          onResume={() => resumeFollowUps(stableRef)}
+        />
+      )}
+
+      <ChatComposer
+        conversationKey={key}
+        composerRef={composerRef}
+        activeTurnId={runtimeConversation?.activeTurnId ?? null}
+        queueCapable={queueCapable}
+        editable={editable}
+        queuePaused={projection?.queuePaused ?? false}
+        placeholder={placeholder}
+        commandError={commandIssuesByConversation[key]?.apiError.error}
+        onDismissCommandError={() => clearCommandIssue(stableRef)}
+        onSend={handleSend}
+        onEnqueue={handleEnqueue}
+        onStop={() => cancelMessage(stableRef)}
+      />
     </div>
   );
 }

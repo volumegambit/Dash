@@ -1,3 +1,39 @@
+import type { MobileV2DeliveryKind, MobileV2DeliveryStatus } from '@dash/mobile-contract-v2';
+
+export interface InputDeliveryPresentation {
+  ariaLabel: string;
+  label: string;
+  alert: boolean;
+}
+
+/** Human and screen-reader treatment for queue-delivered transcript rows. */
+export function inputDeliveryPresentation(
+  kind: MobileV2DeliveryKind,
+  status: MobileV2DeliveryStatus | undefined,
+): InputDeliveryPresentation | null {
+  if (kind === 'normal') return null;
+  const noun = kind === 'steer' ? 'Steer' : 'Follow Up';
+  if (status === 'not_delivered') {
+    return {
+      ariaLabel: `${noun}, not delivered`,
+      label: `${noun} · Not delivered`,
+      alert: true,
+    };
+  }
+  if (status === 'delivered') {
+    return {
+      ariaLabel: kind === 'steer' ? 'Steered, delivered' : 'Follow Up, delivered',
+      label: kind === 'steer' ? 'Steered' : 'Follow Up · Delivered',
+      alert: false,
+    };
+  }
+  return {
+    ariaLabel: kind === 'steer' ? 'Steered, pending' : 'Follow Up, pending',
+    label: kind === 'steer' ? 'Steered · Pending' : 'Follow Up · Pending',
+    alert: false,
+  };
+}
+
 /** Normalize legacy tool names (read_file, write_file, etc.) to canonical names */
 function normalizeTool(name: string): string {
   switch (name) {
