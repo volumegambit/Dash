@@ -178,7 +178,14 @@ function findSplit(text: string, maxChars: number): number | null {
   return null;
 }
 
-/** See rule 1 in {@link findSplit}. */
+/**
+ * See rule 1 in {@link findSplit}. `SentenceChunker` calls this on a buffer
+ * that may still be growing character by character (real-time streaming), so
+ * the digit-run check treats "we haven't seen what comes after the trigger
+ * whitespace yet" as suppressed too — not knowing yet is not the same as
+ * knowing it isn't a digit. If a non-digit does show up, the next character
+ * append re-evaluates this same boundary and finds it no longer suppressed.
+ */
 function isSuppressedBoundary(text: string, punctuationIndex: number): boolean {
   let tokenStart = punctuationIndex;
   while (tokenStart > 0 && !/\s/.test(text[tokenStart - 1])) tokenStart--;
@@ -188,10 +195,63 @@ function isSuppressedBoundary(text: string, punctuationIndex: number): boolean {
 
   if (/^\d+$/.test(precedingToken)) {
     const afterWhitespace = text.slice(punctuationIndex + 1).replace(/^\s+/, '');
-    if (/^\d/.test(afterWhitespace)) return true;
+    if (afterWhitespace === '' || /^\d/.test(afterWhitespace)) return true;
   }
 
   return false;
+}
+
+/**
+ * True when `buf` — the characters accumulated so far for the *current*
+ * line — could still turn into a block-construct line opener (heading,
+ * ordered/bullet list item, blockquote, fenced code, or a table row). Once
+ * this goes false the line is committed as ordinary plain text for the rest
+ * of the line (see `SentenceChunker`'s per-character dispatch).
+ *
+ * Blockquote, fence and table candidacy are "sticky": once their opening
+ * character(s) are seen, they match for the rest of the line no matter what
+ * follows (a blockquote/fence/table row can contain anything after its
+ * opener). Heading/ordered/bullet candidacy is only sticky after the marker
+ * is confirmed complete (hashes + a space, digits + `.`/`)` + a space, or the
+ * bullet char + a space); before that they can still be disqualified.
+ *
+ * Table-row candidacy is deliberately narrowed to lines whose *first*
+ * character is `|` (the common leading-pipe style, matching this package's
+ * own fixtures) rather than "contains `|` anywhere" — a mid-line pipe can't
+ * be distinguished from ordinary prose without holding the whole line, which
+ * would defeat real-time plain-text emission for the overwhelming common
+ * case of ordinary prose that happens to contain a `|` character.
+ */
+function isBlockCandidate(buf: string): boolean {
+  if (buf.length === 0) return true;
+  if (buf[0] === '|') return true;
+  if (buf[0] === '>') return true;
+  return (
+    isHeadingCandidate(buf) ||
+    isOrderedCandidate(buf) ||
+    isBulletCandidate(buf) ||
+    isFenceCandidate(buf)
+  );
+}
+
+function isHeadingCandidate(buf: string): boolean {
+  return /^#{0,6}$/.test(buf) || /^#{1,6}\s/.test(buf);
+}
+
+function isOrderedCandidate(buf: string): boolean {
+  return /^\s*\d*$/.test(buf) || /^\s*\d+[.)]$/.test(buf) || /^\s*\d+[.)]\s/.test(buf);
+}
+
+function isBulletCandidate(buf: string): boolean {
+  return /^\s*$/.test(buf) || /^\s*[-*+]$/.test(buf) || /^\s*[-*+]\s/.test(buf);
+}
+
+function isFenceCandidate(buf: string): boolean {
+  const c = buf[0];
+  if (c !== '`' && c !== '~') return false;
+  if (buf.length >= 3) return buf[1] === c && buf[2] === c;
+  for (let i = 1; i < buf.length; i++) if (buf[i] !== c) return false;
+  return true;
 }
 
 export interface SentenceChunkerOptions {
@@ -199,27 +259,51 @@ export interface SentenceChunkerOptions {
   maxChars?: number;
 }
 
+type LineMode = 'undetermined' | 'plain';
+type TableState = 'none' | 'pendingHeader' | 'inTable';
+
 /**
  * Turns a streamed markdown reply into speakable sentences, one at a time,
- * for per-sentence text-to-speech.
+ * for per-sentence text-to-speech, emitting as early as the content allows
+ * rather than waiting for the whole reply (or even a whole paragraph):
  *
- * Raw markdown is buffered line by line. A fenced code block (opened by a
- * line starting with three backticks or tildes) holds its paragraph — nothing
- * is emitted from it — until the matching fence closes or `flush()` is
- * called. Once a paragraph is complete (a blank line is reached with the
- * fence not open, or `flush()` forces completion), `speakable` is applied to
- * it and the result is appended to a pending buffer, which is then scanned
- * for sentence boundaries (see `findSplit`). A completed paragraph always
- * drains its pending buffer fully — even without trailing punctuation —
- * since the blank line that ended it is itself an emit trigger.
+ * 1. **Plain text** is scanned in real time, character by character. As soon
+ *    as the buffered text contains a sentence-ending trigger (`.`, `!`, `?`,
+ *    `:` followed by whitespace — see `findSplit` for the decimal/
+ *    abbreviation suppression rule) or exceeds `maxChars`, that sentence is
+ *    sliced off, run through `speakable` (for inline transforms — emphasis,
+ *    links, inline code, HTML), and emitted immediately.
+ * 2. **Block-construct lines** — headings, list items, and blockquotes — are
+ *    classified from their first character(s) (see `isBlockCandidate`) and,
+ *    once classified, held until their own line completes (a `\n`), at which
+ *    point the whole line is rendered via `speakable` and emitted as one
+ *    sentence — never split at punctuation inside it. A **table** is a
+ *    multi-line block: consecutive `|`-led rows are held (nothing emitted)
+ *    until the table ends — a non-table-row line, a blank line, or
+ *    `flush()` — at which point one `"Table with N rows omitted."` sentence
+ *    is emitted for the whole table.
+ * 3. A **blank line** or `flush()` force-emits whatever plain text is still
+ *    buffered, even without trailing punctuation, and resolves any
+ *    in-progress table. A **fenced code block** (opened by a line starting
+ *    with three backticks or tildes) holds everything of its own content —
+ *    nothing is emitted from inside it — until the matching fence closes or
+ *    `flush()`, at which point it collapses to one `"Code block omitted."`
+ *    sentence. Plain-text sentences before or after a fence in the same
+ *    paragraph are unaffected by the fence and follow rule 1 as normal.
  */
 export class SentenceChunker {
   private readonly maxChars: number;
+
+  private lineMode: LineMode = 'undetermined';
   private lineBuffer = '';
-  private paragraphLines: string[] = [];
+  private plainBuffer = '';
+
   private fenceOpen = false;
   private fenceMarker = '';
-  private pending = '';
+
+  private tableState: TableState = 'none';
+  private pendingHeaderLine = '';
+  private tableRowCount = 0;
 
   constructor(options: SentenceChunkerOptions = {}) {
     this.maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
@@ -228,12 +312,12 @@ export class SentenceChunker {
   push(delta: string): string[] {
     const emitted: string[] = [];
     for (const ch of delta) {
-      if (ch === '\n') {
-        const line = this.lineBuffer;
-        this.lineBuffer = '';
-        this.completeLine(line, emitted);
+      if (this.fenceOpen) {
+        this.handleFenceChar(ch, emitted);
+      } else if (this.lineMode === 'plain') {
+        this.handlePlainChar(ch, emitted);
       } else {
-        this.lineBuffer += ch;
+        this.handleUndeterminedChar(ch, emitted);
       }
     }
     return emitted;
@@ -242,72 +326,202 @@ export class SentenceChunker {
   flush(): string[] {
     const emitted: string[] = [];
 
-    if (this.lineBuffer !== '') {
+    // Finish a trailing, not-yet-newline-terminated line first — it may
+    // itself open a fence (e.g. a reply that ends mid-fence-opener), which
+    // the fenceOpen check right after must then see and close.
+    if (!this.fenceOpen && this.lineMode === 'undetermined' && this.lineBuffer.trim() !== '') {
       const line = this.lineBuffer;
       this.lineBuffer = '';
-      if (line.trim() !== '' || this.fenceOpen) {
-        this.paragraphLines.push(line);
-      }
+      this.completeUndeterminedLine(line, emitted);
     }
 
-    this.fenceOpen = false;
-
-    if (this.paragraphLines.length > 0) {
-      this.completeParagraph(emitted);
-    } else {
-      const rest = this.pending.trim();
-      if (rest) emitted.push(rest);
-      this.pending = '';
+    if (this.fenceOpen) {
+      this.fenceOpen = false;
+      emitted.push('Code block omitted.');
     }
 
+    this.lineBuffer = '';
+    this.lineMode = 'undetermined';
+    this.finalizeParagraph(emitted);
     return emitted;
   }
 
-  private completeLine(line: string, emitted: string[]): void {
-    const fenceMatch = line.match(FENCE_RE);
+  private handleFenceChar(ch: string, emitted: string[]): void {
+    if (ch !== '\n') {
+      this.lineBuffer += ch;
+      return;
+    }
+    const line = this.lineBuffer;
+    this.lineBuffer = '';
+    if (line.startsWith(this.fenceMarker)) {
+      this.fenceOpen = false;
+      emitted.push('Code block omitted.');
+    }
+  }
 
-    if (this.fenceOpen) {
-      this.paragraphLines.push(line);
-      if (fenceMatch && line.startsWith(this.fenceMarker)) this.fenceOpen = false;
+  private handlePlainChar(ch: string, emitted: string[]): void {
+    this.plainBuffer += ch;
+    this.drainPlain(emitted);
+    if (ch === '\n') {
+      this.lineMode = 'undetermined';
+      this.lineBuffer = '';
+    }
+  }
+
+  private handleUndeterminedChar(ch: string, emitted: string[]): void {
+    if (ch === '\n') {
+      const line = this.lineBuffer;
+      this.lineBuffer = '';
+      if (line.trim() === '') {
+        this.finalizeParagraph(emitted);
+      } else {
+        this.completeUndeterminedLine(line, emitted);
+      }
       return;
     }
 
+    const candidate = this.lineBuffer + ch;
+    if (isBlockCandidate(candidate)) {
+      this.lineBuffer = candidate;
+      return;
+    }
+
+    // This line turned out to be plain text, not a block construct — which
+    // means it's a non-table-row line, so any table in progress ends here.
+    this.resolveTableState(emitted);
+    this.lineBuffer = '';
+    this.lineMode = 'plain';
+    this.plainBuffer += candidate;
+    this.drainPlain(emitted);
+  }
+
+  /** A line whose classification is settled (matched a block pattern, or ran out at flush). */
+  private completeUndeterminedLine(line: string, emitted: string[]): void {
+    if (line.startsWith('|')) {
+      this.handleTableLine(line, emitted);
+      return;
+    }
+
+    // A non-table-row line always ends any table in progress.
+    this.resolveTableState(emitted);
+
+    const fenceMatch = line.match(FENCE_RE);
     if (fenceMatch) {
+      this.forceDrainPlain(emitted);
       this.fenceOpen = true;
       this.fenceMarker = fenceMatch[1];
-      this.paragraphLines.push(line);
       return;
     }
 
-    if (line.trim() === '') {
-      if (this.paragraphLines.length > 0) this.completeParagraph(emitted);
+    const heading = line.match(HEADING_RE);
+    if (heading) {
+      this.forceDrainPlain(emitted);
+      const text = terminate(inline(heading[1]));
+      if (text) emitted.push(text);
       return;
     }
 
-    this.paragraphLines.push(line);
+    const blockquote = line.match(BLOCKQUOTE_RE);
+    if (blockquote) {
+      this.forceDrainPlain(emitted);
+      const text = inline(blockquote[1]).trim();
+      if (text) emitted.push(text);
+      return;
+    }
+
+    const ordered = line.match(ORDERED_ITEM_RE);
+    if (ordered) {
+      this.forceDrainPlain(emitted);
+      const text = terminate(inline(ordered[1]));
+      if (text) emitted.push(text);
+      return;
+    }
+
+    const bullet = line.match(BULLET_ITEM_RE);
+    if (bullet) {
+      this.forceDrainPlain(emitted);
+      const text = terminate(inline(bullet[1]));
+      if (text) emitted.push(text);
+      return;
+    }
+
+    // Candidacy held but nothing actually matched (e.g. a lone "#" or an
+    // incomplete list marker cut off by flush()) — treat as plain text.
+    this.appendPlain(line, emitted);
   }
 
-  private completeParagraph(emitted: string[]): void {
-    const raw = this.paragraphLines.join('\n');
-    this.paragraphLines = [];
+  private handleTableLine(line: string, emitted: string[]): void {
+    if (this.tableState === 'none') {
+      this.forceDrainPlain(emitted);
+      this.tableState = 'pendingHeader';
+      this.pendingHeaderLine = line;
+      return;
+    }
 
-    const text = speakable(raw);
-    if (text) this.pending = this.pending ? `${this.pending} ${text}` : text;
+    if (this.tableState === 'pendingHeader') {
+      if (isTableSeparator(line)) {
+        this.tableState = 'inTable';
+        this.tableRowCount = 0;
+        this.pendingHeaderLine = '';
+        return;
+      }
+      // The held line wasn't followed by a valid separator, so it was never
+      // a real header — treat it as plain text (with the line break it
+      // originally ended in, so it doesn't glue onto whatever follows), then
+      // re-evaluate the current line fresh (it may itself start a new table).
+      const heldLine = this.pendingHeaderLine;
+      this.tableState = 'none';
+      this.pendingHeaderLine = '';
+      this.appendPlain(`${heldLine}\n`, emitted);
+      this.completeUndeterminedLine(line, emitted);
+      return;
+    }
 
-    this.drainSentences(emitted);
-
-    const rest = this.pending.trim();
-    if (rest) emitted.push(rest);
-    this.pending = '';
+    // inTable: another data row. Only the count is needed for the summary.
+    this.tableRowCount++;
   }
 
-  private drainSentences(emitted: string[]): void {
+  /** Resolves any table in progress (emits its summary, or reclaims a false-positive header). */
+  private resolveTableState(emitted: string[]): void {
+    if (this.tableState === 'inTable') {
+      const n = this.tableRowCount;
+      emitted.push(`Table with ${n} row${n === 1 ? '' : 's'} omitted.`);
+    } else if (this.tableState === 'pendingHeader') {
+      this.appendPlain(`${this.pendingHeaderLine}\n`, emitted);
+    }
+    this.tableState = 'none';
+    this.pendingHeaderLine = '';
+    this.tableRowCount = 0;
+  }
+
+  /** Resolves table state and force-emits whatever plain text remains — a paragraph boundary. */
+  private finalizeParagraph(emitted: string[]): void {
+    this.resolveTableState(emitted);
+    this.forceDrainPlain(emitted);
+  }
+
+  private appendPlain(text: string, emitted: string[]): void {
+    if (text === '') return;
+    this.plainBuffer += text;
+    this.drainPlain(emitted);
+  }
+
+  private drainPlain(emitted: string[]): void {
     for (;;) {
-      const splitIndex = findSplit(this.pending, this.maxChars);
+      const splitIndex = findSplit(this.plainBuffer, this.maxChars);
       if (splitIndex === null) break;
-      const sentence = this.pending.slice(0, splitIndex).trim();
+      const raw = this.plainBuffer.slice(0, splitIndex);
+      this.plainBuffer = this.plainBuffer.slice(splitIndex).replace(/^\s+/, '');
+      const sentence = speakable(raw);
       if (sentence) emitted.push(sentence);
-      this.pending = this.pending.slice(splitIndex).trim();
     }
+  }
+
+  private forceDrainPlain(emitted: string[]): void {
+    this.drainPlain(emitted);
+    const rest = this.plainBuffer;
+    this.plainBuffer = '';
+    const sentence = speakable(rest);
+    if (sentence) emitted.push(sentence);
   }
 }
