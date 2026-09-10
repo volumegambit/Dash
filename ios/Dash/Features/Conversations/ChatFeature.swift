@@ -823,6 +823,7 @@ final class ChatFeature {
   @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeSignaling
   @ObservationIgnored private let makeID: @Sendable () -> String
   @ObservationIgnored private let makeDictation: @MainActor @Sendable () -> DictationFeature?
+  @ObservationIgnored private let makeReadAloud: @MainActor @Sendable () -> ReadAloudFeature?
   /// The composer's dictation feature, or nil when this gateway has no
   /// `speech-v1` — see `syncDictation(available:)`. Observable so the mic
   /// button appears the moment the capability lands, which on a cold launch
@@ -832,6 +833,14 @@ final class ChatFeature {
   /// `.success` haptic the design asks for. A counter rather than a flag: two
   /// consecutive dictations must each earn their tick.
   private(set) var dictationInsertTick = 0
+  /// The message row's read-aloud feature, or nil when this gateway has no
+  /// `speech-v1` — see `syncReadAloud(available:)`. Observable so the menu
+  /// item appears the moment the capability lands, which on a cold launch is
+  /// after the transcript is already on screen.
+  private(set) var readAloud: ReadAloudFeature?
+  /// The last read-aloud sentence written into `state.errorBanner`, so
+  /// clearing it cannot wipe an unrelated banner that replaced it.
+  @ObservationIgnored private var readAloudBanner: String?
   /// The last answer `ComposerView` gave for `AppModel.speechAvailable`, so a
   /// deferred teardown knows what it is re-deciding.
   @ObservationIgnored private var speechIsAvailable = false
@@ -911,7 +920,8 @@ final class ChatFeature {
     recoveryChanges: any ConversationRecoveryChangeSignaling =
       ConversationRecoveryChangeSignal.shared,
     makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
-    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil }
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil }
   ) {
     self.gatewayID = gatewayID
     self.persistence = persistence
@@ -923,6 +933,7 @@ final class ChatFeature {
     self.recoveryChanges = recoveryChanges
     self.makeID = makeID
     self.makeDictation = makeDictation
+    self.makeReadAloud = makeReadAloud
     state = ChatState(
       conversation: conversation,
       messages: [],
@@ -1191,6 +1202,55 @@ final class ChatFeature {
   private func retireDictation() {
     guard let retiring = dictation else { return }
     dictation = nil
+    Task { await retiring.shutdown() }
+  }
+
+  /// Creates or drops the read-aloud feature as the gateway's `speech-v1`
+  /// capability comes and goes — the same one gate the composer's mic reads
+  /// (`AppModel.speechAvailable`), driven from `ChatView` for the same reason
+  /// `syncDictation` is driven from `ComposerView`: the capability belongs to
+  /// the CONNECTION, and this feature cannot see the app model.
+  ///
+  /// Unlike dictation there is no in-flight grace period. A recording holds
+  /// words the user cannot get back; a read aloud holds only audio they can
+  /// ask for again, so a gateway that loses speech stops talking immediately.
+  func syncReadAloud(available: Bool) {
+    guard isShutdown == false else { return }
+    guard available else {
+      retireReadAloud()
+      return
+    }
+    guard readAloud == nil, let feature = makeReadAloud() else { return }
+    feature.onErrorChanged = { [weak self] message in
+      self?.applyReadAloudError(message)
+    }
+    readAloud = feature
+  }
+
+  /// Read aloud has no error surface of its own: a failure belongs in the
+  /// conversation's existing banner, where every other chat failure lands.
+  private func applyReadAloudError(_ message: String?) {
+    if let message {
+      readAloudBanner = message
+      state.errorBanner = message
+      return
+    }
+    // Only OUR sentence is cleared — a banner something else wrote in the
+    // meantime is not read aloud's to remove.
+    if let previous = readAloudBanner, state.errorBanner == previous {
+      state.errorBanner = nil
+    }
+    readAloudBanner = nil
+  }
+
+  /// Drops the read-aloud feature, stopping any playback and releasing what
+  /// its factory built for it (in the app, a `GatewayAPI` and its
+  /// `URLSession`).
+  private func retireReadAloud() {
+    guard let retiring = readAloud else { return }
+    readAloud = nil
+    retiring.onErrorChanged = nil
+    applyReadAloudError(nil)
     Task { await retiring.shutdown() }
   }
 
@@ -2254,6 +2314,10 @@ final class ChatFeature {
     // and the process-wide audio session stays active with nothing owning it.
     speechIsAvailable = false
     retireDictation()
+    // Playback outlives its transcript otherwise: the audio keeps talking
+    // about a conversation that is no longer on screen, with the process-wide
+    // session active and nothing owning it.
+    retireReadAloud()
   }
 
   func shutdown() async {

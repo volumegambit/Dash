@@ -571,6 +571,21 @@ struct AppDependencies: Sendable {
               clock: clock,
               onRetire: { await speechAPI.shutdown() }
             )
+          },
+          // Deliberately a SECOND lazy `GatewayAPI`, built the same way and
+          // retired the same way, rather than sharing dictation's: the two
+          // features are created and dropped independently (the mic follows a
+          // recording in flight, playback does not), so one shared session
+          // would be owned by whichever happened to be retired last. Folding
+          // them into one speech-scoped session with a refcount is a
+          // consolidation deferred out of A9.
+          makeReadAloud: {
+            let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
+            return ReadAloudFeature(
+              synthesizer: speechAPI,
+              player: AudioPlaybackService(),
+              onRetire: { await speechAPI.shutdown() }
+            )
           }
         )
       },

@@ -1325,6 +1325,7 @@ extension AppDependenciesFactory {
   /// arming one would make the harness depend on the host Mac's audio.
   private struct UITestSpeechSessionControl: SpeechSessionControlling {
     func activateRecording() throws {}
+    func activatePlayback() throws {}
     func deactivate() {}
   }
 

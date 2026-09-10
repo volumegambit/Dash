@@ -520,10 +520,14 @@ actor FakeSpeechTranscriber: SpeechTranscribing {
 final class FakeSpeechSessionControl: SpeechSessionControlling, @unchecked Sendable {
   private let lock = NSLock()
   private var activationCount = 0
+  private var playbackActivationCount = 0
   private var deactivationCount = 0
   private var activationError: Error?
 
   var activations: Int { lock.withLock { activationCount } }
+  /// Counted separately from `activations`: dictation's assertions are about
+  /// the MIC route being armed, and read aloud must not inflate them.
+  var playbackActivations: Int { lock.withLock { playbackActivationCount } }
   var deactivations: Int { lock.withLock { deactivationCount } }
 
   func setActivationError(_ error: Error?) {
@@ -533,6 +537,14 @@ final class FakeSpeechSessionControl: SpeechSessionControlling, @unchecked Senda
   func activateRecording() throws {
     let error = lock.withLock { () -> Error? in
       activationCount += 1
+      return activationError
+    }
+    if let error { throw error }
+  }
+
+  func activatePlayback() throws {
+    let error = lock.withLock { () -> Error? in
+      playbackActivationCount += 1
       return activationError
     }
     if let error { throw error }

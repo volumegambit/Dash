@@ -16,12 +16,20 @@ extension GatewayAPI: SpeechTranscribing {}
 /// route would affect every other test in the same process.
 protocol SpeechSessionControlling: Sendable {
   func activateRecording() throws
+  /// Read aloud's half of the same seam (Task A9). One protocol rather than
+  /// two, because there is one process-wide `AVAudioSession` and a test that
+  /// armed EITHER route would affect every other test in the process.
+  func activatePlayback() throws
   func deactivate()
 }
 
 struct SystemSpeechSessionControl: SpeechSessionControlling {
   func activateRecording() throws {
     try SpeechAudioSession.activateRecording()
+  }
+
+  func activatePlayback() throws {
+    try SpeechAudioSession.activatePlayback()
   }
 
   func deactivate() {

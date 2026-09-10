@@ -6071,6 +6071,83 @@ struct ChatFeatureTests {
     #expect(await recorder.cancelCount == 1)
   }
 
+  @Test("read aloud appears and disappears with the gateway's speech capability")
+  func readAloudFollowsTheSpeechCapability() async {
+    let feature = makeFeature(makeReadAloud: { readAloudFeature() })
+
+    // Absent until something says the gateway can speak — the menu must not
+    // offer a "Read aloud" that 404s.
+    #expect(feature.readAloud == nil)
+
+    feature.syncReadAloud(available: true)
+    let created = feature.readAloud
+    #expect(created != nil)
+
+    feature.syncReadAloud(available: true)
+    #expect(feature.readAloud === created, "a second sync must not rebuild the feature")
+
+    feature.syncReadAloud(available: false)
+    #expect(feature.readAloud == nil)
+  }
+
+  @Test("a read-aloud failure lands in this conversation's error banner")
+  func readAloudFailureShowsInTheBanner() async {
+    let feature = makeFeature(
+      makeReadAloud: {
+        readAloudFeature(
+          result: .failure(
+            GatewayError.speech(code: "unavailable", message: "no key", retryable: false)
+          )
+        )
+      }
+    )
+    feature.syncReadAloud(available: true)
+
+    await feature.readAloud?.toggle(messageID: "m1", text: "hello")
+
+    await expectEventually("the banner") { feature.state.errorBanner != nil }
+    #expect(feature.state.errorBanner == "Speech isn't set up on your gateway yet.")
+
+    // Retiring the feature takes ITS banner with it — a dead sentence about a
+    // capability the gateway no longer advertises is worse than none.
+    feature.syncReadAloud(available: false)
+    #expect(feature.state.errorBanner == nil)
+  }
+
+  @Test("shutting the conversation down stops read aloud")
+  func shutdownStopsReadAloud() async {
+    let player = FakeAudioPlayer()
+    let feature = makeFeature(makeReadAloud: { readAloudFeature(player: player) })
+    feature.syncReadAloud(available: true)
+    let readAloud = feature.readAloud
+    await readAloud?.toggle(messageID: "m1", text: "hello")
+    // Not `speakingMessageID`, which is set before the gateway is even
+    // called — see `ReadAloudFeatureTests.Harness.waitForPlayback`.
+    await expectEventuallyAsync("playback to be underway") { await player.isPlaying }
+
+    feature.prepareForShutdown()
+
+    #expect(feature.readAloud == nil)
+    // The teardown is a task, so the player is stopped a beat later — but it
+    // IS stopped: audio that outlives its transcript keeps the process-wide
+    // session active with nothing owning it.
+    await expectEventuallyAsync("the player to stop") { await player.stopCount == 1 }
+    #expect(readAloud?.speakingMessageID == nil)
+  }
+
+  @MainActor
+  private func readAloudFeature(
+    player: FakeAudioPlayer = FakeAudioPlayer(),
+    result: Result<Data, Error> = .success(Data([0x49, 0x44, 0x33]))
+  ) -> ReadAloudFeature {
+    ReadAloudFeature(
+      synthesizer: FakeSpeechSynthesizer(result: result),
+      player: player,
+      session: FakeSpeechSessionControl(),
+      interruptions: { AsyncStream { _ in } }
+    )
+  }
+
   @MainActor
   private func dictationFeature(
     transcript: String,
@@ -6094,7 +6171,8 @@ struct ChatFeatureTests {
     announcer: FakeChatAccessibilityAnnouncer = FakeChatAccessibilityAnnouncer(),
     recoveryChanges: any ConversationRecoveryChangeSignaling = ConversationRecoveryChangeSignal(),
     ids: [String] = ["turn-1", "local-1"],
-    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil }
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil }
   ) -> ChatFeature {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
@@ -6110,7 +6188,8 @@ struct ChatFeatureTests {
       }),
       recoveryChanges: recoveryChanges,
       makeID: { source.next() },
-      makeDictation: makeDictation
+      makeDictation: makeDictation,
+      makeReadAloud: makeReadAloud
     )
   }
 

@@ -270,6 +270,16 @@ struct ChatView: View {
     .task {
       await feature.appear()
     }
+    // Read aloud follows the SAME gate the composer's mic does
+    // (`AppModel.speechAvailable`), driven from the view for the same reason:
+    // the capability belongs to the connection and can land after this
+    // conversation is already on screen.
+    .task {
+      feature.syncReadAloud(available: appModel.speechAvailable)
+    }
+    .onChange(of: appModel.speechAvailable) { _, available in
+      feature.syncReadAloud(available: available)
+    }
     .task {
       // Model picker (goal 2026-09-04): the toolbar label wants the catalog's
       // human label ("GPT-5", not "gpt-5"), so load it with the view rather
@@ -818,6 +828,7 @@ struct ChatView: View {
             firstRowFrameCoordinateSpace: Self.scrollSpace,
             isAnsweringEnabled: feature.canAnswerQuestions,
             isScrollTarget: true,
+            readAloud: feature.readAloud,
             onAnswer: { questionID, answer in
               Task { await feature.answer(questionID: questionID, answer: answer) }
             },
