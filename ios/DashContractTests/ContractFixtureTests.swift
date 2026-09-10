@@ -66,6 +66,24 @@ struct ContractFixtureTests {
     #expect(patch.tts?.voice == "nova")
     #expect(patch.tts?.speed == 1.25)
     #expect(patch.realtime?.provider == nil)
+    // A language the patch SETS decodes as a value, not as "clear".
+    #expect(patch.stt?.language == "en")
+
+    // "Auto": `stt.language` is absent when the provider auto-detects, so
+    // clearing it has to travel as an explicit JSON null. An encoder that
+    // dropped the key would send "leave it alone".
+    let clearLanguage = try FixtureLoader.decode(
+      SpeechConfigPatchDTO.self,
+      "speech-config-patch-clear-language.json"
+    )
+    #expect(clearLanguage.stt?.language == .null)
+    #expect(clearLanguage.stt?.model == nil)
+    #expect(clearLanguage.tts == nil)
+    let reencoded = String(
+      decoding: try ContractCoding.encoder().encode(clearLanguage),
+      as: UTF8.self
+    )
+    #expect(reencoded.contains("\"language\":null"), "re-encoded as \(reencoded)")
 
     let models = try FixtureLoader.decode(SpeechModelListDTO.self, "speech-models.json")
     #expect(models.models.map(\.kind) == [.transcription, .speech])

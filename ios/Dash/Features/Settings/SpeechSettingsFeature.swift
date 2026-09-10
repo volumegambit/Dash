@@ -138,13 +138,24 @@ final class SpeechSettingsFeature {
     return voices
   }
 
-  /// Whether "Auto" is still reachable. `PATCH /speech/config` cannot CLEAR
-  /// `stt.language` — `validateSttPatch` rejects `null` and an omitted key
-  /// means "leave it alone" — so Auto is offered only while the gateway is
-  /// already on it. See `setLanguage(_:)`.
-  var canChooseAutomaticLanguage: Bool {
-    config?.stt.language == nil
+  /// Whether the configured voice is one the selected speech model actually
+  /// offers. False after a model change that leaves the previous model's
+  /// voice behind — the request would then fail at the provider, so the row
+  /// says so rather than showing a value that looks configured.
+  ///
+  /// True when the model publishes no voices at all: a free-text voice id
+  /// cannot be contradicted by a list that does not exist.
+  var isVoiceOfferedBySelectedModel: Bool {
+    guard
+      let config,
+      let model = speechModels.first(where: { $0.id == config.tts.model }),
+      let voices = model.voices,
+      voices.isEmpty == false
+    else { return true }
+    return voices.contains(config.tts.voice)
   }
+
+  static let voiceNotOfferedMessage = "Not offered by this model"
 
   /// Language-only locale identifiers ("en", "fr", "zh"), sorted by the name
   /// the user reads. Computed once: `Locale.availableIdentifiers` is ~1 000
@@ -171,7 +182,10 @@ final class SpeechSettingsFeature {
   // MARK: - Commands
 
   func load() async {
-    guard isLoading == false else { return }
+    // Never over a patch in flight: the gateway has not written yet, so the
+    // answer would be the PRE-patch config, and adopting it would put the old
+    // value back on screen and clear an error the user has not read.
+    guard isLoading == false, isSaving == false else { return }
     isLoading = true
     error = nil
     defer { isLoading = false }
@@ -216,15 +230,16 @@ final class SpeechSettingsFeature {
     )
   }
 
-  /// `nil` means "Auto", which this gateway has no way to be told: an omitted
-  /// `language` key means "leave it alone", so the patch would be an empty
-  /// `{"stt":{}}` whose response snaps the picker back to the old language
-  /// with no explanation. Sending nothing is the honest answer; the view only
-  /// offers Auto while `canChooseAutomaticLanguage` is true.
+  /// `nil` is "Auto", and it is sent as an explicit JSON `null` — the
+  /// gateway's `validateSttPatch` reads an omitted `language` as "leave it
+  /// alone" and a null as "clear it", and `stt.language` is absent when the
+  /// provider auto-detects. An encoder that dropped the key would send a
+  /// no-op patch whose response snaps the picker back.
   func setLanguage(_ code: String?) async {
-    guard let config, let code, code.isEmpty == false, config.stt.language != code else { return }
+    guard let config, config.stt.language != code else { return }
+    guard code?.isEmpty != true else { return }
     await patch(
-      SpeechConfigPatchDTO(stt: SpeechSttPatchDTO(language: code)),
+      SpeechConfigPatchDTO(stt: SpeechSttPatchDTO(language: NullableString(code))),
       optimistic: config.replacing(stt: config.stt.replacing(language: code))
     )
   }
@@ -359,7 +374,10 @@ extension SpeechSttConfigDTO {
     SpeechSttConfigDTO(provider: provider, model: model, language: language)
   }
 
-  func replacing(language: String) -> SpeechSttConfigDTO {
+  /// `nil` is a real value here — the configuration a cleared language leaves
+  /// behind — so this cannot take a non-optional the way `replacing(model:)`
+  /// does.
+  func replacing(language: String?) -> SpeechSttConfigDTO {
     SpeechSttConfigDTO(provider: provider, model: model, language: language)
   }
 }

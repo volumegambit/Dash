@@ -53,6 +53,26 @@ struct SpeechSettingsFeatureTests {
     #expect(harness.feature.error == "Speech isn't set up on your gateway yet.")
   }
 
+  /// Pull-to-refresh during a save would replace `config` with the
+  /// pre-patch answer (the gateway has not written yet) and clear an error
+  /// the user has not read.
+  @Test("a refresh cannot run while a patch is in flight")
+  func loadIsRefusedWhileSaving() async {
+    let harness = Harness()
+    await harness.feature.load()
+    let loadsAfterFirst = await harness.api.configLoads
+    await harness.api.hold()
+
+    let save = Task { await harness.feature.setVoice("nova") }
+    await expectEventuallyAsync("the patch to be in flight") { harness.feature.isSaving }
+    await harness.feature.load()
+
+    #expect(await harness.api.configLoads == loadsAfterFirst, "no read may overtake the patch")
+    await harness.api.release()
+    await save.value
+    #expect(harness.feature.config?.tts.voice == "nova")
+  }
+
   // MARK: - Setters
 
   @Test("choosing a transcription model patches only that key")
@@ -121,22 +141,51 @@ struct SpeechSettingsFeatureTests {
     #expect(harness.feature.config?.stt.language == "fr")
   }
 
-  /// The gateway cannot express "clear this": `validateSttPatch` rejects
-  /// `language: null` and an omitted key means "leave it alone", so a nil
-  /// language would encode to `{"stt":{}}` — a no-op patch whose response
-  /// would snap the picker back to the old language with no explanation.
-  /// Sending nothing at all is the honest answer, and `SpeechSettingsView`
-  /// only offers Auto while the gateway is already on Auto.
-  @Test("Auto cannot be sent to a gateway that has no way to clear the language")
-  func setLanguageToAutoSendsNothing() async {
+  /// Auto is a `null`, never an omission: the gateway's `validateSttPatch`
+  /// treats an omitted `language` as "leave it alone" and an explicit null as
+  /// "clear it", so an encoder that dropped the key would send a no-op patch
+  /// whose response snaps the picker back to the old language.
+  @Test("Auto sends an explicit JSON null, not an omitted key")
+  func setLanguageToAutoSendsAnExplicitNull() async throws {
     let harness = Harness()
     await harness.feature.load()
     await harness.feature.setLanguage("fr")
 
     await harness.feature.setLanguage(nil)
 
-    #expect(await harness.api.patches.count == 1, "no empty stt patch may reach the gateway")
-    #expect(harness.feature.config?.stt.language == "fr")
+    let patches = await harness.api.patches
+    #expect(patches.count == 2)
+    #expect(patches.last == SpeechConfigPatchDTO(stt: SpeechSttPatchDTO(language: .null)))
+    // The wire form is the requirement, so it is what is asserted: the same
+    // encoder `GatewayAPI` sends with.
+    let body = try ContractCoding.encoder().encode(try #require(patches.last))
+    let json = try #require(String(data: body, encoding: .utf8))
+    #expect(json.contains("\"language\":null"), "encoded as \(json)")
+    #expect(harness.feature.config?.stt.language == nil)
+  }
+
+  @Test("Auto when the gateway is already on Auto asks it for nothing")
+  func setLanguageToAutoWhenAlreadyAutoSendsNoPatch() async {
+    let harness = Harness()
+    await harness.api.setResponse(
+      SpeechConfigResponseDTO(
+        config: SpeechConfigDTO(
+          stt: SpeechSttConfigDTO(
+            provider: "openrouter",
+            model: "openai/whisper-large-v3",
+            language: nil
+          ),
+          tts: SpeechFixtures.config.tts,
+          realtime: SpeechRealtimeConfigDTO(provider: nil)
+        ),
+        providers: SpeechFixtures.providers
+      )
+    )
+    await harness.feature.load()
+
+    await harness.feature.setLanguage(nil)
+
+    #expect(await harness.api.patches.isEmpty)
   }
 
   @Test("re-choosing the value already configured asks the gateway for nothing")
@@ -270,6 +319,21 @@ struct SpeechSettingsFeatureTests {
     await harness.feature.load()
 
     #expect(harness.feature.voiceOptions == ["shimmer", "alloy", "nova"])
+  }
+
+  @Test("a configured voice the model does not offer is called out, not silently shown")
+  func staleVoiceIsFlagged() async {
+    let harness = Harness()
+
+    await harness.feature.load()
+    #expect(harness.feature.isVoiceOfferedBySelectedModel)
+
+    // Same shape as a model change that leaves the old voice behind.
+    await harness.feature.setTTSModel("openai/tts-1")
+    await harness.feature.setVoice("shimmer")
+
+    #expect(harness.feature.isVoiceOfferedBySelectedModel == false)
+    #expect(harness.feature.voiceOptions.first == "shimmer")
   }
 
   // MARK: - Preview
@@ -433,6 +497,7 @@ actor FakeSpeechConfigAPI: SpeechConfiguring {
   private var response: SpeechConfigResponseDTO
   private var loadFailure: Error?
   private var patchFailure: Error?
+  private var gate: Task<Void, Never>?
 
   init(
     response: SpeechConfigResponseDTO = SpeechConfigResponseDTO(
@@ -455,6 +520,16 @@ actor FakeSpeechConfigAPI: SpeechConfiguring {
     patchFailure = error
   }
 
+  /// Parks the next patch so a test can observe the window it is in flight.
+  func hold() {
+    gate = Task { try? await Task.sleep(for: .seconds(30)) }
+  }
+
+  func release() {
+    gate?.cancel()
+    gate = nil
+  }
+
   func speechConfig() async throws -> SpeechConfigResponseDTO {
     configLoads += 1
     if let loadFailure { throw loadFailure }
@@ -463,6 +538,7 @@ actor FakeSpeechConfigAPI: SpeechConfiguring {
 
   func patchSpeechConfig(_ patch: SpeechConfigPatchDTO) async throws -> SpeechConfigResponseDTO {
     patches.append(patch)
+    if let gate { await gate.value }
     if let patchFailure { throw patchFailure }
     response = SpeechConfigResponseDTO(
       config: Self.merge(response.config, patch),
@@ -485,7 +561,9 @@ actor FakeSpeechConfigAPI: SpeechConfiguring {
       stt: SpeechSttConfigDTO(
         provider: patch.stt?.provider ?? base.stt.provider,
         model: patch.stt?.model ?? base.stt.model,
-        language: patch.stt?.language ?? base.stt.language
+        // The gateway's `mergeSpeechConfig`: an omitted key leaves the
+        // language alone, an explicit null DELETES it.
+        language: patch.stt?.language.map(\.value) ?? base.stt.language
       ),
       tts: SpeechTtsConfigDTO(
         provider: patch.tts?.provider ?? base.tts.provider,

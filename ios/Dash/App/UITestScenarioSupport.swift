@@ -1467,7 +1467,10 @@ extension AppDependenciesFactory {
         stt: SpeechSttConfigDTO(
           provider: patch.stt?.provider ?? config.stt.provider,
           model: patch.stt?.model ?? config.stt.model,
-          language: patch.stt?.language ?? config.stt.language
+          // An omitted key leaves the language alone; an explicit null
+          // clears it — `mergeSpeechConfig`'s rule, so the fake cannot pass a
+          // patch the gateway would treat differently.
+          language: patch.stt?.language.map(\.value) ?? config.stt.language
         ),
         tts: SpeechTtsConfigDTO(
           provider: patch.tts?.provider ?? config.tts.provider,

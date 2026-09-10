@@ -126,17 +126,82 @@ struct SpeechConfigResponseDTO: Codable, Hashable, Sendable {
   let providers: [SpeechProviderStatusDTO]
 }
 
+/// A string whose JSON `null` is a VALUE rather than an absence — the shape
+/// `SpeechSttPatchDTO.language` needs and `String?` cannot express, since the
+/// synthesized encoder `encodeIfPresent`s a nil and DROPS the key.
+///
+/// Wrapped rather than modelled as `String??`, which Codable cannot encode
+/// and no call site could read.
+struct NullableString: Codable, Hashable, Sendable, ExpressibleByStringLiteral {
+  let value: String?
+
+  /// The explicit JSON `null`. Named so a call site reads as what it means:
+  /// `SpeechSttPatchDTO(language: .null)` CLEARS the language, while
+  /// `SpeechSttPatchDTO(language: nil)` omits the key.
+  static let null = NullableString(nil)
+
+  init(_ value: String?) {
+    self.value = value
+  }
+
+  init(stringLiteral value: StringLiteralType) {
+    self.value = value
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    value = container.decodeNil() ? nil : try container.decode(String.self)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    if let value {
+      try container.encode(value)
+    } else {
+      try container.encodeNil()
+    }
+  }
+}
+
 /// Every field of an `stt`/`tts` section is optional: an omitted key keeps its
 /// current value.
 struct SpeechSttPatchDTO: Codable, Hashable, Sendable {
   let provider: String?
   let model: String?
-  let language: String?
+  /// Three states, not two (`validateSttPatch` in
+  /// `packages/speech/src/config.ts`): `nil` omits the key and keeps whatever
+  /// the gateway has, `.null` clears the language back to the provider's own
+  /// detection, and a string sets it. `stt.language` is ABSENT when auto, so
+  /// "clear it" has no other spelling.
+  let language: NullableString?
 
-  init(provider: String? = nil, model: String? = nil, language: String? = nil) {
+  init(provider: String? = nil, model: String? = nil, language: NullableString? = nil) {
     self.provider = provider
     self.model = model
     self.language = language
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case provider
+    case model
+    case language
+  }
+
+  /// Written by hand because the synthesized decoder `decodeIfPresent`s every
+  /// optional, and that CANNOT tell an absent `language` from a null one —
+  /// both come back nil, collapsing "leave it alone" and "clear it" into the
+  /// same value. `contains(_:)` is the only thing that separates them.
+  ///
+  /// The encoder stays synthesized: `encodeIfPresent` drops a nil (omitting
+  /// the key) and hands a `.null` to `NullableString.encode(to:)`, which
+  /// writes the JSON null.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    provider = try container.decodeIfPresent(String.self, forKey: .provider)
+    model = try container.decodeIfPresent(String.self, forKey: .model)
+    language = container.contains(.language)
+      ? NullableString(try container.decodeIfPresent(String.self, forKey: .language))
+      : nil
   }
 }
 

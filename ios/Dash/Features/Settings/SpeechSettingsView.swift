@@ -131,9 +131,9 @@ struct SpeechSettingsView: View {
   private var languageSection: some View {
     Section {
       Picker("Language", selection: language) {
-        if feature.canChooseAutomaticLanguage {
-          Text("Auto").tag(String?.none)
-        }
+        // Always offered: "Auto" patches `stt.language` to an explicit JSON
+        // null, which the gateway reads as "clear it".
+        Text("Auto").tag(String?.none)
         // The gateway accepts any 2-8 character code (`zh-Hans`, `pt-BR`),
         // while this list is language-only; a configured code outside it
         // still has to be selectable, or the picker renders blank. Same
@@ -153,14 +153,7 @@ struct SpeechSettingsView: View {
     } header: {
       Text("Language")
     } footer: {
-      // The honest reason Auto disappears once a language is chosen: the
-      // gateway's `PATCH /speech/config` can set `stt.language` but has no
-      // way to clear it. See `SpeechSettingsFeature.setLanguage(_:)`.
-      Text(
-        feature.canChooseAutomaticLanguage
-          ? "Auto lets the provider detect what you're speaking."
-          : "Your gateway can't switch a set language back to Auto yet."
-      )
+      Text("Auto lets the provider detect what you're speaking.")
     }
   }
 
@@ -200,13 +193,36 @@ struct SpeechSettingsView: View {
       .disabled(feature.isSaving)
       .accessibilityIdentifier("settings.speech.voice")
     } else {
-      Picker("Voice", selection: voice) {
+      Picker(selection: voice) {
         ForEach(feature.voiceOptions, id: \.self) { option in
-          Text(option).tag(option)
+          // The prepended, no-longer-offered voice is labelled where it is
+          // read — inside the picker's own list, not only on the row.
+          if option == feature.config?.tts.voice, feature.isVoiceOfferedBySelectedModel == false {
+            Text("\(option) — \(SpeechSettingsFeature.voiceNotOfferedMessage.lowercased())")
+              .tag(option)
+          } else {
+            Text(option).tag(option)
+          }
+        }
+      } label: {
+        // A voice left behind by a model change would otherwise read as
+        // configured, and only fail when something tries to speak.
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Voice")
+          if feature.isVoiceOfferedBySelectedModel == false {
+            Text(SpeechSettingsFeature.voiceNotOfferedMessage)
+              .font(.footnote)
+              .foregroundStyle(DashTheme.danger)
+          }
         }
       }
       .pickerStyle(.navigationLink)
       .disabled(feature.isSaving)
+      .accessibilityLabel(
+        feature.isVoiceOfferedBySelectedModel
+          ? "Voice"
+          : "Voice. \(SpeechSettingsFeature.voiceNotOfferedMessage)"
+      )
       .accessibilityIdentifier("settings.speech.voice")
     }
   }
