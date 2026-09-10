@@ -38,6 +38,7 @@ struct DashThemeTests {
   @Test("opacity levels form one small ordered set inside (0, 1)")
   func opacityLevelsOrdered() {
     let levels: [Double] = [
+      DashTheme.Opacity.fillFaint,
       DashTheme.Opacity.fillSubtle,
       DashTheme.Opacity.fillMuted,
       DashTheme.Opacity.fillEmphasis,
@@ -56,6 +57,7 @@ struct DashThemeTests {
 
   @Test("opacity snapshot")
   func opacitySnapshot() {
+    #expect(DashTheme.Opacity.fillFaint == 0.04)
     #expect(DashTheme.Opacity.fillSubtle == 0.08)
     #expect(DashTheme.Opacity.fillMuted == 0.12)
     #expect(DashTheme.Opacity.fillEmphasis == 0.14)

@@ -705,15 +705,28 @@ struct ConversationListView: View {
     }
     .buttonStyle(.plain)
     .hoverEffect(.highlight)
-    .listRowBackground(
-      isSelected(conversation.id) ? DashTheme.accent.opacity(DashTheme.Opacity.fillMuted) : Color.clear
-    )
+    .listRowBackground(conversationRowBackground(for: conversation))
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected(conversation.id) ? .isSelected : [])
     .accessibilityIdentifier("conversation.row.\(conversation.id)")
     // Left the separator starting a third of the way across the row,
     // aligned under the status badge rather than under the text column.
     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+  }
+
+  /// Selection outranks activity: a selected running row shows the steady
+  /// selection wash, not the pulse — two competing accent fills on one row
+  /// would make neither legible. The breathing wash only exists on rows
+  /// where nothing else claims the background.
+  @ViewBuilder
+  private func conversationRowBackground(for conversation: CachedConversation) -> some View {
+    if isSelected(conversation.id) {
+      DashTheme.accent.opacity(DashTheme.Opacity.fillMuted)
+    } else if conversation.summary.status == .running {
+      RunningRowWash()
+    } else {
+      Color.clear
+    }
   }
 
   private func recoveryRow(_ recovery: RecoverablePendingSend) -> some View {
@@ -1501,6 +1514,39 @@ struct RecoveryAttachmentTransfer: Transferable {
     DataRepresentation(exportedContentType: .data) { $0.export.data }
       .exportingCondition { $0.export.contentType == .data }
       .suggestedFileName { $0.export.suggestedFileName }
+  }
+}
+
+/// The whole-row "this conversation is live" signal (goal 2026-09-10): a
+/// slow breathing accent wash across the entire `listRowBackground`, in
+/// place of pointing at a static badge glyph. The pulse cycles between
+/// `fillFaint` and `fillSubtle` — both below the selection wash's
+/// `fillMuted`, so a running row never reads as selected.
+///
+/// Reduce-motion holds the wash at its `fillFaint` resting level instead of
+/// removing it — the same "keep the affordance, drop the motion" trade
+/// `StreamingCaretView` makes. The `StatusBadge` ("Running" + waveform)
+/// stays on the row regardless, so the state is never carried by colour
+/// alone (and VoiceOver reads it from there, not from this decoration).
+private struct RunningRowWash: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isBreathing = false
+
+  var body: some View {
+    DashTheme.accent
+      .opacity(
+        reduceMotion || isBreathing == false
+          ? DashTheme.Opacity.fillFaint
+          : DashTheme.Opacity.fillSubtle
+      )
+      .animation(
+        reduceMotion ? nil : .easeInOut(duration: 1.6).repeatForever(autoreverses: true),
+        value: isBreathing
+      )
+      .onAppear {
+        if !reduceMotion { isBreathing = true }
+      }
+      .accessibilityHidden(true)
   }
 }
 
