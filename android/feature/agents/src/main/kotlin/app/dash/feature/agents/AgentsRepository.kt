@@ -2,6 +2,7 @@ package app.dash.feature.agents
 
 import app.dash.model.RegisteredAgent
 import app.dash.network.GatewayClient
+import app.dash.network.GatewayProtocolSelection
 
 /** Agent reads + enable/disable, backed by the gateway management API. */
 interface AgentsRepository {
@@ -13,6 +14,10 @@ interface AgentsRepository {
 class GatewayAgentsRepository(
     private val client: GatewayClient,
 ) : AgentsRepository {
+    val protocolSelection: GatewayProtocolSelection = requireNotNull(client.protocolSelection) {
+        "GatewayAgentsRepository requires an explicitly selected gateway client"
+    }
+
     override suspend fun list(): List<RegisteredAgent> = client.listAgents()
 
     override suspend fun get(id: String): RegisteredAgent = client.getAgent(id)

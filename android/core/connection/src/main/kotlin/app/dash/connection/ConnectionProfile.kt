@@ -25,6 +25,8 @@ data class ConnectionProfile(
      * this device. A secret — stored encrypted, never shown.
      */
     val relayCredential: String? = null,
+    /** Verified mobile-v2 gateway identity; null only for explicit v1 fallback profiles. */
+    val gatewayId: String? = null,
 ) {
     init {
         require(tlsCertificateSha256 == null || TlsCertificatePin.isCanonical(tlsCertificateSha256)) {
@@ -32,6 +34,9 @@ data class ConnectionProfile(
         }
         require(tlsCertificateSha256 == null || secure) {
             "A pinned certificate requires secure transport"
+        }
+        require(gatewayId == null || gatewayId.isNotEmpty()) {
+            "gatewayId must be nonempty when present"
         }
     }
 

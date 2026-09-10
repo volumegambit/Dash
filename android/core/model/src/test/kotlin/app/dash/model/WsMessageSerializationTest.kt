@@ -48,4 +48,18 @@ class WsMessageSerializationTest {
             json.decodeFromString<WsServerMessage>("""{"type":"error","id":"1","error":"boom"}"""),
         )
     }
+
+    @Test fun v1MessageShapeRemainsFrozenBesideV2() {
+        val v1 = json.encodeToJsonElement(
+            WsClientMessage.serializer(),
+            WsClientMessage.Message("turn-01", "ada", "mobile", "conv", "hello"),
+        ).jsonObject
+        assertTrue("resumable" !in v1)
+        assertTrue("streamingBehavior" !in v1)
+
+        val v2 = MobileV2Json.instance.decodeFromString<MobileV2WsClientFrame>(
+            """{"type":"message","id":"turn-01","agentId":"ada","channelId":"mobile","conversationId":"00000000-0000-4000-8000-000000000001","text":"hello","resumable":true}""",
+        )
+        assertTrue(v2 is MobileV2WsClientFrame.Message)
+    }
 }

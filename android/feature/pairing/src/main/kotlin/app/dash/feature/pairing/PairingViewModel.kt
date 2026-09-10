@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import app.dash.connection.ConnectionProfile
 import app.dash.connection.PairingPayload
 import app.dash.connection.TlsCertificatePin
+import app.dash.network.GatewayNegotiation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +26,8 @@ sealed interface PairingUiState {
  */
 class PairingViewModel(
     private val saveProfile: suspend (ConnectionProfile) -> Unit,
-    private val healthCheck: suspend (ConnectionProfile) -> Boolean,
+    private val negotiate: suspend (ConnectionProfile) -> GatewayNegotiation,
+    private val legacyHealthCheck: suspend (ConnectionProfile) -> Boolean,
 ) : ViewModel() {
     private val _state = MutableStateFlow<PairingUiState>(PairingUiState.Idle)
     val state: StateFlow<PairingUiState> = _state.asStateFlow()
@@ -85,17 +88,72 @@ class PairingViewModel(
     private fun pairAndSave(profile: ConnectionProfile) {
         _state.value = PairingUiState.Validating
         viewModelScope.launch {
-            val reachable = try {
-                healthCheck(profile)
-            } catch (_: Exception) {
-                false
-            }
-            if (!reachable) {
-                _state.value = PairingUiState.Error("Could not reach gateway at ${profile.host}")
+            val negotiation = try {
+                negotiate(profile)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.value = PairingUiState.Error(
+                    error.message ?: "Could not negotiate with gateway at ${profile.host}",
+                )
                 return@launch
             }
-            saveProfile(profile)
-            _state.value = PairingUiState.Paired
+
+            val verifiedProfile = when (negotiation) {
+                is GatewayNegotiation.V2 -> {
+                    if (REQUIRED_V2_CAPABILITY !in negotiation.capabilities) {
+                        _state.value = PairingUiState.Error(
+                            "Mobile API v2 omitted required capability $REQUIRED_V2_CAPABILITY",
+                        )
+                        return@launch
+                    }
+                    profile.copy(gatewayId = negotiation.gatewayId)
+                }
+                GatewayNegotiation.UnsupportedVersion -> {
+                    val reachable = try {
+                        legacyHealthCheck(profile)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (!reachable) {
+                        _state.value = PairingUiState.Error(
+                            "Could not reach gateway at ${profile.host}",
+                        )
+                        return@launch
+                    }
+                    profile.copy(gatewayId = null)
+                }
+                is GatewayNegotiation.Failed -> {
+                    _state.value = PairingUiState.Error(negotiation.userMessage())
+                    return@launch
+                }
+            }
+
+            try {
+                saveProfile(verifiedProfile)
+                _state.value = PairingUiState.Paired
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.value = PairingUiState.Error(
+                    error.message ?: "Could not save the gateway profile",
+                )
+            }
         }
+    }
+
+    private fun GatewayNegotiation.Failed.userMessage(): String = when (this) {
+        is GatewayNegotiation.Failed.Authentication ->
+            "Gateway authentication failed (HTTP $status)"
+        is GatewayNegotiation.Failed.Malformed -> message
+        is GatewayNegotiation.Failed.Api -> error.error
+        is GatewayNegotiation.Failed.Transport ->
+            cause.message ?: "Could not reach gateway"
+    }
+
+    private companion object {
+        const val REQUIRED_V2_CAPABILITY = "chat-input-queue-v1"
     }
 }

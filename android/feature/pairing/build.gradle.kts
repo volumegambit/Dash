@@ -38,6 +38,7 @@ android {
 
 dependencies {
     implementation(project(":core:connection"))
+    implementation(project(":core:network"))
     implementation(project(":core:designsystem"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

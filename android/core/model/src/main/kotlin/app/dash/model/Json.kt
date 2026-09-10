@@ -27,3 +27,15 @@ object DashJson {
         explicitNulls = false
     }
 }
+
+/** Strict JSON boundary for every mobile v2 envelope. */
+object MobileV2Json {
+    @OptIn(ExperimentalSerializationApi::class)
+    val instance: Json = Json {
+        ignoreUnknownKeys = false
+        isLenient = false
+        encodeDefaults = false
+        classDiscriminator = "type"
+        explicitNulls = true
+    }
+}

@@ -18,7 +18,8 @@ fun PairingNavHost(container: AppContainer) {
         factory = viewModelFactory {
             PairingViewModel(
                 saveProfile = container.profileStore::save,
-                healthCheck = container::healthCheck,
+                negotiate = container::negotiate,
+                legacyHealthCheck = container::legacyHealthCheck,
             )
         },
     )

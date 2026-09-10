@@ -10,6 +10,12 @@ dependencies {
     testImplementation(libs.junit)
 }
 
+sourceSets {
+    test {
+        resources.srcDir("../../../contracts/mobile/v2/fixtures")
+    }
+}
+
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17

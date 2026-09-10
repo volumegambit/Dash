@@ -17,7 +17,14 @@ import kotlinx.coroutines.flow.map
 class ProfileStore(
     private val dataStore: DataStore<Preferences>,
     private val cipher: TokenCipher,
+    private val conversationPointers: TransactionalConversationPointerStore,
 ) {
+    init {
+        require(conversationPointers.isBackedBy(dataStore)) {
+            "Profile and conversation pointers must share one DataStore"
+        }
+    }
+
     fun profile(): Flow<ConnectionProfile?> = dataStore.data.map { prefs ->
         val host = prefs[HOST] ?: return@map null
         val mgmtEnc = prefs[MGMT_TOKEN] ?: return@map null
@@ -32,6 +39,7 @@ class ProfileStore(
             secure = prefs[SECURE] ?: false,
             tlsCertificateSha256 = prefs[TLS_CERTIFICATE_SHA256],
             relayCredential = prefs[RELAY_CRED]?.let { cipher.decrypt(it) },
+            gatewayId = prefs[GATEWAY_ID],
         )
     }
 
@@ -53,11 +61,27 @@ class ProfileStore(
             // Encrypt the relay credential too; clear any stale value for LAN profiles.
             val cred = profile.relayCredential
             if (cred != null) prefs[RELAY_CRED] = cipher.encrypt(cred) else prefs.remove(RELAY_CRED)
+            val gatewayId = profile.gatewayId
+            if (gatewayId != null) prefs[GATEWAY_ID] = gatewayId else prefs.remove(GATEWAY_ID)
         }
     }
 
     suspend fun clear() {
-        dataStore.edit { it.clear() }
+        dataStore.edit { prefs ->
+            prefs[GATEWAY_ID]?.let {
+                conversationPointers.removeGatewayInTransaction(prefs, it)
+            }
+            prefs.remove(LABEL)
+            prefs.remove(HOST)
+            prefs.remove(MGMT_PORT)
+            prefs.remove(CHAT_PORT)
+            prefs.remove(MGMT_TOKEN)
+            prefs.remove(CHAT_TOKEN)
+            prefs.remove(SECURE)
+            prefs.remove(TLS_CERTIFICATE_SHA256)
+            prefs.remove(RELAY_CRED)
+            prefs.remove(GATEWAY_ID)
+        }
     }
 
     private companion object {
@@ -70,5 +94,6 @@ class ProfileStore(
         val SECURE = booleanPreferencesKey("secure")
         val TLS_CERTIFICATE_SHA256 = stringPreferencesKey("tls_certificate_sha256")
         val RELAY_CRED = stringPreferencesKey("relay_credential_enc")
+        val GATEWAY_ID = stringPreferencesKey("gateway_id")
     }
 }

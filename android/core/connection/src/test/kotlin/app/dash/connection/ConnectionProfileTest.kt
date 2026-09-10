@@ -1,5 +1,6 @@
 package app.dash.connection
 
+import app.dash.model.DashJson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -94,5 +95,29 @@ class ConnectionProfileTest {
         )
         assertFalse(lan.requiresRepair)
         assertFalse(relay.requiresRepair)
+    }
+
+    @Test fun gatewayIdentityIsOptionalForOldProfilesAndRoundTripsWhenPresent() {
+        val old = DashJson.instance.decodeFromString<ConnectionProfile>(
+            """{"label":"Old","host":"h","mgmtToken":"m","chatToken":"c"}""",
+        )
+        assertEquals(null, old.gatewayId)
+
+        val selected = old.copy(gatewayId = "gateway-1")
+        assertEquals(
+            selected,
+            DashJson.instance.decodeFromString<ConnectionProfile>(
+                DashJson.instance.encodeToString(ConnectionProfile.serializer(), selected),
+            ),
+        )
+    }
+
+    @Test fun rejectsEmptyPersistedGatewayIdentity() {
+        try {
+            ConnectionProfile("l", "h", mgmtToken = "m", chatToken = "c", gatewayId = "")
+            fail("expected empty gateway identity to be rejected")
+        } catch (_: IllegalArgumentException) {
+            // Expected.
+        }
     }
 }
