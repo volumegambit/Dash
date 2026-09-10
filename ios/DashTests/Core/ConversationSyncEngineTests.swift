@@ -1117,8 +1117,17 @@ struct ConversationSyncEngineTests {
     await eventually { await recorder.last?.connection == expected }
     await settleSyncWork()
 
+    // The canonical LIST sync succeeded before the transcript reload failed,
+    // so `.online` is published for that window — and then the transcript
+    // failure downgrades it. The failure must be the FINAL state; `.online`
+    // may only precede it.
     #expect(await recorder.last?.connection == expected)
-    #expect(await recorder.connections.contains(.online) == false)
+    let connections = await recorder.connections
+    if let onlineIndex = connections.lastIndex(of: .online),
+      let failureIndex = connections.lastIndex(of: expected)
+    {
+      #expect(onlineIndex < failureIndex)
+    }
     #expect(await api.messageListCalls.map(\.conversationID) == [running.id])
     collector.cancel()
     await engine.shutdown()
@@ -1170,7 +1179,64 @@ struct ConversationSyncEngineTests {
     await settleSyncWork()
 
     #expect(await recorder.last?.connection == expected)
-    #expect(await recorder.connections.contains(.online) == false)
+    switch point {
+    case .omittedDetail:
+      // The failure happens INSIDE list reconciliation, before `.online`
+      // could be published.
+      #expect(await recorder.connections.contains(.online) == false)
+    case .activeTranscript:
+      // List reconciliation succeeded, so `.online` is published before the
+      // transcript failure downgrades it — the failure must come after.
+      let connections = await recorder.connections
+      if let onlineIndex = connections.lastIndex(of: .online),
+        let failureIndex = connections.lastIndex(of: expected)
+      {
+        #expect(onlineIndex < failureIndex)
+      }
+    }
+    collector.cancel()
+    await engine.shutdown()
+  }
+
+  @Test("foreground publishes online after list reconciliation before transcript reloads")
+  func foregroundPublishesOnlineBeforeTranscriptReloads() async throws {
+    let store = try PersistenceStore.inMemory()
+    let running = summary(
+      id: "running",
+      title: "Running",
+      status: .running,
+      activeTurnID: "turn-running"
+    )
+    let api = FakeConversationSyncAPI()
+    await api.enqueueAgents(.success([]))
+    await api.enqueueConversationPage(.success(.init(items: [running], nextCursor: nil)))
+    let gate = TestGate()
+    await api.enqueueMessages(
+      conversationID: running.id,
+      result: .success(.init(items: [], nextCursor: nil, throughSeq: 0)),
+      waitingOn: gate
+    )
+    let engine = makeEngine(store: store, api: api)
+    let recorder = SnapshotRecorder()
+    let collector = Task {
+      for await snapshot in await engine.snapshots() {
+        await recorder.append(snapshot)
+      }
+    }
+
+    await engine.sceneDidEnterBackground()
+    let foreground = Task { await engine.sceneWillEnterForeground() }
+    // While the transcript reload is still suspended on the gate, the list
+    // reconciliation has already completed — `.online` (and with it
+    // `mutationsAllowed`) must not wait for per-conversation transcripts.
+    await gate.waitUntilWaiting()
+    await eventually { await recorder.last?.connection == .online }
+    #expect(await recorder.last?.connection == .online)
+    #expect(await recorder.last?.mutationsAllowed == true)
+
+    await gate.release()
+    await foreground.value
+    #expect(await recorder.last?.connection == .online)
     collector.cancel()
     await engine.shutdown()
   }
