@@ -42,18 +42,7 @@ import {
 } from './subagent-management.js';
 import { mountSwarmRoutes } from './swarm-management.js';
 
-/**
- * Local until Task A6 widens the contract: `contracts/mobile/v1/src/types.ts`
- * only declares `'conversation-sync-v1' | 'chat-resume-v1'` today. Adding
- * `'speech-v1'` there is A6's job (it also updates the openapi enum and the
- * `health-capabilities.json` fixture, both bound together by
- * `contract.test.ts`) — this alias lets A5 emit the real capability now
- * without touching A6's files. Once A6 lands, this collapses back to plain
- * `MobileCapability`.
- */
-type GatewayCapability = MobileCapability | 'speech-v1';
-
-const BASE_MOBILE_CAPABILITIES: GatewayCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
+const BASE_MOBILE_CAPABILITIES: MobileCapability[] = ['conversation-sync-v1', 'chat-resume-v1'];
 
 /**
  * Exact request paths for which the log middleware omits even the
@@ -81,7 +70,7 @@ const NO_BODY_SHAPE_LOG = new Set([
 async function resolveMobileCapabilities(
   speech?: SpeechService,
   speechConfigStore?: SpeechConfigStore,
-): Promise<GatewayCapability[]> {
+): Promise<MobileCapability[]> {
   if (!speech || !speechConfigStore) return BASE_MOBILE_CAPABILITIES;
   let available: boolean;
   try {

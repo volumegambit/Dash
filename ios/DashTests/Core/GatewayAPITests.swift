@@ -113,6 +113,85 @@ struct GatewayAPITests {
     #expect(requests[1].httpBody == nil)
   }
 
+  @Test("speech methods pin their paths, the kind query, and the audio Accept header")
+  func speechRequestShapes() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-config.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-config.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-models.json")
+    try URLProtocolStub.enqueue(status: 200, fixture: "speech-transcription.json")
+    let mpeg = Data([0xFF, 0xFB, 0x90, 0x00])
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: mpeg,
+      headers: ["Content-Type": "audio/mpeg"]
+    )
+    let api = makeAPI()
+
+    let config = try await api.speechConfig()
+    _ = try await api.patchSpeechConfig(SpeechConfigPatchDTO(tts: SpeechTtsPatchDTO(voice: "nova")))
+    let models = try await api.speechModels(kind: .transcription)
+    let transcript = try await api.transcribe(
+      TranscriptionRequestDTO(audio: "AAAA", format: .wav, language: "en")
+    )
+    let audio = try await api.synthesize(text: "Ship the speech routes.")
+
+    #expect(config.config.tts.voice == "alloy")
+    #expect(models.map(\.id) == ["openai/whisper-large-v3", "openai/gpt-4o-mini-tts-2025-12-15"])
+    #expect(transcript.text == "Ship the speech routes.")
+    // Raw bytes, byte for byte — `send` would have tried to JSON-decode these.
+    #expect(audio == mpeg)
+
+    let requests = URLProtocolStub.requests
+    #expect(requests.map(\.httpMethod) == ["GET", "PATCH", "GET", "POST", "POST"])
+    #expect(try encodedPath(requests[0]) == "/mobile/v1/speech/config")
+    #expect(try encodedPath(requests[1]) == "/mobile/v1/speech/config")
+    #expect(try encodedPath(requests[2]) == "/mobile/v1/speech/models")
+    #expect(try encodedPath(requests[3]) == "/mobile/v1/speech/transcriptions")
+    #expect(try encodedPath(requests[4]) == "/mobile/v1/speech/speech")
+    // `kind` is required by the route and carries no default.
+    #expect(try queryNames(requests[2]) == ["kind"])
+    #expect(try queryValues(requests[2]) == ["transcription"])
+    #expect(requests[0].url?.query == nil)
+
+    // Every speech call is authenticated; only `/health` is not.
+    for request in requests {
+      #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer management-test-token")
+    }
+    for index in 0..<4 {
+      #expect(requests[index].value(forHTTPHeaderField: "Accept") == "application/json")
+    }
+    // The one operation whose success body is not JSON.
+    #expect(requests[4].value(forHTTPHeaderField: "Accept") == "audio/mpeg")
+    #expect(requests[4].value(forHTTPHeaderField: "Content-Type") == "application/json")
+    #expect(try stringBody(requests[4]) == ["text": "Ship the speech routes."])
+    #expect(try stringBody(requests[3]) == ["audio": "AAAA", "format": "wav", "language": "en"])
+    #expect(requests[2].httpBody == nil)
+  }
+
+  /// A failing synthesis answers JSON on the SAME request that asked for
+  /// `audio/mpeg`, so `sendData` must still route a non-2xx through
+  /// `mapHTTPError` instead of handing back an error body as if it were audio.
+  @Test("a failed synthesis maps to a gateway error, not to error-page bytes")
+  func synthesisErrorsAreMapped() async throws {
+    URLProtocolStub.enqueue(
+      status: 413,
+      data: Data(#"{"code":"too_long","error":"text is too long","retryable":false}"#.utf8)
+    )
+    let api = makeAPI()
+
+    let error = await gatewayError { try await api.synthesize(text: "over the limit") }
+
+    // `too_long` is a speech code the gateway passes through untranslated, so
+    // it lands in the generic `.server` case carrying its status.
+    guard case let .server(body, status)? = error else {
+      Issue.record("expected .server, got \(String(describing: error))")
+      return
+    }
+    #expect(body.code == "too_long")
+    #expect(body.retryable == false)
+    #expect(status == 413)
+  }
+
   @Test("relay auth is present on HTTP")
   func relayHeaders() async throws {
     try URLProtocolStub.enqueue(status: 200, fixture: "agents-list.json")

@@ -1,4 +1,4 @@
-export type MobileCapability = 'conversation-sync-v1' | 'chat-resume-v1';
+export type MobileCapability = 'conversation-sync-v1' | 'chat-resume-v1' | 'speech-v1';
 export type ConversationStatus = 'idle' | 'running' | 'interrupted' | 'archived' | 'deleted';
 export type ConversationMessageStatus =
   | 'accepted'
@@ -362,7 +362,16 @@ export type MobileApiErrorCode =
   | 'conversation_busy'
   | 'rate_limited'
   | 'gateway_offline'
-  | 'capability_required';
+  | 'capability_required'
+  // `SpeechErrorCode` (`packages/speech/src/errors.ts`), reachable on `/speech/*`:
+  // those handlers reuse this envelope and pass the provider-level code through
+  // untranslated, so the union has to admit them.
+  | 'too_large'
+  | 'too_long'
+  | 'provider'
+  | 'network'
+  | 'unavailable'
+  | 'invalid';
 
 export interface MobileApiError {
   code: MobileApiErrorCode;
@@ -538,4 +547,100 @@ export interface ConversationDeletedEvent {
 export interface WsTicketResponse {
   ticket: string;
   expiresAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Speech (`/speech/*`). Mirrors `@dash/speech`'s own types, restated here so a
+// client depends on the frozen wire contract rather than on the server package.
+// ---------------------------------------------------------------------------
+
+export type SpeechModelKind = 'transcription' | 'speech';
+
+export type SpeechAudioFormat = 'wav' | 'm4a' | 'mp3' | 'flac' | 'ogg' | 'webm' | 'aac';
+
+export type SpeechProviderReason = 'no_credential' | 'no_provider_offers_realtime';
+
+export interface SpeechSttConfig {
+  provider: string;
+  model: string;
+  language?: string;
+}
+
+export interface SpeechTtsConfig {
+  provider: string;
+  model: string;
+  voice: string;
+  speed?: number;
+}
+
+/** `null` means "no realtime provider" and is a real value, never an omission. */
+export interface SpeechRealtimeConfig {
+  provider: string | null;
+}
+
+export interface SpeechConfigDTO {
+  stt: SpeechSttConfig;
+  tts: SpeechTtsConfig;
+  realtime: SpeechRealtimeConfig;
+}
+
+export interface SpeechCapabilitiesDTO {
+  transcription: boolean;
+  speech: boolean;
+  realtime: boolean;
+}
+
+/** `reason` is present only when `available` is false. */
+export interface SpeechProviderStatusDTO {
+  id: string;
+  capabilities: SpeechCapabilitiesDTO;
+  available: boolean;
+  reason?: SpeechProviderReason;
+}
+
+/** The body of both `GET` and `PATCH /speech/config`. */
+export interface SpeechConfigResponse {
+  config: SpeechConfigDTO;
+  providers: SpeechProviderStatusDTO[];
+}
+
+/**
+ * A shallow per-section merge. NOTE the asymmetry on `realtime`: the section
+ * itself is optional, but once present its `provider` key is REQUIRED (and may
+ * be null) — the gateway 400s on `{ "realtime": {} }`. That is why it is typed
+ * as the whole `SpeechRealtimeConfig` rather than a `Partial` of it.
+ */
+export interface SpeechConfigPatch {
+  stt?: Partial<SpeechSttConfig>;
+  tts?: Partial<SpeechTtsConfig>;
+  realtime?: SpeechRealtimeConfig;
+}
+
+export interface SpeechModelDTO {
+  id: string;
+  name: string;
+  kind: SpeechModelKind;
+  voices?: string[];
+}
+
+export interface SpeechModelList {
+  models: SpeechModelDTO[];
+}
+
+export interface TranscriptionRequest {
+  /** Standard base64. Decoded size is capped at 8 MiB; the clip at 60 seconds. */
+  audio: string;
+  format: SpeechAudioFormat;
+  language?: string;
+}
+
+export interface TranscriptionResponse {
+  text: string;
+  durationSeconds?: number;
+}
+
+/** `POST /speech/speech`. The RESPONSE is `audio/mpeg` bytes, not JSON. */
+export interface SynthesisRequest {
+  /** At most 4 000 characters; over that the gateway answers 413 `too_long`. */
+  text: string;
 }

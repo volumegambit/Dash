@@ -619,6 +619,137 @@ describe('mobile v1 contract fixtures', () => {
     });
   });
 
+  it('advertises speech-v1 as a mobile capability in both documents', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: { schemas?: Record<string, Record<string, unknown>> };
+    };
+    const capabilities = openapi.components?.schemas?.MobileHealth?.properties as Record<
+      string,
+      { items?: { enum?: string[] } }
+    >;
+    // Pinned as an exact list, not a `toContain`: `/health`'s capability array
+    // is what every client feature-gates on, so a capability added to one
+    // document and forgotten in the other is exactly the drift this catches.
+    expect(capabilities.capabilities.items?.enum).toEqual([
+      'conversation-sync-v1',
+      'chat-resume-v1',
+      'speech-v1',
+    ]);
+
+    const health = JSON.parse(
+      await readFile(join(root, 'fixtures', 'health-capabilities.json'), 'utf8'),
+    ) as { capabilities: string[] };
+    expect(health.capabilities).toEqual(['conversation-sync-v1', 'chat-resume-v1', 'speech-v1']);
+  });
+
+  it('carries the speech error codes the /speech routes really emit', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: { schemas?: Record<string, { properties?: Record<string, unknown> }> };
+    };
+    const code = openapi.components?.schemas?.MobileApiError?.properties?.code as {
+      enum?: string[];
+    };
+    // The `/speech/*` handlers answer with the SHARED `{ code, error, retryable }`
+    // envelope and pass `SpeechErrorCode` through untranslated
+    // (`apps/gateway/src/speech-routes.ts`'s `speechErrorResponse`), so these six
+    // are reachable on this namespace and a client must be able to decode them.
+    expect(code.enum).toEqual([
+      'unauthorized',
+      'not_found',
+      'validation_failed',
+      'revision_conflict',
+      'conversation_busy',
+      'rate_limited',
+      'gateway_offline',
+      'capability_required',
+      'too_large',
+      'too_long',
+      'provider',
+      'network',
+      'unavailable',
+      'invalid',
+    ]);
+  });
+
+  it('documents the five speech operations with closed schemas', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<string, Record<string, { operationId?: string; parameters?: unknown }>>;
+      components?: {
+        parameters?: Record<string, Record<string, unknown>>;
+        schemas?: Record<string, { additionalProperties?: boolean }>;
+      };
+    };
+
+    expect(openapi.paths?.['/speech/config']?.get?.operationId).toBe('getSpeechConfig');
+    expect(openapi.paths?.['/speech/config']?.patch?.operationId).toBe('patchSpeechConfig');
+    expect(openapi.paths?.['/speech/models']?.get?.operationId).toBe('listSpeechModels');
+    expect(openapi.paths?.['/speech/transcriptions']?.post?.operationId).toBe(
+      'createSpeechTranscription',
+    );
+    expect(openapi.paths?.['/speech/speech']?.post?.operationId).toBe('createSpeechSynthesis');
+
+    // `kind` is REQUIRED: the route 400s without it rather than defaulting.
+    expect(openapi.paths?.['/speech/models']?.get?.parameters).toEqual([
+      { $ref: '#/components/parameters/SpeechModelKind' },
+    ]);
+    expect(openapi.components?.parameters?.SpeechModelKind).toMatchObject({
+      name: 'kind',
+      in: 'query',
+      required: true,
+      schema: { enum: ['transcription', 'speech'] },
+    });
+
+    for (const name of [
+      'SpeechConfig',
+      'SpeechCapabilities',
+      'SpeechProviderStatus',
+      'SpeechConfigResponse',
+      'SpeechConfigPatch',
+      'SpeechModel',
+      'SpeechModelList',
+      'TranscriptionRequest',
+      'TranscriptionResponse',
+      'SynthesisRequest',
+    ]) {
+      expect(openapi.components?.schemas?.[name], name).toBeDefined();
+      expect(openapi.components?.schemas?.[name]?.additionalProperties, name).toBe(false);
+    }
+  });
+
+  it('answers synthesis with audio bytes, never JSON', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      paths?: Record<
+        string,
+        Record<string, { responses?: Record<string, { content?: Record<string, unknown> }> }>
+      >;
+    };
+    const ok = openapi.paths?.['/speech/speech']?.post?.responses?.['200'];
+    // A streamed `audio/mpeg` body. A client that sent `Accept: application/json`
+    // here (iOS `HTTPTransport.perform`'s default) would be asking for a
+    // representation this route never produces.
+    expect(Object.keys(ok?.content ?? {})).toEqual(['audio/mpeg']);
+  });
+
+  it('bounds transcription and synthesis at the upstream limits', async () => {
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: {
+        schemas?: Record<string, { properties?: Record<string, Record<string, unknown>> }>;
+      };
+    };
+    // 4 000 characters — `MAX_TTS_CHARS` in `apps/gateway/src/speech-routes.ts`
+    // and `MAX_SYNTHESIZE_CHARS` in `@dash/speech`'s service.
+    expect(openapi.components?.schemas?.SynthesisRequest?.properties?.text?.maxLength).toBe(4000);
+    expect(openapi.components?.schemas?.TranscriptionRequest?.properties?.format?.enum).toEqual([
+      'wav',
+      'm4a',
+      'mp3',
+      'flac',
+      'ogg',
+      'webm',
+      'aac',
+    ]);
+  });
+
   it('has no duplicate or unlisted fixture files', async () => {
     const manifest = JSON.parse(
       await readFile(join(root, 'fixtures', 'manifest.json'), 'utf8'),

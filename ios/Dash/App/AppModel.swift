@@ -31,11 +31,26 @@ final class AppModel {
   var agentsFeature: AgentsFeature?
   var settingsFeature: SettingsFeature?
   private(set) var chatHostGeneration: UInt64 = 0
+  /// What the CURRENTLY connected gateway last said it can do.
+  ///
+  /// In memory only, and deliberately so: a capability is a property of the
+  /// live gateway, not of the stored profile, and `speech-v1` in particular
+  /// appears and disappears with that gateway's provider credentials.
+  /// Persisting it would let a stale "yes" outlive the credential it described
+  /// and offer a feature that then fails. Replaced wholesale on every
+  /// successful verify, and emptied when the engine is detached (disconnect,
+  /// or a switch to another gateway) so nothing is inherited across gateways.
+  private(set) var gatewayCapabilities: Set<MobileCapability> = []
 
   var route: AppRoute {
     guard selectedProfile != nil else { return .connect }
     return .paired(tab: selectedTab)
   }
+
+  /// The single gate every speech surface reads. False until a verify has
+  /// actually landed — an unverified gateway is one whose capabilities are
+  /// unknown, and unknown must read as absent.
+  var speechAvailable: Bool { gatewayCapabilities.contains(.speechV1) }
 
   /// Multi-window (design §3.2): whether any scene is currently active, from
   /// the set `sceneChanged(id:isActive:)` tracks.
@@ -537,8 +552,11 @@ final class AppModel {
     let epoch = activeEpoch
     markCachedConnection(.connecting)
     do {
-      try await dependencies.verifyProfile(profile)
+      let capabilities = try await dependencies.verifyProfile(profile)
       guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+      // After the epoch guard: a verify that finished against a gateway this
+      // model has already moved off must not overwrite the current one's set.
+      gatewayCapabilities = capabilities
       await engine.bootstrap()
       guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
     } catch {
@@ -895,6 +913,9 @@ final class AppModel {
     activeEngineSuspended = false
     activeEngineSuspensionStarted = false
     selectedProfile = profile
+    // Activation does not verify, so nothing here knows this gateway's
+    // capabilities yet — least of all the previous gateway's.
+    gatewayCapabilities = []
     let conversationFeature = dependencies.makeConversationListFeature(profile)
     conversationFeature?.setGatewayErrorHandler { [weak self, weak conversationFeature] error in
       guard
@@ -1008,6 +1029,7 @@ final class AppModel {
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
+    gatewayCapabilities = []
     activeEngineBootstrapped = false
     activeEngineLifecycleStarted = false
     activeEngineNeedsForegroundResume = false

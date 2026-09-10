@@ -53,6 +53,9 @@ The root fixtures are:
   `chat-accepted.json`, `chat-event.json`, `chat-done.json`, and `chat-error.json`.
 - Streams: `chat-stream.jsonl`, `chat-resume.jsonl`, `sse-conversation-changed.txt`, and
   `sse-conversation-deleted.txt`.
+- Speech: `speech-config.json` (the shared `GET`/`PATCH /speech/config` body),
+  `speech-config-patch.json`, `speech-models.json`, `speech-transcription-request.json`,
+  `speech-transcription.json`, and `speech-synthesis-request.json`.
 
 Structured error fixtures live under `fixtures/errors/`:
 
@@ -100,6 +103,18 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   Schema.
 - Pairing producers emit lowercase SHA-256 certificate fingerprints. Native clients may accept
   uppercase input but normalize the stored pin to lowercase before connecting.
+- `GET /health` advertises `speech-v1` only while a speech provider can actually transcribe
+  and speak, so the capability comes and goes with the gateway's credentials. Clients gate the
+  `/speech/*` operations on it and must tolerate capability strings they do not know — a client
+  that rejects an unfamiliar capability cannot be deployed before the gateway that adds one.
+- `POST /speech/speech` is the only operation whose success body is not JSON: it streams
+  `audio/mpeg`. The gateway does not content-negotiate, so clients send `Accept: audio/mpeg` and
+  must still be ready to decode a JSON `MobileApiError` on the same request — a failure raised
+  before the first audio chunk comes back as the ordinary error envelope.
+- `/speech/*` reuses `MobileApiError` but passes the provider-level `SpeechErrorCode`
+  (`too_large`, `too_long`, `provider`, `network`, `unavailable`, `invalid`) through
+  untranslated, which is why `MobileApiErrorCode` carries them. The WebSocket error frame does
+  not: those codes are unreachable there.
 - Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
   with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other

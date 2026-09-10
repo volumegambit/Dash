@@ -248,7 +248,11 @@ struct AppDependencies: Sendable {
   let clock: any AppClock
   let loadProfile: @Sendable () async throws -> ConnectionProfileSnapshot?
   let makeSyncEngine: @Sendable (ConnectionProfileSnapshot) async throws -> any AppSyncing
-  let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  /// Verifies the profile is still the gateway it was paired with, and hands
+  /// back the capabilities that gateway currently advertises — `AppModel`
+  /// retains them (`gatewayCapabilities`) so an optional capability such as
+  /// `speech-v1` is knowable outside this one call.
+  let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Set<MobileCapability>
   let rememberProfile: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
@@ -270,7 +274,9 @@ struct AppDependencies: Sendable {
     makeSyncEngine: @escaping @Sendable (
       ConnectionProfileSnapshot
     ) async throws -> any AppSyncing,
-    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = { _ in },
+    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
+    > = { _ in [] },
     rememberProfile: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = { _ in },
     deleteProfileSecrets: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = {
       _ in
@@ -427,7 +433,7 @@ struct AppDependencies: Sendable {
         guard let secrets = try await keychain.load(for: profile.id) else {
           throw AppDependencyError.missingSecrets(profileID: profile.id)
         }
-        try await profileVerifier.verify(profile: profile, secrets: secrets)
+        return try await profileVerifier.verify(profile: profile, secrets: secrets)
       },
       rememberProfile: { profile in
         UserDefaults.standard.set(profile.gatewayID, forKey: activeGatewayKey)

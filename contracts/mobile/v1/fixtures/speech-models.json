@@ -1,0 +1,15 @@
+{
+  "models": [
+    {
+      "id": "openai/whisper-large-v3",
+      "name": "Whisper Large v3",
+      "kind": "transcription"
+    },
+    {
+      "id": "openai/gpt-4o-mini-tts-2025-12-15",
+      "name": "GPT-4o mini TTS",
+      "kind": "speech",
+      "voices": ["alloy", "nova"]
+    }
+  ]
+}

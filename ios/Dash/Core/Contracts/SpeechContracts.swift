@@ -1,0 +1,209 @@
+import Foundation
+
+/// Wire types for the `/mobile/v1/speech/*` operations
+/// (`contracts/mobile/v1/openapi.yaml`). They mirror `@dash/speech`'s own
+/// types, but the contract document — not the server package — is what these
+/// are written against.
+enum SpeechModelKind: String, Codable, Hashable, Sendable, CaseIterable {
+  case transcription
+  case speech
+}
+
+/// Container formats the transcription route accepts. Not the codec — the
+/// gateway hands the bytes to the provider as-is.
+enum SpeechAudioFormat: String, Codable, Hashable, Sendable, CaseIterable {
+  case wav
+  case m4a
+  case mp3
+  case flac
+  case ogg
+  case webm
+  case aac
+}
+
+/// Why a provider is unavailable. Present only alongside `available == false`.
+enum SpeechProviderReason: String, Codable, Hashable, Sendable {
+  case noCredential = "no_credential"
+  case noProviderOffersRealtime = "no_provider_offers_realtime"
+}
+
+struct SpeechSttConfigDTO: Codable, Hashable, Sendable {
+  let provider: String
+  let model: String
+  let language: String?
+}
+
+struct SpeechTtsConfigDTO: Codable, Hashable, Sendable {
+  let provider: String
+  let model: String
+  let voice: String
+  let speed: Double?
+}
+
+/// `provider == nil` is a real value meaning "no realtime provider", which is
+/// why this is a struct with an explicit encoder rather than a bare `String?`
+/// — see `encode(to:)`.
+struct SpeechRealtimeConfigDTO: Codable, Hashable, Sendable {
+  let provider: String?
+
+  init(provider: String?) {
+    self.provider = provider
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case provider
+  }
+
+  /// Written by hand because the synthesized encoder would `encodeIfPresent`
+  /// and DROP the key when `provider` is nil. The gateway's
+  /// `validateRealtimePatch` requires the key to be present inside a
+  /// `realtime` object and accepts `null` as its value, so an omission is a
+  /// 400 `validation_failed`, not "leave it alone".
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    if let provider {
+      try container.encode(provider, forKey: .provider)
+    } else {
+      try container.encodeNil(forKey: .provider)
+    }
+  }
+}
+
+struct SpeechConfigDTO: Codable, Hashable, Sendable {
+  let stt: SpeechSttConfigDTO
+  let tts: SpeechTtsConfigDTO
+  let realtime: SpeechRealtimeConfigDTO
+}
+
+struct SpeechCapabilitiesDTO: Codable, Hashable, Sendable {
+  let transcription: Bool
+  let speech: Bool
+  let realtime: Bool
+}
+
+struct SpeechProviderStatusDTO: Codable, Hashable, Sendable, Identifiable {
+  let id: String
+  let capabilities: SpeechCapabilitiesDTO
+  let available: Bool
+  let reason: SpeechProviderReason?
+
+  init(
+    id: String,
+    capabilities: SpeechCapabilitiesDTO,
+    available: Bool,
+    reason: SpeechProviderReason? = nil
+  ) {
+    self.id = id
+    self.capabilities = capabilities
+    self.available = available
+    self.reason = reason
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    capabilities = try container.decode(SpeechCapabilitiesDTO.self, forKey: .capabilities)
+    available = try container.decode(Bool.self, forKey: .available)
+    // `try?`, following the rule `ChatFrames` states: leniency only where the
+    // contract already defines a safe fallback. `reason` is an explanatory
+    // string for a provider that is already known to be unavailable, so a
+    // reason this build has not heard of degrades to "unavailable, no stated
+    // reason". Throwing instead would map to `GatewayError.updateRequired` and
+    // take out the whole speech settings screen over a label.
+    reason = try? container.decodeIfPresent(SpeechProviderReason.self, forKey: .reason)
+  }
+}
+
+/// The body of both `GET` and `PATCH /speech/config` — a patch never needs a
+/// follow-up read.
+struct SpeechConfigResponseDTO: Codable, Hashable, Sendable {
+  let config: SpeechConfigDTO
+  let providers: [SpeechProviderStatusDTO]
+}
+
+/// Every field of an `stt`/`tts` section is optional: an omitted key keeps its
+/// current value.
+struct SpeechSttPatchDTO: Codable, Hashable, Sendable {
+  let provider: String?
+  let model: String?
+  let language: String?
+
+  init(provider: String? = nil, model: String? = nil, language: String? = nil) {
+    self.provider = provider
+    self.model = model
+    self.language = language
+  }
+}
+
+struct SpeechTtsPatchDTO: Codable, Hashable, Sendable {
+  let provider: String?
+  let model: String?
+  let voice: String?
+  let speed: Double?
+
+  init(provider: String? = nil, model: String? = nil, voice: String? = nil, speed: Double? = nil) {
+    self.provider = provider
+    self.model = model
+    self.voice = voice
+    self.speed = speed
+  }
+}
+
+/// A shallow per-section merge. `realtime` is the asymmetric one: the section
+/// is optional, but a present section must carry `provider` (possibly null).
+struct SpeechConfigPatchDTO: Codable, Hashable, Sendable {
+  let stt: SpeechSttPatchDTO?
+  let tts: SpeechTtsPatchDTO?
+  let realtime: SpeechRealtimeConfigDTO?
+
+  init(
+    stt: SpeechSttPatchDTO? = nil,
+    tts: SpeechTtsPatchDTO? = nil,
+    realtime: SpeechRealtimeConfigDTO? = nil
+  ) {
+    self.stt = stt
+    self.tts = tts
+    self.realtime = realtime
+  }
+}
+
+struct SpeechModelDTO: Codable, Hashable, Sendable, Identifiable {
+  let id: String
+  let name: String
+  let kind: SpeechModelKind
+  /// Present only on `speech` models that expose named voices.
+  let voices: [String]?
+}
+
+/// The `GET /speech/models` envelope. `GatewayAPI.speechModels(kind:)` unwraps
+/// it; nothing above the networking layer sees this type.
+struct SpeechModelListDTO: Codable, Hashable, Sendable {
+  let models: [SpeechModelDTO]
+}
+
+struct TranscriptionRequestDTO: Codable, Hashable, Sendable {
+  /// Standard base64, no line breaks. Upstream caps the DECODED clip at 8 MiB
+  /// and 60 seconds; the gateway also fast-rejects on `Content-Length`.
+  let audio: String
+  let format: SpeechAudioFormat
+  let language: String?
+
+  init(audio: String, format: SpeechAudioFormat, language: String? = nil) {
+    self.audio = audio
+    self.format = format
+    self.language = language
+  }
+}
+
+struct TranscriptionResponseDTO: Codable, Hashable, Sendable {
+  let text: String
+  /// Present only when the provider reported one.
+  let durationSeconds: Double?
+}
+
+/// The request body of `POST /speech/speech`. The RESPONSE is `audio/mpeg`
+/// bytes, which is why `GatewayAPI.synthesize` returns `Data`.
+struct SynthesisRequestDTO: Codable, Hashable, Sendable {
+  /// At most 4 000 characters; over that the gateway answers 413 `too_long`.
+  let text: String
+}

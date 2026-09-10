@@ -14,7 +14,10 @@ reconciles when connectivity returns, and never runs an agent on the device.
 - Read and administer agents through the gateway-owned model catalog and configuration.
 - Inspect connection health and remove one gateway's secrets, cache, and drafts from this device.
 
-The app requires gateway capabilities `conversation-sync-v1` and `chat-resume-v1`. It does not
+The app requires gateway capabilities `conversation-sync-v1` and `chat-resume-v1`, and treats
+`speech-v1` as optional — it is retained per connection as `AppModel.gatewayCapabilities` and read
+through `AppModel.speechAvailable`. Capabilities the build does not recognise are dropped rather
+than failing the health decode, so a newer gateway never blocks an older install. It does not
 provide provider credential UI, gateway shutdown controls, connector administration, or project
 lifecycle controls.
 

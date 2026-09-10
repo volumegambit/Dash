@@ -74,6 +74,24 @@ actor HTTPTransport {
     }
   }
 
+  /// The raw response body, for the one operation whose success payload is not
+  /// JSON: `POST /speech/speech` streams `audio/mpeg`. Identical to `send`
+  /// apart from the `Accept` it asks for and the absence of a decode — in
+  /// particular a non-2xx still goes through `perform`'s `mapHTTPError`, so a
+  /// failed synthesis surfaces as a `GatewayError` rather than as error-page
+  /// bytes handed back as if they were audio.
+  ///
+  /// No empty-body guard: audio is opaque, and a zero-byte 200 is a provider
+  /// problem for the caller to notice, not a contract violation.
+  func sendData(
+    _ request: GatewayRequest,
+    body: (any Encodable & Sendable)? = nil,
+    accept: String
+  ) async throws -> Data {
+    let (data, _) = try await perform(request, body: body, ifMatch: nil, accept: accept)
+    return data
+  }
+
   func sendEmpty(
     _ request: GatewayRequest,
     body: (any Encodable & Sendable)? = nil,
@@ -88,12 +106,13 @@ actor HTTPTransport {
   private func perform(
     _ descriptor: GatewayRequest,
     body: (any Encodable & Sendable)?,
-    ifMatch: Int?
+    ifMatch: Int?,
+    accept: String = "application/json"
   ) async throws -> (Data, HTTPURLResponse) {
     try endpoint.requireTrustedTransport()
     var request = URLRequest(url: try url(for: descriptor))
     request.httpMethod = descriptor.method.rawValue
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue(accept, forHTTPHeaderField: "Accept")
     if descriptor.path != ["mobile", "v1", "health"] {
       request.setValue(
         "Bearer \(secrets.managementToken)",

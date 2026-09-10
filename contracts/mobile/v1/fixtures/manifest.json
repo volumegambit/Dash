@@ -537,6 +537,42 @@
       "document": "openapi",
       "schema": "SubagentListResponse",
       "valid": true
+    },
+    {
+      "file": "speech-config.json",
+      "document": "openapi",
+      "schema": "SpeechConfigResponse",
+      "valid": true
+    },
+    {
+      "file": "speech-config-patch.json",
+      "document": "openapi",
+      "schema": "SpeechConfigPatch",
+      "valid": true
+    },
+    {
+      "file": "speech-models.json",
+      "document": "openapi",
+      "schema": "SpeechModelList",
+      "valid": true
+    },
+    {
+      "file": "speech-transcription-request.json",
+      "document": "openapi",
+      "schema": "TranscriptionRequest",
+      "valid": true
+    },
+    {
+      "file": "speech-transcription.json",
+      "document": "openapi",
+      "schema": "TranscriptionResponse",
+      "valid": true
+    },
+    {
+      "file": "speech-synthesis-request.json",
+      "document": "openapi",
+      "schema": "SynthesisRequest",
+      "valid": true
     }
   ]
 }

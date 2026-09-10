@@ -1,0 +1,39 @@
+{
+  "config": {
+    "stt": {
+      "provider": "openrouter",
+      "model": "openai/whisper-large-v3",
+      "language": "en"
+    },
+    "tts": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini-tts-2025-12-15",
+      "voice": "alloy",
+      "speed": 1
+    },
+    "realtime": {
+      "provider": null
+    }
+  },
+  "providers": [
+    {
+      "id": "openrouter",
+      "capabilities": {
+        "transcription": true,
+        "speech": true,
+        "realtime": false
+      },
+      "available": true
+    },
+    {
+      "id": "realtime",
+      "capabilities": {
+        "transcription": false,
+        "speech": false,
+        "realtime": true
+      },
+      "available": false,
+      "reason": "no_provider_offers_realtime"
+    }
+  ]
+}

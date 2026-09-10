@@ -32,13 +32,70 @@ struct ContractFixtureTests {
   func restFixtures() throws {
     let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
     #expect(health.apiVersion == 1)
-    #expect(Set(health.capabilities) == [.conversationSyncV1, .chatResumeV1])
+    #expect(Set(health.capabilities) == [.conversationSyncV1, .chatResumeV1, .speechV1])
 
     let identity = try FixtureLoader.decode(GatewayIdentityDTO.self, "identity.json")
     #expect(identity.gatewayId.isEmpty == false)
 
     let page = try FixtureLoader.decode(ConversationPageDTO.self, "conversations-page.json")
     #expect(page.items.isEmpty == false)
+  }
+
+  @Test("the speech fixtures decode into the DTOs GatewayAPI returns")
+  func speechFixtures() throws {
+    let config = try FixtureLoader.decode(
+      SpeechConfigResponseDTO.self,
+      "speech-config.json"
+    )
+    #expect(config.config.stt.model == "openai/whisper-large-v3")
+    #expect(config.config.stt.language == "en")
+    #expect(config.config.tts.voice == "alloy")
+    #expect(config.config.tts.speed == 1)
+    // Explicit JSON null, not an omission: "no realtime provider" is a value.
+    #expect(config.config.realtime.provider == nil)
+    #expect(config.providers.map(\.id) == ["openrouter", "realtime"])
+    #expect(config.providers[0].available)
+    #expect(config.providers[0].reason == nil)
+    #expect(config.providers[1].available == false)
+    #expect(config.providers[1].reason == .noProviderOffersRealtime)
+    #expect(config.providers[1].capabilities.realtime)
+
+    let patch = try FixtureLoader.decode(SpeechConfigPatchDTO.self, "speech-config-patch.json")
+    #expect(patch.stt?.model == "openai/whisper-large-v3")
+    #expect(patch.stt?.provider == nil)
+    #expect(patch.tts?.voice == "nova")
+    #expect(patch.tts?.speed == 1.25)
+    #expect(patch.realtime?.provider == nil)
+
+    let models = try FixtureLoader.decode(SpeechModelListDTO.self, "speech-models.json")
+    #expect(models.models.map(\.kind) == [.transcription, .speech])
+    #expect(models.models[0].voices == nil)
+    #expect(models.models[1].voices == ["alloy", "nova"])
+
+    let request = try FixtureLoader.decode(
+      TranscriptionRequestDTO.self,
+      "speech-transcription-request.json"
+    )
+    #expect(request.format == .wav)
+    #expect(request.language == "en")
+    // The fixture must be REAL base64: the gateway rejects anything whose
+    // length is not a multiple of 4 or that carries an out-of-alphabet byte,
+    // so a fixture that only looks like base64 would pass this decode and
+    // fail against a live gateway.
+    #expect(Data(base64Encoded: request.audio) != nil)
+
+    let transcription = try FixtureLoader.decode(
+      TranscriptionResponseDTO.self,
+      "speech-transcription.json"
+    )
+    #expect(transcription.text == "Ship the speech routes.")
+    #expect(transcription.durationSeconds == 2.5)
+
+    let synthesis = try FixtureLoader.decode(
+      SynthesisRequestDTO.self,
+      "speech-synthesis-request.json"
+    )
+    #expect(synthesis.text == "Ship the speech routes.")
   }
 
   @Test("the memory list fixture decodes with bare ISO dates and grouped types")
@@ -703,6 +760,18 @@ else {
       try decodeIfValid(SubagentListResponseDTO.self, fixture)
     case ("json", "openapi", "ReplayPage"):
       try decodeIfValid(ReplayPageDTO.self, fixture)
+    case ("json", "openapi", "SpeechConfigResponse"):
+      try decodeIfValid(SpeechConfigResponseDTO.self, fixture)
+    case ("json", "openapi", "SpeechConfigPatch"):
+      try decodeIfValid(SpeechConfigPatchDTO.self, fixture)
+    case ("json", "openapi", "SpeechModelList"):
+      try decodeIfValid(SpeechModelListDTO.self, fixture)
+    case ("json", "openapi", "TranscriptionRequest"):
+      try decodeIfValid(TranscriptionRequestDTO.self, fixture)
+    case ("json", "openapi", "TranscriptionResponse"):
+      try decodeIfValid(TranscriptionResponseDTO.self, fixture)
+    case ("json", "openapi", "SynthesisRequest"):
+      try decodeIfValid(SynthesisRequestDTO.self, fixture)
     case ("json", "openapi", "MobileApiError"),
       ("json", "openapi", "RevisionConflictError"),
       ("json", "openapi", "ConversationBusyError"):

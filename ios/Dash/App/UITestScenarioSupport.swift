@@ -1205,7 +1205,7 @@ extension AppDependenciesFactory {
         makeSyncEngine: { _ in
           UITestSyncEngine(snapshot: await store.syncSnapshot())
         },
-        verifyProfile: { _ in },
+        verifyProfile: { _ in [.conversationSyncV1, .chatResumeV1] },
         rememberProfile: { _ in },
         deleteProfileSecrets: { profile in
           await keychain.delete(for: profile.id)

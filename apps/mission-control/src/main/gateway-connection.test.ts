@@ -72,7 +72,10 @@ describe('gateway connection helpers', () => {
     await expect(verifyConversationGateway(client)).resolves.toEqual({
       identity,
       apiVersion: 1,
-      capabilities: ['conversation-sync-v1', 'chat-resume-v1'],
+      // Straight from `health-capabilities.json`: this asserts the fixture is
+      // passed through verbatim, so it tracks the fixture rather than pinning
+      // a list of its own.
+      capabilities: health.capabilities,
     });
     expect(client.health.mock.invocationCallOrder[0]).toBeLessThan(
       client.getIdentity.mock.invocationCallOrder[0],
