@@ -89,6 +89,7 @@ SURFACES=(
   "recovery|pending-recovery|DASH_UI_TEST_TAB=conversations"
   "agent-detail|paired-online|DASH_UI_TEST_AGENT=research-agent"
   "model-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=model-picker"
+  "agent-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=agent-picker"
 )
 
 # Tool gallery: every tool type, cards forced EXPANDED, four batches because a
