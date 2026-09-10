@@ -63,6 +63,11 @@ enum DashTheme {
   }
 
   enum Opacity {
+    /// The trough of the running-row breathing wash
+    /// (`ConversationListView.RunningRowWash`): the row pulses between this
+    /// and `fillSubtle`, keeping its peak below `fillMuted` so an animated
+    /// row can never be mistaken for the selected one.
+    static let fillFaint = 0.04
     static let fillSubtle = 0.08
     static let strokeSubtle = 0.08
     static let fillMuted = 0.12
