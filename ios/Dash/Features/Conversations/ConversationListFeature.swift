@@ -1859,8 +1859,10 @@ final class ConversationListFeature {
       connection = .updateRequired
     case .transport, .server:
       connection = .offline
+    // `.speech` is unreachable from this feature and changes no connection
+    // state anywhere: a provider failure is not a reachability signal.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown:
+      .mutationOutcomeUnknown, .speech:
       break
     }
     if connection != .online { isAuthoritative = false }

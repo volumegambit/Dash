@@ -1112,8 +1112,12 @@ final class AppModel {
       state = .updateRequired
     case .transport, .server:
       state = .offline
+    // `.speech` deliberately changes NO connection state. A provider that
+    // cannot transcribe says nothing about whether this gateway is reachable,
+    // and routing it here is exactly how a bad OpenRouter key used to surface
+    // as `repairRequired`. The calling speech feature reports it locally.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown:
+      .mutationOutcomeUnknown, .speech:
       return
     }
     guard activeEpoch == epoch else { return }

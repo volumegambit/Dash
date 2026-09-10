@@ -1825,6 +1825,10 @@ enum ChatReducer {
       state.errorBanner = "The message outcome is unknown. Refresh the conversation."
     case let .server(error, _):
       state.errorBanner = error.error
+    case let .speech(_, message, _):
+      // Reachable once dictation lives in the composer (A8): a speech failure
+      // is a banner, never a composer BLOCK — the user can always still type.
+      state.errorBanner = message
     }
     return []
   }

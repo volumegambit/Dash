@@ -104,13 +104,18 @@ struct SpeechProviderStatusDTO: Codable, Hashable, Sendable, Identifiable {
     id = try container.decode(String.self, forKey: .id)
     capabilities = try container.decode(SpeechCapabilitiesDTO.self, forKey: .capabilities)
     available = try container.decode(Bool.self, forKey: .available)
-    // `try?`, following the rule `ChatFrames` states: leniency only where the
-    // contract already defines a safe fallback. `reason` is an explanatory
-    // string for a provider that is already known to be unavailable, so a
-    // reason this build has not heard of degrades to "unavailable, no stated
-    // reason". Throwing instead would map to `GatewayError.updateRequired` and
-    // take out the whole speech settings screen over a label.
-    reason = try? container.decodeIfPresent(SpeechProviderReason.self, forKey: .reason)
+    // Decoded as a STRING and then mapped, which is the same shape as
+    // `HealthResponse`'s capability leniency and for the same reason: an
+    // unfamiliar reason on a provider already known to be unavailable degrades
+    // to "no stated reason", rather than mapping to
+    // `GatewayError.updateRequired` and taking out the whole speech settings
+    // screen over a label.
+    //
+    // NOT `try?` over the whole decode — that would also swallow a malformed
+    // `reason` (a number, an object), which is a broken gateway rather than a
+    // newer one. The leniency is scoped to unknown strings only.
+    let rawReason = try container.decodeIfPresent(String.self, forKey: .reason)
+    reason = rawReason.flatMap(SpeechProviderReason.init(rawValue:))
   }
 }
 

@@ -271,7 +271,11 @@ actor GatewayAPI {
 
   func speechConfig() async throws -> SpeechConfigResponseDTO {
     try await transport.send(
-      GatewayRequest(method: .get, path: mobilePath("speech", "config"))
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("speech", "config"),
+        errorScope: .speech
+      )
     )
   }
 
@@ -279,7 +283,11 @@ actor GatewayAPI {
   /// read to learn what it now has.
   func patchSpeechConfig(_ patch: SpeechConfigPatchDTO) async throws -> SpeechConfigResponseDTO {
     try await transport.send(
-      GatewayRequest(method: .patch, path: mobilePath("speech", "config")),
+      GatewayRequest(
+        method: .patch,
+        path: mobilePath("speech", "config"),
+        errorScope: .speech
+      ),
       body: patch
     )
   }
@@ -290,7 +298,8 @@ actor GatewayAPI {
       GatewayRequest(
         method: .get,
         path: mobilePath("speech", "models"),
-        query: [URLQueryItem(name: "kind", value: kind.rawValue)]
+        query: [URLQueryItem(name: "kind", value: kind.rawValue)],
+        errorScope: .speech
       )
     )
     return response.models
@@ -298,7 +307,11 @@ actor GatewayAPI {
 
   func transcribe(_ request: TranscriptionRequestDTO) async throws -> TranscriptionResponseDTO {
     try await transport.send(
-      GatewayRequest(method: .post, path: mobilePath("speech", "transcriptions")),
+      GatewayRequest(
+        method: .post,
+        path: mobilePath("speech", "transcriptions"),
+        errorScope: .speech
+      ),
       body: request
     )
   }
@@ -314,7 +327,11 @@ actor GatewayAPI {
   /// honest answer, and a caller may simply ask again.
   func synthesize(text: String) async throws -> Data {
     try await transport.sendData(
-      GatewayRequest(method: .post, path: mobilePath("speech", "speech")),
+      GatewayRequest(
+        method: .post,
+        path: mobilePath("speech", "speech"),
+        errorScope: .speech
+      ),
       body: SynthesisRequestDTO(text: text),
       accept: "audio/mpeg"
     )

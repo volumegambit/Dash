@@ -75,6 +75,46 @@ struct GatewayContractsTests {
     }
   }
 
+  /// Same shape of leniency as the capability decode, one screen smaller: a
+  /// provider status the build cannot name a reason for is still a usable row.
+  @Test("an unknown provider reason decodes to nil instead of failing the row")
+  func unknownProviderReasonIsDropped() throws {
+    let json = """
+      {
+        "id": "openrouter",
+        "capabilities": { "transcription": true, "speech": true, "realtime": false },
+        "available": false,
+        "reason": "quota_exhausted"
+      }
+      """
+
+    let status = try ContractCoding.decoder()
+      .decode(SpeechProviderStatusDTO.self, from: Data(json.utf8))
+
+    #expect(status.reason == nil)
+    #expect(status.available == false)
+    #expect(status.id == "openrouter")
+  }
+
+  /// The half that makes the leniency mean something: it is scoped to unknown
+  /// STRINGS. A `reason` that is not a string at all is a broken gateway, and
+  /// swallowing it would hide a real contract break.
+  @Test("a non-string provider reason still fails the decode")
+  func malformedProviderReasonStillThrows() {
+    let json = """
+      {
+        "id": "openrouter",
+        "capabilities": { "transcription": true, "speech": true, "realtime": false },
+        "available": false,
+        "reason": 17
+      }
+      """
+
+    #expect(throws: DecodingError.self) {
+      try ContractCoding.decoder().decode(SpeechProviderStatusDTO.self, from: Data(json.utf8))
+    }
+  }
+
   /// `SpeechConfigPatch.realtime` is the one place omission and `null` differ:
   /// the gateway's `validateRealtimePatch` REQUIRES the `provider` key inside a
   /// present `realtime` object and accepts `null` as the value. Swift's

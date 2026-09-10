@@ -3224,8 +3224,10 @@ final class ChatFeature {
     case .transport:
       connection = .offline
       isAuthoritative = false
+    // `.speech` changes no connection state — the reducer above already turned
+    // it into a banner, and a provider failure is not a reachability signal.
     case .notFound, .validation, .revisionConflict, .conversationBusy,
-      .mutationOutcomeUnknown, .server:
+      .mutationOutcomeUnknown, .server, .speech:
       break
     }
     await gatewayErrorHandler?(gatewayError)
@@ -3548,8 +3550,11 @@ final class ChatFeature {
     switch gatewayError {
     case .transport, .mutationOutcomeUnknown:
       return true
+    // A speech failure is a DEFINITE outcome — the gateway answered with a
+    // code — so there is nothing ambiguous to reconcile.
     case .unauthorized, .rateLimited, .gatewayOffline, .notFound, .validation,
-      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server:
+      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server,
+      .speech:
       return false
     }
   }

@@ -564,8 +564,10 @@ final class PairingFeature {
           title: "Too many requests",
           message: retryMessage(for: retryAfter)
         )
+      // `.speech` is unreachable here — pairing never calls `/speech/*` — but
+      // listing it keeps the switch honest rather than defaulting.
       case .notFound, .validation, .revisionConflict, .conversationBusy,
-        .mutationOutcomeUnknown, .server:
+        .mutationOutcomeUnknown, .server, .speech:
         break
       }
     }
