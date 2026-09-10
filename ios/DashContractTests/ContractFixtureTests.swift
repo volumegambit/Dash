@@ -49,7 +49,7 @@ struct ContractFixtureTests {
     )
     #expect(config.config.stt.model == "openai/whisper-large-v3")
     #expect(config.config.stt.language == "en")
-    #expect(config.config.tts.voice == "alloy")
+    #expect(config.config.tts.voice == "English_expressive_narrator")
     #expect(config.config.tts.speed == 1)
     // Explicit JSON null, not an omission: "no realtime provider" is a value.
     #expect(config.config.realtime.provider == nil)
@@ -88,7 +88,7 @@ struct ContractFixtureTests {
     let models = try FixtureLoader.decode(SpeechModelListDTO.self, "speech-models.json")
     #expect(models.models.map(\.kind) == [.transcription, .speech])
     #expect(models.models[0].voices == nil)
-    #expect(models.models[1].voices == ["alloy", "nova"])
+    #expect(models.models[1].voices == ["English_expressive_narrator", "English_radiant_girl"])
 
     let request = try FixtureLoader.decode(
       TranscriptionRequestDTO.self,

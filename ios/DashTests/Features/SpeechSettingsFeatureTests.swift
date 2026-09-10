@@ -29,7 +29,7 @@ struct SpeechSettingsFeatureTests {
     )
     #expect(
       harness.feature.speechModels.map(\.id)
-        == ["openai/gpt-4o-mini-tts-2025-12-15", "openai/tts-1", "openrouter/plain-tts"]
+        == ["minimax/speech-2.8-turbo", "openai/tts-1", "openrouter/plain-tts"]
     )
     #expect(harness.feature.isLoading == false)
     #expect(harness.feature.error == nil)
@@ -63,14 +63,14 @@ struct SpeechSettingsFeatureTests {
     let loadsAfterFirst = await harness.api.configLoads
     await harness.api.hold()
 
-    let save = Task { await harness.feature.setVoice("nova") }
+    let save = Task { await harness.feature.setVoice("English_radiant_girl") }
     await expectEventuallyAsync("the patch to be in flight") { harness.feature.isSaving }
     await harness.feature.load()
 
     #expect(await harness.api.configLoads == loadsAfterFirst, "no read may overtake the patch")
     await harness.api.release()
     await save.value
-    #expect(harness.feature.config?.tts.voice == "nova")
+    #expect(harness.feature.config?.tts.voice == "English_radiant_girl")
   }
 
   // MARK: - Setters
@@ -108,7 +108,7 @@ struct SpeechSettingsFeatureTests {
     )
     #expect(harness.feature.config?.tts.model == "openai/tts-1")
     // A model change must not silently rewrite the voice: one key per setter.
-    #expect(harness.feature.config?.tts.voice == "alloy")
+    #expect(harness.feature.config?.tts.voice == "English_expressive_narrator")
   }
 
   @Test("choosing a voice patches only that key")
@@ -116,14 +116,14 @@ struct SpeechSettingsFeatureTests {
     let harness = Harness()
     await harness.feature.load()
 
-    await harness.feature.setVoice("nova")
+    await harness.feature.setVoice("English_radiant_girl")
 
     #expect(
       await harness.api.patches == [
-        SpeechConfigPatchDTO(tts: SpeechTtsPatchDTO(voice: "nova"))
+        SpeechConfigPatchDTO(tts: SpeechTtsPatchDTO(voice: "English_radiant_girl"))
       ]
     )
-    #expect(harness.feature.config?.tts.voice == "nova")
+    #expect(harness.feature.config?.tts.voice == "English_radiant_girl")
   }
 
   @Test("choosing a language patches only that key")
@@ -207,7 +207,7 @@ struct SpeechSettingsFeatureTests {
       GatewayError.speech(code: "provider_error", message: "OpenRouter is down", retryable: true)
     )
 
-    await harness.feature.setVoice("nova")
+    await harness.feature.setVoice("English_radiant_girl")
 
     #expect(harness.feature.config == SpeechFixtures.config, "the optimistic value must be undone")
     #expect(harness.feature.error == "OpenRouter is down")
@@ -222,7 +222,7 @@ struct SpeechSettingsFeatureTests {
       GatewayError.speech(code: "unauthorized", message: "401", retryable: false)
     )
 
-    await harness.feature.setVoice("nova")
+    await harness.feature.setVoice("English_radiant_girl")
 
     #expect(harness.feature.error == "Your gateway's speech provider key was rejected.")
   }
@@ -233,7 +233,7 @@ struct SpeechSettingsFeatureTests {
     await harness.feature.load()
     await harness.api.setPatchFailure(GatewayError.unauthorized)
 
-    await harness.feature.setVoice("nova")
+    await harness.feature.setVoice("English_radiant_girl")
 
     #expect(harness.feature.error == "Couldn't reach your gateway. Try again.")
   }
@@ -289,7 +289,7 @@ struct SpeechSettingsFeatureTests {
 
     await harness.feature.load()
 
-    #expect(harness.feature.voiceOptions == ["alloy", "nova"])
+    #expect(harness.feature.voiceOptions == ["English_expressive_narrator", "English_radiant_girl"])
 
     // A model that lists no voices means the field is free text — the app
     // cannot invent a catalogue the provider did not publish.
@@ -306,7 +306,7 @@ struct SpeechSettingsFeatureTests {
           stt: SpeechFixtures.config.stt,
           tts: SpeechTtsConfigDTO(
             provider: "openrouter",
-            model: "openai/gpt-4o-mini-tts-2025-12-15",
+            model: "minimax/speech-2.8-turbo",
             voice: "shimmer",
             speed: 1
           ),
@@ -318,7 +318,7 @@ struct SpeechSettingsFeatureTests {
 
     await harness.feature.load()
 
-    #expect(harness.feature.voiceOptions == ["shimmer", "alloy", "nova"])
+    #expect(harness.feature.voiceOptions == ["shimmer", "English_expressive_narrator", "English_radiant_girl"])
   }
 
   @Test("a configured voice the model does not offer is called out, not silently shown")
@@ -438,8 +438,8 @@ enum SpeechFixtures {
     ),
     tts: SpeechTtsConfigDTO(
       provider: "openrouter",
-      model: "openai/gpt-4o-mini-tts-2025-12-15",
-      voice: "alloy",
+      model: "minimax/speech-2.8-turbo",
+      voice: "English_expressive_narrator",
       speed: 1
     ),
     realtime: SpeechRealtimeConfigDTO(provider: nil)
@@ -476,12 +476,12 @@ enum SpeechFixtures {
     ],
     .speech: [
       SpeechModelDTO(
-        id: "openai/gpt-4o-mini-tts-2025-12-15",
-        name: "GPT-4o mini TTS",
+        id: "minimax/speech-2.8-turbo",
+        name: "MiniMax: Speech 2.8 Turbo",
         kind: .speech,
-        voices: ["alloy", "nova"]
+        voices: ["English_expressive_narrator", "English_radiant_girl"]
       ),
-      SpeechModelDTO(id: "openai/tts-1", name: "TTS 1", kind: .speech, voices: ["alloy", "nova"]),
+      SpeechModelDTO(id: "openai/tts-1", name: "TTS 1", kind: .speech, voices: ["English_expressive_narrator", "English_radiant_girl"]),
       SpeechModelDTO(id: "openrouter/plain-tts", name: "Plain TTS", kind: .speech, voices: nil),
     ],
   ]

@@ -135,8 +135,8 @@ struct GatewayAPITests {
     )
     let audio = try await api.synthesize(text: "Ship the speech routes.")
 
-    #expect(config.config.tts.voice == "alloy")
-    #expect(models.map(\.id) == ["openai/whisper-large-v3", "openai/gpt-4o-mini-tts-2025-12-15"])
+    #expect(config.config.tts.voice == "English_expressive_narrator")
+    #expect(models.map(\.id) == ["openai/whisper-large-v3", "minimax/speech-2.8-turbo"])
     #expect(transcript.text == "Ship the speech routes.")
     // Raw bytes, byte for byte — `send` would have tried to JSON-decode these.
     #expect(audio == mpeg)

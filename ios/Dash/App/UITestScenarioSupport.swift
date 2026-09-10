@@ -1437,8 +1437,8 @@ extension AppDependenciesFactory {
       ),
       tts: SpeechTtsConfigDTO(
         provider: "openrouter",
-        model: "openai/gpt-4o-mini-tts-2025-12-15",
-        voice: "alloy",
+        model: "minimax/speech-2.8-turbo",
+        voice: "English_expressive_narrator",
         speed: 1
       ),
       realtime: SpeechRealtimeConfigDTO(provider: nil)
@@ -1497,10 +1497,10 @@ extension AppDependenciesFactory {
       case .speech:
         return [
           SpeechModelDTO(
-            id: "openai/gpt-4o-mini-tts-2025-12-15",
-            name: "GPT-4o mini TTS",
+            id: "minimax/speech-2.8-turbo",
+            name: "MiniMax: Speech 2.8 Turbo",
             kind: .speech,
-            voices: ["alloy", "nova"]
+            voices: ["English_expressive_narrator", "English_radiant_girl"]
           )
         ]
       }
