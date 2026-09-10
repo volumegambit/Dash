@@ -861,6 +861,27 @@ describe('ResumableChatTransport', () => {
     await vi.waitFor(() => expect(delivered).toHaveBeenCalledWith(unknownEvent));
   });
 
+  it('preserves frozen v1 reconnect behavior for protocol close 1002', async () => {
+    vi.useFakeTimers();
+    const first = new FakeSocket();
+    const resumed = new FakeSocket();
+    const sockets = [first, resumed];
+    const transport = makeTransport(() => sockets.shift() as FakeSocket, vi.fn());
+    await transport.subscribe(conversation, turnId, 4);
+
+    first.drop(1002, 'invalid_frame');
+    await vi.advanceTimersByTimeAsync(1_000);
+    resumed.open();
+
+    expect(resumed.sent[0]).toEqual({
+      type: 'resume',
+      id: turnId,
+      agentId: conversation.agentId,
+      conversationId: conversation.id,
+      sinceSeq: 4,
+    });
+  });
+
   it.each([4001, 4401])(
     'classifies auth close %i as repair-required and does not reconnect',
     async (closeCode) => {

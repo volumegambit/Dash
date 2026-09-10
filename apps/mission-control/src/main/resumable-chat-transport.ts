@@ -220,7 +220,7 @@ function reconnectDelay(attempt: number): number {
   return Math.min(30_000, 1_000 * 2 ** attempt);
 }
 
-function retryAfterMs(reason: string): number | undefined {
+export function parseChatRetryAfterMs(reason: string): number | undefined {
   try {
     const parsed = JSON.parse(reason) as unknown;
     if (isRecord(parsed)) {
@@ -530,7 +530,7 @@ export class ResumableChatTransport {
             'rate_limited',
             true,
             undefined,
-            retryAfterMs(reason),
+            parseChatRetryAfterMs(reason),
             closeCode,
           ),
         );

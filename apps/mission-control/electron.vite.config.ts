@@ -17,9 +17,11 @@ export default defineConfig({
     // any @dash package left external becomes a runtime `require()` that throws
     // ERR_PACKAGE_PATH_NOT_EXPORTED. Every @dash package the main process
     // imports directly must be bundled (excluded here): @dash/mc, @dash/management,
-    // and @dash/paths (imported by src/main/ipc.ts).
+    // @dash/mobile-contract-v2, and @dash/paths (imported by src/main/ipc.ts).
     plugins: [
-      externalizeDepsPlugin({ exclude: ['@dash/mc', '@dash/management', '@dash/paths', 'ws'] }),
+      externalizeDepsPlugin({
+        exclude: ['@dash/mc', '@dash/management', '@dash/mobile-contract-v2', '@dash/paths', 'ws'],
+      }),
     ],
     build: {
       rollupOptions: {
