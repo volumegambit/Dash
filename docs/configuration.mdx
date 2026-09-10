@@ -207,8 +207,10 @@ Provider API keys and messaging tokens are encrypted at rest. The gateway keeps 
 
 Speech-to-text (dictation) and text-to-speech (read aloud) configuration is persisted at
 `<dataDir>/speech.json`. Unset fields fall back to the defaults: OpenRouter's
-`openai/whisper-large-v3` for transcription, and OpenRouter's `openai/gpt-4o-mini-tts-2025-12-15`
-with the `alloy` voice for speech.
+`openai/whisper-large-v3` for transcription, and OpenRouter's `minimax/speech-2.8-turbo`
+with the `English_expressive_narrator` voice for speech. Voice ids are model-specific (for
+example `English_radiant_girl` for MiniMax, `af_heart` for Kokoro, `en-US-Harper:MAI-Voice-2` for
+MAI-Voice-2); an unknown voice is rejected by the provider.
 
 Speech doesn't introduce a new credential type — it reads the same `openrouter` provider API key
 your LLM configuration already stores. Add or update that credential and speech becomes available
