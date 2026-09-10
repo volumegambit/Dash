@@ -31,6 +31,7 @@ import {
 } from '@dash/plugins';
 import { createProjectsTools, openProjectsDb } from '@dash/projects';
 import { getBuiltinPluginsDir } from '@dash/skills';
+import { createSpeechService } from '@dash/speech';
 import { SwarmCoordinator, createStaticResolver } from '@dash/swarm';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -84,6 +85,7 @@ import {
   shouldReviewSkills,
 } from './skill-review-extract.js';
 import { createSkillReviewService } from './skill-review.js';
+import { SpeechConfigStore } from './speech-config-store.js';
 import {
   buildChildDelegationSection,
   isSubagentsEnabled,
@@ -204,6 +206,18 @@ async function main() {
   // Persistent model store. Lazily populated on first GET /models call;
   // invalidated automatically on credential changes by management-api.
   const modelsStore = new ModelsStore(dataDir);
+
+  // Persistent speech config (`<dataDir>/speech.json`) + the service that
+  // reads it lazily on every call, so a config PATCH or a credential change
+  // takes effect on the next request without restarting the gateway. The
+  // provider key resolver reads through the same credential store every
+  // other provider-keyed feature uses; management-api invalidates the
+  // service's availability/model cache on credential PUT/DELETE.
+  const speechConfigStore = new SpeechConfigStore(dataDir);
+  const speech = createSpeechService({
+    config: () => speechConfigStore.load(),
+    providerKeys: () => credentialStore.readProviderApiKeys(),
+  });
 
   // Durable event log for chat streaming events. Lives in
   // `<dataDir>/agent-stream-events.db`. Wired into chat-ws (append
@@ -1485,6 +1499,10 @@ async function main() {
     // disable/delete agent handlers. Same instance the chat coordinator attaches
     // turns to, so the panel reads live runs.
     swarmCoordinator,
+    // Mounts /speech/* on both namespaces and makes 'speech-v1' eligible in
+    // /health. See the speechConfigStore/speech construction above.
+    speech,
+    speechConfigStore,
     // Phones receive the chat capability, never the administrative bearer.
     // The management app accepts it only under `/mobile/v1`.
     mobileToken: flags.chatToken,
