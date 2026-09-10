@@ -85,10 +85,58 @@ private func validateFrameImages(_ images: [MessageImage]?) throws {
   try MobileV2ContractValidation.require(totalBytes <= 12 * 1_024 * 1_024, field: "images")
 }
 
+private func isValidFrameRFC3339(_ value: String) -> Bool {
+  let pattern =
+    #"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$"#
+  let fullRange = value.startIndex..<value.endIndex
+  guard value.range(of: pattern, options: .regularExpression) == fullRange else {
+    return false
+  }
+
+  let bytes = Array(value.utf8)
+  func decimal(_ range: Range<Int>) -> Int {
+    range.reduce(0) { result, index in result * 10 + Int(bytes[index] - 0x30) }
+  }
+  func daysInMonth(year: Int, month: Int) -> Int {
+    if month == 2 {
+      let isLeapYear = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+      return isLeapYear ? 29 : 28
+    }
+    return [4, 6, 9, 11].contains(month) ? 30 : 31
+  }
+
+  let year = decimal(0..<4)
+  let month = decimal(5..<7)
+  let day = decimal(8..<10)
+  let hour = decimal(11..<13)
+  let minute = decimal(14..<16)
+  let second = decimal(17..<19)
+  guard
+    (1...12).contains(month),
+    (1...daysInMonth(year: year, month: month)).contains(day),
+    hour <= 23,
+    minute <= 59,
+    second <= 60
+  else {
+    return false
+  }
+
+  let hasNumericOffset = bytes.last != 0x5A && bytes.last != 0x7A
+  let offsetSign = hasNumericOffset && bytes[bytes.count - 6] == 0x2D ? -1 : 1
+  let offsetHour = hasNumericOffset ? decimal((bytes.count - 5)..<(bytes.count - 3)) : 0
+  let offsetMinute = hasNumericOffset ? decimal((bytes.count - 2)..<bytes.count) : 0
+  guard offsetHour <= 23, offsetMinute <= 59 else { return false }
+  guard second == 60 else { return true }
+
+  let utcMinute = minute - offsetMinute * offsetSign
+  let utcHour = hour - offsetHour * offsetSign - (utcMinute < 0 ? 1 : 0)
+  return (utcHour == 23 || utcHour == -1) && (utcMinute == 59 || utcMinute == -1)
+}
+
 private func validateFrameLocation(_ location: ClientLocation?) throws {
   guard let location else { return }
   try MobileV2ContractValidation.require(
-    (1...200).contains(location.timezone.count),
+    (1...200).contains(location.timezone.unicodeScalars.count),
     field: "location.timezone"
   )
   try MobileV2ContractValidation.require(
@@ -96,11 +144,14 @@ private func validateFrameLocation(_ location: ClientLocation?) throws {
     field: "location.utcOffsetMinutes"
   )
   try MobileV2ContractValidation.require(
-    (1...200).contains(location.locale.count),
+    (1...200).contains(location.locale.unicodeScalars.count),
     field: "location.locale"
   )
   if let region = location.region {
-    try MobileV2ContractValidation.require(region.count == 2, field: "location.region")
+    try MobileV2ContractValidation.require(
+      region.unicodeScalars.count == 2,
+      field: "location.region"
+    )
   }
   if let precise = location.precise {
     try MobileV2ContractValidation.require(
@@ -118,13 +169,13 @@ private func validateFrameLocation(_ location: ClientLocation?) throws {
         && precise.accuracyMeters.rounded(.towardZero) == precise.accuracyMeters,
       field: "location.precise.accuracyMeters"
     )
-    try MobileV2ContractValidation.validateNonempty(
-      precise.capturedAt,
+    try MobileV2ContractValidation.require(
+      isValidFrameRFC3339(precise.capturedAt),
       field: "location.precise.capturedAt"
     )
     if let place = precise.place {
       try MobileV2ContractValidation.require(
-        (1...200).contains(place.count),
+        (1...200).contains(place.unicodeScalars.count),
         field: "location.precise.place"
       )
     }
@@ -923,7 +974,7 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
         v2Seq: base.v2Seq,
         runId: base.runId,
         segmentTurnId: base.segmentTurnId,
-        event: try container.decode(AgentEvent.self, forKey: .event)
+        event: try container.decode(MobileV2StrictAgentEvent.self, forKey: .event).value
       )
     case "done":
       try validateFrameKeys(
@@ -1134,7 +1185,7 @@ enum MobileV2SequencedFrame: Codable, Hashable, Sendable {
         segmentTurnId: segmentTurnId
       )
       try container.encode("event", forKey: .type)
-      try container.encode(event, forKey: .event)
+      try container.encode(MobileV2StrictAgentEvent(event), forKey: .event)
     case let .done(id, conversationId, v2Seq, runId, segmentTurnId, outcome):
       try encodeRunFrameBase(
         &container,

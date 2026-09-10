@@ -32,6 +32,38 @@ struct MobileV2StrictImage: Codable {
   }
 }
 
+struct MobileV2StrictAgentEvent: Codable {
+  let value: AgentEvent
+
+  init(_ value: AgentEvent) {
+    self.value = value
+  }
+
+  init(from decoder: Decoder) throws {
+    let raw = try JSONValue(from: decoder)
+    try Self.validateType(in: raw)
+    let data = try ContractCoding.encoder().encode(raw)
+    value = try ContractCoding.decoder().decode(AgentEvent.self, from: data)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    let data = try ContractCoding.encoder().encode(value)
+    let raw = try ContractCoding.decoder().decode(JSONValue.self, from: data)
+    try Self.validateType(in: raw)
+    try raw.encode(to: encoder)
+  }
+
+  private static func validateType(in raw: JSONValue) throws {
+    guard
+      let object = raw.objectValue,
+      case let .string(type)? = object["type"],
+      type.isEmpty == false
+    else {
+      throw MobileV2ContractValidationError.invalidField("event.type")
+    }
+  }
+}
+
 struct MobileV2StrictPreciseLocation: Codable {
   let value: PreciseLocation
 
@@ -168,7 +200,12 @@ struct MobileV2StrictConversationContent: Codable {
         allowed: Set([CodingKeys.type, .events].map(\.rawValue)),
         required: Set([CodingKeys.type, .events].map(\.rawValue))
       )
-      value = .assistant(events: try container.decode([AgentEvent].self, forKey: .events))
+      value = .assistant(
+        events: try container.decode(
+          [MobileV2StrictAgentEvent].self,
+          forKey: .events
+        ).map(\.value)
+      )
     }
   }
 
@@ -187,7 +224,7 @@ struct MobileV2StrictConversationContent: Codable {
       }
     case let .assistant(events):
       try container.encode(Kind.assistant, forKey: .type)
-      try container.encode(events, forKey: .events)
+      try container.encode(events.map(MobileV2StrictAgentEvent.init), forKey: .events)
     }
   }
 }

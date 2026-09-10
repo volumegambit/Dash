@@ -217,6 +217,175 @@ struct MobileV2ContractFixtureTests {
     }
   }
 
+  @Test("v2 precise capturedAt decoding follows the locked RFC 3339 rules")
+  func preciseCapturedAtDecoding() throws {
+    for capturedAt in [
+      #""2026-09-06T01:02:03Z""#,
+      #""2026-09-06t01:02:03.123z""#,
+      #""1990-12-31T23:59:60Z""#,
+    ] {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2WsClientFrame.self,
+        from: chatSend(location: clientLocation(capturedAt: capturedAt))
+      )
+    }
+
+    for capturedAt in [
+      #""2026-02-30T01:02:03Z""#,
+      #""2026-09-06 01:02:03Z""#,
+      #""2026-09-06T01:02:60Z""#,
+      #""2026-09-06T01:02:03Z\n""#,
+      #""not-a-date""#,
+    ] {
+      #expect(throws: MobileV2ContractValidationError.self) {
+        _ = try ContractCoding.decoder().decode(
+          MobileV2WsClientFrame.self,
+          from: chatSend(location: clientLocation(capturedAt: capturedAt))
+        )
+      }
+    }
+  }
+
+  @Test("v2 precise capturedAt encoding rejects invalid RFC 3339")
+  func preciseCapturedAtEncoding() {
+    let frame = MobileV2WsClientFrame.message(
+      id: "turn-01",
+      agentId: "agent-01",
+      channelId: "mobile",
+      conversationId: "00000000-0000-4000-8000-000000000001",
+      text: "Where am I?",
+      location: ClientLocation(
+        timezone: "Asia/Singapore",
+        utcOffsetMinutes: 480,
+        locale: "en-SG",
+        region: "SG",
+        precise: PreciseLocation(
+          latitude: 1.2966,
+          longitude: 103.7764,
+          accuracyMeters: 13,
+          capturedAt: "not-a-date",
+          place: "Singapore"
+        )
+      ),
+      images: nil,
+      resumable: true
+    )
+
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.encoder().encode(frame)
+    }
+  }
+
+  @Test("v2 nested AgentEvent decoding rejects an empty type")
+  func nestedAgentEventTypeDecoding() {
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2ConversationMessage.self,
+        from: conversationMessage(
+          content: #"{"type":"assistant","events":[{"type":""}]}"#
+        )
+      )
+    }
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2WsServerFrame.self,
+        from: sequencedEvent(event: #"{"type":""}"#)
+      )
+    }
+  }
+
+  @Test("v2 nested AgentEvent encoding rejects an empty type")
+  func nestedAgentEventTypeEncoding() {
+    let event = AgentEvent.unknown(
+      type: "",
+      raw: .object(["type": .string("")])
+    )
+    let timestamp = Date(timeIntervalSince1970: 0)
+    let message = MobileV2ConversationMessage(
+      id: "00000000-0000-4000-8000-000000000111",
+      conversationId: "00000000-0000-4000-8000-000000000101",
+      turnId: "turn-01",
+      ordinal: 1,
+      role: .assistant,
+      status: .completed,
+      content: .assistant(events: [event]),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      runId: "turn-01",
+      segmentIndex: 0,
+      deliveryKind: .normal,
+      deliveryStatus: nil
+    )
+    let frame = MobileV2WsServerFrame.sequenced(
+      .event(
+        id: "00000000-0000-4000-8000-000000000003",
+        conversationId: "00000000-0000-4000-8000-000000000001",
+        v2Seq: 2,
+        runId: "00000000-0000-4000-8000-000000000003",
+        segmentTurnId: "00000000-0000-4000-8000-000000000003",
+        event: event
+      )
+    )
+
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.encoder().encode(message)
+    }
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.encoder().encode(frame)
+    }
+  }
+
+  @Test("v2 nested AgentEvent preserves unknown nonempty types")
+  func nestedUnknownAgentEventRoundTrips() throws {
+    let rawEvent = #"{"type":"future_event","future":{"value":1}}"#
+    let messageSource = conversationMessage(
+      content: #"{"type":"assistant","events":["# + rawEvent + "]}"
+    )
+    let message = try ContractCoding.decoder().decode(
+      MobileV2ConversationMessage.self,
+      from: messageSource
+    )
+    #expect(
+      try canonicalJSON(ContractCoding.encoder().encode(message))
+        == canonicalJSON(messageSource)
+    )
+
+    let frameSource = sequencedEvent(event: rawEvent)
+    let frame = try ContractCoding.decoder().decode(
+      MobileV2WsServerFrame.self,
+      from: frameSource
+    )
+    #expect(
+      try canonicalJSON(ContractCoding.encoder().encode(frame))
+        == canonicalJSON(frameSource)
+    )
+  }
+
+  @Test("v2 location string bounds count Unicode code points")
+  func locationStringCodePointBounds() throws {
+    let exactBoundary = String(repeating: "e\u{301}", count: 100)
+    let overBoundary = exactBoundary + "a"
+    let twoCodePointRegion = "e\u{301}"
+
+    _ = try ContractCoding.decoder().decode(
+      MobileV2WsClientFrame.self,
+      from: chatSend(
+        location: clientLocation(
+          timezone: try jsonString(exactBoundary),
+          region: try jsonString(twoCodePointRegion)
+        )
+      )
+    )
+    #expect(throws: MobileV2ContractValidationError.self) {
+      _ = try ContractCoding.decoder().decode(
+        MobileV2WsClientFrame.self,
+        from: chatSend(
+          location: clientLocation(timezone: try jsonString(overBoundary))
+        )
+      )
+    }
+  }
+
   @Test("v2 nested contract objects reject extra keys")
   func nestedObjectsRejectExtraKeys() throws {
     let clientDocuments = [
@@ -315,6 +484,8 @@ struct MobileV2ContractFixtureTests {
 
   private func clientLocation(
     accuracy: String = "13",
+    capturedAt: String = #""2026-09-06T10:11:02Z""#,
+    timezone: String = #""Asia/Singapore""#,
     region: String = #""SG""#,
     precise: String? = nil,
     place: String = #""Singapore""#,
@@ -324,17 +495,33 @@ struct MobileV2ContractFixtureTests {
     let preciseValue = precise ??
       #"{"latitude":1.2966,"longitude":103.7764,"accuracyMeters":"#
       + accuracy
-      + #","capturedAt":"2026-09-06T10:11:02Z","place":"#
+      + #","capturedAt":"#
+      + capturedAt
+      + #","place":"#
       + place
       + preciseExtra
       + "}"
     return
-      #"{"timezone":"Asia/Singapore","utcOffsetMinutes":480,"locale":"en-SG","region":"#
+      #"{"timezone":"#
+      + timezone
+      + #","utcOffsetMinutes":480,"locale":"en-SG","region":"#
       + region
       + #","precise":"#
       + preciseValue
       + extra
       + "}"
+  }
+
+  private func sequencedEvent(event: String) -> Data {
+    Data(
+      """
+      {"type":"event","id":"00000000-0000-4000-8000-000000000003","conversationId":"00000000-0000-4000-8000-000000000001","runId":"00000000-0000-4000-8000-000000000003","segmentTurnId":"00000000-0000-4000-8000-000000000003","v2Seq":2,"event":\(event)}
+      """.utf8
+    )
+  }
+
+  private func jsonString(_ value: String) throws -> String {
+    String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
   }
 
   private func conversationMessage(content: String) -> Data {
