@@ -66,15 +66,23 @@ struct LiveGatewayEnvironment: Sendable {
     )
     let session = GatewayURLSessionFactory.make(profile: endpoint.profile)
     let transport = HTTPTransport(endpoint: endpoint, secrets: secrets, session: session)
-    let api = GatewayAPI(transport: transport)
-    let sse = SSEClient(endpoint: endpoint, secrets: secrets, session: session)
+    let selection = MobileProtocolSelection.v1
+    let api = GatewayAPI(transport: transport, selection: selection)
+    let sse = SSEClient(
+      endpoint: endpoint,
+      secrets: secrets,
+      session: session,
+      selection: selection
+    )
     let chat = ChatConnection(
       endpoint: endpoint,
+      selection: selection,
       session: URLSessionWebSocketSession(session: session)
     )
     let persistence = try store ?? PersistenceStore.inMemory()
     let sync = ConversationSyncEngine(
       gatewayID: gatewayID,
+      mobileProtocol: selection,
       store: persistence,
       api: api,
       invalidations: SSEInvalidationSource(client: sse),

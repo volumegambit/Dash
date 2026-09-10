@@ -507,7 +507,8 @@ struct ConversationListServiceTests {
         secrets: secrets,
         session: testURLSession(),
         clock: TestAppClock(now: Date(timeIntervalSince1970: 0))
-      )
+      ),
+      selection: .v1
     )
   }
 

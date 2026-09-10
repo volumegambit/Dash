@@ -15,6 +15,7 @@ extension ConversationSyncEngine: AppSyncing {}
 @Observable
 final class AppModel {
   var selectedProfile: ConnectionProfileSnapshot?
+  private(set) var mobileProtocol: MobileProtocolSelection?
   var connectionState: GatewayConnectionState = .connecting
   var selectedTab: AppTab = .conversations
   var conversationPath: [ConversationRoute] = []
@@ -62,6 +63,7 @@ final class AppModel {
   private struct PreparedActivation {
     let engine: any AppSyncing
     let snapshots: AsyncStream<SyncSnapshot>
+    let mobileProtocol: MobileProtocolSelection
   }
 
   private struct ChatLifecycleState: Equatable {
@@ -504,15 +506,28 @@ final class AppModel {
     guard
       let profile = selectedProfile,
       let engine = syncEngine,
+      let mobileProtocol,
       isDisconnecting == false
     else { return }
     let epoch = activeEpoch
     markCachedConnection(.connecting)
     do {
-      try await dependencies.verifyProfile(profile)
-      guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+      let negotiation = try await dependencies.negotiateMobileProtocol(profile)
+      guard
+        activeEpoch == epoch,
+        sameEngine(syncEngine, engine),
+        self.mobileProtocol == mobileProtocol
+      else { return }
+      try validate(negotiation: negotiation, for: profile)
+      guard negotiation.selection == mobileProtocol else {
+        throw GatewayError.updateRequired
+      }
       await engine.bootstrap()
-      guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
+      guard
+        activeEpoch == epoch,
+        sameEngine(syncEngine, engine),
+        self.mobileProtocol == mobileProtocol
+      else { return }
     } catch {
       guard activeEpoch == epoch, sameEngine(syncEngine, engine) else { return }
       if let gatewayError = error as? GatewayError {
@@ -538,7 +553,11 @@ final class AppModel {
   }
 
   func makeChatFeature(_ conversation: ConversationSummaryDTO) async -> ChatFeature? {
-    guard let profile = selectedProfile, conversation.status != .deleted else { return nil }
+    guard
+      let profile = selectedProfile,
+      let mobileProtocol,
+      conversation.status != .deleted
+    else { return nil }
     let scope = chatScope(gatewayID: profile.gatewayID, conversationID: conversation.id)
     let lifecycle = chatLifecycleByScope[scope] ?? ChatLifecycleState()
     guard lifecycle.isRemoved == false else { return nil }
@@ -548,6 +567,7 @@ final class AppModel {
       guard
         activeEpoch == epoch,
         selectedProfile == profile,
+        self.mobileProtocol == mobileProtocol,
         (chatLifecycleByScope[scope] ?? ChatLifecycleState()) == lifecycle
       else { return nil }
     }
@@ -556,12 +576,15 @@ final class AppModel {
       return feature
     }
 
-    guard let feature = await dependencies.makeChatFeature(profile, conversation) else {
+    guard
+      let feature = await dependencies.makeChatFeature(profile, conversation, mobileProtocol)
+    else {
       return nil
     }
     guard
       activeEpoch == epoch,
       selectedProfile == profile,
+      self.mobileProtocol == mobileProtocol,
       (chatLifecycleByScope[scope] ?? ChatLifecycleState()) == lifecycle
     else {
       await feature.shutdown()
@@ -572,6 +595,7 @@ final class AppModel {
       guard
         activeEpoch == epoch,
         selectedProfile == profile,
+        self.mobileProtocol == mobileProtocol,
         (chatLifecycleByScope[scope] ?? ChatLifecycleState()) == lifecycle,
         chatFeatures[scope] === existing
       else { return nil }
@@ -594,6 +618,7 @@ final class AppModel {
         let feature,
         self.activeEpoch == epoch,
         self.selectedProfile == profile,
+        self.mobileProtocol == mobileProtocol,
         self.chatFeatures[scope] === feature
       else { return .ignored }
       return await self.applyConversationLifecycleChanges(
@@ -715,7 +740,11 @@ final class AppModel {
     _ profile: ConnectionProfileSnapshot,
     epoch: UInt64
   ) async throws -> PreparedActivation? {
-    let engine = try await dependencies.makeSyncEngine(profile)
+    let negotiation = try await dependencies.negotiateMobileProtocol(profile)
+    guard isCurrent(epoch) else { return nil }
+    try validate(negotiation: negotiation, for: profile)
+
+    let engine = try await dependencies.makeSyncEngine(profile, negotiation.selection)
     guard isCurrent(epoch) else {
       await engine.shutdown()
       return nil
@@ -727,7 +756,11 @@ final class AppModel {
       return nil
     }
 
-    return PreparedActivation(engine: engine, snapshots: snapshots)
+    return PreparedActivation(
+      engine: engine,
+      snapshots: snapshots,
+      mobileProtocol: negotiation.selection
+    )
   }
 
   private func startPreparedEngine(_ engine: any AppSyncing, activeEpoch: UInt64) async {
@@ -833,7 +866,11 @@ final class AppModel {
     activeEngineSuspended = false
     activeEngineSuspensionStarted = false
     selectedProfile = profile
-    let conversationFeature = dependencies.makeConversationListFeature(profile)
+    mobileProtocol = prepared.mobileProtocol
+    let conversationFeature = dependencies.makeConversationListFeature(
+      profile,
+      prepared.mobileProtocol
+    )
     conversationFeature?.setGatewayErrorHandler { [weak self, weak conversationFeature] error in
       guard
         let self,
@@ -860,7 +897,7 @@ final class AppModel {
       )
     }
     conversationListFeature = conversationFeature
-    let agentsFeature = dependencies.makeAgentsFeature(profile)
+    let agentsFeature = dependencies.makeAgentsFeature(profile, prepared.mobileProtocol)
     agentsFeature?.setGatewayErrorHandler { [weak self, weak agentsFeature] error in
       guard
         let self,
@@ -946,6 +983,7 @@ final class AppModel {
     snapshotTask?.cancel()
     snapshotTask = nil
     syncEngine = nil
+    mobileProtocol = nil
     activeEngineBootstrapped = false
     activeEngineLifecycleStarted = false
     activeEngineNeedsForegroundResume = false
@@ -1024,7 +1062,7 @@ final class AppModel {
       state = .rateLimited(retryAt: now.addingTimeInterval(max(0, seconds)))
     case .gatewayOffline:
       state = .gatewayOffline
-    case .updateRequired, .capabilityRequired:
+    case .updateRequired, .capabilityRequired, .mobileVersionCapabilityRequired:
       state = .updateRequired
     case .transport, .server:
       state = .offline
@@ -1377,6 +1415,7 @@ final class AppModel {
   private func resetToConnect() {
     _ = detachActiveEngine(clearFeatures: true)
     selectedProfile = nil
+    mobileProtocol = nil
     connectionState = .connecting
     selectedTab = .conversations
     conversationPath.removeAll()
@@ -1385,5 +1424,23 @@ final class AppModel {
     splitAgentSelection = nil
     snapshot = nil
     banner = nil
+  }
+
+  private func validate(
+    negotiation: MobileProtocolNegotiation,
+    for profile: ConnectionProfileSnapshot
+  ) throws {
+    guard
+      profile.gatewayID.isEmpty == false,
+      profile.profile.gatewayId == profile.gatewayID,
+      let pinnedPublicKey = profile.profile.publicKey,
+      pinnedPublicKey.isEmpty == false,
+      negotiation.identity.gatewayId.isEmpty == false,
+      negotiation.identity.publicKey.isEmpty == false,
+      negotiation.identity.gatewayId == profile.gatewayID,
+      negotiation.identity.publicKey == pinnedPublicKey
+    else {
+      throw GatewayProfileVerificationError.identityMismatch
+    }
   }
 }

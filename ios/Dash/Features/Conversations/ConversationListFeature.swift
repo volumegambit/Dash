@@ -1822,7 +1822,7 @@ final class ConversationListFeature {
       connection = .offline
     case .gatewayOffline:
       connection = .gatewayOffline
-    case .updateRequired, .capabilityRequired:
+    case .updateRequired, .capabilityRequired, .mobileVersionCapabilityRequired:
       connection = .updateRequired
     case .transport, .server:
       connection = .offline

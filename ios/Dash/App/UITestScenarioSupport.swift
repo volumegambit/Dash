@@ -970,10 +970,18 @@ extension AppDependenciesFactory {
         loadProfile: {
           scenario.startsPaired ? UITestScenarioFixtures.profile : nil
         },
-        makeSyncEngine: { _ in
+        negotiateMobileProtocol: { profile in
+          MobileProtocolNegotiation(
+            selection: .v1,
+            identity: GatewayIdentityDTO(
+              gatewayId: profile.gatewayID,
+              publicKey: profile.profile.publicKey ?? ""
+            )
+          )
+        },
+        makeSyncEngine: { _, _ in
           UITestSyncEngine(snapshot: await store.syncSnapshot())
         },
-        verifyProfile: { _ in },
         rememberProfile: { _ in },
         deleteProfileSecrets: { profile in
           await keychain.delete(for: profile.id)
@@ -982,7 +990,7 @@ extension AppDependenciesFactory {
           await store.clear()
         },
         forgetProfileSelection: { _ in },
-        makeConversationListFeature: { profile in
+        makeConversationListFeature: { profile, _ in
           ConversationListFeature(
             gatewayID: profile.gatewayID,
             service: store,
@@ -991,13 +999,14 @@ extension AppDependenciesFactory {
             lastUsedAgentStore: lastUsedAgentStore
           )
         },
-        makeAgentsFeature: { profile in
+        makeAgentsFeature: { profile, _ in
           AgentsFeature(gatewayID: profile.gatewayID, service: store)
         },
-        makeChatFeature: { profile, conversation in
+        makeChatFeature: { profile, conversation, selection in
           let source = UITestIdentifierSource(values: ["ui-turn", "ui-local-user"])
           return ChatFeature(
             gatewayID: profile.gatewayID,
+            mobileProtocol: selection,
             conversation: conversation,
             persistence: store,
             synchronizer: store,

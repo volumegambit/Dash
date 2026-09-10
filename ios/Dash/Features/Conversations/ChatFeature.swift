@@ -648,6 +648,7 @@ final class ChatFeature {
   }
 
   @ObservationIgnored private let gatewayID: String
+  @ObservationIgnored let mobileProtocol: MobileProtocolSelection
   @ObservationIgnored private let persistence: any ChatFeaturePersisting
   @ObservationIgnored private let synchronizer: any ChatFeatureSynchronizing
   @ObservationIgnored private let transport: any ChatFeatureTransporting
@@ -706,6 +707,7 @@ final class ChatFeature {
 
   init(
     gatewayID: String,
+    mobileProtocol: MobileProtocolSelection,
     conversation: ConversationSummaryDTO,
     persistence: any ChatFeaturePersisting,
     synchronizer: any ChatFeatureSynchronizing,
@@ -718,6 +720,7 @@ final class ChatFeature {
     makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
   ) {
     self.gatewayID = gatewayID
+    self.mobileProtocol = mobileProtocol
     self.persistence = persistence
     self.synchronizer = synchronizer
     self.transport = transport
@@ -2208,7 +2211,7 @@ final class ChatFeature {
     case .gatewayOffline:
       connection = .gatewayOffline
       isAuthoritative = false
-    case .updateRequired, .capabilityRequired:
+    case .updateRequired, .capabilityRequired, .mobileVersionCapabilityRequired:
       connection = .updateRequired
       isAuthoritative = false
     case .transport:
@@ -2539,7 +2542,8 @@ final class ChatFeature {
     case .transport, .mutationOutcomeUnknown:
       return true
     case .unauthorized, .rateLimited, .gatewayOffline, .notFound, .validation,
-      .revisionConflict, .conversationBusy, .capabilityRequired, .updateRequired, .server:
+      .revisionConflict, .conversationBusy, .capabilityRequired,
+      .mobileVersionCapabilityRequired, .updateRequired, .server:
       return false
     }
   }

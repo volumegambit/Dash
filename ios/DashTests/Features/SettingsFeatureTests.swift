@@ -185,6 +185,21 @@ struct SettingsFeatureTests {
     #expect(makeFeature(connection: .repairRequired).connectionText == "Session no longer authorized")
   }
 
+  @Test("mobile-version capability failures use update guidance")
+  func mobileVersionCapabilityFailureUsesUpdateGuidance() async {
+    let feature = SettingsFeature(
+      profile: profile(),
+      connection: .offline,
+      lastSuccessfulSyncAt: nil,
+      reconnectAction: { throw GatewayError.mobileVersionCapabilityRequired },
+      disconnectAction: {}
+    )
+
+    await feature.reconnect()
+
+    #expect(feature.error == "Update Dash on this device and the gateway, then try again.")
+  }
+
   @Test("disconnect does nothing before confirmation")
   func disconnectRequiresConfirmation() async {
     let actions = SettingsActionRecorder()
@@ -227,8 +242,8 @@ struct SettingsFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in SettingsSyncEngine() },
-        verifyProfile: { _ in try await lifecycle.verify() },
+        negotiateMobileProtocol: { value in try await lifecycle.negotiate(value) },
+        makeSyncEngine: { _, _ in SettingsSyncEngine() },
         deleteProfileSecrets: { _ in await lifecycle.deleteSecrets() }
       )
     )
@@ -288,11 +303,12 @@ struct SettingsFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        verifyProfile: { value in
+        negotiateMobileProtocol: { value in
           #expect(value == profile)
           await events.record(.verify)
-        }
+          return v1Negotiation(for: value)
+        },
+        makeSyncEngine: { _, _ in engine }
       )
     )
     await model.start()
@@ -316,12 +332,13 @@ struct SettingsFeatureTests {
   @Test("AppModel reconnect never leaves an unexpected verifier failure connecting forever")
   func appModelReconnectUnexpectedGatewayFailureIsOffline() async throws {
     let profile = profile()
+    let negotiator = FailSecondSettingsNegotiator()
     let model = AppModel(
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in SettingsSyncEngine() },
-        verifyProfile: { _ in throw GatewayError.notFound }
+        negotiateMobileProtocol: { value in try await negotiator.negotiate(value) },
+        makeSyncEngine: { _, _ in SettingsSyncEngine() }
       )
     )
     await model.start()
@@ -349,7 +366,8 @@ struct SettingsFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in SettingsSyncEngine() },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in SettingsSyncEngine() },
         deleteProfileSecrets: { _ in throw SettingsTestError.failed }
       )
     )
@@ -371,7 +389,8 @@ struct SettingsFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in SettingsSyncEngine() },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in SettingsSyncEngine() },
         clearProfileData: { _ in throw SettingsTestError.failed }
       )
     )
@@ -388,7 +407,7 @@ struct SettingsFeatureTests {
     )
   }
 
-  @Test("profile verifier checks health capabilities and pinned identity before shutdown")
+  @Test("profile verifier returns the negotiated selection after checking pinned identity")
   func profileVerifierSuccess() async throws {
     let gateway = SettingsGatewayStub(
       identity: GatewayIdentityDTO(
@@ -398,12 +417,13 @@ struct SettingsFeatureTests {
     )
     let verifier = GatewayProfileVerifier { _, _ in gateway }
 
-    try await verifier.verify(profile: profile(), secrets: secrets())
+    let negotiation = try await verifier.verify(profile: profile(), secrets: secrets())
 
-    #expect(await gateway.calls == [.health, .identity, .shutdown])
+    #expect(negotiation.selection == .v1)
+    #expect(await gateway.calls == [.health, .identity])
   }
 
-  @Test("profile verifier rejects missing capabilities and always shuts down")
+  @Test("profile verifier propagates missing capabilities")
   func profileVerifierCapabilityFailure() async {
     let gateway = SettingsGatewayStub(capabilities: [.conversationSyncV1])
     let verifier = GatewayProfileVerifier { _, _ in gateway }
@@ -412,7 +432,7 @@ struct SettingsFeatureTests {
       try await verifier.verify(profile: profile(), secrets: secrets())
     }
 
-    #expect(await gateway.calls == [.health, .shutdown])
+    #expect(await gateway.calls == [.health])
   }
 
   @Test("profile verifier rejects an unhealthy gateway before identity")
@@ -424,7 +444,7 @@ struct SettingsFeatureTests {
       try await verifier.verify(profile: profile(), secrets: secrets())
     }
 
-    #expect(await gateway.calls == [.health, .shutdown])
+    #expect(await gateway.calls == [.health])
   }
 
   @Test("profile verifier rejects a newer mobile API before identity")
@@ -436,7 +456,7 @@ struct SettingsFeatureTests {
       try await verifier.verify(profile: profile(), secrets: secrets())
     }
 
-    #expect(await gateway.calls == [.health, .shutdown])
+    #expect(await gateway.calls == [.health])
   }
 
   @Test("profile verifier rejects a changed gateway identity")
@@ -450,7 +470,7 @@ struct SettingsFeatureTests {
       try await verifier.verify(profile: profile(), secrets: secrets())
     }
 
-    #expect(await gateway.calls == [.health, .identity, .shutdown])
+    #expect(await gateway.calls == [.health, .identity])
   }
 
   @Test("profile verifier rejects an empty stored public-key pin")
@@ -480,12 +500,12 @@ struct SettingsFeatureTests {
     await gateway.releaseHealth()
 
     do {
-      try await operation.value
+      _ = try await operation.value
       Issue.record("Expected profile verification to preserve cancellation")
     } catch {
       #expect(error is CancellationError)
     }
-    #expect(await gateway.calls == [.health, .shutdown])
+    #expect(await gateway.calls == [.health])
   }
 
   private func makeFeature(
@@ -605,8 +625,13 @@ private actor CancellableSettingsLifecycle {
 
   private let gate = TestGate()
   private(set) var events: [Event] = []
+  private var negotiationCount = 0
 
-  func verify() async throws {
+  func negotiate(_ profile: ConnectionProfileSnapshot) async throws
+    -> MobileProtocolNegotiation
+  {
+    negotiationCount += 1
+    guard negotiationCount > 1 else { return v1Negotiation(for: profile) }
     events.append(.verifyStarted)
     try await withTaskCancellationHandler {
       await gate.wait()
@@ -614,6 +639,7 @@ private actor CancellableSettingsLifecycle {
     } onCancel: {
       Task { await self.cancelVerification() }
     }
+    return v1Negotiation(for: profile)
   }
 
   func deleteSecrets() {
@@ -631,6 +657,16 @@ private actor CancellableSettingsLifecycle {
   private func cancelVerification() async {
     events.append(.verifyCancelled)
     await gate.release()
+  }
+}
+
+private actor FailSecondSettingsNegotiator {
+  private var callCount = 0
+
+  func negotiate(_ profile: ConnectionProfileSnapshot) throws -> MobileProtocolNegotiation {
+    callCount += 1
+    guard callCount == 1 else { throw GatewayError.notFound }
+    return v1Negotiation(for: profile)
   }
 }
 
@@ -675,11 +711,10 @@ private enum SettingsTestError: Error {
   case failed
 }
 
-private actor SettingsGatewayStub: GatewayProfileChecking {
+private actor SettingsGatewayStub: MobileProtocolNegotiating {
   enum Call: Equatable, Sendable {
     case health
     case identity
-    case shutdown
   }
 
   private let status: String
@@ -703,63 +738,37 @@ private actor SettingsGatewayStub: GatewayProfileChecking {
     identityValue = identity
   }
 
-  func health() -> HealthResponse {
+  func negotiate() throws -> MobileProtocolNegotiation {
     calls.append(.health)
-    return HealthResponse(
-      status: status,
-      startedAt: Date(timeIntervalSince1970: 1),
-      pid: 1,
-      agents: 1,
-      channels: 0,
-      apiVersion: apiVersion,
-      capabilities: capabilities
-    )
-  }
-
-  func identity() -> GatewayIdentityDTO {
+    guard status == "healthy" else { throw GatewayError.gatewayOffline }
+    guard apiVersion == 1 else { throw GatewayError.updateRequired }
+    let values = Set(capabilities)
+    guard values.contains(.conversationSyncV1), values.contains(.chatResumeV1) else {
+      throw GatewayError.capabilityRequired
+    }
     calls.append(.identity)
-    return identityValue
-  }
-
-  func shutdown() {
-    calls.append(.shutdown)
+    return MobileProtocolNegotiation(selection: .v1, identity: identityValue)
   }
 }
 
-private actor CancellationIgnoringSettingsGateway: GatewayProfileChecking {
+private actor CancellationIgnoringSettingsGateway: MobileProtocolNegotiating {
   enum Call: Equatable, Sendable {
     case health
-    case identity
-    case shutdown
   }
 
   private let healthGate = TestGate()
   private(set) var calls: [Call] = []
 
-  func health() async -> HealthResponse {
+  func negotiate() async -> MobileProtocolNegotiation {
     calls.append(.health)
     await healthGate.wait()
-    return HealthResponse(
-      status: "healthy",
-      startedAt: Date(timeIntervalSince1970: 1),
-      pid: 1,
-      agents: 1,
-      channels: 0,
-      apiVersion: 1,
-      capabilities: [.conversationSyncV1, .chatResumeV1]
+    return MobileProtocolNegotiation(
+      selection: .v1,
+      identity: GatewayIdentityDTO(
+        gatewayId: "gateway-settings",
+        publicKey: "abcdef-public-key-uvwxyz"
+      )
     )
-  }
-
-  func identity() -> GatewayIdentityDTO {
-    calls.append(.identity)
-    return GatewayIdentityDTO(
-      gatewayId: "gateway-settings",
-      publicKey: "abcdef-public-key-uvwxyz"
-    )
-  }
-
-  func shutdown() {
-    calls.append(.shutdown)
   }
 
   func waitUntilCheckingHealth() async {

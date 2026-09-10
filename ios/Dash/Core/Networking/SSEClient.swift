@@ -9,27 +9,34 @@ actor SSEClient {
   private let endpoint: ConnectionEndpoint
   private let secrets: ConnectionSecrets
   private let session: URLSession
+  private let selection: MobileProtocolSelection
 
   init(
     endpoint: ConnectionEndpoint,
     secrets: ConnectionSecrets,
-    session: URLSession = .shared
+    session: URLSession = .shared,
+    selection: MobileProtocolSelection
   ) {
     self.endpoint = endpoint
     self.secrets = secrets
     self.session = session
+    self.selection = selection
   }
 
   func events() -> AsyncThrowingStream<GatewayInvalidationEvent, Error> {
     let endpoint = endpoint
     let secrets = secrets
     let session = session
+    let selection = selection
     return AsyncThrowingStream { continuation in
       let worker = Task {
         do {
           try endpoint.requireTrustedTransport()
           var request = URLRequest(
-            url: try endpoint.managementURL(path: "/mobile/v1/events", query: [])
+            url: try endpoint.managementURL(
+              path: "/mobile/\(selection.pathVersion)/events",
+              query: []
+            )
           )
           request.httpMethod = "GET"
           request.setValue("text/event-stream", forHTTPHeaderField: "Accept")

@@ -48,10 +48,10 @@ import Testing
       let dependencies = try AppDependencies.uiTesting(scenario: .pairedOnline)
       let profile = try #require(try await dependencies.loadProfile())
 
-      #expect(dependencies.makeConversationListFeature(profile) != nil)
-      #expect(dependencies.makeAgentsFeature(profile) != nil)
+      #expect(dependencies.makeConversationListFeature(profile, .v1) != nil)
+      #expect(dependencies.makeAgentsFeature(profile, .v1) != nil)
       let conversation = UITestScenarioFixtures.sharedConversation
-      #expect(await dependencies.makeChatFeature(profile, conversation) != nil)
+      #expect(await dependencies.makeChatFeature(profile, conversation, .v1) != nil)
     }
 
     @Test("active recovery availability is derived again before discard")
@@ -59,7 +59,7 @@ import Testing
       let scenario = try #require(UITestScenario(rawValue: "active-recovery"))
       let dependencies = try AppDependencies.uiTesting(scenario: scenario)
       let profile = try #require(try await dependencies.loadProfile())
-      let feature = try #require(dependencies.makeConversationListFeature(profile))
+      let feature = try #require(dependencies.makeConversationListFeature(profile, .v1))
       feature.consume(
         SyncSnapshot(
           connection: .online,
@@ -183,11 +183,12 @@ import Testing
     func activeRecoveryDiscardUpdatesMountedChat() async throws {
       let dependencies = try AppDependencies.uiTesting(scenario: .activeRecovery)
       let profile = try #require(try await dependencies.loadProfile())
-      let listFeature = try #require(dependencies.makeConversationListFeature(profile))
+      let listFeature = try #require(dependencies.makeConversationListFeature(profile, .v1))
       let chatFeature = try #require(
         await dependencies.makeChatFeature(
           profile,
-          UITestScenarioFixtures.sharedConversation
+          UITestScenarioFixtures.sharedConversation,
+          .v1
         )
       )
       listFeature.consume(

@@ -3,6 +3,16 @@ import Network
 
 @testable import Dash
 
+func v1Negotiation(for profile: ConnectionProfileSnapshot) -> MobileProtocolNegotiation {
+  MobileProtocolNegotiation(
+    selection: .v1,
+    identity: GatewayIdentityDTO(
+      gatewayId: profile.gatewayID,
+      publicKey: profile.profile.publicKey ?? ""
+    )
+  )
+}
+
 actor TestAppClock: AppClock {
   private var current: Date
   private(set) var sleeps: [Duration] = []
@@ -125,6 +135,20 @@ final class URLProtocolStub: URLProtocol, @unchecked Sendable {
       headers: headers,
       holdOpen: holdOpen,
       waitingOn: responseGate
+    )
+  }
+
+  static func enqueue(
+    status: Int,
+    fixture: String,
+    version: Int,
+    headers: [String: String] = [:]
+  ) throws {
+    precondition(version == 2, "The versioned fixture overload is v2-only")
+    enqueue(
+      status: status,
+      data: try MobileV2FixtureLoader.data(fixture),
+      headers: headers
     )
   }
 
@@ -422,6 +446,12 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
     }
   }
 
+  var sentV2Frames: [MobileV2WsClientFrame] {
+    get async {
+      await state.allSentMessages().compactMap(decodeV2ClientFrame)
+    }
+  }
+
   var closeCode: URLSessionWebSocketTask.CloseCode? {
     get async {
       lock.withLock { recordedCloseCode }
@@ -478,6 +508,11 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
     return decodeClientFrame(message)!
   }
 
+  func nextSentV2Frame() async -> MobileV2WsClientFrame {
+    let message = await state.nextSentMessage()
+    return decodeV2ClientFrame(message)!
+  }
+
   func waitForClose() async -> URLSessionWebSocketTask.CloseCode? {
     while await closeCode == nil {
       await Task.yield()
@@ -488,6 +523,19 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
   private func decodeClientFrame(
     _ message: URLSessionWebSocketTask.Message
   ) -> MobileWSClientFrame? {
+    decode(message, as: MobileWSClientFrame.self)
+  }
+
+  private func decodeV2ClientFrame(
+    _ message: URLSessionWebSocketTask.Message
+  ) -> MobileV2WsClientFrame? {
+    decode(message, as: MobileV2WsClientFrame.self)
+  }
+
+  private func decode<Frame: Decodable>(
+    _ message: URLSessionWebSocketTask.Message,
+    as type: Frame.Type
+  ) -> Frame? {
     let data: Data
     switch message {
     case .string(let value):
@@ -497,7 +545,7 @@ final class FakeWebSocketTask: WebSocketTasking, @unchecked Sendable {
     @unknown default:
       return nil
     }
-    return try? ContractCoding.decoder().decode(MobileWSClientFrame.self, from: data)
+    return try? ContractCoding.decoder().decode(type, from: data)
   }
 }
 

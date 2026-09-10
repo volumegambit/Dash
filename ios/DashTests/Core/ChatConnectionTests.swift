@@ -122,6 +122,7 @@ struct ChatConnectionTests {
     let session = FakeWebSocketSession(tasks: [task])
     let connection = ChatConnection(
       endpoint: relayEndpoint(chatToken: "chat token&value"),
+      selection: .v1,
       session: session
     )
 
@@ -1088,7 +1089,7 @@ struct ChatConnectionTests {
   func authenticationProbe() async throws {
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
-    let probe = Task { try await connection.probeAuthentication() }
+    let probe = Task { try await connection.probeAuthentication(selection: .v1) }
 
     let sent = await task.nextSentFrame()
     guard case .resume(let id, let agentID, let conversationID, let sinceSeq) = sent else {
@@ -1124,7 +1125,7 @@ struct ChatConnectionTests {
     let connection = makeChatConnection(session: session)
     try await connection.connect()
 
-    let probe = Task { try await connection.probeAuthentication() }
+    let probe = Task { try await connection.probeAuthentication(selection: .v1) }
     _ = await probeSocket.nextSentFrame()
     #expect(await existing.closeCode == .goingAway)
     await probeSocket.enqueue(.string(serverJSON(try fixture("chat-accepted.json"))))
@@ -1139,7 +1140,7 @@ struct ChatConnectionTests {
     let session = FakeWebSocketSession(tasks: [probeSocket, replacement])
     let connection = makeChatConnection(session: session)
     let probe = Task {
-      await chatGatewayError { try await connection.probeAuthentication() }
+      await chatGatewayError { try await connection.probeAuthentication(selection: .v1) }
     }
     _ = await probeSocket.nextSentFrame()
 
@@ -1162,7 +1163,7 @@ struct ChatConnectionTests {
   func authenticationProbeAcceptsDecodedFrame() async throws {
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
-    let probe = Task { try await connection.probeAuthentication() }
+    let probe = Task { try await connection.probeAuthentication(selection: .v1) }
     _ = await task.nextSentFrame()
 
     await task.enqueue(.string(serverJSON(try fixture("chat-accepted.json"))))
@@ -1175,7 +1176,7 @@ struct ChatConnectionTests {
   func authenticationProbeAcceptsLegacyFrame() async throws {
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
-    let probe = Task { try await connection.probeAuthentication() }
+    let probe = Task { try await connection.probeAuthentication(selection: .v1) }
     _ = await task.nextSentFrame()
 
     await task.enqueue(
@@ -1197,7 +1198,7 @@ struct ChatConnectionTests {
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
     let probe = Task {
-      await chatGatewayError { try await connection.probeAuthentication() }
+      await chatGatewayError { try await connection.probeAuthentication(selection: .v1) }
     }
     _ = await task.nextSentFrame()
 
@@ -1212,7 +1213,7 @@ struct ChatConnectionTests {
     let task = FakeWebSocketTask()
     let connection = makeChatConnection(task: task)
     let probe = Task {
-      await chatGatewayError { try await connection.probeAuthentication() }
+      await chatGatewayError { try await connection.probeAuthentication(selection: .v1) }
     }
     _ = await task.nextSentFrame()
 
@@ -1229,7 +1230,7 @@ struct ChatConnectionTests {
     let connection = makeChatConnection(task: task, clock: clock)
 
     let error = await chatGatewayError {
-      try await connection.probeAuthentication()
+      try await connection.probeAuthentication(selection: .v1)
     }
 
     #expect(error == .transport("Chat authentication probe timed out"))
@@ -1237,13 +1238,145 @@ struct ChatConnectionTests {
     #expect(await task.waitForClose() == .goingAway)
   }
 
+  @Test("v2 authentication probe reaches the socket with the required hello")
+  func authenticationProbeV2Hello() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task, selection: .v2Queue)
+    let probe = Task { try await connection.probeAuthentication(selection: .v2Queue) }
+
+    #expect(
+      await task.nextSentV2Frame()
+        == .hello(contractVersion: 2, capabilities: ["chat-input-queue-v1"])
+    )
+    await task.enqueue(
+      .string(
+        v2ServerJSON(
+          .control(
+            .helloAck(contractVersion: 2, capabilities: ["chat-input-queue-v1"])
+          )
+        )
+      )
+    )
+
+    try await probe.value
+    #expect(await task.resumeCount == 1)
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("v2 authentication probe rejects hello acknowledgement without queue capability")
+  func authenticationProbeV2RequiresQueueCapability() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task, selection: .v2Queue)
+    let probe = Task {
+      await chatGatewayError {
+        try await connection.probeAuthentication(selection: .v2Queue)
+      }
+    }
+    _ = await task.nextSentV2Frame()
+
+    await task.enqueue(
+      .string(
+        v2ServerJSON(.control(.helloAck(contractVersion: 2, capabilities: ["other-v1"])))
+      )
+    )
+
+    #expect(await probe.value == .updateRequired)
+    #expect(await task.waitForClose() == .goingAway)
+  }
+
+  @Test("v2 authentication probe rejects a valid non-hello server frame")
+  func authenticationProbeV2RequiresHelloAcknowledgement() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task, selection: .v2Queue)
+    let probe = Task {
+      await chatGatewayError {
+        try await connection.probeAuthentication(selection: .v2Queue)
+      }
+    }
+    _ = await task.nextSentV2Frame()
+
+    await task.enqueue(
+      .string(
+        v2ServerJSON(
+          .control(
+            .conversationSubscribed(
+              id: turnID,
+              conversationId: conversationID,
+              v2ThroughSeq: 0
+            )
+          )
+        )
+      )
+    )
+
+    #expect(await probe.value == .updateRequired)
+  }
+
+  @Test("v2 authentication probe maps strict contract validation failures to update required")
+  func authenticationProbeV2RejectsMalformedFrame() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task, selection: .v2Queue)
+    let probe = Task {
+      await chatGatewayError {
+        try await connection.probeAuthentication(selection: .v2Queue)
+      }
+    }
+    _ = await task.nextSentV2Frame()
+
+    await task.enqueue(
+      .string(
+        """
+        {"type":"hello_ack","contractVersion":2,"capabilities":["chat-input-queue-v1"],"extra":true}
+        """
+      )
+    )
+
+    #expect(await probe.value == .updateRequired)
+  }
+
+  @Test("authentication probe selection mismatch fails closed before opening a socket")
+  func authenticationProbeSelectionMismatch() async throws {
+    let task = FakeWebSocketTask()
+    let session = FakeWebSocketSession(tasks: [task])
+    let connection = makeChatConnection(session: session, selection: .v2Queue)
+
+    let error = await chatGatewayError {
+      try await connection.probeAuthentication(selection: .v1)
+    }
+
+    #expect(error == .updateRequired)
+    #expect(session.requests.isEmpty)
+    #expect(await task.resumeCount == 0)
+  }
+
+  @Test("v2 authentication probe preserves unauthorized close mapping")
+  func authenticationProbeV2RejectsAuthClose() async throws {
+    let task = FakeWebSocketTask()
+    let connection = makeChatConnection(task: task, selection: .v2Queue)
+    let probe = Task {
+      await chatGatewayError {
+        try await connection.probeAuthentication(selection: .v2Queue)
+      }
+    }
+    _ = await task.nextSentV2Frame()
+
+    await task.fail(peerClose: .init(code: 4401, reason: Data("Unauthorized".utf8)))
+
+    #expect(await probe.value == .unauthorized)
+  }
+
   private func makeChatConnection(
     task: FakeWebSocketTask,
     clock: any AppClock = SystemAppClock(),
-    location: ClientLocation? = nil
+    location: ClientLocation? = nil,
+    selection: MobileProtocolSelection = .v1
   ) -> ChatConnection {
     makeChatConnection(
-      session: FakeWebSocketSession(tasks: [task]), clock: clock, location: location)
+      session: FakeWebSocketSession(tasks: [task]),
+      clock: clock,
+      location: location,
+      selection: selection
+    )
   }
 
   /// Defaults to reporting NO location so frame assertions are deterministic.
@@ -1254,10 +1387,12 @@ struct ChatConnectionTests {
   private func makeChatConnection(
     session: FakeWebSocketSession,
     clock: any AppClock = SystemAppClock(),
-    location: ClientLocation? = nil
+    location: ClientLocation? = nil,
+    selection: MobileProtocolSelection = .v1
   ) -> ChatConnection {
     ChatConnection(
       endpoint: lanEndpoint(),
+      selection: selection,
       session: session,
       clock: clock,
       locationProvider: { location }
@@ -1399,6 +1534,11 @@ private func settleConcurrentWork() async {
 }
 
 private func serverJSON(_ frame: MobileWSServerFrame) -> String {
+  let data = try! ContractCoding.encoder().encode(frame)
+  return String(data: data, encoding: .utf8)!
+}
+
+private func v2ServerJSON(_ frame: MobileV2WsServerFrame) -> String {
   let data = try! ContractCoding.encoder().encode(frame)
   return String(data: data, encoding: .utf8)!
 }

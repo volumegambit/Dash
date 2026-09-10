@@ -30,6 +30,99 @@ struct AppModelTests {
     #expect(await engine.bootstrapCallCount == 1)
   }
 
+  @Test("a negotiated v2 selection reaches every activated feature factory")
+  func v2SelectionReachesEveryFactory() async {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let engineSelections = MobileProtocolSelectionRecorder()
+    var conversationListSelection: MobileProtocolSelection?
+    var agentsSelection: MobileProtocolSelection?
+    var chatSelection: MobileProtocolSelection?
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        negotiateMobileProtocol: {
+          MobileProtocolNegotiation(
+            selection: .v2Queue,
+            identity: v1Negotiation(for: $0).identity
+          )
+        },
+        makeSyncEngine: { _, selection in
+          await engineSelections.record(selection)
+          return engine
+        },
+        makeConversationListFeature: { _, selection in
+          conversationListSelection = selection
+          return nil
+        },
+        makeAgentsFeature: { _, selection in
+          agentsSelection = selection
+          return nil
+        },
+        makeChatFeature: { _, _, selection in
+          chatSelection = selection
+          return nil
+        }
+      )
+    )
+
+    await model.start()
+    _ = await model.makeChatFeature(conversation())
+
+    #expect(model.selectedProfile == profile)
+    #expect(model.mobileProtocol == .v2Queue)
+    #expect(await engineSelections.values == [.v2Queue])
+    #expect(conversationListSelection == .v2Queue)
+    #expect(agentsSelection == .v2Queue)
+    #expect(chatSelection == .v2Queue)
+    #expect(await engine.bootstrapCallCount == 1)
+  }
+
+  @Test("identity mismatch publishes neither profile, selection, nor factories")
+  func identityMismatchFailsActivationAtomically() async {
+    let profile = connectionProfile()
+    let engineSelections = MobileProtocolSelectionRecorder()
+    var rememberedProfile = false
+    var featureFactoryCalled = false
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        negotiateMobileProtocol: { _ in
+          MobileProtocolNegotiation(
+            selection: .v2Queue,
+            identity: GatewayIdentityDTO(
+              gatewayId: profile.gatewayID,
+              publicKey: "unexpected-public-key"
+            )
+          )
+        },
+        makeSyncEngine: { _, selection in
+          await engineSelections.record(selection)
+          return FakeAppSyncEngine()
+        },
+        rememberProfile: { _ in rememberedProfile = true },
+        makeConversationListFeature: { _, _ in
+          featureFactoryCalled = true
+          return nil
+        }
+      )
+    )
+
+    await model.start()
+
+    #expect(model.selectedProfile == nil)
+    #expect(model.mobileProtocol == nil)
+    #expect(await engineSelections.values.isEmpty)
+    #expect(rememberedProfile == false)
+    #expect(featureFactoryCalled == false)
+    guard case .failed = model.banner else {
+      Issue.record("Expected activation failure to remain visible")
+      return
+    }
+  }
+
   @Test("authorization loss asks for re-pairing without hiding cached content")
   func unauthorizedKeepsCachedContentVisible() async {
     let engine = FakeAppSyncEngine()
@@ -253,6 +346,7 @@ struct AppModelTests {
 
     #expect(model.route == .paired(tab: .conversations))
     #expect(model.selectedProfile == profile)
+    #expect(model.mobileProtocol == nil)
     #expect(model.snapshot?.conversations == [cached])
     #expect(model.snapshot?.mutationsAllowed == false)
     #expect(model.connectionState == .connecting)
@@ -262,6 +356,7 @@ struct AppModelTests {
 
     #expect(model.route == .connect)
     #expect(model.selectedProfile == nil)
+    #expect(model.mobileProtocol == nil)
     #expect(await engine.shutdownCallCount == 1)
   }
 
@@ -275,7 +370,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: clock,
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           guard profile.gatewayID != replacement.gatewayID else {
             throw TestAppDependencyError.unavailable
           }
@@ -316,7 +412,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: clock,
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           if profile == original {
             await originalCreation.wait()
             return originalEngine
@@ -339,6 +436,88 @@ struct AppModelTests {
     #expect(await originalEngine.shutdownCallCount == 1)
   }
 
+  @Test("a stale negotiation cannot publish or create an engine after a newer activation")
+  func staleNegotiationIsDiscardedBeforeFactoryCreation() async {
+    let original = connectionProfile()
+    let replacement = replacementProfile()
+    let originalNegotiation = TestGate()
+    let originalEngine = FakeAppSyncEngine()
+    let replacementEngine = FakeAppSyncEngine()
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { original },
+        negotiateMobileProtocol: { profile in
+          if profile == original {
+            await originalNegotiation.wait()
+            return MobileProtocolNegotiation(
+              selection: .v2Queue,
+              identity: v1Negotiation(for: profile).identity
+            )
+          }
+          return v1Negotiation(for: profile)
+        },
+        makeSyncEngine: { profile, selection in
+          if profile == original {
+            Issue.record("A stale negotiation must not reach the engine factory")
+            return originalEngine
+          }
+          #expect(selection == .v1)
+          return replacementEngine
+        }
+      )
+    )
+
+    let start = Task { await model.start() }
+    await originalNegotiation.waitUntilWaiting()
+    await model.installPairedProfile(replacement)
+    await originalNegotiation.release()
+    await start.value
+
+    #expect(model.selectedProfile == replacement)
+    #expect(model.mobileProtocol == .v1)
+    #expect(await originalEngine.bootstrapCallCount == 0)
+    #expect(await replacementEngine.bootstrapCallCount == 1)
+  }
+
+  @Test("reconnect fails closed when the freshly negotiated selection drifts")
+  func reconnectRejectsSelectionDrift() async {
+    let profile = connectionProfile()
+    let engine = FakeAppSyncEngine()
+    let negotiations = MobileProtocolNegotiationSequence([
+      MobileProtocolNegotiation(
+        selection: .v2Queue,
+        identity: v1Negotiation(for: profile).identity
+      ),
+      v1Negotiation(for: profile),
+    ])
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        negotiateMobileProtocol: { _ in try await negotiations.next() },
+        makeSyncEngine: { _, selection in
+          #expect(selection == .v2Queue)
+          return engine
+        }
+      )
+    )
+    await model.start()
+
+    do {
+      try await model.reconnect()
+      Issue.record("Expected reconnect to reject protocol selection drift")
+    } catch {
+      #expect(error as? GatewayError == .updateRequired)
+    }
+
+    #expect(model.selectedProfile == profile)
+    #expect(model.mobileProtocol == .v2Queue)
+    #expect(model.connectionState == .updateRequired)
+    #expect(model.banner == .updateRequired)
+    #expect(await engine.bootstrapCallCount == 1)
+  }
+
   @Test("profile replacement drains the canceled snapshot loop before bootstrap")
   func profileReplacementAwaitsSnapshotLoop() async {
     let original = connectionProfile()
@@ -350,7 +529,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           if profile == original {
             return originalEngine as any AppSyncing
           }
@@ -385,7 +565,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: clock,
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           if profile == replacement {
             await replacementCreation.wait()
             return replacementEngine
@@ -462,17 +643,18 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           switch profile.gatewayID {
           case original.gatewayID: originalEngine
           case replacement.gatewayID: replacementEngine
           default: newestEngine
           }
         },
-        makeConversationListFeature: { profile in
+        makeConversationListFeature: { profile, _ in
           profile.gatewayID == original.gatewayID ? originalConversationFeature : nil
         },
-        makeAgentsFeature: { profile in
+        makeAgentsFeature: { profile, _ in
           switch profile.gatewayID {
           case original.gatewayID: originalAgentsFeature
           case replacement.gatewayID: replacementAgentsFeature
@@ -509,7 +691,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: clock,
         loadProfile: { profile },
-        makeSyncEngine: { _ in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in
           await creation.wait()
           return engine
         }
@@ -576,7 +759,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: clock,
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
         deleteProfileSecrets: { profile in
           try await forget.deleteSecrets(profile)
         },
@@ -626,7 +810,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
         deleteProfileSecrets: { profile in
           try await forget.deleteSecrets(profile)
         },
@@ -670,9 +855,10 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
         deleteProfileSecrets: { _ in throw TestAppDependencyError.unavailable },
-        makeConversationListFeature: { _ in feature }
+        makeConversationListFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -709,8 +895,9 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeConversationListFeature: { _ in feature }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeConversationListFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -730,6 +917,37 @@ struct AppModelTests {
     #expect(feature.mutationsAllowed == false)
   }
 
+  @Test("mobile-version capability loss updates feature and app authority")
+  func mobileVersionCapabilityLossUpdatesAppState() async {
+    let profile = connectionProfile()
+    let service = AppModelConversationService(createError: .mobileVersionCapabilityRequired)
+    let feature = ConversationListFeature(gatewayID: profile.gatewayID, service: service)
+    let model = AppModel(
+      dependencies: AppDependencies(
+        clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
+        loadProfile: { profile },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in FakeAppSyncEngine() },
+        makeConversationListFeature: { _, _ in feature }
+      )
+    )
+    await model.start()
+    let online = SyncSnapshot(
+      connection: .online,
+      conversations: [],
+      agents: [],
+      lastSuccessfulSyncAt: Date(timeIntervalSince1970: 100)
+    )
+    await model.consume(online)
+    feature.consume(online)
+
+    await feature.create(agentID: "agent-1")
+
+    #expect(model.connectionState == .updateRequired)
+    #expect(model.banner == .updateRequired)
+    #expect(feature.mutationsAllowed == false)
+  }
+
   @Test("a stale rate-limit callback cannot cross disconnect")
   func staleRateLimitDoesNotCrossDisconnect() async throws {
     let nowGate = TestGate()
@@ -744,8 +962,9 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: clock,
         loadProfile: { profile },
-        makeSyncEngine: { _ in FakeAppSyncEngine() },
-        makeConversationListFeature: { _ in feature }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in FakeAppSyncEngine() },
+        makeConversationListFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -761,7 +980,7 @@ struct AppModelTests {
     await nowGate.waitUntilWaiting()
     try await model.disconnectAndForget()
     await nowGate.release()
-    await create.value
+    _ = await create.value
 
     #expect(model.route == .connect)
     #expect(model.connectionState == .connecting)
@@ -780,8 +999,9 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeConversationListFeature: { _ in feature }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeConversationListFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -822,8 +1042,9 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeAgentsFeature: { _ in feature }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeAgentsFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -864,8 +1085,9 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeAgentsFeature: { _ in feature }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeAgentsFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -901,8 +1123,9 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeAgentsFeature: { _ in feature }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeAgentsFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -933,9 +1156,10 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
         deleteProfileSecrets: { _ in throw TestAppDependencyError.unavailable },
-        makeAgentsFeature: { _ in feature }
+        makeAgentsFeature: { _, _ in feature }
       )
     )
     await model.start()
@@ -971,10 +1195,12 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in FakeAppSyncEngine() },
-        makeChatFeature: { receivedProfile, receivedConversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in FakeAppSyncEngine() },
+        makeChatFeature: { receivedProfile, receivedConversation, selection in
           #expect(receivedProfile == profile)
           #expect(receivedConversation == selectedConversation)
+          #expect(selection == .v1)
           return nil
         }
       )
@@ -994,7 +1220,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
         deleteProfileSecrets: { _ in },
         clearProfileData: { _ in
           let selectionWasForgotten = await MainActor.run { selectionForgotten }
@@ -1082,7 +1309,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           profile == original ? originalEngine : replacementEngine
         }
       )
@@ -1120,7 +1348,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           profile == original ? originalEngine : replacementEngine
         }
       )
@@ -1150,7 +1379,8 @@ struct AppModelTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           profile == original ? originalEngine : replacementEngine
         }
       )
@@ -1228,7 +1458,8 @@ struct AppModelTests {
     return AppDependencies(
       clock: clock,
       loadProfile: { profile },
-      makeSyncEngine: { _ in engine },
+      negotiateMobileProtocol: { v1Negotiation(for: $0) },
+      makeSyncEngine: { _, _ in engine },
       accountFeatureFactory: accountFeatureFactory
     )
   }
@@ -1368,6 +1599,27 @@ private actor FakeAppSyncEngine: AppSyncing {
     shutdownCallCount += 1
     events.append(.shutdown)
     await shutdownGate?.wait()
+  }
+}
+
+private actor MobileProtocolSelectionRecorder {
+  private(set) var values: [MobileProtocolSelection] = []
+
+  func record(_ value: MobileProtocolSelection) {
+    values.append(value)
+  }
+}
+
+private actor MobileProtocolNegotiationSequence {
+  private var values: [MobileProtocolNegotiation]
+
+  init(_ values: [MobileProtocolNegotiation]) {
+    self.values = values
+  }
+
+  func next() throws -> MobileProtocolNegotiation {
+    guard values.isEmpty == false else { throw TestAppDependencyError.unavailable }
+    return values.removeFirst()
   }
 }
 

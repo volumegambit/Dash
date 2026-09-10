@@ -345,8 +345,17 @@ final class LiveSignerFlowTests: XCTestCase {
       )
     }
     let pairingVerifier = PairingVerifier(
-      makeGateway: { endpoint, secrets in GatewayAPI(transport: makeTransport(endpoint, secrets)) },
-      makeChat: { endpoint in ChatConnection(endpoint: endpoint, clock: clock) },
+      makeNegotiator: { endpoint, secrets in
+        MobileProtocolNegotiator { selection in
+          GatewayAPI(transport: makeTransport(endpoint, secrets), selection: selection)
+        }
+      },
+      makeGateway: { endpoint, secrets, selection in
+        GatewayAPI(transport: makeTransport(endpoint, secrets), selection: selection)
+      },
+      makeChat: { endpoint, selection in
+        ChatConnection(endpoint: endpoint, selection: selection, clock: clock)
+      },
       debugRelayPortOverride: environment.relayPort
     )
     let payload = PairingPayload(
@@ -379,11 +388,21 @@ final class LiveSignerFlowTests: XCTestCase {
 
     // One chat round-trip over the relay with the claimed credentials.
     let endpoint = ConnectionEndpoint(profile: verified.profile.profile, secrets: verified.secrets)
-    let chat = ChatConnection(endpoint: endpoint, clock: clock)
+    let negotiation = try await MobileProtocolNegotiator { selection in
+      GatewayAPI(transport: makeTransport(endpoint, verified.secrets), selection: selection)
+    }.negotiate()
+    let chat = ChatConnection(
+      endpoint: endpoint,
+      selection: negotiation.selection,
+      clock: clock
+    )
     let recording = await LiveChatRecording.start(chat: chat)
     defer { recording.cancel() }
 
-    let api = GatewayAPI(transport: makeTransport(endpoint, verified.secrets))
+    let api = GatewayAPI(
+      transport: makeTransport(endpoint, verified.secrets),
+      selection: negotiation.selection
+    )
     let conversation = try await api.createConversation(
       CreateConversationRequest(
         agentId: environment.agentID,

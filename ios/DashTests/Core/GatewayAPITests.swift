@@ -34,6 +34,59 @@ struct GatewayAPITests {
     #expect(requests[1].url?.absoluteString.contains("management-test-token") == false)
   }
 
+  @Test("v2 health and identity use the exact selected namespace")
+  func v2HealthAndIdentityRequests() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "health-capabilities.json", version: 2)
+    try URLProtocolStub.enqueue(status: 200, fixture: "identity.json")
+    let api = makeAPI(selection: .v2Queue)
+
+    let health = try await api.healthV2()
+    let identity = try await api.identityV2()
+
+    #expect(health.apiVersion == 2)
+    #expect(identity.gatewayId == "gateway-01")
+    let requests = URLProtocolStub.requests
+    #expect(try encodedPath(requests[0]) == "/mobile/v2/health")
+    #expect(requests[0].value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(try encodedPath(requests[1]) == "/mobile/v2/identity")
+    #expect(
+      requests[1].value(forHTTPHeaderField: "Authorization")
+        == "Bearer management-test-token"
+    )
+  }
+
+  @Test(
+    "v2 identity rejects every non-exact body",
+    arguments: [
+      #"{}"#,
+      #"{"gatewayId":"gateway-01"}"#,
+      #"{"publicKey":"public-key"}"#,
+      #"{"gatewayId":"","publicKey":"public-key"}"#,
+      #"{"gatewayId":"gateway-01","publicKey":""}"#,
+      #"{"gatewayId":"gateway-01","publicKey":"public-key","extra":true}"#,
+      #"[]"#,
+      #"not-json"#,
+    ]
+  )
+  func v2IdentityStrictness(body: String) async {
+    URLProtocolStub.enqueue(status: 200, data: Data(body.utf8))
+
+    let error = await gatewayError {
+      try await makeAPI(selection: .v2Queue).identityV2()
+    }
+
+    #expect(error == .updateRequired)
+  }
+
+  @Test("a selected v2 API routes ordinary resources through v2")
+  func selectedV2ResourceNamespace() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "agents-list.json")
+
+    _ = try await makeAPI(selection: .v2Queue).listAgents()
+
+    #expect(try encodedPath(#require(URLProtocolStub.requests.last)) == "/mobile/v2/agents")
+  }
+
   @Test("agent methods send exact paths, methods, and minimal bodies")
   func agentRequestShapes() async throws {
     let agentData = try registeredAgentData()
@@ -294,7 +347,10 @@ struct GatewayAPITests {
       await gatewayError { try await api.listAgents() }
         == .conversationBusy(activeTurnId: "018f0f4a-5c42-7a8b-9c01-2234567890ab")
     )
-    #expect(await gatewayError { try await api.listAgents() } == .capabilityRequired)
+    #expect(
+      await gatewayError { try await api.listAgents() }
+        == .mobileVersionCapabilityRequired
+    )
 
     let serverBody = try FixtureLoader.decode(
       MobileAPIError.self,
@@ -399,6 +455,62 @@ struct GatewayAPITests {
     #expect(invalidAction == .updateRequired)
   }
 
+  @Test("v2 contract validation failures require an app update")
+  func v2ContractValidationFailureMapping() async {
+    URLProtocolStub.enqueue(
+      status: 200,
+      data: Data(
+        #"{"status":"healthy","startedAt":"2026-09-06T09:00:00.000Z","pid":0,"agents":1,"channels":1,"apiVersion":2,"capabilities":["chat-input-queue-v1"]}"#.utf8
+      )
+    )
+
+    let error = await gatewayError {
+      try await makeAPI(selection: .v2Queue).healthV2()
+    }
+
+    #expect(error == .updateRequired)
+  }
+
+  @Test("only exact 426 capability errors identify unavailable mobile v2")
+  func exactMobileVersionCapabilityError() async {
+    URLProtocolStub.enqueue(
+      status: 426,
+      data: Data(
+        #"{"code":"capability_required","error":"mobile v2 unavailable","retryable":false,"details":{"required":"chat-input-queue-v1"}}"#.utf8
+      )
+    )
+
+    let error = await gatewayError {
+      try await makeAPI(selection: .v2Queue).healthV2()
+    }
+
+    #expect(error == .mobileVersionCapabilityRequired)
+  }
+
+  @Test(
+    "malformed 426 error bodies stay ordinary server failures",
+    arguments: [
+      #"{"code":"capability_required"}"#,
+      #"{"code":"capability_required","error":"","retryable":false}"#,
+      #"{"code":"capability_required","error":"unsupported","retryable":"false"}"#,
+      #"{"code":"capability_required","error":"unsupported","retryable":false,"details":null}"#,
+      #"{"code":"capability_required","error":"unsupported","retryable":false,"extra":1}"#,
+      #"{"code":"unknown","error":"unsupported","retryable":false}"#,
+    ]
+  )
+  func malformedMobileVersionError(body: String) async {
+    URLProtocolStub.enqueue(status: 426, data: Data(body.utf8))
+
+    let error = await gatewayError {
+      try await makeAPI(selection: .v2Queue).healthV2()
+    }
+
+    guard case .server(_, status: 426)? = error else {
+      Issue.record("Expected ordinary HTTP server error, received \(String(describing: error))")
+      return
+    }
+  }
+
   @Test("timeouts distinguish safe reads from ambiguous mutations")
   func timeoutMapping() async {
     URLProtocolStub.enqueue(failure: URLError(.timedOut))
@@ -485,8 +597,11 @@ private struct RequiredCapableResponse: Decodable, Sendable {
   }
 }
 
-private func makeAPI(relay: Bool = false) -> GatewayAPI {
-  GatewayAPI(transport: makeTransport(relay: relay))
+private func makeAPI(
+  relay: Bool = false,
+  selection: MobileProtocolSelection = .v1
+) -> GatewayAPI {
+  GatewayAPI(transport: makeTransport(relay: relay), selection: selection)
 }
 
 private func makeTransport(relay: Bool = false) -> HTTPTransport {

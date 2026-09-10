@@ -85,6 +85,7 @@ actor ChatConnection {
   }
 
   private let endpoint: ConnectionEndpoint
+  private let selection: MobileProtocolSelection
   private let session: any WebSocketSessioning
   private let clock: any AppClock
   private let stream: AsyncThrowingStream<ChatConnectionEvent, Error>
@@ -102,6 +103,7 @@ actor ChatConnection {
 
   init(
     endpoint: ConnectionEndpoint,
+    selection: MobileProtocolSelection,
     session: (any WebSocketSessioning)? = nil,
     clock: any AppClock = SystemAppClock(),
     /// Location attached to outgoing turns. Injected so frame-shape tests are
@@ -113,6 +115,7 @@ actor ChatConnection {
   ) {
     self.locationProvider = locationProvider
     self.endpoint = endpoint
+    self.selection = selection
     self.session =
       session
       ?? URLSessionWebSocketSession(
@@ -224,7 +227,10 @@ actor ChatConnection {
     transition(to: .idle)
   }
 
-  func probeAuthentication() async throws {
+  func probeAuthentication(selection requestedSelection: MobileProtocolSelection) async throws {
+    guard requestedSelection == selection else {
+      throw GatewayError.updateRequired
+    }
     try requireReusableStream()
     prepareForSocketReplacement()
     generation += 1
@@ -237,16 +243,21 @@ actor ChatConnection {
     transition(to: .connected)
     defer { detachProbe(task: task, generation: probeGeneration) }
 
-    let probeID = UUID().uuidString.lowercased()
-    let conversationID = UUID().uuidString.lowercased()
-    try await send(
-      .resume(
-        id: probeID,
-        agentId: "__dash_ios_pairing_probe__",
-        conversationId: conversationID,
-        sinceSeq: 0
+    switch selection {
+    case .v1:
+      let probeID = UUID().uuidString.lowercased()
+      let conversationID = UUID().uuidString.lowercased()
+      try await send(
+        .resume(
+          id: probeID,
+          agentId: "__dash_ios_pairing_probe__",
+          conversationId: conversationID,
+          sinceSeq: 0
+        )
       )
-    )
+    case .v2Queue:
+      try await sendV2ProbeHello()
+    }
 
     enum ProbeResult: Sendable {
       case message(URLSessionWebSocketTask.Message)
@@ -282,7 +293,12 @@ actor ChatConnection {
     case .timeout:
       throw GatewayError.transport("Chat authentication probe timed out")
     case .message(let message):
-      _ = try decodedFrame(from: message)
+      switch selection {
+      case .v1:
+        _ = try decodedFrame(from: message)
+      case .v2Queue:
+        try validateV2ProbeAcknowledgement(from: message)
+      }
     }
   }
 
@@ -404,6 +420,70 @@ actor ChatConnection {
       currentSocket === socket
     else {
       throw GatewayError.transport("Chat connection changed while sending")
+    }
+  }
+
+  private func sendV2ProbeHello() async throws {
+    guard let socket, state == .connected else {
+      throw GatewayError.transport("Chat connection is not connected")
+    }
+    let sendGeneration = generation
+    let data: Data
+    do {
+      data = try ContractCoding.encoder().encode(
+        MobileV2WsClientFrame.hello(
+          contractVersion: 2,
+          capabilities: ["chat-input-queue-v1"]
+        )
+      )
+    } catch is MobileV2ContractValidationError {
+      throw GatewayError.updateRequired
+    }
+    guard let text = String(data: data, encoding: .utf8) else {
+      throw GatewayError.updateRequired
+    }
+    try await socket.send(.string(text))
+    guard
+      sendGeneration == generation,
+      state == .connected,
+      streamFinished == false,
+      let currentSocket = self.socket,
+      currentSocket === socket
+    else {
+      throw GatewayError.transport("Chat connection changed while sending")
+    }
+  }
+
+  private func validateV2ProbeAcknowledgement(
+    from message: URLSessionWebSocketTask.Message
+  ) throws {
+    let data: Data
+    switch message {
+    case .string(let text):
+      data = Data(text.utf8)
+    case .data(let binary):
+      guard String(data: binary, encoding: .utf8) != nil else {
+        throw GatewayError.updateRequired
+      }
+      data = binary
+    @unknown default:
+      throw GatewayError.updateRequired
+    }
+
+    let frame: MobileV2WsServerFrame
+    do {
+      frame = try ContractCoding.decoder().decode(MobileV2WsServerFrame.self, from: data)
+    } catch is DecodingError {
+      throw GatewayError.updateRequired
+    } catch is MobileV2ContractValidationError {
+      throw GatewayError.updateRequired
+    }
+
+    guard
+      case let .control(.helloAck(_, capabilities)) = frame,
+      capabilities.contains("chat-input-queue-v1")
+    else {
+      throw GatewayError.updateRequired
     }
   }
 

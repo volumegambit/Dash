@@ -2,9 +2,14 @@ import Foundation
 
 actor GatewayAPI {
   private let transport: HTTPTransport
+  private let selection: MobileProtocolSelection
 
-  init(transport: HTTPTransport) {
+  init(
+    transport: HTTPTransport,
+    selection: MobileProtocolSelection
+  ) {
     self.transport = transport
+    self.selection = selection
   }
 
   func shutdown() async {
@@ -17,10 +22,23 @@ actor GatewayAPI {
     )
   }
 
+  func healthV2() async throws -> MobileV2HealthResponse {
+    try await transport.send(
+      GatewayRequest(method: .get, path: ["mobile", "v2", "health"])
+    )
+  }
+
   func identity() async throws -> GatewayIdentityDTO {
     try await transport.send(
       GatewayRequest(method: .get, path: mobilePath("identity"))
     )
+  }
+
+  func identityV2() async throws -> GatewayIdentityDTO {
+    let data = try await transport.sendData(
+      GatewayRequest(method: .get, path: ["mobile", "v2", "identity"])
+    )
+    return try decodeExactGatewayIdentity(data)
   }
 
   func listAgents() async throws -> [RegisteredAgentDTO] {
@@ -216,6 +234,21 @@ actor GatewayAPI {
   }
 
   private func mobilePath(_ components: String...) -> [String] {
-    ["mobile", "v1"] + components
+    ["mobile", selection.pathVersion] + components
+  }
+
+  private func decodeExactGatewayIdentity(_ data: Data) throws -> GatewayIdentityDTO {
+    guard
+      let value = try? JSONSerialization.jsonObject(with: data),
+      let object = value as? [String: Any],
+      Set(object.keys) == ["gatewayId", "publicKey"],
+      let gatewayID = object["gatewayId"] as? String,
+      gatewayID.isEmpty == false,
+      let publicKey = object["publicKey"] as? String,
+      publicKey.isEmpty == false
+    else {
+      throw GatewayError.updateRequired
+    }
+    return GatewayIdentityDTO(gatewayId: gatewayID, publicKey: publicKey)
   }
 }

@@ -247,19 +247,29 @@ struct AccountFeatureFactory: Sendable {
 struct AppDependencies: Sendable {
   let clock: any AppClock
   let loadProfile: @Sendable () async throws -> ConnectionProfileSnapshot?
-  let makeSyncEngine: @Sendable (ConnectionProfileSnapshot) async throws -> any AppSyncing
-  let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Void
+  let negotiateMobileProtocol:
+    @Sendable (ConnectionProfileSnapshot) async throws -> MobileProtocolNegotiation
+  let makeSyncEngine:
+    @Sendable (
+      ConnectionProfileSnapshot,
+      MobileProtocolSelection
+    ) async throws -> any AppSyncing
   let rememberProfile: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let forgetProfileSelection: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let makeConversationListFeature:
-    @MainActor @Sendable (ConnectionProfileSnapshot) -> ConversationListFeature?
-  let makeAgentsFeature: @MainActor @Sendable (ConnectionProfileSnapshot) -> AgentsFeature?
+    @MainActor @Sendable (
+      ConnectionProfileSnapshot,
+      MobileProtocolSelection
+    ) -> ConversationListFeature?
+  let makeAgentsFeature:
+    @MainActor @Sendable (ConnectionProfileSnapshot, MobileProtocolSelection) -> AgentsFeature?
   let makeChatFeature:
     @MainActor @Sendable (
       ConnectionProfileSnapshot,
-      ConversationSummaryDTO
+      ConversationSummaryDTO,
+      MobileProtocolSelection
     ) async -> ChatFeature?
   let pairingFeatureFactory: PairingFeatureFactory
   let accountFeatureFactory: AccountFeatureFactory
@@ -267,10 +277,13 @@ struct AppDependencies: Sendable {
   init(
     clock: any AppClock,
     loadProfile: @escaping @Sendable () async throws -> ConnectionProfileSnapshot?,
-    makeSyncEngine: @escaping @Sendable (
+    negotiateMobileProtocol: @escaping @Sendable (
       ConnectionProfileSnapshot
+    ) async throws -> MobileProtocolNegotiation,
+    makeSyncEngine: @escaping @Sendable (
+      ConnectionProfileSnapshot,
+      MobileProtocolSelection
     ) async throws -> any AppSyncing,
-    verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = { _ in },
     rememberProfile: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = { _ in },
     deleteProfileSecrets: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Void = {
       _ in
@@ -282,22 +295,25 @@ struct AppDependencies: Sendable {
       _ in
     },
     makeConversationListFeature: @escaping @MainActor @Sendable (
-      ConnectionProfileSnapshot
-    ) -> ConversationListFeature? = { _ in nil },
+      ConnectionProfileSnapshot,
+      MobileProtocolSelection
+    ) -> ConversationListFeature? = { _, _ in nil },
     makeAgentsFeature: @escaping @MainActor @Sendable (
-      ConnectionProfileSnapshot
-    ) -> AgentsFeature? = { _ in nil },
+      ConnectionProfileSnapshot,
+      MobileProtocolSelection
+    ) -> AgentsFeature? = { _, _ in nil },
     makeChatFeature: @escaping @MainActor @Sendable (
       ConnectionProfileSnapshot,
-      ConversationSummaryDTO
-    ) async -> ChatFeature? = { _, _ in nil },
+      ConversationSummaryDTO,
+      MobileProtocolSelection
+    ) async -> ChatFeature? = { _, _, _ in nil },
     pairingFeatureFactory: PairingFeatureFactory = .unavailable,
     accountFeatureFactory: AccountFeatureFactory = .unavailable
   ) {
     self.clock = clock
     self.loadProfile = loadProfile
+    self.negotiateMobileProtocol = negotiateMobileProtocol
     self.makeSyncEngine = makeSyncEngine
-    self.verifyProfile = verifyProfile
     self.rememberProfile = rememberProfile
     self.deleteProfileSecrets = deleteProfileSecrets
     self.clearProfileData = clearProfileData
@@ -350,39 +366,54 @@ struct AppDependencies: Sendable {
           clock: clock
         )
       }
-    let makeAPI: @Sendable (HTTPTransport) -> GatewayAPI = { transport in
-      GatewayAPI(transport: transport)
-    }
+    let makeAPI:
+      @Sendable (HTTPTransport, MobileProtocolSelection) -> GatewayAPI = { transport, selection in
+        GatewayAPI(transport: transport, selection: selection)
+      }
     let makeInvalidations:
       @Sendable (
         ConnectionEndpoint,
-        ConnectionSecrets
-      ) -> SSEInvalidationSource = { endpoint, secrets in
+        ConnectionSecrets,
+        MobileProtocolSelection
+      ) -> SSEInvalidationSource = { endpoint, secrets, selection in
         SSEInvalidationSource(
           client: SSEClient(
             endpoint: endpoint,
             secrets: secrets,
-            session: GatewayURLSessionFactory.make(profile: endpoint.profile)
+            session: GatewayURLSessionFactory.make(profile: endpoint.profile),
+            selection: selection
           )
         )
       }
-    let makeChat: @Sendable (ConnectionEndpoint) -> ChatConnection = { endpoint in
-      ChatConnection(endpoint: endpoint, clock: clock)
-    }
+    let makeChat:
+      @Sendable (ConnectionEndpoint, MobileProtocolSelection) -> ChatConnection = {
+        endpoint, selection in
+        ChatConnection(endpoint: endpoint, selection: selection, clock: clock)
+      }
     let makeReachability: @Sendable () -> NetworkReachability = {
       NetworkReachability()
     }
     let pairingMetadata = PersistencePairingMetadataStore(store: store)
-    let profileVerifier = GatewayProfileVerifier { endpoint, secrets in
-      makeAPI(makeCancellableTransport(endpoint, secrets))
-    }
+    let makeNegotiator:
+      @Sendable (ConnectionEndpoint, ConnectionSecrets) -> MobileProtocolNegotiator = {
+        endpoint, secrets in
+        MobileProtocolNegotiator { selection in
+          makeAPI(makeCancellableTransport(endpoint, secrets), selection)
+        }
+      }
+    let profileVerifier = GatewayProfileVerifier(makeNegotiator: makeNegotiator)
     // Shared with `accountFeatureFactory` below: the account sign-in connect
     // pipeline reuses the SAME hardened verify+install machinery QR/manual
     // pairing uses, so a gateway reached via account sign-in and one reached
     // via a scanned code land on identical, metadata-reusing profiles.
     let pairingVerifier = PairingVerifier(
-      makeGateway: { endpoint, secrets in
-        makeAPI(makeTransport(endpoint, secrets))
+      makeNegotiator: { endpoint, secrets in
+        MobileProtocolNegotiator { selection in
+          makeAPI(makeTransport(endpoint, secrets), selection)
+        }
+      },
+      makeGateway: { endpoint, secrets, selection in
+        makeAPI(makeTransport(endpoint, secrets), selection)
       },
       makeChat: makeChat
     )
@@ -407,7 +438,13 @@ struct AppDependencies: Sendable {
         }
         return try await store.profile(gatewayID: gatewayID)
       },
-      makeSyncEngine: { profile in
+      negotiateMobileProtocol: { profile in
+        guard let secrets = try await keychain.load(for: profile.id) else {
+          throw AppDependencyError.missingSecrets(profileID: profile.id)
+        }
+        return try await profileVerifier.verify(profile: profile, secrets: secrets)
+      },
+      makeSyncEngine: { profile, selection in
         guard let secrets = try await keychain.load(for: profile.id) else {
           throw AppDependencyError.missingSecrets(profileID: profile.id)
         }
@@ -415,19 +452,14 @@ struct AppDependencies: Sendable {
         let transport = makeTransport(endpoint, secrets)
         return ConversationSyncEngine(
           gatewayID: profile.gatewayID,
+          mobileProtocol: selection,
           store: store,
-          api: makeAPI(transport),
-          invalidations: makeInvalidations(endpoint, secrets),
-          chat: makeChat(endpoint),
+          api: makeAPI(transport, selection),
+          invalidations: makeInvalidations(endpoint, secrets, selection),
+          chat: makeChat(endpoint, selection),
           reachability: makeReachability(),
           clock: clock
         )
-      },
-      verifyProfile: { profile in
-        guard let secrets = try await keychain.load(for: profile.id) else {
-          throw AppDependencyError.missingSecrets(profileID: profile.id)
-        }
-        try await profileVerifier.verify(profile: profile, secrets: secrets)
       },
       rememberProfile: { profile in
         UserDefaults.standard.set(profile.gatewayID, forKey: activeGatewayKey)
@@ -443,7 +475,7 @@ struct AppDependencies: Sendable {
       forgetProfileSelection: { _ in
         UserDefaults.standard.removeObject(forKey: activeGatewayKey)
       },
-      makeConversationListFeature: { profile in
+      makeConversationListFeature: { profile, selection in
         let service = LiveConversationListService(
           gatewayID: profile.gatewayID,
           store: store,
@@ -453,7 +485,7 @@ struct AppDependencies: Sendable {
               throw AppDependencyError.missingSecrets(profileID: profile.id)
             }
             let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
-            return makeAPI(makeCancellableTransport(endpoint, secrets))
+            return makeAPI(makeCancellableTransport(endpoint, secrets), selection)
           }
         )
         return ConversationListFeature(
@@ -466,13 +498,13 @@ struct AppDependencies: Sendable {
           lastUsedAgentStore: lastUsedAgentStore
         )
       },
-      makeAgentsFeature: { profile in
+      makeAgentsFeature: { profile, selection in
         let makeProfileAPI: @Sendable () async throws -> GatewayAPI = {
           guard let secrets = try await keychain.load(for: profile.id) else {
             throw AppDependencyError.missingSecrets(profileID: profile.id)
           }
           let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
-          return makeAPI(makeCancellableTransport(endpoint, secrets))
+          return makeAPI(makeCancellableTransport(endpoint, secrets), selection)
         }
         let conversationService = LiveConversationListService(
           gatewayID: profile.gatewayID,
@@ -488,7 +520,7 @@ struct AppDependencies: Sendable {
         )
         return AgentsFeature(gatewayID: profile.gatewayID, service: service)
       },
-      makeChatFeature: { profile, conversation in
+      makeChatFeature: { profile, conversation, selection in
         guard let secrets = try? await keychain.load(for: profile.id) else {
           return nil
         }
@@ -505,15 +537,21 @@ struct AppDependencies: Sendable {
               profile: profile.profile,
               secrets: currentSecrets
             )
-            return makeAPI(makeCancellableTransport(currentEndpoint, currentSecrets))
+            return makeAPI(
+              makeCancellableTransport(currentEndpoint, currentSecrets),
+              selection
+            )
           }
         )
         return ChatFeature(
           gatewayID: profile.gatewayID,
+          mobileProtocol: selection,
           conversation: conversation,
           persistence: persistence,
           synchronizer: synchronizer,
-          transport: LiveChatFeatureTransport(makeConnection: { makeChat(endpoint) }),
+          transport: LiveChatFeatureTransport(
+            makeConnection: { makeChat(endpoint, selection) }
+          ),
           clock: clock
         )
       },

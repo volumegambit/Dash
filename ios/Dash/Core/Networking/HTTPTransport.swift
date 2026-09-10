@@ -71,7 +71,18 @@ actor HTTPTransport {
       throw GatewayError.updateRequired
     } catch is ContractValidationError {
       throw GatewayError.updateRequired
+    } catch is MobileV2ContractValidationError {
+      throw GatewayError.updateRequired
     }
+  }
+
+  func sendData(
+    _ request: GatewayRequest,
+    body: (any Encodable & Sendable)? = nil,
+    ifMatch: Int? = nil
+  ) async throws -> Data {
+    let (data, _) = try await perform(request, body: body, ifMatch: ifMatch)
+    return data
   }
 
   func sendEmpty(
@@ -94,7 +105,9 @@ actor HTTPTransport {
     var request = URLRequest(url: try url(for: descriptor))
     request.httpMethod = descriptor.method.rawValue
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    if descriptor.path != ["mobile", "v1", "health"] {
+    let isPublicHealth = descriptor.path == ["mobile", "v1", "health"]
+      || descriptor.path == ["mobile", "v2", "health"]
+    if isPublicHealth == false {
       request.setValue(
         "Bearer \(secrets.managementToken)",
         forHTTPHeaderField: "Authorization"
@@ -130,7 +143,7 @@ actor HTTPTransport {
       throw GatewayError.transport("Gateway returned a non-HTTP response")
     }
     guard (200..<300).contains(httpResponse.statusCode) else {
-      throw await mapHTTPError(response: httpResponse, data: data)
+      throw await mapHTTPError(request: descriptor, response: httpResponse, data: data)
     }
     return (data, httpResponse)
   }
@@ -180,8 +193,12 @@ actor HTTPTransport {
     return GatewayError.transport(error.localizedDescription)
   }
 
-  private func mapHTTPError(response: HTTPURLResponse, data: Data) async -> GatewayError {
-    let body = try? ContractCoding.decoder().decode(MobileAPIError.self, from: data)
+  private func mapHTTPError(
+    request: GatewayRequest,
+    response: HTTPURLResponse,
+    data: Data
+  ) async -> GatewayError {
+    let body = decodeMobileAPIError(data)
     switch response.statusCode {
     case 401:
       return .unauthorized
@@ -208,8 +225,14 @@ actor HTTPTransport {
         status: response.statusCode
       )
     }
+    if response.statusCode == 426, body.code == "capability_required" {
+      return .mobileVersionCapabilityRequired
+    }
     switch body.code {
     case "not_found":
+      guard request.path != ["mobile", "v2", "health"] else {
+        return .server(body, status: response.statusCode)
+      }
       return .notFound
     case "validation_failed":
       return .validation(body.error)
@@ -234,6 +257,37 @@ actor HTTPTransport {
     default:
       return .server(body, status: response.statusCode)
     }
+  }
+
+  private func decodeMobileAPIError(_ data: Data) -> MobileAPIError? {
+    guard
+      let value = try? JSONSerialization.jsonObject(with: data),
+      let object = value as? [String: Any]
+    else {
+      return nil
+    }
+
+    let requiredKeys: Set<String> = ["code", "error", "retryable"]
+    let allowedKeys = requiredKeys.union(["details"])
+    let actualKeys = Set(object.keys)
+    guard requiredKeys.isSubset(of: actualKeys), actualKeys.isSubset(of: allowedKeys) else {
+      return nil
+    }
+    guard
+      let code = object["code"] as? String,
+      MobileV2ContractValidation.apiErrorCodes.contains(code),
+      let message = object["error"] as? String,
+      message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+      let retryableNumber = object["retryable"] as? NSNumber,
+      CFGetTypeID(retryableNumber) == CFBooleanGetTypeID()
+    else {
+      return nil
+    }
+    if actualKeys.contains("details") {
+      guard object["details"] is [String: Any] else { return nil }
+    }
+
+    return try? ContractCoding.decoder().decode(MobileAPIError.self, from: data)
   }
 
   private func retryAfter(

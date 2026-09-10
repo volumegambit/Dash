@@ -693,6 +693,7 @@ struct ChatFeatureTests {
     let ids = SequentialUUIDSource(ids: ["turn-live", "local-live"])
     let feature = ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: initial,
       persistence: LiveChatPersistence(store: store),
       synchronizer: sync,
@@ -982,6 +983,7 @@ struct ChatFeatureTests {
     let ids = SequentialUUIDSource(ids: ["turn-missing", "local-missing"])
     let feature = ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: initial,
       persistence: LiveChatPersistence(store: store),
       synchronizer: sync,
@@ -1236,6 +1238,7 @@ struct ChatFeatureTests {
     let ids = SequentialUUIDSource(ids: ["turn-stale", "local-stale"])
     let feature = ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: featureProjection,
       persistence: LiveChatPersistence(store: store),
       synchronizer: synchronizer,
@@ -1322,6 +1325,7 @@ struct ChatFeatureTests {
     let ids = SequentialUUIDSource(ids: ["turn-equal", "local-equal"])
     let feature = ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: current,
       persistence: LiveChatPersistence(store: store),
       synchronizer: synchronizer,
@@ -1393,6 +1397,7 @@ struct ChatFeatureTests {
     let ids = SequentialUUIDSource(ids: ["turn-not-found", "local-not-found"])
     let feature = ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: current,
       persistence: LiveChatPersistence(store: store),
       synchronizer: synchronizer,
@@ -2017,8 +2022,11 @@ struct ChatFeatureTests {
     #expect(feature.state.draft.isEmpty)
   }
 
-  @Test("a protocol failure before acceptance keeps the pending composer locked")
-  func protocolFailureBeforeAcceptanceKeepsPending() async {
+  @Test(
+    "a protocol failure before acceptance keeps the pending composer locked",
+    arguments: [GatewayError.updateRequired, GatewayError.mobileVersionCapabilityRequired]
+  )
+  func protocolFailureBeforeAcceptanceKeepsPending(failure: GatewayError) async {
     let persistence = FakeChatPersistence()
     let sync = FakeChatSynchronizer()
     let chat = FakeChatFeatureTransport()
@@ -2031,7 +2039,7 @@ struct ChatFeatureTests {
 
     await feature.send()
     await sync.enqueueRefresh(.success(snapshot()))
-    await chat.finish(throwing: GatewayError.updateRequired)
+    await chat.finish(throwing: failure)
 
     await eventually {
       guard await persistence.persistedPendingSend?.turnID == "turn-1" else { return false }
@@ -2776,6 +2784,7 @@ struct ChatFeatureTests {
     let recoveryChanges = GatedChatRecoveryChangeSignal(gate: subscriptionGate)
     let feature = ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: summary(),
       persistence: FakeChatPersistence(),
       synchronizer: FakeChatSynchronizer(),
@@ -3642,10 +3651,11 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { profile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { profile, _ in
           profile == original ? originalEngine : replacementEngine
         },
-        makeChatFeature: { profile, conversation in
+        makeChatFeature: { profile, conversation, _ in
           probe.make(profile: profile, conversation: conversation)
         }
       )
@@ -3725,8 +3735,9 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeChatFeature: { _, conversation in probe.make(conversation: conversation) }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeChatFeature: { _, conversation, _ in probe.make(conversation: conversation) }
       )
     )
     await model.start()
@@ -3784,14 +3795,15 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { requestedProfile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { requestedProfile, _ in
           if requestedProfile == replacement {
             await activationGate.wait()
             return replacementEngine
           }
           return originalEngine
         },
-        makeChatFeature: { _, conversation in probe.make(conversation: conversation) }
+        makeChatFeature: { _, conversation, _ in probe.make(conversation: conversation) }
       )
     )
     await model.start()
@@ -3842,8 +3854,9 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeChatFeature: { profile, conversation, _ in
           probe.make(profile: profile, conversation: conversation)
         }
       )
@@ -3903,8 +3916,9 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in engine },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in engine },
+        makeChatFeature: { profile, conversation, _ in
           await factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -3973,8 +3987,9 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4055,10 +4070,11 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { requestedProfile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { requestedProfile, _ in
           requestedProfile == profile ? originalEngine : replacementEngine
         },
-        makeChatFeature: { profile, conversation in
+        makeChatFeature: { profile, conversation, _ in
           probe.make(profile: profile, conversation: conversation)
         }
       )
@@ -4123,8 +4139,9 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4206,11 +4223,12 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { requestedProfile in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { requestedProfile, _ in
           requestedProfile == profile ? originalEngine : replacementEngine
         },
-        makeConversationListFeature: { _ in list },
-        makeChatFeature: { profile, conversation in
+        makeConversationListFeature: { _, _ in list },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4270,9 +4288,10 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeConversationListFeature: { _ in list },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeConversationListFeature: { _, _ in list },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4346,9 +4365,10 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeConversationListFeature: { _ in list },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeConversationListFeature: { _, _ in list },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4404,9 +4424,10 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeConversationListFeature: { _ in list },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeConversationListFeature: { _, _ in list },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4483,9 +4504,10 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeConversationListFeature: { _ in list },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeConversationListFeature: { _, _ in list },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4532,9 +4554,10 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { profile },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeConversationListFeature: { _ in list },
-        makeChatFeature: { profile, conversation in
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeConversationListFeature: { _, _ in list },
+        makeChatFeature: { profile, conversation, _ in
           factory.make(profile: profile, conversation: conversation)
         }
       )
@@ -4594,8 +4617,9 @@ struct ChatFeatureTests {
       dependencies: AppDependencies(
         clock: TestAppClock(now: Date(timeIntervalSince1970: 100)),
         loadProfile: { original },
-        makeSyncEngine: { _ in ChatLifecycleSyncEngine() },
-        makeChatFeature: { _, conversation in probe.make(conversation: conversation) }
+        negotiateMobileProtocol: { v1Negotiation(for: $0) },
+        makeSyncEngine: { _, _ in ChatLifecycleSyncEngine() },
+        makeChatFeature: { _, conversation, _ in probe.make(conversation: conversation) }
       )
     )
     await model.start()
@@ -4624,6 +4648,7 @@ struct ChatFeatureTests {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
       gatewayID: "gateway-1",
+      mobileProtocol: .v1,
       conversation: conversation,
       persistence: persistence,
       synchronizer: sync,
@@ -5581,7 +5606,8 @@ private func makeChatGatewayAPI() -> GatewayAPI {
       secrets: secrets,
       session: testURLSession(),
       clock: TestAppClock(now: Date(timeIntervalSince1970: 0))
-    )
+    ),
+    selection: .v1
   )
 }
 

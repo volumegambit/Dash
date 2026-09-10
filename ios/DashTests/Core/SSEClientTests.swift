@@ -112,6 +112,20 @@ struct SSEClientTests {
     )
   }
 
+  @Test("a selected v2 SSE client uses the v2 event route")
+  func selectedV2RequestPath() async throws {
+    try URLProtocolStub.enqueue(status: 200, fixture: "sse-conversation-changed.txt")
+
+    _ = await collect(from: makeSSEClient(selection: .v2Queue))
+
+    let request = try #require(URLProtocolStub.requests.last)
+    let url = try #require(request.url)
+    let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+    #expect(
+      components.percentEncodedPath == "/mobile/v2/events"
+    )
+  }
+
   @Test("cancelling the consumer cancels the URLSession task")
   func cancellationStopsLoading() async throws {
     URLProtocolStub.enqueue(
@@ -155,7 +169,10 @@ private func collect(from client: SSEClient) async -> SSECollection {
   }
 }
 
-private func makeSSEClient(relay: Bool = false) -> SSEClient {
+private func makeSSEClient(
+  relay: Bool = false,
+  selection: MobileProtocolSelection = .v1
+) -> SSEClient {
   let secrets = ConnectionSecrets(
     managementToken: "management-test-token",
     chatToken: "chat-test-token",
@@ -180,7 +197,8 @@ private func makeSSEClient(relay: Bool = false) -> SSEClient {
   return SSEClient(
     endpoint: ConnectionEndpoint(profile: profile, secrets: secrets),
     secrets: secrets,
-    session: testURLSession()
+    session: testURLSession(),
+    selection: selection
   )
 }
 

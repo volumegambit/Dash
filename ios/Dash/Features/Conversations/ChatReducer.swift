@@ -981,7 +981,7 @@ enum ChatReducer {
     case .unauthorized, .capabilityRequired:
       state.composerBlock = .repairRequired
       return [.showRepair]
-    case .updateRequired:
+    case .updateRequired, .mobileVersionCapabilityRequired:
       state.composerBlock = .updateRequired
       return [.showRepair]
     case let .conversationBusy(activeTurnID):

@@ -84,6 +84,7 @@ struct SyncSnapshot: Equatable, Sendable {
 }
 
 actor ConversationSyncEngine {
+  nonisolated let mobileProtocol: MobileProtocolSelection
   private struct MessageLoadToken: Equatable, Sendable {
     let conversationID: String
     let generation: Int
@@ -127,6 +128,7 @@ actor ConversationSyncEngine {
 
   init(
     gatewayID: String,
+    mobileProtocol: MobileProtocolSelection,
     store: PersistenceStore,
     api: any ConversationSyncAPI,
     invalidations: any GatewayInvalidationStreaming,
@@ -136,6 +138,7 @@ actor ConversationSyncEngine {
     pageSize: Int = 50
   ) {
     self.gatewayID = gatewayID
+    self.mobileProtocol = mobileProtocol
     self.store = store
     self.api = api
     self.invalidations = invalidations
@@ -724,8 +727,8 @@ actor ConversationSyncEngine {
     switch error {
     case .notFound, .validation, .revisionConflict, .conversationBusy, .server:
       return true
-    case .unauthorized, .rateLimited, .gatewayOffline, .capabilityRequired, .updateRequired,
-      .transport, .mutationOutcomeUnknown:
+    case .unauthorized, .rateLimited, .gatewayOffline, .capabilityRequired,
+      .mobileVersionCapabilityRequired, .updateRequired, .transport, .mutationOutcomeUnknown:
       return false
     }
   }
@@ -939,7 +942,7 @@ actor ConversationSyncEngine {
       publish(.rateLimited(retryAt: now.addingTimeInterval(delay.timeInterval)))
     case .gatewayOffline:
       publish(.gatewayOffline)
-    case .updateRequired, .capabilityRequired:
+    case .updateRequired, .capabilityRequired, .mobileVersionCapabilityRequired:
       publish(.updateRequired)
     case .transport:
       scheduleReconnect(

@@ -68,8 +68,17 @@ final class LiveAccountFlowTests: XCTestCase {
       )
     }
     let pairingVerifier = PairingVerifier(
-      makeGateway: { endpoint, secrets in GatewayAPI(transport: makeTransport(endpoint, secrets)) },
-      makeChat: { endpoint in ChatConnection(endpoint: endpoint, clock: clock) },
+      makeNegotiator: { endpoint, secrets in
+        MobileProtocolNegotiator { selection in
+          GatewayAPI(transport: makeTransport(endpoint, secrets), selection: selection)
+        }
+      },
+      makeGateway: { endpoint, secrets, selection in
+        GatewayAPI(transport: makeTransport(endpoint, secrets), selection: selection)
+      },
+      makeChat: { endpoint, selection in
+        ChatConnection(endpoint: endpoint, selection: selection, clock: clock)
+      },
       debugRelayPortOverride: environment.relayPort
     )
     let metadataStore = PersistencePairingMetadataStore(store: try PersistenceStore.inMemory())
@@ -128,14 +137,24 @@ final class LiveAccountFlowTests: XCTestCase {
       "Expected the installed pairing's secrets to be in the Keychain"
     )
     let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+    let negotiation = try await MobileProtocolNegotiator { selection in
+      GatewayAPI(transport: makeTransport(endpoint, secrets), selection: selection)
+    }.negotiate()
 
     // One chat round-trip over the relay, mirroring `ChatResumeIntegrationTests`'
     // style but against the account-authenticated connection this test built.
-    let chat = ChatConnection(endpoint: endpoint, clock: clock)
+    let chat = ChatConnection(
+      endpoint: endpoint,
+      selection: negotiation.selection,
+      clock: clock
+    )
     let recording = await LiveChatRecording.start(chat: chat)
     defer { recording.cancel() }
 
-    let api = GatewayAPI(transport: makeTransport(endpoint, secrets))
+    let api = GatewayAPI(
+      transport: makeTransport(endpoint, secrets),
+      selection: negotiation.selection
+    )
     let conversation = try await api.createConversation(
       CreateConversationRequest(
         agentId: environment.agentID,

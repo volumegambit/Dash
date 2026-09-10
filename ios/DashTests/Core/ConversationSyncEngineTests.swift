@@ -1025,6 +1025,7 @@ struct ConversationSyncEngineTests {
     arguments: [
       (GatewayError.unauthorized, GatewayConnectionState.repairRequired),
       (GatewayError.capabilityRequired, GatewayConnectionState.updateRequired),
+      (GatewayError.mobileVersionCapabilityRequired, GatewayConnectionState.updateRequired),
       (GatewayError.updateRequired, GatewayConnectionState.updateRequired),
       (GatewayError.gatewayOffline, GatewayConnectionState.gatewayOffline),
       (
@@ -1076,6 +1077,7 @@ struct ConversationSyncEngineTests {
     arguments: [
       (GatewayError.unauthorized, GatewayConnectionState.repairRequired),
       (GatewayError.capabilityRequired, GatewayConnectionState.updateRequired),
+      (GatewayError.mobileVersionCapabilityRequired, GatewayConnectionState.updateRequired),
       (GatewayError.updateRequired, GatewayConnectionState.updateRequired),
       (GatewayError.gatewayOffline, GatewayConnectionState.gatewayOffline),
       (
@@ -1149,6 +1151,7 @@ struct ConversationSyncEngineTests {
     let clock = SuspendedSleepClock(now: instant(100))
     let engine = ConversationSyncEngine(
       gatewayID: "gw",
+      mobileProtocol: .v1,
       store: store,
       api: api,
       invalidations: FakeInvalidationSource(),
@@ -1184,6 +1187,7 @@ struct ConversationSyncEngineTests {
     await api.enqueueConversationPage(.success(.init(items: [], nextCursor: nil)))
     let engine = ConversationSyncEngine(
       gatewayID: "gw",
+      mobileProtocol: .v1,
       store: store,
       api: api,
       invalidations: invalidations,
@@ -1227,6 +1231,7 @@ struct ConversationSyncEngineTests {
     )
     let engine = ConversationSyncEngine(
       gatewayID: "gw",
+      mobileProtocol: .v1,
       store: store,
       api: api,
       invalidations: invalidations,
@@ -1786,6 +1791,7 @@ struct ConversationSyncEngineTests {
   ) -> ConversationSyncEngine {
     ConversationSyncEngine(
       gatewayID: "gw",
+      mobileProtocol: .v1,
       store: store,
       api: api,
       invalidations: invalidations,

@@ -17,15 +17,22 @@ import UIKit
 @Suite("Pairing pipeline", .serialized)
 @MainActor
 struct PairingPipelineTests {
-  @Test("verification probes health, identity, agents, then chat before returning identity")
+  @Test("verification carries the negotiated v2 selection through agents and chat")
   func verificationOrder() async throws {
     let recorder = PairingCallRecorder()
-    let gateway = FakePairingGateway(recorder: recorder)
-    let chat = FakePairingChatProbe(recorder: recorder)
+    let gateway = FakePairingGateway(recorder: recorder, selection: .v2Queue)
+    let chat = FakePairingChatProbe(recorder: recorder, expectedSelection: .v2Queue)
     let profileID = UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-2234567890ab")!
     let verifier = PairingVerifier(
-      makeGateway: { _, _ in gateway },
-      makeChat: { _ in chat },
+      makeNegotiator: { _, _ in gateway },
+      makeGateway: { _, _, selection in
+        #expect(selection == .v2Queue)
+        return gateway
+      },
+      makeChat: { _, selection in
+        #expect(selection == .v2Queue)
+        return chat
+      },
       makeProfileID: { profileID }
     )
     var steps: [PairingVerificationStep] = []
@@ -53,8 +60,9 @@ struct PairingPipelineTests {
       let gateway = FakePairingGateway(recorder: recorder, capabilities: capabilities)
       let chat = FakePairingChatProbe(recorder: recorder)
       let verifier = PairingVerifier(
-        makeGateway: { _, _ in gateway },
-        makeChat: { _ in chat }
+        makeNegotiator: { _, _ in gateway },
+        makeGateway: { _, _, _ in gateway },
+        makeChat: { _, _ in chat }
       )
 
       await #expect(throws: GatewayError.capabilityRequired) {
@@ -79,8 +87,9 @@ struct PairingPipelineTests {
         apiVersion: value.apiVersion
       )
       let verifier = PairingVerifier(
-        makeGateway: { _, _ in gateway },
-        makeChat: { _ in FakePairingChatProbe(recorder: recorder) }
+        makeNegotiator: { _, _ in gateway },
+        makeGateway: { _, _, _ in gateway },
+        makeChat: { _, _ in FakePairingChatProbe(recorder: recorder) }
       )
 
       await #expect(throws: value.expected) {
@@ -110,8 +119,9 @@ struct PairingPipelineTests {
       let metadata = RecordingPairingMetadata(recorder: recorder)
       let feature = PairingFeature(
         verifier: PairingVerifier(
-          makeGateway: { _, _ in gateway },
-          makeChat: { _ in FakePairingChatProbe(recorder: recorder) }
+          makeNegotiator: { _, _ in gateway },
+          makeGateway: { _, _, _ in gateway },
+          makeChat: { _, _ in FakePairingChatProbe(recorder: recorder) }
         ),
         installer: PairingProfileInstaller(keychain: keychain, metadata: metadata),
         onPaired: { _ in await recorder.append(.activated) }
@@ -138,8 +148,9 @@ struct PairingPipelineTests {
     let keychain = RecordingPairingKeychain(recorder: recorder)
     let metadata = RecordingPairingMetadata(recorder: recorder)
     let verifier = PairingVerifier(
-      makeGateway: { _, _ in gateway },
-      makeChat: { _ in chat },
+      makeNegotiator: { _, _ in gateway },
+      makeGateway: { _, _, _ in gateway },
+      makeChat: { _, _ in chat },
       makeProfileID: {
         UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-2234567890ab")!
       }
@@ -175,8 +186,9 @@ struct PairingPipelineTests {
     let metadata = RecordingPairingMetadata(recorder: recorder, saveError: PairingTestError.save)
     let feature = PairingFeature(
       verifier: PairingVerifier(
-        makeGateway: { _, _ in gateway },
-        makeChat: { _ in chat }
+        makeNegotiator: { _, _ in gateway },
+        makeGateway: { _, _, _ in gateway },
+        makeChat: { _, _ in chat }
       ),
       installer: PairingProfileInstaller(keychain: keychain, metadata: metadata),
       onPaired: { _ in await recorder.append(.activated) }
@@ -204,8 +216,9 @@ struct PairingPipelineTests {
     let metadata = RecordingPairingMetadata(recorder: recorder)
     let feature = PairingFeature(
       verifier: PairingVerifier(
-        makeGateway: { _, _ in gateway },
-        makeChat: { _ in chat }
+        makeNegotiator: { _, _ in gateway },
+        makeGateway: { _, _, _ in gateway },
+        makeChat: { _, _ in chat }
       ),
       installer: PairingProfileInstaller(keychain: keychain, metadata: metadata),
       onPaired: { _ in await recorder.append(.activated) }
@@ -301,6 +314,7 @@ struct PairingPipelineTests {
     let cases: [(GatewayError, String, String)] = [
       (.unauthorized, "Re-pair this device", "credentials"),
       (.capabilityRequired, "Update Dash", "conversation sync"),
+      (.mobileVersionCapabilityRequired, "Update Dash", "compatible"),
       (.updateRequired, "Update Dash", "compatible"),
       (.gatewayOffline, "Gateway offline", "relay"),
       (.transport("secret raw failure"), "Gateway offline", "reachable"),
@@ -547,8 +561,9 @@ struct PairingPipelineTests {
     let gateway = FakePairingGateway(recorder: recorder)
     let feature = PairingFeature(
       verifier: PairingVerifier(
-        makeGateway: { _, _ in gateway },
-        makeChat: { _ in FakePairingChatProbe(recorder: recorder) }
+        makeNegotiator: { _, _ in gateway },
+        makeGateway: { _, _, _ in gateway },
+        makeChat: { _, _ in FakePairingChatProbe(recorder: recorder) }
       ),
       installer: PairingProfileInstaller(keychain: keychain, metadata: metadata),
       onPaired: { _ in await recorder.append(.activated) }
@@ -583,7 +598,8 @@ struct PairingPipelineTests {
     let dependencies = AppDependencies(
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1)),
       loadProfile: { nil },
-      makeSyncEngine: { _ in engine },
+      negotiateMobileProtocol: { v1Negotiation(for: $0) },
+      makeSyncEngine: { _, _ in engine },
       pairingFeatureFactory: PairingFeatureFactory(
         verifier: verifier,
         installer: NoopPairingInstaller()
@@ -611,7 +627,8 @@ struct PairingPipelineTests {
     let dependencies = AppDependencies(
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1)),
       loadProfile: { nil },
-      makeSyncEngine: { profile in try await engineFactory.make(profile) },
+      negotiateMobileProtocol: { v1Negotiation(for: $0) },
+      makeSyncEngine: { profile, _ in try await engineFactory.make(profile) },
       pairingFeatureFactory: PairingFeatureFactory(
         verifier: verifier,
         installer: NoopPairingInstaller()
@@ -667,13 +684,14 @@ private actor PairingCallRecorder {
   }
 }
 
-private actor FakePairingGateway: PairingGatewayChecking {
+private actor FakePairingGateway: PairingGatewayChecking, MobileProtocolNegotiating {
   let recorder: PairingCallRecorder
   let status: String
   let apiVersion: Int
   let capabilities: [MobileCapability]
   let gatewayID: String
   let publicKey: String
+  let selection: MobileProtocolSelection
 
   init(
     recorder: PairingCallRecorder,
@@ -681,7 +699,8 @@ private actor FakePairingGateway: PairingGatewayChecking {
     apiVersion: Int = 1,
     capabilities: [MobileCapability] = [.conversationSyncV1, .chatResumeV1],
     gatewayID: String = "gateway-verified",
-    publicKey: String = "public-key-verified"
+    publicKey: String = "public-key-verified",
+    selection: MobileProtocolSelection = .v1
   ) {
     self.recorder = recorder
     self.status = status
@@ -689,24 +708,22 @@ private actor FakePairingGateway: PairingGatewayChecking {
     self.capabilities = capabilities
     self.gatewayID = gatewayID
     self.publicKey = publicKey
+    self.selection = selection
   }
 
-  func health() async throws -> HealthResponse {
+  func negotiate() async throws -> MobileProtocolNegotiation {
     await recorder.append(.health)
-    return HealthResponse(
-      status: status,
-      startedAt: Date(timeIntervalSince1970: 1),
-      pid: 1,
-      agents: 1,
-      channels: 0,
-      apiVersion: apiVersion,
-      capabilities: capabilities
-    )
-  }
-
-  func identity() async throws -> GatewayIdentityDTO {
+    guard status == "healthy" else { throw GatewayError.gatewayOffline }
+    guard apiVersion == 1 else { throw GatewayError.updateRequired }
+    let values = Set(capabilities)
+    guard values.contains(.conversationSyncV1), values.contains(.chatResumeV1) else {
+      throw GatewayError.capabilityRequired
+    }
     await recorder.append(.identity)
-    return GatewayIdentityDTO(gatewayId: gatewayID, publicKey: publicKey)
+    return MobileProtocolNegotiation(
+      selection: selection,
+      identity: GatewayIdentityDTO(gatewayId: gatewayID, publicKey: publicKey)
+    )
   }
 
   func listAgents() async throws -> [RegisteredAgentDTO] {
@@ -717,12 +734,18 @@ private actor FakePairingGateway: PairingGatewayChecking {
 
 private actor FakePairingChatProbe: PairingChatChecking {
   let recorder: PairingCallRecorder
+  let expectedSelection: MobileProtocolSelection
 
-  init(recorder: PairingCallRecorder) {
+  init(
+    recorder: PairingCallRecorder,
+    expectedSelection: MobileProtocolSelection = .v1
+  ) {
     self.recorder = recorder
+    self.expectedSelection = expectedSelection
   }
 
-  func probeAuthentication() async throws {
+  func probeAuthentication(selection: MobileProtocolSelection) async throws {
+    #expect(selection == expectedSelection)
     await recorder.append(.chat)
   }
 }

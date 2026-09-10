@@ -1003,6 +1003,15 @@ struct ChatReducerTests {
       ChatReducer.reduce(state: &update, action: .failure(.updateRequired)) == [.showRepair]
     )
     #expect(update.composerBlock == .updateRequired)
+
+    var mobileVersion = chatState()
+    #expect(
+      ChatReducer.reduce(
+        state: &mobileVersion,
+        action: .failure(.mobileVersionCapabilityRequired)
+      ) == [.showRepair]
+    )
+    #expect(mobileVersion.composerBlock == .updateRequired)
   }
 
   // MARK: - Streaming presence / chrome trim (chat-ux Phase 2, Task 5,

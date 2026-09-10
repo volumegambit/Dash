@@ -9,6 +9,7 @@ enum GatewayError: Error, Equatable, Sendable {
   case revisionConflict(current: ConversationSummaryDTO)
   case conversationBusy(activeTurnId: String)
   case capabilityRequired
+  case mobileVersionCapabilityRequired
   case updateRequired
   case transport(String)
   case mutationOutcomeUnknown(resourceID: String?, requestID: String?)

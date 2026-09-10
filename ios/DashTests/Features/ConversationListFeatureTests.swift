@@ -879,6 +879,20 @@ struct ConversationListFeatureTests {
     #expect(feature.selectedID == canonical.id)
   }
 
+  @Test("mobile-version capability failure makes conversation mutations fail closed")
+  func mobileVersionCapabilityFailureStopsMutations() async {
+    let service = FakeConversationListService()
+    await service.enqueueCreate(.failure(.mobileVersionCapabilityRequired))
+    let feature = makeFeature(service: service)
+    feature.consume(snapshot(connection: .online, conversations: []))
+
+    let createdID = await feature.create(agentID: "agent-1")
+
+    #expect(createdID == nil)
+    #expect(feature.isAuthoritative == false)
+    #expect(feature.mutationError == .failed)
+  }
+
   @Test("connection loss after create admission reconciles the retained request ID")
   func transportCreateFailureKeepsRequestID() async {
     let canonical = summary(id: "created", agentID: "agent-1")

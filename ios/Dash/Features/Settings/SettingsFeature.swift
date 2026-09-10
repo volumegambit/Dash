@@ -207,7 +207,9 @@ final class SettingsFeature {
       error = Self.reauthorizeMessage
     } catch GatewayError.unauthorized {
       error = Self.reauthorizeMessage
-    } catch GatewayError.capabilityRequired, GatewayError.updateRequired {
+    } catch GatewayError.capabilityRequired, GatewayError.mobileVersionCapabilityRequired,
+      GatewayError.updateRequired
+    {
       error = "Update Dash on this device and the gateway, then try again."
     } catch {
       self.error = "Dash couldn't reconnect. Check the gateway and try again."

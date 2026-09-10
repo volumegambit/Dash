@@ -3,15 +3,13 @@ import Foundation
 import Observation
 
 protocol PairingGatewayChecking: Actor {
-  func health() async throws -> HealthResponse
-  func identity() async throws -> GatewayIdentityDTO
   func listAgents() async throws -> [RegisteredAgentDTO]
 }
 
 extension GatewayAPI: PairingGatewayChecking {}
 
 protocol PairingChatChecking: Actor {
-  func probeAuthentication() async throws
+  func probeAuthentication(selection: MobileProtocolSelection) async throws
 }
 
 extension ChatConnection: PairingChatChecking {}
@@ -71,9 +69,16 @@ struct UnavailablePairingVerifier: PairingVerifying {
 }
 
 struct PairingVerifier: Sendable {
+  private let makeNegotiator:
+    @Sendable (ConnectionEndpoint, ConnectionSecrets) -> any MobileProtocolNegotiating
   private let makeGateway:
-    @Sendable (ConnectionEndpoint, ConnectionSecrets) -> any PairingGatewayChecking
-  private let makeChat: @Sendable (ConnectionEndpoint) -> any PairingChatChecking
+    @Sendable (
+      ConnectionEndpoint,
+      ConnectionSecrets,
+      MobileProtocolSelection
+    ) -> any PairingGatewayChecking
+  private let makeChat:
+    @Sendable (ConnectionEndpoint, MobileProtocolSelection) -> any PairingChatChecking
   private let makeProfileID: @Sendable () -> UUID
   #if DEBUG
     /// See `ConnectionProfile.applyingDebugRelayPortOverride` — applied right
@@ -84,14 +89,23 @@ struct PairingVerifier: Sendable {
   #endif
 
   init(
-    makeGateway: @escaping @Sendable (
+    makeNegotiator: @escaping @Sendable (
       ConnectionEndpoint,
       ConnectionSecrets
+    ) -> any MobileProtocolNegotiating,
+    makeGateway: @escaping @Sendable (
+      ConnectionEndpoint,
+      ConnectionSecrets,
+      MobileProtocolSelection
     ) -> any PairingGatewayChecking,
-    makeChat: @escaping @Sendable (ConnectionEndpoint) -> any PairingChatChecking,
+    makeChat: @escaping @Sendable (
+      ConnectionEndpoint,
+      MobileProtocolSelection
+    ) -> any PairingChatChecking,
     makeProfileID: @escaping @Sendable () -> UUID = UUID.init,
     debugRelayPortOverride: Int? = nil
   ) {
+    self.makeNegotiator = makeNegotiator
     self.makeGateway = makeGateway
     self.makeChat = makeChat
     self.makeProfileID = makeProfileID
@@ -118,21 +132,12 @@ struct PairingVerifier: Sendable {
       let rawProfile = validatedProfile
     #endif
     let endpoint = ConnectionEndpoint(profile: rawProfile, secrets: secrets)
-    let gateway = makeGateway(endpoint, secrets)
-
     await onStep(.reachability)
-    let health = try await gateway.health()
-    guard health.status == "healthy" else { throw GatewayError.gatewayOffline }
-    guard health.apiVersion == 1 else { throw GatewayError.updateRequired }
+    let negotiation = try await makeNegotiator(endpoint, secrets).negotiate()
 
     await onStep(.capabilities)
-    let capabilities = Set(health.capabilities)
-    guard capabilities.contains(.conversationSyncV1), capabilities.contains(.chatResumeV1) else {
-      throw GatewayError.capabilityRequired
-    }
-
     await onStep(.identity)
-    let identity = try await gateway.identity()
+    let identity = negotiation.identity
     guard
       identity.gatewayId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
       identity.publicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -141,10 +146,13 @@ struct PairingVerifier: Sendable {
     }
 
     await onStep(.agents)
+    let gateway = makeGateway(endpoint, secrets, negotiation.selection)
     _ = try await gateway.listAgents()
 
     await onStep(.chat)
-    try await makeChat(endpoint).probeAuthentication()
+    try await makeChat(endpoint, negotiation.selection).probeAuthentication(
+      selection: negotiation.selection
+    )
 
     var profile = rawProfile
     profile.gatewayId = identity.gatewayId
@@ -544,7 +552,7 @@ final class PairingFeature {
           title: "Update Dash",
           message: "This gateway does not support mobile conversation sync yet."
         )
-      case .updateRequired:
+      case .updateRequired, .mobileVersionCapabilityRequired:
         return PairingFailure(
           title: "Update Dash",
           message: "Update Dash on this device and the gateway to compatible versions."
