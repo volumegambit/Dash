@@ -1,12 +1,21 @@
 const FENCE_RE = /^(```|~~~)/;
 const HEADING_RE = /^#{1,6}\s+(.*)$/;
 const BLOCKQUOTE_RE = /^>+\s?(.*)$/;
-const ORDERED_ITEM_RE = /^\s*\d+[.)]\s+(.*)$/;
+// The negative lookahead excludes a marker followed by a digit: "3. 5 mg" is
+// a decimal reflowed across a space, not an ordered-list item, while
+// "3. Five items" is. Shared by `speakable()` and `SentenceChunker`'s
+// streaming classifier (`isOrderedCandidate`) so both agree on what counts.
+const ORDERED_ITEM_RE = /^\s*\d+[.)]\s+(?!\d)(.*)$/;
 const BULLET_ITEM_RE = /^\s*[-*+]\s+(.*)$/;
 const TERMINAL_PUNCTUATION_RE = /[.!?:]$/;
 
 /** Emit triggers for `SentenceChunker`: sentence-ending punctuation followed by whitespace. */
 const SENTENCE_BOUNDARY_CHARS = '.!?:';
+
+// Closing punctuation that may sit between a terminator and the whitespace that confirms it as a
+// boundary (e.g. `He said "go." Then` — the `"` sits between the `.` and the space). Included in
+// the emitted sentence. Right double quotation mark U+201D is the curly `"`.
+const CLOSING_PUNCTUATION = '"\')]”';
 
 const DEFAULT_MAX_CHARS = 280;
 
@@ -149,27 +158,37 @@ export function speakable(markdown: string): string {
  * Finds the split point for the next emittable sentence in `text`, or `null`
  * if none is ready yet. Two rules, checked in order:
  *
- * 1. Sentence-ending punctuation (`.`, `!`, `?`, `:`) followed by whitespace —
- *    split right after the punctuation. Suppressed when the token immediately
- *    before the punctuation is a single letter, or single letters chained by
- *    dots (so "e.g. " doesn't split after either dot, and neither does
- *    "i.e. " or "U.S. "), or a digit-only run followed by another digit after
- *    the whitespace (so a reflowed decimal like "3. 5" doesn't split). This
- *    is a deliberately simple heuristic, not general abbreviation detection.
+ * 1. Sentence-ending punctuation (`.`, `!`, `?`, `:`), optionally followed by
+ *    closing punctuation (a quote or bracket — see `CLOSING_PUNCTUATION`),
+ *    followed by whitespace — split right after the punctuation run (the
+ *    closing quote/bracket is included in the sentence, e.g. `He said
+ *    "go."`). Suppressed when the token immediately before the terminator is
+ *    a single letter, or single letters chained by dots (so "e.g. " doesn't
+ *    split after either dot, and neither does "i.e. " or "U.S. "), or a
+ *    digit-only run followed by another digit after the whitespace (so a
+ *    reflowed decimal like "3. 5" doesn't split). This is a deliberately
+ *    simple heuristic, not general abbreviation detection.
  * 2. If `text` exceeds `maxChars`, split at the last whitespace at or before
  *    `maxChars` so a sentence is never cut mid-word; if there is no
- *    whitespace to split on, split at `maxChars`.
+ *    whitespace to split on, split at `maxChars`. Skipped entirely when
+ *    `suppressMaxChars` is set — used while streaming a pipe-table row that
+ *    hasn't been confirmed to have ended yet, so a table is never handed to
+ *    `speakable` as a truncated fragment.
  */
-function findSplit(text: string, maxChars: number): number | null {
+function findSplit(text: string, maxChars: number, suppressMaxChars = false): number | null {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (!SENTENCE_BOUNDARY_CHARS.includes(ch)) continue;
-    if (!/\s/.test(text[i + 1] ?? '')) continue;
+
+    let j = i + 1;
+    while (j < text.length && CLOSING_PUNCTUATION.includes(text[j])) j++;
+    if (!/\s/.test(text[j] ?? '')) continue;
+
     if (isSuppressedBoundary(text, i)) continue;
-    return i + 1;
+    return j;
   }
 
-  if (text.length > maxChars) {
+  if (!suppressMaxChars && text.length > maxChars) {
     const window = text.slice(0, maxChars);
     const lastSpace = window.lastIndexOf(' ');
     return lastSpace > 0 ? lastSpace + 1 : maxChars;
@@ -215,12 +234,17 @@ function isSuppressedBoundary(text: string, punctuationIndex: number): boolean {
  * is confirmed complete (hashes + a space, digits + `.`/`)` + a space, or the
  * bullet char + a space); before that they can still be disqualified.
  *
- * Table-row candidacy is deliberately narrowed to lines whose *first*
- * character is `|` (the common leading-pipe style, matching this package's
- * own fixtures) rather than "contains `|` anywhere" — a mid-line pipe can't
- * be distinguished from ordinary prose without holding the whole line, which
- * would defeat real-time plain-text emission for the overwhelming common
- * case of ordinary prose that happens to contain a `|` character.
+ * Table-row candidacy here (for the leading-pipe table state machine) is
+ * deliberately narrowed to lines whose *first* character is `|` (the common
+ * leading-pipe style, matching this package's own fixtures) rather than
+ * "contains `|` anywhere" — a mid-line pipe can't be distinguished from
+ * ordinary prose without holding the whole line, which would defeat
+ * real-time plain-text emission for the overwhelming common case of
+ * ordinary prose that happens to contain a `|` character. A line without a
+ * leading `|` (e.g. `Name | Age`) is therefore treated as plain text here —
+ * `SentenceChunker` separately protects it from `maxChars` fragmentation
+ * once it's known, at line completion, to look like a table row (see
+ * `looksLikePipeTableRow`), without needing real-time mid-line detection.
  */
 function isBlockCandidate(buf: string): boolean {
   if (buf.length === 0) return true;
@@ -238,8 +262,23 @@ function isHeadingCandidate(buf: string): boolean {
   return /^#{0,6}$/.test(buf) || /^#{1,6}\s/.test(buf);
 }
 
+/**
+ * Mirrors `ORDERED_ITEM_RE`'s "not followed by a digit" rule while the line
+ * is still streaming in: once the marker and its required whitespace run are
+ * complete, the first non-whitespace character decides it — a digit means
+ * this is a decimal like "3. 5", not a list item, so candidacy is revoked;
+ * anything else confirms it (sticky from then on, like the other markers).
+ * Until that first character arrives, it stays a candidate (undecided).
+ */
 function isOrderedCandidate(buf: string): boolean {
-  return /^\s*\d*$/.test(buf) || /^\s*\d+[.)]$/.test(buf) || /^\s*\d+[.)]\s/.test(buf);
+  const markerMatch = buf.match(/^\s*\d+[.)]\s+(\S)?/);
+  if (markerMatch) return markerMatch[1] === undefined || !/\d/.test(markerMatch[1]);
+  return /^\s*\d*$/.test(buf) || /^\s*\d+[.)]$/.test(buf);
+}
+
+/** True when `line` looks like a pipe-table row for `SentenceChunker`'s maxChars protection. */
+function looksLikePipeTableRow(line: string): boolean {
+  return line.startsWith('|') || line.includes(' | ');
 }
 
 function isBulletCandidate(buf: string): boolean {
@@ -290,6 +329,22 @@ type TableState = 'none' | 'pendingHeader' | 'inTable';
  *    `flush()`, at which point it collapses to one `"Code block omitted."`
  *    sentence. Plain-text sentences before or after a fence in the same
  *    paragraph are unaffected by the fence and follow rule 1 as normal.
+ *
+ * A pipe table with no leading `|` on its rows (e.g. `Name | Age`) is
+ * ordinary plain text to rule 1's classifier (nothing distinguishes it from
+ * prose until a `|` actually appears), so its rows stream into the plain
+ * buffer like any other line. To stop `maxChars` from fragmenting it mid-
+ * table (which would hand `speakable` a truncated table it can't recognize
+ * as one), each completed line within the plain buffer is checked against
+ * `looksLikePipeTableRow`; while the most recently completed line qualifies,
+ * `maxChars` overflow splitting is suppressed (terminator-triggered splits
+ * are not, though real table rows rarely contain one). The instant a
+ * completed line no longer qualifies, everything before it is emitted right
+ * then as one `speakable`-summarized sentence — the same "table ends and
+ * emits as a unit" behavior as the leading-pipe table state machine, just
+ * decided one line later since a non-leading pipe can't be seen until the
+ * line containing it completes. A blank line or `flush()` does the same via
+ * the normal forced-drain path if a qualifying line was still in progress.
  */
 export class SentenceChunker {
   private readonly maxChars: number;
@@ -297,6 +352,7 @@ export class SentenceChunker {
   private lineMode: LineMode = 'undetermined';
   private lineBuffer = '';
   private plainBuffer = '';
+  private inPipeTable = false;
 
   private fenceOpen = false;
   private fenceMarker = '';
@@ -361,6 +417,22 @@ export class SentenceChunker {
 
   private handlePlainChar(ch: string, emitted: string[]): void {
     this.plainBuffer += ch;
+    if (ch === '\n') {
+      const body = this.plainBuffer.slice(0, -1);
+      const lineStart = body.lastIndexOf('\n') + 1;
+      const wasInPipeTable = this.inPipeTable;
+      this.inPipeTable = looksLikePipeTableRow(body.slice(lineStart));
+      if (wasInPipeTable && !this.inPipeTable && lineStart > 0) {
+        // The line that just completed is the one that ended the table (it
+        // doesn't itself look like a table row) — everything before it is
+        // the table's own raw lines, so emit that as one summary sentence
+        // right here rather than letting it glue onto whatever comes next.
+        const tableRaw = this.plainBuffer.slice(0, lineStart);
+        this.plainBuffer = this.plainBuffer.slice(lineStart);
+        const summary = speakable(tableRaw);
+        if (summary) emitted.push(summary);
+      }
+    }
     this.drainPlain(emitted);
     if (ch === '\n') {
       this.lineMode = 'undetermined';
@@ -498,6 +570,7 @@ export class SentenceChunker {
   private finalizeParagraph(emitted: string[]): void {
     this.resolveTableState(emitted);
     this.forceDrainPlain(emitted);
+    this.inPipeTable = false;
   }
 
   private appendPlain(text: string, emitted: string[]): void {
@@ -508,7 +581,7 @@ export class SentenceChunker {
 
   private drainPlain(emitted: string[]): void {
     for (;;) {
-      const splitIndex = findSplit(this.plainBuffer, this.maxChars);
+      const splitIndex = findSplit(this.plainBuffer, this.maxChars, this.inPipeTable);
       if (splitIndex === null) break;
       const raw = this.plainBuffer.slice(0, splitIndex);
       this.plainBuffer = this.plainBuffer.slice(splitIndex).replace(/^\s+/, '');

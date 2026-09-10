@@ -35,6 +35,18 @@ describe('speakable', () => {
       expect(speakable(markdown)).toBe(expected);
     });
   }
+
+  // --- Fix round 2 (2): an ordered-item marker must not be followed by a token that starts
+  // with a digit — "3. 5 mg" is a decimal, not a list item; "3. Five items" is a list. ---
+  it('renders a line that looks like an ordered item but is really a decimal, verbatim', () => {
+    expect(speakable('3. 5 mg of aspirin is recommended.')).toBe(
+      '3. 5 mg of aspirin is recommended.',
+    );
+  });
+
+  it('still renders a genuine ordered list as list items', () => {
+    expect(speakable('1. First\n2. Second')).toBe('First. Second.');
+  });
 });
 
 describe('SentenceChunker', () => {
@@ -202,5 +214,60 @@ describe('SentenceChunker', () => {
 
     expect(emitted.length).toBeGreaterThan(1);
     for (const sentence of emitted) expect(sentence.length).toBeLessThanOrEqual(280);
+  });
+
+  // --- Fix round 2 ---
+
+  it('(1) never fragments a leading-pipe-less table with maxChars, even streamed in small deltas', () => {
+    // 20 data rows of "RowN | N" (no leading "|"), which speakable() itself
+    // detects as a table via its own contains-anywhere pipe check — but the
+    // streaming classifier only recognizes a table row (for maxChars-
+    // protection purposes) at line completion, since a mid-line pipe can't
+    // be told apart from prose before the line ends.
+    const rows = Array.from({ length: 20 }, (_, i) => `Row${i + 1} | ${i + 1}`);
+    const table = `Name | Age\n--- | ---\n${rows.join('\n')}\n`;
+
+    const chunker = new SentenceChunker({ maxChars: 60 });
+    const emitted: string[] = [];
+    for (let i = 0; i < table.length; i += 5) {
+      emitted.push(...chunker.push(table.slice(i, i + 5)));
+    }
+    emitted.push(...chunker.flush());
+
+    expect(emitted).toEqual(['Table with 20 rows omitted.']);
+  });
+
+  it('(1) closes a leading-pipe-less table as soon as a plain line follows it, before that line emits', () => {
+    // Mirrors the leading-pipe regression above: the table must be emitted
+    // as its own sentence right when a non-table-row line ends it, not
+    // glued onto that line's own sentence.
+    const chunker = new SentenceChunker();
+    const emitted = chunker.push('Name | Age\n--- | ---\nRow1 | 1\nAfter.\n\n');
+    expect(emitted).toEqual(['Table with 1 row omitted.', 'After.']);
+    expect(chunker.flush()).toEqual([]);
+  });
+
+  it('(2) does not misread "<digits>. <digit>" as an ordered-list item', () => {
+    const chunker = new SentenceChunker();
+    const emitted = [...chunker.push('3. 5 mg of aspirin is recommended.\n\n'), ...chunker.flush()];
+    expect(emitted).toEqual(['3. 5 mg of aspirin is recommended.']);
+  });
+
+  it('(2) still emits a genuine ordered list item per line', () => {
+    const chunker = new SentenceChunker();
+    expect(pushCharsNoFlush(chunker, '1. First\n')).toEqual(['First.']);
+    expect(pushCharsNoFlush(chunker, '2. Second\n')).toEqual(['Second.']);
+    expect(chunker.flush()).toEqual([]);
+  });
+
+  it('(3) counts a terminator followed by a closing quote/bracket then whitespace as a boundary', () => {
+    const text = 'He said "go." Then he left.';
+
+    const whole = new SentenceChunker();
+    const wholeEmitted = [...whole.push(text), ...whole.flush()];
+    expect(wholeEmitted).toEqual(['He said "go."', 'Then he left.']);
+
+    const streamed = new SentenceChunker();
+    expect(pushChars(streamed, text)).toEqual(wholeEmitted);
   });
 });
