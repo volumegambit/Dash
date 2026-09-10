@@ -832,6 +832,9 @@ final class ChatFeature {
   /// `.success` haptic the design asks for. A counter rather than a flag: two
   /// consecutive dictations must each earn their tick.
   private(set) var dictationInsertTick = 0
+  /// The last answer `ComposerView` gave for `AppModel.speechAvailable`, so a
+  /// deferred teardown knows what it is re-deciding.
+  @ObservationIgnored private var speechIsAvailable = false
   @ObservationIgnored private var eventTask: Task<Void, Never>?
   @ObservationIgnored private var eventTaskGeneration: UInt64 = 0
   @ObservationIgnored private var cacheLoadTask: Task<Void, Never>?
@@ -1163,16 +1166,32 @@ final class ChatFeature {
   /// finish uploading the clip it recorded.
   func syncDictation(available: Bool) {
     guard isShutdown == false else { return }
+    speechIsAvailable = available
     guard available else {
+      // A recording already in flight is never torn out from under the user;
+      // `onActivityEnded` runs this again the moment it is over, so a mic
+      // cannot outlive the capability by more than one recording.
       guard dictation?.isBusy != true else { return }
-      dictation = nil
+      retireDictation()
       return
     }
     guard dictation == nil, let feature = makeDictation() else { return }
     feature.onInsert = { [weak self] text in
       await self?.insertDictation(text)
     }
+    feature.onActivityEnded = { [weak self] in
+      guard let self else { return }
+      self.syncDictation(available: self.speechIsAvailable)
+    }
     dictation = feature
+  }
+
+  /// Drops the dictation feature and releases what its factory built for it
+  /// (in the app, a `GatewayAPI` and its `URLSession`).
+  private func retireDictation() {
+    guard let retiring = dictation else { return }
+    dictation = nil
+    Task { await retiring.shutdown() }
   }
 
   func addSelections(_ selections: [ImageSelection]) async {
@@ -2233,10 +2252,8 @@ final class ChatFeature {
     recoveryChangeTask?.cancel()
     // A recording outlives its composer otherwise: the recorder keeps running
     // and the process-wide audio session stays active with nothing owning it.
-    if let retiringDictation = dictation {
-      dictation = nil
-      Task { await retiringDictation.cancel() }
-    }
+    speechIsAvailable = false
+    retireDictation()
   }
 
   func shutdown() async {

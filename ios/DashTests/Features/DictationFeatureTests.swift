@@ -256,6 +256,73 @@ struct DictationFeatureTests {
     #expect(harness.session.deactivations == 1)
   }
 
+  @Test("a clip that cannot be read says so rather than uploading nothing")
+  func recorderStopFailureFails() async {
+    let harness = Harness(transcript: "never uploaded")
+    await harness.recorder.setStopResult(.failure(AudioRecorderError.notRecording))
+    await harness.feature.start()
+
+    let text = await harness.feature.finish()
+
+    #expect(text == nil)
+    #expect(harness.feature.state.phase == .failed("Dash couldn't finish the recording."))
+    #expect(await harness.transcriber.callCount == 0, "there is no audio to upload")
+    #expect(harness.session.deactivations == 1)
+  }
+
+  @Test("an audio session that refuses to activate never starts the recorder")
+  func sessionActivationFailureFails() async {
+    let harness = Harness(transcript: "never recorded")
+    harness.session.setActivationError(AudioRecorderError.couldNotStart)
+
+    await harness.feature.start()
+
+    #expect(harness.feature.state.phase == .failed("Dash couldn't start recording."))
+    #expect(await harness.recorder.startCount == 0)
+    // And nothing is deactivated: the session never became active, and a
+    // stray `setActive(false)` would interrupt whatever else is playing —
+    // the same rule the denied-permission case follows.
+    #expect(harness.session.deactivations == 0)
+  }
+
+  @Test("shutting down ends the recording and releases the feature's own resources")
+  func shutdownRetiresTheFeature() async {
+    let retired = InsertionRecorder()
+    let harness = Harness(
+      transcript: "never uploaded",
+      // `onRetire` is nonisolated (it closes a `GatewayAPI` in the app), so
+      // the recording of it has to hop back.
+      onRetire: { await MainActor.run { retired.append("retired") } }
+    )
+    await harness.feature.start()
+
+    await harness.feature.shutdown()
+
+    #expect(harness.feature.state.phase == .idle)
+    #expect(await harness.recorder.cancelCount == 1)
+    #expect(harness.session.deactivations == 1)
+    // In the app this is the `GatewayAPI`'s `URLSession`; leaking one per
+    // opened conversation is what this hook exists to prevent.
+    #expect(retired.texts == ["retired"])
+  }
+
+  @Test("the owner is told when the feature stops being busy")
+  func activityEndedFiresOnEveryExit() async {
+    let ended = InsertionRecorder()
+    let harness = Harness(transcript: "done")
+    harness.feature.onActivityEnded = { ended.append("ended") }
+
+    await harness.feature.start()
+    #expect(ended.texts.isEmpty, "starting is not an ending")
+
+    await harness.feature.finish()
+    #expect(ended.texts == ["ended"])
+
+    await harness.feature.start()
+    await harness.feature.cancel()
+    #expect(ended.texts == ["ended", "ended"])
+  }
+
   // MARK: - Pure presentation
 
   @Test(
@@ -304,7 +371,8 @@ struct DictationFeatureTests {
       transcript: String = "",
       result: Result<String, Error>? = nil,
       permissionGranted: Bool = true,
-      waitingOn gate: TestGate? = nil
+      waitingOn gate: TestGate? = nil,
+      onRetire: @escaping @Sendable () async -> Void = {}
     ) {
       permission = FakeSpeechPermission(granted: permissionGranted)
       transcriber = FakeSpeechTranscriber(
@@ -319,7 +387,8 @@ struct DictationFeatureTests {
         transcriber: transcriber,
         clock: clock,
         session: session,
-        interruptions: { source.stream() }
+        interruptions: { source.stream() },
+        onRetire: onRetire
       )
       let recorderOfInsertions = inserted
       feature.onInsert = { text in

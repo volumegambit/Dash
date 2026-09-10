@@ -99,12 +99,19 @@ final class DictationFeature {
   /// builds this feature stays ignorant of the conversation it serves.
   @ObservationIgnored var onInsert: (@MainActor @Sendable (String) async -> Void)?
 
+  /// Fires when the feature stops being busy — a finish, a cancel, a failure.
+  /// `ChatFeature` re-runs its availability sync from here: a gateway that
+  /// loses `speech-v1` mid-recording is never torn out from under the user,
+  /// so something has to notice when that recording is over.
+  @ObservationIgnored var onActivityEnded: (@MainActor @Sendable () -> Void)?
+
   @ObservationIgnored private let recorder: any AudioRecording
   @ObservationIgnored private let permission: any SpeechPermissionRequesting
   @ObservationIgnored private let transcriber: any SpeechTranscribing
   @ObservationIgnored private let clock: any AppClock
   @ObservationIgnored private let session: any SpeechSessionControlling
   @ObservationIgnored private let interruptions: SpeechInterruptionSource
+  @ObservationIgnored private let onRetire: @Sendable () async -> Void
   @ObservationIgnored private var meterTask: Task<Void, Never>?
   @ObservationIgnored private var interruptionTask: Task<Void, Never>?
   @ObservationIgnored private var transcriptionTask: Task<TranscriptionResponseDTO, Error>?
@@ -118,7 +125,12 @@ final class DictationFeature {
     transcriber: any SpeechTranscribing,
     clock: any AppClock = SystemAppClock(),
     session: any SpeechSessionControlling = SystemSpeechSessionControl(),
-    interruptions: @escaping SpeechInterruptionSource = SpeechInterruptions.began
+    interruptions: @escaping SpeechInterruptionSource = SpeechInterruptions.began,
+    /// Releases whatever the factory built for this feature alone — in the
+    /// app, the `GatewayAPI` (and its `URLSession`) the transcriber runs on.
+    /// Called by `shutdown()`, so a dictation feature that is dropped does not
+    /// leave a live session behind it.
+    onRetire: @escaping @Sendable () async -> Void = {}
   ) {
     self.recorder = recorder
     self.permission = permission
@@ -126,6 +138,7 @@ final class DictationFeature {
     self.clock = clock
     self.session = session
     self.interruptions = interruptions
+    self.onRetire = onRetire
   }
 
   // MARK: - Presentation
@@ -274,11 +287,24 @@ final class DictationFeature {
     apply(.reset)
   }
 
+  /// Ends any recording and releases the feature's own resources. Terminal:
+  /// the owner has dropped this feature and will build a new one if dictation
+  /// comes back.
+  func shutdown() async {
+    await cancel()
+    await onRetire()
+  }
+
   // MARK: - Internals
 
   @discardableResult
   private func apply(_ action: DictationAction) -> DictationEffect? {
-    DictationReducer.reduce(state: &state, action: action)
+    let wasBusy = isBusy
+    let effect = DictationReducer.reduce(state: &state, action: action)
+    if wasBusy, isBusy == false {
+      onActivityEnded?()
+    }
+    return effect
   }
 
   private func performFinish() async -> String? {
@@ -391,7 +417,7 @@ final class DictationFeature {
     // clock makes the 60 s cap testable in milliseconds.
     let elapsed = Duration.seconds(max(0, await clock.now().timeIntervalSince(startedAt)))
     if apply(.tick(elapsed: elapsed, level: level)) == .autoFinish {
-      await performFinish()
+      _ = await performFinish()
     }
   }
 
@@ -401,7 +427,7 @@ final class DictationFeature {
   /// a frozen bar on screen.
   private func handleMeterEnded() async {
     guard isRecording else { return }
-    await performFinish()
+    _ = await performFinish()
   }
 
   private func handleInterruption() async {

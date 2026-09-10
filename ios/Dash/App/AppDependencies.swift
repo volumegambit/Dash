@@ -547,11 +547,6 @@ struct AppDependencies: Sendable {
             return makeAPI(makeCancellableTransport(currentEndpoint, currentSecrets))
           }
         )
-        // Built unconditionally; whether the mic is OFFERED is
-        // `AppModel.speechAvailable`'s call, read by `ComposerView` (this
-        // closure cannot see the app model, and the capability can arrive
-        // after the conversation is already open).
-        let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
         return ChatFeature(
           gatewayID: profile.gatewayID,
           conversation: conversation,
@@ -559,12 +554,22 @@ struct AppDependencies: Sendable {
           synchronizer: synchronizer,
           transport: LiveChatFeatureTransport(makeConnection: { makeChat(endpoint) }),
           clock: clock,
+          // Whether the mic is OFFERED is `AppModel.speechAvailable`'s call,
+          // read by `ComposerView` — this closure cannot see the app model,
+          // and the capability can arrive after the conversation is already
+          // open. Everything here is therefore built INSIDE the closure: a
+          // `GatewayAPI` carries its own `URLSession` (with a pinned-trust
+          // delegate on a LAN profile), and allocating one per opened
+          // conversation for a feature most gateways do not have is a leak
+          // with no owner. `onRetire` closes it when the feature is dropped.
           makeDictation: {
-            DictationFeature(
+            let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
+            return DictationFeature(
               recorder: AudioRecorderService(clock: clock),
               permission: SystemSpeechPermission(),
               transcriber: speechAPI,
-              clock: clock
+              clock: clock,
+              onRetire: { await speechAPI.shutdown() }
             )
           }
         )

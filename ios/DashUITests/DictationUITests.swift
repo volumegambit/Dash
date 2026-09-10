@@ -43,6 +43,11 @@ final class DictationUITests: DashUITestCase {
     let finish = element("chat.dictation.finish", in: app)
     XCTAssertTrue(element("chat.dictation.countdown", in: app).exists)
     XCTAssertTrue(element("chat.dictation.cancel", in: app).exists)
+    // The container AND its children: a plain `.accessibilityIdentifier` on a
+    // SwiftUI container merges the children away, so naming the bar without
+    // `.accessibilityElement(children: .contain)` silently costs every
+    // control inside it its own identifier.
+    XCTAssertTrue(element("chat.dictation.bar", in: app).exists)
     XCTAssertFalse(
       app.descendants(matching: .any)["chat.composer"].exists,
       "The text field must be replaced while recording, not sit beside the meter"

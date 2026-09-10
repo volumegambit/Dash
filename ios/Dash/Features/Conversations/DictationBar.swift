@@ -51,10 +51,14 @@ struct DictationBar: View {
       Color.secondary.opacity(DashTheme.Opacity.fillMuted),
       in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge)
     )
-    // Deliberately NO identifier on this container: an identifier applied to
-    // a SwiftUI container replaces its children's, which made every control
-    // in the bar answer to `chat.dictation` and none to its own name (caught
-    // by `DictationUITests` on the first run).
+    // `.contain` BEFORE the identifier, and both are load-bearing: an
+    // identifier on a SwiftUI container otherwise merges its children into
+    // one element, which made every control in this bar answer to the
+    // container's name and none to its own (caught by `DictationUITests` on
+    // the first run). `.contain` keeps the bar addressable as a whole AND
+    // leaves × and ✓ individually addressable.
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("chat.dictation.bar")
   }
 
   /// A bar, not a waveform: the meter's job is to answer "is it hearing me?",
@@ -73,8 +77,9 @@ struct DictationBar: View {
     }
     .frame(height: 6)
     .frame(maxWidth: .infinity)
+    // Hidden, and therefore deliberately unnamed: an identifier on an element
+    // no accessibility client can see is dead weight.
     .accessibilityHidden(true)
-    .accessibilityIdentifier("chat.dictation.meter")
   }
 }
 

@@ -6034,10 +6034,50 @@ struct ChatFeatureTests {
     #expect(feature.dictation != nil, "a gateway losing speech must not eat the user's recording")
   }
 
+  @Test("a recording that ends is torn down if the capability went away meanwhile")
+  func dictationIsRetiredOnceTheRecordingEnds() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "too late") })
+    feature.syncDictation(available: true)
+    await feature.dictation?.start()
+    feature.syncDictation(available: false)
+    #expect(feature.dictation != nil)
+
+    await feature.dictation?.cancel()
+
+    // Deferred, not cancelled: the mic must not outlive the capability by
+    // more than the one recording it was already making.
+    #expect(feature.dictation == nil)
+  }
+
+  @Test("shutting the conversation down ends an active dictation")
+  func shutdownCancelsAnActiveDictation() async {
+    let recorder = FakeAudioRecorder()
+    let feature = makeFeature(
+      makeDictation: { dictationFeature(transcript: "abandoned", recorder: recorder) }
+    )
+    feature.syncDictation(available: true)
+    let dictation = feature.dictation
+    await dictation?.start()
+
+    feature.prepareForShutdown()
+
+    #expect(feature.dictation == nil)
+    // The teardown is a task, so the recorder is stopped a beat later — but
+    // it IS stopped: a recording that outlives its composer leaves the audio
+    // session armed with nothing owning it.
+    await expectEventually("the recorder to be cancelled") {
+      dictation?.state.phase == .idle
+    }
+    #expect(await recorder.cancelCount == 1)
+  }
+
   @MainActor
-  private func dictationFeature(transcript: String) -> DictationFeature {
+  private func dictationFeature(
+    transcript: String,
+    recorder: FakeAudioRecorder = FakeAudioRecorder()
+  ) -> DictationFeature {
     DictationFeature(
-      recorder: FakeAudioRecorder(),
+      recorder: recorder,
       permission: FakeSpeechPermission(granted: true),
       transcriber: FakeSpeechTranscriber(result: .success(transcript)),
       clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
