@@ -87,6 +87,168 @@ struct GatewayAPITests {
     #expect(try encodedPath(#require(URLProtocolStub.requests.last)) == "/mobile/v2/agents")
   }
 
+  @Test("v2 bootstrap preserves the raw queue payload and request metadata")
+  func v2BootstrapRequest() async throws {
+    try URLProtocolStub.enqueue(
+      status: 200,
+      fixture: "conversation-bootstrap.json",
+      version: 2
+    )
+
+    let bootstrap = try await makeAPI(relay: true, selection: .v2Queue)
+      .bootstrap(conversationID: "conversation/1 ?")
+
+    #expect(bootstrap.v2ThroughSeq == 12)
+    #expect(bootstrap.pendingInputs.map(\.kind) == [.steer, .followUp, .followUp])
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "GET")
+    #expect(
+      try encodedPath(request)
+        == "/mobile/v2/conversations/conversation%2F1%20%3F/bootstrap"
+    )
+    #expect(request.url?.query == nil)
+    #expect(
+      request.value(forHTTPHeaderField: "Authorization")
+        == "Bearer management-test-token"
+    )
+    #expect(
+      request.value(forHTTPHeaderField: "x-dash-relay-credential")
+        == "relay-test-token"
+    )
+    #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
+    #expect(request.httpBody == nil)
+  }
+
+  @Test("v2 messages preserve delivery metadata and exact cursor query")
+  func v2MessagesRequest() async throws {
+    try URLProtocolStub.enqueue(
+      status: 200,
+      fixture: "conversation-message-page.json",
+      version: 2
+    )
+
+    let page = try await makeAPI(relay: true, selection: .v2Queue).messagesV2(
+      conversationID: "conversation/1 ?",
+      limit: 100,
+      before: "opaque/+cursor=="
+    )
+
+    #expect(page.throughSeq == 5)
+    #expect(page.items.map(\.deliveryKind) == [.normal, .steer, .followUp])
+    #expect(page.items.map(\.segmentIndex) == [0, 1, 0])
+    #expect(page.items[1].deliveryStatus == .pending)
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "GET")
+    #expect(
+      try encodedPath(request)
+        == "/mobile/v2/conversations/conversation%2F1%20%3F/messages"
+    )
+    #expect(try queryNames(request) == ["limit", "before"])
+    #expect(try queryValues(request) == ["100", "opaque/+cursor=="])
+    #expect(
+      request.value(forHTTPHeaderField: "Authorization")
+        == "Bearer management-test-token"
+    )
+    #expect(
+      request.value(forHTTPHeaderField: "x-dash-relay-credential")
+        == "relay-test-token"
+    )
+    #expect(request.httpBody == nil)
+  }
+
+  @Test("v2 conversation list preserves queue metadata and exact page query")
+  func v2ConversationListRequest() async throws {
+    try URLProtocolStub.enqueue(
+      status: 200,
+      fixture: "conversation-page.json",
+      version: 2
+    )
+
+    let page = try await makeAPI(relay: true, selection: .v2Queue).conversationsV2(
+      agentId: "agent/1",
+      limit: 25,
+      cursor: "opaque/+cursor=="
+    )
+
+    #expect(page.items.map(\.queuePaused) == [true])
+    #expect(page.items.map(\.queueRevision) == [4])
+    #expect(page.items.map(\.pendingFollowUpCount) == [2])
+    #expect(page.items.map(\.v2LastSeq) == [8])
+    let request = try #require(URLProtocolStub.requests.last)
+    #expect(request.httpMethod == "GET")
+    #expect(try encodedPath(request) == "/mobile/v2/conversations")
+    #expect(try queryNames(request) == ["agentId", "limit", "cursor"])
+    #expect(try queryValues(request) == ["agent/1", "25", "opaque/+cursor=="])
+    #expect(
+      request.value(forHTTPHeaderField: "Authorization")
+        == "Bearer management-test-token"
+    )
+    #expect(
+      request.value(forHTTPHeaderField: "x-dash-relay-credential")
+        == "relay-test-token"
+    )
+    #expect(request.httpBody == nil)
+  }
+
+  @Test("conversation readers reject a mismatched selected protocol before transport")
+  func conversationReaderProtocolGuards() async {
+    let v1 = makeAPI()
+    let v2 = makeAPI(selection: .v2Queue)
+
+    let legacyList = await gatewayError {
+      try await v2.conversations(agentId: nil, limit: 25, cursor: nil)
+    }
+    let legacyMessages = await gatewayError {
+      try await v2.messages(conversationID: "conv-1", limit: 25, before: nil)
+    }
+    let rawList = await gatewayError {
+      try await v1.conversationsV2(agentId: nil, limit: 25, cursor: nil)
+    }
+    let rawBootstrap = await gatewayError {
+      try await v1.bootstrap(conversationID: "conv-1")
+    }
+    let rawMessages = await gatewayError {
+      try await v1.messagesV2(conversationID: "conv-1", limit: 25, before: nil)
+    }
+
+    #expect(legacyList == .updateRequired)
+    #expect(legacyMessages == .updateRequired)
+    #expect(rawList == .updateRequired)
+    #expect(rawBootstrap == .updateRequired)
+    #expect(rawMessages == .updateRequired)
+    #expect(URLProtocolStub.requests.isEmpty)
+  }
+
+  @Test("v2 conversation readers reject unknown top-level response fields")
+  func v2ConversationReaderStrictness() async throws {
+    for fixture in [
+      "conversation-page.json",
+      "conversation-bootstrap.json",
+      "conversation-message-page.json",
+    ] {
+      URLProtocolStub.enqueue(
+        status: 200,
+        data: try v2FixtureWithUnexpectedTopLevelField(fixture)
+      )
+    }
+    let api = makeAPI(selection: .v2Queue)
+
+    let list = await gatewayError {
+      try await api.conversationsV2(agentId: nil, limit: 25, cursor: nil)
+    }
+    let bootstrap = await gatewayError {
+      try await api.bootstrap(conversationID: "conv-1")
+    }
+    let messages = await gatewayError {
+      try await api.messagesV2(conversationID: "conv-1", limit: 25, before: nil)
+    }
+
+    #expect(list == .updateRequired)
+    #expect(bootstrap == .updateRequired)
+    #expect(messages == .updateRequired)
+    #expect(URLProtocolStub.requests.count == 3)
+  }
+
   @Test("agent methods send exact paths, methods, and minimal bodies")
   func agentRequestShapes() async throws {
     let agentData = try registeredAgentData()
@@ -270,6 +432,7 @@ struct GatewayAPITests {
   @Test("page limits are validated before a request is sent")
   func pageLimitValidation() async {
     let api = makeAPI()
+    let v2 = makeAPI(selection: .v2Queue)
 
     let low = await gatewayError {
       try await api.conversations(agentId: nil, limit: 0, cursor: nil)
@@ -277,9 +440,17 @@ struct GatewayAPITests {
     let high = await gatewayError {
       try await api.messages(conversationID: "conv-1", limit: 101, before: nil)
     }
+    let v2Low = await gatewayError {
+      try await v2.conversationsV2(agentId: nil, limit: 0, cursor: nil)
+    }
+    let v2High = await gatewayError {
+      try await v2.messagesV2(conversationID: "conv-1", limit: 101, before: nil)
+    }
 
     #expect(low == .validation("limit must be between 1 and 100"))
     #expect(high == .validation("limit must be between 1 and 100"))
+    #expect(v2Low == .validation("limit must be between 1 and 100"))
+    #expect(v2High == .validation("limit must be between 1 and 100"))
     #expect(URLProtocolStub.requests.isEmpty)
   }
 
@@ -659,6 +830,14 @@ private func queryValues(_ request: URLRequest) throws -> [String?] {
 private func stringBody(_ request: URLRequest) throws -> [String: String] {
   let data = try #require(request.httpBody)
   return try #require(JSONSerialization.jsonObject(with: data) as? [String: String])
+}
+
+private func v2FixtureWithUnexpectedTopLevelField(_ name: String) throws -> Data {
+  var object = try #require(
+    JSONSerialization.jsonObject(with: MobileV2FixtureLoader.data(name)) as? [String: Any]
+  )
+  object["unexpected"] = true
+  return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 }
 
 private func decodeCurrent(from error: MobileAPIError) throws -> ConversationSummaryDTO? {

@@ -124,15 +124,26 @@ actor GatewayAPI {
     limit: Int,
     cursor: String?
   ) async throws -> ConversationPageDTO {
+    try requireSelection(.v1)
     try validate(limit: limit)
-    var query: [URLQueryItem] = []
-    if let agentId {
-      query.append(URLQueryItem(name: "agentId", value: agentId))
-    }
-    query.append(URLQueryItem(name: "limit", value: String(limit)))
-    if let cursor {
-      query.append(URLQueryItem(name: "cursor", value: cursor))
-    }
+    let query = conversationPageQuery(agentId: agentId, limit: limit, cursor: cursor)
+    return try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("conversations"),
+        query: query
+      )
+    )
+  }
+
+  func conversationsV2(
+    agentId: String?,
+    limit: Int,
+    cursor: String?
+  ) async throws -> MobileV2ConversationPage {
+    try requireSelection(.v2Queue)
+    try validate(limit: limit)
+    let query = conversationPageQuery(agentId: agentId, limit: limit, cursor: cursor)
     return try await transport.send(
       GatewayRequest(
         method: .get,
@@ -158,6 +169,16 @@ actor GatewayAPI {
   func conversation(id: String) async throws -> ConversationSummaryDTO {
     try await transport.send(
       GatewayRequest(method: .get, path: mobilePath("conversations", id))
+    )
+  }
+
+  func bootstrap(conversationID: String) async throws -> MobileV2ConversationBootstrap {
+    try requireSelection(.v2Queue)
+    return try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("conversations", conversationID, "bootstrap")
+      )
     )
   }
 
@@ -193,6 +214,27 @@ actor GatewayAPI {
     limit: Int,
     before: String?
   ) async throws -> ConversationMessagePageDTO {
+    try requireSelection(.v1)
+    try validate(limit: limit)
+    var query = [URLQueryItem(name: "limit", value: String(limit))]
+    if let before {
+      query.append(URLQueryItem(name: "before", value: before))
+    }
+    return try await transport.send(
+      GatewayRequest(
+        method: .get,
+        path: mobilePath("conversations", conversationID, "messages"),
+        query: query
+      )
+    )
+  }
+
+  func messagesV2(
+    conversationID: String,
+    limit: Int,
+    before: String?
+  ) async throws -> MobileV2ConversationMessagePage {
+    try requireSelection(.v2Queue)
     try validate(limit: limit)
     var query = [URLQueryItem(name: "limit", value: String(limit))]
     if let before {
@@ -231,6 +273,28 @@ actor GatewayAPI {
     guard (1...100).contains(limit) else {
       throw GatewayError.validation("limit must be between 1 and 100")
     }
+  }
+
+  private func requireSelection(_ required: MobileProtocolSelection) throws {
+    guard selection == required else {
+      throw GatewayError.updateRequired
+    }
+  }
+
+  private func conversationPageQuery(
+    agentId: String?,
+    limit: Int,
+    cursor: String?
+  ) -> [URLQueryItem] {
+    var query: [URLQueryItem] = []
+    if let agentId {
+      query.append(URLQueryItem(name: "agentId", value: agentId))
+    }
+    query.append(URLQueryItem(name: "limit", value: String(limit)))
+    if let cursor {
+      query.append(URLQueryItem(name: "cursor", value: cursor))
+    }
+    return query
   }
 
   private func mobilePath(_ components: String...) -> [String] {
