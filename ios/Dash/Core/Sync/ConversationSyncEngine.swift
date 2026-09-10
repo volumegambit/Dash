@@ -475,6 +475,20 @@ actor ConversationSyncEngine {
         lifecycle: lifecycle,
         conversations: conversations
       )
+      // Publish `.online` as soon as the conversation LIST is canonical —
+      // before the per-conversation transcript reloads below. Those reloads
+      // are a round-trip per active conversation, and holding `.online`
+      // hostage to all of them kept `mutationsAllowed` false (compose
+      // disabled, sends blocked) for the whole window even though the
+      // gateway was demonstrably reachable and authenticated. A transcript
+      // failure below still routes to `handle(error:)`, which downgrades
+      // the connection and shows its banner — failures are preserved, they
+      // just no longer retroactively veto list-level availability.
+      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+      try validate(lifecycle: lifecycle, conversations: conversations)
+      publish(.online)
       for canonical in activeConversations {
         let messageReset = beginMessageReset(conversationID: canonical.id)
         messages = messageReset
@@ -498,11 +512,15 @@ actor ConversationSyncEngine {
           throw authoritativeFailure
         }
       }
-      try await recordSuccessfulSync(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
-      try validate(lifecycle: lifecycle, conversations: conversations)
-      publish(.online)
+      // Second `.online` publish: surfaces any summary changes the
+      // transcript reloads persisted (e.g. a running conversation that
+      // completed while backgrounded). Skipped when there was nothing to
+      // reload — the first publish already carried the canonical list.
+      if activeConversations.isEmpty == false {
+        try await reloadSnapshot(lifecycle: lifecycle, conversations: conversations)
+        try validate(lifecycle: lifecycle, conversations: conversations)
+        publish(.online)
+      }
     } catch is CancellationError {
       return
     } catch {
