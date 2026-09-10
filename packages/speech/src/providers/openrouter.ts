@@ -30,6 +30,23 @@ function upstreamMessage(parsed: unknown): string | undefined {
 }
 
 /**
+ * Parses a 200 response body as JSON, mapping a malformed (non-JSON) body to
+ * a {@link SpeechError} with code `provider` instead of letting a raw
+ * `SyntaxError` escape — the route layer switches on `SpeechError.code`, so
+ * an untyped rejection has nothing to match.
+ */
+async function parseJsonBody(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch (err) {
+    throw new SpeechError(
+      'provider',
+      `openrouter returned a non-JSON response body: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
  * Maps a non-ok OpenRouter response to a {@link SpeechError} per the
  * provider's status-code contract: 401/403 -> unauthorized, 413 -> too_large,
  * 429/5xx -> unavailable (message calls out that it's retryable), any other
@@ -110,7 +127,7 @@ export function createOpenRouterSpeechProvider(
     const res = await get(`/models?output_modalities=${kind}`);
     if (!res.ok) throw await errorFromResponse(res);
 
-    const json = (await res.json()) as { data?: unknown[] };
+    const json = (await parseJsonBody(res)) as { data?: unknown[] };
     const data = Array.isArray(json.data) ? json.data : [];
 
     const models: SpeechModel[] = [];
@@ -143,7 +160,7 @@ export function createOpenRouterSpeechProvider(
     const res = await post('/audio/transcriptions', body);
     if (!res.ok) throw await errorFromResponse(res);
 
-    const json = (await res.json()) as { text?: unknown; duration?: unknown };
+    const json = (await parseJsonBody(res)) as { text?: unknown; duration?: unknown };
     if (typeof json.text !== 'string' || json.text.length === 0) {
       throw new SpeechError('provider', 'openrouter returned an empty transcription');
     }

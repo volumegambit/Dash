@@ -100,6 +100,15 @@ describe('createOpenRouterSpeechProvider', () => {
       await provider.listModels('speech');
       expect(calls[0]?.url).toBe('https://example.test/v1/models?output_modalities=speech');
     });
+
+    it('throws a provider error on a non-JSON 200 body instead of a raw SyntaxError', async () => {
+      const { impl } = queueFetch([new Response('not json', { status: 200 })]);
+      const provider = createOpenRouterSpeechProvider({ apiKey: 'sk-or-test', fetch: impl });
+
+      const err = await provider.listModels('transcription').catch((caught) => caught);
+      expect(err).toBeInstanceOf(SpeechError);
+      expect(err).toMatchObject({ code: 'provider' });
+    });
   });
 
   describe('transcribe', () => {
@@ -151,6 +160,17 @@ describe('createOpenRouterSpeechProvider', () => {
       await expect(
         provider.transcribe(new Uint8Array([1]), { model: 'm', format: 'wav' }),
       ).rejects.toMatchObject({ code: 'provider' });
+    });
+
+    it('throws a provider error on a non-JSON 200 body instead of a raw SyntaxError', async () => {
+      const { impl } = queueFetch([new Response('not json', { status: 200 })]);
+      const provider = createOpenRouterSpeechProvider({ apiKey: 'sk-or-test', fetch: impl });
+
+      const err = await provider
+        .transcribe(new Uint8Array([1]), { model: 'm', format: 'wav' })
+        .catch((caught) => caught);
+      expect(err).toBeInstanceOf(SpeechError);
+      expect(err).toMatchObject({ code: 'provider' });
     });
   });
 
