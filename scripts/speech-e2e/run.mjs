@@ -184,7 +184,7 @@ async function main() {
       failures++;
       console.log(`  ❌ unexpected error: ${err?.stack || err}`);
     }
-    console.log('\n--- gateway log tail ---\n' + gw.tail(40));
+    console.log(`\n--- gateway log tail ---\n${gw.tail(40)}`);
   } finally {
     await gw.stop();
   }
