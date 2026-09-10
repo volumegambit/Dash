@@ -28,3 +28,5 @@ export type {
   SpeechService,
   SpeechServiceOptions,
 } from './service.js';
+export { VoiceActivityDetector } from './vad.js';
+export type { VadEvent, VadOptions } from './vad.js';
