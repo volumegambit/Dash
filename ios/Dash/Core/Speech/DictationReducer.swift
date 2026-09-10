@@ -83,6 +83,13 @@ enum DictationReducer {
       // Only an upload we are still waiting on may write to the draft. A
       // transcript that lands after the user cancelled is discarded audio, and
       // inserting it would put words in the composer the user threw away.
+      //
+      // This guard is phase-only, so it CANNOT tell a late response from
+      // upload #1 apart from upload #2's: if the user cancels and immediately
+      // records again, the stale transcript arrives while the phase is
+      // `.uploading` once more and would be inserted as if it were the new
+      // one. A8 must therefore cancel any in-flight transcription task on
+      // `started` and on `cancelled` — the reducer cannot do it for them.
       guard case .uploading = state.phase else { return nil }
       state.phase = .idle
       return .insert(text)

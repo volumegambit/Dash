@@ -23,6 +23,21 @@ struct DictationReducerTests {
     #expect(effect == nil)
   }
 
+  @Test(
+    "started from a live recording or an in-flight upload re-arms at zero — A8 must cancel the work it abandons"
+  )
+  func startedFromRecordingOrUploadingReArms() {
+    let phases: [DictationState.Phase] = [.recording(elapsed: .seconds(9), level: 0.8), .uploading]
+
+    for phase in phases {
+      var state = DictationState(phase: phase)
+      let effect = DictationReducer.reduce(state: &state, action: .started)
+
+      #expect(state.phase == .recording(elapsed: .zero, level: 0))
+      #expect(effect == nil)
+    }
+  }
+
   @Test("tick carries the elapsed time and the meter level into the recording phase")
   func tickUpdatesElapsedAndLevel() {
     var state = DictationState(phase: .recording(elapsed: .zero, level: 0))
@@ -138,6 +153,22 @@ struct DictationReducerTests {
     #expect(effect == nil)
   }
 
+  @Test("a transcript that arrives while recording, or after the upload already failed, is dropped")
+  func transcribedOutsideUploadingIsDropped() {
+    let phases: [DictationState.Phase] = [
+      .recording(elapsed: .seconds(2), level: 0.4),
+      .failed("The request timed out."),
+    ]
+
+    for phase in phases {
+      var state = DictationState(phase: phase)
+      let effect = DictationReducer.reduce(state: &state, action: .transcribed("late text"))
+
+      #expect(state.phase == phase)
+      #expect(effect == nil)
+    }
+  }
+
   @Test("failed records the message from any phase, including idle (permission denied)")
   func failedRecordsTheMessageFromAnyPhase() {
     let phases: [DictationState.Phase] = [
@@ -246,5 +277,79 @@ struct AudioRecorderLevelTests {
   func mappingIsAmplitude() {
     #expect(abs(AudioRecorderService.normalizedLevel(fromDecibels: -20) - 0.1) < 0.0001)
     #expect(abs(AudioRecorderService.normalizedLevel(fromDecibels: -6) - 0.5012) < 0.001)
+  }
+}
+
+/// `AudioLevelBroadcaster` is the part of the recorder that decides who sees
+/// the meter, and it is pure Swift — no microphone needed.
+@Suite("Audio level broadcast")
+struct AudioLevelBroadcasterTests {
+  @Test("every access is an independent stream, and all of them receive the meter")
+  func everyConsumerReceivesTheMeter() async {
+    let broadcaster = AudioLevelBroadcaster()
+    let first = broadcaster.stream
+    let second = broadcaster.stream
+    var firstLevels = first.makeAsyncIterator()
+    var secondLevels = second.makeAsyncIterator()
+    #expect(broadcaster.consumerCount == 2)
+
+    broadcaster.yield(0.25)
+
+    #expect(await firstLevels.next() == 0.25)
+    #expect(await secondLevels.next() == 0.25)
+  }
+
+  @Test(
+    "cancelling one consumer's task leaves the others live — with a single shared stream the meter would be dead for the rest of the app's life"
+  )
+  func cancellingOneConsumerLeavesTheOthersLive() async {
+    let broadcaster = AudioLevelBroadcaster()
+    let survivor = broadcaster.stream
+    var survivorLevels = survivor.makeAsyncIterator()
+
+    let abandoned = Task {
+      for await _ in broadcaster.stream {}
+    }
+    await waitUntil { broadcaster.consumerCount == 2 }
+    abandoned.cancel()
+    await abandoned.value
+    await waitUntil { broadcaster.consumerCount == 1 }
+    #expect(broadcaster.consumerCount == 1)
+
+    broadcaster.yield(0.75)
+    #expect(await survivorLevels.next() == 0.75)
+  }
+
+  @Test("finish ends every consumer's loop, and the stream taken for the next recording is live")
+  func finishEndsEveryLoopAndTheNextStreamIsLive() async {
+    let broadcaster = AudioLevelBroadcaster()
+    let first = broadcaster.stream
+    let second = broadcaster.stream
+    var firstLevels = first.makeAsyncIterator()
+    var secondLevels = second.makeAsyncIterator()
+    broadcaster.yield(0.5)
+    #expect(await firstLevels.next() == 0.5)
+    #expect(await secondLevels.next() == 0.5)
+
+    broadcaster.finish()
+
+    #expect(await firstLevels.next() == nil)
+    #expect(await secondLevels.next() == nil)
+    #expect(broadcaster.consumerCount == 0)
+
+    let next = broadcaster.stream
+    var nextLevels = next.makeAsyncIterator()
+    broadcaster.yield(0.9)
+    #expect(await nextLevels.next() == 0.9)
+  }
+
+  /// A consumer deregisters itself from its termination handler, which runs on
+  /// the cancelled task's own schedule — hence a bounded poll rather than a
+  /// fixed sleep.
+  private func waitUntil(_ condition: @Sendable () -> Bool) async {
+    for _ in 0..<200 {
+      if condition() { return }
+      try? await Task.sleep(for: .milliseconds(5))
+    }
   }
 }

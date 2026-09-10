@@ -19,9 +19,17 @@ protocol AudioRecording: Sendable {
   /// Stops and deletes without reading — the audio is discarded.
   func cancel() async
   /// A 0…1 microphone level, sampled every 100 ms while recording, for the
-  /// composer's meter. SINGLE CONSUMER: one continuation is created with the
-  /// service and shared by every reader, so a second `for await` would steal
-  /// values from the first. A8 iterates it once, for the feature's lifetime.
+  /// composer's meter.
+  ///
+  /// EVERY ACCESS RETURNS AN INDEPENDENT STREAM, and each one ENDS (the
+  /// `for await` completes) when the recording does, on `stop` or `cancel`.
+  /// Take a fresh stream per recording; abandoning or cancelling one consumer
+  /// affects only that consumer, never the meter for the next recording.
+  ///
+  /// The independence matters: an `AsyncStream` is dead once its consumer's
+  /// task is cancelled, so a single shared stream created with the recorder
+  /// would silently stop metering for the rest of the app's life the first
+  /// time a dictation task was cancelled.
   var level: AsyncStream<Float> { get }
 }
 
@@ -29,8 +37,62 @@ enum AudioRecorderError: Error, Equatable, Sendable {
   /// `AVAudioRecorder.record()` refused — almost always the audio session was
   /// not activated, or another app holds the input route.
   case couldNotStart
+  /// `start()` while a recording is already running. Stop or cancel first;
+  /// starting silently over the top would orphan the first temp file.
+  case alreadyRecording
   /// `stop()` without a `start()`.
   case notRecording
+}
+
+/// Fans the meter out to every live `level` consumer, and lets a consumer go
+/// away (task cancelled, view dismissed) without taking the others with it.
+///
+/// A plain final class with an `NSLock` rather than an actor, following
+/// `QRScannerRuntime` and `UITestIdentifierSource`: `AudioRecording.level` is
+/// a synchronous requirement, so handing out a stream cannot `await`.
+final class AudioLevelBroadcaster: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuations: [UUID: AsyncStream<Float>.Continuation] = [:]
+
+  /// A fresh stream, registered until it ends — whether that is this
+  /// broadcaster finishing it or the consumer walking away.
+  var stream: AsyncStream<Float> {
+    let id = UUID()
+    // `bufferingNewest(1)`: a meter that fell behind should jump to the
+    // current loudness, not replay a backlog of stale samples.
+    let pair = AsyncStream<Float>.makeStream(of: Float.self, bufferingPolicy: .bufferingNewest(1))
+    pair.continuation.onTermination = { [weak self] _ in
+      self?.remove(id)
+    }
+    lock.withLock { continuations[id] = pair.continuation }
+    return pair.stream
+  }
+
+  func yield(_ value: Float) {
+    // Copied out from under the lock: `yield` can run the consumer's
+    // termination handler, which comes straight back here for `remove`.
+    for continuation in lock.withLock({ Array(continuations.values) }) {
+      continuation.yield(value)
+    }
+  }
+
+  /// Ends every live consumer's loop — the recording is over, so a `for await`
+  /// on the meter should complete rather than hang.
+  func finish() {
+    let live = lock.withLock {
+      let values = Array(continuations.values)
+      continuations.removeAll()
+      return values
+    }
+    for continuation in live { continuation.finish() }
+  }
+
+  /// Live consumer count, for tests.
+  var consumerCount: Int { lock.withLock { continuations.count } }
+
+  private func remove(_ id: UUID) {
+    _ = lock.withLock { continuations.removeValue(forKey: id) }
+  }
 }
 
 /// Records dictation to a temp `.m4a` with `AVAudioRecorder`.
@@ -41,9 +103,9 @@ enum AudioRecorderError: Error, Equatable, Sendable {
 /// streaming session — dictation only needs a file, and a file recorder is
 /// far less to get wrong.
 actor AudioRecorderService: AudioRecording {
-  nonisolated let level: AsyncStream<Float>
+  nonisolated var level: AsyncStream<Float> { levels.stream }
 
-  private let levelContinuation: AsyncStream<Float>.Continuation
+  private nonisolated let levels = AudioLevelBroadcaster()
   private let clock: any AppClock
   private var recorder: AVAudioRecorder?
   private var fileURL: URL?
@@ -54,23 +116,27 @@ actor AudioRecorderService: AudioRecording {
   private static let meterInterval: Duration = .milliseconds(100)
 
   init(clock: any AppClock = SystemAppClock()) {
-    // `bufferingNewest(1)`: a meter that fell behind should jump to the
-    // current loudness, not replay a backlog of stale samples.
-    let pair = AsyncStream<Float>.makeStream(of: Float.self, bufferingPolicy: .bufferingNewest(1))
-    level = pair.stream
-    levelContinuation = pair.continuation
     self.clock = clock
   }
 
   deinit {
-    // Only the nonisolated continuation is touched here; the meter task holds
+    // Only the nonisolated broadcaster is touched here; the meter task holds
     // `self` weakly and exits on its next tick.
-    levelContinuation.finish()
+    levels.finish()
   }
 
   func start(maxDuration: Duration) async throws {
-    // Starting twice would orphan the first temp file.
-    await cancel()
+    // Starting over a live recording would orphan its temp file and its meter
+    // task, so it is an error rather than an implicit cancel — the caller
+    // knows whether the audio should be kept (`stop`) or dropped (`cancel`).
+    //
+    // This method suspends nowhere, so the actor runs it to completion and two
+    // callers cannot interleave past this guard.
+    guard recorder == nil else { throw AudioRecorderError.alreadyRecording }
+    // Clears any residue from a `start` that failed halfway. Deliberately not
+    // `cancel()`: that also ends the meter streams, and a caller that took one
+    // before starting would find it already closed.
+    discardRecording()
 
     let url = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString)
@@ -107,25 +173,41 @@ actor AudioRecorderService: AudioRecording {
 
   func stop() async throws -> Data {
     guard let recorder, let url = fileURL else { throw AudioRecorderError.notRecording }
-    stopMetering()
+    meterTask?.cancel()
+    meterTask = nil
     // Not guarded on `isRecording`: the `forDuration` backstop may already
     // have stopped it, and the file still has to be read and removed.
     recorder.stop()
     self.recorder = nil
     fileURL = nil
+    endMeter()
     // The clip is never persisted — the usage string promises exactly that.
     defer { try? FileManager.default.removeItem(at: url) }
     return try Data(contentsOf: url)
   }
 
   func cancel() async {
-    stopMetering()
+    discardRecording()
+    endMeter()
+  }
+
+  /// Tears the recording down without touching the meter streams.
+  private func discardRecording() {
+    meterTask?.cancel()
+    meterTask = nil
     recorder?.stop()
     recorder = nil
     if let url = fileURL {
       try? FileManager.default.removeItem(at: url)
       fileURL = nil
     }
+  }
+
+  /// Drops the meter to silence so a UI still on screen does not freeze with
+  /// the last loud sample, then ends every consumer's loop.
+  private func endMeter() {
+    levels.yield(0)
+    levels.finish()
   }
 
   private func startMetering() {
@@ -142,18 +224,17 @@ actor AudioRecorderService: AudioRecording {
     }
   }
 
-  private func stopMetering() {
-    meterTask?.cancel()
-    meterTask = nil
-    // Drop the meter to silence so a UI that stops reading mid-recording does
-    // not freeze with the last loud sample on screen.
-    levelContinuation.yield(0)
-  }
-
   private func emitLevel() {
-    guard let recorder, recorder.isRecording else { return }
+    guard let recorder else { return }
+    // The `forDuration` backstop can stop the recorder before anyone calls
+    // `stop()`; report silence rather than leaving the last sample frozen on
+    // screen until the caller notices.
+    guard recorder.isRecording else {
+      levels.yield(0)
+      return
+    }
     recorder.updateMeters()
-    levelContinuation.yield(Self.normalizedLevel(fromDecibels: recorder.averagePower(forChannel: 0)))
+    levels.yield(Self.normalizedLevel(fromDecibels: recorder.averagePower(forChannel: 0)))
   }
 
   /// `averagePower(forChannel:)` is in dBFS: 0 at full scale, −160 for
