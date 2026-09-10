@@ -35,6 +35,14 @@ describe('default fetch binding', () => {
     expect(observedThis === undefined || observedThis === globalThis).toBe(true);
   });
 
+  it('MobileRestClient healthV2 default fetch is not invoked as a method of the client', async () => {
+    const client = new MobileRestClient('https://gw.example/mobile/v2', {
+      getToken: async () => 't',
+    });
+    await client.healthV2();
+    expect(observedThis === undefined || observedThis === globalThis).toBe(true);
+  });
+
   it('ControlPlaneClient default fetch is not invoked as a method of the client', async () => {
     const client = new ControlPlaneClient('https://cp.example', { getToken: async () => 't' });
     await client.listGateways();

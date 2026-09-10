@@ -18,9 +18,11 @@
 // test (scripts/mobile-v1-e2e.test.ts) and the gateway's own mobile-v1 test
 // suite — reused here rather than standing up a second, parallel harness.
 import { randomUUID } from 'node:crypto';
+import { CHAT_INPUT_QUEUE_CAPABILITY } from '@dash/mobile-contract-v2';
 import type { CloseEvent, ErrorEvent } from 'ws';
 import { WebSocket as NodeWebSocket } from 'ws';
 import {
+  type MobileTestHarnessV2Client,
   type RunningMobileTestHarness,
   startMobileTestHarness,
 } from '../../../gateway/src/mobile-test-harness.js';
@@ -105,6 +107,7 @@ describe('web protocol stack against a real gateway (no relay)', () => {
   it('drives loadConversations -> create -> sendMessage -> streamed completion; a second REST client observes both messages', async () => {
     const rest = new MobileRestClient(restBaseUrl, tokenSource(harness.chatToken));
     const store = createWebAppStore({
+      protocol: { version: 1, capabilities: [] },
       rest,
       socketFactory: (onFrame, onClose) =>
         new ChatSocket(wsBaseUrl, rest, onFrame, onClose, nodeWsFactory),
@@ -173,10 +176,17 @@ describe('web protocol stack against a real gateway (no relay)', () => {
   it('resumes a dropped socket mid-turn: the transcript converges via sinceSeq replay against the real gateway', async () => {
     const rest = new MobileRestClient(restBaseUrl, tokenSource(harness.chatToken));
     const sockets: ChatSocket[] = [];
+    const transports: NodeWebSocket[] = [];
+    const capturingWsFactory = (url: string, protocols?: string[]): WebSocket => {
+      const transport = new NodeWebSocket(url, protocols, { rejectUnauthorized: false });
+      transports.push(transport);
+      return transport as unknown as WebSocket;
+    };
     const store = createWebAppStore({
+      protocol: { version: 1, capabilities: [] },
       rest,
       socketFactory: (onFrame, onClose) => {
-        const socket = new ChatSocket(wsBaseUrl, rest, onFrame, onClose, nodeWsFactory);
+        const socket = new ChatSocket(wsBaseUrl, rest, onFrame, onClose, capturingWsFactory);
         sockets.push(socket);
         return socket;
       },
@@ -206,7 +216,8 @@ describe('web protocol stack against a real gateway (no relay)', () => {
       // and persisting frames to the durable event log regardless of
       // whether anything is currently attached to read them.
       expect(sockets.length).toBe(1);
-      sockets[0].close();
+      expect(transports.length).toBe(1);
+      transports[0].terminate();
 
       // Store observes the drop and reconnects on its own (exponential
       // backoff, ~1s first attempt) — sending a `resume` frame with
@@ -237,6 +248,185 @@ describe('web protocol stack against a real gateway (no relay)', () => {
       store.getState().dispose();
     }
   }, 20_000);
+
+  it('converges a v2 bootstrap with a replayed second-client mutation while the same gateway keeps ordinary v1 chat compatible', async () => {
+    const v2Harness = await startMobileTestHarness({ scenario: 'follow-up-v2' });
+    const capabilities = [CHAT_INPUT_QUEUE_CAPABILITY];
+    const v2Rest = new MobileRestClient(
+      `${v2Harness.managementBaseUrl}/mobile/v2`,
+      tokenSource(v2Harness.chatToken),
+    );
+    const webTransports: NodeWebSocket[] = [];
+    const capturingV2WsFactory = (url: string, protocols?: string[]): WebSocket => {
+      const transport = new NodeWebSocket(url, protocols, { rejectUnauthorized: false });
+      webTransports.push(transport);
+      return transport as unknown as WebSocket;
+    };
+    const webStore = createWebAppStore({
+      protocol: { version: 2, capabilities },
+      rest: v2Rest,
+      socketFactory: (onFrame, onClose) =>
+        new ChatSocket(
+          v2Harness.chatWebSocketUrl,
+          v2Rest,
+          onFrame,
+          onClose,
+          capturingV2WsFactory,
+          undefined,
+          { version: 2, capabilities },
+        ),
+    });
+    let secondClient: MobileTestHarnessV2Client | undefined;
+    let v1Store: ReturnType<typeof createWebAppStore> | undefined;
+
+    try {
+      const conversation = await v2Rest.createConversation({
+        agentId: v2Harness.agentId,
+        requestId: randomUUID(),
+      });
+      secondClient = await v2Harness.connectV2();
+      await v2Harness.subscribeConversation(secondClient, {
+        conversationId: conversation.id,
+      });
+
+      // Seed state from a second protocol client before Web opens. The
+      // follow-up fixture holds this run at a deterministic safe boundary,
+      // leaving both the live segment and queue available to bootstrap.
+      const runId = randomUUID();
+      secondClient.send({
+        type: 'message',
+        id: runId,
+        agentId: v2Harness.agentId,
+        channelId: 'mission-control',
+        conversationId: conversation.id,
+        text: 'Seed this conversation from Mission Control',
+        resumable: true,
+      });
+      await v2Harness.waitForProviderGate(runId, 'beforeSafeBoundary');
+      const queued = await v2Harness.enqueueInput(secondClient, {
+        conversationId: conversation.id,
+        text: 'Review the integration evidence next',
+        behavior: 'followUp',
+        channelId: 'mission-control',
+      });
+
+      await webStore.getState().loadConversations();
+      await webStore.getState().openConversation(conversation.id);
+      expect(webStore.getState().connection).toBe('connected');
+
+      const bootstrapped = webStore.getState().v2Transcripts[conversation.id];
+      expect(bootstrapped.queueOrder).toEqual([queued.input.inputId]);
+      expect(bootstrapped.inputs[queued.input.inputId]).toEqual(queued.input);
+      expect(Object.values(bootstrapped.messages)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            runId,
+            role: 'user',
+            content: expect.objectContaining({
+              type: 'user',
+              text: 'Seed this conversation from Mission Control',
+            }),
+          }),
+        ]),
+      );
+      const bootstrapSeq = bootstrapped.lastAppliedV2Seq;
+
+      // Drop Web's transport, then mutate from the second client while Web
+      // is detached. Its automatic v2 resubscription must replay the missed
+      // transition from bootstrapSeq without reopening or replacing the store.
+      expect(webTransports).toHaveLength(1);
+      webTransports[0].terminate();
+      await waitUntil(() => webStore.getState().connection === 'reconnecting', 2_000);
+      const updated = await v2Harness.editFollowUp(secondClient, {
+        conversationId: conversation.id,
+        inputId: queued.input.inputId,
+        expectedRevision: queued.input.revision,
+        text: 'Review the final integration evidence next',
+      });
+      await waitUntil(
+        () =>
+          webStore.getState().v2Transcripts[conversation.id]?.inputs[queued.input.inputId]
+            ?.revision === updated.input.revision,
+      );
+      await waitUntil(() => webStore.getState().connection === 'connected');
+      expect(webTransports.length).toBeGreaterThanOrEqual(2);
+
+      const authoritative = await v2Rest.bootstrap(conversation.id);
+      const converged = webStore.getState().v2Transcripts[conversation.id];
+      expect(converged.lastAppliedV2Seq).toBeGreaterThan(bootstrapSeq);
+      expect(converged.lastAppliedV2Seq).toBe(authoritative.v2ThroughSeq);
+      expect(converged.queueRevision).toBe(authoritative.queueRevision);
+      expect(converged.queueOrder).toEqual([updated.input.inputId]);
+      expect(converged.inputs[updated.input.inputId]).toEqual(updated.input);
+      expect(authoritative.pendingInputs).toContainEqual(updated.input);
+      expect(Object.keys(converged.messages).sort()).toEqual(
+        authoritative.messages.map((message) => message.id).sort(),
+      );
+
+      // Remove the queued item before letting the held v2 run finish so it
+      // cannot promote another run while this fixture checks v1 compatibility.
+      await v2Harness.removeFollowUp(secondClient, {
+        conversationId: conversation.id,
+        inputId: updated.input.inputId,
+        expectedRevision: updated.input.revision,
+      });
+      await waitUntil(
+        () => webStore.getState().v2Transcripts[conversation.id]?.queueOrder.length === 0,
+      );
+      v2Harness.releaseProviderGate(runId, 'beforeSafeBoundary');
+      await waitUntil(
+        () =>
+          webStore.getState().v2Transcripts[conversation.id]?.conversation.activeTurnId === null,
+      );
+
+      const v1Rest = new MobileRestClient(
+        `${v2Harness.managementBaseUrl}/mobile/v1`,
+        tokenSource(v2Harness.chatToken),
+      );
+      v1Store = createWebAppStore({
+        protocol: { version: 1, capabilities: [] },
+        rest: v1Rest,
+        socketFactory: (onFrame, onClose) =>
+          new ChatSocket(
+            v2Harness.chatWebSocketUrl,
+            v1Rest,
+            onFrame,
+            onClose,
+            nodeWsFactory,
+            undefined,
+            { version: 1 },
+          ),
+      });
+      const v1Conversation = await v1Rest.createConversation({
+        agentId: v2Harness.agentId,
+        requestId: randomUUID(),
+      });
+      await v1Store.getState().loadConversations();
+      await v1Store.getState().openConversation(v1Conversation.id);
+      await v1Store.getState().sendMessage(v1Conversation.id, 'Ordinary v1 still works');
+      await waitUntil(() => {
+        const transcript = v1Store?.getState().transcripts[v1Conversation.id];
+        return (
+          transcript?.streaming?.type === 'assistant' && transcript.streaming.events.length > 0
+        );
+      });
+      expect(v1Store.getState().protocol).toEqual({ version: 1, capabilities: [] });
+      expect(v1Store.getState().transcripts[v1Conversation.id].error).toBeUndefined();
+      expect(v1Store.getState().transcripts[v1Conversation.id].messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: { type: 'user', text: 'Ordinary v1 still works' },
+          }),
+        ]),
+      );
+    } finally {
+      v1Store?.getState().dispose();
+      webStore.getState().dispose();
+      await secondClient?.close().catch(() => undefined);
+      await v2Harness.stop();
+    }
+  }, 30_000);
 
   describe('security: real ws-ticket handshake and no-auth REST', () => {
     it('mints a ticket over REST and redeems it on a genuine HTTP-upgraded WS handshake', async () => {

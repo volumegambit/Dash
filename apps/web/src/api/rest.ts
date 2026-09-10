@@ -6,20 +6,28 @@ import type {
   ConversationSummary,
   GatewayIdentity,
   MobileAgent,
+  MobileApiError as MobileApiErrorBody,
+  MobileApiErrorCode,
   MobileHealth,
   WsTicketResponse,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+  MobileV2HealthResponse,
+} from '@dash/mobile-contract-v2';
 
-/** Supplies the bearer token used to authenticate mobile v1 REST calls. */
+/** Supplies the bearer token used to authenticate mobile REST calls. */
 export interface TokenSource {
   getToken(): Promise<string>;
 }
 
-/** Thrown for any non-2xx mobile v1 REST response. */
+/** Thrown for any non-2xx mobile REST response. */
 export class MobileApiError extends Error {
   constructor(
     readonly status: number,
-    readonly code: string | undefined,
+    readonly code: MobileApiErrorCode | undefined,
+    readonly apiError?: MobileApiErrorBody,
   ) {
     super(code ? `Mobile API error ${status} (${code})` : `Mobile API error ${status}`);
     this.name = 'MobileApiError';
@@ -27,7 +35,7 @@ export class MobileApiError extends Error {
 }
 
 interface RequestOptions {
-  /** Defaults to true. `health()` is the only unauthenticated endpoint. */
+  /** Defaults to true. Both versioned `health` endpoints are unauthenticated. */
   auth?: boolean;
   body?: unknown;
   query?: Record<string, string | undefined>;
@@ -62,18 +70,65 @@ function buildUrl(baseUrl: string, path: string, query?: Record<string, string |
   return url;
 }
 
-async function readErrorCode(response: Response): Promise<string | undefined> {
+const MOBILE_API_ERROR_CODES: Record<MobileApiErrorCode, true> = {
+  unauthorized: true,
+  not_found: true,
+  validation_failed: true,
+  revision_conflict: true,
+  conversation_busy: true,
+  rate_limited: true,
+  gateway_offline: true,
+  capability_required: true,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function isMobileApiErrorBody(value: unknown): value is MobileApiErrorBody {
+  if (!isRecord(value)) return false;
+  const expectedKeys = Object.hasOwn(value, 'details')
+    ? ['code', 'error', 'retryable', 'details']
+    : ['code', 'error', 'retryable'];
+  return (
+    hasExactKeys(value, expectedKeys) &&
+    typeof value.code === 'string' &&
+    Object.hasOwn(MOBILE_API_ERROR_CODES, value.code) &&
+    typeof value.error === 'string' &&
+    value.error.trim().length > 0 &&
+    typeof value.retryable === 'boolean' &&
+    (!Object.hasOwn(value, 'details') || isRecord(value.details))
+  );
+}
+
+function isGatewayIdentity(value: unknown): value is GatewayIdentity {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['gatewayId', 'publicKey']) &&
+    typeof value.gatewayId === 'string' &&
+    value.gatewayId.length > 0 &&
+    typeof value.publicKey === 'string' &&
+    value.publicKey.length > 0
+  );
+}
+
+async function readMobileApiError(response: Response): Promise<MobileApiErrorBody | undefined> {
   try {
-    const data = (await response.json()) as { code?: unknown };
-    return typeof data.code === 'string' ? data.code : undefined;
+    const data: unknown = await response.json();
+    return isMobileApiErrorBody(data) ? data : undefined;
   } catch {
     return undefined;
   }
 }
 
 /**
- * Thin `fetch` wrapper for the Dash mobile v1 REST surface. `baseUrl` must
- * include the full `/mobile/v1` prefix (e.g. `https://sub.relay.example/mobile/v1`).
+ * Thin `fetch` wrapper for one Dash mobile REST surface. `baseUrl` must
+ * include the full version prefix (for example `https://sub.relay.example/mobile/v2`).
  * No retries — retry policy lives in `state/` (see the retry-aware store built
  * on top of this client).
  */
@@ -96,8 +151,24 @@ export class MobileRestClient {
     return this.request<MobileHealth>('GET', '/health', { auth: false });
   }
 
-  identity(): Promise<GatewayIdentity> {
-    return this.request<GatewayIdentity>('GET', '/identity');
+  healthV2(): Promise<MobileV2HealthResponse> {
+    return this.request<MobileV2HealthResponse>('GET', '/health', { auth: false });
+  }
+
+  async identity(): Promise<GatewayIdentity> {
+    let value: unknown;
+    try {
+      value = await this.request<unknown>('GET', '/identity');
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Malformed gateway identity', { cause: error });
+      }
+      throw error;
+    }
+    if (!isGatewayIdentity(value)) {
+      throw new Error('Malformed gateway identity');
+    }
+    return value;
   }
 
   /** `MobileAgentList` (openapi.yaml `/agents` GET) is a bare array, not an
@@ -119,6 +190,25 @@ export class MobileRestClient {
       'GET',
       `/conversations/${encodeURIComponent(conversationId)}/messages`,
       { query: { before: cursor } },
+    );
+  }
+
+  bootstrap(conversationId: string): Promise<MobileV2ConversationBootstrap> {
+    return this.request<MobileV2ConversationBootstrap>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}/bootstrap`,
+    );
+  }
+
+  getMessagesV2(
+    conversationId: string,
+    before?: string,
+    limit?: number,
+  ): Promise<MobileV2ConversationMessagePage> {
+    return this.request<MobileV2ConversationMessagePage>(
+      'GET',
+      `/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { query: { limit: limit === undefined ? undefined : String(limit), before } },
     );
   }
 
@@ -190,7 +280,8 @@ export class MobileRestClient {
     });
 
     if (!response.ok) {
-      throw new MobileApiError(response.status, await readErrorCode(response));
+      const apiError = await readMobileApiError(response);
+      throw new MobileApiError(response.status, apiError?.code, apiError);
     }
 
     return (await response.json()) as T;

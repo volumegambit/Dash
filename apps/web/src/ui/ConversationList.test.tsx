@@ -1,6 +1,6 @@
 import type { ConversationSummary, MobileAgent } from '@dash/mobile-contract';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
+import type { ChatSocket, ChatSocketClose, FrameHandler } from '../api/chat-socket.js';
 import type { MobileRestClient } from '../api/rest.js';
 import { createWebAppStore } from '../state/store.js';
 import {
@@ -99,11 +99,15 @@ function buildStore(
           summary({ id: conversationId, status: 'deleted', revision: revision + 1 })),
     ),
   } as unknown as MobileRestClient;
-  const factory = vi.fn((_onFrame: FrameHandler, _onClose: (reason: 'error' | 'closed') => void) =>
+  const factory = vi.fn((_onFrame: FrameHandler, _onClose: (close: ChatSocketClose) => void) =>
     fakeSocket(),
   );
   return {
-    store: createWebAppStore({ rest, socketFactory: factory }),
+    store: createWebAppStore({
+      protocol: { version: 1, capabilities: [] },
+      rest,
+      socketFactory: factory,
+    }),
     listConversations: rest.listConversations,
     listAgents: rest.listAgents,
     createConversation: rest.createConversation,

@@ -7,6 +7,13 @@ import type {
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessage,
+  MobileV2ConversationSummary,
+  MobileV2PendingInput,
+  MobileV2WsClientFrame,
+} from '@dash/mobile-contract-v2';
 import {
   act,
   createEvent,
@@ -16,9 +23,10 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import type { ChatSocket, FrameHandler } from '../api/chat-socket.js';
-import type { MobileRestClient } from '../api/rest.js';
-import { createWebAppStore } from '../state/store.js';
+import { ChatSocket, type ChatSocketClose, type FrameHandler } from '../api/chat-socket.js';
+import { MobileApiError, MobileRestClient } from '../api/rest.js';
+import { transcriptFromBootstrap } from '../state/assemble.js';
+import { type WebChatProtocol, createWebAppStore } from '../state/store.js';
 import {
   ChatView,
   EMPTY_CHAT_GREETING,
@@ -40,6 +48,11 @@ vi.mock('./blocks/ContentBlocks.js', async (importOriginal) => {
 });
 
 const CONVERSATION_ID = 'conv-1';
+const V1_PROTOCOL: WebChatProtocol = { version: 1, capabilities: [] };
+const V2_PROTOCOL: WebChatProtocol = {
+  version: 2,
+  capabilities: ['chat-input-queue-v1'],
+};
 
 function summary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -75,26 +88,101 @@ function message(overrides: Partial<ConversationMessage> = {}): ConversationMess
   };
 }
 
-class ScriptedChatSocket {
-  readonly sent: MobileWsClientFrame[] = [];
+function v2Summary(
+  overrides: Partial<MobileV2ConversationSummary> = {},
+): MobileV2ConversationSummary {
+  return {
+    ...summary(),
+    queuePaused: false,
+    queueRevision: 0,
+    pendingFollowUpCount: 0,
+    v2LastSeq: 0,
+    ...overrides,
+  };
+}
+
+function v2Message(
+  overrides: Partial<MobileV2ConversationMessage> = {},
+): MobileV2ConversationMessage {
+  return {
+    ...message(),
+    runId: 'run-1',
+    segmentIndex: 0,
+    deliveryKind: 'normal',
+    ...overrides,
+  };
+}
+
+function pendingInput(overrides: Partial<MobileV2PendingInput> = {}): MobileV2PendingInput {
+  return {
+    inputId: 'input-1',
+    kind: 'follow_up',
+    text: 'next',
+    state: 'queued',
+    revision: 1,
+    enqueueOrder: 1,
+    createdAt: '2026-07-12T00:00:02.000Z',
+    updatedAt: '2026-07-12T00:00:02.000Z',
+    ...overrides,
+  };
+}
+
+function v2Bootstrap(
+  overrides: Partial<MobileV2ConversationBootstrap> = {},
+): MobileV2ConversationBootstrap {
+  return {
+    conversation: v2Summary(),
+    messages: [],
+    nextCursor: null,
+    pendingInputs: [],
+    queuePaused: false,
+    queueRevision: 0,
+    v2ThroughSeq: 0,
+    ...overrides,
+  };
+}
+
+const testRestClient = new MobileRestClient(
+  'https://example.test/mobile/v1',
+  { getToken: async () => 'test-token' },
+  vi.fn(),
+);
+
+type TestClientFrame = MobileWsClientFrame | Exclude<MobileV2WsClientFrame, { type: 'hello' }>;
+
+class ScriptedChatSocket extends ChatSocket {
+  readonly sent: TestClientFrame[] = [];
   closed = false;
   sendShouldThrow = false;
   private settle: ((outcome: 'resolve' | 'reject') => void) | null = null;
 
-  connect(): Promise<void> {
+  constructor() {
+    super(
+      'wss://example.test/ws',
+      testRestClient,
+      () => {},
+      () => {},
+    );
+  }
+
+  override connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.settle = (outcome) => (outcome === 'resolve' ? resolve() : reject(new Error('boom')));
     });
   }
 
-  send(frame: MobileWsClientFrame): void {
+  override send(frame: MobileWsClientFrame | MobileV2WsClientFrame): void {
     if (this.sendShouldThrow) {
       throw new Error('ChatSocket: cannot send while the socket is not open');
     }
-    this.sent.push(frame);
+    // The test factory stands in for an already-handshaken ChatSocket, so
+    // store-level sends never include the transport-owned v2 hello. Keep an
+    // explicit guard so the recorded union exposes the command `id` without
+    // a cast in every legacy assertion below.
+    if (frame.type !== 'hello') this.sent.push(frame);
   }
 
-  close(): void {
+  override close(): void {
     this.closed = true;
   }
 
@@ -106,32 +194,39 @@ class ScriptedChatSocket {
 function scriptedSocketFactory() {
   const sockets: ScriptedChatSocket[] = [];
   const onFrames: FrameHandler[] = [];
-  const onCloses: Array<(reason: 'error' | 'closed') => void> = [];
-  const factory = vi.fn((onFrame: FrameHandler, onClose: (reason: 'error' | 'closed') => void) => {
+  const onCloses: Array<(close: ChatSocketClose) => void> = [];
+  const factory = vi.fn((onFrame: FrameHandler, onClose: (close: ChatSocketClose) => void) => {
     const socket = new ScriptedChatSocket();
     sockets.push(socket);
     onFrames.push(onFrame);
     onCloses.push(onClose);
-    return socket as unknown as ChatSocket;
+    return socket;
   });
   return { factory, sockets, onFrames, onCloses };
 }
 
 function fakeRest(conversationPage: ConversationPage, messages: ConversationMessage[] = []) {
-  const rest = {
-    listConversations: vi.fn(async () => conversationPage),
-    getMessages: vi.fn(async () => ({ items: messages, nextCursor: null, throughSeq: 0 })),
-    // Final-review fix C1b: the store's turn-completion summary refresh
-    // (`maybeRefreshAutoTitle`) is now unconditional (fires on every `done`
-    // frame, not just an untitled conversation), so any test here that
-    // drives a turn to completion needs this stubbed — best-effort/silent
-    // on failure in the store itself, but these tests don't exercise that
-    // path, they just need it not to throw "not a function".
-    getConversation: vi.fn(
-      async (conversationId: string) =>
-        conversationPage.items.find((c) => c.id === conversationId) ?? conversationPage.items[0],
-    ),
-  } as unknown as MobileRestClient;
+  const rest = new MobileRestClient(
+    'https://example.test/mobile/v1',
+    { getToken: async () => 'test-token' },
+    vi.fn(),
+  );
+  rest.listConversations = vi.fn(async () => conversationPage);
+  rest.getMessages = vi.fn(async () => ({ items: messages, nextCursor: null, throughSeq: 0 }));
+  // Final-review fix C1b: the store's turn-completion summary refresh
+  // (`maybeRefreshAutoTitle`) is now unconditional (fires on every `done`
+  // frame, not just an untitled conversation), so any test here that
+  // drives a turn to completion needs this stubbed — best-effort/silent
+  // on failure in the store itself, but these tests don't exercise that
+  // path, they just need it not to throw "not a function".
+  rest.getConversation = vi.fn(
+    async (conversationId: string) =>
+      conversationPage.items.find((c) => c.id === conversationId) ?? conversationPage.items[0],
+  );
+  rest.bootstrap = vi.fn(async (conversationId: string) =>
+    v2Bootstrap({ conversation: v2Summary({ id: conversationId }) }),
+  );
+  rest.getMessagesV2 = vi.fn(async () => ({ items: [], nextCursor: null, throughSeq: 0 }));
   return rest;
 }
 
@@ -141,13 +236,14 @@ async function renderConnected(
   const rest = fakeRest({ items: [summary()], nextCursor: null }, opts.messages ?? []);
   const { factory, sockets, onFrames, onCloses } = scriptedSocketFactory();
   const store = createWebAppStore({
+    protocol: V1_PROTOCOL,
     rest,
     socketFactory: factory,
     reconnect: opts.maxAttempts === undefined ? undefined : { maxAttempts: opts.maxAttempts },
   });
   await store.getState().loadConversations();
 
-  render(
+  const view = render(
     <WebAppStoreContext.Provider value={store}>
       <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
     </WebAppStoreContext.Provider>,
@@ -157,14 +253,65 @@ async function renderConnected(
   sockets[0].open();
   await waitFor(() => expect(store.getState().connection).toBe('connected'));
 
-  return { store, sockets, onFrames, onCloses };
+  return { store, sockets, onFrames, onCloses, view };
+}
+
+type TestStoreState = ReturnType<ReturnType<typeof createWebAppStore>['getState']>;
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function renderV2Projection(bootstrap: MobileV2ConversationBootstrap = v2Bootstrap()) {
+  const connected = await renderConnected();
+  const enqueueInput = vi
+    .fn<TestStoreState['enqueueInput']>()
+    .mockImplementation(async (_conversationId, behavior, text, images) =>
+      pendingInput({ kind: behavior === 'followUp' ? 'follow_up' : 'steer', text, images }),
+    );
+  const editFollowUp = vi
+    .fn<TestStoreState['editFollowUp']>()
+    .mockImplementation(async (_conversationId, inputId, expectedRevision, text, images) =>
+      pendingInput({ inputId, revision: expectedRevision + 1, text, images }),
+    );
+  const removeFollowUp = vi.fn<TestStoreState['removeFollowUp']>().mockResolvedValue(undefined);
+  const resumeFollowUps = vi.fn<TestStoreState['resumeFollowUps']>().mockResolvedValue(undefined);
+  const sendMessage = vi.fn<TestStoreState['sendMessage']>().mockResolvedValue(undefined);
+  const cancelTurn = vi.fn<TestStoreState['cancelTurn']>();
+  act(() => {
+    connected.store.setState({
+      protocol: V2_PROTOCOL,
+      v2Transcripts: { [CONVERSATION_ID]: transcriptFromBootstrap(bootstrap) },
+      enqueueInput,
+      editFollowUp,
+      removeFollowUp,
+      resumeFollowUps,
+      sendMessage,
+      cancelTurn,
+    });
+  });
+  return {
+    ...connected,
+    enqueueInput,
+    editFollowUp,
+    removeFollowUp,
+    resumeFollowUps,
+    sendMessage,
+    cancelTurn,
+  };
 }
 
 describe('ChatView', () => {
   it("shows no unreachable banner for a healthy empty account (connection 'idle', no conversation selected)", async () => {
     const rest = fakeRest({ items: [], nextCursor: null }, []);
     const { factory } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
     expect(store.getState().connection).toBe('idle');
 
@@ -341,6 +488,11 @@ describe('ChatView', () => {
           [CONVERSATION_ID]: {
             ...state.transcripts[CONVERSATION_ID],
             streaming: { type: 'assistant', events: [] },
+            pending: {
+              turnId: 'turn-1',
+              conversationId: CONVERSATION_ID,
+              assistantMessageId: 'assistant-1',
+            },
           },
         },
       }));
@@ -354,6 +506,7 @@ describe('ChatView', () => {
           [CONVERSATION_ID]: {
             ...state.transcripts[CONVERSATION_ID],
             streaming: null,
+            pending: undefined,
             messages: [
               ...state.transcripts[CONVERSATION_ID].messages,
               message({
@@ -374,7 +527,7 @@ describe('ChatView', () => {
 
   it('shows the Reconnecting… banner when the connection drops', async () => {
     const { onCloses } = await renderConnected();
-    act(() => onCloses[0]('error'));
+    act(() => onCloses[0]({ kind: 'error', retryable: true }));
     await waitFor(() => expect(screen.getByText(RECONNECTING_COPY)).toBeTruthy());
   });
 
@@ -382,7 +535,7 @@ describe('ChatView', () => {
     // maxAttempts: 0 makes the very first drop exhaust the retry budget
     // immediately, so `connection` goes straight to `'offline'`.
     const { onCloses } = await renderConnected({ maxAttempts: 0 });
-    act(() => onCloses[0]('error'));
+    act(() => onCloses[0]({ kind: 'error', retryable: true }));
 
     await waitFor(() =>
       expect(screen.getByText("Your gateway 'acme' is unreachable.")).toBeTruthy(),
@@ -497,7 +650,7 @@ describe('ChatView', () => {
 
   it('disables the send box while not connected', async () => {
     const { onCloses } = await renderConnected();
-    act(() => onCloses[0]('error'));
+    act(() => onCloses[0]({ kind: 'error', retryable: true }));
 
     await waitFor(() => expect(screen.getByLabelText('Message')).toHaveProperty('disabled', true));
     expect(screen.getByText('Send')).toHaveProperty('disabled', true);
@@ -737,7 +890,7 @@ describe('ChatView scroll pinning wiring (chat-ux Phase 2 Task 3, audit #4)', ()
   it('creates the IntersectionObserver once a conversation is picked, even though ChatView first mounted with conversationId=null', async () => {
     const rest = fakeRest({ items: [summary()], nextCursor: null }, []);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
 
     const observeSpy = vi.fn();
@@ -837,7 +990,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
       });
     });
 
-    const stopButton = await screen.findByLabelText('Stop response');
+    const stopButton = await screen.findByLabelText('Cancel response');
     expect(screen.queryByText('Send')).toBeNull();
 
     fireEvent.click(stopButton);
@@ -857,7 +1010,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
       });
     });
 
-    await waitFor(() => expect(screen.queryByLabelText('Stop response')).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText('Cancel response')).toBeNull());
     expect(screen.getByText('Send')).toBeTruthy();
   });
 
@@ -865,7 +1018,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
     const OTHER_ID = 'conv-2';
     const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
 
     const { rerender } = render(
@@ -920,7 +1073,7 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
     const OTHER_ID = 'conv-2';
     const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
 
     const { rerender } = render(
@@ -962,6 +1115,583 @@ describe('ChatView composer (chat-ux Phase 2 Task 2, audit #3/#14)', () => {
   });
 });
 
+describe('ChatView follow-up v2 integration', () => {
+  const activeBootstrap = (overrides: Partial<MobileV2ConversationBootstrap> = {}) =>
+    v2Bootstrap({
+      conversation: v2Summary({ activeTurnId: 'run-active', status: 'running' }),
+      ...overrides,
+    });
+
+  it('keeps the capable active-turn composer editable, shows Send and Cancel, and dismisses the chooser without losing the payload or cancelling', async () => {
+    const { cancelTurn } = await renderV2Projection(activeBootstrap());
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(false);
+    expect((screen.getByLabelText('Add images') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByLabelText('Cancel response')).toBeTruthy();
+
+    fireEvent.change(textarea, { target: { value: 'keep this draft' } });
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: {
+        files: [new File([new Uint8Array([1, 2])], 'keep.png', { type: 'image/png' })],
+      },
+    });
+    await screen.findByAltText('Attachment 1');
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    expect(screen.queryByRole('dialog', { name: 'A response is in progress' })).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Send message'));
+    const dialog = screen.getByRole('dialog', { name: 'A response is in progress' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'A response is in progress' })).toBeNull();
+    expect(textarea.value).toBe('keep this draft');
+    expect(screen.getByAltText('Attachment 1')).toBeTruthy();
+    expect(cancelTurn).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByLabelText('Send message'));
+    expect(screen.getByRole('dialog', { name: 'A response is in progress' })).toBeTruthy();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole('dialog', { name: 'A response is in progress' })).toBeNull();
+    expect(textarea.value).toBe('keep this draft');
+    expect(screen.getByAltText('Attachment 1')).toBeTruthy();
+    expect(cancelTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the chooser dismissed after a full click on its already-open Send trigger', async () => {
+    const { cancelTurn, enqueueInput } = await renderV2Projection(activeBootstrap());
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'keep this payload' } });
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: {
+        files: [new File([new Uint8Array([3, 4])], 'keep.png', { type: 'image/png' })],
+      },
+    });
+    await screen.findByAltText('Attachment 1');
+
+    const send = screen.getByLabelText('Send message');
+    fireEvent.click(send);
+    expect(screen.getByRole('dialog', { name: 'A response is in progress' })).toBeTruthy();
+
+    fireEvent.mouseDown(send);
+    fireEvent.mouseUp(send);
+    fireEvent.click(send);
+
+    expect(screen.queryByRole('dialog', { name: 'A response is in progress' })).toBeNull();
+    expect(textarea.value).toBe('keep this payload');
+    expect(screen.getByAltText('Attachment 1')).toBeTruthy();
+    expect(enqueueInput).not.toHaveBeenCalled();
+    expect(cancelTurn).not.toHaveBeenCalled();
+  });
+
+  it('does not reset chooser focus when streaming state updates rerender the active conversation', async () => {
+    const { store } = await renderV2Projection(activeBootstrap());
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'keep focus stable' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    const followUp = screen.getByRole('button', { name: 'Follow Up' });
+    followUp.focus();
+    expect(document.activeElement).toBe(followUp);
+
+    act(() => {
+      store.setState((state) => {
+        const current = state.v2Transcripts[CONVERSATION_ID];
+        if (!current) throw new Error('expected v2 projection');
+        return {
+          v2Transcripts: {
+            ...state.v2Transcripts,
+            [CONVERSATION_ID]: {
+              ...current,
+              queueRevision: current.queueRevision + 1,
+            },
+          },
+        };
+      });
+    });
+
+    expect(document.activeElement).toBe(followUp);
+  });
+
+  it('keeps auto-scroll following active v2 tokens when a pending Steer is later in the timeline', async () => {
+    const assistant = v2Message({
+      id: 'assistant-live',
+      role: 'assistant',
+      runId: 'run-active',
+      turnId: 'segment-active',
+      status: 'streaming',
+      content: { type: 'assistant', events: [] },
+    });
+    const steer = pendingInput({
+      inputId: 'steer-after-segment',
+      kind: 'steer',
+      text: 'guide it',
+      state: 'queued',
+    });
+    const { store } = await renderV2Projection(
+      activeBootstrap({ messages: [assistant], pendingInputs: [steer] }),
+    );
+    const transcript = screen.getByTestId('chat-transcript') as HTMLDivElement;
+    const scrollTo = vi.spyOn(transcript, 'scrollTo');
+    scrollTo.mockClear();
+
+    act(() => {
+      store.setState((state) => {
+        const current = state.v2Transcripts[CONVERSATION_ID];
+        const segment = current?.liveSegments['assistant-live'];
+        if (!current || !segment) throw new Error('expected active v2 segment');
+        return {
+          v2Transcripts: {
+            ...state.v2Transcripts,
+            [CONVERSATION_ID]: {
+              ...current,
+              liveSegments: {
+                ...current.liveSegments,
+                'assistant-live': {
+                  ...segment,
+                  events: [{ type: 'text_delta', text: 'new token' }],
+                },
+              },
+            },
+          },
+        };
+      });
+    });
+
+    expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it('dismisses an open chooser and never enqueues when Follow Ups become paused', async () => {
+    const { store, enqueueInput } = await renderV2Projection(activeBootstrap());
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'keep after pause' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    const detachedFollowUp = screen.getByRole('button', { name: 'Follow Up' });
+
+    act(() => {
+      store.setState((state) => {
+        const current = state.v2Transcripts[CONVERSATION_ID];
+        if (!current) throw new Error('expected v2 projection');
+        return {
+          v2Transcripts: {
+            ...state.v2Transcripts,
+            [CONVERSATION_ID]: {
+              ...current,
+              queuePaused: true,
+              conversation: { ...current.conversation, queuePaused: true },
+            },
+          },
+        };
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'A response is in progress' })).toBeNull(),
+    );
+    expect(document.activeElement).toBe(textarea);
+    fireEvent.click(detachedFollowUp);
+    expect(enqueueInput).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('keep after pause');
+  });
+
+  it.each([
+    ['completed', 'Segment-only reply'],
+    ['failed', 'Response failed'],
+  ] as const)(
+    'announces a segment-only v2 %s terminal transition accurately',
+    async (status, expectedAnnouncement) => {
+      const { store } = await renderV2Projection(activeBootstrap());
+      const liveRegion = screen.getByTestId('chat-live-region');
+      await waitFor(() => expect(liveRegion.textContent).toBe('Assistant is replying'));
+
+      act(() => {
+        store.setState((state) => {
+          const current = state.v2Transcripts[CONVERSATION_ID];
+          if (!current) throw new Error('expected v2 projection');
+          return {
+            v2Transcripts: {
+              ...state.v2Transcripts,
+              [CONVERSATION_ID]: {
+                ...current,
+                conversation: {
+                  ...current.conversation,
+                  activeTurnId: null,
+                  status: 'idle',
+                },
+                timeline: [
+                  {
+                    kind: 'assistant_segment',
+                    assistantMessageId: 'assistant-live',
+                    runId: 'run-active',
+                    segmentTurnId: 'segment-active',
+                  },
+                ],
+                liveSegments: {
+                  'assistant-live': {
+                    assistantMessageId: 'assistant-live',
+                    runId: 'run-active',
+                    segmentTurnId: 'segment-active',
+                    status,
+                    events: [{ type: 'text_delta', text: 'Segment-only reply' }],
+                  },
+                },
+              },
+            },
+          };
+        });
+      });
+
+      await waitFor(() => expect(liveRegion.textContent).toBe(expectedAnnouncement));
+    },
+  );
+
+  it('does not misannounce another conversation history when switching away from an active turn', async () => {
+    const OTHER_ID = 'conv-2';
+    const { store, view } = await renderV2Projection(activeBootstrap());
+    const liveRegion = screen.getByTestId('chat-live-region');
+    await waitFor(() => expect(liveRegion.textContent).toBe('Assistant is replying'));
+
+    act(() => {
+      store.setState((state) => ({
+        openConversation: vi.fn(async () => {}),
+        v2Transcripts: {
+          ...state.v2Transcripts,
+          [OTHER_ID]: transcriptFromBootstrap(
+            v2Bootstrap({
+              conversation: v2Summary({ id: OTHER_ID }),
+              messages: [
+                v2Message({
+                  id: 'assistant-old',
+                  conversationId: OTHER_ID,
+                  role: 'assistant',
+                  content: {
+                    type: 'assistant',
+                    events: [{ type: 'text_delta', text: 'Old response from B' }],
+                  },
+                }),
+              ],
+            }),
+          ),
+        },
+      }));
+    });
+    view.rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-live-region').textContent).toBe(''));
+  });
+
+  it('emits a fresh live-region node when switching directly between two active turns', async () => {
+    const OTHER_ID = 'conv-2';
+    const { store, view } = await renderV2Projection(activeBootstrap());
+    const firstRegion = screen.getByTestId('chat-live-region');
+    await waitFor(() => expect(firstRegion.textContent).toBe('Assistant is replying'));
+    const firstAnnouncementNode = firstRegion.firstElementChild;
+
+    act(() => {
+      store.setState((state) => ({
+        openConversation: vi.fn(async () => {}),
+        v2Transcripts: {
+          ...state.v2Transcripts,
+          [OTHER_ID]: transcriptFromBootstrap(
+            activeBootstrap({
+              conversation: v2Summary({
+                id: OTHER_ID,
+                activeTurnId: 'run-b',
+                status: 'running',
+              }),
+            }),
+          ),
+        },
+      }));
+    });
+    view.rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+
+    const secondRegion = screen.getByTestId('chat-live-region');
+    await waitFor(() => expect(secondRegion.textContent).toBe('Assistant is replying'));
+    expect(secondRegion.firstElementChild).not.toBe(firstAnnouncementNode);
+  });
+
+  it('retains a Steer payload until durable acceptance, then clears only the unchanged attempt', async () => {
+    const { enqueueInput } = await renderV2Projection(activeBootstrap());
+    const acknowledgement = deferred<MobileV2PendingInput>();
+    enqueueInput.mockImplementationOnce(() => acknowledgement.promise);
+
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'steer now' } });
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: {
+        files: [new File([new Uint8Array([4, 5])], 'steer.png', { type: 'image/png' })],
+      },
+    });
+    await screen.findByAltText('Attachment 1');
+    fireEvent.click(screen.getByLabelText('Send message'));
+    fireEvent.click(screen.getByRole('button', { name: 'Steer' }));
+
+    await waitFor(() =>
+      expect(enqueueInput).toHaveBeenCalledWith(CONVERSATION_ID, 'steer', 'steer now', [
+        { mediaType: 'image/png', data: 'BAU=' },
+      ]),
+    );
+    expect(textarea.value).toBe('steer now');
+
+    await act(async () => {
+      acknowledgement.resolve(pendingInput({ kind: 'steer', text: 'steer now' }));
+      await acknowledgement.promise;
+    });
+    await waitFor(() => expect(textarea.value).toBe(''));
+    expect(screen.queryByAltText('Attachment 1')).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it('uses draft revisions, not payload equality, so an A to B to A edit survives a stale Steer acknowledgement', async () => {
+    const { enqueueInput } = await renderV2Projection(activeBootstrap());
+    const acknowledgement = deferred<MobileV2PendingInput>();
+    enqueueInput.mockImplementationOnce(() => acknowledgement.promise);
+
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'A' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    fireEvent.click(screen.getByRole('button', { name: 'Steer' }));
+    await waitFor(() => expect(enqueueInput).toHaveBeenCalledTimes(1));
+    fireEvent.change(textarea, { target: { value: 'B' } });
+    fireEvent.change(textarea, { target: { value: 'A' } });
+
+    await act(async () => {
+      acknowledgement.resolve(pendingInput({ kind: 'steer', text: 'A' }));
+      await acknowledgement.promise;
+    });
+    expect(textarea.value).toBe('A');
+  });
+
+  it('binds a pending acknowledgement to its conversation across an A to B to A switch', async () => {
+    const OTHER_ID = 'conv-2';
+    const { store, view, enqueueInput } = await renderV2Projection(activeBootstrap());
+    const acknowledgement = deferred<MobileV2PendingInput>();
+    enqueueInput.mockImplementationOnce(() => acknowledgement.promise);
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'draft A' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    fireEvent.click(screen.getByRole('button', { name: 'Steer' }));
+    await waitFor(() => expect(enqueueInput).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      store.setState((state) => ({
+        openConversation: vi.fn(async () => {}),
+        v2Transcripts: {
+          ...state.v2Transcripts,
+          [OTHER_ID]: transcriptFromBootstrap(
+            activeBootstrap({ conversation: v2Summary({ id: OTHER_ID }) }),
+          ),
+        },
+      }));
+    });
+    view.rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe(''),
+    );
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'draft B' } });
+
+    view.rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={CONVERSATION_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('draft A'),
+    );
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'new A' } });
+
+    await act(async () => {
+      acknowledgement.resolve(pendingInput({ kind: 'steer', text: 'draft A' }));
+      await acknowledgement.promise;
+    });
+    expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('new A');
+
+    view.rerender(
+      <WebAppStoreContext.Provider value={store}>
+        <ChatView conversationId={OTHER_ID} gatewayLabel="acme" />
+      </WebAppStoreContext.Provider>,
+    );
+    await waitFor(() =>
+      expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('draft B'),
+    );
+  });
+
+  it('keeps the payload and surfaces an error when a stale Steer is rejected as conversation_busy', async () => {
+    const { enqueueInput } = await renderV2Projection(activeBootstrap());
+    enqueueInput.mockRejectedValueOnce(
+      new MobileApiError(400, 'conversation_busy', {
+        code: 'conversation_busy',
+        error: 'The response has already ended.',
+        retryable: false,
+      }),
+    );
+
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'stale steer' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    fireEvent.click(screen.getByRole('button', { name: 'Steer' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'The response has already ended.',
+    );
+    expect(screen.queryByRole('dialog', { name: 'A response is in progress' })).toBeNull();
+    expect(textarea.value).toBe('stale steer');
+  });
+
+  it('waits for ordinary v2 acceptance and does not clear a newer A to B to A draft', async () => {
+    const { sendMessage } = await renderV2Projection();
+    const acknowledgement = deferred<void>();
+    sendMessage.mockImplementationOnce(() => acknowledgement.promise);
+
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'A' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(CONVERSATION_ID, 'A', undefined));
+    expect(textarea.value).toBe('A');
+    fireEvent.change(textarea, { target: { value: 'B' } });
+    fireEvent.change(textarea, { target: { value: 'A' } });
+
+    await act(async () => {
+      acknowledgement.resolve();
+      await acknowledgement.promise;
+    });
+    expect(textarea.value).toBe('A');
+  });
+
+  it('versions a file selection immediately so stale ordinary acceptance cannot clear a newer slow attachment session', async () => {
+    const { sendMessage } = await renderV2Projection();
+    const acknowledgement = deferred<void>();
+    const imageRead = deferred<ArrayBuffer>();
+    sendMessage.mockImplementationOnce(() => acknowledgement.promise);
+    const slowImage = new File([new Uint8Array([1])], 'newer.png', { type: 'image/png' });
+    Object.defineProperty(slowImage, 'arrayBuffer', { value: () => imageRead.promise });
+
+    const textarea = screen.getByLabelText('Message') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'same text' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: { files: [slowImage] },
+    });
+    expect((screen.getByLabelText('Send message') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Reading attached images…')).toBeTruthy();
+
+    await act(async () => {
+      acknowledgement.resolve();
+      await acknowledgement.promise;
+    });
+    expect(textarea.value).toBe('same text');
+
+    await act(async () => {
+      imageRead.resolve(new Uint8Array([9]).buffer);
+      await imageRead.promise;
+    });
+    expect(await screen.findByAltText('Attachment 1')).toBeTruthy();
+    expect(textarea.value).toBe('same text');
+  });
+
+  it('renders the v2 timeline chronologically without a duplicate promoted user row and exposes exact delivery labels', async () => {
+    const delivered = pendingInput({
+      inputId: 'steer-delivered',
+      kind: 'steer',
+      text: 'delivered steer',
+      state: 'delivered',
+      enqueueOrder: 1,
+      userMessageId: 'steer-user',
+      assistantMessageId: 'assistant-1',
+      runId: 'run-1',
+      segmentTurnId: 'segment-1',
+    });
+    const pending = pendingInput({
+      inputId: 'steer-pending',
+      kind: 'steer',
+      text: 'pending steer',
+      state: 'queued',
+      enqueueOrder: 2,
+    });
+    const failed = pendingInput({
+      inputId: 'steer-failed',
+      kind: 'steer',
+      text: 'failed steer',
+      state: 'failed',
+      enqueueOrder: 3,
+      failureMessage: 'The active turn already finished.',
+    });
+    const queued = pendingInput({
+      inputId: 'follow-up-1',
+      kind: 'follow_up',
+      text: 'queued next',
+      enqueueOrder: 4,
+    });
+    await renderV2Projection(
+      activeBootstrap({
+        messages: [
+          v2Message({
+            id: 'steer-user',
+            role: 'user',
+            ordinal: 1,
+            deliveryKind: 'steer',
+            deliveryStatus: 'delivered',
+            content: { type: 'user', text: 'delivered steer' },
+          }),
+          v2Message({
+            id: 'assistant-1',
+            role: 'assistant',
+            ordinal: 2,
+            turnId: 'segment-1',
+            content: { type: 'assistant', events: [{ type: 'text_delta', text: 'reply' }] },
+          }),
+        ],
+        pendingInputs: [delivered, pending, failed, queued],
+      }),
+    );
+
+    expect(screen.getAllByText('delivered steer')).toHaveLength(1);
+    expect(screen.getByLabelText('Steered, pending').textContent).toContain('Steered · Pending');
+    expect(screen.getByLabelText('Steered, delivered').textContent).toContain('Steered');
+    expect(screen.getByLabelText('Steer, not delivered').textContent).toContain(
+      'Steer · Not delivered',
+    );
+    const queueCard = screen.getByRole('article', { name: 'Follow Up, position 1 of 1' });
+    const transcriptRows = screen.getAllByTestId(/chat-message/);
+    const lastTranscriptRow = transcriptRows.at(-1);
+    if (!lastTranscriptRow) throw new Error('expected at least one transcript row');
+    expect(
+      lastTranscriptRow.compareDocumentPosition(queueCard) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getAllByTestId('chat-live-region')).toHaveLength(1);
+  });
+
+  it('wires paused Follow Ups to resume and disables submit with the exact explanation', async () => {
+    const queued = pendingInput({ inputId: 'paused-1', text: 'wait here' });
+    const { resumeFollowUps } = await renderV2Projection(
+      v2Bootstrap({
+        conversation: v2Summary({ queuePaused: true, pendingFollowUpCount: 1 }),
+        pendingInputs: [queued],
+        queuePaused: true,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'another' } });
+
+    expect(screen.getByText('Follow Ups paused')).toBeTruthy();
+    expect(
+      screen.getByText('Follow Ups paused. Resume or remove them before sending.'),
+    ).toBeTruthy();
+    expect((screen.getByLabelText('Send message') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Follow Ups' }));
+    await waitFor(() => expect(resumeFollowUps).toHaveBeenCalledWith(CONVERSATION_ID));
+  });
+});
+
 describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remainder)', () => {
   it('shows the greeting and starter prompts once a conversation with no history finishes loading', async () => {
     await renderConnected();
@@ -987,12 +1717,10 @@ describe('ChatView empty-chat greeting (chat-ux Phase 3 Task 4, audit #13 remain
     }>((resolve) => {
       resolveMessages = resolve;
     });
-    const rest = {
-      listConversations: vi.fn(async () => ({ items: [summary()], nextCursor: null })),
-      getMessages: vi.fn(() => pending),
-    } as unknown as MobileRestClient;
+    const rest = fakeRest({ items: [summary()], nextCursor: null });
+    rest.getMessages = vi.fn(() => pending);
     const { factory } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
 
     render(
@@ -1336,7 +2064,7 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
     const OTHER_ID = 'conv-2';
     const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
     const { rerender } = render(
       <WebAppStoreContext.Provider value={store}>
@@ -1411,7 +2139,7 @@ describe('ChatView message entrance animation (chat-ux Phase 4 Task 1, minor 10)
       message({ id: 'm-2', role: 'assistant', content: { type: 'assistant', events: [] } }),
     ]);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
 
     const { rerender } = render(
@@ -1524,7 +2252,7 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
     const OTHER_ID = 'conv-2';
     const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
     const { rerender } = render(
       <WebAppStoreContext.Provider value={store}>
@@ -1570,9 +2298,9 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
     await waitFor(() => expect(screen.getByAltText('Attachment 1')).toBeTruthy());
   });
 
-  // Phase 4 review M2: two adds racing each other validated against the
-  // same starting count and could exceed the four-image cap together.
-  it('re-validates the count limit after reading so concurrent adds cannot exceed four images', async () => {
+  // Follow-up v2 hardening: reserve capacity before slow reads begin, so
+  // overlapping selections cannot both validate against the same count.
+  it('reserves count capacity before reading so concurrent adds cannot exceed four images', async () => {
     await renderConnected();
     const resolvers: Array<(buffer: ArrayBuffer) => void> = [];
     const slowPng = (name: string) => {
@@ -1591,7 +2319,7 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
     fireEvent.change(screen.getByLabelText('Attach images'), {
       target: { files: [slowPng('d.png'), slowPng('e.png')] },
     });
-    await waitFor(() => expect(resolvers).toHaveLength(5));
+    await waitFor(() => expect(resolvers).toHaveLength(4));
     await act(async () => {
       for (const resolve of resolvers) resolve(new Uint8Array([104, 105]).buffer);
       await Promise.resolve();
@@ -1601,11 +2329,50 @@ describe('ChatView attachments (chat-ux Phase 4 Task 5, audit #14 remainder)', (
     expect(screen.getByText('Maximum 4 images per message.')).toBeTruthy();
   });
 
+  it('reserves aggregate byte capacity before concurrent reads settle', async () => {
+    await renderConnected();
+    const reads: Array<ReturnType<typeof deferred<ArrayBuffer>>> = [];
+    const startedReads: Array<ReturnType<typeof deferred<ArrayBuffer>>> = [];
+    const slowSizedImage = (name: string, size: number): File => {
+      const file = pngFile(name);
+      Object.defineProperty(file, 'size', { configurable: true, value: size });
+      const read = deferred<ArrayBuffer>();
+      reads.push(read);
+      Object.defineProperty(file, 'arrayBuffer', {
+        value: () => {
+          startedReads.push(read);
+          return read.promise;
+        },
+      });
+      return file;
+    };
+    const mib = 1024 * 1024;
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: {
+        files: [slowSizedImage('a.png', 4.5 * mib), slowSizedImage('b.png', 4.5 * mib)],
+      },
+    });
+    fireEvent.change(screen.getByLabelText('Attach images'), {
+      target: { files: [slowSizedImage('c.png', 4 * mib)] },
+    });
+
+    expect(screen.getByText('Images must total under 12 MB.')).toBeTruthy();
+    // The rejected third image never starts an async read.
+    expect(startedReads).toHaveLength(2);
+    expect(screen.getByText('Reading attached images…')).toBeTruthy();
+    await act(async () => {
+      reads[0].resolve(new Uint8Array([1]).buffer);
+      reads[1].resolve(new Uint8Array([2]).buffer);
+      await Promise.all([reads[0].promise, reads[1].promise]);
+    });
+    expect(await screen.findAllByAltText(/Attachment \d/)).toHaveLength(2);
+  });
+
   it('keeps attachments isolated per conversation, like drafts (audit #14)', async () => {
     const OTHER_ID = 'conv-2';
     const rest = fakeRest({ items: [summary(), summary({ id: OTHER_ID })], nextCursor: null }, []);
     const { factory, sockets } = scriptedSocketFactory();
-    const store = createWebAppStore({ rest, socketFactory: factory });
+    const store = createWebAppStore({ protocol: V1_PROTOCOL, rest, socketFactory: factory });
     await store.getState().loadConversations();
 
     const { rerender } = render(

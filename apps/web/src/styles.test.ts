@@ -280,3 +280,25 @@ describe('styles.css composer attachments (chat-ux Phase 4 Task 5, audit #14 rem
     expect(ruleBlock('.app-composer-attach')).toMatch(/border-radius:\s*var\(--radius\)/);
   });
 });
+
+describe('styles.css follow-up v2 controls', () => {
+  it('styles the anchored chooser, FIFO queue cards, and delivery states with semantic tokens', () => {
+    const chooser = ruleBlock('.delivery-chooser');
+    expect(chooser).toMatch(/position:\s*absolute/);
+    expect(chooser).toMatch(/background:\s*var\(--surface-raised\)/);
+    expect(chooser).toMatch(/border:\s*1px solid var\(--border\)/);
+
+    expect(ruleBlock('.follow-up-queue')).toMatch(/display:\s*(?:grid|flex)/);
+    expect(ruleBlock('.follow-up-card')).toMatch(/border:\s*1px solid var\(--border\)/);
+    expect(ruleBlock('.follow-up-card-body p')).toMatch(/white-space:\s*pre-wrap/);
+    expect(ruleBlock('.chat-delivery-label')).toMatch(/color:\s*var\(--text-muted/);
+    expect(ruleBlock('.chat-delivery-pending')).toMatch(/color:/);
+    expect(ruleBlock('.chat-delivery-failed')).toMatch(/color:/);
+  });
+
+  it('removes Follow Up promotion motion when reduced motion is requested', () => {
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*{[^}]*\.follow-up-card,\s*\.chat-input-promoting\s*{[^}]*animation:\s*none;[^}]*transition:\s*none;/s,
+    );
+  });
+});

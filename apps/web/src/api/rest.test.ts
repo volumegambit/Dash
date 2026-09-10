@@ -1,7 +1,99 @@
-import type { ConversationCreateRequest, ConversationPatchRequest } from '@dash/mobile-contract';
+import type {
+  ConversationCreateRequest,
+  ConversationPatchRequest,
+  MobileApiError as MobileApiErrorBody,
+  MobileApiErrorCode,
+} from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessagePage,
+  MobileV2HealthResponse,
+} from '@dash/mobile-contract-v2';
 import { MobileApiError, MobileRestClient, type TokenSource } from './rest';
 
 const TOKEN = 'test-token-abc';
+
+const V2_HEALTH: MobileV2HealthResponse = {
+  status: 'healthy',
+  startedAt: '2026-09-06T09:00:00.000Z',
+  pid: 4242,
+  agents: 1,
+  channels: 2,
+  apiVersion: 2,
+  capabilities: ['chat-input-queue-v1'],
+};
+
+const V2_BOOTSTRAP: MobileV2ConversationBootstrap = {
+  conversation: {
+    id: 'conversation/1',
+    agentId: 'agent-1',
+    agentName: 'Helper',
+    title: 'Queued work',
+    revision: 4,
+    status: 'running',
+    activeTurnId: 'turn-01',
+    owningIssueId: null,
+    projectId: null,
+    lastSeq: 7,
+    lastMessagePreview: 'Working',
+    createdAt: '2026-09-06T09:00:00.000Z',
+    updatedAt: '2026-09-06T09:05:00.000Z',
+    queuePaused: false,
+    queueRevision: 3,
+    pendingFollowUpCount: 1,
+    v2LastSeq: 12,
+  },
+  messages: [],
+  nextCursor: 'older/+cursor==',
+  pendingInputs: [
+    {
+      inputId: '00000000-0000-4000-8000-000000000022',
+      kind: 'follow_up',
+      text: 'Then summarize it.',
+      state: 'queued',
+      revision: 1,
+      enqueueOrder: 2,
+      createdAt: '2026-09-06T09:03:00.000Z',
+      updatedAt: '2026-09-06T09:04:00.000Z',
+    },
+  ],
+  queuePaused: false,
+  queueRevision: 3,
+  v2ThroughSeq: 12,
+};
+
+const V2_MESSAGE_PAGE: MobileV2ConversationMessagePage = {
+  items: [
+    {
+      id: '00000000-0000-4000-8000-000000000111',
+      conversationId: 'conversation/1',
+      turnId: '00000000-0000-4000-8000-000000000121',
+      ordinal: 2,
+      role: 'user',
+      status: 'accepted',
+      content: { type: 'user', text: 'Steer here.' },
+      createdAt: '2026-09-06T09:02:00.000Z',
+      updatedAt: '2026-09-06T09:02:00.000Z',
+      runId: 'turn-01',
+      segmentIndex: 1,
+      deliveryKind: 'steer',
+      deliveryStatus: 'pending',
+    },
+  ],
+  nextCursor: null,
+  throughSeq: 12,
+};
+
+const MOBILE_API_ERROR_CODES: readonly MobileApiErrorCode[] = [
+  'unauthorized',
+  'not_found',
+  'validation_failed',
+  'revision_conflict',
+  'conversation_busy',
+  'rate_limited',
+  'gateway_offline',
+  'capability_required',
+];
 
 function tokenSource(token = TOKEN): TokenSource {
   return { getToken: () => Promise.resolve(token) };
@@ -139,6 +231,70 @@ describe('MobileRestClient', () => {
     });
   });
 
+  describe('mobile v2 reads', () => {
+    it('requests healthV2() without bearer auth and preserves the relay header', async () => {
+      const fetchImpl = fakeFetch(jsonResponse(V2_HEALTH));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+        'relay-cred-xyz',
+      );
+
+      await expect(client.healthV2()).resolves.toEqual(V2_HEALTH);
+
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(url).toBe('https://sub.relay.example/mobile/v2/health');
+      expect(init?.method).toBe('GET');
+      expect(authHeader(init)).toBeUndefined();
+      expect(relayCredentialHeader(init)).toBe('relay-cred-xyz');
+    });
+
+    it('requests an encoded atomic bootstrap with bearer and relay headers', async () => {
+      const fetchImpl = fakeFetch(jsonResponse(V2_BOOTSTRAP));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+        'relay-cred-xyz',
+      );
+
+      await expect(client.bootstrap('conversation/1')).resolves.toEqual(V2_BOOTSTRAP);
+
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(url).toBe(
+        'https://sub.relay.example/mobile/v2/conversations/conversation%2F1/bootstrap',
+      );
+      expect(init?.method).toBe('GET');
+      expect(authHeader(init)).toBe(`Bearer ${TOKEN}`);
+      expect(relayCredentialHeader(init)).toBe('relay-cred-xyz');
+    });
+
+    it('requests an encoded v2 message cursor and preserves delivery metadata', async () => {
+      const fetchImpl = fakeFetch(jsonResponse(V2_MESSAGE_PAGE));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+        'relay-cred-xyz',
+      );
+
+      const page = await client.getMessagesV2('conversation/1', 'opaque/+cursor==', 100);
+      expect(page).toEqual(V2_MESSAGE_PAGE);
+
+      const [url, init] = fetchImpl.mock.calls[0];
+      expect(url).toBe(
+        'https://sub.relay.example/mobile/v2/conversations/conversation%2F1/messages?limit=100&before=opaque%2F%2Bcursor%3D%3D',
+      );
+      expect(init?.method).toBe('GET');
+      expect(authHeader(init)).toBe(`Bearer ${TOKEN}`);
+      expect(relayCredentialHeader(init)).toBe('relay-cred-xyz');
+      expect(page.items[0]?.deliveryKind).toBe('steer');
+      expect(page.items[0]?.segmentIndex).toBe(1);
+      expect(page.items[0]?.deliveryStatus).toBe('pending');
+    });
+  });
+
   describe('authorization', () => {
     it('does not send an Authorization header for health()', async () => {
       const fetchImpl = fakeFetch(jsonResponse({ status: 'healthy' }));
@@ -155,6 +311,8 @@ describe('MobileRestClient', () => {
       ['identity', (c: MobileRestClient) => c.identity()],
       ['listConversations', (c: MobileRestClient) => c.listConversations()],
       ['getMessages', (c: MobileRestClient) => c.getMessages('conv-1')],
+      ['bootstrap', (c: MobileRestClient) => c.bootstrap('conv-1')],
+      ['getMessagesV2', (c: MobileRestClient) => c.getMessagesV2('conv-1')],
       [
         'createConversation',
         (c: MobileRestClient) =>
@@ -168,18 +326,20 @@ describe('MobileRestClient', () => {
         (c: MobileRestClient) => c.patchConversation('conv-1', { title: 'New title' }, 1),
       ],
       ['deleteConversation', (c: MobileRestClient) => c.deleteConversation('conv-1', 1)],
-    ])('sends Authorization: Bearer <token> for %s()', async (_name, call) => {
+    ])('sends Authorization: Bearer <token> for %s()', async (name, call) => {
       const fetchImpl = fakeFetch(
-        jsonResponse({
-          gatewayId: 'g',
-          publicKey: 'p',
-          items: [],
-          nextCursor: null,
-          throughSeq: 0,
-          id: 'c',
-          ticket: 't',
-          expiresAt: 'e',
-        }),
+        jsonResponse(
+          name === 'identity'
+            ? { gatewayId: 'g', publicKey: 'p' }
+            : {
+                items: [],
+                nextCursor: null,
+                throughSeq: 0,
+                id: 'c',
+                ticket: 't',
+                expiresAt: 'e',
+              },
+        ),
       );
       const client = new MobileRestClient(
         'https://sub.relay.example/mobile/v1',
@@ -234,12 +394,12 @@ describe('MobileRestClient', () => {
 
   describe('error handling', () => {
     it('throws MobileApiError with status and code from the error body on non-2xx', async () => {
-      const fetchImpl = fakeFetch(
-        jsonResponse(
-          { code: 'not_found', error: 'Conversation was not found', retryable: false },
-          404,
-        ),
-      );
+      const apiError: MobileApiErrorBody = {
+        code: 'not_found',
+        error: 'Conversation was not found',
+        retryable: false,
+      };
+      const fetchImpl = fakeFetch(jsonResponse(apiError, 404));
       const client = new MobileRestClient(
         'https://sub.relay.example/mobile/v1',
         tokenSource(),
@@ -250,9 +410,64 @@ describe('MobileRestClient', () => {
         expect.objectContaining({
           status: 404,
           code: 'not_found',
+          apiError,
         }),
       );
       await expect(client.getMessages('missing-conv')).rejects.toBeInstanceOf(MobileApiError);
+    });
+
+    it.each(MOBILE_API_ERROR_CODES)(
+      'preserves the complete closed %s MobileApiError envelope',
+      async (code) => {
+        const apiError: MobileApiErrorBody = {
+          code,
+          error: `Structured ${code} failure`,
+          retryable: code === 'rate_limited',
+          details: { opaqueFutureField: { nested: true } },
+        };
+        const fetchImpl = fakeFetch(jsonResponse(apiError, 409));
+        const client = new MobileRestClient(
+          'https://sub.relay.example/mobile/v2',
+          tokenSource(),
+          fetchImpl,
+        );
+
+        const error = await client.identity().catch((value: unknown) => value);
+
+        expect(error).toBeInstanceOf(MobileApiError);
+        expect(error).toMatchObject({ status: 409, code, apiError });
+      },
+    );
+
+    it.each([
+      ['bare code', { code: 'capability_required' }],
+      ['missing code', { error: 'Missing code', retryable: false }],
+      ['unknown code', { code: 'future_error', error: 'Unknown', retryable: false }],
+      ['blank error', { code: 'not_found', error: ' \t\r\n', retryable: false }],
+      ['wrong retryable', { code: 'not_found', error: 'Bad flag', retryable: 'false' }],
+      [
+        'null details',
+        { code: 'not_found', error: 'Bad details', retryable: false, details: null },
+      ],
+      ['array details', { code: 'not_found', error: 'Bad details', retryable: false, details: [] }],
+      [
+        'extra top-level key',
+        { code: 'not_found', error: 'Too wide', retryable: false, extra: true },
+      ],
+      ['array body', ['not_found', 'failure', false]],
+      ['primitive body', 'not_found'],
+    ])('does not type an invalid MobileApiError body: %s', async (_label, body) => {
+      const fetchImpl = fakeFetch(jsonResponse(body, 426));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      const error = await client.identity().catch((value: unknown) => value);
+
+      expect(error).toBeInstanceOf(MobileApiError);
+      expect(error).toMatchObject({ status: 426, code: undefined, apiError: undefined });
     });
 
     it('tolerates a non-JSON error body and still reports the status with an undefined code', async () => {
@@ -298,6 +513,49 @@ describe('MobileRestClient', () => {
         fetchImpl,
       );
       await expect(client.health()).resolves.toEqual(body);
+    });
+
+    it('resolves identity() only for the exact two-field nonempty shape', async () => {
+      const identity = { gatewayId: 'gateway-1', publicKey: 'public-key-1' };
+      const fetchImpl = fakeFetch(jsonResponse(identity));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.identity()).resolves.toEqual(identity);
+    });
+
+    it.each([
+      {},
+      { gatewayId: 'gateway-1' },
+      { publicKey: 'public-key-1' },
+      { gatewayId: '', publicKey: 'public-key-1' },
+      { gatewayId: 'gateway-1', publicKey: '' },
+      { gatewayId: 'gateway-1', publicKey: 'public-key-1', extra: true },
+      [],
+      null,
+    ])('rejects malformed HTTP 200 identity: %#', async (body) => {
+      const fetchImpl = fakeFetch(jsonResponse(body));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.identity()).rejects.toThrow('Malformed gateway identity');
+    });
+
+    it('normalizes a non-JSON HTTP 200 identity to a malformed-identity error', async () => {
+      const fetchImpl = fakeFetch(new Response('not JSON', { status: 200 }));
+      const client = new MobileRestClient(
+        'https://sub.relay.example/mobile/v2',
+        tokenSource(),
+        fetchImpl,
+      );
+
+      await expect(client.identity()).rejects.toThrow('Malformed gateway identity');
     });
 
     it('POSTs a JSON body for createConversation and resolves the typed response', async () => {

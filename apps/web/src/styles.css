@@ -376,6 +376,60 @@ textarea:focus-visible {
   opacity: 0.5;
 }
 
+.app-composer-actions {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.delivery-chooser {
+  position: absolute;
+  z-index: 10;
+  inset: auto 0 calc(100% + 8px) auto;
+  display: grid;
+  width: min(20rem, calc(100vw - 32px));
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  padding: 8px;
+  color: var(--text);
+  box-shadow: 0 10px 30px color-mix(in srgb, #000 22%, transparent);
+}
+
+.delivery-chooser-title {
+  margin: 2px 4px 8px;
+  color: var(--text-muted-strong);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.delivery-chooser-option {
+  display: grid;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  padding: 8px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.delivery-chooser-option span {
+  color: var(--text-muted-strong);
+  font-size: 0.82rem;
+}
+
+.delivery-chooser-option:hover,
+.delivery-chooser-option:focus-visible {
+  border-color: var(--accent-hover);
+  outline: 2px solid transparent;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 /* Image attachments (chat-ux Phase 4 Task 5, audit #14 remainder): the
  * paperclip button, the visually-hidden file input it triggers, and the
  * thumbnail strip above the textarea — MC parity (chat.tsx input bar), on
@@ -462,6 +516,187 @@ textarea:focus-visible {
   max-inline-size: 46rem;
   color: var(--danger);
   font-size: 0.85em;
+}
+
+.app-composer-queue-status,
+.app-composer-image-status {
+  flex-basis: 100%;
+  color: var(--text-muted-strong);
+  font-size: 0.85em;
+}
+
+/* Follow Up v2 queue: durable FIFO cards live after the chronological
+ * transcript and before the bottom sentinel. */
+.follow-up-queue {
+  display: grid;
+  gap: 8px;
+  margin-block: 16px 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.follow-up-queue-header,
+.follow-up-queue-status,
+.follow-up-card-heading,
+.follow-up-card-content,
+.follow-up-card-actions,
+.follow-up-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.follow-up-queue-header {
+  justify-content: space-between;
+}
+
+.follow-up-queue-header h2 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.follow-up-list {
+  display: grid;
+  gap: 8px;
+}
+
+.follow-up-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  padding: 10px;
+}
+
+.follow-up-card:focus-within {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.follow-up-card-heading {
+  justify-content: space-between;
+  color: var(--text-muted-strong);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.follow-up-card-content {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.follow-up-card-body {
+  min-width: 0;
+}
+
+.follow-up-card-body p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.follow-up-card-actions {
+  flex-shrink: 0;
+}
+
+.follow-up-card button,
+.follow-up-queue-status button,
+.follow-up-attach {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 5px 8px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.follow-up-card button:focus-visible,
+.follow-up-queue-status button:focus-visible,
+.follow-up-attach:focus-within {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.follow-up-card button:disabled,
+.follow-up-queue-status button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.follow-up-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.follow-up-editor textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.follow-up-attach {
+  position: relative;
+}
+
+.follow-up-card-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.follow-up-card-attachments img {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+
+.chat-delivery-label {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted-strong);
+  font-size: 0.78rem;
+}
+
+.chat-delivery-pending {
+  color: var(--accent-hover);
+}
+
+.chat-delivery-failed {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chat-input-promoting {
+    animation: follow-up-promote 0.2s ease-out both;
+  }
+}
+
+@keyframes follow-up-promote {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .follow-up-card,
+  .chat-input-promoting {
+    animation: none;
+    transition: none;
+  }
 }
 
 /* Transcript: a user message's attached images (ContentBlocks `.user-images`). */

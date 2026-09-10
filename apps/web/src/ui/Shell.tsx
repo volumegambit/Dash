@@ -1,11 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import { ChatSocket } from '../api/chat-socket.js';
+import { negotiateMobileProtocol } from '../api/protocol.js';
 import { MobileRestClient } from '../api/rest.js';
 import type { ControlPlaneClient, GatewayInfo } from '../auth/control-plane.js';
 import type { CredentialStore, StoredCredential } from '../auth/credential-store.js';
 import { createWebAppStore } from '../state/store.js';
-import type { WebAppState } from '../state/store.js';
+import type { WebAppState, WebAppStoreDeps } from '../state/store.js';
 import { ChatView } from './ChatView.js';
 import { ConversationList } from './ConversationList.js';
 import { Devices } from './Devices.js';
@@ -20,6 +21,28 @@ import { GatewayPicker } from './GatewayPicker.js';
 export type ShellView = 'sign-in' | 'pick-gateway' | 'chat';
 
 type WebAppStore = UseBoundStore<StoreApi<WebAppState>>;
+
+type StoreInitialization =
+  | {
+      gateway: GatewayInfo;
+      credential: StoredCredential;
+      relayDomain: string;
+      status: 'connecting';
+    }
+  | {
+      gateway: GatewayInfo;
+      credential: StoredCredential;
+      relayDomain: string;
+      status: 'ready';
+      store: WebAppStore;
+    }
+  | {
+      gateway: GatewayInfo;
+      credential: StoredCredential;
+      relayDomain: string;
+      status: 'error';
+      error: string;
+    };
 
 /** Exported so Task 13's own component tests (`ChatView.test.tsx`,
  * `ConversationList.test.tsx`) can wrap a component under test with a
@@ -68,7 +91,7 @@ export interface ShellProps {
 function gatewayBaseUrls(
   gateway: GatewayInfo,
   relayDomain: string,
-): { restBaseUrl: string; wsBaseUrl: string } {
+): { restOrigin: string; wsBaseUrl: string } {
   // The control plane's `subdomain` field carries the FULL relay host
   // (e.g. `mygw.relay.example.com`), not just the label — appending
   // `relayDomain` again would double the zone. Use it verbatim when it is
@@ -79,9 +102,23 @@ function gatewayBaseUrls(
     ? `${gateway.subdomain}${port}`
     : `${gateway.subdomain}.${relayDomain}`;
   return {
-    restBaseUrl: `https://${host}/mobile/v1`,
+    restOrigin: `https://${host}`,
     wsBaseUrl: `wss://${host}/ws/chat`,
   };
+}
+
+function initializationMatches(
+  initialization: StoreInitialization | null,
+  gateway: GatewayInfo | null,
+  credential: StoredCredential | null,
+  relayDomain: string,
+): initialization is StoreInitialization {
+  return (
+    initialization !== null &&
+    initialization.gateway === gateway &&
+    initialization.credential === credential &&
+    initialization.relayDomain === relayDomain
+  );
 }
 
 /**
@@ -91,9 +128,11 @@ function gatewayBaseUrls(
  * Choosing a gateway there (`onReady`) transitions the same way a stored
  * credential would.
  *
- * The `'chat'` view creates the conversation store (`createWebAppStore`) and
- * a `ChatSocket`-backed `socketFactory` from the picked gateway's base URLs,
- * authenticating both with the gateway's own `chatToken` (as the mobile-v1
+ * Before entering the `'chat'` view, Shell negotiates mobile v2 (with the
+ * protocol helper's narrow v1 fallback), then creates the conversation store
+ * (`createWebAppStore`) and a version-aware `ChatSocket`-backed
+ * `socketFactory` from the picked gateway's base URLs,
+ * authenticating both with the gateway's own `chatToken` (as the mobile API
  * bearer) and `relayCredential` (as the relay hop's WS subprotocol / REST
  * header) — never the Clerk token, which the gateway doesn't understand —
  * and exposes it via `WebAppStoreContext` (see `useWebAppStore`) to
@@ -108,6 +147,8 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
   /** Set when `handleUnauthorized` routes back to `GatewayPicker` after a
    * revoked/rejected credential; cleared once a gateway is (re-)picked. */
   const [pickGatewayNotice, setPickGatewayNotice] = useState<string | null>(null);
+  const [storeInitialization, setStoreInitialization] = useState<StoreInitialization | null>(null);
+  const storeGenerationRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,37 +188,103 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
     };
   }, [controlPlaneClient, credentialStore]);
 
-  const store = useMemo(() => {
-    if (!activeGateway || !activeCredential) return null;
-    const { restBaseUrl, wsBaseUrl } = gatewayBaseUrls(activeGateway, relayDomain);
-    const { relayCredential, chatToken } = activeCredential;
-    // The gateway's own mobile-v1 bearer — not the Clerk session token.
-    const rest = new MobileRestClient(
-      restBaseUrl,
-      { getToken: () => Promise.resolve(chatToken) },
-      undefined,
-      relayCredential,
-    );
-    return createWebAppStore({
-      rest,
-      socketFactory: (onFrame, onClose) =>
-        new ChatSocket(wsBaseUrl, rest, onFrame, onClose, undefined, relayCredential),
-    });
+  useEffect(() => {
+    const generation = ++storeGenerationRef.current;
+    let cancelled = false;
+    let ownedStore: WebAppStore | null = null;
+
+    if (!activeGateway || !activeCredential) {
+      setStoreInitialization(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const gateway = activeGateway;
+    const credential = activeCredential;
+    const target = { gateway, credential, relayDomain };
+    setStoreInitialization({ ...target, status: 'connecting' });
+
+    const { restOrigin, wsBaseUrl } = gatewayBaseUrls(gateway, relayDomain);
+    const { relayCredential, chatToken } = credential;
+    const tokenSource = { getToken: () => Promise.resolve(chatToken) };
+
+    async function initializeStore(): Promise<void> {
+      try {
+        const negotiated = await negotiateMobileProtocol({
+          createRestClient: (version) =>
+            new MobileRestClient(
+              `${restOrigin}/mobile/v${version}`,
+              tokenSource,
+              undefined,
+              relayCredential,
+            ),
+        });
+        if (cancelled || generation !== storeGenerationRef.current) return;
+
+        const socketProtocol =
+          negotiated.version === 2
+            ? { version: 2 as const, capabilities: negotiated.capabilities }
+            : { version: 1 as const };
+        const storeDeps = {
+          protocol: {
+            version: negotiated.version,
+            capabilities: negotiated.capabilities,
+          },
+          rest: negotiated.rest,
+          socketFactory: (
+            onFrame: Parameters<WebAppStoreDeps['socketFactory']>[0],
+            onClose: Parameters<WebAppStoreDeps['socketFactory']>[1],
+          ) =>
+            new ChatSocket(
+              wsBaseUrl,
+              negotiated.rest,
+              onFrame,
+              onClose,
+              undefined,
+              relayCredential,
+              socketProtocol,
+            ),
+        };
+        ownedStore = createWebAppStore(storeDeps);
+        if (cancelled || generation !== storeGenerationRef.current) {
+          ownedStore.getState().dispose();
+          ownedStore = null;
+          return;
+        }
+        setStoreInitialization({ ...target, status: 'ready', store: ownedStore });
+      } catch (err) {
+        if (cancelled || generation !== storeGenerationRef.current) return;
+        console.error('Shell: failed to negotiate the gateway mobile protocol', err);
+        const message = err instanceof Error ? err.message : String(err);
+        setStoreInitialization({ ...target, status: 'error', error: message });
+      }
+    }
+
+    void initializeStore();
+    return () => {
+      cancelled = true;
+      if (ownedStore) {
+        ownedStore.getState().dispose();
+        ownedStore = null;
+      }
+    };
   }, [activeGateway, activeCredential, relayDomain]);
 
-  // The single teardown spot for whichever store is currently live: fires on
-  // a real unmount, AND whenever `store` itself changes identity — i.e. this
-  // browser picks/re-pairs a *different* gateway, or `handleGatewayForgotten`
-  // nulls `activeGateway`/`activeCredential` (self-revocation), which makes
-  // the `useMemo` above recompute `store` to `null`. Either way, the just-
-  // abandoned store's `dispose()` closes its live socket and cancels any
-  // pending reconnect timer/attempt rather than leaving it to retry (bounded,
-  // but pointless) against a credential that's no longer valid.
-  useEffect(() => {
-    return () => {
-      store?.getState().dispose();
-    };
-  }, [store]);
+  const initializationIsCurrent = initializationMatches(
+    storeInitialization,
+    activeGateway,
+    activeCredential,
+    relayDomain,
+  );
+  const store =
+    initializationIsCurrent && storeInitialization.status === 'ready'
+      ? storeInitialization.store
+      : null;
+  const storeError =
+    initializationIsCurrent && storeInitialization.status === 'error'
+      ? storeInitialization.error
+      : null;
 
   /** Design doc, Error Handling: "revoked/rejected credential →
    * GatewayPicker with explanation. Never a silent retry loop on auth
@@ -186,8 +293,8 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
    * `enterUnauthorized`) — this effect is what notices that from the Shell
    * side and acts on it: the dead credential is no good to keep around, so
    * drop it, then clear `activeGateway`/`activeCredential`, which both
-   * routes `view` back to `'pick-gateway'` and (via the teardown effect
-   * above, once `store` recomputes to `null`) disposes the abandoned store.
+   * routes `view` back to `'pick-gateway'` and lets the initialization
+   * effect's cleanup dispose the abandoned store.
    * Subscribes via the store's vanilla `subscribe`/`getState()` rather than
    * the React hook form since `Shell` itself sits *outside*
    * `WebAppStoreContext.Provider` — `useWebAppStore()` isn't available here. */
@@ -231,9 +338,8 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
   /** Revoking this browser's own pairing from the Devices screen leaves the
    * stored credential dangling (the relay/gateway will reject it from here
    * on) — drop back to `GatewayPicker` so the user re-pairs rather than
-   * sitting on a chat view that silently stops working. Disposing the store
-   * itself is handled by the `useEffect` above, triggered by `store`
-   * recomputing to `null` once `activeGateway`/`activeCredential` clear. */
+   * sitting on a chat view that silently stops working. Clearing the active
+   * gateway/credential also cleans up the effect that owns the live store. */
   function handleGatewayForgotten(): void {
     setActiveGateway(null);
     setActiveCredential(null);
@@ -252,6 +358,28 @@ export function Shell({ controlPlaneClient, credentialStore, relayDomain }: Shel
           onGatewayForgotten={handleGatewayForgotten}
         />
       </WebAppStoreContext.Provider>
+    );
+  }
+
+  if (activeGateway && activeCredential) {
+    return (
+      <div className="pick-gateway-page">
+        {storeError ? (
+          <>
+            <p role="alert">
+              Couldn't connect to {activeGateway.subdomain}: {storeError}
+            </p>
+            <GatewayPicker
+              gateways={gateways}
+              controlPlaneClient={controlPlaneClient}
+              credentialStore={credentialStore}
+              onReady={handleReady}
+            />
+          </>
+        ) : (
+          <output>Connecting to {activeGateway.subdomain}…</output>
+        )}
+      </div>
     );
   }
 
@@ -411,7 +539,7 @@ function ChatWorkspace({
         if (
           event.target instanceof Element &&
           event.target.closest(
-            '.chat-message-edit, .conversation-row-rename-input, .conversation-delete-confirm',
+            '.delivery-chooser, .chat-message-edit, .conversation-row-rename-input, .conversation-delete-confirm',
           )
         ) {
           return;

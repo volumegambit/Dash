@@ -1,6 +1,10 @@
-import type { ConversationMessage } from '@dash/mobile-contract';
+import type { ConversationMessage, MobileImage } from '@dash/mobile-contract';
+import type { MobileV2ConversationMessage, MobileV2PendingInput } from '@dash/mobile-contract-v2';
 import { type ReactNode, memo, useCallback, useEffect, useRef, useState } from 'react';
-import type { Transcript } from '../state/assemble.js';
+import { MobileApiError } from '../api/rest.js';
+import type { Transcript, V2LiveSegment, V2Transcript } from '../state/assemble.js';
+import { DeliveryChooser } from './DeliveryChooser.js';
+import { FollowUpQueue } from './FollowUpQueue.js';
 import { useWebAppStore } from './Shell.js';
 import {
   IMAGE_MEDIA_TYPES,
@@ -31,6 +35,11 @@ export const RECONNECTING_COPY = 'Reconnecting…';
  * `state/store.ts`). The editor stays open with the user's edited text
  * intact rather than silently discarding it. */
 export const RESEND_BLOCKED_COPY = 'Wait for the current response to finish.';
+
+function userFacingActionError(error: unknown, fallback: string): string {
+  if (error instanceof MobileApiError && error.apiError?.error) return error.apiError.error;
+  return error instanceof Error && error.message ? error.message : fallback;
+}
 
 function unreachableCopy(gatewayLabel: string): string {
   return `Your gateway '${gatewayLabel}' is unreachable.`;
@@ -547,6 +556,169 @@ function transcriptContentSignature(transcript: Transcript | undefined): string 
   return `${lastPart}:${streamingCount}`;
 }
 
+function v2TranscriptContentSignature(transcript: V2Transcript | undefined): string {
+  if (!transcript) return 'none';
+  const last = transcript.timeline[transcript.timeline.length - 1];
+  if (!last) return `empty:${transcript.queueRevision}`;
+  let lastPart: string;
+  if (last.kind === 'message') {
+    const message = transcript.messages[last.messageId];
+    lastPart = `message:${last.messageId}:${message?.status ?? 'missing'}`;
+  } else if (last.kind === 'input') {
+    const input = transcript.inputs[last.inputId];
+    lastPart = `input:${last.inputId}:${input?.state ?? 'missing'}`;
+  } else {
+    const segment = transcript.liveSegments[last.assistantMessageId];
+    lastPart = `segment:${last.assistantMessageId}:${segment?.status ?? 'missing'}:${segment?.events.length ?? 0}`;
+  }
+
+  // A pending Steer is chronologically after the assistant segment it is
+  // guiding. Include that active segment separately so later token/tool
+  // deltas still trigger scroll-follow even when the timeline's final entry
+  // is the Steer rather than the response.
+  let activePart = 'inactive';
+  const activeTurnId = transcript.conversation.activeTurnId;
+  if (activeTurnId) {
+    for (let index = transcript.timeline.length - 1; index >= 0; index -= 1) {
+      const entry = transcript.timeline[index];
+      if (entry?.kind !== 'assistant_segment' || entry.runId !== activeTurnId) continue;
+      const segment = transcript.liveSegments[entry.assistantMessageId];
+      activePart = `${entry.assistantMessageId}:${segment?.status ?? 'missing'}:${segment?.events.length ?? 0}`;
+      break;
+    }
+  }
+  return `${lastPart}:${transcript.queueRevision}:${activePart}`;
+}
+
+function v2TerminalAnnouncement(transcript: V2Transcript, runId: string): string {
+  for (let index = transcript.timeline.length - 1; index >= 0; index -= 1) {
+    const entry = transcript.timeline[index];
+    if (entry.kind === 'input') continue;
+    const message =
+      entry.kind === 'message'
+        ? transcript.messages[entry.messageId]
+        : transcript.messages[entry.assistantMessageId];
+    if (message && message.role !== 'assistant') continue;
+    if (entry.kind === 'message' && message?.runId !== runId) continue;
+    if (entry.kind === 'assistant_segment' && entry.runId !== runId) continue;
+    const segment =
+      entry.kind === 'assistant_segment'
+        ? transcript.liveSegments[entry.assistantMessageId]
+        : undefined;
+    if (!message && !segment) continue;
+    if (message?.status === 'failed' || segment?.status === 'failed') return 'Response failed';
+    const text = message
+      ? getMessageCopyText(message.content)
+      : getMessageCopyText({ type: 'assistant', events: segment?.events ?? [] });
+    return text || 'Response finished';
+  }
+  return 'Response finished';
+}
+
+function inputContent(
+  input: MobileV2PendingInput,
+  message: MobileV2ConversationMessage | undefined,
+): ConversationMessage['content'] {
+  if (message?.role === 'user') return message.content;
+  return {
+    type: 'user',
+    text: input.text,
+    ...(input.images?.length ? { images: input.images } : {}),
+  };
+}
+
+function SteerDeliveryLabel({
+  input,
+  message,
+}: {
+  input: MobileV2PendingInput;
+  message: MobileV2ConversationMessage | undefined;
+}): ReactNode {
+  if (input.kind !== 'steer') return null;
+  const deliveryStatus = message?.deliveryStatus;
+  if (input.state === 'failed' || deliveryStatus === 'not_delivered') {
+    return (
+      <span className="chat-delivery-label chat-delivery-failed" aria-label="Steer, not delivered">
+        Steer · Not delivered
+      </span>
+    );
+  }
+  if (input.state === 'delivered' || deliveryStatus === 'delivered') {
+    return (
+      <span className="chat-delivery-label" aria-label="Steered, delivered">
+        Steered
+      </span>
+    );
+  }
+  return (
+    <span className="chat-delivery-label chat-delivery-pending" aria-label="Steered, pending">
+      Steered · Pending
+    </span>
+  );
+}
+
+function V2InputRow({
+  input,
+  message,
+}: {
+  input: MobileV2PendingInput;
+  message: MobileV2ConversationMessage | undefined;
+}): ReactNode {
+  return (
+    <div
+      data-testid="chat-message"
+      data-role="user"
+      className={input.kind === 'follow_up' ? 'chat-message chat-input-promoting' : 'chat-message'}
+    >
+      <ContentBlocks content={inputContent(input, message)} />
+      <SteerDeliveryLabel input={input} message={message} />
+      {input.state === 'failed' && input.failureMessage && (
+        <span role="alert" className="chat-message-failed">
+          {input.failureMessage}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function V2AssistantSegmentRow({
+  segment,
+  message,
+}: {
+  segment: V2LiveSegment | undefined;
+  message: MobileV2ConversationMessage | undefined;
+}): ReactNode {
+  if (!segment && !message) return null;
+  const events =
+    segment?.events ?? (message?.content.type === 'assistant' ? message.content.events : []);
+  const isStreaming = segment?.status === 'streaming' || message?.status === 'streaming';
+  if (isStreaming) {
+    return (
+      <div
+        data-testid="chat-message-streaming"
+        data-role="assistant"
+        className="chat-message-streaming"
+      >
+        {events.length === 0 && <ThinkingIndicator />}
+        <ContentBlocks content={{ type: 'assistant', events }} />
+        {events.length > 0 && (
+          <span className="streaming-caret" aria-hidden="true" data-testid="streaming-caret" />
+        )}
+      </div>
+    );
+  }
+  return (
+    <div data-testid="chat-message" data-role="assistant" className="chat-message">
+      <ContentBlocks content={{ type: 'assistant', events }} />
+      {segment?.status === 'failed' && (
+        <span role="alert" className="chat-message-failed">
+          Response failed
+        </span>
+      )}
+    </div>
+  );
+}
+
 /**
  * The main chat surface: renders the open conversation's transcript
  * (confirmed `messages` plus, mid-turn, the `streaming` assistant content —
@@ -563,10 +735,25 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const transcript = useAppStore((s) =>
     conversationId ? s.transcripts[conversationId] : undefined,
   );
+  const v2Transcript = useAppStore((s) =>
+    conversationId ? s.v2Transcripts[conversationId] : undefined,
+  );
+  const protocol = useAppStore((s) => s.protocol);
   const openConversation = useAppStore((s) => s.openConversation);
   const sendMessage = useAppStore((s) => s.sendMessage);
+  const enqueueInput = useAppStore((s) => s.enqueueInput);
+  const editFollowUp = useAppStore((s) => s.editFollowUp);
+  const removeFollowUp = useAppStore((s) => s.removeFollowUp);
+  const resumeFollowUps = useAppStore((s) => s.resumeFollowUps);
   const cancelTurn = useAppStore((s) => s.cancelTurn);
   const resendFromMessage = useAppStore((s) => s.resendFromMessage);
+
+  const queueCapable =
+    protocol.version === 2 && protocol.capabilities.includes('chat-input-queue-v1');
+  const activeTurnId =
+    v2Transcript?.conversation.activeTurnId ?? transcript?.pending?.turnId ?? null;
+  const activeAndQueueCapable = Boolean(activeTurnId && queueCapable);
+  const showingV2Transcript = protocol.version === 2 && v2Transcript !== undefined;
 
   // Scroll pinning + jump-to-bottom (audit #4, Task 3): `resetKey` is the
   // conversation id itself, so switching threads re-pins and snaps to the
@@ -577,7 +764,9 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // transcript.
   const { containerRef, sentinelRef, pinned, jumpToBottom } = usePinnedScroll({
     resetKey: conversationId,
-    contentSignature: transcriptContentSignature(transcript),
+    contentSignature: showingV2Transcript
+      ? v2TranscriptContentSignature(v2Transcript)
+      : transcriptContentSignature(transcript),
   });
 
   // Streamed-turn lifecycle announcer (fix I1): a single polite live region
@@ -592,47 +781,103 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // "Response failed" when the finalized message itself ended up marked
   // failed. `isStreamingNow` (not the raw `transcript?.streaming` object,
   // which gets a fresh reference on every `event` frame) is the effect's
-  // dependency so this only actually runs once per streaming START/STOP
-  // transition, not once per token.
-  const isStreamingNow = transcript?.streaming != null;
+  // dependency so this only actually runs once per selected-conversation /
+  // active-turn transition, not once per token or because the user switched
+  // to a different conversation.
+  const isStreamingNow = Boolean(activeTurnId);
   const [liveAnnouncement, setLiveAnnouncement] = useState('');
-  const wasStreamingRef = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: isStreamingNow is the intentional trigger; transcript?.messages is read fresh (not tracked) so a message arriving mid-stream doesn't itself re-fire this
+  const [liveAnnouncementRevision, setLiveAnnouncementRevision] = useState(0);
+  const announceLive = useCallback((announcement: string): void => {
+    setLiveAnnouncement(announcement);
+    // Re-key the child even when the spoken copy repeats (for example when
+    // switching directly from active conversation A to active B), so AT sees
+    // a fresh live-region insertion instead of React bailing on equal text.
+    setLiveAnnouncementRevision((revision) => revision + 1);
+  }, []);
+  const announcedTurnRef = useRef<{ conversationId: string; turnId: string } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: conversationId/activeTurnId are the intentional lifecycle edges; transcript state is read fresh only after the selected turn ends
   useEffect(() => {
-    const wasStreaming = wasStreamingRef.current;
-    wasStreamingRef.current = isStreamingNow;
-
-    if (isStreamingNow && !wasStreaming) {
-      setLiveAnnouncement('Assistant is replying');
+    const previous = announcedTurnRef.current;
+    if (conversationId && activeTurnId) {
+      const current = { conversationId, turnId: activeTurnId };
+      announcedTurnRef.current = current;
+      if (
+        !previous ||
+        previous.conversationId !== current.conversationId ||
+        previous.turnId !== current.turnId
+      ) {
+        announceLive('Assistant is replying');
+      }
       return;
     }
 
-    if (!isStreamingNow && wasStreaming) {
-      const messages = transcript?.messages ?? [];
-      const last = messages[messages.length - 1];
-      if (!last) {
-        setLiveAnnouncement('Response finished');
-        return;
-      }
-      if (last.status === 'failed') {
-        setLiveAnnouncement('Response failed');
-        return;
-      }
-      const text = getMessageCopyText(last.content);
-      setLiveAnnouncement(text || 'Response finished');
+    announcedTurnRef.current = null;
+    if (!previous) return;
+    if (previous.conversationId !== conversationId) {
+      announceLive('');
+      return;
     }
-  }, [isStreamingNow]);
+    if (showingV2Transcript) {
+      announceLive(v2TerminalAnnouncement(v2Transcript, previous.turnId));
+      return;
+    }
+    const last = transcript?.messages.at(-1);
+    if (!last) announceLive('Response finished');
+    else if (last.status === 'failed') announceLive('Response failed');
+    else announceLive(getMessageCopyText(last.content) || 'Response finished');
+  }, [activeTurnId, conversationId]);
+
+  const queueAnnouncementSnapshotsRef = useRef(
+    new Map<string, { paused: boolean; states: Record<string, MobileV2PendingInput['state']> }>(),
+  );
+  useEffect(() => {
+    if (!conversationId || !showingV2Transcript) return;
+    const states = Object.fromEntries(
+      Object.values(v2Transcript.inputs).map((input) => [input.inputId, input.state]),
+    );
+    const previous = queueAnnouncementSnapshotsRef.current.get(conversationId);
+    queueAnnouncementSnapshotsRef.current.set(conversationId, {
+      paused: v2Transcript.queuePaused,
+      states,
+    });
+    if (!previous) return;
+
+    if (previous.paused !== v2Transcript.queuePaused) {
+      announceLive(v2Transcript.queuePaused ? 'Follow Ups paused' : 'Follow Ups resumed');
+      return;
+    }
+    for (const input of Object.values(v2Transcript.inputs)) {
+      const previousState = previous.states[input.inputId];
+      if (previousState === input.state) continue;
+      if (input.kind === 'steer') {
+        if (input.state === 'failed') announceLive('Steer, not delivered');
+        else if (input.state === 'delivered') announceLive('Steered, delivered');
+        else announceLive('Steered, pending');
+        return;
+      }
+      if (input.state === 'delivered') announceLive('Follow Up delivered');
+      else if (input.state === 'queued') announceLive('Follow Up queued');
+      if (input.state === 'delivered' || input.state === 'queued') return;
+    }
+  }, [announceLive, conversationId, showingV2Transcript, v2Transcript]);
 
   // Draft-per-conversation (audit #14): a component-level Map, keyed by
   // conversation id, outlives conversation switches (this component instance
   // is never remounted just because `conversationId` changes — `Shell` keeps
   // rendering the same `ChatView`) without leaking one thread's in-progress
-  // draft into another's textarea. `draft` itself is the *displayed* value
-  // for whichever conversation is currently open; the effect below loads it
-  // from the map (or '' for a thread with no saved draft) every time
-  // `conversationId` changes, and `updateDraft` keeps the map in sync on
-  // every keystroke so switching away and back round-trips it.
+  // draft into another's textarea. `draft` itself is derived synchronously
+  // from this map (or '' for a thread with no saved draft) on every render,
+  // and `updateDraft` keeps the map in sync on every keystroke so switching
+  // away and back round-trips it without a passive-effect privacy flash.
   const draftsRef = useRef(new Map<string, string>());
+  const payloadRevisionsRef = useRef(new Map<string, number>());
+  const attachmentSessionsRef = useRef(new Map<string, symbol>());
+  const imageReservationsRef = useRef(
+    new Map<symbol, { conversationId: string; session: symbol; bytes: number }>(),
+  );
+  const pendingDeliveryTokensRef = useRef(new Map<string, symbol>());
+  const sendErrorsRef = useRef(new Map<string, string>());
+  const attachmentErrorsRef = useRef(new Map<string, string>());
   // Entrance-animation ledgers (Phase 4 Task 1, minor 10) — see `markLiveMessages`.
   const entranceLedgersRef = useRef(new Map<string, EntranceLedger>());
 
@@ -643,76 +888,202 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // textarea, or a drop onto the composer; all three funnel through
   // `addImageFiles`, which applies the shared limits (`attachments.ts`).
   const attachmentsRef = useRef(new Map<string, PendingImageAttachment[]>());
-  const [attachments, setAttachments] = useState<PendingImageAttachment[]>([]);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [chooserConversationId, setChooserConversationId] = useState<string | null>(null);
+  const chooserWasOpenOnSendMouseDownRef = useRef(false);
+  const [, setComposerRenderRevision] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Which thread is open RIGHT NOW, readable after an `await` (review M1):
   // a file read that resolves after a switch must land in the thread it was
   // added to, and must not be displayed under the one now open.
   const openConversationRef = useRef(conversationId);
   openConversationRef.current = conversationId;
 
-  useEffect(() => {
-    setAttachments(conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : []);
-    setAttachmentError(null);
-  }, [conversationId]);
+  const refreshComposer = useCallback((forConversation: string): void => {
+    if (openConversationRef.current === forConversation) {
+      setComposerRenderRevision((revision) => revision + 1);
+    }
+  }, []);
 
-  const storeAttachments = useCallback(
-    (forConversation: string, next: PendingImageAttachment[]) => {
-      if (next.length === 0) attachmentsRef.current.delete(forConversation);
-      else attachmentsRef.current.set(forConversation, next);
-      if (openConversationRef.current === forConversation) setAttachments(next);
+  // The keyed refs are the source of truth, not a passive-effect mirror.
+  // Reading them during render prevents one committed frame of conversation
+  // A's private draft/images/errors from appearing under conversation B.
+  const attachments = conversationId ? (attachmentsRef.current.get(conversationId) ?? []) : [];
+  const attachmentError = conversationId
+    ? (attachmentErrorsRef.current.get(conversationId) ?? null)
+    : null;
+  const pendingImageReads = conversationId
+    ? Array.from(imageReservationsRef.current.values()).filter(
+        (reservation) => reservation.conversationId === conversationId,
+      ).length
+    : 0;
+  const draft = conversationId ? (draftsRef.current.get(conversationId) ?? '') : '';
+  const sendError = conversationId ? (sendErrorsRef.current.get(conversationId) ?? null) : null;
+  const pendingDelivery = conversationId
+    ? pendingDeliveryTokensRef.current.has(conversationId)
+    : false;
+  const chooserOpen = conversationId !== null && chooserConversationId === conversationId;
+
+  const bumpPayloadRevision = useCallback((forConversation: string): number => {
+    const next = (payloadRevisionsRef.current.get(forConversation) ?? 0) + 1;
+    payloadRevisionsRef.current.set(forConversation, next);
+    return next;
+  }, []);
+
+  const refreshPendingImageReads = useCallback(
+    (forConversation: string): void => {
+      refreshComposer(forConversation);
     },
-    [],
+    [refreshComposer],
   );
 
-  const setConversationAttachments = useCallback(
-    (next: PendingImageAttachment[]) => {
-      if (conversationId) storeAttachments(conversationId, next);
-      else setAttachments(next);
+  const storeAttachments = useCallback(
+    (forConversation: string, next: PendingImageAttachment[], bumpRevision = true) => {
+      if (next.length === 0) attachmentsRef.current.delete(forConversation);
+      else attachmentsRef.current.set(forConversation, next);
+      if (bumpRevision) bumpPayloadRevision(forConversation);
+      refreshComposer(forConversation);
     },
-    [conversationId, storeAttachments],
+    [bumpPayloadRevision, refreshComposer],
+  );
+
+  const updateDraft = useCallback(
+    (text: string) => {
+      if (conversationId) {
+        draftsRef.current.set(conversationId, text);
+        bumpPayloadRevision(conversationId);
+        refreshComposer(conversationId);
+      }
+    },
+    [bumpPayloadRevision, conversationId, refreshComposer],
+  );
+
+  const setConversationAttachmentError = useCallback(
+    (forConversation: string, error: string | null): void => {
+      if (error) attachmentErrorsRef.current.set(forConversation, error);
+      else attachmentErrorsRef.current.delete(forConversation);
+      refreshComposer(forConversation);
+    },
+    [refreshComposer],
   );
 
   const addImageFiles = useCallback(
     async (files: ReadonlyArray<File>) => {
       if (files.length === 0 || !conversationId) return;
       const forConversation = conversationId;
-      const current = attachmentsRef.current.get(forConversation) ?? [];
-      const { accepted, error } = validateImageFiles(current, files);
-      setAttachmentError(error);
-      if (accepted.length === 0) return;
-      const read = await Promise.all(accepted.map(readImageFile));
-      // Review M2: another add may have landed while these were being read
-      // — re-run the limits against what is attached NOW, not what was.
-      const latest = attachmentsRef.current.get(forConversation) ?? [];
-      const recheck = validateImageFiles(latest, accepted);
-      const kept = read.filter((_, index) => recheck.accepted.includes(accepted[index]));
-      if (recheck.error && openConversationRef.current === forConversation) {
-        setAttachmentError(recheck.error);
+      let session = attachmentSessionsRef.current.get(forConversation);
+      if (!session) {
+        session = Symbol(`composer-images:${forConversation}`);
+        attachmentSessionsRef.current.set(forConversation, session);
       }
-      if (kept.length > 0) storeAttachments(forConversation, [...latest, ...kept]);
+      const current = attachmentsRef.current.get(forConversation) ?? [];
+      const reserved = Array.from(imageReservationsRef.current.values())
+        .filter(
+          (reservation) =>
+            reservation.conversationId === forConversation && reservation.session === session,
+        )
+        .map((reservation) => ({ bytes: reservation.bytes }));
+      const { accepted, error } = validateImageFiles([...current, ...reserved], files);
+      setConversationAttachmentError(forConversation, error);
+      if (accepted.length === 0) return;
+
+      // Reserving count + bytes synchronously means two concurrent file
+      // selections validate against each other before either slow read can
+      // finish. Version immediately too: an older send acknowledgement may
+      // never clear a payload after the user has started selecting new media.
+      bumpPayloadRevision(forConversation);
+      const reservations = accepted.map((file) => {
+        const token = Symbol(`composer-image:${forConversation}`);
+        imageReservationsRef.current.set(token, {
+          conversationId: forConversation,
+          session,
+          bytes: file.size,
+        });
+        return token;
+      });
+      refreshPendingImageReads(forConversation);
+
+      const results = await Promise.allSettled(accepted.map(readImageFile));
+      for (const token of reservations) imageReservationsRef.current.delete(token);
+      refreshPendingImageReads(forConversation);
+
+      if (attachmentSessionsRef.current.get(forConversation) !== session) return;
+      const successful = results.flatMap((result, index) =>
+        result.status === 'fulfilled' ? [{ file: accepted[index], attachment: result.value }] : [],
+      );
+      const latest = attachmentsRef.current.get(forConversation) ?? [];
+      const stillReserved = Array.from(imageReservationsRef.current.values())
+        .filter(
+          (reservation) =>
+            reservation.conversationId === forConversation && reservation.session === session,
+        )
+        .map((reservation) => ({ bytes: reservation.bytes }));
+      const recheck = validateImageFiles(
+        [...latest, ...stillReserved],
+        successful.map(({ file }) => file),
+      );
+      const kept = successful.flatMap(({ file, attachment }) =>
+        recheck.accepted.includes(file) ? [attachment] : [],
+      );
+      if (kept.length > 0) {
+        storeAttachments(forConversation, [...latest, ...kept], false);
+      }
+      if (recheck.error) setConversationAttachmentError(forConversation, recheck.error);
+      if (results.some((result) => result.status === 'rejected')) {
+        setConversationAttachmentError(forConversation, 'Unable to read one or more images.');
+      }
     },
-    [conversationId, storeAttachments],
+    [
+      bumpPayloadRevision,
+      conversationId,
+      refreshPendingImageReads,
+      setConversationAttachmentError,
+      storeAttachments,
+    ],
   );
 
   const removeAttachment = useCallback(
     (id: string) => {
-      setConversationAttachments(attachments.filter((item) => item.id !== id));
-      setAttachmentError(null);
+      if (!conversationId) return;
+      const current = attachmentsRef.current.get(conversationId) ?? [];
+      storeAttachments(
+        conversationId,
+        current.filter((item) => item.id !== id),
+      );
+      setConversationAttachmentError(conversationId, null);
     },
-    [attachments, setConversationAttachments],
+    [conversationId, setConversationAttachmentError, storeAttachments],
   );
-  const [draft, setDraftState] = useState('');
-  const [sendError, setSendError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const updateDraft = useCallback(
-    (text: string) => {
-      setDraftState(text);
-      if (conversationId) draftsRef.current.set(conversationId, text);
+  const setConversationSendError = useCallback(
+    (forConversation: string, error: string | null): void => {
+      if (error) sendErrorsRef.current.set(forConversation, error);
+      else sendErrorsRef.current.delete(forConversation);
+      refreshComposer(forConversation);
     },
-    [conversationId],
+    [refreshComposer],
+  );
+
+  const clearPayloadIfCurrent = useCallback(
+    (forConversation: string, expectedRevision: number): boolean => {
+      if ((payloadRevisionsRef.current.get(forConversation) ?? 0) !== expectedRevision) {
+        return false;
+      }
+      draftsRef.current.delete(forConversation);
+      attachmentsRef.current.delete(forConversation);
+      attachmentSessionsRef.current.set(
+        forConversation,
+        Symbol(`composer-images:${forConversation}:cleared`),
+      );
+      attachmentErrorsRef.current.delete(forConversation);
+      bumpPayloadRevision(forConversation);
+      if (openConversationRef.current === forConversation) {
+        refreshComposer(forConversation);
+        textareaRef.current?.focus();
+      }
+      return true;
+    },
+    [bumpPayloadRevision, refreshComposer],
   );
 
   // Message actions (chat-ux Phase 2 Task 4, audit #5): stabilized via
@@ -725,11 +1096,15 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const handleRetry = useCallback(
     (messageId: string) => {
       if (!conversationId) return;
+      const forConversation = conversationId;
       resendFromMessage(conversationId, messageId).catch((err: unknown) => {
-        setSendError(err instanceof Error ? err.message : 'Failed to resend message.');
+        setConversationSendError(
+          forConversation,
+          userFacingActionError(err, 'Failed to resend message.'),
+        );
       });
     },
-    [conversationId, resendFromMessage],
+    [conversationId, resendFromMessage, setConversationSendError],
   );
 
   // Fix I5: unlike `handleRetry` (nothing to keep open on failure —
@@ -745,19 +1120,19 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   const handleEditResend = useCallback(
     async (messageId: string, editedText: string): Promise<boolean> => {
       if (!conversationId) return false;
+      const forConversation = conversationId;
       try {
         return await resendFromMessage(conversationId, messageId, editedText);
       } catch (err) {
-        setSendError(err instanceof Error ? err.message : 'Failed to resend message.');
+        setConversationSendError(
+          forConversation,
+          userFacingActionError(err, 'Failed to resend message.'),
+        );
         return false;
       }
     },
-    [conversationId, resendFromMessage],
+    [conversationId, resendFromMessage, setConversationSendError],
   );
-
-  useEffect(() => {
-    setDraftState(conversationId ? (draftsRef.current.get(conversationId) ?? '') : '');
-  }, [conversationId]);
 
   // Autogrow (MC parity, chat.tsx:1914-1919 `resizeTextarea`): re-measure
   // `scrollHeight` after every render (deliberately no dependency array —
@@ -789,6 +1164,28 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
       console.error('ChatView: failed to open conversation', err);
     });
   }, [conversationId, openConversation]);
+
+  const queuePaused = v2Transcript?.queuePaused ?? false;
+  const canSend = connection === 'connected';
+  const isStreaming = isStreamingNow;
+  const legacyComposerLocked = isStreaming && !activeAndQueueCapable;
+  const composerEditable = canSend && !legacyComposerLocked;
+  const hasPayload = draft.trim().length > 0 || attachments.length > 0;
+  const canSubmit =
+    composerEditable &&
+    hasPayload &&
+    !pendingDelivery &&
+    pendingImageReads === 0 &&
+    !(queueCapable && queuePaused);
+
+  const dismissChooser = useCallback((): void => {
+    setChooserConversationId(null);
+    textareaRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (chooserOpen && (!activeAndQueueCapable || !canSubmit)) dismissChooser();
+  }, [activeAndQueueCapable, canSubmit, chooserOpen, dismissChooser]);
 
   // 'unauthorized' is Shell's cue to clear the dead credential and route
   // back to 'pick-gateway' (see Shell's store-subscription effect) — by the
@@ -824,8 +1221,13 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
 
   const messages = transcript?.messages ?? [];
   const streaming = transcript?.streaming ?? null;
+  const queueItems = v2Transcript
+    ? v2Transcript.queueOrder.flatMap((inputId) => {
+        const input = v2Transcript.inputs[inputId];
+        return input ? [input] : [];
+      })
+    : [];
   const liveMessageIds = markLiveMessages(entranceLedgersRef.current, conversationId, transcript);
-  const canSend = connection === 'connected';
   // Retry eligibility (chat-ux Phase 2 Task 4, audit #5): a turn counts as
   // failed if EITHER its user message failed to send in the first place
   // (`sendMessage`'s synchronous `socket.send()` throw path marks the
@@ -843,7 +1245,6 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // (computed early, ahead of the early returns, to drive the live-region
   // announcer) — kept as its own local for readability at every call site
   // below.
-  const isStreaming = isStreamingNow;
   // Streaming presence (chat-ux Phase 2 Task 5, audit #13): "no visible
   // event yet" mirrors MC's own `liveEvents.length === 0` check exactly —
   // `streaming.events` is the same raw per-frame array `ContentBlocks`
@@ -861,30 +1262,62 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
   // for a conversation that turns out to have history. `streaming === null`
   // additionally excludes the rare case of a reopened conversation with an
   // in-flight turn but no confirmed messages yet (nothing to greet through).
-  const showEmptyState = transcript !== undefined && messages.length === 0 && streaming === null;
+  const showEmptyState = showingV2Transcript
+    ? v2Transcript.timeline.length === 0 && queueItems.length === 0 && !isStreaming
+    : transcript !== undefined && messages.length === 0 && streaming === null;
 
   function handleStarterPrompt(prompt: string): void {
     updateDraft(prompt);
     textareaRef.current?.focus();
   }
 
-  async function handleSend(): Promise<void> {
-    const text = draft.trim();
-    if ((!text && attachments.length === 0) || !conversationId || !canSend || isStreaming) return;
-    setSendError(null);
-    try {
-      const images =
-        attachments.length > 0
-          ? attachments.map(({ mediaType, data }) => ({ mediaType, data }))
-          : undefined;
-      await sendMessage(conversationId, text, images);
-      draftsRef.current.delete(conversationId);
-      updateDraft('');
-      setConversationAttachments([]);
-      setAttachmentError(null);
-    } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Failed to send message.');
+  async function deliverPayload(behavior?: 'steer' | 'followUp'): Promise<void> {
+    if (!conversationId || !canSubmit) return;
+    if (behavior && (!activeTurnId || !queueCapable)) {
+      dismissChooser();
+      return;
     }
+    const forConversation = conversationId;
+    if (pendingDeliveryTokensRef.current.has(forConversation)) return;
+    const text = (draftsRef.current.get(forConversation) ?? '').trim();
+    const selectedAttachments = attachmentsRef.current.get(forConversation) ?? [];
+    if (!text && selectedAttachments.length === 0) return;
+    const images: MobileImage[] | undefined = selectedAttachments.length
+      ? selectedAttachments.map(({ mediaType, data }) => ({ mediaType, data }))
+      : undefined;
+    const expectedRevision = payloadRevisionsRef.current.get(forConversation) ?? 0;
+    const operationToken = Symbol(`composer-delivery:${forConversation}`);
+    pendingDeliveryTokensRef.current.set(forConversation, operationToken);
+    refreshComposer(forConversation);
+    if (behavior) dismissChooser();
+    setConversationSendError(forConversation, null);
+    try {
+      if (behavior) await enqueueInput(forConversation, behavior, text, images);
+      else await sendMessage(forConversation, text, images);
+      if (pendingDeliveryTokensRef.current.get(forConversation) !== operationToken) return;
+      clearPayloadIfCurrent(forConversation, expectedRevision);
+      if (openConversationRef.current === forConversation) setChooserConversationId(null);
+    } catch (err) {
+      if (pendingDeliveryTokensRef.current.get(forConversation) !== operationToken) return;
+      setConversationSendError(
+        forConversation,
+        userFacingActionError(err, 'Failed to send message.'),
+      );
+    } finally {
+      if (pendingDeliveryTokensRef.current.get(forConversation) === operationToken) {
+        pendingDeliveryTokensRef.current.delete(forConversation);
+        refreshComposer(forConversation);
+      }
+    }
+  }
+
+  function handleSend(): void {
+    if (!canSubmit) return;
+    if (activeAndQueueCapable) {
+      setChooserConversationId(conversationId);
+      return;
+    }
+    void deliverPayload();
   }
 
   return (
@@ -902,11 +1335,15 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
        * banner/transcript-wrap/composer siblings get assigned. Do not
        * remove that `position: absolute` without re-verifying this. */}
       <div aria-live="polite" className="visually-hidden" data-testid="chat-live-region">
-        {liveAnnouncement}
+        <span key={liveAnnouncementRevision}>{liveAnnouncement}</span>
       </div>
       <div className="app-banner-row">
         {connection === 'reconnecting' && <output>{RECONNECTING_COPY}</output>}
-        {transcript?.error && <p role="alert">{transcript.error.message}</p>}
+        {(showingV2Transcript ? v2Transcript.error : transcript?.error) && (
+          <p role="alert">
+            {(showingV2Transcript ? v2Transcript.error : transcript?.error)?.message}
+          </p>
+        )}
       </div>
 
       {/* `.app-transcript-wrap` doesn't itself scroll — it's the positioned
@@ -921,40 +1358,139 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
         <div className="app-transcript" data-testid="chat-transcript" ref={containerRef}>
           <div className="app-message-column">
             {showEmptyState && <EmptyConversationGreeting onPromptSelected={handleStarterPrompt} />}
-            {messages.map((message) => (
-              <MessageRow
-                key={message.id}
-                message={message}
-                entrance={liveMessageIds.has(message.id)}
-                canAct={canSend && !isStreaming}
-                isRetryable={
-                  message.role === 'user' &&
-                  (message.status === 'failed' || failedTurnIds.has(message.turnId))
+            {showingV2Transcript ? (
+              v2Transcript.timeline.map((entry) => {
+                if (entry.kind === 'message') {
+                  const message = v2Transcript.messages[entry.messageId];
+                  if (!message) return null;
+                  return (
+                    <MessageRow
+                      key={`message:${entry.messageId}`}
+                      message={message}
+                      entrance={false}
+                      canAct={false}
+                      isRetryable={false}
+                      onRetry={handleRetry}
+                      onEditResend={handleEditResend}
+                    />
+                  );
                 }
-                onRetry={handleRetry}
-                onEditResend={handleEditResend}
-              />
-            ))}
-            {streaming && (
-              <div
-                data-testid="chat-message-streaming"
-                data-role="assistant"
-                className="chat-message-streaming"
-              >
-                {!streamingHasVisibleContent && <ThinkingIndicator />}
-                <ContentBlocks content={streaming} />
-                {/* Streaming caret (audit #13): only once there's actual
-                 * content to trail — while `ThinkingIndicator` above is
-                 * showing (no visible event yet) there's nothing for a
-                 * caret to sit after. */}
-                {streamingHasVisibleContent && (
-                  <span
-                    className="streaming-caret"
-                    aria-hidden="true"
-                    data-testid="streaming-caret"
+                if (entry.kind === 'input') {
+                  const input = v2Transcript.inputs[entry.inputId];
+                  if (!input) return null;
+                  const userMessageId = entry.userMessageId ?? input.userMessageId;
+                  return (
+                    <V2InputRow
+                      key={`input:${entry.inputId}`}
+                      input={input}
+                      message={userMessageId ? v2Transcript.messages[userMessageId] : undefined}
+                    />
+                  );
+                }
+                const message = v2Transcript.messages[entry.assistantMessageId];
+                const segment = v2Transcript.liveSegments[entry.assistantMessageId];
+                const segmentIsStreaming =
+                  segment?.status === 'streaming' || message?.status === 'streaming';
+                if (message && !segmentIsStreaming) {
+                  return (
+                    <MessageRow
+                      key={`assistant:${entry.assistantMessageId}`}
+                      message={message}
+                      entrance={false}
+                      canAct={false}
+                      isRetryable={false}
+                      onRetry={handleRetry}
+                      onEditResend={handleEditResend}
+                    />
+                  );
+                }
+                return (
+                  <V2AssistantSegmentRow
+                    key={`assistant:${entry.assistantMessageId}`}
+                    segment={segment}
+                    message={message}
                   />
+                );
+              })
+            ) : (
+              <>
+                {messages.map((message) => (
+                  <MessageRow
+                    key={message.id}
+                    message={message}
+                    entrance={liveMessageIds.has(message.id)}
+                    canAct={canSend && !isStreaming}
+                    isRetryable={
+                      message.role === 'user' &&
+                      (message.status === 'failed' || failedTurnIds.has(message.turnId))
+                    }
+                    onRetry={handleRetry}
+                    onEditResend={handleEditResend}
+                  />
+                ))}
+                {streaming && (
+                  <div
+                    data-testid="chat-message-streaming"
+                    data-role="assistant"
+                    className="chat-message-streaming"
+                  >
+                    {!streamingHasVisibleContent && <ThinkingIndicator />}
+                    <ContentBlocks content={streaming} />
+                    {/* Streaming caret (audit #13): only once there's actual
+                     * content to trail — while `ThinkingIndicator` above is
+                     * showing (no visible event yet) there's nothing for a
+                     * caret to sit after. */}
+                    {streamingHasVisibleContent && (
+                      <span
+                        className="streaming-caret"
+                        aria-hidden="true"
+                        data-testid="streaming-caret"
+                      />
+                    )}
+                  </div>
                 )}
-              </div>
+              </>
+            )}
+            {showingV2Transcript && (
+              <FollowUpQueue
+                conversationKey={conversationId}
+                items={queueItems}
+                paused={queuePaused}
+                composerRef={textareaRef}
+                onEdit={async (inputId, revision, text, images) => {
+                  try {
+                    await editFollowUp(conversationId, inputId, revision, text, images);
+                  } catch (error) {
+                    throw new Error(
+                      userFacingActionError(error, 'Unable to update this Follow Up.'),
+                      {
+                        cause: error,
+                      },
+                    );
+                  }
+                }}
+                onRemove={async (inputId, revision) => {
+                  try {
+                    await removeFollowUp(conversationId, inputId, revision);
+                  } catch (error) {
+                    throw new Error(
+                      userFacingActionError(error, 'Unable to remove this Follow Up.'),
+                      {
+                        cause: error,
+                      },
+                    );
+                  }
+                }}
+                onResume={async () => {
+                  try {
+                    await resumeFollowUps(conversationId);
+                  } catch (error) {
+                    throw new Error(userFacingActionError(error, 'Unable to resume Follow Ups.'), {
+                      cause: error,
+                    });
+                  }
+                }}
+              />
             )}
             {/* Zero-height bottom sentinel (audit #4): `usePinnedScroll`'s
              * IntersectionObserver watches this, scoped to `.app-transcript`
@@ -980,7 +1516,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
           className="app-composer"
           onSubmit={(event) => {
             event.preventDefault();
-            void handleSend();
+            handleSend();
           }}
           onDragOver={(event) => {
             // `kind`/`type` only — files aren't readable mid-drag (review I2).
@@ -1035,7 +1571,7 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
             className="app-composer-attach"
             aria-label="Add images"
             title="Attach images"
-            disabled={!canSend || isStreaming}
+            disabled={!composerEditable}
             onClick={() => fileInputRef.current?.click()}
           >
             <PaperclipIcon />
@@ -1081,29 +1617,58 @@ export function ChatView({ conversationId, gatewayLabel }: ChatViewProps) {
               // composition instead of setting `isComposing` reliably.
               if (event.nativeEvent.isComposing || event.keyCode === 229) return;
               event.preventDefault();
-              void handleSend();
+              handleSend();
             }}
-            disabled={!canSend || isStreaming}
+            disabled={!composerEditable}
             placeholder={canSend ? 'Message…' : 'Reconnecting…'}
             className="app-composer-textarea"
           />
-          {isStreaming ? (
-            <button
-              type="button"
-              aria-label="Stop response"
-              className="app-composer-stop"
-              onClick={() => conversationId && cancelTurn(conversationId)}
-            >
-              <StopIcon />
-            </button>
-          ) : (
-            <button
-              type="submit"
-              className="app-composer-send"
-              disabled={!canSend || (!draft.trim() && attachments.length === 0)}
-            >
-              Send
-            </button>
+          <div className="app-composer-actions">
+            {(!isStreaming || activeAndQueueCapable) && (
+              <button
+                type="submit"
+                aria-label="Send message"
+                className="app-composer-send"
+                disabled={!canSubmit}
+                onMouseDown={() => {
+                  chooserWasOpenOnSendMouseDownRef.current = chooserOpen;
+                }}
+                onClick={(event) => {
+                  const shouldDismiss = chooserOpen || chooserWasOpenOnSendMouseDownRef.current;
+                  chooserWasOpenOnSendMouseDownRef.current = false;
+                  if (!shouldDismiss) return;
+                  event.preventDefault();
+                  dismissChooser();
+                }}
+              >
+                Send
+              </button>
+            )}
+            {isStreaming && (
+              <button
+                type="button"
+                aria-label="Cancel response"
+                className="app-composer-stop"
+                onClick={() => cancelTurn(conversationId)}
+              >
+                <StopIcon />
+              </button>
+            )}
+            <DeliveryChooser
+              open={chooserOpen}
+              onChoose={(behavior) => {
+                void deliverPayload(behavior);
+              }}
+              onDismiss={dismissChooser}
+            />
+          </div>
+          {queueCapable && queuePaused && (
+            <output className="app-composer-queue-status">
+              Follow Ups paused. Resume or remove them before sending.
+            </output>
+          )}
+          {pendingImageReads > 0 && (
+            <output className="app-composer-image-status">Reading attached images…</output>
           )}
         </form>
         {sendError && <p role="alert">{sendError}</p>}

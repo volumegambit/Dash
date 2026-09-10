@@ -10,11 +10,13 @@ import type {
   MobileHealth,
   WsTicketResponse,
 } from '@dash/mobile-contract';
+import { isMobileV2LegacyRunId } from '@dash/mobile-contract-v2';
 import { MobileRestClient, type TokenSource } from './rest';
 
 // apps/web/src/api -> apps/web -> apps -> repo root
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const FIXTURES_DIR = join(REPO_ROOT, 'contracts/mobile/v1/fixtures');
+const V2_FIXTURES_DIR = join(REPO_ROOT, 'contracts/mobile/v2/fixtures');
 
 function readFixture(file: string): unknown {
   return JSON.parse(readFileSync(join(FIXTURES_DIR, file), 'utf8'));
@@ -123,4 +125,42 @@ describe('mobile v1 contract fixtures via MobileRestClient', () => {
       assertShape(result);
     });
   }
+});
+
+describe('mobile v2 browser-safe legacy run ID fixtures', () => {
+  it('validates shared byte boundaries without the Node Buffer global', () => {
+    const atLimit = JSON.parse(
+      readFileSync(join(V2_FIXTURES_DIR, 'chat-send-legacy-run-max.json'), 'utf8'),
+    ) as { id: unknown };
+    const overLimit = JSON.parse(
+      readFileSync(join(V2_FIXTURES_DIR, 'invalid/legacy-run-id-too-large.json'), 'utf8'),
+    ) as { id: unknown };
+    const whitespaceOnly = JSON.parse(
+      readFileSync(join(V2_FIXTURES_DIR, 'invalid/legacy-run-id-blank.json'), 'utf8'),
+    ) as { id: unknown };
+    const legacy = JSON.parse(
+      readFileSync(join(V2_FIXTURES_DIR, 'chat-send-legacy-run.json'), 'utf8'),
+    ) as { id: unknown };
+    const multibyteAtLimit = '🚀'.repeat(64);
+    const multibyteOverLimit = `${multibyteAtLimit}a`;
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'Buffer');
+    Object.defineProperty(globalThis, 'Buffer', {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    });
+
+    try {
+      expect(isMobileV2LegacyRunId(atLimit.id)).toBe(true);
+      expect(isMobileV2LegacyRunId(overLimit.id)).toBe(false);
+      expect(isMobileV2LegacyRunId(multibyteAtLimit)).toBe(true);
+      expect(isMobileV2LegacyRunId(multibyteOverLimit)).toBe(false);
+      expect(isMobileV2LegacyRunId(whitespaceOnly.id)).toBe(false);
+      expect(isMobileV2LegacyRunId(legacy.id)).toBe(true);
+      expect(isMobileV2LegacyRunId(legacy.id) ? legacy.id : undefined).toBe('turn-01');
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'Buffer', descriptor);
+      else Reflect.deleteProperty(globalThis, 'Buffer');
+    }
+  });
 });

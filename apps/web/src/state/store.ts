@@ -6,16 +6,42 @@ import type {
   MobileWsClientFrame,
   MobileWsServerFrame,
 } from '@dash/mobile-contract';
+import type {
+  MobileV2ConversationBootstrap,
+  MobileV2ConversationMessage,
+  MobileV2ConversationSummary,
+  MobileV2PendingInput,
+  MobileV2SequencedFrame,
+  MobileV2WsClientFrame,
+  MobileV2WsServerFrame,
+} from '@dash/mobile-contract-v2';
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
-import type { ChatSocket, FrameHandler } from '../api/chat-socket';
+import type { ChatSocket, ChatSocketClose, FrameHandler } from '../api/chat-socket';
 import { MobileApiError, type MobileRestClient } from '../api/rest';
-import { type Transcript, applyServerFrame } from './assemble';
+import {
+  type Transcript,
+  type V2OrdinarySendIntent,
+  type V2Transcript,
+  applyServerFrame,
+  applyV2ServerFrame,
+  prependV2MessagePage,
+  reconcileV2Accepted,
+  transcriptFromBootstrap,
+} from './assemble';
 import { readClientLocation } from './location.js';
+
+export type WebChatProtocol =
+  | { version: 1; capabilities: string[] }
+  | { version: 2; capabilities: string[] };
+
+type V2CommandFrame = Exclude<MobileV2WsClientFrame, { type: 'hello' }>;
 
 export interface WebAppState {
   conversations: ConversationSummary[];
   transcripts: Record<string, Transcript>;
+  v2Transcripts: Record<string, V2Transcript>;
+  protocol: WebChatProtocol;
   /**
    * `'idle'` is the store's INITIAL state — before any conversation has ever
    * been opened or reconnect has ever been attempted. It means "nothing has
@@ -61,6 +87,22 @@ export interface WebAppState {
   loadConversations(): Promise<void>;
   openConversation(id: string): Promise<void>;
   sendMessage(conversationId: string, text: string, images?: MobileImage[]): Promise<void>;
+  enqueueInput(
+    conversationId: string,
+    behavior: 'steer' | 'followUp',
+    text: string,
+    images?: MobileImage[],
+  ): Promise<MobileV2PendingInput>;
+  editFollowUp(
+    conversationId: string,
+    inputId: string,
+    expectedRevision: number,
+    text: string,
+    images?: MobileImage[],
+  ): Promise<MobileV2PendingInput>;
+  removeFollowUp(conversationId: string, inputId: string, expectedRevision: number): Promise<void>;
+  resumeFollowUps(conversationId: string): Promise<void>;
+  loadOlderMessages(conversationId: string): Promise<void>;
   /**
    * Message actions (chat-ux Phase 2 Task 4, audit #5): retry-failed and
    * edit-and-resend both funnel through here — retry is a call with no
@@ -134,7 +176,10 @@ export interface WebAppState {
    * route with a quoted `If-Match: revision` precondition iOS's
    * `GatewayAPI.patchConversation` uses — see `ConversationListFeature.swift`'s
    * `retryRename`), and reconciles with the server's authoritative summary
-   * (new `revision` included) on success.
+   * (new `revision` included) on success. That reconciliation is field-scoped:
+   * it cannot replace newer lifecycle or queue state received while the PATCH
+   * was in flight, and a superseded rename attempt cannot settle over the
+   * user's newer title.
    *
    * A no-op if `conversationId` isn't in `conversations` (nothing to
    * optimistically rename). On REST failure, rolls the optimistic title back
@@ -143,7 +188,8 @@ export interface WebAppState {
    * store) and is swallowed rather than rethrown, but any other failure
    * (network error, validation) propagates to the caller so the UI can show
    * it — same "don't swallow an action the UI asked for" philosophy as
-   * `startConversation`.
+   * `startConversation`. Rollback is attempt-scoped and title-scoped, so a
+   * late failure cannot undo a newer rename or remotely refreshed title.
    *
    * FINAL-REVIEW FIX C1c: a `revision_conflict` (409) — this store's local
    * `revision` is stale, which any turn on this conversation makes routine
@@ -168,8 +214,9 @@ export interface WebAppState {
    * `retryDelete`).
    *
    * A no-op if `conversationId` isn't in `conversations`. On REST failure,
-   * restores the removed row and rethrows (except a 401, which routes to
-   * `enterUnauthorized()` instead, same as every other REST call here).
+   * restores the removed row from the latest hidden v2 projection (falling
+   * back to the pre-delete summary) and rethrows, except a 401, which routes
+   * to `enterUnauthorized()` instead, same as every other REST call here.
    *
    * FINAL-REVIEW FIX C1c: same `revision_conflict` (409) retry-once handling
    * as `renameConversation` — see its doc comment — re-fetches the
@@ -206,11 +253,9 @@ export interface WebAppState {
 }
 
 export interface WebAppStoreDeps {
+  protocol: WebChatProtocol;
   rest: MobileRestClient;
-  socketFactory: (
-    onFrame: FrameHandler,
-    onClose: (reason: 'error' | 'closed') => void,
-  ) => ChatSocket;
+  socketFactory: (onFrame: FrameHandler, onClose: (close: ChatSocketClose) => void) => ChatSocket;
   /** Overrides for the reconnect policy; both are test/consumer hooks — the
    * defaults (below) are what production code gets. */
   reconnect?: {
@@ -302,6 +347,149 @@ function mergeMessagesById(
   return [...byId.values()].sort((a, b) => a.ordinal - b.ordinal);
 }
 
+interface PendingV2Command {
+  conversationId: string;
+  expectedType: MobileV2SequencedFrame['type'];
+  frame: V2CommandFrame;
+  intent?: V2OrdinarySendIntent;
+  resolve(frame: MobileV2SequencedFrame): void;
+  reject(error: Error): void;
+}
+
+interface ActiveV2Subscription {
+  id: string;
+  conversationId: string;
+  socket: ChatSocket;
+  socketGeneration: number;
+  openGeneration: number;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
+interface ActiveV2Refresh {
+  conversationId: string;
+  openGeneration: number;
+  promise: Promise<void>;
+}
+
+interface PendingV2Cancel {
+  conversationId: string;
+  openGeneration: number;
+  socket: ChatSocket;
+  socketGeneration: number;
+}
+
+function copiedImages(images: MobileImage[] | undefined): MobileImage[] | undefined {
+  return images?.map((image) => ({ ...image }));
+}
+
+function commandRejectionError(
+  frame: Extract<MobileV2WsServerFrame, { type: 'command_rejected' }>,
+): MobileApiError {
+  const status =
+    frame.code === 'revision_conflict' ? 409 : frame.code === 'unauthorized' ? 401 : 400;
+  return new MobileApiError(status, frame.code, {
+    code: frame.code,
+    error: frame.error,
+    retryable: frame.retryable,
+    ...(frame.details ? { details: frame.details } : {}),
+  });
+}
+
+function upsertConversationSummary(
+  conversations: ConversationSummary[],
+  incoming: ConversationSummary,
+): ConversationSummary[] {
+  const index = conversations.findIndex((conversation) => conversation.id === incoming.id);
+  if (index < 0) return [incoming, ...conversations];
+  const next = [...conversations];
+  next[index] = incoming;
+  return next;
+}
+
+/**
+ * A rename response owns only the title plus the revision/timestamp that
+ * acknowledge that title mutation. It must not replace lifecycle or queue
+ * fields that may have advanced over the socket while the PATCH was in
+ * flight.
+ */
+function reconcileRenameSummary<T extends ConversationSummary>(
+  current: T,
+  updated: ConversationSummary,
+): T {
+  const responseIsAtLeastAsNew = updated.revision >= current.revision;
+  return {
+    ...current,
+    title: updated.title,
+    revision: Math.max(current.revision, updated.revision),
+    updatedAt: responseIsAtLeastAsNew ? updated.updatedAt : current.updatedAt,
+  };
+}
+
+function hasV2SummaryFields(summary: ConversationSummary): summary is MobileV2ConversationSummary {
+  const candidate = summary as Partial<MobileV2ConversationSummary>;
+  return (
+    typeof candidate.queuePaused === 'boolean' &&
+    typeof candidate.queueRevision === 'number' &&
+    typeof candidate.pendingFollowUpCount === 'number' &&
+    typeof candidate.v2LastSeq === 'number'
+  );
+}
+
+function reconcileV2Summary(
+  current: ConversationSummary,
+  incoming: ConversationSummary,
+  options: {
+    forceIncomingTitle?: boolean;
+    sequencedStateOwner?: 'current' | 'incoming';
+  } = {},
+): ConversationSummary {
+  const currentIsV2 = hasV2SummaryFields(current);
+  const incomingIsV2 = hasV2SummaryFields(incoming);
+  const metadata = current.revision > incoming.revision ? current : incoming;
+  let lifecycleSource: ConversationSummary | undefined;
+  let queueSource: ConversationSummary | undefined;
+  if (options.sequencedStateOwner === 'current' && currentIsV2) {
+    lifecycleSource = current;
+    queueSource = current;
+  } else if (options.sequencedStateOwner === 'incoming' && incomingIsV2) {
+    lifecycleSource = incoming;
+    queueSource = incoming;
+  } else if (currentIsV2 && incomingIsV2) {
+    lifecycleSource = current.v2LastSeq > incoming.v2LastSeq ? current : incoming;
+    queueSource =
+      current.v2LastSeq > incoming.v2LastSeq ||
+      (current.v2LastSeq === incoming.v2LastSeq && current.queueRevision > incoming.queueRevision)
+        ? current
+        : incoming;
+  } else if (currentIsV2) {
+    lifecycleSource = current;
+    queueSource = current;
+  } else if (incomingIsV2) {
+    lifecycleSource = incoming;
+    queueSource = incoming;
+  }
+
+  return {
+    ...metadata,
+    ...(lifecycleSource && hasV2SummaryFields(lifecycleSource)
+      ? {
+          status: lifecycleSource.status,
+          activeTurnId: lifecycleSource.activeTurnId,
+          v2LastSeq: lifecycleSource.v2LastSeq,
+        }
+      : {}),
+    ...(queueSource && hasV2SummaryFields(queueSource)
+      ? {
+          queuePaused: queueSource.queuePaused,
+          queueRevision: queueSource.queueRevision,
+          pendingFollowUpCount: queueSource.pendingFollowUpCount,
+        }
+      : {}),
+    ...(options.forceIncomingTitle ? { title: incoming.title } : {}),
+  };
+}
+
 /**
  * Conversation store: streaming assembly (via `assemble.ts`) plus REST
  * replay and WS resume-based reconnect. Built on zustand v5's `create` (the
@@ -313,14 +501,34 @@ function mergeMessagesById(
  * rather than store state — it's wiring, not UI-observable data.
  */
 export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi<WebAppState>> {
-  const { rest, socketFactory } = deps;
+  const { protocol, rest, socketFactory } = deps;
   const maxReconnectAttempts = deps.reconnect?.maxAttempts ?? RECONNECT_MAX_ATTEMPTS;
 
   let currentConversationId: string | null = null;
   let socket: ChatSocket | null = null;
+  let socketGeneration = 0;
+  let openGeneration = 0;
+  let activeV2Subscription: ActiveV2Subscription | null = null;
+  let activeV2Refresh: ActiveV2Refresh | null = null;
+  const projectionEpochByConversation = new Map<string, number>();
+  const pendingCommands = new Map<string, PendingV2Command>();
+  const pendingCancels = new Map<string, PendingV2Cancel>();
+  const deletedConversationIds = new Set<string>();
+  const bootstrapRequiredConversations = new Set<string>();
+  const renameAttemptByConversation = new Map<string, number>();
+  const renamePendingAttemptsByConversation = new Map<string, Set<number>>();
+  const renameAppliedAttemptByConversation = new Map<string, number>();
+  const renameRollbackByConversation = new Map<string, ConversationSummary>();
+  let conversationListRequest = 0;
+  let renameAttempt = 0;
   let lastSeq = 0;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let historyRetryAttempt = 0;
+  let historyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let refreshRetryAttempt = 0;
+  let refreshRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectDisabled = false;
   /** Set by `dispose()`; checked at every point that would otherwise
    * (re)establish a connection or resurrect `connection` out of `'offline'`
    * — see `scheduleReconnect`/`attemptReconnect` — so a reconnect already in
@@ -333,6 +541,22 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+  }
+
+  function clearHistoryRetryTimer(resetAttempt = true): void {
+    if (historyRetryTimer) {
+      clearTimeout(historyRetryTimer);
+      historyRetryTimer = null;
+    }
+    if (resetAttempt) historyRetryAttempt = 0;
+  }
+
+  function clearRefreshRetryTimer(resetAttempt = true): void {
+    if (refreshRetryTimer) {
+      clearTimeout(refreshRetryTimer);
+      refreshRetryTimer = null;
+    }
+    if (resetAttempt) refreshRetryAttempt = 0;
   }
 
   /** Backward-paginated replay: `getMessages` walks from newest to oldest via
@@ -362,6 +586,157 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
   }
 
   return create<WebAppState>((set, get) => {
+    function observeAuthoritativeRenameBaseline(
+      conversationId: string,
+      summary: ConversationSummary,
+    ): void {
+      if (!renamePendingAttemptsByConversation.get(conversationId)?.size) return;
+      const baseline = renameRollbackByConversation.get(conversationId);
+      if (!baseline) {
+        renameRollbackByConversation.set(conversationId, summary);
+        return;
+      }
+      if (protocol.version === 2) {
+        renameRollbackByConversation.set(conversationId, reconcileV2Summary(baseline, summary));
+      } else if (summary.revision >= baseline.revision) {
+        renameRollbackByConversation.set(conversationId, summary);
+      }
+    }
+
+    function installConversationPage(
+      items: ConversationSummary[],
+      idsAtRequestStart: ReadonlySet<string>,
+    ): void {
+      set((state) => {
+        const incomingIds = new Set(items.map((conversation) => conversation.id));
+        let v2Transcripts = state.v2Transcripts;
+        const conversations = items
+          .filter((conversation) => !deletedConversationIds.has(conversation.id))
+          .map((conversation) => {
+            observeAuthoritativeRenameBaseline(conversation.id, conversation);
+            const listed = state.conversations.find((current) => current.id === conversation.id);
+            if (protocol.version !== 2) {
+              return renameAttemptByConversation.has(conversation.id) && listed
+                ? { ...conversation, title: listed.title }
+                : conversation;
+            }
+
+            const projected = state.v2Transcripts[conversation.id]?.conversation;
+            const current =
+              listed && projected ? reconcileV2Summary(listed, projected) : (listed ?? projected);
+            let reconciled = current ? reconcileV2Summary(current, conversation) : conversation;
+            if (renameAttemptByConversation.has(conversation.id) && listed) {
+              reconciled = { ...reconciled, title: listed.title };
+            }
+            const transcript = state.v2Transcripts[conversation.id];
+            if (transcript) {
+              v2Transcripts = {
+                ...v2Transcripts,
+                [conversation.id]: {
+                  ...transcript,
+                  conversation: reconcileV2Summary(transcript.conversation, reconciled, {
+                    sequencedStateOwner: 'current',
+                  }) as MobileV2ConversationSummary,
+                },
+              };
+            }
+            return reconciled;
+          });
+
+        if (protocol.version !== 2) return { conversations };
+        const additions = state.conversations.filter(
+          (conversation) =>
+            !idsAtRequestStart.has(conversation.id) &&
+            !incomingIds.has(conversation.id) &&
+            !deletedConversationIds.has(conversation.id),
+        );
+        return { conversations: [...additions, ...conversations], v2Transcripts };
+      });
+    }
+
+    function addPendingRename(conversationId: string, attempt: number): void {
+      const pending = renamePendingAttemptsByConversation.get(conversationId) ?? new Set<number>();
+      pending.add(attempt);
+      renamePendingAttemptsByConversation.set(conversationId, pending);
+    }
+
+    function removePendingRename(conversationId: string, attempt: number): void {
+      const pending = renamePendingAttemptsByConversation.get(conversationId);
+      pending?.delete(attempt);
+      if (pending?.size === 0) renamePendingAttemptsByConversation.delete(conversationId);
+    }
+
+    function hasNewerRenameIntent(conversationId: string, attempt: number): boolean {
+      if ((renameAppliedAttemptByConversation.get(conversationId) ?? 0) > attempt) return true;
+      return [...(renamePendingAttemptsByConversation.get(conversationId) ?? [])].some(
+        (pendingAttempt) => pendingAttempt > attempt,
+      );
+    }
+
+    function clearSettledRenameTracking(conversationId: string): void {
+      if (renamePendingAttemptsByConversation.get(conversationId)?.size) return;
+      renameAttemptByConversation.delete(conversationId);
+      renameAppliedAttemptByConversation.delete(conversationId);
+      renameRollbackByConversation.delete(conversationId);
+    }
+
+    function restoreRenameBaseline(conversationId: string, baseline: ConversationSummary): void {
+      set((state) => {
+        const transcript = state.v2Transcripts[conversationId];
+        return {
+          conversations: state.conversations.map((conversation) =>
+            conversation.id !== conversationId
+              ? conversation
+              : protocol.version === 2
+                ? reconcileV2Summary(conversation, baseline, { forceIncomingTitle: true })
+                : baseline,
+          ),
+          ...(transcript
+            ? {
+                v2Transcripts: {
+                  ...state.v2Transcripts,
+                  [conversationId]: {
+                    ...transcript,
+                    conversation: reconcileV2Summary(transcript.conversation, baseline, {
+                      forceIncomingTitle: true,
+                      sequencedStateOwner: 'current',
+                    }) as MobileV2ConversationSummary,
+                  },
+                },
+              }
+            : {}),
+        };
+      });
+    }
+
+    function applyRenameSuccess(conversationId: string, updated: ConversationSummary): void {
+      set((state) => {
+        const transcript = state.v2Transcripts[conversationId];
+        return {
+          conversations: deletedConversationIds.has(conversationId)
+            ? state.conversations.filter((conversation) => conversation.id !== conversationId)
+            : state.conversations.map((conversation) =>
+                conversation.id === conversationId
+                  ? protocol.version === 2
+                    ? reconcileRenameSummary(conversation, updated)
+                    : updated
+                  : conversation,
+              ),
+          ...(transcript
+            ? {
+                v2Transcripts: {
+                  ...state.v2Transcripts,
+                  [conversationId]: {
+                    ...transcript,
+                    conversation: reconcileRenameSummary(transcript.conversation, updated),
+                  },
+                },
+              }
+            : {}),
+        };
+      });
+    }
+
     function updateTranscript(
       conversationId: string,
       updater: (t: Transcript) => Transcript,
@@ -372,6 +747,165 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
           [conversationId]: updater(state.transcripts[conversationId] ?? emptyTranscript()),
         },
       }));
+    }
+
+    function installV2Transcript(
+      conversationId: string,
+      transcript: V2Transcript,
+      preserveNewerMetadata = false,
+    ): void {
+      set((state) => {
+        let nextTranscript = transcript;
+        if (preserveNewerMetadata) {
+          observeAuthoritativeRenameBaseline(conversationId, transcript.conversation);
+          const projected = state.v2Transcripts[conversationId]?.conversation;
+          const listed = state.conversations.find(
+            (conversation) => conversation.id === conversationId,
+          );
+          const current =
+            projected && listed ? reconcileV2Summary(listed, projected) : (projected ?? listed);
+          if (current) {
+            const reconciled = reconcileV2Summary(current, transcript.conversation, {
+              sequencedStateOwner: 'incoming',
+            });
+            nextTranscript = {
+              ...transcript,
+              conversation: {
+                ...reconciled,
+                ...(renameAttemptByConversation.has(conversationId)
+                  ? { title: current.title }
+                  : {}),
+              } as MobileV2ConversationSummary,
+            };
+          }
+        }
+        const listed = state.conversations.find(
+          (conversation) => conversation.id === conversationId,
+        );
+        const listSummary = listed
+          ? reconcileV2Summary(listed, nextTranscript.conversation)
+          : nextTranscript.conversation;
+        return {
+          conversations: deletedConversationIds.has(conversationId)
+            ? state.conversations.filter((conversation) => conversation.id !== conversationId)
+            : upsertConversationSummary(state.conversations, listSummary),
+          v2Transcripts: { ...state.v2Transcripts, [conversationId]: nextTranscript },
+        };
+      });
+    }
+
+    function updateV2Transcript(
+      conversationId: string,
+      updater: (transcript: V2Transcript) => V2Transcript,
+    ): void {
+      set((state) => {
+        const current = state.v2Transcripts[conversationId];
+        if (!current) return state;
+        const next = updater(current);
+        if (next === current) return state;
+        const listed = state.conversations.find(
+          (conversation) => conversation.id === conversationId,
+        );
+        const listSummary = listed
+          ? reconcileV2Summary(listed, next.conversation)
+          : next.conversation;
+        return {
+          v2Transcripts: { ...state.v2Transcripts, [conversationId]: next },
+          conversations: deletedConversationIds.has(conversationId)
+            ? state.conversations.filter((conversation) => conversation.id !== conversationId)
+            : upsertConversationSummary(state.conversations, listSummary),
+        };
+      });
+    }
+
+    function rejectActiveSubscription(error: Error): void {
+      const subscription = activeV2Subscription;
+      activeV2Subscription = null;
+      subscription?.reject(error);
+    }
+
+    function rejectPendingCommands(
+      predicate: (command: PendingV2Command) => boolean,
+      error: Error,
+    ): void {
+      for (const [id, command] of pendingCommands) {
+        if (!predicate(command)) continue;
+        pendingCommands.delete(id);
+        command.reject(new Error(error.message));
+      }
+    }
+
+    function recordV2Error(conversationId: string, message: string): void {
+      updateV2Transcript(conversationId, (transcript) => ({
+        ...transcript,
+        error: { message, retryable: false },
+      }));
+    }
+
+    function terminateV2CorrelationViolation(conversationId: string, frameType: string): void {
+      const error = new Error(`Invalid v2 frame correlation for ${frameType}`);
+      recordV2Error(conversationId, error.message);
+      haltReconnectMachinery(error);
+      set({ connection: 'offline' });
+    }
+
+    function currentProjectionEpoch(conversationId: string): number {
+      return projectionEpochByConversation.get(conversationId) ?? 0;
+    }
+
+    function bumpProjectionEpoch(conversationId: string): number {
+      const next = currentProjectionEpoch(conversationId) + 1;
+      projectionEpochByConversation.set(conversationId, next);
+      return next;
+    }
+
+    function operationIsCurrent(
+      conversationId: string,
+      generation: number,
+      epoch?: number,
+    ): boolean {
+      return (
+        !disposed &&
+        currentConversationId === conversationId &&
+        openGeneration === generation &&
+        (epoch === undefined || currentProjectionEpoch(conversationId) === epoch)
+      );
+    }
+
+    function sendV2Command<T extends MobileV2SequencedFrame>(
+      conversationId: string,
+      frame: V2CommandFrame,
+      expectedType: T['type'],
+      intent?: V2OrdinarySendIntent,
+    ): Promise<T> {
+      if (protocol.version !== 2 || !socket || get().connection !== 'connected') {
+        return Promise.reject(
+          new Error(
+            'Cannot send: no connected chat socket (call openConversation() and wait for it to connect)',
+          ),
+        );
+      }
+      const attached = socket;
+      return new Promise<T>((resolve, reject) => {
+        pendingCommands.set(frame.id, {
+          conversationId,
+          expectedType,
+          frame,
+          intent,
+          resolve: (result) => resolve(result as T),
+          reject,
+        });
+        try {
+          attached.send(frame);
+        } catch {
+          if (socket === attached) {
+            socket = null;
+            attached.close();
+            set({ connection: 'reconnecting' });
+            scheduleReconnect();
+          }
+        }
+      });
     }
 
     /**
@@ -414,6 +948,7 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       rest
         .getConversation(conversationId)
         .then((updated) => {
+          observeAuthoritativeRenameBaseline(conversationId, updated);
           set((state) => ({
             conversations: state.conversations.map((c) =>
               c.id === conversationId && c.title === titleAtRefreshStart ? updated : c,
@@ -436,11 +971,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * failed for some other reason" so it can go straight to `'unauthorized'`
      * instead of just trying (and failing) the resume again next attempt. */
     async function resolveAgentId(conversationId: string): Promise<string | null> {
+      const v2AgentId = get().v2Transcripts[conversationId]?.conversation.agentId;
+      if (v2AgentId) return v2AgentId;
       const known = get().conversations.find((c) => c.id === conversationId)?.agentId;
       if (known) return known;
       try {
+        const idsAtRequestStart = new Set(
+          get().conversations.map((conversation) => conversation.id),
+        );
         const page = await rest.listConversations();
-        set({ conversations: page.items });
+        installConversationPage(page.items, idsAtRequestStart);
         return page.items.find((c) => c.id === conversationId)?.agentId ?? null;
       } catch (err) {
         if (isAuthError(err)) throw err;
@@ -448,7 +988,289 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }
     }
 
-    function handleFrame(frame: MobileWsServerFrame): void {
+    async function loadOneOlderV2Page(
+      conversationId: string,
+      generation: number,
+      epoch: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+    ): Promise<boolean> {
+      if (
+        !operationIsCurrent(conversationId, generation, epoch) ||
+        socket !== attached ||
+        socketGeneration !== attachedGeneration
+      ) {
+        return false;
+      }
+      const cursor = get().v2Transcripts[conversationId]?.nextCursor;
+      if (!cursor) return false;
+      const page = await rest.getMessagesV2(conversationId, cursor);
+      if (
+        !operationIsCurrent(conversationId, generation, epoch) ||
+        socket !== attached ||
+        socketGeneration !== attachedGeneration
+      ) {
+        return false;
+      }
+      const currentCursor = get().v2Transcripts[conversationId]?.nextCursor;
+      if (currentCursor !== cursor) return Boolean(currentCursor);
+      updateV2Transcript(conversationId, (transcript) => prependV2MessagePage(transcript, page));
+      return Boolean(page.nextCursor);
+    }
+
+    async function walkOlderV2Pages(
+      conversationId: string,
+      generation: number,
+      epoch: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+    ): Promise<void> {
+      while (
+        await loadOneOlderV2Page(conversationId, generation, epoch, attached, attachedGeneration)
+      ) {
+        // Each iteration re-reads the cursor from the latest projection so
+        // interleaved socket frames remain authoritative.
+      }
+    }
+
+    function historyOperationIsCurrent(
+      conversationId: string,
+      generation: number,
+      epoch: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+    ): boolean {
+      return (
+        operationIsCurrent(conversationId, generation, epoch) &&
+        socket === attached &&
+        socketGeneration === attachedGeneration
+      );
+    }
+
+    function scheduleV2HistoryRetry(
+      conversationId: string,
+      generation: number,
+      epoch: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+    ): void {
+      if (
+        historyRetryTimer ||
+        !get().v2Transcripts[conversationId]?.nextCursor ||
+        !historyOperationIsCurrent(conversationId, generation, epoch, attached, attachedGeneration)
+      ) {
+        return;
+      }
+      const delay = reconnectDelay(historyRetryAttempt);
+      historyRetryAttempt += 1;
+      historyRetryTimer = setTimeout(() => {
+        historyRetryTimer = null;
+        if (
+          !historyOperationIsCurrent(
+            conversationId,
+            generation,
+            epoch,
+            attached,
+            attachedGeneration,
+          )
+        ) {
+          return;
+        }
+        void continueV2History(conversationId, generation, epoch, attached, attachedGeneration);
+      }, delay);
+    }
+
+    async function continueV2History(
+      conversationId: string,
+      generation: number,
+      epoch: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+    ): Promise<void> {
+      try {
+        await walkOlderV2Pages(conversationId, generation, epoch, attached, attachedGeneration);
+        if (
+          historyOperationIsCurrent(conversationId, generation, epoch, attached, attachedGeneration)
+        ) {
+          clearHistoryRetryTimer();
+        }
+      } catch (error) {
+        if (
+          !historyOperationIsCurrent(
+            conversationId,
+            generation,
+            epoch,
+            attached,
+            attachedGeneration,
+          )
+        ) {
+          return;
+        }
+        if (isAuthError(error)) {
+          enterUnauthorized();
+          return;
+        }
+        scheduleV2HistoryRetry(conversationId, generation, epoch, attached, attachedGeneration);
+      }
+    }
+
+    function resendPendingV2Commands(conversationId: string, attached: ChatSocket): void {
+      for (const command of pendingCommands.values()) {
+        if (command.conversationId !== conversationId) continue;
+        try {
+          attached.send(command.frame);
+        } catch {
+          if (socket === attached) {
+            socket = null;
+            attached.close();
+            set({ connection: 'reconnecting' });
+            scheduleReconnect();
+          }
+          return;
+        }
+      }
+    }
+
+    function subscribeV2(
+      conversationId: string,
+      sinceV2Seq: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+      generation: number,
+    ): Promise<void> {
+      rejectActiveSubscription(new Error('Conversation subscription superseded'));
+      const id = crypto.randomUUID();
+      const frame: MobileV2WsClientFrame = {
+        type: 'subscribe_conversation',
+        id,
+        agentId:
+          get().v2Transcripts[conversationId]?.conversation.agentId ??
+          get().conversations.find((conversation) => conversation.id === conversationId)?.agentId ??
+          '',
+        conversationId,
+        sinceV2Seq,
+      };
+      return new Promise<void>((resolve, reject) => {
+        activeV2Subscription = {
+          id,
+          conversationId,
+          socket: attached,
+          socketGeneration: attachedGeneration,
+          openGeneration: generation,
+          resolve,
+          reject,
+        };
+        try {
+          attached.send(frame);
+        } catch (error) {
+          if (activeV2Subscription?.id === id) activeV2Subscription = null;
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    }
+
+    function scheduleV2RefreshRetry(
+      conversationId: string,
+      generation: number,
+      attached: ChatSocket,
+      attachedGeneration: number,
+    ): void {
+      if (
+        refreshRetryTimer ||
+        !bootstrapRequiredConversations.has(conversationId) ||
+        !operationIsCurrent(conversationId, generation) ||
+        socket !== attached ||
+        socketGeneration !== attachedGeneration
+      ) {
+        return;
+      }
+      const delay = reconnectDelay(refreshRetryAttempt);
+      refreshRetryAttempt += 1;
+      refreshRetryTimer = setTimeout(() => {
+        refreshRetryTimer = null;
+        if (
+          !bootstrapRequiredConversations.has(conversationId) ||
+          !operationIsCurrent(conversationId, generation) ||
+          socket !== attached ||
+          socketGeneration !== attachedGeneration
+        ) {
+          return;
+        }
+        void refreshV2Projection(conversationId).catch((error: unknown) => {
+          if (!isAuthError(error)) {
+            recordV2Error(conversationId, error instanceof Error ? error.message : String(error));
+          }
+        });
+      }, delay);
+    }
+
+    function refreshV2Projection(conversationId: string): Promise<void> {
+      if (protocol.version !== 2 || currentConversationId !== conversationId || disposed) {
+        return Promise.resolve();
+      }
+      bootstrapRequiredConversations.add(conversationId);
+      clearRefreshRetryTimer(false);
+      const generation = openGeneration;
+      const existing = activeV2Refresh;
+      if (existing?.conversationId === conversationId && existing.openGeneration === generation) {
+        return existing.promise;
+      }
+      clearHistoryRetryTimer();
+      const epoch = bumpProjectionEpoch(conversationId);
+      const promise = (async () => {
+        let bootstrap: MobileV2ConversationBootstrap;
+        try {
+          bootstrap = await rest.bootstrap(conversationId);
+        } catch (error) {
+          if (isAuthError(error)) enterUnauthorized();
+          throw error;
+        }
+        if (!operationIsCurrent(conversationId, generation, epoch)) return;
+        installV2Transcript(conversationId, transcriptFromBootstrap(bootstrap), true);
+        const attached = socket;
+        const attachedGeneration = socketGeneration;
+        if (!attached) return;
+        set({ connection: 'reconnecting' });
+        await subscribeV2(
+          conversationId,
+          bootstrap.v2ThroughSeq,
+          attached,
+          attachedGeneration,
+          generation,
+        );
+        if (
+          !historyOperationIsCurrent(
+            conversationId,
+            generation,
+            epoch,
+            attached,
+            attachedGeneration,
+          )
+        ) {
+          return;
+        }
+        bootstrapRequiredConversations.delete(conversationId);
+        clearRefreshRetryTimer();
+        void continueV2History(conversationId, generation, epoch, attached, attachedGeneration);
+      })();
+      const refresh: ActiveV2Refresh = { conversationId, openGeneration: generation, promise };
+      activeV2Refresh = refresh;
+      void promise.then(
+        () => {
+          if (activeV2Refresh === refresh) activeV2Refresh = null;
+        },
+        (error: unknown) => {
+          if (activeV2Refresh === refresh) activeV2Refresh = null;
+          const attached = socket;
+          if (!isAuthError(error) && attached) {
+            scheduleV2RefreshRetry(conversationId, generation, attached, socketGeneration);
+          }
+        },
+      );
+      return promise;
+    }
+
+    function handleV1Frame(frame: MobileWsServerFrame): void {
       const frameConversationId = 'conversationId' in frame ? frame.conversationId : undefined;
       const conversationId = frameConversationId ?? currentConversationId;
       if (!conversationId) return;
@@ -529,6 +1351,193 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       }
     }
 
+    function handleV2Frame(
+      receivingSocket: ChatSocket,
+      receivingGeneration: number,
+      frame: MobileV2WsServerFrame,
+    ): void {
+      if (receivingSocket !== socket || receivingGeneration !== socketGeneration) return;
+
+      if (frame.type === 'conversation_subscribed') {
+        const subscription = activeV2Subscription;
+        if (
+          !subscription ||
+          subscription.socket !== receivingSocket ||
+          subscription.socketGeneration !== receivingGeneration ||
+          subscription.openGeneration !== openGeneration ||
+          subscription.id !== frame.id
+        ) {
+          return;
+        }
+        if (subscription.conversationId !== frame.conversationId) {
+          terminateV2CorrelationViolation(subscription.conversationId, frame.type);
+          return;
+        }
+        activeV2Subscription = null;
+        reconnectAttempt = 0;
+        set({ connection: 'connected' });
+        resendPendingV2Commands(frame.conversationId, receivingSocket);
+        subscription.resolve();
+        return;
+      }
+
+      if (frame.type === 'command_rejected') {
+        const subscription = activeV2Subscription;
+        if (
+          subscription &&
+          subscription.socket === receivingSocket &&
+          subscription.socketGeneration === receivingGeneration &&
+          subscription.openGeneration === openGeneration &&
+          subscription.id === frame.id
+        ) {
+          if (frame.conversationId !== subscription.conversationId) {
+            terminateV2CorrelationViolation(subscription.conversationId, frame.type);
+            return;
+          }
+          activeV2Subscription = null;
+          const error = commandRejectionError(frame);
+          subscription.reject(error);
+          if (frame.code === 'unauthorized') enterUnauthorized();
+          return;
+        }
+
+        const pending = pendingCommands.get(frame.id);
+        const pendingCancel = pendingCancels.get(frame.id);
+        if (
+          frame.conversationId === undefined &&
+          pending?.frame.type === 'message' &&
+          pendingCancel?.socket === receivingSocket &&
+          pendingCancel.socketGeneration === receivingGeneration &&
+          pendingCancel.openGeneration === openGeneration
+        ) {
+          pendingCancels.delete(frame.id);
+          updateV2Transcript(pendingCancel.conversationId, (transcript) => ({
+            ...transcript,
+            error: {
+              message: frame.error,
+              code: frame.code,
+              retryable: frame.retryable,
+              activeTurnId: frame.id,
+            },
+          }));
+          if (frame.code === 'unauthorized') enterUnauthorized();
+          return;
+        }
+        if (frame.conversationId === undefined && pending?.frame.type === 'message') return;
+        if (pending) {
+          if (frame.conversationId !== pending.conversationId) {
+            terminateV2CorrelationViolation(pending.conversationId, frame.type);
+            return;
+          }
+          pendingCommands.delete(frame.id);
+          pending.reject(commandRejectionError(frame));
+          if (frame.code === 'unauthorized') enterUnauthorized();
+          return;
+        }
+
+        if (!pendingCancel) return;
+        if (
+          pendingCancel.socket !== receivingSocket ||
+          pendingCancel.socketGeneration !== receivingGeneration ||
+          pendingCancel.openGeneration !== openGeneration
+        ) {
+          return;
+        }
+        if (
+          frame.conversationId !== undefined &&
+          frame.conversationId !== pendingCancel.conversationId
+        ) {
+          terminateV2CorrelationViolation(pendingCancel.conversationId, frame.type);
+          return;
+        }
+        pendingCancels.delete(frame.id);
+        updateV2Transcript(pendingCancel.conversationId, (transcript) => ({
+          ...transcript,
+          error: {
+            message: frame.error,
+            code: frame.code,
+            retryable: frame.retryable,
+            activeTurnId: frame.id,
+          },
+        }));
+        if (frame.code === 'unauthorized') enterUnauthorized();
+        return;
+      }
+
+      if (!('v2Seq' in frame)) return;
+      if (frame.conversationId !== currentConversationId) {
+        if (currentConversationId) {
+          terminateV2CorrelationViolation(currentConversationId, frame.type);
+        }
+        return;
+      }
+      if (frame.type === 'done' || frame.type === 'error') {
+        pendingCancels.delete(frame.runId);
+      }
+      const transcript = get().v2Transcripts[frame.conversationId];
+      if (!transcript) return;
+
+      const frameId = frame.id;
+      const pending = typeof frameId === 'string' ? pendingCommands.get(frameId) : undefined;
+      const matchingPending =
+        pending?.conversationId === frame.conversationId && pending.expectedType === frame.type
+          ? pending
+          : undefined;
+      if (matchingPending && typeof frameId === 'string') {
+        // Settle before reducing. On reconnect the durable transition may be
+        // replayed at a cursor the projection already contains; its promise
+        // still has to finish even though the reducer correctly ignores the
+        // duplicate transition.
+        pendingCommands.delete(frameId);
+        matchingPending.resolve(frame);
+      }
+
+      let applied: { state: V2Transcript; gapAfter: number | null };
+      let needsBootstrap = false;
+      if (frame.type === 'accepted') {
+        const reconciled = reconcileV2Accepted(transcript, frame, matchingPending?.intent);
+        applied = { state: reconciled.state, gapAfter: null };
+        needsBootstrap = reconciled.needsBootstrap;
+      } else {
+        applied = applyV2ServerFrame(transcript, frame);
+      }
+      if (applied.gapAfter !== null) {
+        void refreshV2Projection(frame.conversationId).catch((error: unknown) => {
+          if (!isAuthError(error)) {
+            recordV2Error(
+              frame.conversationId,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        });
+        return;
+      }
+      if (applied.state !== transcript) installV2Transcript(frame.conversationId, applied.state);
+      if (needsBootstrap) {
+        void refreshV2Projection(frame.conversationId).catch((error: unknown) => {
+          if (!isAuthError(error)) {
+            recordV2Error(
+              frame.conversationId,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        });
+      }
+    }
+
+    function handleFrame(
+      receivingSocket: ChatSocket,
+      receivingGeneration: number,
+      frame: MobileWsServerFrame | MobileV2WsServerFrame,
+    ): void {
+      if (receivingSocket !== socket || receivingGeneration !== socketGeneration) return;
+      if (protocol.version === 2) {
+        handleV2Frame(receivingSocket, receivingGeneration, frame as MobileV2WsServerFrame);
+      } else {
+        handleV1Frame(frame as MobileWsServerFrame);
+      }
+    }
+
     /** Wraps a fresh `ChatSocket` so its `onClose` can tell a genuine drop
      * of the *current* socket apart from a late event from one this store
      * itself already detached (e.g. `openConversation` switching to a
@@ -541,8 +1550,10 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       // `const` initializer finishes — safe here because that closure only
       // ever runs asynchronously (after `connect()`'s network round-trip),
       // by which point `created` is already initialized.
-      const created: ChatSocket = socketFactory(handleFrame, (reason) =>
-        onSocketClose(created, reason),
+      const generation = ++socketGeneration;
+      const created: ChatSocket = socketFactory(
+        (frame) => handleFrame(created, generation, frame),
+        (close) => onSocketClose(created, generation, close),
       );
       return created;
     }
@@ -557,10 +1568,20 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * in-progress `attemptReconnect`) can resurrect a connection afterwards.
      * Does not touch `connection` itself — callers set their own terminal
      * value. */
-    function haltReconnectMachinery(): void {
+    function haltReconnectMachinery(error = new Error('Conversation closed')): void {
+      const closingConversationId = currentConversationId;
       disposed = true;
+      reconnectDisabled = true;
+      openGeneration += 1;
+      activeV2Refresh = null;
+      if (closingConversationId) bumpProjectionEpoch(closingConversationId);
       currentConversationId = null;
       clearReconnectTimer();
+      clearHistoryRetryTimer();
+      clearRefreshRetryTimer();
+      rejectActiveSubscription(error);
+      rejectPendingCommands(() => true, error);
+      pendingCancels.clear();
       if (socket) {
         const closing = socket;
         socket = null;
@@ -576,14 +1597,46 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * fresh `openConversation()` after re-pairing or discard the store via
      * `dispose()`; both already clear `disposed`/tear down cleanly. */
     function enterUnauthorized(): void {
-      haltReconnectMachinery();
+      haltReconnectMachinery(new Error('Unauthorized'));
       set({ connection: 'unauthorized' });
     }
 
-    function onSocketClose(closingSocket: ChatSocket, reason: 'error' | 'closed'): void {
-      void reason; // Both reasons mean "this connection is gone" — either warrants a reconnect.
+    function onSocketClose(
+      closingSocket: ChatSocket,
+      closingGeneration: number,
+      close: ChatSocketClose,
+    ): void {
       if (closingSocket !== socket) return; // stale/detached socket — already superseded, ignore.
+      if (closingGeneration !== socketGeneration) return;
+      const conversationId = currentConversationId;
       socket = null;
+      clearHistoryRetryTimer();
+      clearRefreshRetryTimer();
+      pendingCancels.clear();
+      activeV2Refresh = null;
+      if (conversationId) bumpProjectionEpoch(conversationId);
+      rejectActiveSubscription(
+        new Error(close.kind === 'error' ? 'Connection error' : close.reason),
+      );
+      if (close.kind === 'protocol' && protocol.version === 2 && conversationId !== null) {
+        recordV2Error(conversationId, close.reason);
+        haltReconnectMachinery(new Error(close.reason));
+        set({ connection: 'offline' });
+        return;
+      }
+      if (
+        close.kind === 'closed' &&
+        (close.code === 4001 || close.reason.toLowerCase() === 'unauthorized')
+      ) {
+        enterUnauthorized();
+        return;
+      }
+      if (!close.retryable) {
+        const reason = close.kind === 'closed' && close.reason ? close.reason : 'Connection closed';
+        haltReconnectMachinery(new Error(reason));
+        set({ connection: 'offline' });
+        return;
+      }
       set({ connection: 'reconnecting' });
       scheduleReconnect();
     }
@@ -597,26 +1650,35 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
      * including the probe itself failing to reach the gateway — means it's
      * still just offline, matching the design doc's "gateway offline (relay
      * reports no dial) → honest 'gateway unreachable' screen." */
-    async function finalizeReconnectExhausted(): Promise<void> {
-      if (disposed) return;
+    async function finalizeReconnectExhausted(
+      conversationId: string,
+      generation: number,
+    ): Promise<void> {
+      if (!operationIsCurrent(conversationId, generation)) return;
       try {
         await rest.identity();
-        if (!disposed) set({ connection: 'offline' });
+        if (!operationIsCurrent(conversationId, generation)) return;
+        reconnectDisabled = true;
+        rejectPendingCommands(() => true, new Error('Reconnect attempts exhausted'));
+        set({ connection: 'offline' });
       } catch (err) {
-        if (disposed) return;
+        if (!operationIsCurrent(conversationId, generation)) return;
         if (isAuthError(err)) {
           enterUnauthorized();
         } else {
+          reconnectDisabled = true;
+          rejectPendingCommands(() => true, new Error('Reconnect attempts exhausted'));
           set({ connection: 'offline' });
         }
       }
     }
 
     function scheduleReconnect(): void {
-      if (disposed) return;
-      if (reconnectTimer || !currentConversationId) return;
+      if (disposed || reconnectDisabled) return;
+      const conversationId = currentConversationId;
+      if (reconnectTimer || !conversationId) return;
       if (reconnectAttempt >= maxReconnectAttempts) {
-        void finalizeReconnectExhausted();
+        void finalizeReconnectExhausted(conversationId, openGeneration);
         return;
       }
       const delay = reconnectDelay(reconnectAttempt);
@@ -644,16 +1706,59 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     async function attemptReconnect(): Promise<void> {
       const conversationId = currentConversationId;
       if (!conversationId || disposed) return;
+      const generation = openGeneration;
+      if (
+        protocol.version === 2 &&
+        (!get().v2Transcripts[conversationId] || bootstrapRequiredConversations.has(conversationId))
+      ) {
+        const epoch = bumpProjectionEpoch(conversationId);
+        try {
+          const bootstrap = await rest.bootstrap(conversationId);
+          if (!operationIsCurrent(conversationId, generation, epoch)) return;
+          installV2Transcript(conversationId, transcriptFromBootstrap(bootstrap), true);
+          bootstrapRequiredConversations.delete(conversationId);
+          clearRefreshRetryTimer();
+        } catch (error) {
+          if (!operationIsCurrent(conversationId, generation, epoch)) return;
+          if (isAuthError(error)) {
+            enterUnauthorized();
+            return;
+          }
+          scheduleReconnect();
+          return;
+        }
+      }
       const attempted = createAttachedSocket();
+      const attemptedGeneration = socketGeneration;
       socket = attempted;
       try {
         await attempted.connect();
-        if (disposed) {
+        if (!operationIsCurrent(conversationId, generation) || socket !== attempted) {
           // `dispose()` ran while `connect()` was in flight — this
           // connection is unwanted now; tear it straight back down rather
           // than resuming the turn and reporting `'connected'`.
           if (socket === attempted) socket = null;
           attempted.close();
+          return;
+        }
+        if (protocol.version === 2) {
+          const transcript = get().v2Transcripts[conversationId];
+          if (!transcript) throw new Error('Conversation v2 transcript is unavailable');
+          await subscribeV2(
+            conversationId,
+            transcript.lastAppliedV2Seq,
+            attempted,
+            attemptedGeneration,
+            generation,
+          );
+          const epoch = currentProjectionEpoch(conversationId);
+          await continueV2History(
+            conversationId,
+            generation,
+            epoch,
+            attempted,
+            attemptedGeneration,
+          );
           return;
         }
         const agentId = await resolveAgentId(conversationId);
@@ -674,6 +1779,11 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         reconnectAttempt = 0;
         set({ connection: 'connected' });
       } catch (err) {
+        if (!operationIsCurrent(conversationId, generation) || socket !== attempted) {
+          attempted.close();
+          return;
+        }
+        rejectActiveSubscription(err instanceof Error ? err : new Error(String(err)));
         if (socket === attempted) socket = null;
         attempted.close();
         if (disposed) return;
@@ -688,6 +1798,8 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
     return {
       conversations: [],
       transcripts: {},
+      v2Transcripts: {},
+      protocol,
       connection: 'idle',
 
       async listAgents() {
@@ -706,10 +1818,16 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       },
 
       async loadConversations() {
+        const request = ++conversationListRequest;
         try {
+          const idsAtRequestStart = new Set(
+            get().conversations.map((conversation) => conversation.id),
+          );
           const page = await rest.listConversations();
-          set({ conversations: page.items });
+          if (request !== conversationListRequest) return;
+          installConversationPage(page.items, idsAtRequestStart);
         } catch (err) {
+          if (request !== conversationListRequest) return;
           if (isAuthError(err)) {
             enterUnauthorized();
             return;
@@ -719,14 +1837,93 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
       },
 
       async openConversation(conversationId: string) {
+        const previousConversationId = currentConversationId;
+        rejectActiveSubscription(new Error('Conversation changed'));
+        rejectPendingCommands(() => true, new Error('Conversation changed'));
         if (socket) {
-          socket.close();
+          const closing = socket;
           socket = null;
+          closing.close();
         }
         clearReconnectTimer();
+        clearHistoryRetryTimer();
+        clearRefreshRetryTimer();
         reconnectAttempt = 0;
+        reconnectDisabled = false;
         disposed = false; // a disposed store is reusable — this is a fresh connect intent.
+        openGeneration += 1;
+        activeV2Refresh = null;
+        pendingCancels.clear();
+        if (previousConversationId) bumpProjectionEpoch(previousConversationId);
         currentConversationId = conversationId;
+        const generation = openGeneration;
+        const epoch = bumpProjectionEpoch(conversationId);
+
+        if (protocol.version === 2) {
+          set({ connection: 'reconnecting' });
+          bootstrapRequiredConversations.add(conversationId);
+          let bootstrap: MobileV2ConversationBootstrap;
+          try {
+            bootstrap = await rest.bootstrap(conversationId);
+          } catch (error) {
+            if (!operationIsCurrent(conversationId, generation, epoch)) return;
+            if (isAuthError(error)) {
+              enterUnauthorized();
+              return;
+            }
+            set({ connection: 'reconnecting' });
+            scheduleReconnect();
+            return;
+          }
+          if (!operationIsCurrent(conversationId, generation, epoch)) return;
+          installV2Transcript(conversationId, transcriptFromBootstrap(bootstrap), true);
+          bootstrapRequiredConversations.delete(conversationId);
+          clearRefreshRetryTimer();
+          const attached = createAttachedSocket();
+          const attachedGeneration = socketGeneration;
+          socket = attached;
+          set({ connection: 'reconnecting' });
+          try {
+            await attached.connect();
+            if (!operationIsCurrent(conversationId, generation, epoch) || socket !== attached) {
+              if (socket === attached) socket = null;
+              attached.close();
+              return;
+            }
+            await subscribeV2(
+              conversationId,
+              bootstrap.v2ThroughSeq,
+              attached,
+              attachedGeneration,
+              generation,
+            );
+            if (!operationIsCurrent(conversationId, generation, epoch)) return;
+            await continueV2History(
+              conversationId,
+              generation,
+              epoch,
+              attached,
+              attachedGeneration,
+            );
+          } catch (error) {
+            if (!operationIsCurrent(conversationId, generation, epoch) || socket !== attached) {
+              attached.close();
+              return;
+            }
+            rejectActiveSubscription(error instanceof Error ? error : new Error(String(error)));
+            if (socket === attached) socket = null;
+            attached.close();
+            if (isAuthError(error)) {
+              enterUnauthorized();
+              return;
+            }
+            if (!reconnectDisabled) {
+              set({ connection: 'reconnecting' });
+              scheduleReconnect();
+            }
+          }
+          return;
+        }
         // Reset BEFORE the replay attempt, not after it succeeds: `lastSeq`
         // is a single per-store closure variable, not keyed by conversation.
         // Switching from conversation A (replay succeeded, lastSeq = N) to
@@ -823,6 +2020,89 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         }
 
         const turnId = crypto.randomUUID();
+        if (protocol.version === 2) {
+          const transcript = get().v2Transcripts[conversationId];
+          if (!transcript) throw new Error('Conversation v2 transcript is unavailable');
+          if (transcript.queuePaused) {
+            throw new Error('Follow Ups paused. Resume or remove them before sending.');
+          }
+          const submittedAt = new Date().toISOString();
+          const intent: V2OrdinarySendIntent = {
+            turnId,
+            text,
+            ...(images?.length ? { images: copiedImages(images) } : {}),
+            submittedAt,
+            draftRevision: 0,
+          };
+          const optimisticId = `optimistic:${turnId}`;
+          const optimisticMessage: MobileV2ConversationMessage = {
+            id: optimisticId,
+            conversationId,
+            turnId,
+            runId: turnId,
+            segmentIndex: 0,
+            deliveryKind: 'normal',
+            ordinal: Number.MAX_SAFE_INTEGER,
+            role: 'user',
+            status: 'accepted',
+            content: {
+              type: 'user',
+              text,
+              ...(images?.length ? { images: copiedImages(images) } : {}),
+            },
+            createdAt: submittedAt,
+            updatedAt: submittedAt,
+          };
+          updateV2Transcript(conversationId, (current) => ({
+            ...current,
+            messages: {
+              ...current.messages,
+              [optimisticId]: optimisticMessage,
+            },
+            timeline: [...current.timeline, { kind: 'message', messageId: optimisticId }],
+          }));
+          const location = readClientLocation();
+          const frame: MobileV2WsClientFrame = {
+            type: 'message',
+            id: turnId,
+            agentId: transcript.conversation.agentId,
+            channelId: CHANNEL_ID,
+            conversationId,
+            text,
+            ...(location ? { location } : {}),
+            ...(images?.length ? { images: copiedImages(images) } : {}),
+            resumable: true,
+          };
+          try {
+            await sendV2Command<Extract<MobileV2SequencedFrame, { type: 'accepted' }>>(
+              conversationId,
+              frame,
+              'accepted',
+              intent,
+            );
+          } catch (error) {
+            updateV2Transcript(conversationId, (current) => {
+              const hasTimelineEntry = current.timeline.some(
+                (entry) => entry.kind === 'message' && entry.messageId === optimisticId,
+              );
+              return {
+                ...current,
+                messages: {
+                  ...current.messages,
+                  [optimisticId]: {
+                    ...(current.messages[optimisticId] ?? optimisticMessage),
+                    status: 'failed',
+                  },
+                },
+                timeline: hasTimelineEntry
+                  ? current.timeline
+                  : [...current.timeline, { kind: 'message', messageId: optimisticId }],
+              };
+            });
+            throw error;
+          }
+          return;
+        }
         const optimistic: ConversationMessage = {
           id: turnId,
           conversationId,
@@ -875,6 +2155,126 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         }
       },
 
+      async enqueueInput(conversationId, behavior, text, images) {
+        const transcript = get().v2Transcripts[conversationId];
+        if (protocol.version !== 2 || !transcript) {
+          throw new Error('Conversation input queue unavailable');
+        }
+        const activeTurnId = transcript.conversation.activeTurnId;
+        if (behavior === 'steer' && !activeTurnId) {
+          throw new Error('The response ended before this Steer could be sent');
+        }
+        const frame: MobileV2WsClientFrame = {
+          type: 'enqueue_input',
+          id: crypto.randomUUID(),
+          inputId: crypto.randomUUID(),
+          agentId: transcript.conversation.agentId,
+          channelId: CHANNEL_ID,
+          conversationId,
+          text,
+          ...(images?.length ? { images: copiedImages(images) } : {}),
+          behavior,
+          ...(behavior === 'steer' && activeTurnId ? { expectedActiveTurnId: activeTurnId } : {}),
+        };
+        try {
+          const accepted = await sendV2Command<
+            Extract<MobileV2SequencedFrame, { type: 'input_accepted' }>
+          >(conversationId, frame, 'input_accepted');
+          return accepted.input;
+        } catch (error) {
+          if (isRevisionConflict(error)) await refreshV2Projection(conversationId);
+          throw error;
+        }
+      },
+
+      async editFollowUp(conversationId, inputId, expectedRevision, text, images) {
+        if (protocol.version !== 2 || !get().v2Transcripts[conversationId]) {
+          throw new Error('Conversation input queue unavailable');
+        }
+        const frame: MobileV2WsClientFrame = {
+          type: 'edit_follow_up',
+          id: crypto.randomUUID(),
+          conversationId,
+          inputId,
+          expectedRevision,
+          text,
+          ...(images?.length ? { images: copiedImages(images) } : {}),
+        };
+        try {
+          const updated = await sendV2Command<
+            Extract<MobileV2SequencedFrame, { type: 'input_updated' }>
+          >(conversationId, frame, 'input_updated');
+          return updated.input;
+        } catch (error) {
+          if (isRevisionConflict(error)) await refreshV2Projection(conversationId);
+          throw error;
+        }
+      },
+
+      async removeFollowUp(conversationId, inputId, expectedRevision) {
+        if (protocol.version !== 2 || !get().v2Transcripts[conversationId]) {
+          throw new Error('Conversation input queue unavailable');
+        }
+        const frame: MobileV2WsClientFrame = {
+          type: 'remove_follow_up',
+          id: crypto.randomUUID(),
+          conversationId,
+          inputId,
+          expectedRevision,
+        };
+        try {
+          await sendV2Command<Extract<MobileV2SequencedFrame, { type: 'input_removed' }>>(
+            conversationId,
+            frame,
+            'input_removed',
+          );
+        } catch (error) {
+          if (isRevisionConflict(error)) await refreshV2Projection(conversationId);
+          throw error;
+        }
+      },
+
+      async resumeFollowUps(conversationId) {
+        const transcript = get().v2Transcripts[conversationId];
+        if (protocol.version !== 2 || !transcript) {
+          throw new Error('Conversation input queue unavailable');
+        }
+        const frame: MobileV2WsClientFrame = {
+          type: 'resume_follow_ups',
+          id: crypto.randomUUID(),
+          conversationId,
+          expectedQueueRevision: transcript.queueRevision,
+        };
+        try {
+          await sendV2Command<Extract<MobileV2SequencedFrame, { type: 'queue_resumed' }>>(
+            conversationId,
+            frame,
+            'queue_resumed',
+          );
+        } catch (error) {
+          if (isRevisionConflict(error)) await refreshV2Projection(conversationId);
+          throw error;
+        }
+      },
+
+      async loadOlderMessages(conversationId) {
+        if (protocol.version !== 2) return;
+        const generation = openGeneration;
+        const epoch = currentProjectionEpoch(conversationId);
+        const attached = socket;
+        const attachedGeneration = socketGeneration;
+        if (!attached) return;
+        try {
+          await loadOneOlderV2Page(conversationId, generation, epoch, attached, attachedGeneration);
+        } catch (error) {
+          if (isAuthError(error)) {
+            enterUnauthorized();
+            return;
+          }
+          throw error;
+        }
+      },
+
       async resendFromMessage(conversationId, messageId, editedText) {
         // Same connected-socket precondition `sendMessage` itself enforces
         // (and the composer's `canSend` gate already keeps the UI from
@@ -913,9 +2313,31 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
         const previous = get().conversations;
         const target = previous.find((c) => c.id === conversationId);
         if (!target) return;
+        const attempt = ++renameAttempt;
+        addPendingRename(conversationId, attempt);
+        if (!renameRollbackByConversation.has(conversationId)) {
+          renameRollbackByConversation.set(conversationId, target);
+        }
+        renameAttemptByConversation.set(conversationId, attempt);
 
-        set({
-          conversations: previous.map((c) => (c.id === conversationId ? { ...c, title } : c)),
+        set((state) => {
+          const transcript = state.v2Transcripts[conversationId];
+          return {
+            conversations: state.conversations.map((conversation) =>
+              conversation.id === conversationId ? { ...conversation, title } : conversation,
+            ),
+            ...(transcript
+              ? {
+                  v2Transcripts: {
+                    ...state.v2Transcripts,
+                    [conversationId]: {
+                      ...transcript,
+                      conversation: { ...transcript.conversation, title },
+                    },
+                  },
+                }
+              : {}),
+          };
         });
         try {
           let updated: ConversationSummary;
@@ -927,14 +2349,40 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
             // (network error, 401, validation) falls straight through to
             // the outer catch, same as before this fix.
             if (!isRevisionConflict(err)) throw err;
+            if (hasNewerRenameIntent(conversationId, attempt)) throw err;
             const fresh = await rest.getConversation(conversationId);
+            observeAuthoritativeRenameBaseline(conversationId, fresh);
+            if (hasNewerRenameIntent(conversationId, attempt)) throw err;
             updated = await rest.patchConversation(conversationId, { title }, fresh.revision);
           }
-          set((state) => ({
-            conversations: state.conversations.map((c) => (c.id === conversationId ? updated : c)),
-          }));
+          const lastApplied = renameAppliedAttemptByConversation.get(conversationId) ?? 0;
+          if (attempt >= lastApplied) {
+            const baseline = renameRollbackByConversation.get(conversationId);
+            renameRollbackByConversation.set(
+              conversationId,
+              protocol.version === 2 && baseline
+                ? reconcileRenameSummary(baseline, updated)
+                : updated,
+            );
+            renameAppliedAttemptByConversation.set(conversationId, attempt);
+          }
+          removePendingRename(conversationId, attempt);
+          if (!hasNewerRenameIntent(conversationId, attempt))
+            applyRenameSuccess(conversationId, updated);
+          if (renameAttemptByConversation.get(conversationId) === attempt) {
+            renameAttemptByConversation.delete(conversationId);
+          }
+          clearSettledRenameTracking(conversationId);
         } catch (err) {
-          set({ conversations: previous });
+          removePendingRename(conversationId, attempt);
+          if (renameAttemptByConversation.get(conversationId) === attempt) {
+            renameAttemptByConversation.delete(conversationId);
+            restoreRenameBaseline(
+              conversationId,
+              renameRollbackByConversation.get(conversationId) ?? target,
+            );
+          }
+          clearSettledRenameTracking(conversationId);
           if (isAuthError(err)) {
             enterUnauthorized();
             return;
@@ -945,9 +2393,14 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
       async deleteConversation(conversationId) {
         const previous = get().conversations;
-        const target = previous.find((c) => c.id === conversationId);
+        const targetIndex = previous.findIndex(
+          (conversation) => conversation.id === conversationId,
+        );
+        const target = previous[targetIndex];
         if (!target) return;
 
+        let rollbackSummary = target;
+        deletedConversationIds.add(conversationId);
         set({ conversations: previous.filter((c) => c.id !== conversationId) });
         try {
           try {
@@ -956,16 +2409,62 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
             // Fix C1c: same stale-`revision` retry-once as renameConversation.
             if (!isRevisionConflict(err)) throw err;
             const fresh = await rest.getConversation(conversationId);
+            observeAuthoritativeRenameBaseline(conversationId, fresh);
+            if (fresh.revision >= rollbackSummary.revision) rollbackSummary = fresh;
             await rest.deleteConversation(conversationId, fresh.revision);
           }
         } catch (err) {
-          set({ conversations: previous });
+          deletedConversationIds.delete(conversationId);
+          set((state) => {
+            if (state.conversations.some((conversation) => conversation.id === conversationId)) {
+              return state;
+            }
+            const restored = [...state.conversations];
+            const transcript = state.v2Transcripts[conversationId];
+            const projected = transcript?.conversation;
+            const restoredSummary = projected
+              ? reconcileV2Summary(projected, rollbackSummary)
+              : rollbackSummary;
+            restored.splice(Math.min(targetIndex, restored.length), 0, restoredSummary);
+            return {
+              conversations: restored,
+              ...(transcript
+                ? {
+                    v2Transcripts: {
+                      ...state.v2Transcripts,
+                      [conversationId]: {
+                        ...transcript,
+                        conversation: reconcileV2Summary(transcript.conversation, restoredSummary, {
+                          sequencedStateOwner: 'current',
+                        }) as MobileV2ConversationSummary,
+                      },
+                    },
+                  }
+                : {}),
+            };
+          });
           if (isAuthError(err)) {
             enterUnauthorized();
             return;
           }
           throw err;
         }
+        set((state) => {
+          const { [conversationId]: _v2Transcript, ...v2Transcripts } = state.v2Transcripts;
+          const { [conversationId]: _transcript, ...transcripts } = state.transcripts;
+          return {
+            conversations: state.conversations.filter(
+              (conversation) => conversation.id !== conversationId,
+            ),
+            v2Transcripts,
+            transcripts,
+          };
+        });
+        bootstrapRequiredConversations.delete(conversationId);
+        renameAttemptByConversation.delete(conversationId);
+        renamePendingAttemptsByConversation.delete(conversationId);
+        renameAppliedAttemptByConversation.delete(conversationId);
+        renameRollbackByConversation.delete(conversationId);
         if (conversationId === currentConversationId) {
           haltReconnectMachinery();
           set({ connection: 'idle' });
@@ -974,12 +2473,24 @@ export function createWebAppStore(deps: WebAppStoreDeps): UseBoundStore<StoreApi
 
       cancelTurn(conversationId) {
         if (!socket || conversationId !== currentConversationId) return;
-        const turnId = get().transcripts[conversationId]?.pending?.turnId;
+        const turnId =
+          protocol.version === 2
+            ? get().v2Transcripts[conversationId]?.conversation.activeTurnId
+            : get().transcripts[conversationId]?.pending?.turnId;
         if (!turnId) return;
         const frame: MobileWsClientFrame = { type: 'cancel', id: turnId };
         try {
+          if (protocol.version === 2) {
+            pendingCancels.set(turnId, {
+              conversationId,
+              openGeneration,
+              socket,
+              socketGeneration,
+            });
+          }
           socket.send(frame);
         } catch (err) {
+          pendingCancels.delete(turnId);
           console.error('WebAppStore: failed to send cancel frame', err);
         }
       },

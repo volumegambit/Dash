@@ -2,6 +2,7 @@ import type { ConversationMessage, ConversationSummary } from '@dash/mobile-cont
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { create } from 'zustand';
 import { ChatSocket } from '../api/chat-socket.js';
+import { type NegotiatedMobileProtocol, negotiateMobileProtocol } from '../api/protocol.js';
 import { MobileRestClient } from '../api/rest.js';
 import type { GatewayInfo } from '../auth/control-plane.js';
 import type { StoredCredential } from '../auth/credential-store.js';
@@ -16,7 +17,11 @@ import {
 import { SESSION_REVOKED_COPY, Shell } from './Shell.js';
 
 vi.mock('../api/rest.js', () => ({
-  MobileRestClient: vi.fn().mockImplementation(() => ({})),
+  MobileRestClient: vi.fn().mockImplementation((baseUrl: string) => ({ baseUrl })),
+}));
+
+vi.mock('../api/protocol.js', () => ({
+  negotiateMobileProtocol: vi.fn(),
 }));
 
 vi.mock('../api/chat-socket.js', () => ({
@@ -33,6 +38,8 @@ function fakeWebAppState() {
   return create<WebAppState>(() => ({
     conversations: [],
     transcripts: {},
+    v2Transcripts: {},
+    protocol: { version: 1, capabilities: [] },
     connection: 'connected',
     listAgents: vi.fn(async () => []),
     startConversation: vi.fn(async () => {
@@ -41,6 +48,15 @@ function fakeWebAppState() {
     loadConversations: vi.fn(async () => undefined),
     openConversation: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
+    enqueueInput: vi.fn<WebAppState['enqueueInput']>(async () => {
+      throw new Error('enqueueInput: not used by Shell tests');
+    }),
+    editFollowUp: vi.fn<WebAppState['editFollowUp']>(async () => {
+      throw new Error('editFollowUp: not used by Shell tests');
+    }),
+    removeFollowUp: vi.fn<WebAppState['removeFollowUp']>(async () => undefined),
+    resumeFollowUps: vi.fn<WebAppState['resumeFollowUps']>(async () => undefined),
+    loadOlderMessages: vi.fn<WebAppState['loadOlderMessages']>(async () => undefined),
     resendFromMessage: vi.fn(async () => true),
     renameConversation: vi.fn(async () => undefined),
     deleteConversation: vi.fn(async () => undefined),
@@ -80,6 +96,33 @@ const STORED: StoredCredential = {
   chatToken: 'chat-token-abc',
   pairingId: 'p-1',
 };
+
+const GATEWAY_B: GatewayInfo = {
+  gatewayId: 'gw-2',
+  subdomain: 'beta',
+  status: 'active',
+  createdAt: 2,
+};
+
+const STORED_B: StoredCredential = {
+  relayCredential: 'relay-cred-beta',
+  chatToken: 'chat-token-beta',
+  pairingId: 'p-2',
+};
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 function baseControlPlaneClient() {
   return {
@@ -150,6 +193,15 @@ async function renderChatWorkspace(): Promise<void> {
 }
 
 describe('Shell', () => {
+  beforeEach(() => {
+    vi.mocked(negotiateMobileProtocol).mockReset();
+    vi.mocked(negotiateMobileProtocol).mockImplementation(async ({ createRestClient }) => ({
+      version: 1,
+      capabilities: [],
+      rest: createRestClient(1),
+    }));
+  });
+
   afterEach(() => {
     vi.mocked(MobileRestClient).mockClear();
     vi.mocked(ChatSocket).mockClear();
@@ -174,6 +226,403 @@ describe('Shell', () => {
     );
 
     await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+  });
+
+  it('shows a safe connecting state until asynchronous protocol negotiation creates the store', async () => {
+    const negotiation = deferred<NegotiatedMobileProtocol>();
+    vi.mocked(negotiateMobileProtocol).mockImplementation(({ createRestClient }) => {
+      const rest = createRestClient(2);
+      return negotiation.promise.then((result) => ({ ...result, rest }));
+    });
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Connecting'));
+    expect(screen.queryByTestId('chat-workspace')).toBeNull();
+    expect(createdStores).toHaveLength(0);
+
+    await act(async () => {
+      negotiation.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiation.promise;
+    });
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+    expect(createdStores).toHaveLength(1);
+  });
+
+  it('creates a v2 store and socket from the negotiated protocol and versioned REST client', async () => {
+    vi.mocked(negotiateMobileProtocol).mockImplementation(async ({ createRestClient }) => ({
+      version: 2,
+      capabilities: ['chat-input-queue-v1'],
+      rest: createRestClient(2),
+    }));
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+
+    expect(MobileRestClient).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(MobileRestClient).mock.calls[0][0]).toBe(
+      'https://acme.relay.example.com/mobile/v2',
+    );
+    expect(capturedStoreDeps[0]).toMatchObject({
+      protocol: { version: 2, capabilities: ['chat-input-queue-v1'] },
+    });
+
+    capturedStoreDeps[0].socketFactory(
+      () => {},
+      () => {},
+    );
+    expect(vi.mocked(ChatSocket).mock.calls[0][6]).toEqual({
+      version: 2,
+      capabilities: ['chat-input-queue-v1'],
+    });
+  });
+
+  it('creates a v1 store after negotiation requests separately versioned v2 and v1 clients', async () => {
+    vi.mocked(negotiateMobileProtocol).mockImplementation(async ({ createRestClient }) => {
+      createRestClient(2);
+      return { version: 1, capabilities: [], rest: createRestClient(1) };
+    });
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+
+    expect(vi.mocked(MobileRestClient).mock.calls.map(([baseUrl]) => baseUrl)).toEqual([
+      'https://acme.relay.example.com/mobile/v2',
+      'https://acme.relay.example.com/mobile/v1',
+    ]);
+    expect(capturedStoreDeps[0]).toMatchObject({
+      protocol: { version: 1, capabilities: [] },
+    });
+    capturedStoreDeps[0].socketFactory(
+      () => {},
+      () => {},
+    );
+    expect(vi.mocked(ChatSocket).mock.calls[0][6]).toEqual({ version: 1 });
+  });
+
+  it.each([
+    ['an authentication failure after v2 health', new Error('Unauthorized')],
+    ['a malformed response after v2 health', new Error('Malformed gateway identity')],
+  ])('surfaces %s without constructing a fallback v1 store', async (_label, error) => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(negotiateMobileProtocol).mockImplementation(async ({ createRestClient }) => {
+      createRestClient(2);
+      throw error;
+    });
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async (gatewayId: string) => (gatewayId === GATEWAY.gatewayId ? STORED : null)),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(error.message));
+    expect(vi.mocked(MobileRestClient).mock.calls.map(([baseUrl]) => baseUrl)).toEqual([
+      'https://acme.relay.example.com/mobile/v2',
+    ]);
+    expect(createdStores).toHaveLength(0);
+    expect(screen.queryByTestId('chat-workspace')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  it('ignores a stale negotiation result after the active gateway and credential switch', async () => {
+    const negotiationA = deferred<NegotiatedMobileProtocol>();
+    const negotiationB = deferred<NegotiatedMobileProtocol>();
+    vi.mocked(negotiateMobileProtocol).mockImplementation(({ createRestClient }) => {
+      const rest = createRestClient(2);
+      const baseUrl = vi.mocked(MobileRestClient).mock.calls.at(-1)?.[0] ?? '';
+      const pending = baseUrl.includes('acme') ? negotiationA : negotiationB;
+      return pending.promise.then((result) => ({ ...result, rest }));
+    });
+    const controlPlaneA = baseControlPlaneClient();
+    const credentialStoreA = {
+      get: vi.fn(async () => STORED),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const controlPlaneB = {
+      ...baseControlPlaneClient(),
+      listGateways: vi.fn(async () => [GATEWAY_B]),
+    };
+    const credentialStoreB = {
+      get: vi.fn(async () => STORED_B),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const rendered = render(
+      <Shell
+        controlPlaneClient={controlPlaneA}
+        credentialStore={credentialStoreA}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(negotiateMobileProtocol).toHaveBeenCalledTimes(1));
+
+    rendered.rerender(
+      <Shell
+        controlPlaneClient={controlPlaneB}
+        credentialStore={credentialStoreB}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(negotiateMobileProtocol).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      negotiationB.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiationB.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('chat-workspace').textContent).toContain('beta'));
+
+    await act(async () => {
+      negotiationA.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiationA.promise;
+    });
+
+    expect(createdStores).toHaveLength(1);
+    expect(capturedStoreDeps[0].rest).toMatchObject({
+      baseUrl: 'https://beta.relay.example.com/mobile/v2',
+    });
+    expect(screen.getByTestId('chat-workspace').textContent).toContain('beta');
+  });
+
+  it('lets a new credential win a same-gateway negotiation race', async () => {
+    const negotiationA = deferred<NegotiatedMobileProtocol>();
+    const negotiationB = deferred<NegotiatedMobileProtocol>();
+    let negotiationCount = 0;
+    vi.mocked(negotiateMobileProtocol).mockImplementation(({ createRestClient }) => {
+      const rest = createRestClient(2);
+      const pending = negotiationCount++ === 0 ? negotiationA : negotiationB;
+      return pending.promise.then((result) => ({ ...result, rest }));
+    });
+    const refreshedCredential: StoredCredential = {
+      relayCredential: 'relay-cred-refreshed',
+      chatToken: 'chat-token-refreshed',
+      pairingId: 'p-refreshed',
+    };
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStoreA = {
+      get: vi.fn(async () => STORED),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const credentialStoreB = {
+      get: vi.fn(async () => refreshedCredential),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const rendered = render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStoreA}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(negotiateMobileProtocol).toHaveBeenCalledTimes(1));
+
+    rendered.rerender(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStoreB}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(negotiateMobileProtocol).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      negotiationB.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiationB.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+
+    expect(createdStores).toHaveLength(1);
+    expect(capturedStoreDeps).toHaveLength(1);
+    const [, tokenSource, , relayCredential] = vi.mocked(MobileRestClient).mock.calls[1];
+    await expect((tokenSource as { getToken(): Promise<string> }).getToken()).resolves.toBe(
+      refreshedCredential.chatToken,
+    );
+    expect(relayCredential).toBe(refreshedCredential.relayCredential);
+    capturedStoreDeps[0].socketFactory(
+      () => {},
+      () => {},
+    );
+    expect(vi.mocked(ChatSocket).mock.calls[0][5]).toBe(refreshedCredential.relayCredential);
+
+    await act(async () => {
+      negotiationA.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiationA.promise;
+    });
+
+    expect(createdStores).toHaveLength(1);
+    expect(capturedStoreDeps).toHaveLength(1);
+    expect(ChatSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a pending negotiation on unmount without creating a store later', async () => {
+    const negotiation = deferred<NegotiatedMobileProtocol>();
+    vi.mocked(negotiateMobileProtocol).mockImplementation(({ createRestClient }) => {
+      const rest = createRestClient(2);
+      return negotiation.promise.then((result) => ({ ...result, rest }));
+    });
+    const controlPlaneClient = baseControlPlaneClient();
+    const credentialStore = {
+      get: vi.fn(async () => STORED),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const rendered = render(
+      <Shell
+        controlPlaneClient={controlPlaneClient}
+        credentialStore={credentialStore}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(negotiateMobileProtocol).toHaveBeenCalledTimes(1));
+
+    rendered.unmount();
+    await act(async () => {
+      negotiation.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiation.promise;
+    });
+
+    expect(createdStores).toHaveLength(0);
+  });
+
+  it('disposes the prior store exactly once before a gateway replacement and the new store on unmount', async () => {
+    const negotiationB = deferred<NegotiatedMobileProtocol>();
+    vi.mocked(negotiateMobileProtocol).mockImplementation(({ createRestClient }) => {
+      const rest = createRestClient(2);
+      const baseUrl = vi.mocked(MobileRestClient).mock.calls.at(-1)?.[0] ?? '';
+      if (baseUrl.includes('beta')) {
+        return negotiationB.promise.then((result) => ({ ...result, rest }));
+      }
+      return Promise.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest,
+      });
+    });
+    const controlPlaneA = baseControlPlaneClient();
+    const credentialStoreA = {
+      get: vi.fn(async () => STORED),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const controlPlaneB = {
+      ...baseControlPlaneClient(),
+      listGateways: vi.fn(async () => [GATEWAY_B]),
+    };
+    const credentialStoreB = {
+      get: vi.fn(async () => STORED_B),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const rendered = render(
+      <Shell
+        controlPlaneClient={controlPlaneA}
+        credentialStore={credentialStoreA}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('chat-workspace')).toBeTruthy());
+    expect(createdStores).toHaveLength(1);
+
+    rendered.rerender(
+      <Shell
+        controlPlaneClient={controlPlaneB}
+        credentialStore={credentialStoreB}
+        relayDomain="relay.example.com"
+      />,
+    );
+    await waitFor(() => expect(negotiateMobileProtocol).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('chat-workspace')).toBeNull();
+
+    await act(async () => {
+      negotiationB.resolve({
+        version: 2,
+        capabilities: ['chat-input-queue-v1'],
+        rest: {} as MobileRestClient,
+      });
+      await negotiationB.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('chat-workspace').textContent).toContain('beta'));
+    expect(createdStores).toHaveLength(2);
+    expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1);
+
+    rendered.unmount();
+    expect(createdStores[0].getState().dispose).toHaveBeenCalledTimes(1);
+    expect(createdStores[1].getState().dispose).toHaveBeenCalledTimes(1);
   });
 
   it('builds the mobile REST client and chat socket from the stored chat token and relay credential, never the Clerk token', async () => {
@@ -703,6 +1152,31 @@ describe('Shell', () => {
 
       expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
       expect(screen.queryByText(DELETE_CONFIRM_COPY)).toBeNull();
+    });
+
+    it("lets the delivery chooser own Escape instead of also cancelling the conversation's turn", async () => {
+      await renderChatWorkspace();
+      act(() => {
+        createdStores[0].setState({
+          conversations: [conversationSummary()],
+          transcripts: {
+            'conv-1': { messages: [], streaming: { type: 'assistant', events: [] } },
+          },
+        });
+      });
+      await waitFor(() => expect(screen.getByText('Chat about the roadmap')).toBeTruthy());
+      fireEvent.click(screen.getByText('Chat about the roadmap'));
+
+      const chooser = document.createElement('div');
+      chooser.className = 'delivery-chooser';
+      const chooserButton = document.createElement('button');
+      chooser.append(chooserButton);
+      document.body.append(chooser);
+
+      fireEvent.keyDown(chooserButton, { key: 'Escape' });
+
+      expect(createdStores[0].getState().cancelTurn).not.toHaveBeenCalled();
+      chooser.remove();
     });
 
     // Re-review regression guard for fix I2. The "Escape stops generation"
