@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -427,9 +427,10 @@ describe('plugin management routes', () => {
       const outside = await mkdtemp(join(tmpdir(), 'plugins-outside-'));
       await writeFile(join(outside, 'keep.txt'), 'x');
 
-      // A traversal name that escapes pluginsDir. The dir read is from
-      // join(pluginsDir, name); a "../outside-..." name resolves outside.
-      const escaping = `..${outside.slice(tmpdir().length)}`;
+      // Keep the route parameter a valid plugin name while making its on-disk
+      // directory resolve outside pluginsDir through a symlink.
+      const escaping = 'escaping-plugin';
+      await symlink(outside, join(dir, escaping));
       const { store } = stubConfigStore({ [escaping]: { enabled: true, installed: true } });
       const reloadPlugins = vi.fn().mockResolvedValue(wiring());
       const { app } = createApp({ configStore: store, reloadPlugins, pluginsDir: dir });
@@ -442,6 +443,7 @@ describe('plugin management routes', () => {
       const body = await res.json();
       expect(body.ok).toBe(true);
       expect(body.path).toBeUndefined();
+      expect(store.remove).toHaveBeenCalledWith(escaping);
       // The outside dir survives the realpath guard.
       await expect(stat(join(outside, 'keep.txt'))).resolves.toBeTruthy();
 

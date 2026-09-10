@@ -142,9 +142,25 @@ beforeEach(() => {
     sending: {},
     unreadConversations: new Set(),
     conversationError: null,
+    connectionIssue: null,
+    protocolByConversation: {},
+    v2Projections: {},
+    subscribedV2Conversations: {},
+    openingPromiseByConversation: {},
+    openGenerationByConversation: {},
+    projectionEpochByConversation: {},
+    conversationOwnersByConversation: {},
+    ordinarySendIntentsByConversation: {},
+    pendingV2LegacyCommandsByConversation: {},
+    commandIssuesByConversation: {},
+    answerAttemptsByConversation: {},
+    mainChatSurfaceGeneration: 0,
+    mainChatSurfaceActive: false,
+    mainChatSelectionGeneration: 0,
   });
   mockConversations([]);
   mockApi.chatGetMessages.mockResolvedValue(messagePage([]));
+  mockApi.chatGetInitialState.mockResolvedValue({ protocol: 'v1', page: messagePage([]) });
   mockNavigate.mockClear();
 });
 
@@ -318,9 +334,10 @@ describe('TaskDetail delete', () => {
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
     mockConversations([mcConversation]);
-    mockApi.chatGetMessages.mockResolvedValue(
-      messagePage([assistantMessage('m1', 'conv-42', 'I loaded TASK-1')]),
-    );
+    mockApi.chatGetInitialState.mockResolvedValue({
+      protocol: 'v1',
+      page: messagePage([assistantMessage('m1', 'conv-42', 'I loaded TASK-1')]),
+    });
     render(<TaskDetail />);
 
     await userEvent.click(await screen.findByTestId('tab-session-conv-42'));
@@ -341,9 +358,10 @@ describe('TaskDetail delete', () => {
     useProjectsStore.setState({ detailById: { issue_1: d } });
     mockApi.projectsGetIssue.mockResolvedValue(d);
     mockConversations([mcConversation, { ...mcConversation, id: 'conv-41' }]);
-    mockApi.chatGetMessages.mockImplementation(async (ref: ConversationRef) =>
-      messagePage([assistantMessage(`m-${ref.id}`, ref.id, `transcript ${ref.id}`)]),
-    );
+    mockApi.chatGetInitialState.mockImplementation(async (ref: ConversationRef) => ({
+      protocol: 'v1',
+      page: messagePage([assistantMessage(`m-${ref.id}`, ref.id, `transcript ${ref.id}`)]),
+    }));
     render(<TaskDetail />);
 
     const tabs = await screen.findAllByTestId(/^tab-session-/);

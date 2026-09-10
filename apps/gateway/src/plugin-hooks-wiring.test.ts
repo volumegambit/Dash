@@ -181,7 +181,11 @@ describe('gateway plugin hook assembly (Task 7)', () => {
     // Blocked BEFORE the agent runs; the reason is sent back to the sender via
     // the adapter using its native (unprefixed) conversation id.
     expect(agent.chat).not.toHaveBeenCalled();
-    expect(adapter.send).toHaveBeenCalledWith('conv1', { text: 'DENIED-BY-HOOK' });
+    expect(adapter.send).toHaveBeenCalledWith(
+      'conv1',
+      { text: 'DENIED-BY-HOOK' },
+      expect.any(AbortSignal),
+    );
   });
 
   it('engine drives the channel messageHook: a non-blocking UserPromptSubmit with no output passes the message through unchanged', async () => {
