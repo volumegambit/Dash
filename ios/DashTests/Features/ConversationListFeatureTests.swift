@@ -514,6 +514,28 @@ struct ConversationListFeatureTests {
     #expect(feature.isAuthoritative)
   }
 
+  /// `.connecting` blocks mutations like every other non-online state, but
+  /// shows no offline banner — `isConnecting` is what lets compose surfaces
+  /// render a progress affordance instead of an unexplained disabled button.
+  @Test("isConnecting tracks the liminal connecting state and nothing else")
+  func isConnectingTracksConnectingOnly() {
+    let feature = makeFeature(service: FakeConversationListService())
+    #expect(feature.isConnecting)
+    #expect(feature.mutationsAllowed == false)
+
+    feature.consume(snapshot(connection: .online, conversations: []))
+    #expect(feature.isConnecting == false)
+    #expect(feature.mutationsAllowed)
+
+    feature.consume(snapshot(connection: .offline, conversations: []))
+    #expect(feature.isConnecting == false)
+    #expect(feature.mutationsAllowed == false)
+
+    feature.consume(snapshot(connection: .connecting, conversations: []))
+    #expect(feature.isConnecting)
+    #expect(feature.mutationsAllowed == false)
+  }
+
   @Test("becoming online after cache load fetches the first canonical page")
   func onlineTransitionStartsCanonicalRefresh() async {
     let cached = cachedConversation(summary(id: "cached", title: "Cached"))
@@ -2225,6 +2247,31 @@ struct ComposeAgentSelectionTests {
     #expect(
       ComposeAgentSelection.availableAgents(agents, filteredAgentID: nil).map(\.id)
         == ["agent-a", "agent-c"]
+    )
+  }
+
+  /// The `.connecting` state shows no offline banner (`AppModel.consume`
+  /// deliberately maps it to `banner = nil`), so the hint is the only text
+  /// explaining the disabled compose button — it must describe what the app
+  /// is DOING (connecting), not instruct the user to do something the app
+  /// is already doing.
+  @Test("the unavailable hint reports in-progress connection instead of instructing to connect")
+  func hintDistinguishesConnectingFromDisconnected() {
+    let agents = [agentFixture(id: "agent-a", name: "Agent A")]
+    #expect(
+      ComposeAgentSelection.unavailableHint(
+        agents, filteredAgentID: nil, mutationsAllowed: false, isConnecting: true
+      ) == "Connecting to the gateway"
+    )
+    #expect(
+      ComposeAgentSelection.unavailableHint(
+        agents, filteredAgentID: nil, mutationsAllowed: false, isConnecting: false
+      ) == "Connect to the gateway to create a conversation"
+    )
+    #expect(
+      ComposeAgentSelection.unavailableHint(
+        agents, filteredAgentID: nil, mutationsAllowed: true, isConnecting: false
+      ) == ""
     )
   }
 
