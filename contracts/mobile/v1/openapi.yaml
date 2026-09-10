@@ -1603,7 +1603,9 @@ components:
         Every member is optional, but `realtime` is all-or-nothing: when the object is
         present its `provider` key is REQUIRED and may be null. A client that omits the
         key inside a present `realtime` gets a 400, so encoders must write an explicit
-        JSON null rather than dropping the field.
+        JSON null rather than dropping the field. `stt.language` is nullable for a
+        different reason: omitting it leaves the language alone, and `null` clears it
+        back to the provider's own detection.
       type: object
       additionalProperties: false
       properties:
@@ -1613,7 +1615,11 @@ components:
           properties:
             provider: { type: string, minLength: 1, maxLength: 200 }
             model: { type: string, minLength: 1, maxLength: 200 }
-            language: { type: string, minLength: 2, maxLength: 8 }
+            # Explicitly nullable, like `realtime.provider`: an OMITTED key
+            # leaves the language alone, while `null` CLEARS it back to the
+            # provider's own detection. `SpeechConfig.stt.language` is absent
+            # when auto, so there is no other way to express it.
+            language: { type: [string, 'null'], minLength: 2, maxLength: 8 }
         tts:
           type: object
           additionalProperties: false

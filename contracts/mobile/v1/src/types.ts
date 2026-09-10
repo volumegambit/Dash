@@ -611,7 +611,12 @@ export interface SpeechConfigResponse {
  * as the whole `SpeechRealtimeConfig` rather than a `Partial` of it.
  */
 export interface SpeechConfigPatch {
-  stt?: Partial<SpeechSttConfig>;
+  /**
+   * `language: null` CLEARS the language (back to the provider's own
+   * detection); omitting the key leaves it alone. Spelled out rather than
+   * `Partial<SpeechSttConfig>`, which cannot express the difference.
+   */
+  stt?: { provider?: string; model?: string; language?: string | null };
   tts?: Partial<SpeechTtsConfig>;
   realtime?: SpeechRealtimeConfig;
 }

@@ -96,6 +96,47 @@ describe('createSpeechRoutes', () => {
       expect(persisted.tts.voice).toBe('nova');
     });
 
+    // The round trip Settings > Speech's "Auto" makes: set a language, then
+    // clear it. An omitted key means "leave it alone", so only an explicit
+    // null can get back to the provider's own detection.
+    it('clears a set language on an explicit null', async () => {
+      const speech = makeSpeechService();
+      const app = createSpeechRoutes({ speech, store });
+      const set = await app.request('/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ stt: { language: 'fr' } }),
+      });
+      expect(((await set.json()) as JsonBody).config.stt.language).toBe('fr');
+
+      const res = await app.request('/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ stt: { language: null } }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as JsonBody;
+      expect(body.config.stt.language).toBeUndefined();
+      expect('language' in (body.config.stt as object)).toBe(false);
+      // The rest of the section survives, and so does what was persisted.
+      expect(body.config.stt.model).toBe(DEFAULT_SPEECH_CONFIG.stt.model);
+      const persisted = await store.load();
+      expect(persisted.stt.language).toBeUndefined();
+    });
+
+    it('rejects a language that is neither a valid string nor null', async () => {
+      const speech = makeSpeechService();
+      const app = createSpeechRoutes({ speech, store });
+      const res = await app.request('/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ stt: { language: 17 } }),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as JsonBody).code).toBe('validation_failed');
+    });
+
     it('rejects an invalid patch with 400 validation_failed', async () => {
       const speech = makeSpeechService();
       const app = createSpeechRoutes({ speech, store });

@@ -117,6 +117,18 @@ describe('validateSpeechConfigPatch', () => {
     expect(result.ok).toBe(false);
   });
 
+  // The one way a client can go back to provider auto-detect: an omitted key
+  // means "leave it alone", so "clear it" has to be a value.
+  it('accepts an explicit null language, meaning clear it', () => {
+    const result = validateSpeechConfigPatch({ stt: { language: null } });
+    expect(result).toEqual({ ok: true, patch: { stt: { language: null } } });
+  });
+
+  it('still rejects a non-string, non-null language', () => {
+    const result = validateSpeechConfigPatch({ stt: { language: 17 } });
+    expect(result.ok).toBe(false);
+  });
+
   it('accepts a patch that omits language', () => {
     const result = validateSpeechConfigPatch({ stt: { provider: 'openrouter' } });
     expect(result).toEqual({ ok: true, patch: { stt: { provider: 'openrouter' } } });
@@ -198,6 +210,15 @@ describe('mergeSpeechConfig', () => {
   it('never drops a stored field via an undefined patch key', () => {
     const merged = mergeSpeechConfig(base, { stt: { language: undefined } });
     expect(merged.stt.language).toBe('en');
+  });
+
+  it('deletes the language on an explicit null, rather than storing null', () => {
+    const merged = mergeSpeechConfig(base, { stt: { language: null } });
+    expect(merged.stt.language).toBeUndefined();
+    expect('language' in merged.stt).toBe(false);
+    // Only the language: the rest of the section is untouched.
+    expect(merged.stt.provider).toBe(base.stt.provider);
+    expect(merged.stt.model).toBe(base.stt.model);
   });
 
   it('does not mutate the base config', () => {

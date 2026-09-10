@@ -551,6 +551,12 @@
       "valid": true
     },
     {
+      "file": "speech-config-patch-clear-language.json",
+      "document": "openapi",
+      "schema": "SpeechConfigPatch",
+      "valid": true
+    },
+    {
       "file": "speech-models.json",
       "document": "openapi",
       "schema": "SpeechModelList",

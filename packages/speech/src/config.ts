@@ -11,7 +11,13 @@ export const DEFAULT_SPEECH_CONFIG: SpeechConfig = {
 };
 
 export interface SpeechConfigPatch {
-  stt?: Partial<SpeechConfig['stt']>;
+  /**
+   * `language: null` is a real value meaning "clear it" — the only way back to
+   * provider auto-detect, since an omitted key means "leave it alone" and
+   * `SpeechConfig.stt.language` is absent when auto. Deliberately spelled out
+   * rather than `Partial<SpeechConfig['stt']>`, which cannot express it.
+   */
+  stt?: { provider?: string; model?: string; language?: string | null };
   tts?: Partial<SpeechConfig['tts']>;
   realtime?: { provider: string | null };
 }
@@ -83,10 +89,13 @@ function validateSttPatch(
     value.model = raw.model;
   }
   if (raw.language !== undefined) {
-    if (!isValidLanguage(raw.language)) {
-      return { ok: false, error: 'stt.language must be 2-8 characters' };
+    // `null` clears the language; every other non-string, and an out-of-range
+    // string, is still a 400. Mirrors `realtime.provider`: a nullable field
+    // whose null is a value, not an absence.
+    if (raw.language !== null && !isValidLanguage(raw.language)) {
+      return { ok: false, error: 'stt.language must be 2-8 characters or null' };
     }
-    value.language = raw.language;
+    value.language = raw.language as string | null;
   }
 
   return { ok: true, value };
@@ -206,7 +215,19 @@ export function mergeSpeechConfig(base: SpeechConfig, patch: SpeechConfigPatch):
   if (patch.stt) {
     if (patch.stt.provider !== undefined) merged.stt.provider = patch.stt.provider;
     if (patch.stt.model !== undefined) merged.stt.model = patch.stt.model;
-    if (patch.stt.language !== undefined) merged.stt.language = patch.stt.language;
+    if (patch.stt.language !== undefined) {
+      // The one key a patch can REMOVE: `stt.language` is ABSENT when the
+      // provider auto-detects, so "set it to auto" drops the key rather than
+      // writing a value. Rebuilt without it rather than `delete`d (biome's
+      // `noDelete`) and rather than assigned `undefined`, which would leave
+      // the key present for `in` and `Object.keys`.
+      if (patch.stt.language === null) {
+        const { language: _cleared, ...withoutLanguage } = merged.stt;
+        merged.stt = withoutLanguage;
+      } else {
+        merged.stt.language = patch.stt.language;
+      }
+    }
   }
 
   if (patch.tts) {
