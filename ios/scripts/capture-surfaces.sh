@@ -108,6 +108,8 @@ SURFACES=(
   "chat-voice-speaking|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=speaking"
   "chat-voice-muted|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=muted"
   "chat-voice-ended|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=ended"
+  "agent-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=agent-picker"
+)
 )
 
 # Tool gallery: every tool type, cards forced EXPANDED, four batches because a

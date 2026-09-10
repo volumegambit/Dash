@@ -106,7 +106,19 @@ struct ChatView: View {
   private var showsAgentChip: Bool {
     feature.state.messages.isEmpty && feature.state.activeTurnID == nil
   }
-  @State private var isAgentPickerPresented = false
+  // Seeded like `initialModelPickerPresented` above: the agent picker was
+  // the one chat sheet `capture-surfaces.sh` couldn't reach, so its redesign
+  // (agents-list goal 2026-09-10) would have shipped sight unseen — the
+  // exact gap that script exists to close.
+  @State private var isAgentPickerPresented = ChatView.initialAgentPickerPresented
+
+  private static var initialAgentPickerPresented: Bool {
+    #if DEBUG
+      return UITestLaunchOptions.initialSheet == "agent-picker"
+    #else
+      return false
+    #endif
+  }
   @State private var isSwitchingAgent = false
   /// Bumped by ⌘L (`KeyboardCommand.focusComposer`) and handed to
   /// `ComposerView`, which owns the `@FocusState` the text field is bound to.
