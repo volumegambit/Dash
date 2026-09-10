@@ -55,6 +55,13 @@ function configOf(config: SpeechConfig): () => Promise<SpeechConfig> {
   return async () => config;
 }
 
+// DEFAULT_SPEECH_CONFIG's tts model (minimax/speech-2.8-turbo) is MP3-only;
+// these speechFormat/synthesize tests need a model on the pcm16 allow-list.
+const PCM16_CONFIG: SpeechConfig = {
+  ...DEFAULT_SPEECH_CONFIG,
+  tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'hexgrad/kokoro-82m' },
+};
+
 describe('createSpeechService', () => {
   describe('providers', () => {
     it('reports openrouter unavailable with no_credential when no key is configured', async () => {
@@ -242,15 +249,15 @@ describe('createSpeechService', () => {
   });
 
   describe('speechFormat', () => {
-    it('returns pcm16 with sampleRate for an openai/* tts model', async () => {
+    it('returns pcm16 with sampleRate for a pcm16-allow-listed tts model', async () => {
       const service = createSpeechService({
-        config: configOf(DEFAULT_SPEECH_CONFIG),
+        config: configOf(PCM16_CONFIG),
         providerKeys: async () => ({}),
       });
       expect(await service.speechFormat()).toEqual({ format: 'pcm16', sampleRate: 24000 });
     });
 
-    it('returns mp3 with no sampleRate for a non-openai tts model', async () => {
+    it('returns mp3 with no sampleRate for a non-pcm16 tts model', async () => {
       const config: SpeechConfig = {
         ...DEFAULT_SPEECH_CONFIG,
         tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'elevenlabs/multilingual-v2' },
@@ -263,7 +270,7 @@ describe('createSpeechService', () => {
     });
 
     it('honors a config change between calls', async () => {
-      let config: SpeechConfig = DEFAULT_SPEECH_CONFIG;
+      let config: SpeechConfig = PCM16_CONFIG;
       const service = createSpeechService({
         config: async () => config,
         providerKeys: async () => ({}),
@@ -288,7 +295,7 @@ describe('createSpeechService', () => {
     it('rejects text over 4000 characters with too_long, and accepts exactly 4000', async () => {
       const { impl } = queueFetch([streamResponse(200, [new Uint8Array([1, 2])])]);
       const service = createSpeechService({
-        config: configOf(DEFAULT_SPEECH_CONFIG),
+        config: configOf(PCM16_CONFIG),
         providerKeys: async () => ({ openrouter: 'sk-or-test' }),
         fetch: impl,
       });
@@ -305,7 +312,7 @@ describe('createSpeechService', () => {
     it('defaults format from speechFormat() (pcm16 with sampleRate) when omitted', async () => {
       const { impl, calls } = queueFetch([streamResponse(200, [new Uint8Array([9, 9, 9])])]);
       const service = createSpeechService({
-        config: configOf(DEFAULT_SPEECH_CONFIG),
+        config: configOf(PCM16_CONFIG),
         providerKeys: async () => ({ openrouter: 'sk-or-test' }),
         fetch: impl,
       });
@@ -321,7 +328,7 @@ describe('createSpeechService', () => {
     it('uses the explicit format override instead of speechFormat(), with no sampleRate for mp3', async () => {
       const { impl, calls } = queueFetch([streamResponse(200, [new Uint8Array([9, 9, 9])])]);
       const service = createSpeechService({
-        config: configOf(DEFAULT_SPEECH_CONFIG), // tts.model is openai/* -> speechFormat() would say pcm16
+        config: configOf(PCM16_CONFIG), // tts.model is pcm16-allow-listed -> speechFormat() would say pcm16
         providerKeys: async () => ({ openrouter: 'sk-or-test' }),
         fetch: impl,
       });

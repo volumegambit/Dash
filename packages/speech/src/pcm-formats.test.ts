@@ -1,15 +1,23 @@
-import { pcmFormatFor } from './pcm-formats.js';
+import { PCM16_MODELS, pcmFormatFor } from './pcm-formats.js';
 
 describe('pcmFormatFor', () => {
-  it('returns 24kHz mono 16-bit PCM for an openai/* model', () => {
-    expect(pcmFormatFor('openai/gpt-4o-mini-tts-2025-12-15')).toEqual({
+  it.each([...PCM16_MODELS.keys()])('returns 24kHz mono 16-bit PCM for %s', (model) => {
+    expect(pcmFormatFor(model)).toEqual({
       sampleRate: 24000,
       channels: 1,
       bitsPerSample: 16,
     });
   });
 
-  it('returns null for a non-openai model', () => {
-    expect(pcmFormatFor('mistralai/voxtral-mini-tts-2603')).toBeNull();
+  it('returns null for the MiniMax default (MP3-only)', () => {
+    expect(pcmFormatFor('minimax/speech-2.8-turbo')).toBeNull();
+  });
+
+  it('returns null for a non-existent openai/* model id', () => {
+    expect(pcmFormatFor('openai/gpt-4o-mini-tts-2025-12-15')).toBeNull();
+  });
+
+  it('returns null for any other openai/* model id', () => {
+    expect(pcmFormatFor('openai/anything')).toBeNull();
   });
 });

@@ -6,7 +6,11 @@ export interface SpeechConfig {
 
 export const DEFAULT_SPEECH_CONFIG: SpeechConfig = {
   stt: { provider: 'openrouter', model: 'openai/whisper-large-v3' },
-  tts: { provider: 'openrouter', model: 'openai/gpt-4o-mini-tts-2025-12-15', voice: 'alloy' },
+  tts: {
+    provider: 'openrouter',
+    model: 'minimax/speech-2.8-turbo',
+    voice: 'English_expressive_narrator',
+  },
   realtime: { provider: null },
 };
 

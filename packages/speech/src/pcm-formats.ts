@@ -4,14 +4,21 @@ export interface Pcm16Format {
   bitsPerSample: 16;
 }
 
-/** OpenRouter's `openai/*` TTS models stream raw PCM at 24kHz mono 16-bit. */
-const OPENAI_PCM16: Pcm16Format = { sampleRate: 24000, channels: 1, bitsPerSample: 16 };
+const PCM16_24K: Pcm16Format = { sampleRate: 24000, channels: 1, bitsPerSample: 16 };
 
 /**
- * Looks up the raw PCM stream shape for a given model id. Only `openai/*`
- * models are known to emit `pcm16`; every other provider prefix returns
- * `null` (its `synthesize` output is not a bare PCM stream we can header).
+ * OpenRouter's `audio/pcm` responses declare `rate=` and `channels=` in the
+ * content-type; this table is the static allow-list of models known to
+ * accept `response_format: pcm` — MiniMax and Gemini do not (MiniMax is
+ * MP3-only, Gemini is PCM-only).
  */
+export const PCM16_MODELS: ReadonlyMap<string, Pcm16Format> = new Map([
+  ['hexgrad/kokoro-82m', PCM16_24K],
+  ['microsoft/mai-voice-2-flash', PCM16_24K],
+  ['microsoft/mai-voice-2', PCM16_24K],
+]);
+
+/** Looks up the raw PCM stream shape for a given model id, or `null` if unknown. */
 export function pcmFormatFor(model: string): Pcm16Format | null {
-  return model.startsWith('openai/') ? OPENAI_PCM16 : null;
+  return PCM16_MODELS.get(model) ?? null;
 }

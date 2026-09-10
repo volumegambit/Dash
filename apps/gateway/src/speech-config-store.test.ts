@@ -25,7 +25,7 @@ describe('SpeechConfigStore', () => {
   it('save then load round-trips the data', async () => {
     const config: SpeechConfig = {
       stt: { provider: 'openrouter', model: 'openai/whisper-large-v3', language: 'en' },
-      tts: { provider: 'openrouter', model: 'openai/gpt-4o-mini-tts-2025-12-15', voice: 'nova' },
+      tts: { provider: 'openrouter', model: 'minimax/speech-2.8-turbo', voice: 'nova' },
       realtime: { provider: 'openai' },
     };
     await store.save(config);
@@ -57,7 +57,7 @@ describe('SpeechConfigStore', () => {
       filePath,
       JSON.stringify({
         stt: { provider: 'openrouter', model: 'openai/whisper-large-v3' },
-        tts: { provider: 'openrouter', model: 'openai/gpt-4o-mini-tts-2025-12-15', voice: 'alloy' },
+        tts: { provider: 'openrouter', model: 'minimax/speech-2.8-turbo', voice: 'alloy' },
       }),
     );
 

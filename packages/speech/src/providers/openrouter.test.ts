@@ -67,8 +67,8 @@ describe('createOpenRouterSpeechProvider', () => {
               architecture: { output_modalities: ['transcription'] },
             },
             {
-              id: 'openai/gpt-4o-mini-tts',
-              name: 'GPT-4o mini TTS',
+              id: 'minimax/speech-2.8-turbo',
+              name: 'MiniMax: Speech 2.8 Turbo',
               architecture: { output_modalities: ['speech'] },
             },
           ],
@@ -183,8 +183,8 @@ describe('createOpenRouterSpeechProvider', () => {
 
       const chunks: Uint8Array[] = [];
       for await (const chunk of provider.synthesize('hello', {
-        model: 'openai/gpt-4o-mini-tts',
-        voice: 'alloy',
+        model: 'minimax/speech-2.8-turbo',
+        voice: 'English_expressive_narrator',
         format: 'pcm16',
       })) {
         chunks.push(chunk);
@@ -197,9 +197,9 @@ describe('createOpenRouterSpeechProvider', () => {
       expect(calls[0]?.headers['HTTP-Referer']).toBe('https://dash.app');
       expect(calls[0]?.headers['X-Title']).toBe('Dash');
       expect(calls[0]?.body).toMatchObject({
-        model: 'openai/gpt-4o-mini-tts',
+        model: 'minimax/speech-2.8-turbo',
         input: 'hello',
-        voice: 'alloy',
+        voice: 'English_expressive_narrator',
         response_format: 'pcm',
       });
     });
