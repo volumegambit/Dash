@@ -32,3 +32,5 @@ export { VoiceActivityDetector } from './vad.js';
 export type { VadEvent, VadOptions } from './vad.js';
 export { speakable, SentenceChunker } from './chunker.js';
 export type { SentenceChunkerOptions } from './chunker.js';
+export { SpokenRenderer } from './spoken-renderer.js';
+export type { SpeechItem, SpokenRendererOptions } from './spoken-renderer.js';
