@@ -109,4 +109,45 @@ describe('SpeechConfigStore', () => {
     const tmpFiles = entries.filter((name) => name.includes('.tmp'));
     expect(tmpFiles).toHaveLength(0);
   });
+
+  it('a concurrent save() is never lost to a load() quarantining stale corrupt content', async () => {
+    // Regression: load()'s corrupt-JSON quarantine ran outside the write
+    // queue. Sequence that lost data: load() reads corrupt bytes -> a
+    // concurrent save() renames a fresh valid file into place -> load()'s
+    // quarantine step then renamed that just-saved VALID file to
+    // speech.json.corrupt-<ts>, leaving no speech.json and silently
+    // dropping the save. The fix re-reads and re-checks behind the write
+    // queue, so quarantine only ever fires on content that is still
+    // corrupt when the queue actually serializes it.
+    const filePath = join(dataDir, 'speech.json');
+    const corruptBytes = '{not json';
+    await writeFile(filePath, corruptBytes);
+
+    const validConfig: SpeechConfig = {
+      stt: { provider: 'openrouter', model: 'race-model' },
+      tts: { provider: 'openrouter', model: 'race-model', voice: 'alloy' },
+      realtime: { provider: null },
+    };
+
+    await Promise.all([store.load(), store.save(validConfig)]);
+
+    // The invariant that matters: the save is never silently destroyed.
+    // speech.json always ends up holding the valid saved config, whichever
+    // order the race resolved in.
+    const finalRaw = await readFile(filePath, 'utf-8');
+    expect(JSON.parse(finalRaw)).toEqual(validConfig);
+    expect(await store.load()).toEqual(validConfig);
+
+    // If a quarantine file exists, it must hold the ORIGINAL corrupt bytes
+    // -- never the valid config that was just saved (that was exactly the
+    // bug: a concurrent save()'s just-written valid file getting renamed
+    // away as if it were the corrupt one).
+    const entries = await readdir(dataDir);
+    const quarantined = entries.filter((name) => name.startsWith('speech.json.corrupt-'));
+    expect(quarantined.length).toBeLessThanOrEqual(1);
+    for (const name of quarantined) {
+      const content = await readFile(join(dataDir, name), 'utf-8');
+      expect(content).toBe(corruptBytes);
+    }
+  });
 });

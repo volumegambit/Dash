@@ -78,14 +78,41 @@ export class SpeechConfigStore {
     } catch {
       return cloneDefaultConfig();
     }
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      return mergeFromDisk(JSON.parse(raw));
+    } catch {
+      // Corrupt JSON. The quarantine-and-recheck runs behind the write
+      // queue: a concurrent save() may land between this read and the
+      // queued step actually running, replacing the corrupt file with a
+      // fresh valid one. Without the queue, quarantine() would rename that
+      // just-written valid file away, silently losing the save. Re-reading
+      // inside the queue means we only ever quarantine content that is
+      // still corrupt at the moment we're serialized to act on it.
+      return this.enqueue(() => this.recoverFromCorruptFile());
+    }
+  }
+
+  /**
+   * Re-read and re-check the file, then quarantine only if it is still
+   * corrupt. Always called behind `writeQueue` (see `load()`) so it can't
+   * race a concurrent `save()`.
+   */
+  private async recoverFromCorruptFile(): Promise<SpeechConfig> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, 'utf-8');
+    } catch {
+      return cloneDefaultConfig();
+    }
+    try {
+      // A concurrent save() already replaced the corrupt content with
+      // valid JSON while we were waiting on the queue. Nothing to
+      // quarantine — load the now-current file instead.
+      return mergeFromDisk(JSON.parse(raw));
     } catch {
       await this.quarantine();
       return cloneDefaultConfig();
     }
-    return mergeFromDisk(parsed);
   }
 
   /**
