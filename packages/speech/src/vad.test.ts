@@ -34,7 +34,10 @@ describe('VoiceActivityDetector', () => {
   });
 
   it('does not start speech for a 200ms tone (shorter than startMs)', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test is about startMs, not calibration; without
+    // it the entire 200ms burst would fall inside the default 500ms
+    // calibration window and never reach detection at all.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
     const events = vad.push(tone(200, 440, 0.5));
 
     expect(byType(events, 'speech_start')).toHaveLength(0);
@@ -42,7 +45,10 @@ describe('VoiceActivityDetector', () => {
   });
 
   it('starts and ends an utterance around a tone, keeping ~300ms pre-roll', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test is about pre-roll/end-trim byte math, not
+    // calibration; the calibration window would otherwise eat the first
+    // 500ms of the leading silence without feeding the pre-roll ring.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
 
     // 300ms of leading silence establishes a full pre-roll window before the
     // tone begins, so speech_start's utterance provably includes it.
@@ -76,13 +82,16 @@ describe('VoiceActivityDetector', () => {
   it('the same mid-volume tone starts speech against a cold (unadapted) floor', () => {
     // Baseline for the drift test below: this exact tone clears 3x the
     // initial 1e-4 floor (rms ~4.95e-4 > 3e-4) when nothing has adapted it.
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test is about EMA drift, not calibration.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
     const events = pushAll(vad, tone(1000, 440, 0.0007));
     expect(byType(events, 'speech_start')).toHaveLength(1);
   });
 
   it('adapts the noise floor to a quiet hum: a mid tone no longer starts speech, a loud one still does', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test targets the EMA drift path specifically
+    // (as opposed to the one-shot calibration seed, covered separately below).
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
 
     // Hum RMS (~2.3e-4) is deliberately below the initial 3x threshold over
     // the 1e-4 floor (3e-4), so it's classified as non-speech from the start
@@ -107,7 +116,12 @@ describe('VoiceActivityDetector', () => {
   });
 
   it('cuts a 61s tone at exactly maxUtteranceMs and continues as a new utterance', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — with default calibration on, the tone itself would
+    // become the calibration signal for its first 500ms, seeding the floor
+    // from its own ~0.35 rms; 3x that exceeds the maximum possible rms
+    // (1.0), so the tone could never be classified as speech at all. This
+    // test is about the max cutoff, not calibration, so it opts out.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
     const events = pushAll(vad, tone(61_000, 440, 0.5));
 
     const starts = byType(events, 'speech_start');
@@ -124,7 +138,9 @@ describe('VoiceActivityDetector', () => {
   });
 
   it('reset() clears speaking state and the adapted noise floor', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test targets reset()'s effect on the EMA-adapted
+    // floor specifically; calibration-seeding is covered by its own tests below.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
 
     // Adapt the floor upward with the same hum used in the drift test above.
     pushAll(vad, noise(5000, 0.0004, 7));
@@ -141,7 +157,8 @@ describe('VoiceActivityDetector', () => {
   });
 
   it('setStartMs(400) requires a longer sustained run before starting speech', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test is about startMs, not calibration.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
     vad.setStartMs(400);
 
     const events = vad.push(tone(350, 440, 0.5));
@@ -150,7 +167,10 @@ describe('VoiceActivityDetector', () => {
   });
 
   it('drops an utterance shorter than minUtteranceMs silently (no speech_end)', () => {
-    const vad = new VoiceActivityDetector();
+    // calibrationMs: 0 — this test is about minUtteranceMs, not calibration;
+    // the abrupt 400ms burst below would otherwise fall inside the default
+    // 500ms calibration window and never even attempt detection.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
 
     // An abrupt 400ms burst (no pre-roll, since nothing preceded it) starts
     // speech but never reaches minUtteranceMs (500ms) once silence ends it.
@@ -160,5 +180,75 @@ describe('VoiceActivityDetector', () => {
     const endEvents = vad.push(silence(700));
     expect(byType(endEvents, 'speech_end')).toHaveLength(0);
     expect(vad.speaking).toBe(false);
+  });
+
+  it('calibrates the floor from 500ms of ambient hum, so a tone that would start speech cold no longer does', () => {
+    // Default calibrationMs (500). The first 500ms of pushed audio only
+    // seeds the floor — no detection, no pre-roll.
+    const hummed = new VoiceActivityDetector();
+    pushAll(hummed, noise(500, 0.02, 5));
+    const afterHum = pushAll(hummed, tone(500, 440, 0.03));
+    expect(byType(afterHum, 'speech_start')).toHaveLength(0);
+
+    // Same tone, but calibrated against 500ms of silence instead: the floor
+    // seeds at the 1e-4 minimum, and the tone clears 3x that easily — this
+    // is what proves the hum's own energy (not just "calibration happened")
+    // is what raised the floor above.
+    const quiet = new VoiceActivityDetector();
+    pushAll(quiet, silence(500));
+    const afterSilence = pushAll(quiet, tone(500, 440, 0.03));
+    expect(byType(afterSilence, 'speech_start')).toHaveLength(1);
+  });
+
+  it('calibrationMs: 0 restores immediate cold-start detection', () => {
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
+    // Well above both startMs (300ms) and the cold 1e-4 floor — with
+    // calibration disabled this starts speech immediately, matching
+    // pre-calibration behaviour (no leading window of any kind).
+    const events = pushAll(vad, tone(400, 440, 0.5));
+    expect(byType(events, 'speech_start')).toHaveLength(1);
+  });
+
+  it('re-seeds the noise floor after a max cutoff, recovering a stuck-classifying-as-speech mic', () => {
+    // calibrationMs: 0 so the loud tone below doesn't poison its own
+    // calibration window (see the max-cutoff test's comment above) — this
+    // test is specifically about the max-triggered self-heal, not calibration.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
+
+    // 61s of tone hits the max cutoff once, which re-seeds the floor from
+    // that utterance's own rms (~0.354 for a 0.5-amplitude sine). The
+    // second (continuation) utterance is still open at 1s in; let it end
+    // normally on trailing silence.
+    pushAll(vad, tone(61_000, 440, 0.5));
+    pushAll(vad, silence(700));
+    expect(vad.speaking).toBe(false);
+
+    // A tone at the exact same amplitude that started speech cold now
+    // cannot: 3x the re-seeded floor (~1.06) exceeds the maximum possible
+    // rms (1.0), so nothing at this level can ever clear it again.
+    const events = pushAll(vad, tone(500, 440, 0.5));
+    expect(byType(events, 'speech_start')).toHaveLength(0);
+  });
+
+  it('self-heals a stuck mic that never sees silence: a second consecutive max applies the re-seed', () => {
+    // calibrationMs: 0 — same reasoning as the max-cutoff test above.
+    const vad = new VoiceActivityDetector({ calibrationMs: 0 });
+
+    // Ambient "speech" that never stops: 121s of tone hits max twice
+    // (at 60s and 120s) with no silence in between. The first max only
+    // stages a re-seed; the second applies it immediately (nothing else
+    // would ever return this detector to idle), so the still-ongoing tone
+    // reads as non-speech on the next frame and the stuck utterance ends
+    // (empty, dropped silently) well before the input runs out.
+    const events = pushAll(vad, tone(121_000, 440, 0.5));
+
+    const ends = byType(events, 'speech_end');
+    expect(ends).toHaveLength(2);
+    expect(ends.every((e) => e.reason === 'max')).toBe(true);
+    expect(vad.speaking).toBe(false);
+
+    // Recovered: the same tone that started speech cold no longer does.
+    const after = pushAll(vad, tone(500, 440, 0.5));
+    expect(byType(after, 'speech_start')).toHaveLength(0);
   });
 });

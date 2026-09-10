@@ -4,6 +4,7 @@ const DEFAULT_END_MS = 700;
 const DEFAULT_MIN_UTTERANCE_MS = 500;
 const DEFAULT_MAX_UTTERANCE_MS = 60000;
 const DEFAULT_THRESHOLD = 3.0;
+const DEFAULT_CALIBRATION_MS = 500;
 
 /** Fixed pre-roll window kept while not speaking, independent of `startMs`. */
 const PRE_ROLL_MS = 300;
@@ -25,6 +26,10 @@ export interface VadOptions {
   maxUtteranceMs?: number;
   /** RMS multiple over the adaptive noise floor that counts as speech. Default 3.0. */
   threshold?: number;
+  /** Leading window (ms) that only seeds the noise floor — no detection, no pre-roll.
+   * Runs once after construction and again after every `reset()`. 0 disables it
+   * (immediate cold-start detection, the pre-calibration behaviour). Default 500. */
+  calibrationMs?: number;
 }
 
 export type VadEvent =
@@ -72,6 +77,30 @@ function rmsOf(frame: Uint8Array): number {
  * trailing silence used only to confirm the end is not included in the
  * emitted `pcm`. An utterance exceeding `maxUtteranceMs` is cut at exactly
  * that many bytes and capture continues immediately as a new utterance.
+ *
+ * The first `calibrationMs` of audio (after construction, and again after
+ * every `reset()`) is a calibration window: frames only update the running
+ * mean RMS and emit `level` events — no detection runs and no pre-roll is
+ * collected — and once the window elapses the floor is seeded from that
+ * mean (still floored at 1e-4) before the normal EMA takes over. This
+ * avoids classifying a real microphone's resting noise as speech from the
+ * first frame, which the plain cold 1e-4 floor would do on most hardware.
+ * Self-healing complements this: whenever an utterance ends with
+ * `reason: 'max'` — a strong signal that the floor is currently too low for
+ * the environment (something has read as continuous "speech" for a full
+ * minute) — a re-seed from that utterance's own RMS is staged rather than
+ * applied immediately, since the frames right after almost always belong to
+ * the same still-ongoing utterance, which must not be judged against a
+ * floor just raised to match its own energy. The stage is applied at
+ * whichever comes first: the next genuine return to idle (a `reason:
+ * 'silence'` end), which is the common case for real speech that simply
+ * continues past a minute; or a *second consecutive* `'max'` with no
+ * silence in between, which means the environment never settled and
+ * waiting for silence would wait forever — that case applies the seed
+ * immediately, so the still-elevated-energy signal reads as non-speech on
+ * the next frame and the stuck utterance ends (empty, dropped silently)
+ * within one more `endMs` window. Either way, a stuck-classifying-as-speech
+ * mic recovers on its own, in at most two `maxUtteranceMs` windows.
  */
 export class VoiceActivityDetector {
   private readonly bytesPerMs: number;
@@ -79,10 +108,21 @@ export class VoiceActivityDetector {
   private readonly minUtteranceMs: number;
   private readonly maxUtteranceMs: number;
   private readonly threshold: number;
+  private readonly calibrationMs: number;
   private startMs: number;
 
   private floor = NOISE_FLOOR_INIT;
   private _speaking = false;
+  // Set by a 'max' finalize, applied only once detection genuinely returns
+  // to idle (see the class doc comment) — applying it immediately would
+  // poison the still-ongoing continuation utterance's own above/below
+  // classification against its own energy.
+  private pendingFloorSeed: number | null = null;
+
+  // Calibration state.
+  private calibrating: boolean;
+  private calibrationMsSoFar = 0;
+  private calibrationWeightedSum = 0;
 
   // Idle / candidate state (not speaking).
   private ring: Uint8Array[] = [];
@@ -105,6 +145,8 @@ export class VoiceActivityDetector {
     this.minUtteranceMs = opts.minUtteranceMs ?? DEFAULT_MIN_UTTERANCE_MS;
     this.maxUtteranceMs = opts.maxUtteranceMs ?? DEFAULT_MAX_UTTERANCE_MS;
     this.threshold = opts.threshold ?? DEFAULT_THRESHOLD;
+    this.calibrationMs = opts.calibrationMs ?? DEFAULT_CALIBRATION_MS;
+    this.calibrating = this.calibrationMs > 0;
   }
 
   get speaking(): boolean {
@@ -116,7 +158,8 @@ export class VoiceActivityDetector {
     this.startMs = ms;
   }
 
-  /** Clears all detection state (floor, buffers, speaking) but leaves configured options. */
+  /** Clears all detection state (floor, buffers, speaking) but leaves configured options.
+   * Re-runs the calibration window (if `calibrationMs > 0`) before detection resumes. */
   reset(): void {
     this.floor = NOISE_FLOOR_INIT;
     this._speaking = false;
@@ -129,6 +172,10 @@ export class VoiceActivityDetector {
     this.utteranceBytes = 0;
     this.trailing = [];
     this.belowMs = 0;
+    this.calibrating = this.calibrationMs > 0;
+    this.calibrationMsSoFar = 0;
+    this.calibrationWeightedSum = 0;
+    this.pendingFloorSeed = null;
   }
 
   push(frame: Uint8Array): VadEvent[] {
@@ -138,12 +185,27 @@ export class VoiceActivityDetector {
     const rms = rmsOf(frame);
     events.push({ type: 'level', rms });
 
-    if (this._speaking) {
+    if (this.calibrating) {
+      this.pushWhileCalibrating(frame, rms);
+    } else if (this._speaking) {
       this.pushWhileSpeaking(frame, rms, events);
     } else {
       this.pushWhileIdle(frame, rms, events);
     }
     return events;
+  }
+
+  /** During calibration: no detection, no pre-roll — only seeds the running mean RMS. */
+  private pushWhileCalibrating(frame: Uint8Array, rms: number): void {
+    const frameMs = frame.length / this.bytesPerMs;
+    this.calibrationWeightedSum += rms * frameMs;
+    this.calibrationMsSoFar += frameMs;
+
+    if (this.calibrationMsSoFar >= this.calibrationMs) {
+      const mean = this.calibrationWeightedSum / this.calibrationMsSoFar;
+      this.floor = Math.max(NOISE_FLOOR_MIN, mean);
+      this.calibrating = false;
+    }
   }
 
   private pushWhileIdle(frame: Uint8Array, rms: number, events: VadEvent[]): void {
@@ -203,6 +265,11 @@ export class VoiceActivityDetector {
 
     if (this.belowMs >= this.endMs) {
       this.finalizeUtterance('silence', events);
+      // Genuine return to idle: apply any max-triggered self-heal seed now.
+      if (this.pendingFloorSeed !== null) {
+        this.floor = this.pendingFloorSeed;
+        this.pendingFloorSeed = null;
+      }
       // The trailing silence that confirmed the end seeds the next pre-roll.
       this.ring = [];
       this.ringBytes = 0;
@@ -252,6 +319,29 @@ export class VoiceActivityDetector {
       events.push({ type: 'speech_end', pcm, durationMs, reason });
     }
     // Otherwise the utterance is shorter than minUtteranceMs: dropped silently.
+
+    if (reason === 'max') {
+      // Self-heal: an utterance that only ended because it hit the hard cap
+      // never saw real silence, which usually means the floor is too low
+      // for this environment. Stage a re-seed from the utterance's own
+      // energy — applied once detection actually returns to idle, not here,
+      // since the very next frames are typically this same utterance's own
+      // continuation and must not be judged against their own just-elevated
+      // floor.
+      //
+      // But if the environment never settles (a stuck mic reading ambient
+      // noise as continuous "speech" hits 'max' again without ever seeing
+      // silence in between), waiting for a 'silence' finalize that will
+      // never come would leave it stuck at 60s chunks forever. So a
+      // *second* consecutive 'max' applies the still-pending seed from the
+      // first one immediately, before staging its own — that's enough to
+      // make the ongoing signal read as non-speech and let this utterance
+      // end (empty, as 'silence') on the very next frame.
+      if (this.pendingFloorSeed !== null) {
+        this.floor = this.pendingFloorSeed;
+      }
+      this.pendingFloorSeed = Math.max(NOISE_FLOOR_MIN, rmsOf(pcm));
+    }
   }
 
   private pushToRing(chunk: Uint8Array): void {
