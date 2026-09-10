@@ -16,3 +16,8 @@ export {
   validateSpeechConfigPatch,
 } from './config.js';
 export type { SpeechConfig, SpeechConfigPatch, ValidationResult } from './config.js';
+export { pcmFormatFor } from './pcm-formats.js';
+export type { Pcm16Format } from './pcm-formats.js';
+export { wavFromPcm16 } from './wav.js';
+export { createOpenRouterSpeechProvider } from './providers/openrouter.js';
+export type { OpenRouterSpeechProviderOptions } from './providers/openrouter.js';
