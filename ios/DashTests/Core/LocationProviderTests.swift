@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Testing
 
@@ -52,6 +53,17 @@ struct LocationProviderTests {
     #expect(provider.cachedFix() == nil)
   }
 
+  @Test("precise accuracy rounds up and clamps to the safe wire range")
+  func preciseAccuracyNormalization() throws {
+    let maximum = Double(MobileV2ContractValidation.maxSafeInteger)
+    #expect(try capturedAccuracy(12.01) == 13)
+    #expect(try capturedAccuracy(-1) == 0)
+    #expect(try capturedAccuracy(maximum * 2) == maximum)
+    #expect(try capturedAccuracy(Double.infinity) == maximum)
+    #expect(try capturedAccuracy(-Double.infinity) == maximum)
+    #expect(try capturedAccuracy(Double.nan) == maximum)
+  }
+
   @Test("a newTurn frame carries the location it was given")
   func newTurnCarriesLocation() throws {
     let location = ClientLocation(
@@ -74,5 +86,22 @@ struct LocationProviderTests {
       return
     }
     #expect(sent == location)
+  }
+
+  private func capturedAccuracy(_ horizontalAccuracy: CLLocationAccuracy) throws -> Double {
+    let suiteName = "dash.location.tests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(true, forKey: PreciseLocationProvider.enabledKey)
+    let provider = PreciseLocationProvider(defaults: defaults)
+    let location = CLLocation(
+      coordinate: CLLocationCoordinate2D(latitude: 1.2966, longitude: 103.7764),
+      altitude: 0,
+      horizontalAccuracy: horizontalAccuracy,
+      verticalAccuracy: 0,
+      timestamp: Date()
+    )
+    provider.locationManager(CLLocationManager(), didUpdateLocations: [location])
+    return try #require(provider.cachedFix()?.accuracyMeters)
   }
 }

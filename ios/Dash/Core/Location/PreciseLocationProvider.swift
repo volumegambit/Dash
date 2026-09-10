@@ -28,6 +28,8 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
   private var fix: PreciseLocation?
   private var geocoding = false
 
+  private static let maximumWireAccuracyMeters = 9_007_199_254_740_991.0
+
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
     super.init()
@@ -97,12 +99,17 @@ final class PreciseLocationProvider: NSObject, CLLocationManagerDelegate, @unche
     fix = PreciseLocation(
       latitude: location.coordinate.latitude,
       longitude: location.coordinate.longitude,
-      accuracyMeters: max(location.horizontalAccuracy, 0),
+      accuracyMeters: Self.normalizedAccuracyMeters(location.horizontalAccuracy),
       capturedAt: captured,
       place: existingPlace
     )
     lock.unlock()
     reverseGeocode(location)
+  }
+
+  private static func normalizedAccuracyMeters(_ accuracy: CLLocationAccuracy) -> Double {
+    guard accuracy.isFinite else { return maximumWireAccuracyMeters }
+    return min(max(accuracy, 0), maximumWireAccuracyMeters).rounded(.up)
   }
 
   func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

@@ -37,6 +37,15 @@ targets:
         group: ContractFixtures
         buildPhase: resources
         optional: true
+      - path: ../contracts/mobile/v2/fixtures
+        name: MobileV2ContractFixtures
+        type: folder
+        group: ContractFixturesV2
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: MobileV2ContractFixtures
+        optional: true
     dependencies:
       - target: Dash
     settings:
@@ -53,6 +62,15 @@ targets:
         type: folder
         group: ContractFixtures
         buildPhase: resources
+        optional: true
+      - path: ../contracts/mobile/v2/fixtures
+        name: MobileV2ContractFixtures
+        type: folder
+        group: ContractFixturesV2
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: MobileV2ContractFixtures
         optional: true
     dependencies:
       - target: Dash
