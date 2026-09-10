@@ -64,6 +64,7 @@ final class AppModel {
   @ObservationIgnored private var chatRetirementTasks: [String: ChatRetirementRecord] = [:]
   @ObservationIgnored private var transitionEpoch: UInt64 = 0
   @ObservationIgnored private var activeEpoch: UInt64 = 0
+  @ObservationIgnored private var capabilityAdoptionTask: Task<Void, Never>?
   @ObservationIgnored private var activeEngineBootstrapped = false
   @ObservationIgnored private var activeEngineLifecycleStarted = false
   @ObservationIgnored private var activeEngineNeedsForegroundResume = false
@@ -83,6 +84,11 @@ final class AppModel {
   private struct PreparedActivation {
     let engine: any AppSyncing
     let snapshots: AsyncStream<SyncSnapshot>
+    /// The launch-time `/health` read, already in flight. Started during
+    /// preparation so it overlaps activation, ADOPTED in `publish` — a task
+    /// that wrote `gatewayCapabilities` directly would race `publish`'s own
+    /// `gatewayCapabilities = []` and could be wiped a moment after it landed.
+    let capabilityProbe: Task<Set<MobileCapability>, Error>
   }
 
   private struct ChatLifecycleState: Equatable {
@@ -801,13 +807,56 @@ final class AppModel {
       return nil
     }
 
+    // Non-blocking, and deliberately started here rather than awaited:
+    // activation must not wait on the network, but the composer's mic depends
+    // on the answer and cannot wait for the user to trigger a reconnect.
+    let fetchCapabilities = dependencies.fetchCapabilities
+    let capabilityProbe = Task { try await fetchCapabilities(profile) }
+
     let snapshots = await engine.snapshots()
     guard isCurrent(epoch) else {
+      capabilityProbe.cancel()
       await engine.shutdown()
       return nil
     }
 
-    return PreparedActivation(engine: engine, snapshots: snapshots)
+    return PreparedActivation(
+      engine: engine,
+      snapshots: snapshots,
+      capabilityProbe: capabilityProbe
+    )
+  }
+
+  /// Applies the launch-time probe's answer to the gateway that is now live.
+  ///
+  /// Both guards matter: the epoch catches a probe that finished after the
+  /// user moved to another gateway, and a THROWN probe (offline, an expired
+  /// credential) leaves the set untouched rather than emptying it — the
+  /// honest reading of "we could not ask" is "we still do not know", and
+  /// `reconnect()`'s verify remains the authority.
+  private func adoptCapabilities(
+    from probe: Task<Set<MobileCapability>, Error>,
+    engine: any AppSyncing,
+    epoch: UInt64
+  ) {
+    capabilityAdoptionTask?.cancel()
+    capabilityAdoptionTask = Task { [weak self] in
+      let capabilities = try? await probe.value
+      guard
+        let self,
+        let capabilities,
+        self.activeEpoch == epoch,
+        self.sameEngine(self.syncEngine, engine)
+      else { return }
+      self.gatewayCapabilities = capabilities
+    }
+  }
+
+  /// Test seam: awaits the launch-time capability probe, so a test can assert
+  /// on `gatewayCapabilities` without racing it. `start()` returns before the
+  /// probe does, by design.
+  func waitForCapabilityProbe() async {
+    await capabilityAdoptionTask?.value
   }
 
   private func startPreparedEngine(_ engine: any AppSyncing, activeEpoch: UInt64) async {
@@ -914,8 +963,11 @@ final class AppModel {
     activeEngineSuspensionStarted = false
     selectedProfile = profile
     // Activation does not verify, so nothing here knows this gateway's
-    // capabilities yet — least of all the previous gateway's.
+    // capabilities yet — least of all the previous gateway's. The launch-time
+    // `/health` probe started in `prepareActivation` fills them in when it
+    // answers; `reconnect()`'s verify overwrites them after that.
     gatewayCapabilities = []
+    adoptCapabilities(from: prepared.capabilityProbe, engine: prepared.engine, epoch: epoch)
     let conversationFeature = dependencies.makeConversationListFeature(profile)
     conversationFeature?.setGatewayErrorHandler { [weak self, weak conversationFeature] error in
       guard
@@ -1030,6 +1082,10 @@ final class AppModel {
     snapshotTask = nil
     syncEngine = nil
     gatewayCapabilities = []
+    // The epoch bump below would already refuse it, but a probe still reading
+    // a detached gateway's `/health` is pure waste.
+    capabilityAdoptionTask?.cancel()
+    capabilityAdoptionTask = nil
     activeEngineBootstrapped = false
     activeEngineLifecycleStarted = false
     activeEngineNeedsForegroundResume = false

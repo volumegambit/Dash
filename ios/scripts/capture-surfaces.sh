@@ -89,6 +89,12 @@ SURFACES=(
   "recovery|pending-recovery|DASH_UI_TEST_TAB=conversations"
   "agent-detail|paired-online|DASH_UI_TEST_AGENT=research-agent"
   "model-picker|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_SHEET=model-picker"
+  # Dictation (speech Phase A). All three states are behind a tap, a
+  # microphone and a gateway with a speech provider, so none of them could be
+  # looked at before `DASH_UI_TEST_DICTATION` drove them from fakes.
+  "chat-dictation-recording|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=recording"
+  "chat-dictation-uploading|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=uploading"
+  "chat-dictation-failed|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=failed"
 )
 
 # Tool gallery: every tool type, cards forced EXPANDED, four batches because a

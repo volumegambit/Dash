@@ -61,6 +61,11 @@ enum ComposerKeyContract {
 
 struct ComposerView: View {
   @Environment(ChatFeature.self) private var feature
+  /// Speech is a property of the CONNECTED GATEWAY, not of a conversation:
+  /// `AppModel.gatewayCapabilities` is the one place that knows whether this
+  /// gateway advertises `speech-v1`, so the mic is gated from here rather
+  /// than from `ChatFeature`, which never sees a capability.
+  @Environment(AppModel.self) private var appModel
 
   /// Monotonic counter bumped by `ChatView` when ⌘L
   /// (`KeyboardCommand.focusComposer`) fires. A counter rather than a `Bool`
@@ -105,6 +110,13 @@ struct ComposerView: View {
   // deliberately dismissed it.
   @FocusState private var isDraftFocused: Bool
   @State private var hasAttemptedAutoFocus = false
+  #if DEBUG
+    /// One-shot, like `hasAttemptedAutoFocus`: `DASH_UI_TEST_DICTATION` seeds
+    /// the dictation state exactly once, on whichever pass first finds a
+    /// non-nil `feature.dictation` — the capability arrives asynchronously,
+    /// so that is often not the first.
+    @State private var hasSeededDictation = false
+  #endif
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -113,53 +125,80 @@ struct ComposerView: View {
       }
 
       HStack(alignment: .bottom, spacing: 8) {
-        photoPicker
-
-        TextField("Message", text: draftBinding, axis: .vertical)
-          .lineLimit(1...6)
-          .textFieldStyle(.plain)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
-          .frame(minHeight: 44)
-          .background(Color.secondary.opacity(DashTheme.Opacity.fillMuted), in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge))
-          .disabled(feature.draftEditingAllowed == false)
-          .focused($isDraftFocused)
-          .accessibilityIdentifier("chat.composer")
-          .keyboardShortcut("l", modifiers: .command)
-          // Return inserts a newline; ⌘Return sends (the send button already
-          // carries that shortcut). Previously `.onSubmit` fired on every
-          // Return, and SwiftUI's `onSubmit` has no modifier awareness — so
-          // with a hardware keyboard there was NO way to type a newline in
-          // the composer at all. `.submitLabel(.send)` goes with it, so the
-          // software keyboard's return key stops advertising a send it no
-          // longer performs.
-          .onKeyPress(keys: [.tab], phases: .down) { press in
-            // Through the contract, so the declaration is load-bearing rather
-            // than decorative: if the table changes, this branch changes with
-            // it and `ComposerKeyContractTests` checks both against the shared
-            // fixture.
-            let shift = press.modifiers.contains(.shift)
-            let action = ComposerKeyContract.action(
-              key: "Tab", shift: shift, command: press.modifiers.contains(.command))
-            guard action == .newline else { return .ignored }
-            guard feature.draftEditingAllowed else { return .ignored }
-            // Appends rather than splitting at the caret: SwiftUI's
-            // `TextField` does not expose a selection, and reaching one
-            // would mean replacing the whole input with a `UITextView`
-            // wrapper. Return already gives a caret-correct newline here,
-            // so this is the redundant convenience path.
-            //
-            // Through `updateDraft`, not `state.draft` directly — that is
-            // the path `draftBinding` uses, and the one that persists the
-            // per-conversation draft.
-            Task { await feature.updateDraft(feature.state.draft + "\n") }
-            return .handled
+        // While a dictation runs, the field, the attach menu and send are all
+        // replaced: the only actions that still make sense are the two that
+        // end the recording, and a draft typed over a running meter reads as
+        // two inputs competing for the same message.
+        if let dictation = feature.dictation, dictation.isBusy {
+          if dictation.isUploading {
+            transcribingIndicator
+          } else {
+            DictationBar(
+              dictation: dictation,
+              onCancel: { Task { await dictation.cancel() } },
+              onFinish: { Task { await dictation.finish() } }
+            )
+          }
+        } else {
+          if feature.dictation != nil {
+            dictationButton
           }
 
-        primaryAction
+          photoPicker
+
+          TextField("Message", text: draftBinding, axis: .vertical)
+            .lineLimit(1...6)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .background(Color.secondary.opacity(DashTheme.Opacity.fillMuted), in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge))
+            .disabled(feature.draftEditingAllowed == false)
+            .focused($isDraftFocused)
+            .accessibilityIdentifier("chat.composer")
+            .keyboardShortcut("l", modifiers: .command)
+            // Return inserts a newline; ⌘Return sends (the send button already
+            // carries that shortcut). Previously `.onSubmit` fired on every
+            // Return, and SwiftUI's `onSubmit` has no modifier awareness — so
+            // with a hardware keyboard there was NO way to type a newline in
+            // the composer at all. `.submitLabel(.send)` goes with it, so the
+            // software keyboard's return key stops advertising a send it no
+            // longer performs.
+            .onKeyPress(keys: [.tab], phases: .down) { press in
+              // Through the contract, so the declaration is load-bearing rather
+              // than decorative: if the table changes, this branch changes with
+              // it and `ComposerKeyContractTests` checks both against the shared
+              // fixture.
+              let shift = press.modifiers.contains(.shift)
+              let action = ComposerKeyContract.action(
+                key: "Tab", shift: shift, command: press.modifiers.contains(.command))
+              guard action == .newline else { return .ignored }
+              guard feature.draftEditingAllowed else { return .ignored }
+              // Appends rather than splitting at the caret: SwiftUI's
+              // `TextField` does not expose a selection, and reaching one
+              // would mean replacing the whole input with a `UITextView`
+              // wrapper. Return already gives a caret-correct newline here,
+              // so this is the redundant convenience path.
+              //
+              // Through `updateDraft`, not `state.draft` directly — that is
+              // the path `draftBinding` uses, and the one that persists the
+              // per-conversation draft.
+              Task { await feature.updateDraft(feature.state.draft + "\n") }
+              return .handled
+            }
+
+          primaryAction
+        }
       }
 
-      if let message = pickerError ?? feature.composerDisabledReason {
+      if let dictation = feature.dictation, let message = dictation.failureMessage {
+        DictationFailureRow(
+          message: message,
+          showsSettingsAction: dictation.showsSettingsAction,
+          onOpenSettings: openSettings,
+          onDismiss: { dictation.acknowledgeFailure() }
+        )
+      } else if let message = pickerError ?? feature.composerDisabledReason {
         Label(message, systemImage: pickerError == nil ? "info.circle" : "exclamationmark.circle")
           .font(.caption)
           .foregroundStyle(pickerError == nil ? Color.secondary : Color.red)
@@ -224,7 +263,12 @@ struct ComposerView: View {
       Task { await importFiles(result) }
     }
     .sensoryFeedback(.impact(weight: .light), trigger: actionFeedbackTick)
+    // Design §4: the transcript landing in the draft earns a `.success`, the
+    // one moment in dictation where something the user cannot see happened.
+    .sensoryFeedback(.success, trigger: feature.dictationInsertTick)
     .task { attemptAutoFocus() }
+    .task { updateDictationAvailability() }
+    .onChange(of: appModel.speechAvailable) { _, _ in updateDictationAvailability() }
     .onChange(of: feature.draftEditingAllowed) { _, allowed in
       guard allowed else { return }
       attemptAutoFocus()
@@ -294,6 +338,80 @@ struct ComposerView: View {
 
   private var remainingAttachmentSlots: Int {
     ImageAttachmentValidator.maximumCount - feature.state.attachments.count
+  }
+
+  /// Design §4: the mic sits left of the paperclip, and is disabled by the
+  /// same rule the field is — a turn in progress, a read-only conversation or
+  /// a blocked composer means there is nothing to dictate INTO.
+  private var dictationButton: some View {
+    Button {
+      actionFeedbackTick += 1
+      Task { await feature.dictation?.start() }
+    } label: {
+      Image(systemName: "mic")
+        .font(.title3)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
+    }
+    .disabled(feature.draftEditingAllowed == false)
+    .accessibilityLabel("Dictate a message")
+    .accessibilityHint("Records up to 60 seconds and adds what you say to your message")
+    .accessibilityIdentifier("chat.dictate")
+  }
+
+  /// The upload. No cancel: the clip is already recorded and the request is
+  /// seconds long — the honest thing is to say what is happening and let it
+  /// finish. Starting another recording cancels it.
+  private var transcribingIndicator: some View {
+    HStack(spacing: 8) {
+      ProgressView()
+      Text("Transcribing…")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .frame(minHeight: 44)
+    .frame(maxWidth: .infinity)
+    .background(
+      Color.secondary.opacity(DashTheme.Opacity.fillMuted),
+      in: RoundedRectangle(cornerRadius: DashTheme.Radius.xLarge)
+    )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Transcribing")
+    .accessibilityIdentifier("chat.dictation.uploading")
+  }
+
+  private func updateDictationAvailability() {
+    feature.syncDictation(available: appModel.speechAvailable)
+    #if DEBUG
+      seedDictationForUITesting()
+    #endif
+  }
+
+  #if DEBUG
+    /// `DASH_UI_TEST_DICTATION=recording|uploading|failed` drives the REAL
+    /// state machine through the UI-test fakes rather than writing a phase
+    /// directly, so a capture cannot show a state the app can't reach.
+    /// `uploading` hangs in the fake transcriber; `failed` throws from it.
+    private func seedDictationForUITesting() {
+      guard
+        hasSeededDictation == false,
+        let seed = UITestLaunchOptions.dictation,
+        let dictation = feature.dictation
+      else { return }
+      hasSeededDictation = true
+      Task {
+        await dictation.start()
+        guard seed != "recording" else { return }
+        await dictation.finish()
+      }
+    }
+  #endif
+
+  private func openSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+    UIApplication.shared.open(url)
   }
 
   /// Audit #19: photo library, camera (when the device has one), or the

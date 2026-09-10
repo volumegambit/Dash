@@ -5955,6 +5955,97 @@ struct ChatFeatureTests {
     #expect(first != third, "a different feature identity must compare unequal")
   }
 
+  // MARK: - Dictation (speech Phase A)
+
+  @Test("a dictated transcript is appended to the draft and persisted")
+  func dictationAppendsToTheDraft() async {
+    let persistence = FakeChatPersistence()
+    let feature = makeFeature(persistence: persistence)
+    await feature.updateDraft("Ask the agent")
+
+    await feature.insertDictation("  about the deploy  ")
+
+    // Appended with ONE separating space, and the transcript's own edges
+    // trimmed: dictation types for the user, it does not replace what they
+    // already wrote.
+    #expect(feature.state.draft == "Ask the agent about the deploy")
+    #expect(feature.dictationInsertTick == 1)
+    #expect(await persistence.savedDrafts.last?.text == "Ask the agent about the deploy")
+  }
+
+  @Test("a dictated transcript into an empty draft adds no leading space")
+  func dictationIntoAnEmptyDraft() async {
+    let feature = makeFeature()
+
+    await feature.insertDictation("ship it")
+
+    #expect(feature.state.draft == "ship it")
+  }
+
+  @Test("an empty transcript never touches the draft")
+  func emptyDictationIsIgnored() async {
+    let feature = makeFeature()
+    await feature.updateDraft("unchanged")
+
+    await feature.insertDictation("   ")
+
+    #expect(feature.state.draft == "unchanged")
+    #expect(feature.dictationInsertTick == 0)
+  }
+
+  @Test("dictation appears and disappears with the gateway's speech capability")
+  func dictationFollowsTheSpeechCapability() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "hello") })
+
+    // Absent until something says the gateway can transcribe — the composer
+    // must not offer a mic that 404s.
+    #expect(feature.dictation == nil)
+
+    feature.syncDictation(available: true)
+    let created = feature.dictation
+    #expect(created != nil)
+
+    feature.syncDictation(available: true)
+    #expect(feature.dictation === created, "a second sync must not rebuild the feature")
+
+    feature.syncDictation(available: false)
+    #expect(feature.dictation == nil)
+  }
+
+  @Test("a finished dictation lands in this conversation's draft")
+  func dictationInsertIsWiredToTheDraft() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "deploy the gateway") })
+    feature.syncDictation(available: true)
+
+    await feature.dictation?.start()
+    await feature.dictation?.finish()
+
+    #expect(feature.state.draft == "deploy the gateway")
+  }
+
+  @Test("a recording in flight survives the capability going away")
+  func dictationIsNotTornOutMidRecording() async {
+    let feature = makeFeature(makeDictation: { dictationFeature(transcript: "keep me") })
+    feature.syncDictation(available: true)
+    await feature.dictation?.start()
+
+    feature.syncDictation(available: false)
+
+    #expect(feature.dictation != nil, "a gateway losing speech must not eat the user's recording")
+  }
+
+  @MainActor
+  private func dictationFeature(transcript: String) -> DictationFeature {
+    DictationFeature(
+      recorder: FakeAudioRecorder(),
+      permission: FakeSpeechPermission(granted: true),
+      transcriber: FakeSpeechTranscriber(result: .success(transcript)),
+      clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+      session: FakeSpeechSessionControl(),
+      interruptions: { AsyncStream { _ in } }
+    )
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -5962,7 +6053,8 @@ struct ChatFeatureTests {
     chat: FakeChatFeatureTransport = FakeChatFeatureTransport(),
     announcer: FakeChatAccessibilityAnnouncer = FakeChatAccessibilityAnnouncer(),
     recoveryChanges: any ConversationRecoveryChangeSignaling = ConversationRecoveryChangeSignal(),
-    ids: [String] = ["turn-1", "local-1"]
+    ids: [String] = ["turn-1", "local-1"],
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil }
   ) -> ChatFeature {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
@@ -5977,7 +6069,8 @@ struct ChatFeatureTests {
         UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
       }),
       recoveryChanges: recoveryChanges,
-      makeID: { source.next() }
+      makeID: { source.next() },
+      makeDictation: makeDictation
     )
   }
 

@@ -1320,6 +1320,9 @@ struct AppModelTests {
     accountFeatureFactory: AccountFeatureFactory = .unavailable,
     verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
       MobileCapability
+    > = { _ in [] },
+    fetchCapabilities: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
     > = { _ in [] }
   ) -> AppDependencies {
     let clock = TestAppClock(now: Date(timeIntervalSince1970: 100))
@@ -1328,6 +1331,7 @@ struct AppModelTests {
       loadProfile: { profile },
       makeSyncEngine: { _ in engine },
       verifyProfile: verifyProfile,
+      fetchCapabilities: fetchCapabilities,
       accountFeatureFactory: accountFeatureFactory
     )
   }
@@ -1357,14 +1361,65 @@ struct AppModelTests {
     )
 
     await model.start()
-    // Activation itself never verifies: until a verify lands, the honest
-    // answer is "unknown", and an unknown capability is an absent one.
+    // Activation still does not verify, and this dependency answers with an
+    // empty set, so nothing arrives to change the "unknown means absent"
+    // starting point.
+    await model.waitForCapabilityProbe()
     #expect(model.gatewayCapabilities.isEmpty)
     #expect(model.speechAvailable == false)
 
     try await model.reconnect()
 
     #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(model.speechAvailable)
+  }
+
+  @Test("activation reads the gateway's capabilities without waiting for a verify")
+  func launchCapabilitiesArriveFromHealth() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        fetchCapabilities: { _ in Set(health.capabilities) }
+      )
+    )
+
+    await model.start()
+    // The probe is deliberately off activation's critical path, so `start()`
+    // returning is NOT the moment the answer lands.
+    await model.waitForCapabilityProbe()
+
+    // The mic in the composer depends on this: before it, `speech-v1` was
+    // unknowable until the user happened to trigger a reconnect, so a cold
+    // launch showed no mic on a gateway that has speech.
+    #expect(model.gatewayCapabilities == [.conversationSyncV1, .chatResumeV1, .speechV1])
+    #expect(model.speechAvailable)
+  }
+
+  @Test("a failed health call leaves the retained capabilities alone")
+  func failedCapabilityProbeChangesNothing() async throws {
+    let engine = FakeAppSyncEngine()
+    let profile = connectionProfile()
+    let health = try FixtureLoader.decode(HealthResponse.self, "health-capabilities.json")
+    let model = AppModel(
+      dependencies: dependencies(
+        profile: profile,
+        engine: engine,
+        verifyProfile: { _ in Set(health.capabilities) },
+        fetchCapabilities: { _ in throw GatewayError.gatewayOffline }
+      )
+    )
+
+    await model.start()
+    await model.waitForCapabilityProbe()
+    #expect(model.gatewayCapabilities.isEmpty)
+
+    // And a later verify still decides: a probe that could not ask must not
+    // leave the set permanently poisoned either way.
+    try await model.reconnect()
     #expect(model.speechAvailable)
   }
 

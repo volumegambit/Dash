@@ -822,6 +822,16 @@ final class ChatFeature {
   @ObservationIgnored private let validator: ImageAttachmentValidator
   @ObservationIgnored private let recoveryChanges: any ConversationRecoveryChangeSignaling
   @ObservationIgnored private let makeID: @Sendable () -> String
+  @ObservationIgnored private let makeDictation: @MainActor @Sendable () -> DictationFeature?
+  /// The composer's dictation feature, or nil when this gateway has no
+  /// `speech-v1` — see `syncDictation(available:)`. Observable so the mic
+  /// button appears the moment the capability lands, which on a cold launch
+  /// is after the conversation is already on screen.
+  private(set) var dictation: DictationFeature?
+  /// Bumped on every dictated insert, purely so `ComposerView` can fire the
+  /// `.success` haptic the design asks for. A counter rather than a flag: two
+  /// consecutive dictations must each earn their tick.
+  private(set) var dictationInsertTick = 0
   @ObservationIgnored private var eventTask: Task<Void, Never>?
   @ObservationIgnored private var eventTaskGeneration: UInt64 = 0
   @ObservationIgnored private var cacheLoadTask: Task<Void, Never>?
@@ -897,7 +907,8 @@ final class ChatFeature {
     validator: ImageAttachmentValidator = ImageAttachmentValidator(),
     recoveryChanges: any ConversationRecoveryChangeSignaling =
       ConversationRecoveryChangeSignal.shared,
-    makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
+    makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
+    makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil }
   ) {
     self.gatewayID = gatewayID
     self.persistence = persistence
@@ -908,6 +919,7 @@ final class ChatFeature {
     self.validator = validator
     self.recoveryChanges = recoveryChanges
     self.makeID = makeID
+    self.makeDictation = makeDictation
     state = ChatState(
       conversation: conversation,
       messages: [],
@@ -1114,6 +1126,53 @@ final class ChatFeature {
     guard rejectIfShutdown() == false, composerMutationAllowed else { return }
     state.draft = text
     await persistDraft()
+  }
+
+  /// Appends a dictated transcript to the draft (design §4: dictation never
+  /// sends, it only types for you) and persists it, so a crash between the
+  /// transcript landing and the user tapping send does not lose the words.
+  ///
+  /// Appends rather than replaces, and separates with a space unless the
+  /// draft already ends in whitespace: dictating twice, or dictating after
+  /// typing, has to read as one sentence rather than a run-on.
+  func insertDictation(_ text: String) async {
+    guard rejectIfShutdown() == false, composerMutationAllowed else { return }
+    let addition = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard addition.isEmpty == false else { return }
+    let existing = state.draft
+    if existing.isEmpty {
+      state.draft = addition
+    } else if existing.last?.isWhitespace == true {
+      state.draft = existing + addition
+    } else {
+      state.draft = existing + " " + addition
+    }
+    dictationInsertTick &+= 1
+    await persistDraft()
+  }
+
+  /// Creates or drops the dictation feature as the gateway's `speech-v1`
+  /// capability comes and goes (`AppModel.speechAvailable`, the one gate every
+  /// speech surface reads).
+  ///
+  /// Driven by `ComposerView` rather than by this feature, because the
+  /// capability belongs to the CONNECTION, not to a conversation: `AppModel`
+  /// learns it from `/health` and the composer is the only thing that needs
+  /// to know. A recording already in flight is never torn out from under the
+  /// user — a gateway that just lost its speech credential still gets to
+  /// finish uploading the clip it recorded.
+  func syncDictation(available: Bool) {
+    guard isShutdown == false else { return }
+    guard available else {
+      guard dictation?.isBusy != true else { return }
+      dictation = nil
+      return
+    }
+    guard dictation == nil, let feature = makeDictation() else { return }
+    feature.onInsert = { [weak self] text in
+      await self?.insertDictation(text)
+    }
+    dictation = feature
   }
 
   func addSelections(_ selections: [ImageSelection]) async {
@@ -2172,6 +2231,12 @@ final class ChatFeature {
     recoveryChangeGeneration &+= 1
     isStartingRecoveryChangeObservation = false
     recoveryChangeTask?.cancel()
+    // A recording outlives its composer otherwise: the recorder keeps running
+    // and the process-wide audio session stays active with nothing owning it.
+    if let retiringDictation = dictation {
+      dictation = nil
+      Task { await retiringDictation.cancel() }
+    }
   }
 
   func shutdown() async {

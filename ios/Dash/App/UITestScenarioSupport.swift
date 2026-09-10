@@ -103,6 +103,20 @@ extension AppDependenciesFactory {
         ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tool-gallery")
     }
 
+    /// Seeds the composer's dictation state: `recording`, `uploading` or
+    /// `failed`. Like `toolGallery`, this exists because the states behind it
+    /// are unreachable from `simctl` — dictation needs a tap, a microphone
+    /// and a gateway — so none of the three could be looked at on any screen.
+    ///
+    /// It drives the REAL `DictationFeature` through the UI-test fakes below
+    /// rather than writing a phase, so a capture cannot show a state the app
+    /// is unable to reach.
+    static var dictation: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_DICTATION"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-dictation")
+    }
+
     static var expandTools: Bool {
       let environment = ProcessInfo.processInfo.environment
       if let raw = environment["DASH_UI_TEST_EXPAND_TOOLS"] {
@@ -245,6 +259,20 @@ extension AppDependenciesFactory {
 
     var connection: GatewayConnectionState {
       self == .pairedOffline ? .offline : .online
+    }
+
+    /// What this scenario's fake gateway advertises.
+    ///
+    /// Only `.pairedOnline` carries `speech-v1`, which is what makes the
+    /// composer's mic testable in BOTH directions: every other scenario —
+    /// `.pairedOffline` in particular — stands in for a gateway that has no
+    /// speech provider, where `chat.dictate` must not exist at all.
+    var capabilities: Set<MobileCapability> {
+      var advertised: Set<MobileCapability> = [.conversationSyncV1, .chatResumeV1]
+      if self == .pairedOnline {
+        advertised.insert(.speechV1)
+      }
+      return advertised
     }
   }
 
@@ -1205,7 +1233,10 @@ extension AppDependenciesFactory {
         makeSyncEngine: { _ in
           UITestSyncEngine(snapshot: await store.syncSnapshot())
         },
-        verifyProfile: { _ in [.conversationSyncV1, .chatResumeV1] },
+        verifyProfile: { _ in scenario.capabilities },
+        // The same answer `/health` gives at launch, so a UI test sees the
+        // capability without having to trigger a reconnect first.
+        fetchCapabilities: { _ in scenario.capabilities },
         rememberProfile: { _ in },
         deleteProfileSecrets: { profile in
           await keychain.delete(for: profile.id)
@@ -1237,7 +1268,21 @@ extension AppDependenciesFactory {
             clock: clock,
             announcer: UITestAccessibilityAnnouncer(),
             recoveryChanges: recoveryChanges,
-            makeID: { source.next() }
+            makeID: { source.next() },
+            makeDictation: {
+              DictationFeature(
+                recorder: UITestAudioRecorder(),
+                permission: UITestSpeechPermission(),
+                transcriber: UITestSpeechTranscriber(seed: UITestLaunchOptions.dictation),
+                // Deliberately the SYSTEM clock, not `UITestClock` (which is
+                // frozen): the countdown has to actually count down in a
+                // capture, and a UI test never runs a recording near the 60 s
+                // cap.
+                clock: SystemAppClock(),
+                session: UITestSpeechSessionControl(),
+                interruptions: { AsyncStream { _ in } }
+              )
+            }
           )
         },
         pairingFeatureFactory: PairingFeatureFactory(
@@ -1267,6 +1312,85 @@ extension AppDependenciesFactory {
               clock: clock
             )
       )
+    }
+  }
+
+  /// A microphone that is always granted: a UI test cannot answer the system
+  /// permission alert, and the alert is not what these tests are about.
+  private struct UITestSpeechPermission: SpeechPermissionRequesting {
+    func requestMicrophone() async -> Bool { true }
+  }
+
+  /// No `AVAudioSession` in a UI test: the simulator has no input route, and
+  /// arming one would make the harness depend on the host Mac's audio.
+  private struct UITestSpeechSessionControl: SpeechSessionControlling {
+    func activateRecording() throws {}
+    func deactivate() {}
+  }
+
+  /// Produces a moving meter and a fixed clip. Reuses the real
+  /// `AudioLevelBroadcaster`, so the fresh-stream-per-recording contract is
+  /// the same one `AudioRecorderService` implements.
+  private actor UITestAudioRecorder: AudioRecording {
+    nonisolated let levels = AudioLevelBroadcaster()
+    nonisolated var level: AsyncStream<Float> { levels.stream }
+    private var meterTask: Task<Void, Never>?
+
+    func start(maxDuration: Duration) async throws {
+      meterTask?.cancel()
+      meterTask = Task { [levels] in
+        var step = 0
+        while Task.isCancelled == false {
+          do {
+            try await Task.sleep(for: .milliseconds(120))
+          } catch {
+            return
+          }
+          // A slow sweep between a murmur and a shout, so a capture catches
+          // the bar somewhere visible rather than at silence.
+          levels.yield(Float(0.05 + 0.2 * abs(sin(Double(step) / 4))))
+          step += 1
+        }
+      }
+    }
+
+    func stop() async throws -> Data {
+      endMetering()
+      return Data("ui-test-clip".utf8)
+    }
+
+    func cancel() async {
+      endMetering()
+    }
+
+    private func endMetering() {
+      meterTask?.cancel()
+      meterTask = nil
+      levels.finish()
+    }
+  }
+
+  /// Answers "hello world" — the string `DictationUITests` asserts lands in
+  /// the composer — unless the launch option asks for a state that needs the
+  /// upload to hang (`uploading`) or fail (`failed`).
+  private struct UITestSpeechTranscriber: SpeechTranscribing {
+    let seed: String?
+
+    func transcribe(_ request: TranscriptionRequestDTO) async throws -> TranscriptionResponseDTO {
+      switch seed {
+      case "uploading":
+        // Long enough to outlive any capture; cancelled with the app.
+        try await Task.sleep(for: .seconds(600))
+        throw CancellationError()
+      case "failed":
+        throw GatewayError.speech(
+          code: "unavailable",
+          message: "speech is not configured on this gateway",
+          retryable: false
+        )
+      default:
+        return TranscriptionResponseDTO(text: "hello world", durationSeconds: 1.5)
+      }
     }
   }
 

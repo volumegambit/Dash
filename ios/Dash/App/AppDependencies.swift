@@ -253,6 +253,17 @@ struct AppDependencies: Sendable {
   /// retains them (`gatewayCapabilities`) so an optional capability such as
   /// `speech-v1` is knowable outside this one call.
   let verifyProfile: @Sendable (ConnectionProfileSnapshot) async throws -> Set<MobileCapability>
+  /// The same question as `verifyProfile`'s answer, asked WITHOUT the
+  /// identity round trip: just `GET /mobile/v1/health`.
+  ///
+  /// Activation does not verify (verification is `reconnect()`'s job), so on a
+  /// cold launch nothing knew this gateway's capabilities until the user
+  /// happened to trigger a reconnect — and `speech-v1` gates a button in the
+  /// composer, which is on screen long before that. `AppModel` runs this once
+  /// per activation, off the critical path; a failure leaves the retained set
+  /// exactly as it was.
+  let fetchCapabilities:
+    @Sendable (ConnectionProfileSnapshot) async throws -> Set<MobileCapability>
   let rememberProfile: @MainActor @Sendable (ConnectionProfileSnapshot) -> Void
   let deleteProfileSecrets: @Sendable (ConnectionProfileSnapshot) async throws -> Void
   let clearProfileData: @Sendable (ConnectionProfileSnapshot) async throws -> Void
@@ -275,6 +286,9 @@ struct AppDependencies: Sendable {
       ConnectionProfileSnapshot
     ) async throws -> any AppSyncing,
     verifyProfile: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
+      MobileCapability
+    > = { _ in [] },
+    fetchCapabilities: @escaping @Sendable (ConnectionProfileSnapshot) async throws -> Set<
       MobileCapability
     > = { _ in [] },
     rememberProfile: @escaping @MainActor @Sendable (ConnectionProfileSnapshot) -> Void = { _ in },
@@ -304,6 +318,7 @@ struct AppDependencies: Sendable {
     self.loadProfile = loadProfile
     self.makeSyncEngine = makeSyncEngine
     self.verifyProfile = verifyProfile
+    self.fetchCapabilities = fetchCapabilities
     self.rememberProfile = rememberProfile
     self.deleteProfileSecrets = deleteProfileSecrets
     self.clearProfileData = clearProfileData
@@ -435,6 +450,24 @@ struct AppDependencies: Sendable {
         }
         return try await profileVerifier.verify(profile: profile, secrets: secrets)
       },
+      fetchCapabilities: { profile in
+        guard let secrets = try await keychain.load(for: profile.id) else {
+          throw AppDependencyError.missingSecrets(profileID: profile.id)
+        }
+        let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+        let api = makeAPI(makeCancellableTransport(endpoint, secrets))
+        do {
+          let health = try await api.health()
+          // Its own `URLSession`, like `GatewayProfileVerifier`'s: shut down
+          // on both paths or the session outlives the one call it was made
+          // for.
+          await api.shutdown()
+          return Set(health.capabilities)
+        } catch {
+          await api.shutdown()
+          throw error
+        }
+      },
       rememberProfile: { profile in
         UserDefaults.standard.set(profile.gatewayID, forKey: activeGatewayKey)
       },
@@ -514,13 +547,26 @@ struct AppDependencies: Sendable {
             return makeAPI(makeCancellableTransport(currentEndpoint, currentSecrets))
           }
         )
+        // Built unconditionally; whether the mic is OFFERED is
+        // `AppModel.speechAvailable`'s call, read by `ComposerView` (this
+        // closure cannot see the app model, and the capability can arrive
+        // after the conversation is already open).
+        let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
         return ChatFeature(
           gatewayID: profile.gatewayID,
           conversation: conversation,
           persistence: persistence,
           synchronizer: synchronizer,
           transport: LiveChatFeatureTransport(makeConnection: { makeChat(endpoint) }),
-          clock: clock
+          clock: clock,
+          makeDictation: {
+            DictationFeature(
+              recorder: AudioRecorderService(clock: clock),
+              permission: SystemSpeechPermission(),
+              transcriber: speechAPI,
+              clock: clock
+            )
+          }
         )
       },
       pairingFeatureFactory: PairingFeatureFactory(
