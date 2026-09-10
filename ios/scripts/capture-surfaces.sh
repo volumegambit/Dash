@@ -83,6 +83,9 @@ SURFACES=(
   "conversations-offline|paired-offline|DASH_UI_TEST_TAB=conversations"
   "agents|paired-online|DASH_UI_TEST_TAB=agents"
   "settings|paired-online|DASH_UI_TEST_TAB=settings"
+  # Settings > Speech (speech Phase A). A pushed detail view, so it needs
+  # the route option: `settings-speech` lands on Settings and pushes it.
+  "settings-speech|paired-online|DASH_UI_TEST_TAB=settings-speech"
   "chat|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan"
   "signin|signed-out|"
   "gateway-picker|account-picker|"

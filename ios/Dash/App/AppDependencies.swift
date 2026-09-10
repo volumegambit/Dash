@@ -276,6 +276,14 @@ struct AppDependencies: Sendable {
       ConnectionProfileSnapshot,
       ConversationSummaryDTO
     ) async -> ChatFeature?
+  /// Settings › Speech, built on demand — `AppModel` calls this the first
+  /// time the screen is opened and retires it with the profile. Like
+  /// `makeDictation`/`makeReadAloud`, everything it needs is built INSIDE the
+  /// closure: most gateways never open this screen, and a `GatewayAPI` (with
+  /// its own `URLSession`) allocated per activation for a screen nobody
+  /// visits is a leak with no owner.
+  let makeSpeechSettingsFeature:
+    @MainActor @Sendable (ConnectionProfileSnapshot) async -> SpeechSettingsFeature?
   let pairingFeatureFactory: PairingFeatureFactory
   let accountFeatureFactory: AccountFeatureFactory
 
@@ -311,6 +319,9 @@ struct AppDependencies: Sendable {
       ConnectionProfileSnapshot,
       ConversationSummaryDTO
     ) async -> ChatFeature? = { _, _ in nil },
+    makeSpeechSettingsFeature: @escaping @MainActor @Sendable (
+      ConnectionProfileSnapshot
+    ) async -> SpeechSettingsFeature? = { _ in nil },
     pairingFeatureFactory: PairingFeatureFactory = .unavailable,
     accountFeatureFactory: AccountFeatureFactory = .unavailable
   ) {
@@ -326,6 +337,7 @@ struct AppDependencies: Sendable {
     self.makeConversationListFeature = makeConversationListFeature
     self.makeAgentsFeature = makeAgentsFeature
     self.makeChatFeature = makeChatFeature
+    self.makeSpeechSettingsFeature = makeSpeechSettingsFeature
     self.pairingFeatureFactory = pairingFeatureFactory
     self.accountFeatureFactory = accountFeatureFactory
   }
@@ -587,6 +599,21 @@ struct AppDependencies: Sendable {
               onRetire: { await speechAPI.shutdown() }
             )
           }
+        )
+      },
+      // ONE `GatewayAPI` for the whole screen, unlike A9's deliberate pair:
+      // dictation and read aloud are created and dropped independently, but
+      // the config reads, the patches and the voice preview all live and die
+      // with this one screen, so a single session has exactly one owner.
+      makeSpeechSettingsFeature: { profile in
+        guard let secrets = try? await keychain.load(for: profile.id) else { return nil }
+        let endpoint = ConnectionEndpoint(profile: profile.profile, secrets: secrets)
+        let speechAPI = makeAPI(makeCancellableTransport(endpoint, secrets))
+        return SpeechSettingsFeature(
+          api: speechAPI,
+          synthesizer: speechAPI,
+          player: AudioPlaybackService(),
+          onRetire: { await speechAPI.shutdown() }
         )
       },
       pairingFeatureFactory: PairingFeatureFactory(

@@ -30,6 +30,11 @@ final class AppModel {
   var conversationListFeature: ConversationListFeature?
   var agentsFeature: AgentsFeature?
   var settingsFeature: SettingsFeature?
+  /// Settings › Speech, built the first time the screen is opened
+  /// (`prepareSpeechSettings()`) rather than with the profile: it owns a
+  /// `GatewayAPI` of its own, and most sessions never open it. Retired with
+  /// the profile, like every other feature here.
+  private(set) var speechSettingsFeature: SpeechSettingsFeature?
   private(set) var chatHostGeneration: UInt64 = 0
   /// What the CURRENTLY connected gateway last said it can do.
   ///
@@ -119,6 +124,7 @@ final class AppModel {
     let conversationFeature: ConversationListFeature?
     let agentsFeature: AgentsFeature?
     let settingsFeature: SettingsFeature?
+    let speechSettingsFeature: SpeechSettingsFeature?
     let chatFeatures: [ChatFeature]
     let chatRetirementTasks: [Task<Void, Never>]
   }
@@ -191,6 +197,9 @@ final class AppModel {
       {
         await retiredFeature.shutdown()
       }
+      if let retiredFeature = retired.speechSettingsFeature {
+        await retiredFeature.shutdown()
+      }
       if let retiredFeature = retired.conversationFeature,
         retiredFeature !== conversationListFeature
       {
@@ -244,6 +253,9 @@ final class AppModel {
       if let retiredFeature = retired.settingsFeature,
         retiredFeature !== settingsFeature
       {
+        await retiredFeature.shutdown()
+      }
+      if let retiredFeature = retired.speechSettingsFeature {
         await retiredFeature.shutdown()
       }
       if let retiredFeature = retired.conversationFeature,
@@ -505,6 +517,31 @@ final class AppModel {
     dependencies.accountFeatureFactory.makeApproveDeviceViewModel()
   }
 
+  /// Builds Settings › Speech the first time it is opened, and keeps it for
+  /// the life of the profile — unlike `makeApproveDeviceViewModel` above,
+  /// which is per-tap, this owns a `GatewayAPI` that has to be shut down, so
+  /// exactly one instance may exist at a time.
+  ///
+  /// Idempotent, and re-entrant-safe: the factory suspends (it reads the
+  /// Keychain), so a second call can arrive before the first returns, and a
+  /// profile switch can land in the same window. Both are resolved by
+  /// retiring the loser rather than leaking it.
+  func prepareSpeechSettings() async {
+    guard speechSettingsFeature == nil, let profile = selectedProfile else { return }
+    let epoch = activeEpoch
+    let feature = await dependencies.makeSpeechSettingsFeature(profile)
+    guard let feature else { return }
+    guard
+      activeEpoch == epoch,
+      selectedProfile == profile,
+      speechSettingsFeature == nil
+    else {
+      await feature.shutdown()
+      return
+    }
+    speechSettingsFeature = feature
+  }
+
   private func connectToAccountGateway(_ gateway: GatewayInfoDTO) async throws {
     let feature = dependencies.accountFeatureFactory.makeConnect(
       onGrantMinted: { [weak self] gatewayId, pairingId in
@@ -759,6 +796,9 @@ final class AppModel {
     if let feature = retired.settingsFeature {
       await feature.shutdown()
     }
+    if let feature = retired.speechSettingsFeature {
+      await feature.shutdown()
+    }
     if let feature = retired.conversationFeature {
       await feature.shutdown()
     }
@@ -938,12 +978,18 @@ final class AppModel {
       conversationFeature: conversationListFeature,
       agentsFeature: agentsFeature,
       settingsFeature: settingsFeature,
+      speechSettingsFeature: speechSettingsFeature,
       chatFeatures: Array(chatFeatures.values),
       chatRetirementTasks: chatRetirementTasks.values.map(\.task)
     )
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
     retired.settingsFeature?.prepareForShutdown()
+    // Unconditionally dropped, in BOTH publish and detach: its `GatewayAPI`
+    // is about to be shut down, and a feature nobody may call must not stay
+    // reachable from the view. The next visit to Settings › Speech builds a
+    // fresh one against the profile that is actually active.
+    speechSettingsFeature = nil
     for feature in retired.chatFeatures {
       feature.prepareForShutdown()
     }
@@ -1066,12 +1112,18 @@ final class AppModel {
       conversationFeature: conversationListFeature,
       agentsFeature: agentsFeature,
       settingsFeature: settingsFeature,
+      speechSettingsFeature: speechSettingsFeature,
       chatFeatures: Array(chatFeatures.values),
       chatRetirementTasks: chatRetirementTasks.values.map(\.task)
     )
     retired.conversationFeature?.prepareForShutdown()
     retired.agentsFeature?.prepareForShutdown()
     retired.settingsFeature?.prepareForShutdown()
+    // Unconditionally dropped, in BOTH publish and detach: its `GatewayAPI`
+    // is about to be shut down, and a feature nobody may call must not stay
+    // reachable from the view. The next visit to Settings › Speech builds a
+    // fresh one against the profile that is actually active.
+    speechSettingsFeature = nil
     for feature in retired.chatFeatures {
       feature.prepareForShutdown()
     }

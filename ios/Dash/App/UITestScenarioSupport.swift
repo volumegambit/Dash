@@ -79,12 +79,28 @@ extension AppDependenciesFactory {
     }
 
     static var initialTab: AppTab? {
-      let environment = ProcessInfo.processInfo.environment
-      guard
-        let raw = environment["DASH_UI_TEST_TAB"]
-          ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
-      else { return nil }
+      guard let raw = rawInitialTab else { return nil }
+      // `settings-speech` is a ROUTE, not a tab: it lands on Settings and
+      // pushes Settings > Speech. Kept in this one option rather than a
+      // second variable because a capture asks for a surface, and Speech is
+      // one of Settings' surfaces.
+      if raw == speechSettingsTab { return .settings }
       return AppTab(rawValue: raw)
+    }
+
+    /// Whether the launch asked for Settings > Speech, the one screen in
+    /// Settings that is behind a tap and so unreachable from `simctl`.
+    /// `SettingsView` reads this and pushes the screen itself, since a
+    /// pushed detail view is view state rather than `AppModel` state.
+    static var opensSpeechSettings: Bool {
+      rawInitialTab == speechSettingsTab
+    }
+
+    private static let speechSettingsTab = "settings-speech"
+
+    private static var rawInitialTab: String? {
+      ProcessInfo.processInfo.environment["DASH_UI_TEST_TAB"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-tab")
     }
 
     /// Start every tool card expanded, so a capture can show the tool BODIES.
@@ -1285,6 +1301,20 @@ extension AppDependenciesFactory {
             }
           )
         },
+        // Settings > Speech, answered from the contract fixtures
+        // (`contracts/mobile/v1/fixtures/speech-{config,models}.json`) so the
+        // screen has a provider, two model lists and a voice list without a
+        // gateway. Patches are merged the way `mergeSpeechConfig` merges
+        // them, so a UI test that changes a picker sees what the gateway
+        // would have answered.
+        makeSpeechSettingsFeature: { _ in
+          SpeechSettingsFeature(
+            api: UITestSpeechConfigurator(),
+            synthesizer: UITestSpeechSynthesizer(),
+            player: UITestAudioPlayer(),
+            session: UITestSpeechSessionControl()
+          )
+        },
         pairingFeatureFactory: PairingFeatureFactory(
           verifier: UITestPairingVerifier(),
           installer: UITestPairingInstaller(keychain: keychain)
@@ -1392,6 +1422,112 @@ extension AppDependenciesFactory {
       default:
         return TranscriptionResponseDTO(text: "hello world", durationSeconds: 1.5)
       }
+    }
+  }
+
+  /// The gateway's speech-config half. Starts from the bundled fixture and
+  /// merges patches per section, exactly as `mergeSpeechConfig` does — a fake
+  /// that echoed the request back would let a broken one-key patch pass.
+  private actor UITestSpeechConfigurator: SpeechConfiguring {
+    private var config = SpeechConfigDTO(
+      stt: SpeechSttConfigDTO(
+        provider: "openrouter",
+        model: "openai/whisper-large-v3",
+        language: "en"
+      ),
+      tts: SpeechTtsConfigDTO(
+        provider: "openrouter",
+        model: "openai/gpt-4o-mini-tts-2025-12-15",
+        voice: "alloy",
+        speed: 1
+      ),
+      realtime: SpeechRealtimeConfigDTO(provider: nil)
+    )
+
+    private let providers: [SpeechProviderStatusDTO] = [
+      SpeechProviderStatusDTO(
+        id: "openrouter",
+        capabilities: SpeechCapabilitiesDTO(transcription: true, speech: true, realtime: false),
+        available: true
+      ),
+      SpeechProviderStatusDTO(
+        id: "realtime",
+        capabilities: SpeechCapabilitiesDTO(transcription: false, speech: false, realtime: true),
+        available: false,
+        reason: .noProviderOffersRealtime
+      ),
+    ]
+
+    func speechConfig() async throws -> SpeechConfigResponseDTO {
+      SpeechConfigResponseDTO(config: config, providers: providers)
+    }
+
+    func patchSpeechConfig(_ patch: SpeechConfigPatchDTO) async throws -> SpeechConfigResponseDTO {
+      config = SpeechConfigDTO(
+        stt: SpeechSttConfigDTO(
+          provider: patch.stt?.provider ?? config.stt.provider,
+          model: patch.stt?.model ?? config.stt.model,
+          language: patch.stt?.language ?? config.stt.language
+        ),
+        tts: SpeechTtsConfigDTO(
+          provider: patch.tts?.provider ?? config.tts.provider,
+          model: patch.tts?.model ?? config.tts.model,
+          voice: patch.tts?.voice ?? config.tts.voice,
+          speed: patch.tts?.speed ?? config.tts.speed
+        ),
+        realtime: patch.realtime ?? config.realtime
+      )
+      return SpeechConfigResponseDTO(config: config, providers: providers)
+    }
+
+    func speechModels(kind: SpeechModelKind) async throws -> [SpeechModelDTO] {
+      switch kind {
+      case .transcription:
+        return [
+          SpeechModelDTO(
+            id: "openai/whisper-large-v3",
+            name: "Whisper Large v3",
+            kind: .transcription,
+            voices: nil
+          )
+        ]
+      case .speech:
+        return [
+          SpeechModelDTO(
+            id: "openai/gpt-4o-mini-tts-2025-12-15",
+            name: "GPT-4o mini TTS",
+            kind: .speech,
+            voices: ["alloy", "nova"]
+          )
+        ]
+      }
+    }
+  }
+
+  /// Hands back a few bytes so "Preview voice" reaches the player. The bytes
+  /// are never decoded: `UITestAudioPlayer` stands in for playback.
+  private struct UITestSpeechSynthesizer: SpeechSynthesizing {
+    func synthesize(text: String) async throws -> Data {
+      Data([0x49, 0x44, 0x33])
+    }
+  }
+
+  /// A player with no audio route — the simulator's route is the host Mac's.
+  /// `playMP3` takes about as long as a short sample would, so the preview
+  /// button's progress state is visible in a capture.
+  private actor UITestAudioPlayer: AudioPlaying {
+    private var playing = false
+
+    var isPlaying: Bool { playing }
+
+    func playMP3(_ data: Data) async throws {
+      playing = true
+      defer { playing = false }
+      try? await Task.sleep(for: .seconds(2))
+    }
+
+    func stop() async {
+      playing = false
     }
   }
 
