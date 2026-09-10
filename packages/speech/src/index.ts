@@ -21,3 +21,10 @@ export type { Pcm16Format } from './pcm-formats.js';
 export { wavFromPcm16 } from './wav.js';
 export { createOpenRouterSpeechProvider } from './providers/openrouter.js';
 export type { OpenRouterSpeechProviderOptions } from './providers/openrouter.js';
+export { createSpeechService } from './service.js';
+export type {
+  SpeechProviderReason,
+  SpeechProviderStatus,
+  SpeechService,
+  SpeechServiceOptions,
+} from './service.js';
