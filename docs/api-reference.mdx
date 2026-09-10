@@ -345,6 +345,68 @@ Native clients use `GET /mobile/v1/models`. The model list is fetched from provi
 cached. Adding or changing a credential refreshes it on the next request. See
 [AI Providers](/ai-providers).
 
+## Speech
+
+Dictation and read-aloud support. Mounted on both the unprefixed administrative surface and
+`/mobile/v1`; native clients use the `/mobile/v1` paths.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/speech/config` | Current speech configuration plus per-provider availability |
+| `PATCH` | `/speech/config` | Merge a partial configuration and return the merged result |
+| `GET` | `/speech/models?kind=transcription\|speech` | Models the configured provider offers for one kind |
+| `POST` | `/speech/transcriptions` | Transcribe one recorded clip |
+| `POST` | `/speech/speech` | Synthesize speech, streamed as `audio/mpeg` |
+
+`GET /health` advertises the `speech-v1` capability only while a speech provider can actually
+transcribe and speak; a gateway without a configured provider omits it, and older clients must
+tolerate capability strings they don't recognize.
+
+`PATCH /speech/config` is a shallow per-section merge: an omitted key keeps its current value, and
+an unknown key anywhere in the body is a `400` rather than a silent drop. `stt.language` is the one
+field where the distinction between omitted and `null` matters — omitting it leaves the language
+alone, while sending `null` clears it back to the provider's own auto-detection:
+
+```bash
+curl -i -X PATCH "$MOBILE_URL/mobile/v1/speech/config" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"stt": {"language": null}}'
+```
+
+`POST /speech/transcriptions` takes base64 audio inline rather than multipart, so every client
+sends a plain JSON body:
+
+```bash
+curl -i -X POST "$MOBILE_URL/mobile/v1/speech/transcriptions" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"audio": "<base64>", "format": "m4a"}'
+```
+
+The decoded audio must be at most 8 MiB (`413 too_large`); a clip is expected to be at most 60
+seconds. The gateway also fast-rejects on a `Content-Length` above 12 MB before reading the body at
+all, so an oversized upload is refused without being buffered.
+
+`POST /speech/speech` is the only operation in this namespace whose success body isn't JSON — it
+streams MPEG audio. `text` is capped at 4,000 characters (`413 too_long`):
+
+```bash
+curl -i -X POST "$MOBILE_URL/mobile/v1/speech/speech" \
+  -H "Authorization: Bearer $MOBILE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello from Dash."}' \
+  --output reply.mp3
+```
+
+An error raised before the first audio chunk is still a JSON `MobileApiError`, so a client must
+accept both `audio/mpeg` and `application/json` on this route.
+
+`/speech/*` reuses the `MobileApiError` envelope but passes the provider-level error code through
+untranslated: `unauthorized` (the provider rejected the API key), `unavailable` (no provider is
+configured — retryable), `too_large` / `too_long` (payload over a limit), `provider` (the provider
+returned an error), `network` (the gateway couldn't reach it), and `invalid` (a malformed request).
+
 ## Events
 
 The unprefixed `GET /events` and replay routes remain available for Mission Control. Native clients

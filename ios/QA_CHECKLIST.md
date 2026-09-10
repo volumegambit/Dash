@@ -88,6 +88,34 @@ less precisely.
 - [ ] Floating (undocked/minimised) keyboard -> the composer stays visible and the send button
       stays reachable; the transcript is not left scrolled behind the keyboard
 
+## Speech — dictation and read aloud
+
+- [ ] Tap the mic button with microphone permission not yet decided -> iOS presents its permission
+      prompt; recording starts once you allow it
+- [ ] Deny microphone access (or with access previously denied) -> Dash shows "Microphone access
+      is off. Turn it on in Settings." with a **Settings** button that opens the app's iOS Settings
+      page
+- [ ] Start a recording and let it run without tapping anything -> it auto-finishes at 60 seconds
+      and the transcript is inserted, exactly as if the checkmark had been tapped
+- [ ] Record dictation over AirPods or another Bluetooth input -> the recording uses that input and
+      transcribes correctly
+- [ ] Receive a phone call (or another audio interruption) while recording -> the recording stops
+      and Dash shows "Recording was interrupted."
+- [ ] Choose **Read aloud** on an assistant message -> audio plays and the context menu item
+      becomes **Stop reading**; tapping it stops playback
+- [ ] Start **Read aloud** on a message, then start it on a second message before the first
+      finishes -> the first stops immediately and only the second plays
+- [ ] Open **Settings → Speech** on a gateway with a speech provider configured -> the screen loads
+      the speech-to-text model, text-to-speech model, voice, and language without error
+- [ ] Change the speech-to-text model, text-to-speech model, or voice, then force-quit and relaunch
+      the app -> the change persisted on the gateway and the screen reflects it on reload
+- [ ] Tap **Preview voice** -> the configured voice speaks the sample sentence
+- [ ] Set **Language** to **Auto** -> the change saves, and the gateway's stored configuration no
+      longer carries a language, so a subsequent dictation is transcribed with the provider's own
+      auto-detection
+- [ ] Open **Settings** on a gateway without the `speech-v1` capability -> the **Speech** row is
+      hidden and the section footer reads "Update your gateway to use speech."
+
 ## Evidence notes
 
 For each checked item, record the device, OS, build commit, date, tester, and a screenshot or

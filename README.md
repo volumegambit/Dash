@@ -110,6 +110,7 @@ For the full development guide — coding conventions, testing strategy, git wor
 | `packages/management` | HTTP management API client |
 | `packages/mc` | Mission Control core — gateway supervisor, keychain store, state |
 | `packages/logging` | Structured logging primitives |
+| `packages/speech` | Speech config, validation, and provider abstraction for dictation and read aloud (OpenRouter today) |
 
 ### Apps
 

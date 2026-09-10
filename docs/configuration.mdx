@@ -203,6 +203,27 @@ git, and systemd user services available.
 
 Provider API keys and messaging tokens are encrypted at rest. The gateway keeps them in `~/.dash/gateway/credentials.enc` (AES-256-GCM); gateway access tokens live in your OS keychain. See [Secrets](/secrets) for the full picture of how credentials are stored and delivered to agents.
 
+## Speech
+
+Speech-to-text (dictation) and text-to-speech (read aloud) configuration is persisted at
+`<dataDir>/speech.json`. Unset fields fall back to the defaults: OpenRouter's
+`openai/whisper-large-v3` for transcription, and OpenRouter's `openai/gpt-4o-mini-tts-2025-12-15`
+with the `alloy` voice for speech.
+
+Speech doesn't introduce a new credential type — it reads the same `openrouter` provider API key
+your LLM configuration already stores. Add or update that credential and speech becomes available
+without any extra setup.
+
+The configuration always reports a `realtime` slot for live back-and-forth conversation, alongside
+the transcription and speech providers. Today it's always unavailable — no configured provider
+offers realtime speech yet — but its presence in the config and API responses is intentional,
+reserved for a future release.
+
+<Note>
+  A gateway upgrade that adds speech and an app upgrade that expects it need to be deployed
+  together. An older gateway rejects a client's request to set dictation language to "Auto".
+</Note>
+
 ## Plugins
 
 Plugins let you drop extra skills into any Dash agent without touching the config file. The gateway discovers plugins from the `plugins/` directory inside the **gateway's data directory** — that is, `~/.dash/gateway/plugins/`. Throughout this section, `<dataDir>` is shorthand for that gateway data directory (`~/.dash/gateway`), not Mission Control's `~/.dash/desktop`.
