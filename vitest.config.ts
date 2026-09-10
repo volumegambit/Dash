@@ -14,6 +14,7 @@ export default defineConfig({
       // @dash/agent up to the main checkout's built dist, so gateway tests run
       // against the main branch's agent code rather than the branch's own.
       '@dash/agent': resolve(__dirname, 'packages/agent/src/index.ts'),
+      '@dash/speech': resolve(__dirname, 'packages/speech/src/index.ts'),
       '@dash/management': resolve(__dirname, 'packages/management/src/index.ts'),
       '@dash/projects': resolve(__dirname, 'packages/projects/src/index.ts'),
       '@dash/plugin-sdk': resolve(__dirname, 'packages/plugin-sdk/src/index.ts'),

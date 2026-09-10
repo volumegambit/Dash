@@ -1,0 +1,18 @@
+export type {
+  AudioFormat,
+  SpeechCapabilities,
+  SpeechModel,
+  SpeechModelKind,
+  SpeechProvider,
+  SynthesizeOptions,
+  Transcription,
+  TranscribeOptions,
+} from './types.js';
+export { SpeechError, httpStatusFor } from './errors.js';
+export type { SpeechErrorCode } from './errors.js';
+export {
+  DEFAULT_SPEECH_CONFIG,
+  mergeSpeechConfig,
+  validateSpeechConfigPatch,
+} from './config.js';
+export type { SpeechConfig, SpeechConfigPatch, ValidationResult } from './config.js';
