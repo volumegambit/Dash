@@ -10,7 +10,18 @@ const DEFAULT_CALIBRATION_MS = 500;
 const PRE_ROLL_MS = 300;
 const NOISE_FLOOR_INIT = 1e-4;
 const NOISE_FLOOR_MIN = 1e-4;
-const NOISE_FLOOR_ALPHA = 0.05;
+/** EMA alpha at a 20ms frame; see `floorAlphaFor` for the time-based scaling. */
+const NOISE_FLOOR_ALPHA_PER_20MS = 0.05;
+
+/**
+ * Per-frame EMA alpha scaled so the *time constant* is identical regardless
+ * of how the caller chunks its frames — a fixed alpha applied once per call
+ * would make the floor adapt slower with larger frames (fewer calls per
+ * second of audio) and faster with smaller ones, for the same elapsed time.
+ */
+function floorAlphaFor(frameMs: number): number {
+  return 1 - (1 - NOISE_FLOOR_ALPHA_PER_20MS) ** (frameMs / 20);
+}
 
 export interface VadOptions {
   /** PCM16 sample rate in Hz. Default 16000. */
@@ -67,10 +78,23 @@ function rmsOf(frame: Uint8Array): number {
  * PCM16 audio. `push()` frames may be any length — the client typically
  * sends ~20-100ms chunks — and all durations are accumulated from byte
  * counts, never frame counts, so callers don't need to align to any grid.
+ * A zero-length frame returns `[]` (not even a `level` event). An odd-length
+ * frame contributes `floor(n/2)` samples to that frame's `level.rms`, and
+ * its trailing unpaired byte is dropped before storage — a stray byte kept
+ * mid-stream would shift the alignment of every sample concatenated after
+ * it in the eventual utterance `pcm`. A 1-byte frame trims to zero: its
+ * `level` is still emitted (the original frame wasn't zero-length), but it
+ * is otherwise ignored — in particular it does not cancel an in-progress
+ * candidate run the way a genuine below-threshold frame would.
  *
  * Speech is confirmed once RMS stays above `threshold * noiseFloor` for
- * `startMs`; the noise floor is an exponential moving average (alpha 0.05)
- * of RMS over frames classified as non-speech, floored at 1e-4. A rolling
+ * `startMs`; the noise floor is an exponential moving average of RMS over
+ * frames classified as non-speech, floored at 1e-4. The alpha is time-based
+ * (scaled from a 0.05-per-20ms base by `frameMs / 20`), not a flat
+ * per-`push()` constant, so the floor's time constant — how many
+ * milliseconds of audio it takes to adapt — is identical whether the
+ * caller sends 20ms or 100ms frames; a flat per-call alpha would make the
+ * floor adapt faster for callers who happen to chunk smaller. A rolling
  * pre-roll of up to 300ms of audio observed while not speaking is kept and
  * prepended to the utterance, so the confirmation delay doesn't clip the
  * onset. Speech ends once RMS stays at or below threshold for `endMs`; the
@@ -82,25 +106,38 @@ function rmsOf(frame: Uint8Array): number {
  * every `reset()`) is a calibration window: frames only update the running
  * mean RMS and emit `level` events — no detection runs and no pre-roll is
  * collected — and once the window elapses the floor is seeded from that
- * mean (still floored at 1e-4) before the normal EMA takes over. This
- * avoids classifying a real microphone's resting noise as speech from the
- * first frame, which the plain cold 1e-4 floor would do on most hardware.
+ * mean (still floored at 1e-4) before the normal EMA takes over. A frame
+ * that straddles the end of the window is absorbed whole into calibration
+ * (calibration is never split mid-frame); the window simply ends on
+ * whichever frame's cumulative duration first reaches `calibrationMs`, so
+ * the true calibration window is `calibrationMs` rounded up to the nearest
+ * frame boundary the caller happens to use. This avoids classifying a real
+ * microphone's resting noise as speech from the first frame, which the
+ * plain cold 1e-4 floor would do on most hardware.
+ *
  * Self-healing complements this: whenever an utterance ends with
  * `reason: 'max'` — a strong signal that the floor is currently too low for
  * the environment (something has read as continuous "speech" for a full
  * minute) — a re-seed from that utterance's own RMS is staged rather than
- * applied immediately, since the frames right after almost always belong to
- * the same still-ongoing utterance, which must not be judged against a
- * floor just raised to match its own energy. The stage is applied at
- * whichever comes first: the next genuine return to idle (a `reason:
- * 'silence'` end), which is the common case for real speech that simply
- * continues past a minute; or a *second consecutive* `'max'` with no
- * silence in between, which means the environment never settled and
- * waiting for silence would wait forever — that case applies the seed
- * immediately, so the still-elevated-energy signal reads as non-speech on
- * the next frame and the stuck utterance ends (empty, dropped silently)
- * within one more `endMs` window. Either way, a stuck-classifying-as-speech
- * mic recovers on its own, in at most two `maxUtteranceMs` windows.
+ * applied immediately. This deferral is a deliberate invariant, not a
+ * workaround: applying it immediately would judge the very next frames —
+ * almost always this same utterance's own continuation — against a floor
+ * just raised to match their own energy, so a genuine multi-minute
+ * monologue would grow progressively deaf to itself, chopping into shorter
+ * and shorter false utterances every time it crossed `maxUtteranceMs`. The
+ * stage is applied at whichever comes first: the next genuine return to
+ * idle (a `reason: 'silence'` end), which is what happens for real speech
+ * that simply continues past a minute and then actually pauses; or a
+ * *second consecutive* `'max'` with no silence in between, which means the
+ * environment never settled and waiting for silence would wait forever —
+ * that case applies the seed immediately, so the still-elevated-energy
+ * signal reads as non-speech on the next frame and the stuck utterance ends
+ * (empty, dropped silently) within one more `endMs` window. Either way, a
+ * stuck-classifying-as-speech mic recovers on its own, in at most two
+ * `maxUtteranceMs` windows — and because the re-seed only raises the floor
+ * (adaptation resumes normally from there), a few seconds of genuine
+ * silence afterward decays it back down and detection of real speech
+ * resumes.
  */
 export class VoiceActivityDetector {
   private readonly bytesPerMs: number;
@@ -113,10 +150,11 @@ export class VoiceActivityDetector {
 
   private floor = NOISE_FLOOR_INIT;
   private _speaking = false;
-  // Set by a 'max' finalize, applied only once detection genuinely returns
-  // to idle (see the class doc comment) — applying it immediately would
-  // poison the still-ongoing continuation utterance's own above/below
-  // classification against its own energy.
+  // Set by a 'max' finalize. Applied at the next genuine return to idle, or
+  // immediately on a second consecutive 'max' with no idle in between,
+  // whichever comes first (see the class doc comment) — applying it right
+  // at the first 'max' would poison the still-ongoing continuation
+  // utterance's own above/below classification against its own energy.
   private pendingFloorSeed: number | null = null;
 
   // Calibration state.
@@ -185,19 +223,31 @@ export class VoiceActivityDetector {
     const rms = rmsOf(frame);
     events.push({ type: 'level', rms });
 
+    // An odd byte count contributes floor(n/2) samples to rms above, same
+    // as before; drop that trailing byte here so it's never stored — kept
+    // in a buffer, a stray unpaired byte would byte-shift every sample
+    // concatenated after it for the rest of the utterance.
+    const bytes = frame.length % 2 === 0 ? frame : frame.subarray(0, frame.length - 1);
+    // A 1-byte frame trims to empty: its level was already emitted above,
+    // but there's nothing left to classify or store. Returning here matters
+    // — an empty frame reaching pushWhileIdle would otherwise discard any
+    // in-progress candidate run (aboveMs > 0), letting one stray byte
+    // cancel a real confirmation that was already 299ms in.
+    if (bytes.length === 0) return events;
+
     if (this.calibrating) {
-      this.pushWhileCalibrating(frame, rms);
+      this.pushWhileCalibrating(bytes, rms);
     } else if (this._speaking) {
-      this.pushWhileSpeaking(frame, rms, events);
+      this.pushWhileSpeaking(bytes, rms, events);
     } else {
-      this.pushWhileIdle(frame, rms, events);
+      this.pushWhileIdle(bytes, rms, events);
     }
     return events;
   }
 
   /** During calibration: no detection, no pre-roll — only seeds the running mean RMS. */
-  private pushWhileCalibrating(frame: Uint8Array, rms: number): void {
-    const frameMs = frame.length / this.bytesPerMs;
+  private pushWhileCalibrating(bytes: Uint8Array, rms: number): void {
+    const frameMs = bytes.length / this.bytesPerMs;
     this.calibrationWeightedSum += rms * frameMs;
     this.calibrationMsSoFar += frameMs;
 
@@ -208,17 +258,17 @@ export class VoiceActivityDetector {
     }
   }
 
-  private pushWhileIdle(frame: Uint8Array, rms: number, events: VadEvent[]): void {
-    const frameMs = frame.length / this.bytesPerMs;
+  private pushWhileIdle(bytes: Uint8Array, rms: number, events: VadEvent[]): void {
+    const frameMs = bytes.length / this.bytesPerMs;
     const above = rms > this.threshold * this.floor;
 
     if (above) {
       if (this.aboveMs === 0) {
         this.candidateSnapshot = concatChunks(this.ring);
       }
-      this.candidate.push(frame);
+      this.candidate.push(bytes);
       this.aboveMs += frameMs;
-      this.pushToRing(frame);
+      this.pushToRing(bytes);
 
       if (this.aboveMs >= this.startMs) {
         const pending = [this.candidateSnapshot ?? new Uint8Array(0), ...this.candidate];
@@ -232,12 +282,11 @@ export class VoiceActivityDetector {
       return;
     }
 
-    // Below threshold: adapt the noise floor and drop any failed candidate run.
-    this.floor = Math.max(
-      NOISE_FLOOR_MIN,
-      (1 - NOISE_FLOOR_ALPHA) * this.floor + NOISE_FLOOR_ALPHA * rms,
-    );
-    this.pushToRing(frame);
+    // Below threshold: adapt the noise floor (time-based alpha — see
+    // floorAlphaFor) and drop any failed candidate run.
+    const alpha = floorAlphaFor(frameMs);
+    this.floor = Math.max(NOISE_FLOOR_MIN, (1 - alpha) * this.floor + alpha * rms);
+    this.pushToRing(bytes);
     if (this.aboveMs > 0) {
       this.candidate = [];
       this.candidateSnapshot = null;
@@ -245,8 +294,8 @@ export class VoiceActivityDetector {
     }
   }
 
-  private pushWhileSpeaking(frame: Uint8Array, rms: number, events: VadEvent[]): void {
-    const frameMs = frame.length / this.bytesPerMs;
+  private pushWhileSpeaking(bytes: Uint8Array, rms: number, events: VadEvent[]): void {
+    const frameMs = bytes.length / this.bytesPerMs;
     const above = rms > this.threshold * this.floor;
 
     if (above) {
@@ -256,11 +305,11 @@ export class VoiceActivityDetector {
         this.appendToUtterance(flushed, events);
       }
       this.belowMs = 0;
-      this.appendToUtterance(frame, events);
+      this.appendToUtterance(bytes, events);
       return;
     }
 
-    this.trailing.push(frame);
+    this.trailing.push(bytes);
     this.belowMs += frameMs;
 
     if (this.belowMs >= this.endMs) {
