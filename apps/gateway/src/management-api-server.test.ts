@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '@dash/agent';
 import { MemoryOpError, persistBook, readBook } from '@dash/agent';
+import { DEFAULT_SPEECH_CONFIG } from '@dash/speech';
 import type { SpeechService } from '@dash/speech';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -182,6 +183,7 @@ function makeModelsStore() {
 
 function makeSpeechService(overrides: Partial<SpeechService> = {}): SpeechService {
   return {
+    currentConfig: vi.fn().mockResolvedValue(DEFAULT_SPEECH_CONFIG),
     providers: vi.fn().mockResolvedValue([
       {
         id: 'openrouter',

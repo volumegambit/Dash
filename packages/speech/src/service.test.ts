@@ -435,4 +435,19 @@ describe('createSpeechService', () => {
       });
     });
   });
+
+  describe('currentConfig', () => {
+    it('returns the current speech config, re-reading it on every call', async () => {
+      let config: SpeechConfig = DEFAULT_SPEECH_CONFIG;
+      const service = createSpeechService({
+        config: async () => config,
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+      });
+
+      await expect(service.currentConfig()).resolves.toEqual(DEFAULT_SPEECH_CONFIG);
+
+      config = { ...DEFAULT_SPEECH_CONFIG, stt: { ...DEFAULT_SPEECH_CONFIG.stt, language: 'de' } };
+      await expect(service.currentConfig()).resolves.toMatchObject({ stt: { language: 'de' } });
+    });
+  });
 });

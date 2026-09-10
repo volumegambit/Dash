@@ -33,6 +33,12 @@ export interface SpeechServiceOptions {
 }
 
 export interface SpeechService {
+  /**
+   * The speech config in force right now, re-read from the options' `config`
+   * on every call (never cached) — a caller that needs a field of it, such as
+   * `stt.language` for a transcription, must see a config change immediately.
+   */
+  currentConfig(): Promise<SpeechConfig>;
   /** Always includes the 'openrouter' entry and the 'realtime' pseudo-entry. */
   providers(): Promise<SpeechProviderStatus[]>;
   /** Cached 1h per (provider, kind). */
@@ -94,6 +100,10 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
       return createOpenRouterSpeechProvider({ apiKey, fetch: opts.fetch });
     }
     return null;
+  }
+
+  async function currentConfig(): Promise<SpeechConfig> {
+    return opts.config();
   }
 
   async function providers(): Promise<SpeechProviderStatus[]> {
@@ -214,6 +224,7 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
   }
 
   return {
+    currentConfig,
     providers,
     listModels,
     transcribe,

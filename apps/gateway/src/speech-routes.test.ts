@@ -33,6 +33,7 @@ const OK_PROVIDERS: SpeechProviderStatus[] = [
 
 function makeSpeechService(overrides: Partial<SpeechService> = {}): SpeechService {
   return {
+    currentConfig: vi.fn().mockResolvedValue(DEFAULT_SPEECH_CONFIG),
     providers: vi.fn().mockResolvedValue(OK_PROVIDERS),
     listModels: vi.fn().mockResolvedValue([{ id: 'm1', name: 'Model 1', kind: 'transcription' }]),
     transcribe: vi.fn().mockResolvedValue({ text: 'hello world' }),
