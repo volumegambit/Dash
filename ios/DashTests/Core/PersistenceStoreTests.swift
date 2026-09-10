@@ -1882,6 +1882,1320 @@ struct PersistenceStoreTests {
     )
   }
 
+  @Test("v2 bootstrap atomically installs an independently versioned projection")
+  func v2BootstrapRoundTrip() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture()
+
+    let result = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    let cached = try #require(
+      try await store.v2Bootstrap(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    )
+    let versioned = try #require(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    )
+
+    #expect(result.disposition == .installed)
+    #expect(cached.v2ThroughSeq == bootstrap.v2ThroughSeq)
+    #expect(cached.pendingInputs == bootstrap.pendingInputs)
+    #expect(cached.pendingFollowUpCount == bootstrap.conversation.pendingFollowUpCount)
+    #expect(cached.deliveryByMessageID.values.contains { $0.kind == .normal })
+    #expect(versioned.projection.anchor == cached)
+    #expect(versioned.projection.appliedFrames.isEmpty)
+    #expect(versioned.version == .init(committedV2Seq: bootstrap.v2ThroughSeq, mutationRevision: 1))
+    #expect(
+      try await store.v2Cursor(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == bootstrap.v2ThroughSeq
+    )
+    #expect(
+      try await store.cursor(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == 0
+    )
+  }
+
+  @Test("v2 bootstrap is monotonic and same-watermark compaction is versioned")
+  func v2BootstrapMonotonicDispositions() async throws {
+    let store = try PersistenceStore.inMemory()
+    let first = try v2BootstrapFixture()
+    _ = try await store.replaceV2Bootstrap(first, gatewayID: "gw")
+
+    let unchanged = try await store.replaceV2Bootstrap(first, gatewayID: "gw")
+    #expect(unchanged.disposition == .unchanged)
+    #expect(unchanged.current.version.mutationRevision == 1)
+
+    let compactedValue = v2Bootstrap(
+      from: first,
+      title: "Canonical repair",
+      revision: first.conversation.revision + 1
+    )
+    let compacted = try await store.replaceV2Bootstrap(compactedValue, gatewayID: "gw")
+    #expect(compacted.disposition == .compacted)
+    #expect(compacted.current.version.mutationRevision == 2)
+    #expect(compacted.current.projection.anchor.conversation.title == "Canonical repair")
+
+    let staleValue = v2Bootstrap(
+      from: compactedValue,
+      title: "Future metadata on stale sequence",
+      revision: compactedValue.conversation.revision + 1,
+      v2ThroughSeq: first.v2ThroughSeq - 1
+    )
+    let stale = try await store.replaceV2Bootstrap(staleValue, gatewayID: "gw")
+    #expect(stale.disposition == .stale)
+    #expect(stale.current.version == compacted.current.version)
+    #expect(stale.current.projection.anchor.conversation.title == "Canonical repair")
+
+    let caughtUp = try await store.replaceV2Bootstrap(
+      v2Bootstrap(from: staleValue, v2ThroughSeq: first.v2ThroughSeq),
+      gatewayID: "gw"
+    )
+    #expect(caughtUp.disposition == .compacted)
+    #expect(caughtUp.current.projection.anchor.conversation.title == "Future metadata on stale sequence")
+
+    let advancedValue = v2Bootstrap(
+      from: compactedValue,
+      v2ThroughSeq: first.v2ThroughSeq + 4,
+      queueRevision: compactedValue.queueRevision + 1
+    )
+    let advanced = try await store.replaceV2Bootstrap(advancedValue, gatewayID: "gw")
+    #expect(advanced.disposition == .advanced)
+    #expect(advanced.current.version.committedV2Seq == first.v2ThroughSeq + 4)
+    #expect(advanced.current.version.mutationRevision == 4)
+    #expect(
+      advanced.current.projection.anchor.conversation.title
+        == "Future metadata on stale sequence"
+    )
+  }
+
+  @Test("v2 frame commit is compare-and-swap and preserves canonical bytes")
+  func v2FrameCommitCAS() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture()
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    let frame = v2QueueFrame(
+      conversationID: bootstrap.conversation.id,
+      sequence: bootstrap.v2ThroughSeq + 1,
+      queueRevision: bootstrap.queueRevision + 1
+    )
+
+    let committed = try await store.commitV2Frame(
+      frame,
+      gatewayID: "gw",
+      expected: installed.current.version
+    )
+    let committedProjection = committed.currentProjection
+    #expect(committed.isCommitted)
+    #expect(committedProjection.projection.appliedFrames == [frame])
+    #expect(committedProjection.version.committedV2Seq == bootstrap.v2ThroughSeq + 1)
+    #expect(committedProjection.version.mutationRevision == 2)
+
+    let covered = try await store.commitV2Frame(
+      frame,
+      gatewayID: "gw",
+      expected: installed.current.version
+    )
+    #expect(covered.isAlreadyCovered)
+    #expect(covered.currentProjection == committedProjection)
+
+    let conflicting = v2QueueFrame(
+      id: "00000000-0000-4000-8000-000000000099",
+      conversationID: bootstrap.conversation.id,
+      sequence: bootstrap.v2ThroughSeq + 1,
+      queueRevision: bootstrap.queueRevision + 1
+    )
+    await #expect(throws: PersistenceStoreError.conflictingV2Frame) {
+      _ = try await store.commitV2Frame(
+        conflicting,
+        gatewayID: "gw",
+        expected: installed.current.version
+      )
+    }
+  }
+
+  @Test("v2 frame commit rejects gaps regressions stale writers and durable-behind state")
+  func v2FrameCommitGuards() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture()
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+
+    await #expect(throws: PersistenceStoreError.nonContiguousV2Overlay) {
+      _ = try await store.commitV2Frame(
+        v2QueueFrame(
+          conversationID: bootstrap.conversation.id,
+          sequence: bootstrap.v2ThroughSeq + 2,
+          queueRevision: bootstrap.queueRevision + 1
+        ),
+        gatewayID: "gw",
+        expected: installed.current.version
+      )
+    }
+    await #expect(throws: PersistenceStoreError.v2QueueRevisionRegression) {
+      _ = try await store.commitV2Frame(
+        v2QueueFrame(
+          conversationID: bootstrap.conversation.id,
+          sequence: bootstrap.v2ThroughSeq + 1,
+          queueRevision: bootstrap.queueRevision - 1
+        ),
+        gatewayID: "gw",
+        expected: installed.current.version
+      )
+    }
+
+    let compacted = try await store.replaceV2Bootstrap(
+      v2Bootstrap(
+        from: bootstrap,
+        title: "Compacted",
+        revision: bootstrap.conversation.revision + 1
+      ),
+      gatewayID: "gw"
+    )
+    let staleWriter = try await store.commitV2Frame(
+      v2QueueFrame(
+        conversationID: bootstrap.conversation.id,
+        sequence: bootstrap.v2ThroughSeq + 1,
+        queueRevision: bootstrap.queueRevision + 1
+      ),
+      gatewayID: "gw",
+      expected: installed.current.version
+    )
+    #expect(staleWriter.isStaleWriter)
+    #expect(staleWriter.currentProjection == compacted.current)
+
+    await #expect(throws: PersistenceStoreError.durableV2CursorBehind) {
+      _ = try await store.commitV2Frame(
+        v2QueueFrame(
+          conversationID: bootstrap.conversation.id,
+          sequence: bootstrap.v2ThroughSeq + 2,
+          queueRevision: bootstrap.queueRevision + 1
+        ),
+        gatewayID: "gw",
+        expected: .init(
+          committedV2Seq: bootstrap.v2ThroughSeq + 1,
+          mutationRevision: compacted.current.version.mutationRevision
+        )
+      )
+    }
+  }
+
+  @Test("failed v2 bootstrap and frame saves leave the previous projection intact")
+  func v2WritesRollback() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture()
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+
+    await #expect(throws: PersistenceStoreTestError.save) {
+      _ = try await store.replaceV2Bootstrap(
+        v2Bootstrap(
+          from: bootstrap,
+          v2ThroughSeq: bootstrap.v2ThroughSeq + 2,
+          queueRevision: bootstrap.queueRevision + 1
+        ),
+        gatewayID: "gw",
+        saveChanges: { throw PersistenceStoreTestError.save }
+      )
+    }
+    #expect(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == installed.current
+    )
+
+    await #expect(throws: PersistenceStoreTestError.save) {
+      _ = try await store.commitV2Frame(
+        v2QueueFrame(
+          conversationID: bootstrap.conversation.id,
+          sequence: bootstrap.v2ThroughSeq + 1,
+          queueRevision: bootstrap.queueRevision + 1
+        ),
+        gatewayID: "gw",
+        expected: installed.current.version,
+        saveChanges: { throw PersistenceStoreTestError.save }
+      )
+    }
+    #expect(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == installed.current
+    )
+  }
+
+  @Test("v2 history pages retain delivery metadata without advancing replay")
+  func v2HistoryPageMerge() async throws {
+    let store = try PersistenceStore.inMemory()
+    let fixture = try v2BootstrapFixture(nextCursor: "before-2")
+    let bootstrap = v2Bootstrap(
+      from: fixture,
+      nextCursor: .some("before-2"),
+      messages: [
+        v2Message(from: fixture.messages[0], ordinal: 5),
+        v2Message(from: fixture.messages[1], ordinal: 6),
+      ]
+    )
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    let overlap = bootstrap.messages[0]
+    let sourceAssistant = bootstrap.messages[1]
+    let olderAssistant = MobileV2ConversationMessage(
+      id: "00000000-0000-4000-8000-000000000092",
+      conversationId: bootstrap.conversation.id,
+      turnId: sourceAssistant.turnId,
+      ordinal: 4,
+      role: sourceAssistant.role,
+      status: .completed,
+      content: sourceAssistant.content,
+      createdAt: sourceAssistant.createdAt,
+      updatedAt: sourceAssistant.updatedAt,
+      runId: sourceAssistant.runId,
+      segmentIndex: 2,
+      deliveryKind: .normal,
+      deliveryStatus: .delivered
+    )
+    let olderSteer = v2Message(
+      id: "00000000-0000-4000-8000-000000000091",
+      conversationID: bootstrap.conversation.id,
+      ordinal: 3,
+      segmentIndex: 1,
+      deliveryKind: .steer
+    )
+    let firstPage = MobileV2ConversationMessagePage(
+      items: [olderAssistant, overlap],
+      nextCursor: "before-1",
+      throughSeq: bootstrap.v2ThroughSeq + 50
+    )
+
+    let firstMerge = try await store.mergeV2MessagePage(
+      firstPage,
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id,
+      expectedBefore: "before-2"
+    )
+    let secondPage = MobileV2ConversationMessagePage(
+      items: [olderSteer, olderAssistant],
+      nextCursor: nil,
+      throughSeq: bootstrap.v2ThroughSeq + 100
+    )
+    let secondMerge = try await store.mergeV2MessagePage(
+      secondPage,
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id,
+      expectedBefore: "before-1"
+    )
+    let projection = try #require(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    )
+
+    #expect(firstMerge.messages.map(\.id) == [olderAssistant.id, overlap.id])
+    #expect(firstMerge.deliveryByMessageID[olderAssistant.id]?.segmentIndex == 2)
+    #expect(secondMerge.messages.map(\.id) == [olderSteer.id, olderAssistant.id])
+    #expect(secondMerge.deliveryByMessageID[olderSteer.id]?.kind == .steer)
+    #expect(secondMerge.deliveryByMessageID[olderSteer.id]?.segmentIndex == 1)
+    #expect(projection.projection.anchor.messages.map(\.id).contains(olderSteer.id))
+    #expect(projection.projection.anchor.messages.map(\.id).contains(olderAssistant.id))
+    #expect(projection.version.committedV2Seq == bootstrap.v2ThroughSeq)
+    #expect(projection.projection.anchor.nextCursor == nil)
+
+    let staleWriter = try await store.commitV2Frame(
+      v2QueueFrame(
+        conversationID: bootstrap.conversation.id,
+        sequence: bootstrap.v2ThroughSeq + 1,
+        queueRevision: bootstrap.queueRevision + 1
+      ),
+      gatewayID: "gw",
+      expected: installed.current.version
+    )
+    #expect(staleWriter.isStaleWriter)
+    #expect(staleWriter.currentProjection == projection)
+
+    let repeatedBootstrap = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    #expect(repeatedBootstrap.disposition == .unchanged)
+    #expect(repeatedBootstrap.current == projection)
+    #expect(repeatedBootstrap.current.projection.anchor.nextCursor == nil)
+
+    let advancedBootstrap = v2Bootstrap(
+      from: bootstrap,
+      v2ThroughSeq: bootstrap.v2ThroughSeq + 1,
+      nextCursor: .some("advanced-before"),
+      messages: [
+        v2Message(
+          from: bootstrap.messages[0],
+          id: "00000000-0000-4000-8000-000000000094",
+          ordinal: 10
+        ),
+        v2Message(
+          from: bootstrap.messages[1],
+          id: "00000000-0000-4000-8000-000000000095",
+          ordinal: 11
+        ),
+      ]
+    )
+    let advanced = try await store.replaceV2Bootstrap(advancedBootstrap, gatewayID: "gw")
+    #expect(advanced.disposition == .advanced)
+    #expect(advanced.current.projection.anchor.nextCursor == "advanced-before")
+    let gapPage = try await store.mergeV2MessagePage(
+      MobileV2ConversationMessagePage(
+        items: [
+          v2Message(
+            id: "00000000-0000-4000-8000-000000000096",
+            conversationID: bootstrap.conversation.id,
+            ordinal: 9,
+            segmentIndex: 3,
+            deliveryKind: .followUp
+          )
+        ],
+        nextCursor: nil,
+        throughSeq: advancedBootstrap.v2ThroughSeq
+      ),
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id,
+      expectedBefore: "advanced-before"
+    )
+    #expect(gapPage.messages.map(\.id) == ["00000000-0000-4000-8000-000000000096"])
+  }
+
+  @Test("v2 history enriches newer legacy rows without regressing their base payload")
+  func v2HistoryPageEnrichesNewerLegacyRows() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture(nextCursor: "before-bad")
+    _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    let legacyID = "00000000-0000-4000-8000-000000000093"
+    try await store.mergeMessages(
+      [message(id: legacyID, updatedOffset: 1_000)],
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id
+    )
+    let before = try #require(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    )
+    let olderWireValue = v2Message(
+      id: legacyID,
+      conversationID: bootstrap.conversation.id,
+      ordinal: 1,
+      segmentIndex: 1,
+      deliveryKind: .steer
+    )
+
+    let merged = try await store.mergeV2MessagePage(
+      MobileV2ConversationMessagePage(
+        items: [olderWireValue],
+        nextCursor: nil,
+        throughSeq: bootstrap.v2ThroughSeq + 10
+      ),
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id,
+      expectedBefore: "before-bad"
+    )
+    let after = try #require(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    )
+
+    #expect(merged.messages.count == 1)
+    #expect(merged.messages[0].updatedAt == instant(1_000))
+    #expect(merged.messages[0].content == .user(text: "Message 1", images: nil))
+    #expect(merged.deliveryByMessageID[legacyID]?.kind == .steer)
+    #expect(merged.deliveryByMessageID[legacyID]?.segmentIndex == 1)
+    #expect(after.projection.anchor.nextCursor == nil)
+    #expect(after.version.committedV2Seq == before.version.committedV2Seq)
+    #expect(after.version.mutationRevision == before.version.mutationRevision + 1)
+  }
+
+  @Test("v2 projection breaks equal message ordinals by stable message id")
+  func v2ProjectionUsesStableMessageIDTieBreak() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture(nextCursor: "same-ordinal")
+    _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    let lowerID = "00000000-0000-4000-8000-000000000091"
+    let higherID = "00000000-0000-4000-8000-000000000092"
+    let lowerIDWithLaterTimestamp = v2Message(
+      id: lowerID,
+      conversationID: bootstrap.conversation.id,
+      ordinal: 99,
+      segmentIndex: 1,
+      deliveryKind: .normal,
+      createdAt: instant(20)
+    )
+    let higherIDWithEarlierTimestamp = v2Message(
+      id: higherID,
+      conversationID: bootstrap.conversation.id,
+      ordinal: 99,
+      segmentIndex: 2,
+      deliveryKind: .normal,
+      createdAt: instant(10)
+    )
+
+    _ = try await store.mergeV2MessagePage(
+      MobileV2ConversationMessagePage(
+        items: [higherIDWithEarlierTimestamp, lowerIDWithLaterTimestamp],
+        nextCursor: nil,
+        throughSeq: bootstrap.v2ThroughSeq
+      ),
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id,
+      expectedBefore: "same-ordinal"
+    )
+    let projection = try #require(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    )
+
+    #expect(
+      projection.projection.anchor.messages
+        .filter { $0.id == lowerID || $0.id == higherID }
+        .map(\.id) == [lowerID, higherID]
+    )
+  }
+
+  @Test("v2 admission acknowledgement clears only the exact submitted draft revision")
+  func v2AdmissionAcknowledgement() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("cache.store")
+    let bootstrap = try v2BootstrapFixture()
+    let draft = ConversationDraft(
+      text: "Follow up",
+      attachments: [],
+      updatedAt: instant(100),
+      revision: 7
+    )
+    let admission = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000081",
+      inputID: "00000000-0000-4000-8000-000000000082",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: draft.text,
+      images: [],
+      draftRevision: draft.revision
+    )
+    do {
+      let store = try PersistenceStore.stored(at: url)
+      _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+      try await store.saveDraft(
+        draft,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      try await store.stageV2Admission(
+        admission,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    }
+
+    do {
+      let reopened = try PersistenceStore.stored(at: url)
+      #expect(
+        try await reopened.pendingV2Admission(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        ) == admission
+      )
+      let retained = try await reopened.acknowledgeV2Admission(
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      #expect(retained == nil)
+      #expect(
+        try await reopened.pendingV2Admission(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        ) == nil
+      )
+      #expect(
+        try await reopened.draft(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        ) == nil
+      )
+    }
+  }
+
+  @Test("v2 admission acknowledgement preserves newer typing and rejects the wrong command")
+  func v2AdmissionPreservesNewerDraft() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("cache.store")
+    let bootstrap = try v2BootstrapFixture()
+    let submittedAttachment = PreparedAttachment(
+      id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ab")!,
+      mediaType: "image/png",
+      data: Data([0x01, 0x02])
+    )
+    let admission = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000081",
+      inputID: "00000000-0000-4000-8000-000000000082",
+      behavior: .steer,
+      expectedActiveTurnID: bootstrap.conversation.activeTurnId,
+      text: "Original",
+      images: [
+        MessageImage(mediaType: .png, data: submittedAttachment.data.base64EncodedString())
+      ],
+      draftRevision: 2
+    )
+    let newerAttachment = PreparedAttachment(
+      id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ac")!,
+      mediaType: "image/webp",
+      data: Data([0x03, 0x04])
+    )
+    let newer = ConversationDraft(
+      text: "New typing",
+      attachments: [newerAttachment],
+      updatedAt: instant(101),
+      revision: 3
+    )
+    do {
+      let store = try PersistenceStore.stored(at: url)
+      _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+      try await store.saveDraft(
+        .init(
+          text: "Original",
+          attachments: [submittedAttachment],
+          updatedAt: instant(100),
+          revision: 2
+        ),
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      try await store.stageV2Admission(
+        admission,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      try await store.saveDraft(
+        newer,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    }
+
+    do {
+      let reopened = try PersistenceStore.stored(at: url)
+      let wrong = try await reopened.acknowledgeV2Admission(
+        commandID: "00000000-0000-4000-8000-000000000089",
+        inputID: admission.inputID,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      #expect(wrong == newer)
+      #expect(
+        try await reopened.pendingV2Admission(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        ) == admission
+      )
+
+      let retained = try await reopened.acknowledgeV2Admission(
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      #expect(retained == newer)
+      #expect(
+        try await reopened.draft(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        ) == newer
+      )
+    }
+  }
+
+  @Test("frame-first and bootstrap-first races converge without replay duplication")
+  func v2FrameBootstrapRaces() async throws {
+    let bootstrap = try v2BootstrapFixture()
+    let frame = v2QueueFrame(
+      conversationID: bootstrap.conversation.id,
+      sequence: bootstrap.v2ThroughSeq + 1,
+      queueRevision: bootstrap.queueRevision + 1
+    )
+    let coveringBootstrap = v2Bootstrap(
+      from: bootstrap,
+      v2ThroughSeq: bootstrap.v2ThroughSeq + 1,
+      queueRevision: bootstrap.queueRevision + 1,
+      queuePaused: true
+    )
+
+    let frameFirst = try PersistenceStore.inMemory()
+    let frameFirstAnchor = try await frameFirst.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    _ = try await frameFirst.commitV2Frame(
+      frame,
+      gatewayID: "gw",
+      expected: frameFirstAnchor.current.version
+    )
+    let compacted = try await frameFirst.replaceV2Bootstrap(
+      coveringBootstrap,
+      gatewayID: "gw"
+    )
+    #expect(compacted.disposition == .compacted)
+    #expect(compacted.current.projection.appliedFrames.isEmpty)
+    #expect(compacted.current.projection.anchor.v2ThroughSeq == frame.v2Seq)
+
+    let bootstrapFirst = try PersistenceStore.inMemory()
+    let advanced = try await bootstrapFirst.replaceV2Bootstrap(
+      coveringBootstrap,
+      gatewayID: "gw"
+    )
+    let covered = try await bootstrapFirst.commitV2Frame(
+      frame,
+      gatewayID: "gw",
+      expected: advanced.current.version
+    )
+    #expect(covered.isAlreadyCovered)
+    #expect(covered.currentProjection == advanced.current)
+  }
+
+  @Test("invalid v2 bootstraps mutate nothing")
+  func invalidV2BootstrapValidation() async throws {
+    let store = try PersistenceStore.inMemory()
+    let valid = try v2BootstrapFixture()
+    let installed = try await store.replaceV2Bootstrap(valid, gatewayID: "gw")
+    let invalidValues = [
+      v2Bootstrap(
+        from: valid,
+        messages: [
+          v2Message(from: valid.messages[0], conversationID: "00000000-0000-4000-8000-000000000099")
+        ]
+      ),
+      v2Bootstrap(from: valid, messages: [valid.messages[0], valid.messages[0]]),
+      v2Bootstrap(from: valid, summaryQueueRevision: valid.queueRevision + 1),
+      v2Bootstrap(from: valid, pendingInputs: Array(valid.pendingInputs.reversed())),
+      v2Bootstrap(
+        from: valid,
+        pendingFollowUpCount: valid.conversation.pendingFollowUpCount + 1
+      ),
+      v2Bootstrap(from: valid, title: "Contradiction"),
+      v2Bootstrap(
+        from: valid,
+        revision: valid.conversation.revision + 1,
+        status: .deleted
+      ),
+    ]
+
+    for invalid in invalidValues {
+      await #expect(throws: PersistenceStoreError.invalidV2Bootstrap) {
+        _ = try await store.replaceV2Bootstrap(invalid, gatewayID: "gw")
+      }
+      #expect(
+        try await store.v2Projection(
+          gatewayID: "gw",
+          conversationID: valid.conversation.id
+        ) == installed.current
+      )
+    }
+  }
+
+  @Test("v2 stable IDs cannot move between conversations or staged admissions")
+  func v2StableIDOwnershipIsConversationScoped() async throws {
+    let store = try PersistenceStore.inMemory()
+    let first = try v2BootstrapFixture()
+    let secondConversationID = "00000000-0000-4000-8000-000000000002"
+    let secondMessages = [
+      v2Message(
+        from: first.messages[0],
+        conversationID: secondConversationID,
+        id: "00000000-0000-4000-8000-000000000113"
+      ),
+      v2Message(
+        from: first.messages[1],
+        conversationID: secondConversationID,
+        id: "00000000-0000-4000-8000-000000000114"
+      ),
+    ]
+    let secondInputs = zip(
+      first.pendingInputs,
+      [
+        "00000000-0000-4000-8000-000000000122",
+        "00000000-0000-4000-8000-000000000124",
+        "00000000-0000-4000-8000-000000000128",
+      ]
+    ).map { v2PendingInput(from: $0.0, inputID: $0.1) }
+    let second = v2Bootstrap(
+      from: first,
+      conversationID: secondConversationID,
+      title: "Second conversation",
+      nextCursor: .some("second-before"),
+      messages: secondMessages,
+      pendingInputs: secondInputs
+    )
+    _ = try await store.replaceV2Bootstrap(first, gatewayID: "gw")
+    _ = try await store.replaceV2Bootstrap(second, gatewayID: "gw")
+    let firstBefore = try #require(
+      try await store.v2Projection(gatewayID: "gw", conversationID: first.conversation.id)
+    )
+    let secondBefore = try #require(
+      try await store.v2Projection(gatewayID: "gw", conversationID: second.conversation.id)
+    )
+
+    let messageCollision = v2Bootstrap(
+      from: second,
+      messages: [
+        v2Message(from: second.messages[0], id: first.messages[0].id),
+        second.messages[1],
+      ]
+    )
+    var collidingInputs = second.pendingInputs
+    collidingInputs[0] = v2PendingInput(
+      from: collidingInputs[0],
+      inputID: first.pendingInputs[0].inputId
+    )
+    let inputCollision = v2Bootstrap(from: second, pendingInputs: collidingInputs)
+    for collision in [messageCollision, inputCollision] {
+      await #expect(throws: PersistenceStoreError.invalidV2Bootstrap) {
+        _ = try await store.replaceV2Bootstrap(collision, gatewayID: "gw")
+      }
+    }
+    await #expect(throws: PersistenceStoreError.invalidV2Bootstrap) {
+      _ = try await store.mergeV2MessagePage(
+        MobileV2ConversationMessagePage(
+          items: [
+            v2Message(
+              from: second.messages[0],
+              id: first.messages[0].id,
+              ordinal: second.messages[0].ordinal - 1
+            )
+          ],
+          nextCursor: nil,
+          throughSeq: second.v2ThroughSeq
+        ),
+        gatewayID: "gw",
+        conversationID: second.conversation.id,
+        expectedBefore: "second-before"
+      )
+    }
+
+    let firstAdmission = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000181",
+      inputID: "00000000-0000-4000-8000-000000000182",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: "First admission",
+      images: [],
+      draftRevision: 1
+    )
+    try await store.stageV2Admission(
+      firstAdmission,
+      gatewayID: "gw",
+      conversationID: first.conversation.id
+    )
+    let admissionCollisions = [
+      PendingV2Admission(
+        commandID: firstAdmission.commandID,
+        inputID: "00000000-0000-4000-8000-000000000183",
+        behavior: .followUp,
+        expectedActiveTurnID: nil,
+        text: "Command collision",
+        images: [],
+        draftRevision: 1
+      ),
+      PendingV2Admission(
+        commandID: "00000000-0000-4000-8000-000000000184",
+        inputID: firstAdmission.inputID,
+        behavior: .followUp,
+        expectedActiveTurnID: nil,
+        text: "Input collision",
+        images: [],
+        draftRevision: 1
+      ),
+      PendingV2Admission(
+        commandID: "00000000-0000-4000-8000-000000000185",
+        inputID: second.pendingInputs[0].inputId,
+        behavior: .followUp,
+        expectedActiveTurnID: nil,
+        text: "Canonical input collision",
+        images: [],
+        draftRevision: 1
+      ),
+    ]
+    for collision in admissionCollisions {
+      await #expect(throws: PersistenceStoreError.conflictingV2Admission) {
+        try await store.stageV2Admission(
+          collision,
+          gatewayID: "gw",
+          conversationID: second.conversation.id
+        )
+      }
+    }
+
+    #expect(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: first.conversation.id
+      ) == firstBefore
+    )
+    #expect(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: second.conversation.id
+      ) == secondBefore
+    )
+    #expect(
+      try await store.pendingV2Admission(
+        gatewayID: "gw",
+        conversationID: first.conversation.id
+      ) == firstAdmission
+    )
+    #expect(
+      try await store.pendingV2Admission(
+        gatewayID: "gw",
+        conversationID: second.conversation.id
+      ) == nil
+    )
+  }
+
+  @Test("v2 tombstone preserves recovery admission but purges canonical projection")
+  func v2TombstoneRecoveryBoundary() async throws {
+    let store = try PersistenceStore.inMemory()
+    let bootstrap = try v2BootstrapFixture()
+    let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+    _ = try await store.commitV2Frame(
+      v2QueueFrame(
+        conversationID: bootstrap.conversation.id,
+        sequence: bootstrap.v2ThroughSeq + 1,
+        queueRevision: bootstrap.queueRevision + 1
+      ),
+      gatewayID: "gw",
+      expected: installed.current.version
+    )
+    let draft = ConversationDraft(
+      text: "Recover me",
+      attachments: [],
+      updatedAt: instant(100),
+      revision: 4
+    )
+    let admission = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000081",
+      inputID: "00000000-0000-4000-8000-000000000082",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: draft.text,
+      images: [],
+      draftRevision: draft.revision
+    )
+    try await store.saveDraft(
+      draft,
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id
+    )
+    try await store.stageV2Admission(
+      admission,
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id
+    )
+    try await store.applyTombstone(v2Tombstone(from: bootstrap), gatewayID: "gw")
+
+    #expect(
+      try await store.v2Projection(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == nil
+    )
+    #expect(
+      try await store.v2Cursor(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == 0
+    )
+    #expect(
+      try await store.pendingV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == admission
+    )
+    #expect(
+      try await store.draft(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == draft
+    )
+    await #expect(throws: PersistenceStoreError.conversationDeleted(
+      gatewayID: "gw",
+      conversationID: bootstrap.conversation.id
+    )) {
+      _ = try await store.acknowledgeV2Admission(
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    }
+
+    try await store.clearGateway(gatewayID: "gw")
+    #expect(
+      try await store.pendingV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == nil
+    )
+    #expect(
+      try await store.draft(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == nil
+    )
+  }
+
+  @Test("tombstoned v2 admission survives restart and exact discard is atomic")
+  func recoverableV2AdmissionRestartAndDiscard() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("cache.store")
+    let bootstrap = try v2BootstrapFixture()
+    let draft = ConversationDraft(
+      text: "Recover the accepted draft",
+      attachments: [],
+      updatedAt: instant(100),
+      revision: 9
+    )
+    let admission = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000281",
+      inputID: "00000000-0000-4000-8000-000000000282",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: draft.text,
+      images: [],
+      draftRevision: draft.revision
+    )
+    do {
+      let store = try PersistenceStore.stored(at: url)
+      _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+      try await store.saveDraft(
+        draft,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      try await store.stageV2Admission(
+        admission,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+      try await store.applyTombstone(v2Tombstone(from: bootstrap), gatewayID: "gw")
+    }
+
+    let reopened = try PersistenceStore.stored(at: url)
+    let recovery = try #require(
+      try await reopened.recoverableV2Admissions(gatewayID: "gw").first
+    )
+    #expect(recovery.commandID == admission.commandID)
+    #expect(recovery.inputID == admission.inputID)
+    #expect(recovery.admission == admission)
+    #expect(recovery.payloadIssue == nil)
+    #expect(recovery.coexistingDraft == draft)
+    #expect(recovery.conversationAvailable == false)
+    #expect(
+      try await reopened.discardV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        commandID: admission.commandID,
+        inputID: "00000000-0000-4000-8000-000000000289",
+        expectedConversationAvailable: false
+      ) == false
+    )
+    #expect(
+      try await reopened.discardV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        expectedConversationAvailable: true
+      ) == false
+    )
+    await #expect(throws: PersistenceStoreTestError.save) {
+      _ = try await reopened.discardV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        expectedConversationAvailable: false,
+        saveChanges: { throw PersistenceStoreTestError.save }
+      )
+    }
+    #expect(try await reopened.recoverableV2Admissions(gatewayID: "gw").count == 1)
+    #expect(
+      try await reopened.draft(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == draft
+    )
+    #expect(
+      try await reopened.discardV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        expectedConversationAvailable: false
+      )
+    )
+    #expect(try await reopened.recoverableV2Admissions(gatewayID: "gw").isEmpty)
+    #expect(
+      try await reopened.draft(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == nil
+    )
+  }
+
+  @Test("one corrupt v2 admission does not hide a recoverable sibling")
+  func corruptRecoverableV2AdmissionIsIsolated() async throws {
+    let store = try PersistenceStore.inMemory()
+    let firstConversationID = "recovery-a"
+    let secondConversationID = "recovery-b"
+    try await store.upsertConversations(
+      [
+        summary(id: firstConversationID, title: "First"),
+        summary(id: secondConversationID, title: "Second"),
+      ],
+      gatewayID: "gw"
+    )
+    let first = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000291",
+      inputID: "00000000-0000-4000-8000-000000000292",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: "First",
+      images: [],
+      draftRevision: 1
+    )
+    let second = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000293",
+      inputID: "00000000-0000-4000-8000-000000000294",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: "Second",
+      images: [],
+      draftRevision: 1
+    )
+    try await store.stageV2Admission(first, gatewayID: "gw", conversationID: firstConversationID)
+    try await store.stageV2Admission(second, gatewayID: "gw", conversationID: secondConversationID)
+    try await store.applyTombstone(
+      summary(
+        id: firstConversationID,
+        title: "First",
+        revision: 2,
+        status: .deleted,
+        deletedAt: instant(2)
+      ),
+      gatewayID: "gw"
+    )
+    try await store.applyTombstone(
+      summary(
+        id: secondConversationID,
+        title: "Second",
+        revision: 2,
+        status: .deleted,
+        deletedAt: instant(2)
+      ),
+      gatewayID: "gw"
+    )
+    let firstPayload = try ContractCoding.encoder().encode(first)
+    let recoveries = try await store.recoverableV2Admissions(
+      gatewayID: "gw",
+      decodeAdmission: { data in
+        if data == firstPayload { throw PersistenceStoreTestError.decode }
+        return try ContractCoding.decoder().decode(PendingV2Admission.self, from: data)
+      }
+    )
+
+    #expect(recoveries.count == 2)
+    let corrupt = try #require(recoveries.first { $0.commandID == first.commandID })
+    let healthy = try #require(recoveries.first { $0.commandID == second.commandID })
+    #expect(corrupt.admission == nil)
+    #expect(corrupt.payloadIssue == .unreadableStoredPayload)
+    #expect(healthy.admission == second)
+    #expect(healthy.payloadIssue == nil)
+  }
+
+  @Test("active v2 admission with corrupt draft remains recoverable and discard sanitizes it")
+  func activeV2AdmissionDiscardSanitizesCorruptDraft() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("cache.store")
+    let bootstrap = try v2BootstrapFixture()
+    let draft = ConversationDraft(
+      text: "  Preserve this exact newer draft\n",
+      attachments: [
+        PreparedAttachment(
+          id: UUID(uuidString: "018f0f4a-5c42-7a8b-9c01-1234567890ad")!,
+          mediaType: "image/png",
+          data: Data([0x01])
+        )
+      ],
+      updatedAt: instant(100),
+      revision: 11
+    )
+    let admission = PendingV2Admission(
+      commandID: "00000000-0000-4000-8000-000000000381",
+      inputID: "00000000-0000-4000-8000-000000000382",
+      behavior: .followUp,
+      expectedActiveTurnID: nil,
+      text: draft.text,
+      images: [],
+      draftRevision: draft.revision
+    )
+    do {
+      let store = try PersistenceStore.stored(at: url)
+      _ = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+      try await store.saveDraft(
+        draft,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        encodeAttachments: { _ in Data("corrupt-draft-attachments".utf8) }
+      )
+      try await store.stageV2Admission(
+        admission,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    }
+
+    let recoveryStore = try PersistenceStore.stored(at: url)
+    let recovery = try #require(
+      try await recoveryStore.recoverableV2Admissions(gatewayID: "gw").first
+    )
+    #expect(recovery.admission == admission)
+    #expect(recovery.payloadIssue == nil)
+    #expect(recovery.coexistingDraft?.text == draft.text)
+    #expect(recovery.coexistingDraft?.attachments.isEmpty == true)
+    #expect(recovery.coexistingDraftAttachmentIssue == .unreadableStoredPayload)
+    #expect(recovery.conversationAvailable)
+
+    await #expect(throws: DecodingError.self) {
+      _ = try await recoveryStore.acknowledgeV2Admission(
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      )
+    }
+    #expect(
+      try await recoveryStore.pendingV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == admission
+    )
+    #expect(
+      try await recoveryStore.discardV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        commandID: admission.commandID,
+        inputID: admission.inputID,
+        expectedConversationAvailable: true
+      )
+    )
+
+    let reopenedStore = try PersistenceStore.stored(at: url)
+    #expect(
+      try await reopenedStore.draft(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == ConversationDraft(
+        text: draft.text,
+        attachments: [],
+        updatedAt: draft.updatedAt,
+        revision: draft.revision
+      )
+    )
+    #expect(
+      try await reopenedStore.pendingV2Admission(
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id
+      ) == nil
+    )
+    #expect(try await reopenedStore.recoverableV2Admissions(gatewayID: "gw").isEmpty)
+  }
+
+  @Test("on-disk v2 projection restores anchor history overlay and cursor")
+  func v2ProjectionReopensFromDisk() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("cache.store")
+    let bootstrap = try v2BootstrapFixture(nextCursor: "before-1")
+    let frame = v2QueueFrame(
+      conversationID: bootstrap.conversation.id,
+      sequence: bootstrap.v2ThroughSeq + 1,
+      queueRevision: bootstrap.queueRevision + 1
+    )
+    let expected: VersionedV2ConversationProjection
+    do {
+      let store = try PersistenceStore.stored(at: url)
+      let installed = try await store.replaceV2Bootstrap(bootstrap, gatewayID: "gw")
+      _ = try await store.mergeV2MessagePage(
+        MobileV2ConversationMessagePage(
+          items: [
+            v2Message(
+              id: "00000000-0000-4000-8000-000000000091",
+              conversationID: bootstrap.conversation.id,
+              ordinal: 3,
+              segmentIndex: 2,
+              deliveryKind: .steer
+            )
+          ],
+          nextCursor: nil,
+          throughSeq: bootstrap.v2ThroughSeq
+        ),
+        gatewayID: "gw",
+        conversationID: bootstrap.conversation.id,
+        expectedBefore: "before-1"
+      )
+      let afterHistory = try #require(
+        try await store.v2Projection(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        )
+      )
+      let committed = try await store.commitV2Frame(
+        frame,
+        gatewayID: "gw",
+        expected: afterHistory.version
+      )
+      expected = committed.currentProjection
+      #expect(expected.version.mutationRevision == installed.current.version.mutationRevision + 2)
+    }
+
+    do {
+      let reopened = try PersistenceStore.stored(at: url)
+      let restored = try #require(
+        try await reopened.v2Projection(
+          gatewayID: "gw",
+          conversationID: bootstrap.conversation.id
+        )
+      )
+      #expect(restored == expected)
+      #expect(restored.projection.anchor.messages.count == bootstrap.messages.count + 1)
+      #expect(restored.projection.appliedFrames == [frame])
+    }
+  }
+
   @Test("SwiftData schema property names contain no connection secret material")
   func secretFreeSchema() {
     let schema = PersistenceSchema.make()
@@ -1927,6 +3241,178 @@ struct PersistenceStoreTests {
       gatewayID: "gw"
     )
     return store
+  }
+
+  private func v2BootstrapFixture(nextCursor: String? = nil) throws
+    -> MobileV2ConversationBootstrap
+  {
+    let fixture = try MobileV2FixtureLoader.decode(
+      MobileV2ConversationBootstrap.self,
+      "conversation-bootstrap.json"
+    )
+    return v2Bootstrap(from: fixture, nextCursor: nextCursor)
+  }
+
+  private func v2Bootstrap(
+    from source: MobileV2ConversationBootstrap,
+    conversationID: String? = nil,
+    title: String? = nil,
+    revision: Int? = nil,
+    status: ConversationStatus? = nil,
+    v2ThroughSeq: Int? = nil,
+    queueRevision: Int? = nil,
+    summaryQueueRevision: Int? = nil,
+    queuePaused: Bool? = nil,
+    pendingFollowUpCount: Int? = nil,
+    nextCursor: String?? = nil,
+    messages: [MobileV2ConversationMessage]? = nil,
+    pendingInputs: [MobileV2PendingInput]? = nil
+  ) -> MobileV2ConversationBootstrap {
+    let sequence = v2ThroughSeq ?? source.v2ThroughSeq
+    let queueRevision = queueRevision ?? source.queueRevision
+    let queuePaused = queuePaused ?? source.queuePaused
+    let summary = source.conversation
+    let conversationID = conversationID ?? summary.id
+    return MobileV2ConversationBootstrap(
+      conversation: MobileV2ConversationSummary(
+        id: conversationID,
+        agentId: summary.agentId,
+        agentName: summary.agentName,
+        title: title ?? summary.title,
+        revision: revision ?? summary.revision,
+        status: status ?? summary.status,
+        activeTurnId: summary.activeTurnId,
+        owningIssueId: summary.owningIssueId,
+        projectId: summary.projectId,
+        lastSeq: summary.lastSeq,
+        lastMessagePreview: summary.lastMessagePreview,
+        createdAt: summary.createdAt,
+        updatedAt: summary.updatedAt,
+        deletedAt: summary.deletedAt,
+        queuePaused: queuePaused,
+        queueRevision: summaryQueueRevision ?? queueRevision,
+        pendingFollowUpCount: pendingFollowUpCount ?? summary.pendingFollowUpCount,
+        v2LastSeq: sequence
+      ),
+      messages: messages ?? source.messages,
+      nextCursor: nextCursor ?? source.nextCursor,
+      pendingInputs: pendingInputs ?? source.pendingInputs,
+      queuePaused: queuePaused,
+      queueRevision: queueRevision,
+      v2ThroughSeq: sequence
+    )
+  }
+
+  private func v2QueueFrame(
+    id: String = "00000000-0000-4000-8000-000000000088",
+    conversationID: String,
+    sequence: Int,
+    queueRevision: Int
+  ) -> MobileV2SequencedFrame {
+    .queuePaused(
+      id: id,
+      conversationId: conversationID,
+      v2Seq: sequence,
+      queueRevision: queueRevision,
+      queuePaused: true,
+      pendingFollowUpCount: 2
+    )
+  }
+
+  private func v2PendingInput(
+    from source: MobileV2PendingInput,
+    inputID: String
+  ) -> MobileV2PendingInput {
+    MobileV2PendingInput(
+      inputId: inputID,
+      kind: source.kind,
+      targetTurnId: source.targetTurnId,
+      text: source.text,
+      images: source.images,
+      state: source.state,
+      revision: source.revision,
+      enqueueOrder: source.enqueueOrder,
+      runId: source.runId,
+      segmentTurnId: source.segmentTurnId,
+      userMessageId: source.userMessageId,
+      assistantMessageId: source.assistantMessageId,
+      failureCode: source.failureCode,
+      failureMessage: source.failureMessage,
+      createdAt: source.createdAt,
+      updatedAt: source.updatedAt,
+      deliveredAt: source.deliveredAt
+    )
+  }
+
+  private func v2Message(
+    id: String,
+    conversationID: String,
+    ordinal: Int,
+    segmentIndex: Int,
+    deliveryKind: MobileV2DeliveryKind,
+    createdAt: Date? = nil
+  ) -> MobileV2ConversationMessage {
+    let timestamp = createdAt ?? instant(1)
+    return MobileV2ConversationMessage(
+      id: id,
+      conversationId: conversationID,
+      turnId: "turn-01",
+      ordinal: ordinal,
+      role: .user,
+      status: .completed,
+      content: .user(text: "Older segment", images: nil),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      runId: "turn-01",
+      segmentIndex: segmentIndex,
+      deliveryKind: deliveryKind,
+      deliveryStatus: .delivered
+    )
+  }
+
+  private func v2Tombstone(
+    from bootstrap: MobileV2ConversationBootstrap
+  ) -> ConversationSummaryDTO {
+    let summary = bootstrap.conversation
+    return ConversationSummaryDTO(
+      id: summary.id,
+      agentId: summary.agentId,
+      agentName: summary.agentName,
+      title: summary.title,
+      revision: summary.revision + 1,
+      status: .deleted,
+      activeTurnId: nil,
+      owningIssueId: summary.owningIssueId,
+      projectId: summary.projectId,
+      lastSeq: summary.lastSeq,
+      lastMessagePreview: summary.lastMessagePreview,
+      createdAt: summary.createdAt,
+      updatedAt: instant(200),
+      deletedAt: instant(200)
+    )
+  }
+
+  private func v2Message(
+    from source: MobileV2ConversationMessage,
+    conversationID: String? = nil,
+    id: String? = nil,
+    ordinal: Int? = nil
+  ) -> MobileV2ConversationMessage {
+    MobileV2ConversationMessage(
+      id: id ?? source.id,
+      conversationId: conversationID ?? source.conversationId,
+      turnId: source.turnId,
+      ordinal: ordinal ?? source.ordinal,
+      role: source.role,
+      status: source.status,
+      content: source.content,
+      createdAt: source.createdAt,
+      updatedAt: source.updatedAt,
+      runId: source.runId,
+      segmentIndex: source.segmentIndex,
+      deliveryKind: source.deliveryKind,
+      deliveryStatus: source.deliveryStatus
+    )
   }
 
   @MainActor
@@ -2116,6 +3602,7 @@ private final class PendingAttachmentDecodeProbe: @unchecked Sendable {
 }
 
 private enum PersistenceStoreTestError: Error {
+  case decode
   case save
 }
 

@@ -63,6 +63,11 @@ final class ConversationRecord {
   var createdAt: Date
   var updatedAt: Date
   var deletedAt: Date?
+  var queuePaused: Bool = false
+  var queueRevision: Int = 0
+  var pendingFollowUpCount: Int = 0
+  var v2LastSeq: Int = 0
+  var v2NextMessageCursor: String?
 
   init(
     scopedID: String,
@@ -80,7 +85,12 @@ final class ConversationRecord {
     lastMessagePreview: String?,
     createdAt: Date,
     updatedAt: Date,
-    deletedAt: Date?
+    deletedAt: Date?,
+    queuePaused: Bool = false,
+    queueRevision: Int = 0,
+    pendingFollowUpCount: Int = 0,
+    v2LastSeq: Int = 0,
+    v2NextMessageCursor: String? = nil
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -98,6 +108,11 @@ final class ConversationRecord {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.deletedAt = deletedAt
+    self.queuePaused = queuePaused
+    self.queueRevision = queueRevision
+    self.pendingFollowUpCount = pendingFollowUpCount
+    self.v2LastSeq = v2LastSeq
+    self.v2NextMessageCursor = v2NextMessageCursor
   }
 }
 
@@ -134,6 +149,11 @@ final class MessageRecord {
   var contentData: Data
   var createdAt: Date
   var updatedAt: Date
+  var runID: String?
+  var segmentIndex: Int?
+  var deliveryKindRaw: String?
+  var deliveryStatusRaw: String?
+  var isV2Anchor: Bool = false
 
   init(
     scopedID: String,
@@ -146,7 +166,12 @@ final class MessageRecord {
     statusRaw: String,
     contentData: Data,
     createdAt: Date,
-    updatedAt: Date
+    updatedAt: Date,
+    runID: String? = nil,
+    segmentIndex: Int? = nil,
+    deliveryKindRaw: String? = nil,
+    deliveryStatusRaw: String? = nil,
+    isV2Anchor: Bool = false
   ) {
     self.scopedID = scopedID
     self.gatewayID = gatewayID
@@ -159,6 +184,11 @@ final class MessageRecord {
     self.contentData = contentData
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+    self.runID = runID
+    self.segmentIndex = segmentIndex
+    self.deliveryKindRaw = deliveryKindRaw
+    self.deliveryStatusRaw = deliveryStatusRaw
+    self.isV2Anchor = isV2Anchor
   }
 }
 
@@ -193,6 +223,7 @@ final class DraftRecord {
   var text: String
   @Attribute(.externalStorage) var attachmentsData: Data
   var updatedAt: Date
+  var revision: UInt64 = 0
 
   init(
     scopedConversationID: String,
@@ -200,7 +231,8 @@ final class DraftRecord {
     conversationID: String,
     text: String,
     attachmentsData: Data,
-    updatedAt: Date
+    updatedAt: Date,
+    revision: UInt64 = 0
   ) {
     self.scopedConversationID = scopedConversationID
     self.gatewayID = gatewayID
@@ -208,6 +240,7 @@ final class DraftRecord {
     self.text = text
     self.attachmentsData = attachmentsData
     self.updatedAt = updatedAt
+    self.revision = revision
   }
 }
 
@@ -263,6 +296,127 @@ final class ReplayCursorRecord {
   }
 }
 
+@Model
+final class PendingInputRecord {
+  @Attribute(.unique) var scopedID: String
+  var gatewayID: String
+  var conversationID: String
+  var inputID: String
+  var enqueueOrder: Int
+  @Attribute(.externalStorage) var payloadData: Data
+
+  init(
+    scopedID: String,
+    gatewayID: String,
+    conversationID: String,
+    inputID: String,
+    enqueueOrder: Int,
+    payloadData: Data
+  ) {
+    self.scopedID = scopedID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.inputID = inputID
+    self.enqueueOrder = enqueueOrder
+    self.payloadData = payloadData
+  }
+}
+
+@Model
+final class V2ReplayCursorRecord {
+  @Attribute(.unique) var scopedConversationID: String
+  var gatewayID: String
+  var conversationID: String
+  var lastV2Seq: Int
+  var mutationRevision: Int = 0
+
+  init(
+    scopedConversationID: String,
+    gatewayID: String,
+    conversationID: String,
+    lastV2Seq: Int,
+    mutationRevision: Int = 0
+  ) {
+    self.scopedConversationID = scopedConversationID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.lastV2Seq = lastV2Seq
+    self.mutationRevision = mutationRevision
+  }
+}
+
+@Model
+final class V2BootstrapAnchorRecord {
+  @Attribute(.unique) var scopedConversationID: String
+  var gatewayID: String
+  var conversationID: String
+  @Attribute(.externalStorage) var payloadData: Data
+
+  init(
+    scopedConversationID: String,
+    gatewayID: String,
+    conversationID: String,
+    payloadData: Data
+  ) {
+    self.scopedConversationID = scopedConversationID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.payloadData = payloadData
+  }
+}
+
+@Model
+final class V2AppliedFrameRecord {
+  @Attribute(.unique) var scopedSequenceID: String
+  var gatewayID: String
+  var conversationID: String
+  var sequence: Int
+  @Attribute(.externalStorage) var payloadData: Data
+
+  init(
+    scopedSequenceID: String,
+    gatewayID: String,
+    conversationID: String,
+    sequence: Int,
+    payloadData: Data
+  ) {
+    self.scopedSequenceID = scopedSequenceID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.sequence = sequence
+    self.payloadData = payloadData
+  }
+}
+
+@Model
+final class PendingV2AdmissionRecord {
+  @Attribute(.unique) var scopedConversationID: String
+  var gatewayID: String
+  var conversationID: String
+  var commandID: String
+  var inputID: String
+  @Attribute(.externalStorage) var payloadData: Data
+  var createdAt: Date
+
+  init(
+    scopedConversationID: String,
+    gatewayID: String,
+    conversationID: String,
+    commandID: String,
+    inputID: String,
+    payloadData: Data,
+    createdAt: Date
+  ) {
+    self.scopedConversationID = scopedConversationID
+    self.gatewayID = gatewayID
+    self.conversationID = conversationID
+    self.commandID = commandID
+    self.inputID = inputID
+    self.payloadData = payloadData
+    self.createdAt = createdAt
+  }
+}
+
 enum PersistenceSchema {
   static func make() -> Schema {
     Schema([
@@ -274,6 +428,11 @@ enum PersistenceSchema {
       DraftRecord.self,
       PendingSendRecord.self,
       ReplayCursorRecord.self,
+      PendingInputRecord.self,
+      V2ReplayCursorRecord.self,
+      V2BootstrapAnchorRecord.self,
+      V2AppliedFrameRecord.self,
+      PendingV2AdmissionRecord.self,
     ])
   }
 }

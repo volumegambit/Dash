@@ -5,6 +5,13 @@ enum PersistenceStoreError: Error, Equatable, Sendable {
   case invalidTombstoneStatus
   case invalidStoredValue(String)
   case conversationDeleted(gatewayID: String, conversationID: String)
+  case invalidV2Bootstrap
+  case nonContiguousV2Overlay
+  case durableV2CursorBehind
+  case conflictingV2Frame
+  case v2QueueRevisionRegression
+  case v2HistoryCursorMismatch
+  case conflictingV2Admission
 }
 
 enum ConversationRemovalOutcome: Equatable, Sendable {
@@ -15,6 +22,17 @@ enum ConversationRemovalOutcome: Equatable, Sendable {
 private enum ConversationRemovalPrecondition: Sendable {
   case unconditional
   case canonical(ConversationSummaryDTO?)
+}
+
+private struct PreparedV2Bootstrap {
+  let value: MobileV2ConversationBootstrap
+  let payload: Data
+  let summary: ConversationSummaryDTO
+}
+
+private struct CachedV2MessageRow {
+  let message: ConversationMessageDTO
+  let delivery: MobileV2MessageDelivery?
 }
 
 @ModelActor
@@ -486,6 +504,7 @@ actor PersistenceStore {
       record.text = draft.text
       record.attachmentsData = attachments
       record.updatedAt = draft.updatedAt
+      record.revision = draft.revision
     } else {
       modelContext.insert(
         DraftRecord(
@@ -494,7 +513,8 @@ actor PersistenceStore {
           conversationID: conversationID,
           text: draft.text,
           attachmentsData: attachments,
-          updatedAt: draft.updatedAt
+          updatedAt: draft.updatedAt,
+          revision: draft.revision
         )
       )
     }
@@ -511,7 +531,8 @@ actor PersistenceStore {
         [DraftAttachment].self,
         from: record.attachmentsData
       ),
-      updatedAt: record.updatedAt
+      updatedAt: record.updatedAt,
+      revision: record.revision
     )
   }
 
@@ -757,7 +778,8 @@ actor PersistenceStore {
             [DraftAttachment].self,
             from: draft.attachmentsData
           ),
-          updatedAt: draft.updatedAt
+          updatedAt: draft.updatedAt,
+          revision: draft.revision
         )
       )
     }
@@ -773,13 +795,15 @@ actor PersistenceStore {
         conversationID: conversationID,
         text: pending.draft,
         attachmentsData: pending.attachmentsData,
-        updatedAt: updatedAt
+        updatedAt: updatedAt,
+        revision: 0
       )
     )
     let restoredDraft = ConversationDraft(
       text: pending.draft,
       attachments: attachments,
-      updatedAt: updatedAt
+      updatedAt: updatedAt,
+      revision: 0
     )
     modelContext.delete(pending)
     do {
@@ -879,9 +903,616 @@ actor PersistenceStore {
     return try replayCursorRecord(scopedConversationID: key)?.lastSeq ?? 0
   }
 
+  @discardableResult
+  func replaceV2Bootstrap(
+    _ bootstrap: MobileV2ConversationBootstrap,
+    gatewayID: String,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws -> V2BootstrapApplyResult {
+    let prepared = try prepareV2Bootstrap(bootstrap, gatewayID: gatewayID)
+    do {
+      let existing = try v2Projection(
+        gatewayID: gatewayID,
+        conversationID: bootstrap.conversation.id
+      )
+      let committed = existing?.version.committedV2Seq ?? 0
+      if bootstrap.v2ThroughSeq < committed {
+        guard let existing else { throw PersistenceStoreError.invalidV2Bootstrap }
+        return V2BootstrapApplyResult(disposition: .stale, current: existing)
+      }
+      if let existing,
+        bootstrap.queueRevision < currentQueueRevision(for: existing.projection)
+      {
+        throw PersistenceStoreError.v2QueueRevisionRegression
+      }
+      let key = scopedID(
+        gatewayID: gatewayID,
+        resourceID: bootstrap.conversation.id
+      )
+      let anchorRecord = try v2BootstrapAnchorRecord(scopedConversationID: key)
+      let overlays = try v2AppliedFrameRecords(
+        gatewayID: gatewayID,
+        conversationID: bootstrap.conversation.id
+      )
+      let historyCursor: String?
+      if
+        let anchorRecord,
+        let conversation = try conversationRecord(
+          gatewayID: gatewayID,
+          conversationID: bootstrap.conversation.id
+        )
+      {
+        let previousAnchor = try ContractCoding.decoder().decode(
+          MobileV2ConversationBootstrap.self,
+          from: anchorRecord.payloadData
+        )
+        let preservesHistoryFrontier = bootstrap.v2ThroughSeq == previousAnchor.v2ThroughSeq
+          && bootstrap.nextCursor == previousAnchor.nextCursor
+          && bootstrap.messages.map(\.id) == previousAnchor.messages.map(\.id)
+        historyCursor = preservesHistoryFrontier
+          ? conversation.v2NextMessageCursor
+          : bootstrap.nextCursor
+      } else {
+        historyCursor = bootstrap.nextCursor
+      }
+      let exactRepeat = try anchorRecord?.payloadData == prepared.payload
+        && overlays.isEmpty
+        && existing != nil
+        && isExactV2BootstrapDerivedState(prepared, gatewayID: gatewayID)
+      if bootstrap.v2ThroughSeq == committed, exactRepeat {
+        return V2BootstrapApplyResult(disposition: .unchanged, current: existing!)
+      }
+
+      try stageV2Bootstrap(prepared, gatewayID: gatewayID, historyCursor: historyCursor)
+      for record in overlays { modelContext.delete(record) }
+      let cursor = try v2ReplayCursorRecord(scopedConversationID: key)
+      let nextMutationRevision = (cursor?.mutationRevision ?? 0) + 1
+      if let cursor {
+        cursor.lastV2Seq = bootstrap.v2ThroughSeq
+        cursor.mutationRevision = nextMutationRevision
+      } else {
+        modelContext.insert(
+          V2ReplayCursorRecord(
+            scopedConversationID: key,
+            gatewayID: gatewayID,
+            conversationID: bootstrap.conversation.id,
+            lastV2Seq: bootstrap.v2ThroughSeq,
+            mutationRevision: nextMutationRevision
+          )
+        )
+      }
+      if let anchorRecord {
+        anchorRecord.payloadData = prepared.payload
+      } else {
+        modelContext.insert(
+          V2BootstrapAnchorRecord(
+            scopedConversationID: key,
+            gatewayID: gatewayID,
+            conversationID: bootstrap.conversation.id,
+            payloadData: prepared.payload
+          )
+        )
+      }
+      if let saveChanges { try saveChanges() } else { try modelContext.save() }
+
+      guard
+        let current = try v2Projection(
+          gatewayID: gatewayID,
+          conversationID: bootstrap.conversation.id
+        )
+      else { throw PersistenceStoreError.invalidV2Bootstrap }
+      let disposition: V2BootstrapApplyDisposition
+      if existing == nil {
+        disposition = .installed
+      } else if bootstrap.v2ThroughSeq > committed {
+        disposition = .advanced
+      } else {
+        disposition = .compacted
+      }
+      return V2BootstrapApplyResult(disposition: disposition, current: current)
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func v2Bootstrap(
+    gatewayID: String,
+    conversationID: String
+  ) throws -> CachedV2ConversationBootstrap? {
+    try v2Projection(gatewayID: gatewayID, conversationID: conversationID)?.projection.anchor
+  }
+
+  func v2Projection(
+    gatewayID: String,
+    conversationID: String
+  ) throws -> VersionedV2ConversationProjection? {
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard
+      let anchorRecord = try v2BootstrapAnchorRecord(scopedConversationID: key),
+      let cursorRecord = try v2ReplayCursorRecord(scopedConversationID: key),
+      let conversationRecord = try conversationRecord(
+        gatewayID: gatewayID,
+        conversationID: conversationID
+      )
+    else { return nil }
+    guard
+      anchorRecord.gatewayID == gatewayID,
+      anchorRecord.conversationID == conversationID,
+      cursorRecord.gatewayID == gatewayID,
+      cursorRecord.conversationID == conversationID,
+      conversationRecord.gatewayID == gatewayID,
+      conversationRecord.conversationID == conversationID
+    else {
+      throw PersistenceStoreError.invalidStoredValue("v2 projection scope")
+    }
+    let wireAnchor = try ContractCoding.decoder().decode(
+      MobileV2ConversationBootstrap.self,
+      from: anchorRecord.payloadData
+    )
+    guard wireAnchor.conversation.id == conversationID else {
+      throw PersistenceStoreError.invalidStoredValue("v2 bootstrap conversation scope")
+    }
+    let frames = try v2AppliedFrameRecords(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ).map {
+      try ContractCoding.decoder().decode(MobileV2SequencedFrame.self, from: $0.payloadData)
+    }
+    try validateV2Overlay(
+      conversationID: conversationID,
+      anchorSequence: wireAnchor.v2ThroughSeq,
+      committedSequence: cursorRecord.lastV2Seq,
+      anchorQueueRevision: wireAnchor.queueRevision,
+      frames: frames
+    )
+    let cachedMessages = try v2Messages(gatewayID: gatewayID, conversationID: conversationID)
+    let pendingInputs = try pendingInputRecords(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ).map {
+      try ContractCoding.decoder().decode(MobileV2PendingInput.self, from: $0.payloadData)
+    }
+    let anchor = CachedV2ConversationBootstrap(
+      conversation: try cachedConversation(from: conversationRecord).summary,
+      messages: cachedMessages.map(\.message),
+      deliveryByMessageID: Dictionary(
+        uniqueKeysWithValues: cachedMessages.compactMap { value in
+          value.delivery.map { (value.message.id, $0) }
+        }
+      ),
+      pendingInputs: pendingInputs,
+      nextCursor: conversationRecord.v2NextMessageCursor,
+      queuePaused: conversationRecord.queuePaused,
+      queueRevision: conversationRecord.queueRevision,
+      pendingFollowUpCount: conversationRecord.pendingFollowUpCount,
+      v2ThroughSeq: wireAnchor.v2ThroughSeq
+    )
+    return VersionedV2ConversationProjection(
+      projection: CachedV2ConversationProjection(
+        anchor: anchor,
+        appliedFrames: frames,
+        committedV2Seq: cursorRecord.lastV2Seq
+      ),
+      version: V2ProjectionVersion(
+        committedV2Seq: cursorRecord.lastV2Seq,
+        mutationRevision: cursorRecord.mutationRevision
+      )
+    )
+  }
+
+  func v2Cursor(gatewayID: String, conversationID: String) throws -> Int {
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    return try v2ReplayCursorRecord(scopedConversationID: key)?.lastV2Seq ?? 0
+  }
+
+  func commitV2Frame(
+    _ frame: MobileV2SequencedFrame,
+    gatewayID: String,
+    expected: V2ProjectionVersion,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws -> V2FrameCommitResult {
+    do {
+      guard
+        let current = try v2Projection(
+          gatewayID: gatewayID,
+          conversationID: frame.conversationId
+        )
+      else { throw PersistenceStoreError.invalidV2Bootstrap }
+      try requireWritableConversation(
+        gatewayID: gatewayID,
+        conversationID: frame.conversationId,
+        allowMissing: false
+      )
+      let sequence = frame.v2Seq
+      let payload = try ContractCoding.encoder().encode(frame)
+      if current.version.committedV2Seq >= sequence {
+        if let existing = try v2AppliedFrameRecord(
+          gatewayID: gatewayID,
+          conversationID: frame.conversationId,
+          sequence: sequence
+        ), existing.payloadData != payload {
+          throw PersistenceStoreError.conflictingV2Frame
+        }
+        return .alreadyCovered(current)
+      }
+      if current.version.committedV2Seq < expected.committedV2Seq {
+        throw PersistenceStoreError.durableV2CursorBehind
+      }
+      guard current.version == expected else { return .staleWriter(current) }
+      guard sequence == current.version.committedV2Seq + 1 else {
+        throw PersistenceStoreError.nonContiguousV2Overlay
+      }
+      if let queueRevision = frame.queueRevision,
+        queueRevision < currentQueueRevision(for: current.projection)
+      {
+        throw PersistenceStoreError.v2QueueRevisionRegression
+      }
+
+      let sequenceKey = v2SequenceID(
+        gatewayID: gatewayID,
+        conversationID: frame.conversationId,
+        sequence: sequence
+      )
+      if let existing = try v2AppliedFrameRecord(scopedSequenceID: sequenceKey) {
+        guard existing.payloadData == payload else {
+          throw PersistenceStoreError.conflictingV2Frame
+        }
+      } else {
+        modelContext.insert(
+          V2AppliedFrameRecord(
+            scopedSequenceID: sequenceKey,
+            gatewayID: gatewayID,
+            conversationID: frame.conversationId,
+            sequence: sequence,
+            payloadData: payload
+          )
+        )
+      }
+      let key = scopedID(gatewayID: gatewayID, resourceID: frame.conversationId)
+      guard let cursor = try v2ReplayCursorRecord(scopedConversationID: key) else {
+        throw PersistenceStoreError.invalidV2Bootstrap
+      }
+      cursor.lastV2Seq = sequence
+      cursor.mutationRevision += 1
+      if let saveChanges { try saveChanges() } else { try modelContext.save() }
+      guard
+        let committed = try v2Projection(
+          gatewayID: gatewayID,
+          conversationID: frame.conversationId
+        )
+      else { throw PersistenceStoreError.invalidV2Bootstrap }
+      return .committed(committed)
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func mergeV2MessagePage(
+    _ page: MobileV2ConversationMessagePage,
+    gatewayID: String,
+    conversationID: String,
+    expectedBefore: String,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws -> CachedV2ConversationMessagePage {
+    guard
+      page.items.allSatisfy({ $0.conversationId == conversationID }),
+      Set(page.items.map(\.id)).count == page.items.count
+    else {
+      throw PersistenceStoreError.invalidV2Bootstrap
+    }
+    try validateV2MessageOwnership(
+      page.items,
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    )
+    _ = try ContractCoding.encoder().encode(page)
+    do {
+      try requireWritableConversation(
+        gatewayID: gatewayID,
+        conversationID: conversationID,
+        allowMissing: false
+      )
+      guard
+        let conversation = try conversationRecord(
+          gatewayID: gatewayID,
+          conversationID: conversationID
+        ),
+        conversation.v2NextMessageCursor == expectedBefore
+      else { throw PersistenceStoreError.v2HistoryCursorMismatch }
+      var materiallyChanged = conversation.v2NextMessageCursor != page.nextCursor
+      for message in page.items {
+        if try upsertV2Message(message, gatewayID: gatewayID, isAnchor: false) {
+          materiallyChanged = true
+        }
+      }
+      conversation.v2NextMessageCursor = page.nextCursor
+      if materiallyChanged {
+        let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+        guard let cursor = try v2ReplayCursorRecord(scopedConversationID: key) else {
+          throw PersistenceStoreError.invalidV2Bootstrap
+        }
+        cursor.mutationRevision += 1
+      }
+      let values = try page.items.map { value -> (ConversationMessageDTO, MobileV2MessageDelivery) in
+        let key = scopedID(gatewayID: gatewayID, resourceID: value.id)
+        guard let record = try messageRecord(scopedID: key) else {
+          throw PersistenceStoreError.invalidStoredValue("v2 history message \(value.id)")
+        }
+        let decoded = try decodeV2Message(record)
+        guard let delivery = decoded.delivery else {
+          throw PersistenceStoreError.invalidStoredValue("v2 history delivery \(value.id)")
+        }
+        return (decoded.message, delivery)
+      }.sorted { lhs, rhs in
+        if lhs.0.ordinal != rhs.0.ordinal { return lhs.0.ordinal < rhs.0.ordinal }
+        return lhs.0.id < rhs.0.id
+      }
+      if let saveChanges { try saveChanges() } else { try modelContext.save() }
+      return CachedV2ConversationMessagePage(
+        messages: values.map(\.0),
+        deliveryByMessageID: Dictionary(
+          uniqueKeysWithValues: values.map { ($0.0.id, $0.1) }
+        ),
+        nextCursor: page.nextCursor,
+        throughSeq: page.throughSeq
+      )
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func stageV2Admission(
+    _ admission: PendingV2Admission,
+    gatewayID: String,
+    conversationID: String,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws {
+    guard
+      isCanonicalUUID(admission.commandID),
+      isCanonicalUUID(admission.inputID),
+      (admission.behavior == .followUp) == (admission.expectedActiveTurnID == nil)
+    else { throw PersistenceStoreError.conflictingV2Admission }
+    try requireWritableConversation(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      allowMissing: false
+    )
+    let payload = try ContractCoding.encoder().encode(admission)
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    do {
+      if let existing = try pendingV2AdmissionRecord(scopedConversationID: key) {
+        guard existing.payloadData == payload else {
+          throw PersistenceStoreError.conflictingV2Admission
+        }
+        return
+      }
+      if try pendingInputRecord(
+        scopedID: scopedID(gatewayID: gatewayID, resourceID: admission.inputID)
+      ) != nil {
+        throw PersistenceStoreError.conflictingV2Admission
+      }
+      let collidesWithAnotherAdmission = try pendingV2AdmissionRecords(gatewayID: gatewayID)
+        .contains { record in
+          record.conversationID != conversationID
+            && (record.commandID == admission.commandID || record.inputID == admission.inputID)
+        }
+      guard collidesWithAnotherAdmission == false else {
+        throw PersistenceStoreError.conflictingV2Admission
+      }
+      modelContext.insert(
+        PendingV2AdmissionRecord(
+          scopedConversationID: key,
+          gatewayID: gatewayID,
+          conversationID: conversationID,
+          commandID: admission.commandID,
+          inputID: admission.inputID,
+          payloadData: payload,
+          createdAt: Date()
+        )
+      )
+      if let saveChanges { try saveChanges() } else { try modelContext.save() }
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func pendingV2Admission(
+    gatewayID: String,
+    conversationID: String
+  ) throws -> PendingV2Admission? {
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard let record = try pendingV2AdmissionRecord(scopedConversationID: key) else {
+      return nil
+    }
+    guard record.gatewayID == gatewayID, record.conversationID == conversationID else {
+      throw PersistenceStoreError.conflictingV2Admission
+    }
+    let admission = try ContractCoding.decoder().decode(
+      PendingV2Admission.self,
+      from: record.payloadData
+    )
+    guard admission.commandID == record.commandID, admission.inputID == record.inputID else {
+      throw PersistenceStoreError.conflictingV2Admission
+    }
+    return admission
+  }
+
+  func recoverableV2Admissions(
+    gatewayID: String,
+    decodeAdmission: @Sendable (Data) throws -> PendingV2Admission = {
+      try ContractCoding.decoder().decode(PendingV2Admission.self, from: $0)
+    }
+  ) throws -> [RecoverableV2Admission] {
+    let targetGatewayID = gatewayID
+    let deleted = ConversationStatus.deleted.rawValue
+    let records = try modelContext.fetch(
+      FetchDescriptor<PendingV2AdmissionRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID },
+        sortBy: [
+          SortDescriptor(\PendingV2AdmissionRecord.createdAt, order: .reverse),
+          SortDescriptor(\PendingV2AdmissionRecord.conversationID),
+          SortDescriptor(\PendingV2AdmissionRecord.commandID),
+        ]
+      )
+    )
+    let conversations = try modelContext.fetch(
+      FetchDescriptor<ConversationRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    )
+    let drafts = try modelContext.fetch(
+      FetchDescriptor<DraftRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    )
+    let conversationsByID = Dictionary(
+      uniqueKeysWithValues: conversations.map { ($0.conversationID, $0) }
+    )
+    let draftsByKey = Dictionary(
+      uniqueKeysWithValues: drafts.map { ($0.scopedConversationID, $0) }
+    )
+    return records.compactMap { record in
+      let conversation = conversationsByID[record.conversationID]
+      let conversationAvailable = conversation != nil && conversation?.statusRaw != deleted
+      let admission: PendingV2Admission?
+      let payloadIssue: RecoverableAttachmentIssue?
+      do {
+        let decoded = try decodeAdmission(record.payloadData)
+        guard decoded.commandID == record.commandID, decoded.inputID == record.inputID else {
+          throw PersistenceStoreError.conflictingV2Admission
+        }
+        admission = decoded
+        payloadIssue = nil
+      } catch {
+        admission = nil
+        payloadIssue = .unreadableStoredPayload
+      }
+      let decodedDraft = draftsByKey[record.scopedConversationID]
+        .map(decodeConversationDraft(from:))
+      guard
+        conversationAvailable == false || payloadIssue != nil
+          || decodedDraft?.attachmentIssue != nil
+      else { return nil }
+      return RecoverableV2Admission(
+        gatewayID: record.gatewayID,
+        conversationID: record.conversationID,
+        conversationTitle: conversation?.title,
+        agentName: conversation?.agentName,
+        commandID: record.commandID,
+        inputID: record.inputID,
+        createdAt: record.createdAt,
+        admission: admission,
+        payloadIssue: payloadIssue,
+        coexistingDraft: decodedDraft?.draft,
+        coexistingDraftAttachmentIssue: decodedDraft?.attachmentIssue,
+        conversationAvailable: conversationAvailable
+      )
+    }
+  }
+
+  func discardV2Admission(
+    gatewayID: String,
+    conversationID: String,
+    commandID: String,
+    inputID: String,
+    expectedConversationAvailable: Bool? = nil,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws -> Bool {
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard
+      let record = try pendingV2AdmissionRecord(scopedConversationID: key),
+      record.gatewayID == gatewayID,
+      record.conversationID == conversationID,
+      record.commandID == commandID,
+      record.inputID == inputID
+    else { return false }
+    let conversation = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    )
+    let conversationAvailable = conversation != nil
+      && conversation?.statusRaw != ConversationStatus.deleted.rawValue
+    if let expectedConversationAvailable,
+      expectedConversationAvailable != conversationAvailable
+    {
+      return false
+    }
+    let draft = try draftRecord(scopedConversationID: key)
+    do {
+      if conversationAvailable,
+        let draft,
+        decodeConversationDraft(from: draft).attachmentIssue == .unreadableStoredPayload
+      {
+        draft.attachmentsData = try ContractCoding.encoder().encode([DraftAttachment]())
+      }
+      modelContext.delete(record)
+      if conversationAvailable == false,
+        let draft
+      {
+        modelContext.delete(draft)
+      }
+      if let saveChanges { try saveChanges() } else { try modelContext.save() }
+      recoveryCache[gatewayID] = nil
+      return true
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
+  func acknowledgeV2Admission(
+    commandID: String,
+    inputID: String,
+    gatewayID: String,
+    conversationID: String,
+    saveChanges: (@Sendable () throws -> Void)? = nil
+  ) throws -> ConversationDraft? {
+    try requireWritableConversation(
+      gatewayID: gatewayID,
+      conversationID: conversationID,
+      allowMissing: false
+    )
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    guard
+      let record = try pendingV2AdmissionRecord(scopedConversationID: key),
+      record.commandID == commandID,
+      record.inputID == inputID
+    else { return try draft(gatewayID: gatewayID, conversationID: conversationID) }
+    do {
+      let admission = try ContractCoding.decoder().decode(
+        PendingV2Admission.self,
+        from: record.payloadData
+      )
+      guard admission.commandID == record.commandID, admission.inputID == record.inputID else {
+        throw PersistenceStoreError.conflictingV2Admission
+      }
+      let draftRecord = try draftRecord(scopedConversationID: key)
+      var retainedDraft = draftRecord.map(decodeConversationDraft(from:))?.draft
+      if let draftRecord,
+        draftRecord.revision == admission.draftRevision,
+        draftRecord.text == admission.text,
+        try preparedAttachmentsMatch(draftRecord.attachmentsData, images: admission.images)
+      {
+        modelContext.delete(draftRecord)
+        retainedDraft = nil
+      }
+      modelContext.delete(record)
+      if let saveChanges { try saveChanges() } else { try modelContext.save() }
+      return retainedDraft
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
+  }
+
   func clearGateway(gatewayID: String) throws {
     let targetGatewayID = gatewayID
-    for record in try modelContext.fetch(
+    do {
+      for record in try modelContext.fetch(
       FetchDescriptor<GatewayProfileRecord>(
         predicate: #Predicate { $0.gatewayID == targetGatewayID }
       )
@@ -937,8 +1568,47 @@ actor PersistenceStore {
     ) {
       modelContext.delete(record)
     }
-    try modelContext.save()
-    recoveryCache[gatewayID] = nil
+    for record in try modelContext.fetch(
+      FetchDescriptor<PendingInputRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
+      FetchDescriptor<V2ReplayCursorRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
+      FetchDescriptor<V2BootstrapAnchorRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
+      FetchDescriptor<V2AppliedFrameRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+    for record in try modelContext.fetch(
+      FetchDescriptor<PendingV2AdmissionRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    ) {
+      modelContext.delete(record)
+    }
+      try modelContext.save()
+      recoveryCache[gatewayID] = nil
+    } catch {
+      modelContext.rollback()
+      throw error
+    }
   }
 
   private func upsertConversation(
@@ -1040,6 +1710,7 @@ actor PersistenceStore {
   private func purgeConversationContent(gatewayID: String, conversationID: String) throws {
     let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
     let preservesDraftForRecovery = try pendingSendRecord(scopedConversationID: key) != nil
+      || pendingV2AdmissionRecord(scopedConversationID: key) != nil
     let targetGatewayID = gatewayID
     let targetConversationID = conversationID
     for record in try modelContext.fetch(
@@ -1070,6 +1741,34 @@ actor PersistenceStore {
       )
     ) {
       modelContext.delete(record)
+    }
+    for record in try pendingInputRecords(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ) {
+      modelContext.delete(record)
+    }
+    if let record = try v2ReplayCursorRecord(scopedConversationID: key) {
+      modelContext.delete(record)
+    }
+    if let record = try v2BootstrapAnchorRecord(scopedConversationID: key) {
+      modelContext.delete(record)
+    }
+    for record in try v2AppliedFrameRecords(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ) {
+      modelContext.delete(record)
+    }
+    if let conversation = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ) {
+      conversation.queuePaused = false
+      conversation.queueRevision = 0
+      conversation.pendingFollowUpCount = 0
+      conversation.v2LastSeq = 0
+      conversation.v2NextMessageCursor = nil
     }
   }
 
@@ -1236,7 +1935,8 @@ actor PersistenceStore {
       ConversationDraft(
         text: record.text,
         attachments: attachments,
-        updatedAt: record.updatedAt
+        updatedAt: record.updatedAt,
+        revision: record.revision
       ),
       attachmentIssue
     )
@@ -1253,7 +1953,622 @@ actor PersistenceStore {
     return try modelContext.fetch(descriptor).first
   }
 
+  private func prepareV2Bootstrap(
+    _ bootstrap: MobileV2ConversationBootstrap,
+    gatewayID: String
+  ) throws -> PreparedV2Bootstrap {
+    let pendingFollowUpCount = bootstrap.pendingInputs.filter { input in
+      input.kind == .followUp && (input.state == .queued || input.state == .delivering)
+    }.count
+    let hasCanonicalQueueOrder = zip(
+      bootstrap.pendingInputs,
+      bootstrap.pendingInputs.dropFirst()
+    ).allSatisfy { lhs, rhs in
+      lhs.enqueueOrder < rhs.enqueueOrder
+    }
+    guard
+      bootstrap.conversation.status != .deleted,
+      bootstrap.v2ThroughSeq >= 0,
+      bootstrap.conversation.v2LastSeq == bootstrap.v2ThroughSeq,
+      bootstrap.conversation.queuePaused == bootstrap.queuePaused,
+      bootstrap.conversation.queueRevision == bootstrap.queueRevision,
+      bootstrap.conversation.pendingFollowUpCount == pendingFollowUpCount,
+      Set(bootstrap.messages.map(\.id)).count == bootstrap.messages.count,
+      Set(bootstrap.pendingInputs.map(\.inputId)).count == bootstrap.pendingInputs.count,
+      bootstrap.messages.allSatisfy({ $0.conversationId == bootstrap.conversation.id }),
+      hasCanonicalQueueOrder
+    else { throw PersistenceStoreError.invalidV2Bootstrap }
+    try validateV2MessageOwnership(
+      bootstrap.messages,
+      gatewayID: gatewayID,
+      conversationID: bootstrap.conversation.id
+    )
+    try validateV2PendingInputOwnership(
+      bootstrap.pendingInputs,
+      gatewayID: gatewayID,
+      conversationID: bootstrap.conversation.id
+    )
+    try requireWritableConversation(
+      gatewayID: gatewayID,
+      conversationID: bootstrap.conversation.id
+    )
+    let summary = v1SummaryProjection(bootstrap.conversation)
+    if let current = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: bootstrap.conversation.id
+    ), current.revision == summary.revision,
+      try cachedConversation(from: current).summary != summary
+    {
+      throw PersistenceStoreError.invalidV2Bootstrap
+    }
+    return PreparedV2Bootstrap(
+      value: bootstrap,
+      payload: try ContractCoding.encoder().encode(bootstrap),
+      summary: summary
+    )
+  }
+
+  private func stageV2Bootstrap(
+    _ prepared: PreparedV2Bootstrap,
+    gatewayID: String,
+    historyCursor: String?
+  ) throws {
+    let bootstrap = prepared.value
+    let conversationID = bootstrap.conversation.id
+    let key = scopedID(gatewayID: gatewayID, resourceID: conversationID)
+    let conversation: ConversationRecord
+    if let existing = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ) {
+      conversation = existing
+      if prepared.summary.revision > existing.revision {
+        apply(prepared.summary, to: existing)
+      }
+    } else {
+      conversation = ConversationRecord(
+        scopedID: key,
+        gatewayID: gatewayID,
+        conversationID: conversationID,
+        agentID: prepared.summary.agentId,
+        agentName: prepared.summary.agentName,
+        title: prepared.summary.title,
+        revision: prepared.summary.revision,
+        statusRaw: prepared.summary.status.rawValue,
+        activeTurnID: prepared.summary.activeTurnId,
+        owningIssueID: prepared.summary.owningIssueId,
+        projectID: prepared.summary.projectId,
+        lastSeq: prepared.summary.lastSeq,
+        lastMessagePreview: prepared.summary.lastMessagePreview,
+        createdAt: prepared.summary.createdAt,
+        updatedAt: prepared.summary.updatedAt,
+        deletedAt: prepared.summary.deletedAt
+      )
+      modelContext.insert(conversation)
+    }
+    conversation.queuePaused = bootstrap.queuePaused
+    conversation.queueRevision = bootstrap.queueRevision
+    conversation.pendingFollowUpCount = bootstrap.conversation.pendingFollowUpCount
+    conversation.v2LastSeq = bootstrap.v2ThroughSeq
+    conversation.v2NextMessageCursor = historyCursor
+
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    for record in try modelContext.fetch(
+      FetchDescriptor<MessageRecord>(
+        predicate: #Predicate {
+          $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
+            && $0.isV2Anchor
+        }
+      )
+    ) {
+      record.isV2Anchor = false
+    }
+    for message in bootstrap.messages {
+      _ = try upsertV2Message(
+        message,
+        gatewayID: gatewayID,
+        isAnchor: true,
+        authoritative: true
+      )
+    }
+
+    for record in try pendingInputRecords(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ) {
+      modelContext.delete(record)
+    }
+    for input in bootstrap.pendingInputs {
+      modelContext.insert(
+        PendingInputRecord(
+          scopedID: scopedID(gatewayID: gatewayID, resourceID: input.inputId),
+          gatewayID: gatewayID,
+          conversationID: conversationID,
+          inputID: input.inputId,
+          enqueueOrder: input.enqueueOrder,
+          payloadData: try ContractCoding.encoder().encode(input)
+        )
+      )
+    }
+  }
+
+  private func isExactV2BootstrapDerivedState(
+    _ prepared: PreparedV2Bootstrap,
+    gatewayID: String
+  ) throws -> Bool {
+    let bootstrap = prepared.value
+    let conversationID = bootstrap.conversation.id
+    guard let conversation = try conversationRecord(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    ),
+      conversation.queuePaused == bootstrap.queuePaused,
+      conversation.queueRevision == bootstrap.queueRevision,
+      conversation.pendingFollowUpCount == bootstrap.conversation.pendingFollowUpCount,
+      conversation.v2LastSeq == bootstrap.v2ThroughSeq
+    else { return false }
+
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    let currentPageRecords = try modelContext.fetch(
+      FetchDescriptor<MessageRecord>(
+        predicate: #Predicate {
+          $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
+            && $0.isV2Anchor
+        }
+      )
+    )
+    guard currentPageRecords.count == bootstrap.messages.count else { return false }
+    let recordsByID = Dictionary(
+      uniqueKeysWithValues: currentPageRecords.map { ($0.messageID, $0) }
+    )
+    for message in bootstrap.messages {
+      guard let record = recordsByID[message.id],
+        record.conversationID == message.conversationId,
+        record.turnID == message.turnId,
+        record.ordinal == message.ordinal,
+        record.roleRaw == message.role.rawValue,
+        record.statusRaw == message.status.rawValue,
+        record.contentData == (try ContractCoding.encoder().encode(message.content)),
+        record.createdAt == message.createdAt,
+        record.updatedAt == message.updatedAt,
+        record.runID == message.runId,
+        record.segmentIndex == message.segmentIndex,
+        record.deliveryKindRaw == message.deliveryKind.rawValue,
+        record.deliveryStatusRaw == message.deliveryStatus?.rawValue
+      else { return false }
+    }
+
+    let pending = try pendingInputRecords(
+      gatewayID: gatewayID,
+      conversationID: conversationID
+    )
+    guard pending.count == bootstrap.pendingInputs.count else { return false }
+    for (record, input) in zip(pending, bootstrap.pendingInputs) {
+      guard
+        record.inputID == input.inputId,
+        record.enqueueOrder == input.enqueueOrder,
+        record.payloadData == (try ContractCoding.encoder().encode(input))
+      else { return false }
+    }
+    return true
+  }
+
+  @discardableResult
+  private func upsertV2Message(
+    _ value: MobileV2ConversationMessage,
+    gatewayID: String,
+    isAnchor: Bool,
+    authoritative: Bool = false
+  ) throws -> Bool {
+    let key = scopedID(gatewayID: gatewayID, resourceID: value.id)
+    let content = try ContractCoding.encoder().encode(value.content)
+    if let record = try messageRecord(scopedID: key) {
+      guard
+        record.gatewayID == gatewayID,
+        record.conversationID == value.conversationId,
+        record.messageID == value.id
+      else { throw PersistenceStoreError.invalidV2Bootstrap }
+      let markerChanged = isAnchor && record.isV2Anchor == false
+      let canReplace = authoritative || value.updatedAt >= record.updatedAt
+      let payloadChanged = isStoredV2Message(record, equalTo: value, content: content) == false
+      if canReplace && payloadChanged {
+        record.conversationID = value.conversationId
+        record.messageID = value.id
+        record.turnID = value.turnId
+        record.ordinal = value.ordinal
+        record.roleRaw = value.role.rawValue
+        record.statusRaw = value.status.rawValue
+        record.contentData = content
+        record.createdAt = value.createdAt
+        record.updatedAt = value.updatedAt
+        record.runID = value.runId
+        record.segmentIndex = value.segmentIndex
+        record.deliveryKindRaw = value.deliveryKind.rawValue
+        record.deliveryStatusRaw = value.deliveryStatus?.rawValue
+      } else if canReplace == false {
+        let requiredMetadata = [
+          record.runID != nil,
+          record.segmentIndex != nil,
+          record.deliveryKindRaw != nil,
+        ]
+        let hasNoMetadata = requiredMetadata.allSatisfy { $0 == false }
+          && record.deliveryStatusRaw == nil
+        let hasCompleteMetadata = requiredMetadata.allSatisfy { $0 }
+        guard hasNoMetadata || hasCompleteMetadata else {
+          throw PersistenceStoreError.invalidStoredValue("partial v2 delivery metadata")
+        }
+        if hasNoMetadata {
+          record.runID = value.runId
+          record.segmentIndex = value.segmentIndex
+          record.deliveryKindRaw = value.deliveryKind.rawValue
+          record.deliveryStatusRaw = value.deliveryStatus?.rawValue
+        }
+        if isAnchor { record.isV2Anchor = true }
+        return hasNoMetadata || markerChanged
+      }
+      if isAnchor { record.isV2Anchor = true }
+      return (canReplace && payloadChanged) || markerChanged
+    }
+    modelContext.insert(
+      MessageRecord(
+        scopedID: key,
+        gatewayID: gatewayID,
+        conversationID: value.conversationId,
+        messageID: value.id,
+        turnID: value.turnId,
+        ordinal: value.ordinal,
+        roleRaw: value.role.rawValue,
+        statusRaw: value.status.rawValue,
+        contentData: content,
+        createdAt: value.createdAt,
+        updatedAt: value.updatedAt,
+        runID: value.runId,
+        segmentIndex: value.segmentIndex,
+        deliveryKindRaw: value.deliveryKind.rawValue,
+        deliveryStatusRaw: value.deliveryStatus?.rawValue,
+        isV2Anchor: isAnchor
+      )
+    )
+    return true
+  }
+
+  private func v2Messages(
+    gatewayID: String,
+    conversationID: String
+  ) throws -> [CachedV2MessageRow] {
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    return try modelContext.fetch(
+      FetchDescriptor<MessageRecord>(
+        predicate: #Predicate {
+          $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
+        },
+        sortBy: [
+          SortDescriptor(\MessageRecord.ordinal),
+          SortDescriptor(\MessageRecord.messageID),
+        ]
+      )
+    ).map(decodeV2Message)
+  }
+
+  private func decodeV2Message(_ record: MessageRecord) throws -> CachedV2MessageRow {
+    guard let role = MessageRole(rawValue: record.roleRaw) else {
+      throw PersistenceStoreError.invalidStoredValue("message role \(record.roleRaw)")
+    }
+    guard let status = MessageStatus(rawValue: record.statusRaw) else {
+      throw PersistenceStoreError.invalidStoredValue("message status \(record.statusRaw)")
+    }
+    let message = ConversationMessageDTO(
+      id: record.messageID,
+      conversationId: record.conversationID,
+      turnId: record.turnID,
+      ordinal: record.ordinal,
+      role: role,
+      status: status,
+      content: try ContractCoding.decoder().decode(MessageContent.self, from: record.contentData),
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt
+    )
+    let metadata = [record.runID != nil, record.segmentIndex != nil, record.deliveryKindRaw != nil]
+    guard metadata.allSatisfy({ $0 }) || metadata.allSatisfy({ !$0 }) else {
+      throw PersistenceStoreError.invalidStoredValue("partial v2 delivery metadata")
+    }
+    guard
+      let runID = record.runID,
+      let segmentIndex = record.segmentIndex,
+      let kindRaw = record.deliveryKindRaw
+    else { return CachedV2MessageRow(message: message, delivery: nil) }
+    guard let kind = MobileV2DeliveryKind(rawValue: kindRaw) else {
+      throw PersistenceStoreError.invalidStoredValue("delivery kind \(kindRaw)")
+    }
+    let deliveryStatus: MobileV2DeliveryStatus?
+    if let raw = record.deliveryStatusRaw {
+      guard let value = MobileV2DeliveryStatus(rawValue: raw) else {
+        throw PersistenceStoreError.invalidStoredValue("delivery status \(raw)")
+      }
+      deliveryStatus = value
+    } else {
+      deliveryStatus = nil
+    }
+    return CachedV2MessageRow(
+      message: message,
+      delivery: MobileV2MessageDelivery(
+        runId: runID,
+        segmentIndex: segmentIndex,
+        kind: kind,
+        status: deliveryStatus
+      )
+    )
+  }
+
+  private func isStoredV2Message(
+    _ record: MessageRecord,
+    equalTo value: MobileV2ConversationMessage,
+    content: Data
+  ) -> Bool {
+    record.conversationID == value.conversationId
+      && record.messageID == value.id
+      && record.turnID == value.turnId
+      && record.ordinal == value.ordinal
+      && record.roleRaw == value.role.rawValue
+      && record.statusRaw == value.status.rawValue
+      && record.contentData == content
+      && record.createdAt == value.createdAt
+      && record.updatedAt == value.updatedAt
+      && record.runID == value.runId
+      && record.segmentIndex == value.segmentIndex
+      && record.deliveryKindRaw == value.deliveryKind.rawValue
+      && record.deliveryStatusRaw == value.deliveryStatus?.rawValue
+  }
+
+  private func validateV2Overlay(
+    conversationID: String,
+    anchorSequence: Int,
+    committedSequence: Int,
+    anchorQueueRevision: Int,
+    frames: [MobileV2SequencedFrame]
+  ) throws {
+    guard committedSequence >= anchorSequence else {
+      throw PersistenceStoreError.nonContiguousV2Overlay
+    }
+    let expected = committedSequence == anchorSequence
+      ? []
+      : Array((anchorSequence + 1)...committedSequence)
+    guard
+      frames.allSatisfy({ $0.conversationId == conversationID }),
+      frames.map(\.v2Seq) == expected
+    else {
+      throw PersistenceStoreError.nonContiguousV2Overlay
+    }
+    var queueRevision = anchorQueueRevision
+    for frame in frames {
+      if let next = frame.queueRevision {
+        if next < queueRevision {
+          throw PersistenceStoreError.v2QueueRevisionRegression
+        }
+        queueRevision = next
+      }
+    }
+  }
+
+  private func currentQueueRevision(for projection: CachedV2ConversationProjection) -> Int {
+    projection.appliedFrames.reduce(projection.anchor.queueRevision) { current, frame in
+      max(current, frame.queueRevision ?? current)
+    }
+  }
+
+  private func preparedAttachmentsMatch(_ data: Data, images: [MessageImage]) throws -> Bool {
+    let attachments = try ContractCoding.decoder().decode([PreparedAttachment].self, from: data)
+    guard attachments.count == images.count else { return false }
+    return zip(attachments, images).allSatisfy { attachment, image in
+      attachment.mediaType == image.mediaType.rawValue
+        && attachment.data.base64EncodedString() == image.data
+    }
+  }
+
+  private func isCanonicalUUID(_ value: String) -> Bool {
+    guard let uuid = UUID(uuidString: value) else { return false }
+    return uuid.uuidString.lowercased() == value
+  }
+
+  private func v1SummaryProjection(_ value: MobileV2ConversationSummary)
+    -> ConversationSummaryDTO
+  {
+    ConversationSummaryDTO(
+      id: value.id,
+      agentId: value.agentId,
+      agentName: value.agentName,
+      title: value.title,
+      revision: value.revision,
+      status: value.status,
+      activeTurnId: value.activeTurnId,
+      owningIssueId: value.owningIssueId,
+      projectId: value.projectId,
+      lastSeq: value.lastSeq,
+      lastMessagePreview: value.lastMessagePreview,
+      createdAt: value.createdAt,
+      updatedAt: value.updatedAt,
+      deletedAt: value.deletedAt
+    )
+  }
+
+  private func pendingInputRecords(
+    gatewayID: String,
+    conversationID: String
+  ) throws -> [PendingInputRecord] {
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    return try modelContext.fetch(
+      FetchDescriptor<PendingInputRecord>(
+        predicate: #Predicate {
+          $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
+        },
+        sortBy: [
+          SortDescriptor(\PendingInputRecord.enqueueOrder),
+          SortDescriptor(\PendingInputRecord.inputID),
+        ]
+      )
+    )
+  }
+
+  private func pendingInputRecord(scopedID: String) throws -> PendingInputRecord? {
+    let key = scopedID
+    var descriptor = FetchDescriptor<PendingInputRecord>(
+      predicate: #Predicate { $0.scopedID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
+  private func validateV2MessageOwnership(
+    _ messages: [MobileV2ConversationMessage],
+    gatewayID: String,
+    conversationID: String
+  ) throws {
+    for message in messages {
+      let key = scopedID(gatewayID: gatewayID, resourceID: message.id)
+      if let record = try messageRecord(scopedID: key),
+        record.gatewayID != gatewayID || record.conversationID != conversationID
+      {
+        throw PersistenceStoreError.invalidV2Bootstrap
+      }
+    }
+  }
+
+  private func validateV2PendingInputOwnership(
+    _ inputs: [MobileV2PendingInput],
+    gatewayID: String,
+    conversationID: String
+  ) throws {
+    let admissions = try pendingV2AdmissionRecords(gatewayID: gatewayID)
+    for input in inputs {
+      let key = scopedID(gatewayID: gatewayID, resourceID: input.inputId)
+      if let record = try pendingInputRecord(scopedID: key),
+        record.gatewayID != gatewayID || record.conversationID != conversationID
+      {
+        throw PersistenceStoreError.invalidV2Bootstrap
+      }
+      if admissions.contains(where: {
+        $0.inputID == input.inputId && $0.conversationID != conversationID
+      }) {
+        throw PersistenceStoreError.invalidV2Bootstrap
+      }
+    }
+  }
+
+  private func v2AppliedFrameRecords(
+    gatewayID: String,
+    conversationID: String
+  ) throws -> [V2AppliedFrameRecord] {
+    let targetGatewayID = gatewayID
+    let targetConversationID = conversationID
+    return try modelContext.fetch(
+      FetchDescriptor<V2AppliedFrameRecord>(
+        predicate: #Predicate {
+          $0.gatewayID == targetGatewayID && $0.conversationID == targetConversationID
+        },
+        sortBy: [SortDescriptor(\V2AppliedFrameRecord.sequence)]
+      )
+    )
+  }
+
+  private func v2BootstrapAnchorRecord(
+    scopedConversationID: String
+  ) throws -> V2BootstrapAnchorRecord? {
+    let key = scopedConversationID
+    var descriptor = FetchDescriptor<V2BootstrapAnchorRecord>(
+      predicate: #Predicate { $0.scopedConversationID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
+  private func v2ReplayCursorRecord(
+    scopedConversationID: String
+  ) throws -> V2ReplayCursorRecord? {
+    let key = scopedConversationID
+    var descriptor = FetchDescriptor<V2ReplayCursorRecord>(
+      predicate: #Predicate { $0.scopedConversationID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
+  private func v2AppliedFrameRecord(
+    scopedSequenceID: String
+  ) throws -> V2AppliedFrameRecord? {
+    let key = scopedSequenceID
+    var descriptor = FetchDescriptor<V2AppliedFrameRecord>(
+      predicate: #Predicate { $0.scopedSequenceID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
+  private func v2AppliedFrameRecord(
+    gatewayID: String,
+    conversationID: String,
+    sequence: Int
+  ) throws -> V2AppliedFrameRecord? {
+    try v2AppliedFrameRecord(
+      scopedSequenceID: v2SequenceID(
+        gatewayID: gatewayID,
+        conversationID: conversationID,
+        sequence: sequence
+      )
+    )
+  }
+
+  private func pendingV2AdmissionRecord(
+    scopedConversationID: String
+  ) throws -> PendingV2AdmissionRecord? {
+    let key = scopedConversationID
+    var descriptor = FetchDescriptor<PendingV2AdmissionRecord>(
+      predicate: #Predicate { $0.scopedConversationID == key }
+    )
+    descriptor.fetchLimit = 1
+    return try modelContext.fetch(descriptor).first
+  }
+
+  private func pendingV2AdmissionRecords(
+    gatewayID: String
+  ) throws -> [PendingV2AdmissionRecord] {
+    let targetGatewayID = gatewayID
+    return try modelContext.fetch(
+      FetchDescriptor<PendingV2AdmissionRecord>(
+        predicate: #Predicate { $0.gatewayID == targetGatewayID }
+      )
+    )
+  }
+
+  private func v2SequenceID(
+    gatewayID: String,
+    conversationID: String,
+    sequence: Int
+  ) -> String {
+    "\(gatewayID)|\(conversationID)|\(sequence)"
+  }
+
   private func scopedID(gatewayID: String, resourceID: String) -> String {
     "\(gatewayID)|\(resourceID)"
+  }
+}
+
+private extension MobileV2SequencedFrame {
+  var queueRevision: Int? {
+    switch self {
+    case let .inputAccepted(_, _, _, value, _),
+      let .inputUpdated(_, _, _, value, _),
+      let .inputRemoved(_, _, _, value, _),
+      let .inputFailed(_, _, _, value, _),
+      let .inputDelivered(_, _, _, value, _, _, _, _, _),
+      let .queuePaused(_, _, _, value, _, _),
+      let .queueResumed(_, _, _, value, _, _):
+      value
+    case .accepted, .event, .done, .error:
+      nil
+    }
   }
 }
