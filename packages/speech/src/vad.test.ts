@@ -73,20 +73,36 @@ describe('VoiceActivityDetector', () => {
     expect(vad.speaking).toBe(false);
   });
 
-  it('adapts the noise floor to a quiet hum, then still triggers on a louder tone', () => {
+  it('the same mid-volume tone starts speech against a cold (unadapted) floor', () => {
+    // Baseline for the drift test below: this exact tone clears 3x the
+    // initial 1e-4 floor (rms ~4.95e-4 > 3e-4) when nothing has adapted it.
+    const vad = new VoiceActivityDetector();
+    const events = pushAll(vad, tone(1000, 440, 0.0007));
+    expect(byType(events, 'speech_start')).toHaveLength(1);
+  });
+
+  it('adapts the noise floor to a quiet hum: a mid tone no longer starts speech, a loud one still does', () => {
     const vad = new VoiceActivityDetector();
 
-    // Hum RMS (~1.5e-4) is deliberately below the initial 3x threshold over
+    // Hum RMS (~2.3e-4) is deliberately below the initial 3x threshold over
     // the 1e-4 floor (3e-4), so it's classified as non-speech from the start
-    // and the floor adapts toward it over many small frames.
-    const humEvents = pushAll(vad, noise(5000, 0.00026, 7));
+    // and the floor adapts toward it over many small frames (5s chunked
+    // into 20ms pieces so the EMA actually iterates rather than taking one
+    // giant step).
+    const humEvents = pushAll(vad, noise(5000, 0.0004, 7));
     expect(byType(humEvents, 'speech_start')).toHaveLength(0);
+
+    // The exact tone that starts speech cold (previous test) does NOT once
+    // the floor has adapted toward the hum (rms ~4.95e-4 < 3 * ~2.3e-4 =
+    // ~6.9e-4) — this is what actually proves the floor moved, rather than
+    // merely staying frozen at its initial value.
+    const midEvents = pushAll(vad, tone(1000, 440, 0.0007));
+    expect(byType(midEvents, 'speech_start')).toHaveLength(0);
     expect(vad.speaking).toBe(false);
 
-    // A tone far above the adapted floor (~1.5e-4 * 3 = 4.5e-4) still starts
-    // speech — the drift didn't desensitize the detector into deafness.
-    const toneEvents = pushAll(vad, tone(1000, 440, 0.5));
-    expect(byType(toneEvents, 'speech_start')).toHaveLength(1);
+    // A tone loud enough to clear even the adapted floor still starts speech.
+    const loudEvents = pushAll(vad, tone(1000, 440, 0.5));
+    expect(byType(loudEvents, 'speech_start')).toHaveLength(1);
     expect(vad.speaking).toBe(true);
   });
 
@@ -110,18 +126,17 @@ describe('VoiceActivityDetector', () => {
   it('reset() clears speaking state and the adapted noise floor', () => {
     const vad = new VoiceActivityDetector();
 
-    // Adapt the floor upward with a moderately loud hum.
-    pushAll(vad, noise(2000, 0.02, 3));
-    // A quieter tone that would NOT clear 3x the adapted floor.
-    const beforeReset = pushAll(vad, tone(1000, 440, 0.02));
+    // Adapt the floor upward with the same hum used in the drift test above.
+    pushAll(vad, noise(5000, 0.0004, 7));
+    const beforeReset = pushAll(vad, tone(1000, 440, 0.0007));
     expect(byType(beforeReset, 'speech_start')).toHaveLength(0);
 
     vad.reset();
     expect(vad.speaking).toBe(false);
 
-    // Same quiet tone now clears 3x the reset floor (1e-4), proving the
-    // floor really was reset rather than merely retained.
-    const afterReset = pushAll(vad, tone(1000, 440, 0.02));
+    // Same tone now clears 3x the reset floor (1e-4), proving the floor
+    // really was reset rather than merely retained.
+    const afterReset = pushAll(vad, tone(1000, 440, 0.0007));
     expect(byType(afterReset, 'speech_start')).toHaveLength(1);
   });
 
