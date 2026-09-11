@@ -358,6 +358,13 @@ actor FakeAudioPlayer: AudioPlaying {
   private var continuation: CheckedContinuation<Void, Error>?
   private var failure: Error?
   private var playing = false
+  // Fix round 2 (item 4): `AudioPlaying` dropped its default no-op
+  // `enqueuePCM`/`flush` — recorded here (not yet asserted on by this
+  // suite, which only drives `playMP3`) so a future voice-mode/barge-in
+  // test against `ReadAloudFeature` or a shared fake does not need to add
+  // this plumbing from scratch.
+  private(set) var enqueued: [(Data, Double)] = []
+  private(set) var flushCount = 0
 
   var isPlaying: Bool { playing }
 
@@ -377,6 +384,14 @@ actor FakeAudioPlayer: AudioPlaying {
   func stop() async {
     stopCount += 1
     finish()
+  }
+
+  func enqueuePCM(_ data: Data, sampleRate: Double) async {
+    enqueued.append((data, sampleRate))
+  }
+
+  func flush() async {
+    flushCount += 1
   }
 
   /// Playback reaching its natural end.

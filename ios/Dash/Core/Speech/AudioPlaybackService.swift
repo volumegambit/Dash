@@ -22,18 +22,17 @@ protocol AudioPlaying: Sendable {
   /// path. A 0-byte `data` is a no-op rather than an error — the gateway can
   /// legitimately send an empty frame at the end of a turn.
   ///
-  /// Default no-op via the extension below so existing `playMP3`-only
-  /// conformers (test fakes) do not have to change; `AudioPlaybackService`
-  /// overrides it with a real PCM player.
+  /// Fix round 2 (item 4): no default implementation — every conformer,
+  /// including test fakes, implements this explicitly. A fake that silently
+  /// no-ops here would let a B9 barge-in test pass without ever proving a
+  /// frame was actually enqueued; `ReadAloudFeatureTests.swift`'s
+  /// `FakeAudioPlayer` and `UITestScenarioSupport.swift`'s `UITestAudioPlayer`
+  /// both record calls (`enqueued`/`flushCount`) so those tests can assert on
+  /// them.
   func enqueuePCM(_ data: Data, sampleRate: Double) async
   /// Barge-in: stops PCM playback now and drops any buffered frames, without
   /// touching `playMP3`'s player. A no-op with nothing queued.
   func flush() async
-}
-
-extension AudioPlaying {
-  func enqueuePCM(_ data: Data, sampleRate: Double) async {}
-  func flush() async {}
 }
 
 enum AudioPlaybackError: Error, Equatable, Sendable {
@@ -71,6 +70,18 @@ actor AudioPlaybackService: AudioPlaying {
   private let pcmPlayerNode = AVAudioPlayerNode()
   private var pcmFormat: AVAudioFormat?
 
+  /// Fix round 2 (item 1): `pcmEngine.start()` itself cannot be forced to
+  /// fail deterministically in a test — there is no host-controllable way to
+  /// make real `AVAudioEngine` hardware refuse to start. This seam wraps the
+  /// one call site that matters (whether `enqueuePCM`'s guard against a
+  /// non-running engine actually holds) without needing a full tap-injection
+  /// seam the way `AudioCaptureService.installTap` does: a test double here
+  /// can throw WITHOUT ever touching the real `pcmEngine`, so
+  /// `pcmEngine.isRunning` still correctly reports `false` afterward — the
+  /// exact state `enqueuePCM`'s guard has to handle correctly, or crash on
+  /// `pcmPlayerNode.play()`.
+  private let startPCMEngine: @Sendable (AVAudioEngine) throws -> Void
+
   var isPlaying: Bool { player?.isPlaying ?? false }
 
   /// Test-only window into the PCM engine, distinct from `isPlaying` (which
@@ -80,7 +91,8 @@ actor AudioPlaybackService: AudioPlaying {
   /// idle.
   var isPCMEngineRunning: Bool { pcmEngine.isRunning }
 
-  init() {
+  init(startPCMEngine: @escaping @Sendable (AVAudioEngine) throws -> Void = { try $0.start() }) {
+    self.startPCMEngine = startPCMEngine
     // Attached once, up front: `AVAudioPlayerNode.stop()`/`.reset()` are safe
     // to call on an attached-but-never-connected node, which is exactly the
     // idle state a `flush()` with nothing queued finds it in.
@@ -152,13 +164,16 @@ actor AudioPlaybackService: AudioPlaying {
 
     guard let channel = buffer.floatChannelData else { return }
     data.withUnsafeBytes { raw in
-      let samples = raw.bindMemory(to: Int16.self)
       for index in 0..<sampleCount {
+        // Fix round 2 (item 7): `loadUnaligned`, not `bindMemory` — `data`
+        // can be a slice of a larger buffer (e.g. sliced off a network
+        // frame), which is not guaranteed to start at a 2-byte-aligned
+        // address; `bindMemory` assumes alignment `loadUnaligned` does not.
+        let sample = raw.loadUnaligned(fromByteOffset: index * MemoryLayout<Int16>.size, as: Int16.self)
         // `Int16(littleEndian:)` makes the wire's byte order explicit rather
         // than relying on the host also being little-endian (true today, but
         // not something this line should quietly assume).
-        let sample = Int16(littleEndian: samples[index])
-        channel[0][index] = Float(sample) / 32_768.0
+        channel[0][index] = Float(Int16(littleEndian: sample)) / 32_768.0
       }
     }
 
@@ -166,8 +181,16 @@ actor AudioPlaybackService: AudioPlaying {
       // Nothing sensible to do if the engine refuses to start (no output
       // route, e.g. a host with audio disabled) — the frame is simply
       // dropped rather than throwing, since `enqueuePCM` promises not to.
-      try? pcmEngine.start()
+      try? startPCMEngine(pcmEngine)
     }
+    // Fix round 2 (item 1, BLOCKER): `AVAudioPlayerNode.play()` on a
+    // non-running engine raises an uncatchable AVFoundation assertion — a
+    // frame arriving while the engine failed to start (e.g. mid phone call)
+    // would crash the app rather than merely losing that frame. The comment
+    // above already promised to drop the frame on a failed start; this guard
+    // is what actually keeps that promise instead of falling through to
+    // `play()` regardless.
+    guard pcmEngine.isRunning else { return }
     pcmPlayerNode.scheduleBuffer(buffer, completionHandler: nil)
     if !pcmPlayerNode.isPlaying {
       pcmPlayerNode.play()
@@ -204,11 +227,17 @@ actor AudioPlaybackService: AudioPlaying {
 
     let wasRunning = pcmEngine.isRunning
     if wasRunning { pcmEngine.stop() }
+    // Fix round 2 (item 6): `stop()` before `reset()` — `reset()` alone does
+    // not clear the node's playing flag, so a reconnect mid-playback could
+    // leave `pcmPlayerNode.isPlaying` true and `enqueuePCM`'s `if
+    // !pcmPlayerNode.isPlaying { play() }` would then skip calling `play()`
+    // on the newly connected node.
+    pcmPlayerNode.stop()
     pcmPlayerNode.reset()
     pcmEngine.disconnectNodeOutput(pcmPlayerNode)
     pcmEngine.connect(pcmPlayerNode, to: pcmEngine.mainMixerNode, format: format)
     pcmFormat = format
-    if wasRunning { try? pcmEngine.start() }
+    if wasRunning { try? startPCMEngine(pcmEngine) }
     return format
   }
 

@@ -119,10 +119,11 @@ less precisely.
 ## Voice mode — capture and playback (device only)
 
 `AudioCaptureService` and `AudioPlaybackService`'s PCM path (Task B8) need a real microphone and
-a real audio route, so — like dictation and read-aloud above — none of this is exercised on the
-simulator; `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level logic only, and
-`AudioCaptureTerminationTests` covers only the stream-termination plumbing pattern, not the real
-capture actor.
+a real audio route, so — like dictation and read-aloud above — the REAL tap/route is not
+exercised on the simulator. `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level
+logic; `AudioCaptureServiceTests` (fix round 2) exercises `AudioCaptureService`'s own logic —
+conversion, framing, termination plumbing, the generation guard — against the real actor via an
+injectable tap seam, with only the hardware tap itself faked.
 
 - [ ] Start voice mode and speak -> frames arrive at roughly 10/s (100 ms each); the orb's level
       meter visibly tracks your voice, not a flat line
@@ -134,6 +135,10 @@ capture actor.
       trailing audio or delay before the mic is heard again. PCM16 is rendered through a Float32
       mixer connection, so also confirm the agent's voice sounds correct (no static, pitch shift,
       or clipping) — that conversion is new as of fix round 1
+- [ ] Echo cancellation: with the agent speaking through the device speaker, the agent must not
+      interrupt itself with its own voice picked up by the mic (the capture engine's
+      `.voiceChat` mode enables voice-processing/echo cancellation; playback runs on a SEPARATE
+      engine from capture, so this is not automatic — confirm it actually holds on real hardware)
 
 ## Evidence notes
 

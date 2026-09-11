@@ -1520,6 +1520,11 @@ extension AppDependenciesFactory {
   /// button's progress state is visible in a capture.
   private actor UITestAudioPlayer: AudioPlaying {
     private var playing = false
+    // Fix round 2 (item 4): `AudioPlaying` dropped its default no-op
+    // `enqueuePCM`/`flush` — this fake records both so a UI-test scenario
+    // driving voice mode can be extended later without silently no-op-ing.
+    private(set) var enqueued: [(Data, Double)] = []
+    private(set) var flushCount = 0
 
     var isPlaying: Bool { playing }
 
@@ -1531,6 +1536,14 @@ extension AppDependenciesFactory {
 
     func stop() async {
       playing = false
+    }
+
+    func enqueuePCM(_ data: Data, sampleRate: Double) async {
+      enqueued.append((data, sampleRate))
+    }
+
+    func flush() async {
+      flushCount += 1
     }
   }
 

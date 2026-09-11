@@ -76,6 +76,28 @@ struct AudioPlaybackServiceTests {
     #expect(await service.isPCMEngineRunning == false)
   }
 
+  /// Fix round 2 (item 1, BLOCKER): before this fix, a failed
+  /// `pcmEngine.start()` still fell through to `pcmPlayerNode.play()`, which
+  /// raises an uncatchable AVFoundation assertion on a non-running engine —
+  /// a real crash, not a Swift error, so nothing could catch it. This is the
+  /// deterministic regression test for that: `startPCMEngine` is faked to
+  /// throw WITHOUT ever touching the real `pcmEngine`, so `pcmEngine`
+  /// genuinely never starts (this is not a mock standing in for reality —
+  /// the actual engine object is actually not running) and `enqueuePCM` has
+  /// to cope with exactly the state the crash required. Before the guard was
+  /// added, this test would have crashed the whole test process rather than
+  /// failing a `#expect` — there being no other way to observe an uncatchable
+  /// assertion from Swift.
+  @Test("enqueuePCM drops the frame instead of calling play() when the engine fails to start")
+  func enqueuePCMDropsFrameWhenEngineFailsToStart() async {
+    let service = AudioPlaybackService(startPCMEngine: { _ in throw BoomError() })
+    let frame = makeTonePCM16(frequency: 440, sampleRate: 16_000, sampleCount: 1_600)
+
+    await service.enqueuePCM(frame, sampleRate: 16_000)
+
+    #expect(await service.isPCMEngineRunning == false)
+  }
+
   /// A real, non-silent PCM16 mono tone at `sampleRate`, little-endian —
   /// the same wire shape `enqueuePCM` documents. `frequency` and
   /// `sampleRate` are deliberately real audio parameters (not degenerate
@@ -122,6 +144,11 @@ struct AudioPlaybackServiceTests {
     return data
   }
 }
+
+/// A distinct, empty error for the `startPCMEngine` seam test — any `Error`
+/// would do, since the test only cares that `enqueuePCM` never propagates it
+/// (it promises not to throw) and correctly treats the engine as not running.
+private struct BoomError: Error {}
 
 extension Data {
   fileprivate mutating func appendLittleEndian(_ value: UInt32) {

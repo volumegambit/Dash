@@ -85,4 +85,38 @@ struct PCMFramerTests {
     #expect(frames.count == 1)
     #expect(frames[0].count == 3_200)
   }
+
+  /// Fix round 2 (item 8): `arbitraryPushSizesStillYieldExactFrames` above
+  /// only checks total BYTE COUNT, which a byte swapped between two frames
+  /// (or dropped and coincidentally replaced) would not necessarily break.
+  /// This pushes distinct, non-repeating bytes (a wrapping counter, so no
+  /// two bytes in the whole input are equal by coincidence within a
+  /// 256-byte window) across the same odd push sizes, then reassembles every
+  /// emitted frame plus the drained tail and asserts the result is
+  /// byte-for-byte identical to the input — proving ordering and content,
+  /// not just length.
+  @Test("concatenating every emitted frame plus the drained tail reproduces the input exactly")
+  func concatenationReproducesInputExactly() {
+    var framer = PCMFramer(bytesPerFrame: 3_200)
+    let pushSizes = [1, 7_000, 5, 3_199, 3_201, 2]
+    var input = Data()
+    var counter: UInt8 = 0
+    var allFrames: [Data] = []
+    for size in pushSizes {
+      var chunk = Data(capacity: size)
+      for _ in 0..<size {
+        chunk.append(counter)
+        counter = counter &+ 1
+      }
+      input.append(chunk)
+      allFrames.append(contentsOf: framer.push(chunk))
+    }
+    let tail = framer.drain()
+
+    var reassembled = Data()
+    for frame in allFrames { reassembled.append(frame) }
+    if let tail { reassembled.append(tail) }
+
+    #expect(reassembled == input)
+  }
 }
