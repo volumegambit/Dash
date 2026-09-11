@@ -2,20 +2,27 @@
 // Speech E2E smoke — boots a REAL gateway under a throwaway DASH_HOME
 // (reusing scripts/memory-e2e/harness.mjs, which copies secret.key +
 // credentials.enc so the configured OpenRouter key is present) and drives
-// the Phase A speech routes against the REAL provider:
+// the speech routes AND the hands-free voice WebSocket protocol against the
+// REAL provider:
 //
 //   1. GET  /speech/config            → openrouter provider available; realtime slot unavailable with reason
 //   2. GET  /speech/models?kind=…     → at least one transcription and one speech model
 //   3. POST /speech/transcriptions    → fixtures/hello.wav ("Hello from Dash, what is two plus two?") transcribes
 //   4. POST /speech/speech            → audio/mpeg bytes for a short sentence
+//   5. validation envelope on the mobile mount
+//   6. a full hands-free voice turn over /ws/chat: voice_start → stream
+//      fixtures/hello.wav's PCM as ~100ms voice_audio frames (600ms of
+//      calibration silence first, 1.5s of trailing silence after) → asserts
+//      voice_state listening, a final voice_transcript, the hub's accepted
+//      AFTER the transcript, >=1 voice_speech, done, voice_state listening
+//      again, then voice_stop → voice_stopped { reason: 'client' }.
 //
 // Also exercises the /mobile/v1 mount (health advertises 'speech-v1').
 // Real (small, ~cents) provider calls, so NOT part of `npm test`/CI.
-// Phase B (voice frames over /ws/chat) is appended to this script by Task B10.
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootGateway, preflight } from '../memory-e2e/harness.mjs';
+import { bootGateway, pickModel, preflight, registerAgent, sleep } from '../memory-e2e/harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Whisper may write "2+2" or "two plus two": accept either spelling of each token.
@@ -44,6 +51,41 @@ const json = async (res) => {
     return { _raw: text };
   }
 };
+
+/**
+ * Find the `data` sub-chunk of a canonical RIFF/WAVE file and return its raw
+ * PCM bytes. `afconvert` inserts a `FLLR` filler chunk between `fmt ` and
+ * `data` for alignment, so the PCM does NOT reliably start at byte 44 — it is
+ * found by walking the chunk list, not assumed.
+ */
+function wavPcm(buf) {
+  let offset = 12; // past 'RIFF' size 'WAVE'
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString('ascii', offset, offset + 4);
+    const size = buf.readUInt32LE(offset + 4);
+    if (id === 'data') return buf.subarray(offset + 8, offset + 8 + size);
+    offset += 8 + size + (size % 2);
+  }
+  throw new Error('no data chunk found in WAV file');
+}
+
+/** One-line description of a voice/hub frame, for the transcript log. */
+function describeFrame(m) {
+  if (m.type === 'voice_state') return `state=${m.state}${m.turnId ? ` turnId=${m.turnId}` : ''}`;
+  if (m.type === 'voice_transcript') {
+    return `final=${m.final} turnId=${m.turnId ?? '-'} text="${m.text}"`;
+  }
+  if (m.type === 'voice_speech') {
+    const bytes = typeof m.audio === 'string' ? Buffer.from(m.audio, 'base64').length : 0;
+    return `seq=${m.seq} format=${m.format} bytes=${bytes} text="${m.text}"`;
+  }
+  if (m.type === 'voice_error') return `code=${m.code} error=${m.error}`;
+  if (m.type === 'voice_stopped') return `reason=${m.reason}`;
+  if (m.type === 'accepted') return `id=${m.id}`;
+  if (m.type === 'done') return `id=${m.id} outcome=${m.outcome ?? '-'}`;
+  if (m.type === 'error') return `id=${m.id} error=${m.error} code=${m.code ?? '-'}`;
+  return '';
+}
 
 async function main() {
   await preflight();
@@ -179,6 +221,245 @@ async function main() {
       "400 { code: 'validation_failed' }",
       `${vRes.status} ${JSON.stringify(vBody)}`,
     );
+
+    // 6. Hands-free voice turn over /ws/chat (real STT + LLM + TTS)
+    console.log('\n6. WebSocket voice turn (/ws/chat)');
+    const model = process.env.SPEECH_E2E_MODEL || (await pickModel());
+    const agent = await registerAgent(gw, {
+      name: 'speech-e2e',
+      model,
+      systemPrompt: 'You are a terse assistant. Answer the spoken question in one short sentence.',
+    });
+    console.log(`     agent ${agent.id} (model ${model})`);
+    const convRes = await fetch(`${gw.mgmtUrl}/conversations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: agent.id, requestId: `speech-e2e-${Date.now()}` }),
+    });
+    const conv = await json(convRes);
+    require_(
+      convRes.ok && typeof conv.id === 'string',
+      'created a conversation for the voice turn',
+      '201 { id }',
+      `${convRes.status} ${JSON.stringify(conv)}`,
+    );
+    console.log(`     conversation ${conv.id}`);
+
+    const voiceId = crypto.randomUUID();
+    const wsT0 = Date.now();
+    const wsFrames = []; // { t: msSinceWsT0, m: parsedFrame }
+    const ws = new WebSocket(gw.chatUrl);
+    await new Promise((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = (e) => reject(new Error(`ws connect error: ${e?.message || e}`));
+    });
+    ws.onmessage = (e) => {
+      let m;
+      try {
+        m = JSON.parse(e.data.toString());
+      } catch {
+        return;
+      }
+      const t = Date.now() - wsT0;
+      wsFrames.push({ t, m });
+      console.log(`     [${(t / 1000).toFixed(2)}s] ← ${m.type}  ${describeFrame(m)}`);
+    };
+    const send = (frame) => ws.send(JSON.stringify(frame));
+
+    /** Resolve the first frame (at index > afterIndex) matching `pred`, or undefined on timeout. */
+    const waitFor = (pred, timeoutMs, afterIndex = -1) =>
+      new Promise((resolve) => {
+        const tryFind = () => wsFrames.findIndex((f, i) => i > afterIndex && pred(f.m));
+        const already = tryFind();
+        if (already !== -1) return resolve({ index: already, ...wsFrames[already] });
+        const interval = setInterval(() => {
+          const idx = tryFind();
+          if (idx !== -1) {
+            clearInterval(interval);
+            clearTimeout(timer);
+            resolve({ index: idx, ...wsFrames[idx] });
+          }
+        }, 50);
+        const timer = setTimeout(() => {
+          clearInterval(interval);
+          resolve(undefined);
+        }, timeoutMs);
+      });
+
+    // Whole step 6 shares a 120s budget across the streaming + every wait below.
+    const deadline = Date.now() + 120_000;
+    const remaining = () => Math.max(1000, deadline - Date.now());
+
+    try {
+      console.log(`     voice_start id=${voiceId} agent=${agent.id} conversation=${conv.id}`);
+      send({ type: 'voice_start', id: voiceId, agentId: agent.id, conversationId: conv.id });
+      const listening1 = await waitFor(
+        (m) => m.type === 'voice_state' && m.id === voiceId && m.state === 'listening',
+        remaining(),
+      );
+      require_(
+        listening1 !== undefined,
+        'voice_state listening (session ready — the gateway drops voice_audio before this)',
+        'voice_state { state: listening }',
+        wsFrames.map((f) => f.m.type).join(', ') || 'no frames received',
+      );
+
+      // The gateway's VAD is deaf for its first 500ms calibration window, and
+      // needs >=300ms of speech to start / 700ms of silence to end an
+      // utterance — so send 600ms of silence, the WAV's real PCM (paced
+      // ~100ms apart so the VAD sees a realtime stream), then >=1.5s of
+      // trailing silence.
+      const FRAME_BYTES = 3200; // 100ms of 16 kHz mono PCM16
+      const FRAME_MS = 100;
+      const silenceFrame = Buffer.alloc(FRAME_BYTES);
+      const wavBuf = await readFile(join(HERE, 'fixtures/hello.wav'));
+      const pcm = wavPcm(wavBuf);
+      console.log(
+        `     streaming: ${pcm.length} bytes of speech PCM (${((pcm.length / FRAME_BYTES) * FRAME_MS).toFixed(0)}ms)`,
+      );
+
+      let seq = 0;
+      const sendPacedFrame = async (buf) => {
+        send({ type: 'voice_audio', id: voiceId, seq: seq++, pcm: buf.toString('base64') });
+        await sleep(FRAME_MS);
+      };
+      for (let i = 0; i < 600 / FRAME_MS; i++) await sendPacedFrame(silenceFrame);
+      for (let offset = 0; offset < pcm.length; offset += FRAME_BYTES) {
+        await sendPacedFrame(pcm.subarray(offset, offset + FRAME_BYTES));
+      }
+      for (let i = 0; i < 1500 / FRAME_MS; i++) await sendPacedFrame(silenceFrame);
+
+      const transcript = await waitFor(
+        (m) => m.type === 'voice_transcript' && m.id === voiceId && m.final === true,
+        remaining(),
+        listening1.index,
+      );
+      require_(
+        transcript !== undefined,
+        'voice_transcript { final: true } arrives',
+        'voice_transcript { final: true }',
+        wsFrames
+          .slice(listening1.index)
+          .map((f) => f.m.type)
+          .join(', '),
+      );
+      const turnId = transcript.m.turnId;
+      require_(
+        typeof turnId === 'string' && turnId.length > 0,
+        'the final voice_transcript carries turnId',
+        'string turnId',
+        JSON.stringify(transcript.m),
+      );
+      const lowerTranscript = transcript.m.text.toLowerCase();
+      const VOICE_EXPECTED_TOKENS = [
+        ['two', '2'],
+        ['plus', '+'],
+      ];
+      const missingVoice = VOICE_EXPECTED_TOKENS.filter(
+        (alts) => !alts.some((w) => lowerTranscript.includes(w)),
+      );
+      check(
+        missingVoice.length === 0,
+        'transcript contains "two"/"2" and "plus"/"+"',
+        'both tokens present',
+        `missing ${JSON.stringify(missingVoice)} in "${transcript.m.text}"`,
+      );
+
+      const accepted = await waitFor(
+        (m) => m.type === 'accepted' && m.id === turnId,
+        remaining(),
+        transcript.index,
+      );
+      check(
+        accepted !== undefined,
+        `the hub's accepted for turnId=${turnId} arrives`,
+        'accepted { id: turnId }',
+        'no accepted frame seen',
+      );
+      check(
+        accepted !== undefined && accepted.index > transcript.index,
+        'accepted arrives AFTER the voice_transcript frame',
+        `accepted.index > ${transcript.index}`,
+        accepted ? `accepted.index=${accepted.index}` : 'n/a',
+      );
+
+      const speechFrame = await waitFor(
+        (m) =>
+          m.type === 'voice_speech' &&
+          m.id === voiceId &&
+          typeof m.audio === 'string' &&
+          m.audio.length > 0 &&
+          typeof m.text === 'string' &&
+          m.text.length > 0,
+        remaining(),
+      );
+      require_(
+        speechFrame !== undefined,
+        '>=1 voice_speech with non-empty audio and text',
+        'voice_speech { audio: non-empty, text: non-empty }',
+        'no voice_speech frame seen',
+      );
+      check(
+        speechFrame.m.format === 'mp3',
+        "voice_speech.format === 'mp3' (default TTS minimax/speech-2.8-turbo)",
+        'mp3',
+        speechFrame.m.format,
+      );
+
+      const doneFrame = await waitFor((m) => m.type === 'done' && m.id === turnId, remaining());
+      require_(
+        doneFrame !== undefined,
+        'done for the turn',
+        'done { id: turnId }',
+        'no done frame seen',
+      );
+
+      const listening2 = await waitFor(
+        (m) => m.type === 'voice_state' && m.id === voiceId && m.state === 'listening',
+        remaining(),
+        doneFrame.index,
+      );
+      check(
+        listening2 !== undefined,
+        'voice_state listening again after the turn',
+        'voice_state { state: listening }',
+        'not seen after done',
+      );
+
+      if (listening2 !== undefined) {
+        const between = wsFrames
+          .slice(listening1.index + 1, listening2.index)
+          .filter((f) => f.m.type === 'voice_state' && f.m.id === voiceId)
+          .map((f) => f.m.state);
+        const expectedOrder = ['transcribing', 'thinking', 'speaking'];
+        let cursor = 0;
+        for (const state of between) {
+          if (state === expectedOrder[cursor]) cursor++;
+        }
+        check(
+          cursor === expectedOrder.length,
+          'voice_state visited transcribing, thinking, speaking in that order',
+          expectedOrder.join(' → '),
+          between.join(' → ') || 'none',
+        );
+      }
+
+      send({ type: 'voice_stop', id: voiceId });
+      const stopped = await waitFor(
+        (m) => m.type === 'voice_stopped' && m.id === voiceId && m.reason === 'client',
+        10_000,
+      );
+      check(
+        stopped !== undefined,
+        "voice_stop → voice_stopped { reason: 'client' }",
+        "voice_stopped { reason: 'client' }",
+        stopped ? JSON.stringify(stopped.m) : 'no voice_stopped frame seen',
+      );
+    } finally {
+      try {
+        ws.close();
+      } catch {}
+    }
   } catch (err) {
     if (!(err instanceof Fatal)) {
       failures++;
