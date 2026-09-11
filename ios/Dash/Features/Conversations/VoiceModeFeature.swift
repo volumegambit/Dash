@@ -118,6 +118,12 @@ final class VoiceModeFeature: Identifiable {
   @ObservationIgnored private var effectChain: Task<Void, Never>?
   @ObservationIgnored private var playbackChain: Task<Void, Never>?
   @ObservationIgnored private var playbackGeneration = 0
+  /// How many chunks have been handed to the playback chain, ever. Captured
+  /// at enqueue time and compared again once the chunk has played: only the
+  /// chunk that is still the LAST one enqueued is the tail of the chain, and
+  /// only the tail acknowledges (F1). Waiting for a drain after every chunk
+  /// would insert an audible gap between the PCM buffers of one sentence.
+  @ObservationIgnored private var playbackEnqueueCount = 0
   @ObservationIgnored private var captureTask: Task<Void, Never>?
   @ObservationIgnored private var levelTask: Task<Void, Never>?
   @ObservationIgnored private var teardownTask: Task<Void, Never>?
@@ -275,7 +281,11 @@ final class VoiceModeFeature: Identifiable {
     for effect in effects {
       switch effect {
       case let .play(data, sampleRate, format):
-        enqueuePlayback(data, sampleRate: sampleRate, format: format)
+        // `seq` is read here, synchronously, because the reducer has just
+        // recorded it for the very frame that produced this effect — which
+        // keeps the `.play` effect itself free of a field only the drain ack
+        // uses.
+        enqueuePlayback(data, sampleRate: sampleRate, format: format, seq: state.lastSpeechSeq)
       case .flushPlayback:
         flushPlayback()
       case .sendStop:
@@ -407,14 +417,47 @@ final class VoiceModeFeature: Identifiable {
 
   // MARK: - Playback
 
-  private func enqueuePlayback(_ data: Data, sampleRate: Double?, format: String) {
+  private func enqueuePlayback(_ data: Data, sampleRate: Double?, format: String, seq: Int) {
     let generation = playbackGeneration
+    playbackEnqueueCount &+= 1
+    let position = playbackEnqueueCount
     let previous = playbackChain
     playbackChain = Task { [weak self] in
       await previous?.value
       guard let self, Task.isCancelled == false else { return }
       await self.playNow(data, sampleRate: sampleRate, format: format, generation: generation)
+      await self.acknowledgeIfDrained(position: position, seq: seq, generation: generation)
     }
+  }
+
+  /// Tells the gateway that playback has drained, so it may leave `speaking`.
+  ///
+  /// Three guards, each for its own failure:
+  ///
+  /// 1. `position` — only the chunk that is still the last one enqueued is the
+  ///    tail of the chain. Anything behind it is followed by more audio, and
+  ///    acknowledging it would let the gateway advance mid-reply.
+  /// 2. `generation` — a flush bumps it, and audio a barge-in DISCARDED was
+  ///    never played. This is what keeps `flushPlayback` silent on the wire.
+  /// 3. `awaitDrain()` — `enqueuePCM` returns when a buffer is SCHEDULED, not
+  ///    when it has been heard; `playMP3` already returns at the end of its
+  ///    clip, so for it this resolves at once.
+  ///
+  /// A clip whose bytes would not decode still acknowledges: there is nothing
+  /// left to play, and staying silent would park the gateway on its 8 s timer.
+  private func acknowledgeIfDrained(position: Int, seq: Int, generation: Int) async {
+    guard position == playbackEnqueueCount, generation == playbackGeneration else { return }
+    await player.awaitDrain()
+    guard position == playbackEnqueueCount, generation == playbackGeneration else { return }
+    guard state.phase.isEnded == false else { return }
+    // A later chunk that carried no playable audio (an empty or undecodable
+    // `voice_speech`) never reached the chain, but the gateway still counts
+    // its `seq` — and it has, trivially, finished playing.
+    let acknowledged = max(seq, state.lastSpeechSeq)
+    guard acknowledged >= 0 else { return }
+    // Never fatal: a drain ack the socket cannot carry costs the gateway its
+    // 8 s safety timer, which is exactly what that timer is for.
+    try? await transport.voicePlayed(id: id, seq: acknowledged)
   }
 
   private func playNow(

@@ -76,6 +76,12 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
   case voiceAudio(id: String, seq: Int, pcm: String)
   case voiceMute(id: String, muted: Bool)
   case voiceStop(id: String)
+  /// Every `voice_speech` up to and including `seq` has finished PLAYING on
+  /// this device. The gateway holds the session in `speaking` until it
+  /// arrives (or an 8s safety timer fires), because leaving `speaking` is
+  /// what makes this client flush playback — without it the reply's last
+  /// sentence was cut off.
+  case voicePlayed(id: String, seq: Int)
 
   private enum CodingKeys: String, CodingKey {
     case type
@@ -187,6 +193,11 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       )
     case "voice_stop":
       self = .voiceStop(id: try container.decode(String.self, forKey: .id))
+    case "voice_played":
+      self = .voicePlayed(
+        id: try container.decode(String.self, forKey: .id),
+        seq: try container.decode(Int.self, forKey: .seq)
+      )
     default:
       throw DecodingError.dataCorruptedError(
         forKey: .type,
@@ -263,6 +274,10 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     case let .voiceStop(id):
       try container.encode("voice_stop", forKey: .type)
       try container.encode(id, forKey: .id)
+    case let .voicePlayed(id, seq):
+      try container.encode("voice_played", forKey: .type)
+      try container.encode(id, forKey: .id)
+      try container.encode(seq, forKey: .seq)
     }
   }
 }

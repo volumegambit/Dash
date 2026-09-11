@@ -30,6 +30,16 @@ protocol AudioPlaying: Sendable {
   /// both record calls (`enqueued`/`flushCount`) so those tests can assert on
   /// them.
   func enqueuePCM(_ data: Data, sampleRate: Double) async
+  /// Returns once every buffer `enqueuePCM` has scheduled has finished
+  /// PLAYING — `enqueuePCM` itself returns as soon as one is scheduled, which
+  /// is the whole difference the gateway's drain gate turns on (F1).
+  ///
+  /// Returns immediately when nothing is outstanding, including when a frame
+  /// was dropped because the engine would not start. A `flush()`/`stop()`
+  /// releases every waiter too: the audio is over either way, and what makes
+  /// a flush different from a natural end is decided by the CALLER (which
+  /// does not acknowledge audio a barge-in discarded), not here.
+  func awaitDrain() async
   /// Barge-in: stops PCM playback now and drops any buffered frames, without
   /// touching `playMP3`'s player. A no-op with nothing queued.
   func flush() async
@@ -81,6 +91,14 @@ actor AudioPlaybackService: AudioPlaying {
   /// exact state `enqueuePCM`'s guard has to handle correctly, or crash on
   /// `pcmPlayerNode.play()`.
   private let startPCMEngine: @Sendable (AVAudioEngine) throws -> Void
+
+  /// Buffers scheduled on `pcmPlayerNode` that have not yet played back, and
+  /// whoever is waiting for them. Both are confined to this actor for the same
+  /// reason the MP3 continuation is: the completion callback arrives on an
+  /// arbitrary queue, so "did it finish before the caller flushed?" has to be
+  /// answered in one isolation domain rather than raced.
+  private var pendingPCMBuffers = 0
+  private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
   var isPlaying: Bool { player?.isPlaying ?? false }
 
@@ -191,10 +209,37 @@ actor AudioPlaybackService: AudioPlaying {
     // is what actually keeps that promise instead of falling through to
     // `play()` regardless.
     guard pcmEngine.isRunning else { return }
-    pcmPlayerNode.scheduleBuffer(buffer, completionHandler: nil)
+    pendingPCMBuffers += 1
+    // `.dataPlayedBack` — NOT the default `.dataRendered`: the drain gate
+    // exists to answer "has the user heard this?", and rendering happens one
+    // buffer ahead of the speaker.
+    pcmPlayerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) {
+      [weak self] _ in
+      Task { await self?.pcmBufferFinished() }
+    }
     if !pcmPlayerNode.isPlaying {
       pcmPlayerNode.play()
     }
+  }
+
+  func awaitDrain() async {
+    guard pendingPCMBuffers > 0 else { return }
+    await withCheckedContinuation { continuation in
+      drainWaiters.append(continuation)
+    }
+  }
+
+  private func pcmBufferFinished() {
+    // Clamped: a completion for a buffer a `flush()` already accounted for can
+    // still arrive, and must not push the count negative.
+    pendingPCMBuffers = max(0, pendingPCMBuffers - 1)
+    if pendingPCMBuffers == 0 { releaseDrainWaiters() }
+  }
+
+  private func releaseDrainWaiters() {
+    let waiters = drainWaiters
+    drainWaiters = []
+    for waiter in waiters { waiter.resume() }
   }
 
   func flush() async {
@@ -203,6 +248,11 @@ actor AudioPlaybackService: AudioPlaying {
     // voice must go silent immediately, not after draining its queue.
     pcmPlayerNode.stop()
     pcmPlayerNode.reset()
+    // A stopped node fires no `.dataPlayedBack` callback for the buffers it
+    // just dropped, so the count is cleared here and every waiter released —
+    // otherwise an `awaitDrain()` parked across a barge-in would never return.
+    pendingPCMBuffers = 0
+    releaseDrainWaiters()
     // The engine itself is also stopped, not just the node: there is nothing
     // left to play once flushed, so there is no reason to keep the audio
     // hardware open — the next `enqueuePCM` restarts it on demand.
@@ -234,6 +284,12 @@ actor AudioPlaybackService: AudioPlaying {
     // on the newly connected node.
     pcmPlayerNode.stop()
     pcmPlayerNode.reset()
+    // Same reason as `flush()`: a stopped node fires no `.dataPlayedBack` for
+    // the buffers it just dropped, so an `awaitDrain()` parked across a sample
+    // rate change would never return — and the playback chain behind it would
+    // wedge until something flushed.
+    pendingPCMBuffers = 0
+    releaseDrainWaiters()
     pcmEngine.disconnectNodeOutput(pcmPlayerNode)
     pcmEngine.connect(pcmPlayerNode, to: pcmEngine.mainMixerNode, format: format)
     pcmFormat = format

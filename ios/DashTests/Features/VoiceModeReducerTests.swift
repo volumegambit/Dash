@@ -72,6 +72,11 @@ struct VoiceModeReducerTests {
     #expect(effects.isEmpty)
   }
 
+  // F1: leaving `speaking` still flushes — but that transition now only
+  // happens on a barge-in or an ending, never at the end of a turn: the
+  // gateway holds `speaking` until this device sends `voice_played`. A
+  // `listening` that arrives after the drain ack is therefore not a
+  // truncation, because playback had already finished.
   @Test("listening after speaking clears the assistant caption and flushes playback")
   func listeningAfterSpeakingClearsTheCaption() {
     var state = VoiceModeState(phase: .speaking, assistantCaption: "Sunny and warm.")
@@ -86,6 +91,8 @@ struct VoiceModeReducerTests {
     #expect(effects == [.flushPlayback])
   }
 
+  // Same semantics as above: every remaining exit from `speaking` is an
+  // interruption of audio that is genuinely still playing.
   @Test("any phase change away from speaking flushes playback")
   func leavingSpeakingFlushesPlayback() {
     for next in [VoiceState.thinking, .transcribing, .muted] {
@@ -216,6 +223,34 @@ struct VoiceModeReducerTests {
     )
 
     #expect(effects == [.play(audio, sampleRate: nil, format: "mp3")])
+  }
+
+  // F2: a PCM sentence arrives as several chunks, and each used to repeat the
+  // whole sentence in `text` — so this caption read "One.One.One.". The
+  // gateway now sends `text` on the FIRST chunk of a sentence only.
+  @Test("a two-chunk sentence produces exactly one caption")
+  func multiChunkSentenceCaptionsOnce() {
+    var state = VoiceModeState(phase: .speaking)
+
+    for (seq, text) in [(0, "One."), (1, "")] {
+      _ = VoiceModeReducer.reduce(
+        state: &state,
+        action: .frame(
+          .voiceSpeech(
+            id: "v1",
+            seq: seq,
+            audio: Data([UInt8(seq)]).base64EncodedString(),
+            format: "pcm16",
+            sampleRate: 24_000,
+            text: text
+          )
+        )
+      )
+    }
+
+    #expect(state.assistantCaption == "One.")
+    // F1: the highest seq seen is what `voice_played` quotes back.
+    #expect(state.lastSpeechSeq == 1)
   }
 
   @Test("a chunk whose audio will not decode still shows its text")

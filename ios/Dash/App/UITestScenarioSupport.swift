@@ -1579,6 +1579,7 @@ extension AppDependenciesFactory {
     // driving voice mode can be extended later without silently no-op-ing.
     private(set) var enqueued: [(Data, Double)] = []
     private(set) var flushCount = 0
+    private(set) var drainWaits = 0
 
     var isPlaying: Bool { playing }
 
@@ -1594,6 +1595,10 @@ extension AppDependenciesFactory {
 
     func enqueuePCM(_ data: Data, sampleRate: Double) async {
       enqueued.append((data, sampleRate))
+    }
+
+    func awaitDrain() async {
+      drainWaits += 1
     }
 
     func flush() async {
@@ -2595,6 +2600,11 @@ extension AppDependenciesFactory {
     func voiceMute(id: String, muted: Bool) {
       _ = id
       _ = muted
+    }
+
+    func voicePlayed(id: String, seq: Int) {
+      _ = id
+      _ = seq
     }
 
     func voiceStop(id: String) {

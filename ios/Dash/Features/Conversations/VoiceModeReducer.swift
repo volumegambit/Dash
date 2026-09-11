@@ -62,6 +62,11 @@ struct VoiceModeState: Equatable, Sendable {
   /// The last thing that went wrong, shown under the captions. Not fatal on
   /// its own — a provider hiccup mid-session leaves the session running.
   var error: String?
+  /// The highest `voice_speech.seq` this session has seen, or -1 before the
+  /// first chunk. It is what `voice_played` quotes back once playback drains
+  /// (F1) — the gateway holds `speaking` until a `seq` at least this high
+  /// comes back, because leaving `speaking` is what makes this client flush.
+  var lastSpeechSeq: Int = -1
 
   // The microphone level is deliberately NOT here. It is written 10-20 times
   // a second, and every write to this struct re-renders the captions, the
@@ -236,7 +241,11 @@ enum VoiceModeReducer {
       guard let turnID, turnID.isEmpty == false, text.isEmpty == false else { return [] }
       return [.startLocalTurn(turnID: turnID, text: text)]
 
-    case let .voiceSpeech(_, _, audio, format, sampleRate, text):
+    case let .voiceSpeech(_, seq, audio, format, sampleRate, text):
+      state.lastSpeechSeq = max(state.lastSpeechSeq, seq)
+      // F2: `text` is the caption for the SENTENCE and a PCM sentence is
+      // several chunks, so only its first chunk carries one. Appending an
+      // empty string is already a no-op — this is the whole client half.
       state.assistantCaption += text
       // A chunk whose bytes will not decode still has words in it; showing
       // them beats a silent gap in the captions.

@@ -6253,6 +6253,62 @@ struct ChatFeatureTests {
     #expect(await chat.calls.contains(.voiceStop(id: "voice-session")) == false)
   }
 
+  // F12: an oversize or malformed `voice_*` frame is answered with the
+  // ordinary `error` frame carrying the VOICE SESSION id in `id`. That frame
+  // is not a `voice_*` frame, so it used to fall through to the chat-turn
+  // machinery under a borrowed id and never reach the cover.
+  @Test("an error frame carrying the live voice session id reaches the cover")
+  func voiceSessionErrorFrameReachesTheCover() async {
+    let chat = FakeChatFeatureTransport()
+    let capture = FakeAudioCapture()
+    let feature = makeFeature(
+      chat: chat,
+      ids: ["voice-session"],
+      makeVoiceMode: { id, agentID, conversationID, transport in
+        VoiceModeFeature(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          transport: transport,
+          capture: capture,
+          player: FakeAudioPlayer(),
+          haptics: FakeVoiceHaptics(),
+          permission: FakeSpeechPermission(granted: true),
+          session: FakeSpeechSessionControl(),
+          clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+          dismissDelay: nil
+        )
+      }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    feature.syncVoiceMode(available: true)
+
+    let voice = feature.startVoiceMode()
+    await voice?.start()
+    await eventually { await capture.isRunning }
+    voice?.receive(.voiceState(id: "voice-session", state: .listening, turnId: nil))
+
+    await chat.yield(
+      .frame(
+        .error(
+          id: "voice-session",
+          conversationId: nil,
+          seq: nil,
+          error: "Invalid message: missing required fields",
+          code: "validation_failed",
+          retryable: false,
+          activeTurnId: nil
+        )
+      )
+    )
+
+    await eventually { await voice?.state.error != nil }
+    #expect(voice?.state.error == "Invalid message: missing required fields")
+    // A mid-session error is not fatal: the cover stays up.
+    #expect(voice?.state.phase.isEnded == false)
+  }
+
   @Test("a closed voice session is released, not kept alive by its own callbacks")
   func closedVoiceSessionIsDeallocated() async {
     let capture = FakeAudioCapture()
@@ -7218,6 +7274,10 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
     calls.append(.voiceStop(id: id))
   }
 
+  func voicePlayed(id: String, seq: Int) async throws {
+    calls.append(.voicePlayed(id: id, seq: seq))
+  }
+
   func suspendForDetachment() async {
     calls.append(.suspendForDetachment)
     // What `ChatConnection.suspend()` really does (`ChatConnection.swift:249-257`):
@@ -7273,6 +7333,7 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   case voiceAudio(id: String, seq: Int, pcm: Data)
   case voiceMute(id: String, muted: Bool)
   case voiceStop(id: String)
+  case voicePlayed(id: String, seq: Int)
   case suspendForDetachment
   case resetAfterTerminalFailure
   case shutdown

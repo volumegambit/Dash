@@ -276,6 +276,10 @@ actor ChatConnection {
     try await send(.voiceStop(id: id))
   }
 
+  func voicePlayed(id: String, seq: Int) async throws {
+    try await send(.voicePlayed(id: id, seq: seq))
+  }
+
   func detach() {
     detachNow()
   }

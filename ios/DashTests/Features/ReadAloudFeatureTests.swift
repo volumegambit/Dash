@@ -365,6 +365,10 @@ actor FakeAudioPlayer: AudioPlaying {
   // this plumbing from scratch.
   private(set) var enqueued: [(Data, Double)] = []
   private(set) var flushCount = 0
+  /// How many times the feature waited for the chain to drain (F1). A fake
+  /// has nothing to wait for, so `awaitDrain` resolves at once and only
+  /// records that it was asked.
+  private(set) var drainWaits = 0
   /// The calls IN ORDER. `played`/`enqueued`/`flushCount` each answer "how
   /// many"; voice mode's barge-in question is "in what order" — a flush that
   /// lands after the next utterance's first chunk has already been buffered
@@ -396,6 +400,10 @@ actor FakeAudioPlayer: AudioPlaying {
   func enqueuePCM(_ data: Data, sampleRate: Double) async {
     enqueued.append((data, sampleRate))
     events.append(.enqueue(data))
+  }
+
+  func awaitDrain() async {
+    drainWaits += 1
   }
 
   func flush() async {

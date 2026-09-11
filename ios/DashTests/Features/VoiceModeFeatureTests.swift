@@ -303,6 +303,92 @@ struct VoiceModeFeatureTests {
     await gate.release()
   }
 
+
+  // MARK: - Playback drain (F1)
+  //
+  // The gateway used to announce `voice_state listening` the instant the LAST
+  // chunk was SENT, while this device was still playing it — and leaving
+  // `speaking` flushes playback, so every reply's tail was cut off. The
+  // session now holds `speaking` until this device says the chain has drained.
+
+  @Test("voice_played is sent with the last seq once the playback chain drains")
+  func drainedPlaybackAcknowledges() async {
+    let harness = await Harness.started()
+    harness.feature.receive(.voiceState(id: "voice-1", state: .speaking, turnId: "turn-1"))
+
+    for seq in 0..<3 {
+      harness.feature.receive(
+        .voiceSpeech(
+          id: "voice-1",
+          seq: seq,
+          audio: Data([UInt8(seq)]).base64EncodedString(),
+          format: "pcm16",
+          sampleRate: 24_000,
+          text: seq == 0 ? "Sunny. " : ""
+        )
+      )
+    }
+
+    await expectEventuallyAsync("the drain ack to be sent") {
+      await harness.transport.calls.contains(.played(seq: 2))
+    }
+    // Exactly ONE ack: only the tail of the chain reports, not every chunk.
+    #expect(await harness.transport.playedCalls.count == 1)
+    #expect(await harness.player.drainWaits >= 1)
+  }
+
+  @Test("an mp3 clip acknowledges once it has finished playing, not when it starts")
+  func mp3ClipAcknowledgesAfterItEnds() async {
+    let harness = await Harness.started()
+    harness.feature.receive(.voiceState(id: "voice-1", state: .speaking, turnId: "turn-1"))
+    harness.feature.receive(
+      .voiceSpeech(
+        id: "voice-1",
+        seq: 7,
+        audio: Data([0x49, 0x44, 0x33]).base64EncodedString(),
+        format: "mp3",
+        sampleRate: nil,
+        text: "Hello"
+      )
+    )
+
+    await expectEventuallyAsync("the clip to start") { await harness.player.played.count == 1 }
+    // `FakeAudioPlayer.playMP3` hangs until the clip ends — exactly like a
+    // real one. Nothing may be acknowledged while it is still playing.
+    #expect(await harness.transport.playedCalls.isEmpty)
+
+    await harness.player.finish()
+    await expectEventuallyAsync("the drain ack to be sent") {
+      await harness.transport.calls.contains(.played(seq: 7))
+    }
+  }
+
+  @Test("a flush never acknowledges the audio it discarded")
+  func flushNeverAcknowledges() async {
+    let harness = await Harness.started()
+    harness.feature.receive(.voiceState(id: "voice-1", state: .speaking, turnId: "turn-1"))
+    harness.feature.receive(
+      .voiceSpeech(
+        id: "voice-1",
+        seq: 0,
+        audio: Data([0x49, 0x44, 0x33]).base64EncodedString(),
+        format: "mp3",
+        sampleRate: nil,
+        text: "Sunny"
+      )
+    )
+    await expectEventuallyAsync("the clip to start") { await harness.player.played.count == 1 }
+
+    // The user talks over it: the gateway's barge-in flushes what is buffered.
+    harness.feature.receive(.voiceState(id: "voice-1", state: .listening, turnId: nil))
+    await expectEventuallyAsync("playback to be flushed") { await harness.player.flushCount == 1 }
+
+    // `player.stop()` releases the parked `playMP3`, so the chain does drain —
+    // but it drained because it was DISCARDED, which is not "played".
+    try? await Task.sleep(for: .milliseconds(50))
+    #expect(await harness.transport.playedCalls.isEmpty)
+  }
+
   // MARK: - Transcripts
 
   @Test("a transcript carrying a turn id starts the optimistic row exactly once")
@@ -654,6 +740,8 @@ enum FakeVoiceTransportCall: Equatable, Sendable {
   case audio(seq: Int, pcm: Data)
   case mute(Bool)
   case stop(id: String)
+  /// The playback-drain acknowledgement (F1).
+  case played(seq: Int)
 }
 
 actor FakeVoiceTransport: ChatFeatureTransporting {
@@ -686,6 +774,14 @@ actor FakeVoiceTransport: ChatFeatureTransporting {
 
   func voiceMute(id: String, muted: Bool) async throws {
     calls.append(.mute(muted))
+  }
+
+  func voicePlayed(id: String, seq: Int) async throws {
+    calls.append(.played(seq: seq))
+  }
+
+  var playedCalls: [FakeVoiceTransportCall] {
+    calls.filter { if case .played = $0 { true } else { false } }
   }
 
   private var stopHangs = false

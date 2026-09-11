@@ -904,7 +904,8 @@ else {
       ("json", "chat-ws", "VoiceStart"),
       ("json", "chat-ws", "VoiceAudio"),
       ("json", "chat-ws", "VoiceMute"),
-      ("json", "chat-ws", "VoiceStop"):
+      ("json", "chat-ws", "VoiceStop"),
+      ("json", "chat-ws", "VoicePlayed"):
       try decodeIfValid(MobileWSClientFrame.self, fixture)
     case ("json", "chat-ws", "ChatAccepted"),
       ("json", "chat-ws", "ChatEvent"),

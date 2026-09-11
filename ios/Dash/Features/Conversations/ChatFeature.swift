@@ -243,6 +243,9 @@ protocol ChatFeatureTransporting: Actor {
   func voiceAudio(id: String, seq: Int, pcm: Data) async throws
   func voiceMute(id: String, muted: Bool) async throws
   func voiceStop(id: String) async throws
+  /// Reports that every `voice_speech` up to and including `seq` has finished
+  /// PLAYING, so the gateway may leave `speaking` (F1).
+  func voicePlayed(id: String, seq: Int) async throws
   func suspendForDetachment() async
   func shutdown() async
 }
@@ -409,6 +412,10 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
 
   func voiceStop(id: String) async throws {
     try await connection.voiceStop(id: id)
+  }
+
+  func voicePlayed(id: String, seq: Int) async throws {
+    try await connection.voicePlayed(id: id, seq: seq)
   }
 
   func suspendForDetachment() async {
@@ -3192,6 +3199,18 @@ final class ChatFeature {
       // itself — rather than through this feature under a borrowed meaning.
       if frame.isVoiceForFeature {
         voiceMode?.receive(frame)
+        return
+      }
+      // F12: an oversize or malformed `voice_*` frame fails the gateway's
+      // parser BEFORE it is recognized as voice, so it is answered with the
+      // ordinary `error` frame — carrying the voice SESSION id in `id`
+      // (`apps/gateway/src/chat-ws.ts`). Routed as a chat turn it would be
+      // acted on under a borrowed meaning and never reach the cover, so it is
+      // translated into the voice vocabulary here instead.
+      if case let .error(id, _, _, message, code, _, _) = frame, let voice = voiceMode,
+        id == voice.id
+      {
+        voice.receive(.voiceError(id: id, code: code ?? "invalid", error: message))
         return
       }
       // BEFORE the recovery deferral below, deliberately: the deferral is
