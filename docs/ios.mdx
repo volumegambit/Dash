@@ -125,8 +125,8 @@ Recovery items survive app restarts and never include a Retry action.
 
 ## Talk to your agent
 
-When your gateway has a speech provider configured, Dash can turn your voice into a message and
-read an agent's replies back to you.
+When your gateway has a speech provider configured, Dash can turn your voice into a message, read
+an agent's replies back to you, or hold a full hands-free conversation in voice mode.
 
 <Note>
   This needs a gateway running the version that adds speech, installed at the same time as (or
@@ -152,6 +152,34 @@ that transcribes to nothing shows **Nothing was heard.**
 Open the context menu on an assistant message and choose **Read aloud** to hear it spoken. The
 same item becomes **Stop reading** while it plays. Starting a read on another message stops
 whichever one was already reading. Only the first 4,000 characters of a reply are read aloud.
+
+### Voice mode
+
+Tap the waveform button to the right of Send to start a hands-free conversation. It only appears
+once your gateway's speech is available and Dash has microphone access — the same requirements as
+dictation.
+
+A full-screen orb opens with a line underneath naming what's happening — Listening, Thinking,
+Speaking — plus captions of what you said and what the agent is saying. Just talk. When you stop,
+Dash sends what you said, and the agent answers out loud. There's no button to press in between —
+speak, pause, and the reply comes back.
+
+To interrupt the agent while it's speaking, start talking — Dash hears you and stops playback right
+away — or tap the orb. A mute button sits below the orb: while muted, the agent keeps speaking, but
+nothing you say is sent until you unmute.
+
+While voice mode is open, the agent knows you're speaking to it and answers in short spoken
+sentences. If a reply would include code, a table, or something long, the agent tells you it's in
+the transcript rather than reading it aloud.
+
+Voice mode always tells you why it stopped, then closes the cover: **Connection lost** if the
+gateway connection drops, **Microphone stopped** if a phone call or other interruption takes the
+microphone away, or **Voice mode ended** if you close it yourself or send the app to the
+background. Either way, nothing is lost — every turn from the conversation stays in your chat
+afterward like any other message. Voice mode also works over Dash's hosted relay, so it behaves
+the same way on cellular as it does on Wi-Fi.
+
+**Read aloud** isn't available while voice mode is open — close voice mode first.
 
 ### Settings → Speech
 

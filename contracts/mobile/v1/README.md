@@ -126,6 +126,20 @@ Negative conformance fixtures live under `fixtures/invalid/`:
 - `voice_audio.pcm` is at most 16 KiB (16384 bytes) decoded per frame. A frame decoding to
   exactly 16384 bytes is accepted; one byte more fails parsing and the socket answers the
   ordinary `error` frame with `code: 'validation_failed'`.
+- A socket holds at most one voice session. Sending `voice_start` while a session is already open
+  replaces it: the old session gets `voice_stopped { reason: 'replaced' }` before the new one
+  starts, keyed on the new `voice_start.id`.
+- `voice_audio` sent before the gateway's own `voice_state listening` is dropped rather than
+  rejected, since the phone starts streaming the moment it sends `voice_start`, before the gateway
+  has confirmed the speech provider is available.
+- The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before that
+  turn's `ChatAccepted`, so a client can render the optimistic user row before the turn is
+  confirmed.
+- There is no `voice_state` value of `stopped`; a session's end is always a `voice_stopped` frame,
+  never a terminal `voice_state`.
+- `message.modality` is `'voice'` only for the turn a hands-free voice session starts on the
+  user's behalf; a dictated message that a client sends as a `message` frame must omit `modality`
+  or send `'text'`.
 - Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
   with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other

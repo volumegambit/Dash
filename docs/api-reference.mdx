@@ -309,6 +309,59 @@ Send `cancel` to stop it. Messages without `resumable: true` retain the legacy c
 behavior and are cancelled when their socket closes. Clients must preserve or safely ignore
 unknown `event` variants so newer gateways remain compatible.
 
+`message` also accepts an optional `modality: 'text' | 'voice'`. The gateway sets this to `'voice'`
+only for the turn that its own hands-free voice session starts on the user's behalf (see
+[Voice frames](#voice-frames) below) — it appends the spoken-mode system prompt for that turn only.
+A dictated message is still ordinary typed text once transcribed: a client sending it as a `message`
+frame must omit `modality` or send `'text'`, never `'voice'`.
+
+### Voice frames
+
+Hands-free voice mode adds ten frames to the same `/ws/chat` socket used for resumable chat, gated
+on the same `speech-v1` capability as the [Speech](#speech) routes. `id` is the client-generated
+session id and is echoed on every `voice_*` frame in both directions.
+
+**Client frames**
+
+| Type | Required fields | Purpose |
+|------|-----------------|---------|
+| `voice_start` | `id`, `agentId`, `conversationId` | Start a hands-free session on `conversationId` |
+| `voice_audio` | `id`, `seq`, `pcm` | One capture chunk: base64 PCM16, 16 kHz mono, at most 16384 decoded bytes (~512ms) per frame |
+| `voice_mute` | `id`, `muted` | Mute or unmute the microphone; playback is unaffected |
+| `voice_stop` | `id` | End the session from the client |
+
+**Server frames**
+
+| Type | Meaning |
+|------|---------|
+| `voice_state` | The session's phase: `listening`, `transcribing`, `thinking`, `speaking`, or `muted`. There is no `stopped` state here — see `voice_stopped` |
+| `voice_transcript` | Text recognized from the user's speech. The transcript that starts a turn carries `final: true` and a `turnId`, and is always emitted before that turn's `accepted` |
+| `voice_speech` | One chunk of the agent's spoken reply: `format: 'mp3'` (one clip per sentence) or `format: 'pcm16'` (raw chunks, with `sampleRate` set) |
+| `voice_error` | A provider-level failure. `code` is the narrower `SpeechErrorCode` union: `unauthorized`, `unavailable`, `too_long`, `too_large`, `invalid`, `provider`, `network` |
+| `voice_stopped` | The session ended, with `reason: 'client' \| 'socket' \| 'provider' \| 'replaced'` |
+
+```json
+{"type":"voice_start","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","agentId":"agent-01","conversationId":"018f0f4a-5c42-7a8b-9c01-1234567890ab"}
+```
+
+```json
+{"type":"voice_speech","id":"018f0f4a-5c42-7a8b-9c01-6234567890ab","seq":3,"audio":"<base64>","format":"pcm16","sampleRate":24000,"text":"It's sunny and 24 degrees."}
+```
+
+Session rules:
+
+- One voice session per socket. Sending `voice_start` while a session is already open stops the
+  previous one with `voice_stopped { reason: 'replaced' }` before the new session starts.
+- `voice_audio` sent before the gateway's own `voice_state listening` is silently dropped, not
+  rejected — the phone begins streaming the instant it sends `voice_start`, before the gateway has
+  confirmed the speech provider is available.
+- The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before the
+  resumable hub's `accepted` for that turn, so a client can render the optimistic user row before
+  the turn is confirmed.
+- There is no `voice_state stopped` frame; every session end is a `voice_stopped` frame instead.
+- `voice_audio.pcm` decodes to at most 16384 bytes (16 KiB) per frame; one byte over answers the
+  ordinary `error` frame with `code: 'validation_failed'`, not `voice_error`.
+
 ## Channels
 
 Connect and manage messaging apps such as Telegram and WhatsApp. Channels are persisted to
@@ -348,7 +401,9 @@ cached. Adding or changing a credential refreshes it on the next request. See
 ## Speech
 
 Dictation and read-aloud support. Mounted on both the unprefixed administrative surface and
-`/mobile/v1`; native clients use the `/mobile/v1` paths.
+`/mobile/v1`; native clients use the `/mobile/v1` paths. Hands-free voice mode is a separate,
+WebSocket-based flow on the same `speech-v1` capability — see
+[Voice frames](#voice-frames) under Resumable chat.
 
 | Method | Path | Purpose |
 |--------|------|---------|

@@ -116,6 +116,47 @@ less precisely.
 - [ ] Open **Settings** on a gateway without the `speech-v1` capability -> the **Speech** row is
       hidden and the section footer reads "Update your gateway to use speech."
 
+## Speech — voice mode
+
+- [ ] Tap the waveform button with microphone permission not yet decided -> iOS presents its
+      permission prompt; the voice cover opens and starts listening once you allow it
+- [ ] Deny microphone access (or with access already denied) -> the waveform button does not
+      appear in the composer, the same as dictation's denial behavior
+- [ ] Have a two-turn conversation hands-free: ask a question, let the agent finish answering, then
+      ask a follow-up without touching the screen -> both turns are heard and answered correctly,
+      the state line moves Listening -> Thinking -> Speaking -> Listening each time, and closing
+      voice mode afterward shows both exchanges in the transcript as ordinary messages
+- [ ] While the agent is speaking, start talking over it (barge-in) -> playback stops immediately,
+      the state line returns to Listening, and what you said starts a new turn rather than being
+      lost
+- [ ] Start a session on the built-in microphone, then connect AirPods (or another Bluetooth
+      input) mid-session -> the session keeps running; then disconnect the active input -> the
+      cover shows "Microphone stopped" and closes
+- [ ] Receive a phone call while voice mode is open -> the cover shows "Microphone stopped" and
+      closes; the conversation is unaffected and any completed turns remain in the transcript
+- [ ] Background the app while voice mode is open (Home button/gesture, or switch apps) -> voice
+      mode ends immediately ("Voice mode ended") rather than continuing to listen with nothing on
+      screen to show it
+- [ ] Connect to a gateway over cellular (no local Wi-Fi, through the relay) and start voice mode
+      -> the session starts, hears you, and speaks back with no more latency than the equivalent
+      typed turn
+- [ ] Ask something that makes the agent run a tool (e.g. a file search or a web search) -> you
+      hear exactly one short status line for the tool activity (for example "Looking at the
+      files."), not one per call, before the agent's spoken answer
+- [ ] Ask something the agent must ask a clarifying question about -> the question is spoken aloud,
+      answering it out loud (without touching the screen) continues the same turn, and the answer
+      appears in the transcript afterward like a normal exchange
+- [ ] Tap the mute button while the agent is speaking -> the agent keeps speaking to completion;
+      say something while muted -> it is not heard, and the state line reads "Muted" until you tap
+      the button again
+- [ ] Force-quit the gateway (or otherwise drop the connection) while voice mode is open -> the
+      cover shows "Connection lost" and closes rather than hanging on "Listening" or "Thinking"
+- [ ] Open the context menu on an assistant message while voice mode is open -> **Read aloud** is
+      unavailable; it becomes available again once voice mode is closed
+- [ ] Open voice mode on iPad, in both portrait and landscape, and with the app split-screened
+      narrow -> the orb and captions stay centered in a single readable column and never stretch
+      edge to edge
+
 ## Voice mode — capture and playback (device only)
 
 `AudioCaptureService` and `AudioPlaybackService`'s PCM path (Task B8) need a real microphone and

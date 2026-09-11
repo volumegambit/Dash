@@ -224,6 +224,15 @@ the transcription and speech providers. Today it's always unavailable — no con
 offers realtime speech yet — but its presence in the config and API responses is intentional,
 reserved for a future release.
 
+### Voice mode
+
+Hands-free voice mode (see [Dash for iPhone and iPad](/ios#voice-mode)) speaks each sentence as
+soon as it's ready, either as a continuous PCM stream or as one MP3 clip per sentence, depending on
+the text-to-speech model. `hexgrad/kokoro-82m`, `microsoft/mai-voice-2-flash`, and
+`microsoft/mai-voice-2` stream PCM at a fixed sample rate, and Google's Gemini TTS streams PCM
+because it's PCM-only; every other model, including the default MiniMax voice, sends one MP3 clip
+per sentence.
+
 <Note>
   A gateway upgrade that adds speech and an app upgrade that expects it need to be deployed
   together. An older gateway rejects a client's request to set dictation language to "Auto".
