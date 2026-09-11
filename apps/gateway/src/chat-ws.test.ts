@@ -1677,26 +1677,46 @@ describe('mountChatWs voice sessions', () => {
     ]);
   });
 
-  it('accepts exactly 16384 decoded pcm bytes and passes it to the running session', async () => {
+  it('accepts exactly 16384 decoded pcm bytes and transcribes an utterance containing it', async () => {
     const harness = makeVoiceHarness();
     const connection = harness.connect();
     dispatch(connection, VOICE_START);
     await settle();
 
+    // Calibration: 500ms of silence, chunked the way a real client would.
+    feedVoice(connection, VOICE_START.id, pcmSilence(500));
+    await settle();
+
+    // The boundary value itself: exactly 16384 decoded bytes (512ms at 16kHz
+    // mono PCM16) of REAL tone, sent as ONE voice_audio frame. All-zero
+    // silence at this size would parse but never reach `transcribe()` (the
+    // VAD would just extend calibration/silence), so it cannot distinguish
+    // "accepted onto the session" from "silently dropped" — tone can.
+    const boundaryTone = pcmTone(512);
+    expect(boundaryTone.byteLength).toBe(16 * 1024);
     dispatch(connection, {
       type: 'voice_audio',
-      id: 'voice-01',
-      seq: 0,
-      pcm: Buffer.alloc(16 * 1024).toString('base64'),
+      id: VOICE_START.id,
+      seq: 1,
+      pcm: Buffer.from(boundaryTone).toString('base64'),
     });
     await settle();
 
-    // No error frame of any kind — the boundary value reaches the session
-    // rather than being rejected at the parse or session-lookup layer.
-    expect(allFrames(connection.socket)).toEqual([
-      { type: 'voice_state', id: 'voice-01', state: 'listening' },
-    ]);
-    expect(harness.speech?.transcribedBytes).toEqual([]);
+    // No error frame for the boundary frame itself.
+    expect(voiceFramesOf(connection.socket).filter((f) => f.type === 'voice_error')).toEqual([]);
+    expect(allFrames(connection.socket).some((f) => f.type === 'error')).toBe(false);
+
+    // A bit more tone, then enough trailing silence (> endMs) for the VAD to
+    // confirm the utterance ended and hand it to `transcribe()`.
+    feedVoice(connection, VOICE_START.id, pcmTone(300));
+    feedVoice(connection, VOICE_START.id, pcmSilence(800));
+    await settle();
+
+    // The frame reached the session: `transcribe()` was called, and the
+    // utterance it received is at least as long as the boundary frame alone
+    // (it also carries the pre-roll and the extra tone appended above).
+    expect(harness.speech?.transcribedBytes.length).toBeGreaterThanOrEqual(1);
+    expect(harness.speech?.transcribedBytes[0]).toBeGreaterThanOrEqual(16 * 1024);
   });
 
   it('drops audio while muted and re-announces the state on unmute', async () => {

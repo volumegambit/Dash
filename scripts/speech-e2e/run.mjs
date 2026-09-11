@@ -365,10 +365,16 @@ async function main() {
         `missing ${JSON.stringify(missingVoice)} in "${transcript.m.text}"`,
       );
 
+      // Search from listening1, NOT from transcript.index: narrowing the
+      // search to indices after the transcript would make an EARLY accepted
+      // (the bug this assertion exists to catch) look identical to a missing
+      // one — waitFor would simply never find it and report "no accepted
+      // frame seen" instead of "arrived too early". The ordering itself is
+      // proved by the explicit index comparison below, not by the search.
       const accepted = await waitFor(
         (m) => m.type === 'accepted' && m.id === turnId,
         remaining(),
-        transcript.index,
+        listening1.index,
       );
       check(
         accepted !== undefined,
@@ -379,8 +385,12 @@ async function main() {
       check(
         accepted !== undefined && accepted.index > transcript.index,
         'accepted arrives AFTER the voice_transcript frame',
-        `accepted.index > ${transcript.index}`,
-        accepted ? `accepted.index=${accepted.index}` : 'n/a',
+        `accepted.index > transcript.index (transcript at ${transcript.index})`,
+        accepted === undefined
+          ? 'no accepted frame seen'
+          : accepted.index > transcript.index
+            ? `accepted.index=${accepted.index}`
+            : `accepted arrived before the transcript (idx ${accepted.index} < idx ${transcript.index})`,
       );
 
       const speechFrame = await waitFor(
@@ -414,16 +424,31 @@ async function main() {
         'no done frame seen',
       );
 
+      // Same fix as `accepted` above: search from listening1 rather than
+      // from doneFrame.index, so a premature "listening" (arriving before
+      // `done`, which would be the regression this assertion exists to
+      // catch) is actually FOUND rather than silently missed by the search,
+      // and the explicit index check below is what proves the ordering.
       const listening2 = await waitFor(
         (m) => m.type === 'voice_state' && m.id === voiceId && m.state === 'listening',
         remaining(),
-        doneFrame.index,
+        listening1.index,
       );
       check(
         listening2 !== undefined,
         'voice_state listening again after the turn',
         'voice_state { state: listening }',
-        'not seen after done',
+        'not seen after listening1',
+      );
+      check(
+        listening2 !== undefined && listening2.index > doneFrame.index,
+        'the second voice_state listening arrives AFTER done',
+        `listening2.index > doneFrame.index (done at ${doneFrame.index})`,
+        listening2 === undefined
+          ? 'no second listening frame seen'
+          : listening2.index > doneFrame.index
+            ? `listening2.index=${listening2.index}`
+            : `listening arrived before done (idx ${listening2.index} < idx ${doneFrame.index})`,
       );
 
       if (listening2 !== undefined) {
@@ -447,7 +472,7 @@ async function main() {
       send({ type: 'voice_stop', id: voiceId });
       const stopped = await waitFor(
         (m) => m.type === 'voice_stopped' && m.id === voiceId && m.reason === 'client',
-        10_000,
+        remaining(),
       );
       check(
         stopped !== undefined,
