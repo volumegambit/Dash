@@ -6163,6 +6163,48 @@ struct ChatFeatureTests {
     )
   }
 
+  @Test("a spoken turn's optimistic row is adopted by the gateway's accepted")
+  func spokenTurnRowIsAdoptedByTheAccepted() async {
+    let chat = FakeChatFeatureTransport()
+    // One id: `startLocalTurn` takes the LOCAL user id only — the turn id
+    // comes from the gateway, in the `voice_transcript` that names it.
+    let feature = makeFeature(chat: chat, ids: ["local-voice"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    // Exactly what `VoiceModeEffect.startLocalTurn` asks for (Task B9).
+    await feature.startLocalTurn(turnID: "turn-1", text: "what's the weather")
+
+    #expect(feature.userTexts == ["what's the weather"])
+
+    await chat.yield(.frame(accepted(seq: 1)))
+    await eventually { await feature.state.lastAppliedSeq == 1 }
+
+    // One bubble, carrying the spoken words and the gateway's own id — the
+    // `accepted` ADOPTED the optimistic row rather than adding a second, empty
+    // one beside it.
+    #expect(feature.userTexts == ["what's the weather"])
+    #expect(feature.state.messages.filter { $0.role == .user }.map(\.id) == ["user-1"])
+    // And the turn reads as this device's, not as someone else's: a row the
+    // client did not claim blocks the composer with "active on another device".
+    #expect(feature.state.composerBlock == nil)
+    #expect(feature.composerDisabledReason == "A response is in progress")
+    // Nothing was SENT: the gateway is already running this turn.
+    #expect(await chat.calls.compactMap(\.sentPayload).isEmpty)
+  }
+
+  @Test("the same spoken turn id never produces two rows")
+  func spokenTurnRowIsNotDuplicated() async {
+    let feature = makeFeature(ids: ["local-voice", "local-voice-2"])
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await feature.startLocalTurn(turnID: "turn-1", text: "what's the weather")
+    await feature.startLocalTurn(turnID: "turn-1", text: "what's the weather")
+
+    #expect(feature.userTexts == ["what's the weather"])
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -7453,5 +7495,17 @@ struct ComposerDraftStatusPresentationTests {
     let label = ComposerDraftStatusPresentation.label(for: .failed)
     #expect(label?.text == "Draft couldn't be saved")
     #expect(label?.systemImage == "exclamationmark.circle")
+  }
+}
+
+@MainActor
+extension ChatFeature {
+  /// The user bubbles' text, in order. Voice mode's whole optimistic-row
+  /// question is "how many bubbles, saying what".
+  var userTexts: [String] {
+    state.messages.compactMap { message in
+      guard message.role == .user else { return nil }
+      return message.user?.text
+    }
   }
 }

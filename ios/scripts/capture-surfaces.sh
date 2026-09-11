@@ -98,6 +98,16 @@ SURFACES=(
   "chat-dictation-recording|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=recording"
   "chat-dictation-uploading|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=uploading"
   "chat-dictation-failed|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_DICTATION=failed"
+  # Hands-free voice mode (speech Phase B). A full-screen cover behind a tap,
+  # a microphone, a speaker and a live socket — five states, none of which
+  # could be looked at before `DASH_UI_TEST_VOICE` drove them from fakes.
+  # `ended` would normally take itself down after 1.5 s; the UI-test factory
+  # gives it no dismiss delay so there is something to photograph.
+  "chat-voice-listening|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=listening"
+  "chat-voice-thinking|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=thinking"
+  "chat-voice-speaking|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=speaking"
+  "chat-voice-muted|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=muted"
+  "chat-voice-ended|paired-online|DASH_UI_TEST_CONVERSATION=shared-plan;DASH_UI_TEST_VOICE=ended"
 )
 
 # Tool gallery: every tool type, cards forced EXPANDED, four batches because a

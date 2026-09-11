@@ -254,6 +254,19 @@ protocol ChatAccessibilityAnnouncing: Actor {
 
 typealias ChatGatewayErrorHandler = @MainActor @Sendable (GatewayError) async -> Void
 
+/// Builds one hands-free voice session (speech Phase B, Task B9). The
+/// `ChatFeature` supplies the session id, the conversation it speaks into and
+/// its OWN transport — the socket the voice frames must share with the chat,
+/// since the gateway keys them by connection — and the factory supplies the
+/// microphone, the speaker and the haptics, none of which this feature can
+/// see. Nil means this build has nothing to build them with.
+typealias ChatVoiceModeFactory = @MainActor @Sendable (
+  _ id: String,
+  _ agentID: String,
+  _ conversationID: String,
+  _ transport: any ChatFeatureTransporting
+) -> VoiceModeFeature?
+
 enum ChatDraftStatus: Equatable, Sendable {
   case saved
   case saving
@@ -846,6 +859,11 @@ final class ChatFeature {
   @ObservationIgnored private let makeID: @Sendable () -> String
   @ObservationIgnored private let makeDictation: @MainActor @Sendable () -> DictationFeature?
   @ObservationIgnored private let makeReadAloud: @MainActor @Sendable () -> ReadAloudFeature?
+  @ObservationIgnored private let makeVoiceMode: ChatVoiceModeFactory
+  /// Read, never requested, from here: `syncVoiceMode` only needs to know
+  /// whether the microphone has ALREADY been refused, and prompting from a
+  /// capability sync would put a system alert on screen nobody asked for.
+  @ObservationIgnored private let permission: any SpeechPermissionRequesting
   /// The composer's dictation feature, or nil when this gateway has no
   /// `speech-v1` — see `syncDictation(available:)`. Observable so the mic
   /// button appears the moment the capability lands, which on a cold launch
@@ -860,6 +878,17 @@ final class ChatFeature {
   /// item appears the moment the capability lands, which on a cold launch is
   /// after the transcript is already on screen.
   private(set) var readAloud: ReadAloudFeature?
+  /// The open voice cover's session, or nil when voice mode is not running.
+  /// Observable because `ChatView` presents the cover off it — clearing it IS
+  /// the dismissal — and `MessageViews` reads it to withhold read aloud,
+  /// whose `.playback` category would evict the live capture.
+  private(set) var voiceMode: VoiceModeFeature?
+  /// Whether the waveform button belongs in the composer: this gateway
+  /// advertises `speech-v1`, this build can build a session, and the
+  /// microphone has not already been refused. Kept in sync by `ComposerView`
+  /// for the same reason `syncDictation` is — the capability belongs to the
+  /// CONNECTION, which this feature cannot see.
+  private(set) var voiceModeAvailable = false
   /// The last read-aloud sentence written into `state.errorBanner`, so
   /// clearing it cannot wipe an unrelated banner that replaced it.
   @ObservationIgnored private var readAloudBanner: String?
@@ -943,7 +972,9 @@ final class ChatFeature {
       ConversationRecoveryChangeSignal.shared,
     makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
     makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
-    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil }
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil },
+    makeVoiceMode: @escaping ChatVoiceModeFactory = { _, _, _, _ in nil },
+    permission: any SpeechPermissionRequesting = SystemSpeechPermission()
   ) {
     self.gatewayID = gatewayID
     self.persistence = persistence
@@ -956,6 +987,8 @@ final class ChatFeature {
     self.makeID = makeID
     self.makeDictation = makeDictation
     self.makeReadAloud = makeReadAloud
+    self.makeVoiceMode = makeVoiceMode
+    self.permission = permission
     state = ChatState(
       conversation: conversation,
       messages: [],
@@ -1225,6 +1258,90 @@ final class ChatFeature {
     guard let retiring = dictation else { return }
     dictation = nil
     Task { await retiring.shutdown() }
+  }
+
+  /// Whether voice mode may be offered at all. Driven by `ComposerView`
+  /// alongside `syncDictation`, off the same one gate
+  /// (`AppModel.speechAvailable`).
+  ///
+  /// A microphone iOS has already refused is the second half: iOS never asks
+  /// twice, so offering a button whose only possible outcome is an error
+  /// sentence is worse than not offering it. A session already RUNNING is
+  /// never torn down from here — the same courtesy `syncDictation` extends to
+  /// a recording in flight.
+  func syncVoiceMode(available: Bool) {
+    guard isShutdown == false else { return }
+    voiceModeAvailable = available && permission.microphoneIsDenied == false
+  }
+
+  /// Opens a session and returns it for the cover to present, or nil when
+  /// voice mode is not available on this gateway/build. The caller starts it:
+  /// `start()` is async and asks for the microphone.
+  ///
+  /// The conversation's own subscription is deliberately left alone (Task
+  /// B6): the gateway drops the VOICE turn's conversation subscription to
+  /// avoid double fan-out, so the chat screen underneath the cover is what
+  /// keeps the transcript live.
+  func startVoiceMode() -> VoiceModeFeature? {
+    guard isShutdown == false, voiceModeAvailable else { return nil }
+    if let voiceMode { return voiceMode }
+    // Read aloud and voice mode are mutually exclusive: read aloud's
+    // `.playback` category evicts the live capture.
+    let speaking = readAloud
+    if speaking != nil { Task { await speaking?.stop() } }
+    let sessionID = makeID()
+    guard
+      let feature = makeVoiceMode(
+        sessionID,
+        state.conversation.agentId,
+        state.conversation.id,
+        transport
+      )
+    else { return nil }
+    feature.onStartLocalTurn = { [weak self] turnID, text in
+      await self?.startLocalTurn(turnID: turnID, text: text)
+    }
+    feature.onDismiss = { [weak self] in
+      guard let self, self.voiceMode === feature else { return }
+      self.voiceMode = nil
+    }
+    voiceMode = feature
+    return feature
+  }
+
+  /// Ends the open session and takes the cover down. The close button, the
+  /// cover's binding and the app going to the background all land here.
+  func stopVoiceMode() async {
+    guard let voiceMode else { return }
+    await voiceMode.stop()
+    if self.voiceMode === voiceMode { self.voiceMode = nil }
+  }
+
+  /// The optimistic row for a SPOKEN turn (Task B9). Exactly the two things
+  /// `send()` does for a typed one — insert the turn id into `localTurnIDs`
+  /// and reduce `.sendStarted` — so the hub's following `accepted` adopts this
+  /// row instead of creating a second one, and the composer never shows
+  /// "Active on another device" for a turn this device started.
+  ///
+  /// Nothing else of `send()` applies: there is no draft to clear, no
+  /// attachment to validate, no pending-send durability to stage (the words
+  /// only ever existed as audio), and the turn is ALREADY running on the
+  /// gateway by the time the transcript naming it arrives.
+  func startLocalTurn(turnID: String, text: String) async {
+    guard isShutdown == false, turnID.isEmpty == false else { return }
+    // The queued-utterance pair can deliver the same id twice if the gateway
+    // ever repeats itself; a second row would be a duplicate bubble.
+    guard localTurnIDs.contains(turnID) == false else { return }
+    localTurnIDs.insert(turnID)
+    _ = ChatReducer.reduce(
+      state: &state,
+      action: .sendStarted(
+        turnID: turnID,
+        localUserID: makeID(),
+        text: text,
+        images: []
+      )
+    )
   }
 
   /// Creates or drops the read-aloud feature as the gateway's `speech-v1`
@@ -2288,6 +2405,11 @@ final class ChatFeature {
   }
 
   func sceneDidEnterBackground() async {
+    // Voice mode first, and whether or not this feature is shutting down: it
+    // is hands-free by definition, so nothing on screen would tell the user
+    // the microphone is still live behind another app. `SceneLifecycleModifier`
+    // → `AppModel.sceneChanged` → here is the whole hook.
+    await stopVoiceMode()
     guard isShutdown == false else { return }
     let attachmentIntent = beginAttachmentIntent(attached: false)
     await persistDraft()
@@ -2340,6 +2462,14 @@ final class ChatFeature {
     // about a conversation that is no longer on screen, with the process-wide
     // session active and nothing owning it.
     retireReadAloud()
+    // And the microphone outlives both: a voice session left running would
+    // keep `.playAndRecord` armed for a conversation that is gone.
+    voiceModeAvailable = false
+    if let retiring = voiceMode {
+      voiceMode = nil
+      retiring.onDismiss = nil
+      Task { await retiring.stop() }
+    }
   }
 
   func shutdown() async {
@@ -3015,11 +3145,14 @@ final class ChatFeature {
 
     case .frame(let frame):
       // The hands-free `voice_*` server frames (Task B7) are keyed by voice
-      // session id, not a chat turn id, and this feature has no voice UI yet.
-      // Every helper below (`turnIDForFeature`, `conversationIDForFeature`,
-      // …) is chat-turn machinery, so a voice frame is dropped here rather
-      // than fed through it under a borrowed meaning.
-      if frame.isVoiceForFeature { return }
+      // SESSION id, not a chat turn id. Every helper below
+      // (`turnIDForFeature`, `conversationIDForFeature`, …) is chat-turn
+      // machinery, so they go to the open cover — which filters by session id
+      // itself — rather than through this feature under a borrowed meaning.
+      if frame.isVoiceForFeature {
+        voiceMode?.receive(frame)
+        return
+      }
       // BEFORE the recovery deferral below, deliberately: the deferral is
       // about classifying a LOCAL send and returns early, and a list read has
       // nothing to do with that decision. Placed here it cannot be swallowed

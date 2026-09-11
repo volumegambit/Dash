@@ -116,6 +116,10 @@ struct ComposerView: View {
     /// non-nil `feature.dictation` — the capability arrives asynchronously,
     /// so that is often not the first.
     @State private var hasSeededDictation = false
+    /// The same one-shot for `DASH_UI_TEST_VOICE`. Seeded from HERE rather
+    /// than from `ChatView` because `voiceModeAvailable` is set by this
+    /// view's own capability sync — a `.task` one level up races it.
+    @State private var hasSeededVoice = false
   #endif
 
   var body: some View {
@@ -188,6 +192,10 @@ struct ComposerView: View {
             }
 
           primaryAction
+
+          if feature.voiceModeAvailable {
+            voiceModeButton
+          }
         }
       }
 
@@ -359,6 +367,28 @@ struct ComposerView: View {
     .accessibilityIdentifier("chat.dictate")
   }
 
+  /// Design §4: hands-free voice mode, right of send — the last thing on the
+  /// row, because it replaces the whole composer rather than adding to the
+  /// draft. Disabled by the same rule the field is: a turn already in
+  /// progress, a read-only conversation or a blocked composer means there is
+  /// nothing to talk INTO.
+  private var voiceModeButton: some View {
+    Button {
+      actionFeedbackTick += 1
+      guard let voice = feature.startVoiceMode() else { return }
+      Task { await voice.start() }
+    } label: {
+      Image(systemName: "waveform")
+        .font(.title3)
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
+    }
+    .disabled(feature.draftEditingAllowed == false)
+    .accessibilityLabel("Start voice mode")
+    .accessibilityHint("Talk with your agent hands-free")
+    .accessibilityIdentifier("chat.voice")
+  }
+
   /// The upload. No cancel: the clip is already recorded and the request is
   /// seconds long — the honest thing is to say what is happening and let it
   /// finish. Starting another recording cancels it.
@@ -382,10 +412,15 @@ struct ComposerView: View {
     .accessibilityIdentifier("chat.dictation.uploading")
   }
 
+  /// One gate, two surfaces: `AppModel.speechAvailable` is the only place
+  /// that knows whether this GATEWAY advertises `speech-v1`, and neither the
+  /// mic nor the waveform belongs on a gateway that cannot speak.
   private func updateDictationAvailability() {
     feature.syncDictation(available: appModel.speechAvailable)
+    feature.syncVoiceMode(available: appModel.speechAvailable)
     #if DEBUG
       seedDictationForUITesting()
+      seedVoiceModeForUITesting()
     #endif
   }
 
@@ -405,6 +440,26 @@ struct ComposerView: View {
         await dictation.start()
         guard seed != "recording" else { return }
         await dictation.finish()
+      }
+    }
+  #endif
+
+  #if DEBUG
+    /// `DASH_UI_TEST_VOICE=listening|thinking|speaking|muted|ended` opens the
+    /// cover and drives it into one state through the REAL feature and the
+    /// REAL reducer, from canned frames — a tap, a microphone and a gateway
+    /// with a speech provider are all unreachable from `simctl`, and a
+    /// capture must not be able to show a state the app cannot reach.
+    private func seedVoiceModeForUITesting() {
+      guard
+        hasSeededVoice == false,
+        let seed = UITestLaunchOptions.voice,
+        let voice = feature.startVoiceMode()
+      else { return }
+      hasSeededVoice = true
+      Task {
+        await voice.start()
+        voice.seedForUITesting(seed)
       }
     }
   #endif

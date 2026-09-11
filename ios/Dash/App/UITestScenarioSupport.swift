@@ -133,6 +133,17 @@ extension AppDependenciesFactory {
         ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-dictation")
     }
 
+    /// Opens the hands-free voice cover and drives it into one state:
+    /// `listening`, `thinking`, `speaking`, `muted` or `ended`. Same reason
+    /// `dictation` exists — every one of those needs a tap, a microphone, a
+    /// speech provider and a live socket, so none of them could be looked at
+    /// on any screen before this.
+    static var voice: String? {
+      let environment = ProcessInfo.processInfo.environment
+      return environment["DASH_UI_TEST_VOICE"]
+        ?? ProcessInfo.processInfo.arguments.uiTestValue(after: "--dash-ui-test-voice")
+    }
+
     static var expandTools: Bool {
       let environment = ProcessInfo.processInfo.environment
       if let raw = environment["DASH_UI_TEST_EXPAND_TOOLS"] {
@@ -1298,6 +1309,24 @@ extension AppDependenciesFactory {
                 session: UITestSpeechSessionControl(),
                 interruptions: { AsyncStream { _ in } }
               )
+            },
+            makeVoiceMode: { id, agentID, conversationID, transport in
+              VoiceModeFeature(
+                id: id,
+                agentID: agentID,
+                conversationID: conversationID,
+                transport: transport,
+                capture: UITestAudioCapture(),
+                player: UITestAudioPlayer(),
+                haptics: UITestVoiceHaptics(),
+                permission: UITestSpeechPermission(),
+                session: UITestSpeechSessionControl(),
+                // Deliberately never dismissing: `DASH_UI_TEST_VOICE=ended`
+                // exists so the ended state can be READ — and photographed —
+                // and a cover that took itself down after 1.5 s could be
+                // neither.
+                dismissDelay: nil
+              )
             }
           )
         },
@@ -1404,6 +1433,31 @@ extension AppDependenciesFactory {
   /// Answers "hello world" — the string `DictationUITests` asserts lands in
   /// the composer — unless the launch option asks for a state that needs the
   /// upload to hang (`uploading`) or fail (`failed`).
+  /// A microphone that is live but silent: the stream NEVER finishes, since
+  /// a finished stream is voice mode's interruption signal and would end
+  /// every seeded session a fraction of a second after it opened.
+  private actor UITestAudioCapture: AudioCapturing {
+    private var continuation: AsyncStream<Data>.Continuation?
+
+    func start() async throws -> AsyncStream<Data> {
+      let pair = AsyncStream<Data>.makeStream()
+      continuation = pair.continuation
+      return pair.stream
+    }
+
+    func stop() async {
+      continuation?.finish()
+      continuation = nil
+    }
+  }
+
+  /// A simulator has no taptic engine, and a UI test has no way to observe
+  /// one. Silence keeps the console clean.
+  private struct UITestVoiceHaptics: VoiceHaptics {
+    func impact(_ weight: VoiceHapticWeight) {}
+    func error() {}
+  }
+
   private struct UITestSpeechTranscriber: SpeechTranscribing {
     let seed: String?
 

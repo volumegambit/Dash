@@ -14,6 +14,20 @@ protocol SpeechPermissionRequesting: Sendable {
   /// iOS only ever asks once, which is why the UI has to offer a route to
   /// Settings rather than a second "Allow" button.
   func requestMicrophone() async -> Bool
+
+  /// Whether iOS has ALREADY been told no. Read WITHOUT prompting, so a
+  /// surface can decide whether to offer itself at all — voice mode (Task B9)
+  /// hides its button rather than offering a session that can only fail, and
+  /// iOS never asks a second time.
+  ///
+  /// Defaulted so every existing conformer — the app's own
+  /// `SystemSpeechPermission` aside, that is every test and UI-test fake —
+  /// keeps compiling and keeps meaning "permission is fine".
+  var microphoneIsDenied: Bool { get }
+}
+
+extension SpeechPermissionRequesting {
+  var microphoneIsDenied: Bool { false }
 }
 
 struct SystemSpeechPermission: SpeechPermissionRequesting {
@@ -21,5 +35,9 @@ struct SystemSpeechPermission: SpeechPermissionRequesting {
     // iOS 17 replaced `AVAudioSession.requestRecordPermission(_:)` with this;
     // the deployment target is 17.0, so the old spelling is not needed.
     await AVAudioApplication.requestRecordPermission()
+  }
+
+  var microphoneIsDenied: Bool {
+    AVAudioApplication.shared.recordPermission == .denied
   }
 }

@@ -388,6 +388,14 @@ struct ChatView: View {
         onCancel: { editingMessage = nil }
       )
     }
+    // Hands-free voice mode (speech Phase B, Task B9). A full-screen cover
+    // rather than a sheet: it is a mode, not a detail, and the transcript
+    // underneath has to keep rendering — the chat screen's conversation
+    // subscription is what stays live while the gateway drops the voice
+    // turn's own (Task B6).
+    .fullScreenCover(item: voiceModeBinding) { voice in
+      VoiceModeView(voice: voice)
+    }
     .sheet(isPresented: $isTasksPresented) {
       TasksSheet { childID in
         feature.revealSubagent(childID)
@@ -406,6 +414,22 @@ struct ChatView: View {
       // Presentation audit (iPad goal Phase D, Task 11 / design §4).
       .modifier(FormSheetSizing())
     }
+  }
+
+  /// The cover's presentation is `ChatFeature.voiceMode` itself: clearing it
+  /// IS the dismissal, so a session that ends on its own (the gateway
+  /// stopping, a lost socket) takes the cover down without the view needing
+  /// to hear about it. A dismissal that starts on the VIEW side — the system
+  /// taking the cover away — routes back through `stopVoiceMode()` so the
+  /// microphone and the gateway session go with it.
+  private var voiceModeBinding: Binding<VoiceModeFeature?> {
+    Binding(
+      get: { feature.voiceMode },
+      set: { value in
+        guard value == nil else { return }
+        Task { await feature.stopVoiceMode() }
+      }
+    )
   }
 
   /// Compose-first new chat (Task 3, audit #16): the header agent chip's
@@ -828,7 +852,11 @@ struct ChatView: View {
             firstRowFrameCoordinateSpace: Self.scrollSpace,
             isAnsweringEnabled: feature.canAnswerQuestions,
             isScrollTarget: true,
-            readAloud: feature.readAloud,
+            // Read aloud and voice mode are mutually exclusive: read
+            // aloud's `.playback` session category evicts voice mode's live
+            // capture, so the menu item goes away entirely while the cover
+            // is up rather than offering a tap that kills the microphone.
+            readAloud: feature.voiceMode == nil ? feature.readAloud : nil,
             onAnswer: { questionID, answer in
               Task { await feature.answer(questionID: questionID, answer: answer) }
             },

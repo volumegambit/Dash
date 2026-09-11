@@ -79,5 +79,10 @@ enum DashTheme {
   /// transcript, composer and agent forms at regular width.
   enum Layout {
     static let readableWidth: CGFloat = 760
+    /// Voice mode's centred column (speech Phase B, Task B9). Narrower than
+    /// the reading column on purpose: the cover is an orb, a state line and
+    /// two captions, and stretching those across an iPad leaves the eye
+    /// travelling between elements that belong together.
+    static let voiceWidth: CGFloat = 560
   }
 }
