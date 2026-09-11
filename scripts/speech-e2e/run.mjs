@@ -15,7 +15,10 @@
 //      calibration silence first, 1.5s of trailing silence after) → asserts
 //      voice_state listening, a final voice_transcript, the hub's accepted
 //      AFTER the transcript, >=1 voice_speech, done, voice_state listening
-//      again, then voice_stop → voice_stopped { reason: 'client' }.
+//      again, then voice_stop → voice_stopped { reason: 'client' }. It
+//      acknowledges each voice_speech with voice_played and asserts the
+//      second listening arrives after that ack and well inside the gateway's
+//      8s drain timeout — i.e. that the ACK is what advanced the session.
 //
 // Also exercises the /mobile/v1 mount (health advertises 'speech-v1').
 // Real (small, ~cents) provider calls, so NOT part of `npm test`/CI.
@@ -248,6 +251,15 @@ async function main() {
     const voiceId = crypto.randomUUID();
     const wsT0 = Date.now();
     const wsFrames = []; // { t: msSinceWsT0, m: parsedFrame }
+    /**
+     * The drain acknowledgements this script has sent, `{ seq, t }`. A real
+     * client sends `voice_played` once its playback chain has drained; this
+     * script has no speaker, so it acknowledges each `voice_speech` as it
+     * arrives (resolution 1 allows once-per-sentence). Without it the gateway
+     * would sit on its 8s safety timer — which is exactly what the assertions
+     * below distinguish.
+     */
+    const playedAcks = [];
     const ws = new WebSocket(gw.chatUrl);
     await new Promise((resolve, reject) => {
       ws.onopen = () => resolve();
@@ -263,6 +275,11 @@ async function main() {
       const t = Date.now() - wsT0;
       wsFrames.push({ t, m });
       console.log(`     [${(t / 1000).toFixed(2)}s] ← ${m.type}  ${describeFrame(m)}`);
+      if (m.type === 'voice_speech' && m.id === voiceId) {
+        playedAcks.push({ seq: m.seq, t: Date.now() - wsT0 });
+        ws.send(JSON.stringify({ type: 'voice_played', id: voiceId, seq: m.seq }));
+        console.log(`     [${(t / 1000).toFixed(2)}s] → voice_played  seq=${m.seq}`);
+      }
     };
     const send = (frame) => ws.send(JSON.stringify(frame));
 
@@ -450,6 +467,38 @@ async function main() {
             ? `listening2.index=${listening2.index}`
             : `listening arrived before done (idx ${listening2.index} < idx ${doneFrame.index})`,
       );
+
+      // F1: the session holds `speaking` until the phone acknowledges that
+      // playback has DRAINED. Two facts, and the second is the load-bearing
+      // one: without it this step passes either way, because the gateway's 8s
+      // safety timer would eventually advance the session on its own.
+      check(
+        playedAcks.length > 0,
+        'the client acknowledged playback with voice_played',
+        '>=1 voice_played sent',
+        `${playedAcks.length} sent`,
+      );
+      const lastAck = playedAcks.at(-1);
+      if (listening2 !== undefined && lastAck !== undefined) {
+        // The session waits for BOTH the turn to finish and playback to drain,
+        // and either can be last: TTS can outrun the model's final tokens, in
+        // which case `listening` legitimately waits on `done`. Measuring from
+        // the later of the two is what keeps this from failing a slow model.
+        const gateT = Math.max(lastAck.t, doneFrame.t);
+        const delay = listening2.t - gateT;
+        check(
+          listening2.t >= lastAck.t,
+          'voice_state listening arrives AFTER the last voice_played',
+          `listening2.t >= lastAck.t (ack at ${(lastAck.t / 1000).toFixed(2)}s)`,
+          `listening at ${(listening2.t / 1000).toFixed(2)}s`,
+        );
+        check(
+          delay >= 0 && delay < 3_000,
+          'the ACK is what advanced the session, not the 8s drain timeout',
+          '< 3000ms after the later of the last voice_played and done',
+          `${delay}ms (gate at ${(gateT / 1000).toFixed(2)}s)`,
+        );
+      }
 
       if (listening2 !== undefined) {
         const between = wsFrames

@@ -126,6 +126,11 @@ less precisely.
       ask a follow-up without touching the screen -> both turns are heard and answered correctly,
       the state line moves Listening -> Thinking -> Speaking -> Listening each time, and closing
       voice mode afterward shows both exchanges in the transcript as ordinary messages
+- [ ] Listen to the END of a multi-sentence answer, and to a one-sentence answer ("Four.") ->
+      the LAST sentence is heard in full, not clipped or dropped, and the state line only moves
+      to Listening once the speaker has actually gone quiet (this is what `voice_played` fixes:
+      the gateway used to say Listening the moment it SENT the last chunk, and the phone flushes
+      playback when it leaves Speaking)
 - [ ] While the agent is speaking, start talking over it (barge-in) -> playback stops immediately,
       the state line returns to Listening, and what you said starts a new turn rather than being
       lost
