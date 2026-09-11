@@ -63,6 +63,37 @@ struct VoiceModeFeatureTests {
     #expect(harness.feature.state.error == VoiceModeState.couldNotStartMessage)
   }
 
+  @Test("prepare finishes before the microphone is armed")
+  func prepareRunsBeforeCapture() async {
+    let harness = Harness()
+    let order = OrderRecorder()
+    harness.feature.prepare = {
+      // `ReadAloudFeature.stop()` deactivates the one process-wide audio
+      // session; landing after the capture armed it would evict the capture.
+      await order.record("prepare")
+    }
+    await harness.capture.setOnStart { await order.record("capture") }
+
+    await harness.feature.start()
+    await expectEventuallyAsync("capture to be running") { await harness.capture.isRunning }
+
+    #expect(await order.events == ["prepare", "capture"])
+  }
+
+  @Test("a session ended during prepare never arms the microphone")
+  func endedDuringPrepareNeverStarts() async {
+    let harness = Harness()
+    harness.feature.prepare = { [weak feature = harness.feature] in
+      feature?.transportLost()
+    }
+
+    await harness.feature.start()
+
+    #expect(harness.feature.state.phase.isEnded)
+    #expect(await harness.capture.isRunning == false)
+    #expect(await harness.transport.calls.isEmpty)
+  }
+
   // MARK: - Audio
 
   @Test("captured audio is dropped until the gateway says it is listening")
@@ -319,6 +350,25 @@ struct VoiceModeFeatureTests {
     #expect(await harness.transport.calls.contains(.stop(id: "voice-1")) == false)
   }
 
+  @Test("a socket that goes away ends the session, even while muted")
+  func transportLossEndsAMutedSession() async {
+    let harness = await Harness.started()
+    harness.feature.receive(.voiceState(id: "voice-1", state: .listening, turnId: nil))
+    await harness.feature.toggleMute()
+
+    // Nothing on the wire says the session is gone: a muted session sends no
+    // audio, so there is no send to fail. `ChatFeature` has to say so.
+    harness.feature.transportLost()
+
+    #expect(harness.feature.state.phase == .ended(reason: VoiceModeState.connectionLostMessage))
+    await expectEventuallyAsync("the microphone to stop") {
+      await harness.capture.isRunning == false
+    }
+    // Nothing is sent down a socket that is already gone.
+    #expect(await harness.transport.calls.contains(.stop(id: "voice-1")) == false)
+    #expect(harness.session.deactivations == 1)
+  }
+
   // MARK: - Haptics
 
   @Test("the phase changes are felt, and so is an error")
@@ -412,12 +462,21 @@ actor FakeAudioCapture: AudioCapturing {
   private(set) var isRunning = false
   private(set) var stopCount = 0
 
+  private var onStart: (@Sendable () async -> Void)?
+
   func setStartError(_ error: Error?) {
     startError = error
   }
 
+  /// Runs inside `start()`, so a test can observe what has and has not
+  /// happened by the time the microphone is armed.
+  func setOnStart(_ body: @escaping @Sendable () async -> Void) {
+    onStart = body
+  }
+
   func start() async throws -> AsyncStream<Data> {
     if let startError { throw startError }
+    await onStart?()
     guard isRunning == false else { throw AudioCaptureError.alreadyCapturing }
     isRunning = true
     let pair = AsyncStream<Data>.makeStream()
@@ -529,4 +588,13 @@ actor FakeVoiceTransport: ChatFeatureTransporting {
   func unsubscribe(agentID: String, conversationID: String) async throws {}
   func suspendForDetachment() async {}
   func shutdown() async {}
+}
+
+/// Orders two things that happen on different tasks.
+actor OrderRecorder {
+  private(set) var events: [String] = []
+
+  func record(_ event: String) {
+    events.append(event)
+  }
 }

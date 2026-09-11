@@ -6205,6 +6205,54 @@ struct ChatFeatureTests {
     #expect(feature.userTexts == ["what's the weather"])
   }
 
+  @Test("a socket that drops ends the open voice session")
+  func droppedSocketEndsVoiceMode() async {
+    let chat = FakeChatFeatureTransport()
+    let capture = FakeAudioCapture()
+    let feature = makeFeature(
+      chat: chat,
+      ids: ["voice-session"],
+      makeVoiceMode: { id, agentID, conversationID, transport in
+        VoiceModeFeature(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          transport: transport,
+          capture: capture,
+          player: FakeAudioPlayer(),
+          haptics: FakeVoiceHaptics(),
+          permission: FakeSpeechPermission(granted: true),
+          session: FakeSpeechSessionControl(),
+          clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+          dismissDelay: nil
+        )
+      }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    feature.syncVoiceMode(available: true)
+
+    let voice = feature.startVoiceMode()
+    #expect(voice != nil)
+    await voice?.start()
+    await eventually { await capture.isRunning }
+
+    // Even a reconnect the CHAT recovers from transparently is fatal to the
+    // voice session: the gateway keeps its voice slot in the per-connection
+    // closure, so the new socket has no session in it. Nothing on the wire
+    // says so — a muted session sends no audio at all — which is why this
+    // has to come from the transport state.
+    await chat.yield(.state(.reconnecting(attempt: 1)))
+
+    await eventually { await voice?.state.phase.isEnded == true }
+    #expect(voice?.state.phase == .ended(reason: VoiceModeState.connectionLostMessage))
+    // The teardown — stop capture, flush playback, release the route — runs
+    // on its own task, so it lands a beat after the phase does.
+    await eventually { await capture.isRunning == false }
+    // Nothing is pushed down a socket that is already gone.
+    #expect(await chat.calls.contains(.voiceStop(id: "voice-session")) == false)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),
@@ -6214,7 +6262,8 @@ struct ChatFeatureTests {
     recoveryChanges: any ConversationRecoveryChangeSignaling = ConversationRecoveryChangeSignal(),
     ids: [String] = ["turn-1", "local-1"],
     makeDictation: @escaping @MainActor @Sendable () -> DictationFeature? = { nil },
-    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil }
+    makeReadAloud: @escaping @MainActor @Sendable () -> ReadAloudFeature? = { nil },
+    makeVoiceMode: @escaping ChatVoiceModeFactory = { _, _, _, _ in nil }
   ) -> ChatFeature {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
@@ -6231,7 +6280,8 @@ struct ChatFeatureTests {
       recoveryChanges: recoveryChanges,
       makeID: { source.next() },
       makeDictation: makeDictation,
-      makeReadAloud: makeReadAloud
+      makeReadAloud: makeReadAloud,
+      makeVoiceMode: makeVoiceMode
     )
   }
 

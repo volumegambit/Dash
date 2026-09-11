@@ -1285,10 +1285,10 @@ final class ChatFeature {
   func startVoiceMode() -> VoiceModeFeature? {
     guard isShutdown == false, voiceModeAvailable else { return nil }
     if let voiceMode { return voiceMode }
-    // Read aloud and voice mode are mutually exclusive: read aloud's
-    // `.playback` category evicts the live capture.
-    let speaking = readAloud
-    if speaking != nil { Task { await speaking?.stop() } }
+    // Read aloud and voice mode are mutually exclusive (its `.playback`
+    // category evicts the live capture), but stopping it happens in the
+    // feature's `prepare` hook below rather than here, so the deactivate is
+    // ordered BEFORE the capture arms the route rather than racing it.
     let sessionID = makeID()
     guard
       let feature = makeVoiceMode(
@@ -1298,6 +1298,17 @@ final class ChatFeature {
         transport
       )
     else { return nil }
+    feature.prepare = { [weak self] in
+      guard let self else { return }
+      // Awaited, not detached: `ReadAloudFeature.stop()` deactivates the one
+      // process-wide audio session, and a detached stop could land after the
+      // capture has armed `.playAndRecord`.
+      await self.readAloud?.stop()
+      // The same call `send()` makes, and a no-op when the socket is already
+      // up — `ChatConnection.connect()` REPLACES the socket, so it must never
+      // be called unconditionally.
+      try? await self.ensureConnected()
+    }
     feature.onStartLocalTurn = { [weak self] turnID, text in
       await self?.startLocalTurn(turnID: turnID, text: text)
     }
@@ -3137,6 +3148,17 @@ final class ChatFeature {
         isSubscribed = false
         subscribedSubagentIDs.removeAll()
       case .connecting, .connected, .reconnecting: break
+      }
+      // A voice session cannot survive its socket: the gateway keeps the slot
+      // in the per-connection closure, so even a `.reconnecting` the chat
+      // recovers from transparently leaves the session gone. `.connecting` is
+      // deliberately NOT in this list — `startVoiceMode` itself may have just
+      // asked `ensureConnected()` for a socket, and ending on the state that
+      // request produces would close the cover the user just opened.
+      switch transportState {
+      case .reconnecting, .idle, .detached:
+        voiceMode?.transportLost()
+      case .connecting, .connected: break
       }
       _ = ChatReducer.reduce(state: &state, action: .transportChanged(transportState))
       if reconnectCompleted {

@@ -75,6 +75,19 @@ final class VoiceModeFeature: Identifiable {
   /// Take the cover down. `ChatFeature` clears its `voiceMode`, which is what
   /// the `.fullScreenCover(item:)` binding reads.
   @ObservationIgnored var onDismiss: (@MainActor () -> Void)?
+  /// Anything the owner must finish BEFORE the microphone is armed. Awaited
+  /// at the very top of `start()`.
+  ///
+  /// It exists for one ordering hazard and one convenience.
+  /// `ReadAloudFeature.stop()` ends with `session.deactivate()`, and there is
+  /// one process-wide `AVAudioSession`: stopping a read in a detached task
+  /// would let that `deactivate()` land AFTER `AudioCaptureService.start()`
+  /// has activated `.playAndRecord`, tearing the route out from under a
+  /// capture that had just armed it. Awaiting here makes the order total. The
+  /// convenience is the socket — `ChatFeature.ensureConnected()`, the same
+  /// call `send()` makes, so voice mode does not fail on a connection the
+  /// chat would have re-established anyway.
+  @ObservationIgnored var prepare: (@MainActor () async -> Void)?
 
   @ObservationIgnored private let agentID: String
   @ObservationIgnored private let conversationID: String
@@ -152,6 +165,8 @@ final class VoiceModeFeature: Identifiable {
   func start() async {
     guard hasStarted == false else { return }
     hasStarted = true
+    await prepare?()
+    guard state.phase.isEnded == false else { return }
     guard await permission.requestMicrophone() else {
       apply(.failed(VoiceModeState.permissionDeniedMessage))
       return
@@ -181,6 +196,18 @@ final class VoiceModeFeature: Identifiable {
     apply(.stopRequested)
     await effectChain?.value
     await teardownTask?.value
+  }
+
+  /// The socket this session lives on went away.
+  ///
+  /// Fatal, and not only while reconnecting: the gateway holds its voice slot
+  /// in the per-CONNECTION closure (`apps/gateway/src/chat-ws.ts`), so a new
+  /// socket is a new closure with no session in it. Nothing on the wire says
+  /// so — a muted session sends no audio at all, so without this the cover
+  /// would sit on "Muted" forever and the first unmute would earn a
+  /// `voice_error { invalid }`.
+  func transportLost() {
+    apply(.transportLost)
   }
 
   /// A `voice_*` frame from `ChatFeature`'s socket.
