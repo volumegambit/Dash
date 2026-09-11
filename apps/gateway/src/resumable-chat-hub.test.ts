@@ -282,6 +282,30 @@ describe('ResumableChatHub', () => {
     expect(harness.chat.mock.calls[0][0].location).toBeUndefined();
   });
 
+  it("threads modality: 'voice' through to the chat request", async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start({ ...sendFrame(conversation), modality: 'voice' }, sink);
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].modality).toBe('voice');
+  });
+
+  it('sends no modality when the client did not report one', async () => {
+    const conversation = createConversation();
+    const scripted = register(conversation.id);
+    const sink = makeSink();
+
+    hub.start(sendFrame(conversation), sink);
+    scripted.finish();
+    await vi.waitFor(() => expect(harness.chat).toHaveBeenCalled());
+
+    expect(harness.chat.mock.calls[0][0].modality).toBeUndefined();
+  });
+
   async function waitForFrames(sink: TestSink, count: number): Promise<void> {
     await vi.waitFor(() => expect(sink.frames).toHaveLength(count));
   }

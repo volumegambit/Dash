@@ -67,6 +67,7 @@ const STRUCTURAL_CLIENT_FIELDS = new Set([
   'answer',
   'images',
   'location',
+  'modality',
 ]);
 
 /** Allowlist protocol metadata; never recursively serialize untrusted values. */
@@ -224,6 +225,7 @@ export function parseChatClientFrame(msg: unknown): MobileWsClientFrame | null {
     if (!valid) return null;
     if (!isValidConversationId(m.conversationId as string)) return null;
     if (m.resumable !== undefined && typeof m.resumable !== 'boolean') return null;
+    if (m.modality !== undefined && m.modality !== 'text' && m.modality !== 'voice') return null;
     if (
       m.streamingBehavior !== undefined &&
       m.streamingBehavior !== 'steer' &&
@@ -545,6 +547,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
                 text,
                 images: images?.length ? images : undefined,
                 location: toClientLocation(msg.location),
+                modality: msg.modality,
                 messageId: msg.id,
                 signal: controller.signal,
               });

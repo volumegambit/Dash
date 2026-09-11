@@ -394,6 +394,90 @@ describe('DashAgent location prompt', () => {
     expect(mem).toBeGreaterThan(-1);
     expect(env).toBeLessThan(mem);
   });
+
+  it('orders <voice> after </environment> and before <memory>', async () => {
+    await new MemoryStore(dir).save({
+      name: 'user-timezone',
+      description: 'Gerry is in Singapore',
+      type: 'user',
+      content: 'UTC+8',
+      source: 'agent',
+    });
+
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({
+        model: 'anthropic/claude-sonnet-5',
+        systemPrompt: 'base',
+        memory: { dir },
+      }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { location, modality: 'voice' }));
+
+    const env = seen[0].indexOf('</environment>');
+    const voice = seen[0].indexOf('<voice>');
+    const mem = seen[0].indexOf('<memory>');
+    expect(env).toBeGreaterThan(-1);
+    expect(voice).toBeGreaterThan(-1);
+    expect(mem).toBeGreaterThan(-1);
+    expect(env).toBeLessThan(voice);
+    expect(voice).toBeLessThan(mem);
+  });
+});
+
+describe('DashAgent voice prompt', () => {
+  it("appends a <voice> block when the turn's modality is 'voice'", async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-sonnet-5', systemPrompt: 'base' }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { modality: 'voice' }));
+
+    expect(seen[0]).toContain('base\n\n<voice>');
+    expect(seen[0]).toContain('The user is speaking to you');
+  });
+
+  it("appends nothing when modality is 'text'", async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-sonnet-5', systemPrompt: 'base' }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi', { modality: 'text' }));
+
+    expect(seen[0]).not.toContain('<voice>');
+    expect(seen[0]).toBe('base');
+  });
+
+  it('appends nothing when modality is absent (dictated / default turns)', async () => {
+    const seen: string[] = [];
+    const backend = makeBackend([], (state) => {
+      seen.push(state.systemPrompt);
+    });
+    const agent = new DashAgent(
+      backend,
+      staticResolver({ model: 'anthropic/claude-sonnet-5', systemPrompt: 'base' }),
+    );
+
+    await collect(agent.chat('ch', 'conv', 'hi'));
+
+    expect(seen[0]).not.toContain('<voice>');
+    expect(seen[0]).toBe('base');
+  });
 });
 
 describe('DashAgent location tool gating', () => {

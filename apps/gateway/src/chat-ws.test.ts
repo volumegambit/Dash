@@ -251,6 +251,34 @@ describe('parseChatClientFrame', () => {
     ).toBeNull();
   });
 
+  it('accepts a message frame with modality voice or text, or no modality at all', () => {
+    const base = {
+      type: 'message',
+      id: 'turn-01',
+      agentId: 'agent-01',
+      channelId: 'mobile-ios',
+      conversationId: 'conversation-01',
+      text: 'Where am I?',
+    } as const;
+
+    expect(parseChatClientFrame({ ...base, modality: 'voice' })).not.toBeNull();
+    expect(parseChatClientFrame({ ...base, modality: 'text' })).not.toBeNull();
+    expect(parseChatClientFrame(base)).not.toBeNull();
+  });
+
+  it('rejects a message frame with an unrecognized modality', () => {
+    const base = {
+      type: 'message',
+      id: 'turn-01',
+      agentId: 'agent-01',
+      channelId: 'mobile-ios',
+      conversationId: 'conversation-01',
+      text: 'Where am I?',
+    } as const;
+
+    expect(parseChatClientFrame({ ...base, modality: 'audio' })).toBeNull();
+  });
+
   it('accepts capable image payloads at the exact individual and combined byte boundaries', () => {
     const individualBoundary = Buffer.alloc(5 * 1024 * 1024).toString('base64');
     const combinedBoundary = Buffer.alloc(4 * 1024 * 1024).toString('base64');
@@ -1254,6 +1282,37 @@ describe('mountChatWs client location', () => {
     dispatch(connection, DIRECT_MESSAGE);
 
     expect(harness.requests[0]?.location).toBeUndefined();
+  });
+});
+
+describe('mountChatWs modality forwarding', () => {
+  // A frame WITHOUT `resumable: true` takes the direct agents.chat() path in
+  // chat-ws.ts rather than the resumable hub.
+  const DIRECT_MESSAGE = {
+    type: 'message',
+    id: 'turn-modality',
+    agentId: 'agent-01',
+    channelId: 'mission-control',
+    conversationId: 'conversation-01',
+    text: 'Say it out loud',
+  } as const;
+
+  it("forwards modality: 'voice' to the chat request", () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, { ...DIRECT_MESSAGE, modality: 'voice' });
+
+    expect(harness.requests[0]?.modality).toBe('voice');
+  });
+
+  it('sends no modality when the client did not report one', () => {
+    const harness = makeWsHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, DIRECT_MESSAGE);
+
+    expect(harness.requests[0]?.modality).toBeUndefined();
   });
 });
 
