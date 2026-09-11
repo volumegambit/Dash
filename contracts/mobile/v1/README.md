@@ -51,6 +51,9 @@ The root fixtures are:
   and `replay.json`.
 - Chat frames: `chat-send.json`, `chat-resume.json`, `chat-answer.json`, `chat-cancel.json`,
   `chat-accepted.json`, `chat-event.json`, `chat-done.json`, and `chat-error.json`.
+- Hands-free voice frames: `voice-start.json`, `voice-audio.json`, `voice-mute.json`,
+  `voice-stop.json` (client), and `voice-state.json`, `voice-transcript.json`,
+  `voice-speech.json`, `voice-error.json`, `voice-stopped.json` (server).
 - Streams: `chat-stream.jsonl`, `chat-resume.jsonl`, `sse-conversation-changed.txt`, and
   `sse-conversation-deleted.txt`.
 - Speech: `speech-config.json` (the shared `GET`/`PATCH /speech/config` body),
@@ -81,6 +84,7 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   `chat-answer-missing-question-id.json`, `chat-cancel-missing-id.json`,
   `chat-accepted-missing-seq.json`, `chat-event-missing-conversation-id.json`,
   `chat-done-missing-outcome.json`, and `chat-error-missing-error.json`.
+- Voice: `voice-audio-missing-pcm.json`.
 - Errors: `structured-error-missing-code.json`.
 
 ## Compatibility rules
@@ -108,13 +112,17 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   `/speech/*` operations on it and must tolerate capability strings they do not know — a client
   that rejects an unfamiliar capability cannot be deployed before the gateway that adds one.
 - `POST /speech/speech` is the only operation whose success body is not JSON: it streams
-  `audio/mpeg`. The gateway does not content-negotiate, so clients send `Accept: audio/mpeg` and
-  must still be ready to decode a JSON `MobileApiError` on the same request — a failure raised
-  before the first audio chunk comes back as the ordinary error envelope.
+  `audio/mpeg`, or answers `audio/wav` whole for a PCM-only model that cannot produce MP3.
+  Clients send `Accept: audio/mpeg, audio/wav` and must still be ready to decode a JSON
+  `MobileApiError` on the same request — a failure raised before the first audio chunk comes
+  back as the ordinary error envelope.
 - `/speech/*` reuses `MobileApiError` but passes the provider-level `SpeechErrorCode`
   (`too_large`, `too_long`, `provider`, `network`, `unavailable`, `invalid`) through
-  untranslated, which is why `MobileApiErrorCode` carries them. The WebSocket error frame does
-  not: those codes are unreachable there.
+  untranslated, which is why `MobileApiErrorCode` carries them. The WebSocket `error` frame does
+  not carry them (those codes are unreachable there), but the hands-free voice `voice_error`
+  frame does: its `code` is the narrower `SpeechErrorCode` union
+  (`unauthorized, unavailable, too_long, too_large, invalid, provider, network`), its own
+  `chat-ws.schema.json` `$defs.SpeechErrorCode` def.
 - Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
   with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other

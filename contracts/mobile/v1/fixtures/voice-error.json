@@ -1,0 +1,6 @@
+{
+  "type": "voice_error",
+  "id": "018f0f4a-5c42-7a8b-9c01-6234567890ab",
+  "code": "provider",
+  "error": "The speech provider failed to transcribe the clip"
+}

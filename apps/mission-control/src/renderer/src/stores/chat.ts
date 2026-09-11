@@ -32,6 +32,18 @@ export function conversationKey(ref: ConversationRef): ConversationKey {
   return `${ref.origin}:${ref.id}`;
 }
 
+/**
+ * The hands-free `voice_*` server frames (Task B7) are keyed by voice session
+ * id, not `conversationId`, and Mission Control has no voice UI yet. `applyFrame`
+ * guards on this so a voice frame is ignored rather than mis-routed onto
+ * whatever conversation happens to be selected.
+ */
+function isVoiceServerFrame(
+  frame: MobileWsServerFrame,
+): frame is Extract<MobileWsServerFrame, { type: `voice_${string}` }> {
+  return frame.type.startsWith('voice_');
+}
+
 export function conversationRefFromKey(key: ConversationKey): ConversationRef {
   const separator = key.indexOf(':');
   return {
@@ -985,6 +997,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     async applyFrame(frame) {
+      if (isVoiceServerFrame(frame)) return;
       if (!frame.conversationId) return;
       // Ruling 4: a child's frames belong to the child's transcript. Ahead of
       // everything below, because the conversation path would key

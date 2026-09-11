@@ -226,18 +226,32 @@ function decodedBase64Bytes(data: string): number {
 }
 
 /**
- * The hands-free voice frames. Task B7 moves these into `contracts/mobile/v1`
- * beside the chat frames; until then they are typed here so the gateway can
- * parse them, and `parseChatClientFrame` returns the wider union.
+ * The hands-free voice client frames now live in `contracts/mobile/v1`
+ * (`MobileWsClientFrame`'s `voice_start` | `voice_audio` | `voice_mute` |
+ * `voice_stop` variants) alongside the rest of the chat wire protocol. This
+ * alias is kept only so existing imports (`chat-ws.test.ts`) do not need to
+ * change name; it is exactly `Extract<MobileWsClientFrame, {type: 'voice_*'}>`.
  */
-export type VoiceClientFrame =
-  | { type: 'voice_start'; id: string; agentId: string; conversationId: string }
-  /** `pcm` is base64 PCM16 at 16 kHz mono; `seq` is advisory and never reordered. */
-  | { type: 'voice_audio'; id: string; seq: number; pcm: string }
-  | { type: 'voice_mute'; id: string; muted: boolean }
-  | { type: 'voice_stop'; id: string };
+export type VoiceClientFrame = Extract<
+  MobileWsClientFrame,
+  { type: 'voice_start' | 'voice_audio' | 'voice_mute' | 'voice_stop' }
+>;
 
-export type ChatClientFrame = MobileWsClientFrame | VoiceClientFrame;
+export type ChatClientFrame = MobileWsClientFrame;
+
+// Compile-time proof that `@dash/speech`'s `VoiceServerFrame` — the actual
+// producer of every `voice_*` server frame — is structurally assignable to
+// the contract's `MobileWsServerFrame`. `@dash/speech` is the SOURCE of the
+// shape (VoiceSession authors the frames); the contract restates it so a
+// client depends on the frozen wire type rather than the server package, and
+// this assertion is what keeps the restatement honest. It only actually
+// type-checks where a gate runs `tsc`/emits `.d.ts` for this file (tsup's
+// `dts: true` build here) — vitest's esbuild transform does not check types.
+type _VoiceServerFrameAssignableToContract = VoiceServerFrame extends MobileWsServerFrame
+  ? true
+  : never;
+const _voiceServerFrameAssignableToContract: _VoiceServerFrameAssignableToContract = true;
+void _voiceServerFrameAssignableToContract;
 
 /**
  * One capture frame from the phone. 16 KB is 512ms of 16 kHz mono PCM16 — far

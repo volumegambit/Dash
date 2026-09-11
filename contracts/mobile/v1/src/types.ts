@@ -373,6 +373,39 @@ export type MobileApiErrorCode =
   | 'unavailable'
   | 'invalid';
 
+/**
+ * Runtime mirror of {@link MobileApiErrorCode}, in the same order. Exists so a
+ * test can assert the schema `enum`s and OpenAPI `enum`s are the same SET as
+ * the TS union without hand-maintaining a second literal list — see
+ * `contract.test.ts`'s "keeps MobileApiErrorCode identical" test. The
+ * `satisfies` clause below fails to compile if this array ever drops a member
+ * the type union still has.
+ */
+export const MOBILE_API_ERROR_CODES = [
+  'unauthorized',
+  'not_found',
+  'validation_failed',
+  'revision_conflict',
+  'conversation_busy',
+  'rate_limited',
+  'gateway_offline',
+  'capability_required',
+  'too_large',
+  'too_long',
+  'provider',
+  'network',
+  'unavailable',
+  'invalid',
+] as const satisfies readonly MobileApiErrorCode[];
+
+// Exhaustiveness in the OTHER direction: if `MobileApiErrorCode` grows a
+// member not listed in `MOBILE_API_ERROR_CODES` above, this line fails to
+// compile rather than letting the two silently drift apart.
+type _AssertMobileApiErrorCodesComplete =
+  MobileApiErrorCode extends (typeof MOBILE_API_ERROR_CODES)[number] ? true : never;
+const _mobileApiErrorCodesComplete: _AssertMobileApiErrorCodesComplete = true;
+void _mobileApiErrorCodesComplete;
+
 export interface MobileApiError {
   code: MobileApiErrorCode;
   error: string;
@@ -447,7 +480,56 @@ export type MobileWsClientFrame =
    * needed for a conversation the socket has not otherwise touched.
    */
   | { type: 'subscribe'; id: string; agentId: string; conversationId: string }
-  | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string };
+  | { type: 'unsubscribe'; id: string; agentId: string; conversationId: string }
+  /**
+   * Starts the hands-free voice session on `conversationId`. `id` is the
+   * client-generated session id: every `voice_*` frame in both directions
+   * (including the server's) is tagged with it, and a second `voice_start`
+   * from the same socket replaces the first session.
+   */
+  | { type: 'voice_start'; id: string; agentId: string; conversationId: string }
+  /**
+   * One capture chunk from the phone's microphone. `pcm` is standard base64
+   * PCM16 at 16 kHz mono; the gateway caps the DECODED size at 16 384 bytes
+   * (~512ms). `seq` is advisory only and never used to reorder — the VAD
+   * consumes chunks in arrival order.
+   */
+  | { type: 'voice_audio'; id: string; seq: number; pcm: string }
+  | { type: 'voice_mute'; id: string; muted: boolean }
+  | { type: 'voice_stop'; id: string };
+
+/**
+ * The hands-free voice session's state machine (`@dash/speech`'s
+ * `VoiceSession`). `muted` and `stopped` cut across the others; the rest
+ * advance in the order the session actually moves through them.
+ */
+export type VoiceState =
+  | 'listening'
+  | 'transcribing'
+  | 'thinking'
+  | 'speaking'
+  | 'muted'
+  | 'stopped';
+
+/** Why a `voice_stopped` frame was sent — never the reason for an ordinary error. */
+export type VoiceStopReason = 'client' | 'socket' | 'provider' | 'replaced';
+
+/**
+ * The exact `SpeechErrorCode` union from `packages/speech/src/errors.ts`,
+ * restated here so a client depends on the frozen wire contract rather than
+ * on the server package. It is a strict subset of `MobileApiErrorCode` (which
+ * additionally carries the REST-only codes like `not_found`), and is its own
+ * type rather than a reuse of `MobileApiErrorCode` because a `voice_error`
+ * frame can never legally carry one of those REST-only codes.
+ */
+export type SpeechErrorCode =
+  | 'unauthorized'
+  | 'unavailable'
+  | 'too_long'
+  | 'too_large'
+  | 'invalid'
+  | 'provider'
+  | 'network';
 
 export type MobileWsServerFrame =
   | {
@@ -512,7 +594,30 @@ export type MobileWsServerFrame =
       code?: MobileApiErrorCode;
       retryable?: boolean;
       activeTurnId?: string;
-    };
+    }
+  /** `turnId` is set once a turn is running and cleared once it settles back to `listening`. */
+  | { type: 'voice_state'; id: string; state: VoiceState; turnId?: string }
+  | {
+      type: 'voice_transcript';
+      id: string;
+      text: string;
+      final: boolean;
+      /** Set on the transcript that STARTS a turn — always emitted before that turn's `accepted`. */
+      turnId?: string;
+    }
+  | {
+      type: 'voice_speech';
+      id: string;
+      /** Per-chunk counter, independent of the resumable chat hub's `seq`. */
+      seq: number;
+      /** base64 of the chunk's raw bytes. */
+      audio: string;
+      format: 'pcm16' | 'mp3';
+      sampleRate?: number;
+      text: string;
+    }
+  | { type: 'voice_error'; id: string; code: SpeechErrorCode; error: string }
+  | { type: 'voice_stopped'; id: string; reason: VoiceStopReason };
 
 export type ReplayPayload =
   | {

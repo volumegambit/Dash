@@ -673,13 +673,15 @@ paths:
   /speech/speech:
     post:
       operationId: createSpeechSynthesis
-      summary: Synthesize speech, streamed as MPEG audio.
+      summary: Synthesize speech, streamed as MPEG audio, or PCM-only models are a WAV response.
       description: >-
         The ONLY operation in this namespace whose success body is not JSON. The gateway
         pins the format to `mp3` (this route always feeds a file player) and streams the
-        provider's bytes through without buffering. An error raised before the first
-        audio chunk still becomes a JSON `MobileApiError`, which is why a client must send
-        an `Accept` that admits both.
+        provider's bytes through without buffering. A PCM-only provider (e.g. Gemini TTS)
+        cannot honor that request and answers `audio/wav` instead, buffered whole rather
+        than streamed. An error raised before the first audio chunk still becomes a JSON
+        `MobileApiError`, which is why a client must send an `Accept` that admits all three:
+        `audio/mpeg, audio/wav`.
       requestBody:
         required: true
         content:
@@ -688,9 +690,11 @@ paths:
               $ref: '#/components/schemas/SynthesisRequest'
       responses:
         '200':
-          description: MPEG audio, streamed.
+          description: MPEG audio, streamed, or WAV audio, whole, for a PCM-only model.
           content:
             audio/mpeg:
+              schema: { type: string, format: binary }
+            audio/wav:
               schema: { type: string, format: binary }
         '400':
           $ref: '#/components/responses/ValidationFailed'
@@ -1486,7 +1490,7 @@ components:
             type: { const: error }
             error: { type: string, minLength: 1 }
             code:
-              enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required]
+              enum: [unauthorized, not_found, validation_failed, revision_conflict, conversation_busy, rate_limited, gateway_offline, capability_required, too_large, too_long, provider, network, unavailable, invalid]
             retryable: { type: boolean }
     ReplayEntry:
       type: object

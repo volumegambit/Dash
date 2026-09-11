@@ -200,6 +200,60 @@
       "valid": true
     },
     {
+      "file": "voice-start.json",
+      "document": "chat-ws",
+      "schema": "VoiceStart",
+      "valid": true
+    },
+    {
+      "file": "voice-audio.json",
+      "document": "chat-ws",
+      "schema": "VoiceAudio",
+      "valid": true
+    },
+    {
+      "file": "voice-mute.json",
+      "document": "chat-ws",
+      "schema": "VoiceMute",
+      "valid": true
+    },
+    {
+      "file": "voice-stop.json",
+      "document": "chat-ws",
+      "schema": "VoiceStop",
+      "valid": true
+    },
+    {
+      "file": "voice-state.json",
+      "document": "chat-ws",
+      "schema": "VoiceState",
+      "valid": true
+    },
+    {
+      "file": "voice-transcript.json",
+      "document": "chat-ws",
+      "schema": "VoiceTranscript",
+      "valid": true
+    },
+    {
+      "file": "voice-speech.json",
+      "document": "chat-ws",
+      "schema": "VoiceSpeech",
+      "valid": true
+    },
+    {
+      "file": "voice-error.json",
+      "document": "chat-ws",
+      "schema": "VoiceError",
+      "valid": true
+    },
+    {
+      "file": "voice-stopped.json",
+      "document": "chat-ws",
+      "schema": "VoiceStopped",
+      "valid": true
+    },
+    {
       "file": "chat-stream.jsonl",
       "document": "chat-ws",
       "schema": "MobileWsServerFrame",
@@ -506,6 +560,12 @@
       "file": "invalid/chat-send-latitude-out-of-range.json",
       "document": "chat-ws",
       "schema": "ChatSend",
+      "valid": false
+    },
+    {
+      "file": "invalid/voice-audio-missing-pcm.json",
+      "document": "chat-ws",
+      "schema": "VoiceAudio",
       "valid": false
     },
     {

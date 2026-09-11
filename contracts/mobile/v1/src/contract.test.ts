@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import addFormats from 'ajv-formats';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { parse } from 'yaml';
+import { MOBILE_API_ERROR_CODES } from './types.js';
 
 interface FixtureCase {
   file: string;
@@ -580,6 +581,28 @@ describe('mobile v1 contract fixtures', () => {
       '#/$defs/ChatCancel',
       '#/$defs/ChatSubscribe',
       '#/$defs/ChatUnsubscribe',
+      '#/$defs/VoiceStart',
+      '#/$defs/VoiceAudio',
+      '#/$defs/VoiceMute',
+      '#/$defs/VoiceStop',
+    ]);
+  });
+
+  it('appends the hands-free voice server frames to MobileWsServerFrame in schema order', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { oneOf?: Array<{ $ref?: string }> }>;
+    };
+    const serverFrame = ws.$defs?.MobileWsServerFrame;
+    expect(serverFrame?.oneOf?.map((entry) => entry.$ref)).toEqual([
+      '#/$defs/ChatAccepted',
+      '#/$defs/MobileWsEventFrame',
+      '#/$defs/MobileWsDoneFrame',
+      '#/$defs/MobileWsErrorFrame',
+      '#/$defs/VoiceState',
+      '#/$defs/VoiceTranscript',
+      '#/$defs/VoiceSpeech',
+      '#/$defs/VoiceError',
+      '#/$defs/VoiceStopped',
     ]);
   });
 
@@ -671,6 +694,32 @@ describe('mobile v1 contract fixtures', () => {
     ]);
   });
 
+  it('keeps MobileApiErrorCode identical across the TS union, the WS schema, and the OpenAPI enums', async () => {
+    const ws = JSON.parse(await readFile(join(root, 'chat-ws.schema.json'), 'utf8')) as {
+      $defs?: Record<string, { enum?: string[] }>;
+    };
+    const wsEnum = ws.$defs?.MobileApiErrorCode?.enum ?? [];
+
+    const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
+      components?: {
+        schemas?: {
+          MobileApiError?: { properties?: { code?: { enum?: string[] } } };
+          ReplayPayload?: { oneOf?: Array<{ properties?: { code?: { enum?: string[] } } }> };
+        };
+      };
+    };
+    const topLevelEnum = openapi.components?.schemas?.MobileApiError?.properties?.code?.enum ?? [];
+    const replayVariant = openapi.components?.schemas?.ReplayPayload?.oneOf?.find(
+      (variant) => variant.properties?.code?.enum,
+    );
+    const replayEnum = replayVariant?.properties?.code?.enum ?? [];
+
+    const expected = new Set<string>(MOBILE_API_ERROR_CODES);
+    expect(new Set(wsEnum)).toEqual(expected);
+    expect(new Set(topLevelEnum)).toEqual(expected);
+    expect(new Set(replayEnum)).toEqual(expected);
+  });
+
   it('documents the five speech operations with closed schemas', async () => {
     const openapi = parse(await readFile(join(root, 'openapi.yaml'), 'utf8')) as {
       paths?: Record<string, Record<string, { operationId?: string; parameters?: unknown }>>;
@@ -724,10 +773,11 @@ describe('mobile v1 contract fixtures', () => {
       >;
     };
     const ok = openapi.paths?.['/speech/speech']?.post?.responses?.['200'];
-    // A streamed `audio/mpeg` body. A client that sent `Accept: application/json`
-    // here (iOS `HTTPTransport.perform`'s default) would be asking for a
-    // representation this route never produces.
-    expect(Object.keys(ok?.content ?? {})).toEqual(['audio/mpeg']);
+    // A streamed body: `audio/mpeg` normally, or `audio/wav` for a PCM-only
+    // model. A client that sent `Accept: application/json` here (iOS
+    // `HTTPTransport.perform`'s default) would be asking for a representation
+    // this route never produces.
+    expect(Object.keys(ok?.content ?? {})).toEqual(['audio/mpeg', 'audio/wav']);
   });
 
   it('bounds transcription and synthesis at the upstream limits', async () => {

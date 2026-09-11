@@ -1,0 +1,9 @@
+{
+  "type": "voice_speech",
+  "id": "018f0f4a-5c42-7a8b-9c01-6234567890ab",
+  "seq": 3,
+  "audio": "AAAAAAAAAAAAAAAAAAAAAA==",
+  "format": "pcm16",
+  "sampleRate": 24000,
+  "text": "It's sunny and 24 degrees."
+}

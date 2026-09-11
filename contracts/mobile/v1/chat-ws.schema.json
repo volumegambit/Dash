@@ -93,7 +93,25 @@
         "conversation_busy",
         "rate_limited",
         "gateway_offline",
-        "capability_required"
+        "capability_required",
+        "too_large",
+        "too_long",
+        "provider",
+        "network",
+        "unavailable",
+        "invalid"
+      ]
+    },
+    "SpeechErrorCode": {
+      "$comment": "packages/speech/src/errors.ts's SpeechErrorCode, restated here. The subset of MobileApiErrorCode a voice_error frame can actually carry.",
+      "enum": [
+        "unauthorized",
+        "unavailable",
+        "too_long",
+        "too_large",
+        "invalid",
+        "provider",
+        "network"
       ]
     },
     "ChatSend": {
@@ -344,6 +362,122 @@
         "activeTurnId": { "type": "string", "minLength": 1 }
       }
     },
+    "VoiceStart": {
+      "$comment": "Starts the hands-free voice session on conversationId. id is the client-generated session id carried by every voice_* frame in both directions; a second voice_start on the same socket replaces the first session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "agentId", "conversationId"],
+      "properties": {
+        "type": { "const": "voice_start" },
+        "id": { "type": "string", "format": "uuid" },
+        "agentId": { "type": "string", "minLength": 1 },
+        "conversationId": { "$ref": "#/$defs/ConversationId" }
+      }
+    },
+    "VoiceAudio": {
+      "$comment": "One capture chunk from the phone's microphone. The gateway caps the DECODED size of pcm at 16384 bytes (~512ms of 16 kHz mono PCM16). seq is advisory only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "seq", "pcm"],
+      "properties": {
+        "type": { "const": "voice_audio" },
+        "id": { "type": "string", "format": "uuid" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "pcm": {
+          "description": "Standard base64 PCM16 at 16 kHz mono.",
+          "type": "string",
+          "minLength": 1,
+          "contentEncoding": "base64"
+        }
+      }
+    },
+    "VoiceMute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "muted"],
+      "properties": {
+        "type": { "const": "voice_mute" },
+        "id": { "type": "string", "format": "uuid" },
+        "muted": { "type": "boolean" }
+      }
+    },
+    "VoiceStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "const": "voice_stop" },
+        "id": { "type": "string", "format": "uuid" }
+      }
+    },
+    "VoiceState": {
+      "$comment": "turnId is set once a turn is running and cleared once it settles back to listening.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "state"],
+      "properties": {
+        "type": { "const": "voice_state" },
+        "id": { "type": "string", "format": "uuid" },
+        "state": {
+          "enum": ["listening", "transcribing", "thinking", "speaking", "muted", "stopped"]
+        },
+        "turnId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "VoiceTranscript": {
+      "$comment": "turnId is set on the transcript that STARTS a turn, always emitted before that turn's ChatAccepted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "text", "final"],
+      "properties": {
+        "type": { "const": "voice_transcript" },
+        "id": { "type": "string", "format": "uuid" },
+        "text": { "type": "string" },
+        "final": { "type": "boolean" },
+        "turnId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "VoiceSpeech": {
+      "$comment": "seq is a per-chunk counter, independent of the resumable chat hub's seq.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "seq", "audio", "format", "text"],
+      "properties": {
+        "type": { "const": "voice_speech" },
+        "id": { "type": "string", "format": "uuid" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "audio": {
+          "description": "base64 of the chunk's raw bytes.",
+          "type": "string",
+          "minLength": 1,
+          "contentEncoding": "base64"
+        },
+        "format": { "enum": ["pcm16", "mp3"] },
+        "sampleRate": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string" }
+      }
+    },
+    "VoiceError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "code", "error"],
+      "properties": {
+        "type": { "const": "voice_error" },
+        "id": { "type": "string", "format": "uuid" },
+        "code": { "$ref": "#/$defs/SpeechErrorCode" },
+        "error": { "type": "string", "minLength": 1 }
+      }
+    },
+    "VoiceStopped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "reason"],
+      "properties": {
+        "type": { "const": "voice_stopped" },
+        "id": { "type": "string", "format": "uuid" },
+        "reason": { "enum": ["client", "socket", "provider", "replaced"] }
+      }
+    },
     "MobileWsClientFrame": {
       "oneOf": [
         { "$ref": "#/$defs/MobileWsMessageFrame" },
@@ -351,7 +485,11 @@
         { "$ref": "#/$defs/ChatAnswer" },
         { "$ref": "#/$defs/ChatCancel" },
         { "$ref": "#/$defs/ChatSubscribe" },
-        { "$ref": "#/$defs/ChatUnsubscribe" }
+        { "$ref": "#/$defs/ChatUnsubscribe" },
+        { "$ref": "#/$defs/VoiceStart" },
+        { "$ref": "#/$defs/VoiceAudio" },
+        { "$ref": "#/$defs/VoiceMute" },
+        { "$ref": "#/$defs/VoiceStop" }
       ]
     },
     "MobileWsServerFrame": {
@@ -367,6 +505,21 @@
         },
         {
           "$ref": "#/$defs/MobileWsErrorFrame"
+        },
+        {
+          "$ref": "#/$defs/VoiceState"
+        },
+        {
+          "$ref": "#/$defs/VoiceTranscript"
+        },
+        {
+          "$ref": "#/$defs/VoiceSpeech"
+        },
+        {
+          "$ref": "#/$defs/VoiceError"
+        },
+        {
+          "$ref": "#/$defs/VoiceStopped"
         }
       ]
     },
