@@ -316,10 +316,12 @@ actor GatewayAPI {
     )
   }
 
-  /// The MP3 bytes, whole. `sendData` rather than `send` because this is the
-  /// only operation in the namespace whose success body is not JSON; a failure
-  /// on the same request still comes back as a JSON `MobileApiError` and is
-  /// mapped by `HTTPTransport` before the bytes are returned.
+  /// The audio bytes, whole: `audio/mpeg` normally, or `audio/wav` for a
+  /// PCM-only model that cannot produce MP3. `sendData` rather than `send`
+  /// because this is the only operation in the namespace whose success body
+  /// is not JSON; a failure on the same request still comes back as a JSON
+  /// `MobileApiError` and is mapped by `HTTPTransport` before the bytes are
+  /// returned.
   ///
   /// No `resourceID`/`requestID` on the descriptor: synthesis creates nothing
   /// server-side, so a timeout has no outcome to reconcile — `POST` still
@@ -333,7 +335,7 @@ actor GatewayAPI {
         errorScope: .speech
       ),
       body: SynthesisRequestDTO(text: text),
-      accept: "audio/mpeg"
+      accept: "audio/mpeg, audio/wav"
     )
   }
 

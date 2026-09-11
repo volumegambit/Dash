@@ -253,6 +253,29 @@ actor ChatConnection {
     try await send(.cancel(id: turnID))
   }
 
+  /// Starts the hands-free voice session on `conversationID`. `id` is the
+  /// caller-generated session id every `voice_*` frame in both directions
+  /// carries; a second call on this socket replaces the first session.
+  /// Unlike `sendTurn`/`resume`, no turn subscription is registered — voice
+  /// frames are matched by `frame.isVoice` in `receiveLoop`, not by id.
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws {
+    try await send(.voiceStart(id: id, agentId: agentID, conversationId: conversationID))
+  }
+
+  /// One capture chunk from the microphone. `pcm` is base64-encoded here so
+  /// callers work with `Data`, not the wire's base64 string.
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws {
+    try await send(.voiceAudio(id: id, seq: seq, pcm: pcm.base64EncodedString()))
+  }
+
+  func voiceMute(id: String, muted: Bool) async throws {
+    try await send(.voiceMute(id: id, muted: muted))
+  }
+
+  func voiceStop(id: String) async throws {
+    try await send(.voiceStop(id: id))
+  }
+
   func detach() {
     detachNow()
   }
@@ -349,6 +372,16 @@ actor ChatConnection {
         let message = try await task.receive()
         guard loopGeneration == generation, state != .detached else { return }
         let frame = try decodedFrame(from: message)
+        // Voice frames are keyed by the voice session id, not a chat turn id
+        // — a socket never calls `sendTurn`/`resume` for one, so the
+        // turn-subscription lookup below would always miss and silently drop
+        // them. They carry no `seq`/capability semantics either, so they
+        // bypass that machinery entirely and are delivered as-is.
+        if frame.isVoice {
+          reconnectAttempt = 0
+          continuation.yield(.frame(frame))
+          continue
+        }
         // A turn this client never started, on a conversation it watches: the
         // server-initiated notification turns and child turns of sub-agents
         // design 7.6. Register the turn from its `accepted` so the rest of its
@@ -682,7 +715,12 @@ extension MobileWSServerFrame {
     case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
-      .error(let id, _, _, _, _, _, _):
+      .error(let id, _, _, _, _, _, _),
+      .voiceState(let id, _, _),
+      .voiceTranscript(let id, _, _, _),
+      .voiceSpeech(let id, _, _, _, _, _),
+      .voiceError(let id, _, _),
+      .voiceStopped(let id, _):
       return id
     }
   }
@@ -709,6 +747,11 @@ extension MobileWSServerFrame {
       .done(_, _, let seq, _),
       .error(_, _, let seq, _, _, _, _):
       return seq
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      // The resumable chat hub's turn/seq bookkeeping does not apply to voice
+      // frames at all — they never flow through the hub (`chat-ws.ts`'s
+      // `emitVoice` bypasses it entirely).
+      return nil
     }
   }
 
@@ -717,6 +760,22 @@ extension MobileWSServerFrame {
     case .done, .error:
       return true
     case .accepted, .event:
+      return false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      // "Terminal" is a chat-TURN concept; a voice session's own lifecycle is
+      // tracked independently (`voice_stopped` ends the SESSION, not a turn).
+      return false
+    }
+  }
+
+  /// True for any `voice_*` server frame. These are keyed by voice session id
+  /// rather than a chat turn id, so `receiveLoop` yields them directly rather
+  /// than running them through the turn-subscription/capability machinery.
+  fileprivate var isVoice: Bool {
+    switch self {
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      return true
+    case .accepted, .event, .done, .error:
       return false
     }
   }

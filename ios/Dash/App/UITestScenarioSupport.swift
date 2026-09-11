@@ -2512,6 +2512,28 @@ extension AppDependenciesFactory {
 
     func unsubscribe(agentID: String, conversationID: String) {}
 
+    // The UI-test harness has no voice session to drive; these are no-ops.
+    func voiceStart(id: String, agentID: String, conversationID: String) {
+      _ = id
+      _ = agentID
+      _ = conversationID
+    }
+
+    func voiceAudio(id: String, seq: Int, pcm: Data) {
+      _ = id
+      _ = seq
+      _ = pcm
+    }
+
+    func voiceMute(id: String, muted: Bool) {
+      _ = id
+      _ = muted
+    }
+
+    func voiceStop(id: String) {
+      _ = id
+    }
+
     func sendTurn(
       id: String,
       agentID: String,

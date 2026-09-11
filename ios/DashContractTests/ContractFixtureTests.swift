@@ -332,6 +332,104 @@ struct ContractFixtureTests {
     try expectRoundTrip(MobileWSClientFrame.self, "chat-cancel.json")
   }
 
+  /// Task B7: the hands-free voice frames moved into the contract alongside
+  /// the rest of the chat wire protocol. Round-trips every fixture (proving
+  /// no field is silently dropped on re-encode, the same proof
+  /// `requestRoundTrips` runs for `chat-send-voice.json`'s `modality`) and
+  /// asserts the decoded values for the five server frames.
+  @Test("hands-free voice frames round-trip through the wire types")
+  func voiceFramesRoundTrip() throws {
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-start.json")
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-audio.json")
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-mute.json")
+    try expectRoundTrip(MobileWSClientFrame.self, "voice-stop.json")
+
+    let state = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-state.json")
+    guard case let .voiceState(stateID, voiceState, stateTurnID) = state else {
+      Issue.record("expected a voice_state frame")
+      return
+    }
+    #expect(stateID.isEmpty == false)
+    #expect(voiceState == .thinking)
+    #expect(stateTurnID != nil)
+
+    let transcript = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-transcript.json")
+    guard case let .voiceTranscript(_, text, final, transcriptTurnID) = transcript else {
+      Issue.record("expected a voice_transcript frame")
+      return
+    }
+    #expect(text.isEmpty == false)
+    #expect(final == true)
+    // Carries `turnId`: the transcript that STARTS a turn, always emitted
+    // before that turn's `accepted`.
+    #expect(transcriptTurnID != nil)
+
+    let speech = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-speech.json")
+    guard case let .voiceSpeech(_, seq, audio, format, sampleRate, speechText) = speech else {
+      Issue.record("expected a voice_speech frame")
+      return
+    }
+    #expect(seq == 3)
+    #expect(Data(base64Encoded: audio) != nil)
+    #expect(format == "pcm16")
+    #expect(sampleRate == 24000)
+    #expect(speechText.isEmpty == false)
+
+    let error = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-error.json")
+    guard case let .voiceError(_, code, errorMessage) = error else {
+      Issue.record("expected a voice_error frame")
+      return
+    }
+    #expect(code == "provider")
+    #expect(errorMessage.isEmpty == false)
+
+    let stopped = try FixtureLoader.decode(MobileWSServerFrame.self, "voice-stopped.json")
+    guard case let .voiceStopped(_, reason) = stopped else {
+      Issue.record("expected a voice_stopped frame")
+      return
+    }
+    #expect(reason == .client)
+
+    for file in [
+      "voice-state.json", "voice-transcript.json", "voice-speech.json", "voice-error.json",
+      "voice-stopped.json",
+    ] {
+      try expectRoundTrip(MobileWSServerFrame.self, file)
+    }
+  }
+
+  /// `VoiceState`/`VoiceStopReason` decode leniently, mirroring `SkillSource`:
+  /// a value this build has never heard of reads as `.unknown` rather than
+  /// throwing and failing the whole frame (`ChatConnection` maps a
+  /// `DecodingError` to `GatewayError.updateRequired`, tearing the socket
+  /// down for every conversation, not just the voice session).
+  @Test("an unknown voice state or stop reason degrades leniently rather than failing the frame")
+  func voiceEnumsDegradeLeniently() throws {
+    let futureState = Data(#"{"type":"voice_state","id":"v1","state":"levitating"}"#.utf8)
+    guard
+      case let .voiceState(_, state, _) = try ContractCoding.decoder().decode(
+        MobileWSServerFrame.self,
+        from: futureState
+      )
+    else {
+      Issue.record("expected a voice_state frame")
+      return
+    }
+    #expect(state == .unknown)
+
+    let futureReason = Data(#"{"type":"voice_stopped","id":"v1","reason":"solar_flare"}"#.utf8)
+    guard
+      case let .voiceStopped(_, reason) = try ContractCoding.decoder().decode(
+        MobileWSServerFrame.self,
+        from: futureReason
+      )
+    else {
+      Issue.record("expected a voice_stopped frame")
+      return
+    }
+    #expect(reason == .unknown)
+  }
+
   @Test("conversation patch construction preserves omitted, value, and null")
   func patchConstruction() throws {
     let clearAndSet = try PatchConversationRequest(
@@ -802,12 +900,21 @@ else {
       ("json", "chat-ws", "ChatAnswer"),
       ("json", "chat-ws", "ChatCancel"),
       ("json", "chat-ws", "ChatSubscribe"),
-      ("json", "chat-ws", "ChatUnsubscribe"):
+      ("json", "chat-ws", "ChatUnsubscribe"),
+      ("json", "chat-ws", "VoiceStart"),
+      ("json", "chat-ws", "VoiceAudio"),
+      ("json", "chat-ws", "VoiceMute"),
+      ("json", "chat-ws", "VoiceStop"):
       try decodeIfValid(MobileWSClientFrame.self, fixture)
     case ("json", "chat-ws", "ChatAccepted"),
       ("json", "chat-ws", "ChatEvent"),
       ("json", "chat-ws", "ChatDone"),
-      ("json", "chat-ws", "ChatError"):
+      ("json", "chat-ws", "ChatError"),
+      ("json", "chat-ws", "VoiceState"),
+      ("json", "chat-ws", "VoiceTranscript"),
+      ("json", "chat-ws", "VoiceSpeech"),
+      ("json", "chat-ws", "VoiceError"),
+      ("json", "chat-ws", "VoiceStopped"):
       if fixture.valid {
         _ = try FixtureLoader.decode(MobileWSServerFrame.self, fixture.file)
       } else {

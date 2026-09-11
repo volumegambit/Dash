@@ -263,6 +263,10 @@ extension MobileWSServerFrame {
       .done(_, _, let sequence, _),
       .error(_, _, let sequence, _, _, _, _):
       return sequence
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      // Not exercised by this live-turn harness: voice frames carry no
+      // resumable-hub sequence.
+      return nil
     }
   }
 

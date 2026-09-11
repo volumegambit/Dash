@@ -272,7 +272,8 @@ struct TranscriptionResponseDTO: Codable, Hashable, Sendable {
 }
 
 /// The request body of `POST /speech/speech`. The RESPONSE is `audio/mpeg`
-/// bytes, which is why `GatewayAPI.synthesize` returns `Data`.
+/// bytes, or `audio/wav` for a PCM-only model, which is why
+/// `GatewayAPI.synthesize` returns `Data`.
 struct SynthesisRequestDTO: Codable, Hashable, Sendable {
   /// At most 4 000 characters; over that the gateway answers 413 `too_long`.
   let text: String

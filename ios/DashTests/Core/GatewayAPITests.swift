@@ -160,8 +160,9 @@ struct GatewayAPITests {
     for index in 0..<4 {
       #expect(requests[index].value(forHTTPHeaderField: "Accept") == "application/json")
     }
-    // The one operation whose success body is not JSON.
-    #expect(requests[4].value(forHTTPHeaderField: "Accept") == "audio/mpeg")
+    // The one operation whose success body is not JSON. Both media types are
+    // requested: `audio/mpeg` normally, `audio/wav` for a PCM-only model.
+    #expect(requests[4].value(forHTTPHeaderField: "Accept") == "audio/mpeg, audio/wav")
     #expect(requests[4].value(forHTTPHeaderField: "Content-Type") == "application/json")
     #expect(try stringBody(requests[4]) == ["text": "Ship the speech routes."])
     #expect(try stringBody(requests[3]) == ["audio": "AAAA", "format": "wav", "language": "en"])

@@ -120,11 +120,12 @@ actor HTTPTransport {
   }
 
   /// The raw response body, for the one operation whose success payload is not
-  /// JSON: `POST /speech/speech` streams `audio/mpeg`. Identical to `send`
-  /// apart from the `Accept` it asks for and the absence of a decode — in
-  /// particular a non-2xx still goes through `perform`'s `mapHTTPError`, so a
-  /// failed synthesis surfaces as a `GatewayError` rather than as error-page
-  /// bytes handed back as if they were audio.
+  /// JSON: `POST /speech/speech` streams `audio/mpeg`, or `audio/wav` for a
+  /// PCM-only model. Identical to `send` apart from the `Accept` it asks for
+  /// and the absence of a decode — in particular a non-2xx still goes through
+  /// `perform`'s `mapHTTPError`, so a failed synthesis surfaces as a
+  /// `GatewayError` rather than as error-page bytes handed back as if they
+  /// were audio.
   ///
   /// No empty-body guard: audio is opaque, and a zero-byte 200 is a provider
   /// problem for the caller to notice, not a contract violation.

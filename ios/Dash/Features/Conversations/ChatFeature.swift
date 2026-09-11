@@ -237,6 +237,12 @@ protocol ChatFeatureTransporting: Actor {
   /// reach this client (sub-agents design 7.6).
   func subscribe(agentID: String, conversationID: String) async throws
   func unsubscribe(agentID: String, conversationID: String) async throws
+  /// Starts the hands-free voice session on `conversationID`. `id` is the
+  /// caller-generated voice session id every `voice_*` frame carries.
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws
+  func voiceMute(id: String, muted: Bool) async throws
+  func voiceStop(id: String) async throws
   func suspendForDetachment() async
   func shutdown() async
 }
@@ -374,6 +380,22 @@ actor LiveChatFeatureTransport: ChatFeatureTransporting {
 
   func unsubscribe(agentID: String, conversationID: String) async throws {
     try await connection.unsubscribe(agentID: agentID, conversationID: conversationID)
+  }
+
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws {
+    try await connection.voiceStart(id: id, agentID: agentID, conversationID: conversationID)
+  }
+
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws {
+    try await connection.voiceAudio(id: id, seq: seq, pcm: pcm)
+  }
+
+  func voiceMute(id: String, muted: Bool) async throws {
+    try await connection.voiceMute(id: id, muted: muted)
+  }
+
+  func voiceStop(id: String) async throws {
+    try await connection.voiceStop(id: id)
   }
 
   func suspendForDetachment() async {
@@ -2992,6 +3014,12 @@ final class ChatFeature {
       }
 
     case .frame(let frame):
+      // The hands-free `voice_*` server frames (Task B7) are keyed by voice
+      // session id, not a chat turn id, and this feature has no voice UI yet.
+      // Every helper below (`turnIDForFeature`, `conversationIDForFeature`,
+      // …) is chat-turn machinery, so a voice frame is dropped here rather
+      // than fed through it under a borrowed meaning.
+      if frame.isVoiceForFeature { return }
       // BEFORE the recovery deferral below, deliberately: the deferral is
       // about classifying a LOCAL send and returns early, and a list read has
       // nothing to do with that decision. Placed here it cannot be swallowed
@@ -3984,12 +4012,25 @@ final class ChatFeature {
 }
 
 extension MobileWSServerFrame {
+  /// True for any `voice_*` server frame. `consume(_:)` returns before any of
+  /// the other computed properties below run — they are chat-turn machinery
+  /// and voice frames carry no turn id.
+  fileprivate var isVoiceForFeature: Bool {
+    switch self {
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      true
+    case .accepted, .event, .done, .error:
+      false
+    }
+  }
+
   fileprivate var conversationIDForFeature: String? {
     switch self {
     case let .accepted(_, conversationID, _, _, _, _, _, _, _): conversationID
     case let .event(_, conversationID, _, _): conversationID
     case let .done(_, conversationID, _, _): conversationID
     case let .error(_, conversationID, _, _, _, _, _): conversationID
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: nil
     }
   }
 
@@ -4026,6 +4067,7 @@ extension MobileWSServerFrame {
       default: false
       }
     case .error: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
@@ -4048,6 +4090,7 @@ extension MobileWSServerFrame {
     switch self {
     case .accepted, .done, .error: true
     case .event: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
@@ -4055,6 +4098,7 @@ extension MobileWSServerFrame {
     switch self {
     case .done, .error: true
     case .accepted, .event: false
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped: false
     }
   }
 
@@ -4063,7 +4107,12 @@ extension MobileWSServerFrame {
     case .accepted(let id, _, _, _, _, _, _, _, _),
       .event(let id, _, _, _),
       .done(let id, _, _, _),
-      .error(let id, _, _, _, _, _, _):
+      .error(let id, _, _, _, _, _, _),
+      .voiceState(let id, _, _),
+      .voiceTranscript(let id, _, _, _),
+      .voiceSpeech(let id, _, _, _, _, _),
+      .voiceError(let id, _, _),
+      .voiceStopped(let id, _):
       id
     }
   }
@@ -4077,6 +4126,8 @@ extension MobileWSServerFrame {
       seq
     case .error(_, _, let seq, _, _, _, _):
       seq
+    case .voiceState, .voiceTranscript, .voiceSpeech, .voiceError, .voiceStopped:
+      nil
     }
   }
 }

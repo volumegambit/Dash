@@ -7065,6 +7065,22 @@ private actor FakeChatFeatureTransport: ChatFeatureTransporting {
     calls.append(.unsubscribe(agentID: agentID, conversationID: conversationID))
   }
 
+  func voiceStart(id: String, agentID: String, conversationID: String) async throws {
+    calls.append(.voiceStart(id: id, agentID: agentID, conversationID: conversationID))
+  }
+
+  func voiceAudio(id: String, seq: Int, pcm: Data) async throws {
+    calls.append(.voiceAudio(id: id, seq: seq, pcm: pcm))
+  }
+
+  func voiceMute(id: String, muted: Bool) async throws {
+    calls.append(.voiceMute(id: id, muted: muted))
+  }
+
+  func voiceStop(id: String) async throws {
+    calls.append(.voiceStop(id: id))
+  }
+
   func suspendForDetachment() async {
     calls.append(.suspendForDetachment)
     // What `ChatConnection.suspend()` really does (`ChatConnection.swift:249-257`):
@@ -7116,6 +7132,10 @@ private enum FakeChatTransportCall: Equatable, Sendable {
   case cancel(turnID: String)
   case subscribe(agentID: String, conversationID: String)
   case unsubscribe(agentID: String, conversationID: String)
+  case voiceStart(id: String, agentID: String, conversationID: String)
+  case voiceAudio(id: String, seq: Int, pcm: Data)
+  case voiceMute(id: String, muted: Bool)
+  case voiceStop(id: String)
   case suspendForDetachment
   case resetAfterTerminalFailure
   case shutdown
