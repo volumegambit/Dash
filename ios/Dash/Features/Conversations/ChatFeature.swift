@@ -572,6 +572,10 @@ final class ChatFeature {
   private(set) var draftStatus: ChatDraftStatus = .saved
   private(set) var retryAt: Date?
   private(set) var pendingSendRecovery: RecoverablePendingSend?
+  /// Temporary non-releasable Task 4 seam. Tasks 3+5/6 replace this with
+  /// reduce, persist, publish, and correlation acknowledgement.
+  private(set) var bufferedV2Frames: [MobileV2WsServerFrame] = []
+  private(set) var v2ProtocolCloseError: V2ProtocolCloseError?
 
   var canSend: Bool {
     guard
@@ -1874,6 +1878,9 @@ final class ChatFeature {
         return
       }
       await consumeFrame(frame)
+
+    case .v2Frame(let frame):
+      bufferedV2Frames.append(frame)
     }
   }
 
@@ -2188,6 +2195,13 @@ final class ChatFeature {
   }
 
   private func applyFailure(_ error: Error) async {
+    if let protocolError = error as? V2ProtocolCloseError {
+      v2ProtocolCloseError = protocolError
+      connection = .updateRequired
+      isAuthoritative = false
+      state.composerBlock = .updateRequired
+      return
+    }
     guard let gatewayError = error as? GatewayError else {
       state.errorBanner = "Saved conversation data couldn't be updated."
       return

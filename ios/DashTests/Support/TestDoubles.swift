@@ -34,6 +34,70 @@ actor TestAppClock: AppClock {
   }
 }
 
+/// Lets reconnect backoff elapse deterministically while keeping the v2 hello
+/// deadline pending until the connection cancels it after a valid acknowledgement.
+actor ReconnectingTestAppClock: AppClock {
+  private let current: Date
+  private(set) var sleeps: [Duration] = []
+
+  init(now: Date = Date(timeIntervalSince1970: 0)) {
+    current = now
+  }
+
+  func now() async -> Date {
+    current
+  }
+
+  func sleep(for duration: Duration) async throws {
+    sleeps.append(duration)
+    if duration == .seconds(5) {
+      try await ContinuousClock().sleep(for: .seconds(3_600))
+    }
+  }
+}
+
+/// Holds reconnect backoff until a test explicitly releases it while keeping
+/// the independent v2 hello deadline cancellable.
+actor HeldReconnectTestAppClock: AppClock {
+  private let current: Date
+  private let backoffGate = TestGate()
+  private(set) var sleeps: [Duration] = []
+
+  init(now: Date = Date(timeIntervalSince1970: 0)) {
+    current = now
+  }
+
+  func now() async -> Date {
+    current
+  }
+
+  func sleep(for duration: Duration) async throws {
+    sleeps.append(duration)
+    if duration == .seconds(5) {
+      try await ContinuousClock().sleep(for: .seconds(3_600))
+      return
+    }
+    await backoffGate.wait()
+    try Task.checkCancellation()
+  }
+
+  func waitForBackoff() async {
+    await backoffGate.waitUntilWaiting()
+  }
+
+  func releaseBackoff() async {
+    await backoffGate.release()
+  }
+}
+
+actor ChatConnectionCompletionProbe {
+  private(set) var isComplete = false
+
+  func markComplete() {
+    isComplete = true
+  }
+}
+
 private final class URLProtocolStubState: @unchecked Sendable {
   struct Response {
     let status: Int

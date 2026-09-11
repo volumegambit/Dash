@@ -2055,6 +2055,55 @@ struct ChatFeatureTests {
     #expect(await chat.calls.compactMap(\.sentPayload).count == 1)
   }
 
+  @Test("temporary v2 transport seam buffers every frame in receive order")
+  func v2FramesAreBufferedInOrder() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat, mobileProtocol: .v2Queue)
+    feature.setConnection(.online)
+    await feature.appear()
+    let frames: [MobileV2WsServerFrame] = [
+      .control(.helloAck(contractVersion: 2, capabilities: ["chat-input-queue-v1"])),
+      .control(
+        .conversationSubscribed(
+          id: "00000000-0000-4000-8000-000000000011",
+          conversationId: "00000000-0000-4000-8000-000000000001",
+          v2ThroughSeq: 0
+        )
+      ),
+      .control(
+        .commandRejected(
+          id: "turn-1",
+          conversationId: nil,
+          code: "conversation_busy",
+          error: "busy",
+          retryable: false,
+          details: nil
+        )
+      ),
+    ]
+
+    for frame in frames {
+      await chat.yield(.v2Frame(frame))
+    }
+
+    await eventually { await feature.bufferedV2Frames.count == frames.count }
+    #expect(feature.bufferedV2Frames == frames)
+  }
+
+  @Test("typed v2 protocol close maps to update required and retains its reason")
+  func v2ProtocolCloseMapsToUpdateRequired() async {
+    let chat = FakeChatFeatureTransport()
+    let feature = makeFeature(chat: chat, mobileProtocol: .v2Queue)
+    feature.setConnection(.online)
+    await feature.appear()
+
+    await chat.finish(throwing: V2ProtocolCloseError(reason: "hello_required"))
+
+    await eventually { await feature.connection == .updateRequired }
+    #expect(feature.statusPresentation == .updateRequired)
+    #expect(feature.v2ProtocolCloseError == V2ProtocolCloseError(reason: "hello_required"))
+  }
+
   @Test("an explicit pre-admission rejection restores the original composer payload")
   func explicitRejectionRestoresComposer() async {
     let persistence = FakeChatPersistence()
@@ -4643,12 +4692,13 @@ struct ChatFeatureTests {
     chat: FakeChatFeatureTransport = FakeChatFeatureTransport(),
     announcer: FakeChatAccessibilityAnnouncer = FakeChatAccessibilityAnnouncer(),
     recoveryChanges: any ConversationRecoveryChangeSignaling = ConversationRecoveryChangeSignal(),
-    ids: [String] = ["turn-1", "local-1"]
+    ids: [String] = ["turn-1", "local-1"],
+    mobileProtocol: MobileProtocolSelection = .v1
   ) -> ChatFeature {
     let source = SequentialUUIDSource(ids: ids)
     return ChatFeature(
       gatewayID: "gateway-1",
-      mobileProtocol: .v1,
+      mobileProtocol: mobileProtocol,
       conversation: conversation,
       persistence: persistence,
       synchronizer: sync,

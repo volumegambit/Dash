@@ -277,6 +277,7 @@ struct LiveInvalidationRetryPolicy: Sendable {
 
 actor LiveChatRecorder {
   private var recordedFrames: [MobileWSServerFrame] = []
+  private var recordedV2Frames: [MobileV2WsServerFrame] = []
   private var recordedStates: [ChatTransportState] = []
   private var terminalError: GatewayError?
   private var isFinished = false
@@ -287,6 +288,8 @@ actor LiveChatRecorder {
       recordedStates.append(state)
     case .frame(let frame):
       recordedFrames.append(frame)
+    case .v2Frame(let frame):
+      recordedV2Frames.append(frame)
     }
   }
 
@@ -305,6 +308,10 @@ actor LiveChatRecorder {
 
   func frames(turnID: String, after marker: Int = 0) -> [MobileWSServerFrame] {
     Array(recordedFrames.lazy.filter { $0.liveTurnID == turnID }.dropFirst(marker))
+  }
+
+  func v2Frames() -> [MobileV2WsServerFrame] {
+    recordedV2Frames
   }
 
   func waitForFrame(
