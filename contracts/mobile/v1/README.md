@@ -123,6 +123,9 @@ Negative conformance fixtures live under `fixtures/invalid/`:
   frame does: its `code` is the narrower `SpeechErrorCode` union
   (`unauthorized, unavailable, too_long, too_large, invalid, provider, network`), its own
   `chat-ws.schema.json` `$defs.SpeechErrorCode` def.
+- `voice_audio.pcm` is at most 16 KiB (16384 bytes) decoded per frame. A frame decoding to
+  exactly 16384 bytes is accepted; one byte more fails parsing and the socket answers the
+  ordinary `error` frame with `code: 'validation_failed'`.
 - Mutating a tombstoned conversation with `PATCH`, or repeating its `DELETE`, returns HTTP 410
   with a non-retryable `not_found` error. `GET` still returns the revisioned tombstone.
 - Any change to a TypeScript wire type or schema requires coordinated updates to the other

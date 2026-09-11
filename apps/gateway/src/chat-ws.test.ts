@@ -1677,6 +1677,28 @@ describe('mountChatWs voice sessions', () => {
     ]);
   });
 
+  it('accepts exactly 16384 decoded pcm bytes and passes it to the running session', async () => {
+    const harness = makeVoiceHarness();
+    const connection = harness.connect();
+    dispatch(connection, VOICE_START);
+    await settle();
+
+    dispatch(connection, {
+      type: 'voice_audio',
+      id: 'voice-01',
+      seq: 0,
+      pcm: Buffer.alloc(16 * 1024).toString('base64'),
+    });
+    await settle();
+
+    // No error frame of any kind — the boundary value reaches the session
+    // rather than being rejected at the parse or session-lookup layer.
+    expect(allFrames(connection.socket)).toEqual([
+      { type: 'voice_state', id: 'voice-01', state: 'listening' },
+    ]);
+    expect(harness.speech?.transcribedBytes).toEqual([]);
+  });
+
   it('drops audio while muted and re-announces the state on unmute', async () => {
     const harness = makeVoiceHarness();
     const connection = harness.connect();
