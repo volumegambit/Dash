@@ -17,6 +17,23 @@ protocol AudioPlaying: Sendable {
   /// hanging; calling this with nothing playing is a no-op.
   func stop() async
   var isPlaying: Bool { get async }
+  /// Voice mode (B9): enqueues one PCM16 mono frame at `sampleRate` for
+  /// immediate playback, alongside (not instead of) `playMP3`'s read-aloud
+  /// path. A 0-byte `data` is a no-op rather than an error — the gateway can
+  /// legitimately send an empty frame at the end of a turn.
+  ///
+  /// Default no-op via the extension below so existing `playMP3`-only
+  /// conformers (test fakes) do not have to change; `AudioPlaybackService`
+  /// overrides it with a real PCM player.
+  func enqueuePCM(_ data: Data, sampleRate: Double) async
+  /// Barge-in: stops PCM playback now and drops any buffered frames, without
+  /// touching `playMP3`'s player. A no-op with nothing queued.
+  func flush() async
+}
+
+extension AudioPlaying {
+  func enqueuePCM(_ data: Data, sampleRate: Double) async {}
+  func flush() async {}
 }
 
 enum AudioPlaybackError: Error, Equatable, Sendable {
@@ -44,7 +61,24 @@ actor AudioPlaybackService: AudioPlaying {
   private var delegate: PlaybackDelegate?
   private var continuation: CheckedContinuation<Void, Error>?
 
+  // MARK: PCM playback (voice mode, B9)
+  //
+  // A dedicated engine + player node, entirely separate from the
+  // `AVAudioPlayer` above: `playMP3` and `enqueuePCM` are two different
+  // playback mechanisms that happen to share this actor so the two never
+  // fight over which one currently "owns" audio output.
+  private let pcmEngine = AVAudioEngine()
+  private let pcmPlayerNode = AVAudioPlayerNode()
+  private var pcmFormat: AVAudioFormat?
+
   var isPlaying: Bool { player?.isPlaying ?? false }
+
+  init() {
+    // Attached once, up front: `AVAudioPlayerNode.stop()`/`.reset()` are safe
+    // to call on an attached-but-never-connected node, which is exactly the
+    // idle state a `flush()` with nothing queued finds it in.
+    pcmEngine.attach(pcmPlayerNode)
+  }
 
   func playMP3(_ data: Data) async throws {
     // Whatever was playing is over: read aloud is one voice at a time, and
@@ -80,6 +114,72 @@ actor AudioPlaybackService: AudioPlaying {
     player?.stop()
     clear()
     resume(throwing: nil)
+    // `stop()` ends ALL playback this actor owns, not just the MP3 path —
+    // ending a read-aloud clip should not leave a stray PCM frame queued
+    // behind it (or vice versa).
+    await flush()
+  }
+
+  func enqueuePCM(_ data: Data, sampleRate: Double) async {
+    // An empty frame is not an error — the gateway can legitimately send one
+    // at the end of a turn — but there is nothing to build a buffer from.
+    guard !data.isEmpty else { return }
+    guard let format = reconnectedFormat(sampleRate: sampleRate) else { return }
+
+    let frameCount = UInt32(data.count / MemoryLayout<Int16>.size)
+    guard frameCount > 0,
+      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+    else { return }
+    buffer.frameLength = frameCount
+
+    guard let channel = buffer.int16ChannelData else { return }
+    data.withUnsafeBytes { raw in
+      guard let base = raw.bindMemory(to: Int16.self).baseAddress else { return }
+      channel[0].update(from: base, count: Int(frameCount))
+    }
+
+    if !pcmEngine.isRunning {
+      // Nothing sensible to do if the engine refuses to start (no output
+      // route, e.g. a Mac host with audio disabled) — the frame is simply
+      // dropped rather than throwing, since `enqueuePCM` promises not to.
+      try? pcmEngine.start()
+    }
+    pcmPlayerNode.scheduleBuffer(buffer, completionHandler: nil)
+    if !pcmPlayerNode.isPlaying {
+      pcmPlayerNode.play()
+    }
+  }
+
+  func flush() async {
+    // `stop()` (not `pause()`): a stopped player node drops every buffer
+    // already scheduled, which is the whole point of barge-in — the agent's
+    // voice must go silent immediately, not after draining its queue.
+    pcmPlayerNode.stop()
+    pcmPlayerNode.reset()
+  }
+
+  /// The PCM path plays exactly one sample rate at a time; a change means
+  /// disconnecting and reconnecting the node at the new rate. Returns the
+  /// live format to build the next buffer against, or `nil` if the format
+  /// itself is invalid (an unsupported sample rate from the gateway).
+  private func reconnectedFormat(sampleRate: Double) -> AVAudioFormat? {
+    if let pcmFormat, pcmFormat.sampleRate == sampleRate {
+      return pcmFormat
+    }
+    guard
+      let format = AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true
+      )
+    else { return nil }
+
+    let wasRunning = pcmEngine.isRunning
+    if wasRunning { pcmEngine.stop() }
+    pcmPlayerNode.reset()
+    pcmEngine.disconnectNodeOutput(pcmPlayerNode)
+    pcmEngine.connect(pcmPlayerNode, to: pcmEngine.mainMixerNode, format: format)
+    pcmFormat = format
+    if wasRunning { try? pcmEngine.start() }
+    return format
   }
 
   private func finish(error: Error?) {

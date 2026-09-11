@@ -24,6 +24,21 @@ struct AudioPlaybackServiceTests {
     #expect(player.duration > 0)
   }
 
+  /// Task B8: voice mode's PCM playback path. This is deliberately the
+  /// narrowest possible check — an empty frame and an idle flush — because
+  /// actually starting `AVAudioEngine` and hearing output depends on the
+  /// host machine's audio route, which is exactly what the header comment
+  /// above says is device-only. What IS safe on the simulator/CI host is
+  /// confirming `enqueuePCM`/`flush` never throw or trap when there is
+  /// nothing to play.
+  @Test("enqueuePCM with an empty payload and flush with nothing queued are both no-ops")
+  func emptyPCMFrameAndIdleFlushAreNoOps() async {
+    let service = AudioPlaybackService()
+    await service.enqueuePCM(Data(), sampleRate: 16_000)
+    await service.flush()
+    #expect(await service.isPlaying == false)
+  }
+
   /// Builds a minimal, valid canonical WAV clip: the standard 44-byte
   /// RIFF/WAVE/fmt/data header, plus a handful of silent 16-bit mono samples
   /// so the clip has a real, nonzero duration rather than being header-only.

@@ -116,6 +116,21 @@ less precisely.
 - [ ] Open **Settings** on a gateway without the `speech-v1` capability -> the **Speech** row is
       hidden and the section footer reads "Update your gateway to use speech."
 
+## Voice mode — capture and playback (device only)
+
+`AudioCaptureService` and `AudioPlaybackService`'s PCM path (Task B8) need a real microphone and
+a real audio route, so — like dictation and read-aloud above — none of this is exercised on the
+simulator; `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level logic only.
+
+- [ ] Start voice mode and speak -> frames arrive at roughly 10/s (100 ms each); the orb's level
+      meter visibly tracks your voice, not a flat line
+- [ ] While voice mode is capturing, disconnect the active input (unplug a wired headset, or let
+      connected AirPods drop) or let a phone call interrupt -> capture ends immediately rather
+      than continuing to listen on the old route or silently hanging. Plugging in a NEW input
+      device does not stop capture on its own
+- [ ] While the agent is speaking, start talking (barge-in) -> playback stops instantly, with no
+      trailing audio or delay before the mic is heard again
+
 ## Evidence notes
 
 For each checked item, record the device, OS, build commit, date, tester, and a screenshot or
