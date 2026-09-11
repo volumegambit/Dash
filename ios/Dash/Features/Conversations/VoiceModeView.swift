@@ -63,7 +63,10 @@ struct VoiceModeView: View {
     } label: {
       VoiceOrbView(
         phase: voice.state.phase,
-        level: voice.state.level,
+        // `voice.level`, not `voice.state.level`: the meter is its own
+        // observable property precisely so its 10-20 writes a second
+        // re-render this orb and nothing else on the cover.
+        level: voice.level,
         animates: reduceMotion == false
       )
     }

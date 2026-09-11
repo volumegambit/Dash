@@ -6253,6 +6253,51 @@ struct ChatFeatureTests {
     #expect(await chat.calls.contains(.voiceStop(id: "voice-session")) == false)
   }
 
+  @Test("a closed voice session is released, not kept alive by its own callbacks")
+  func closedVoiceSessionIsDeallocated() async {
+    let capture = FakeAudioCapture()
+    let feature = makeFeature(
+      ids: ["voice-session"],
+      makeVoiceMode: { id, agentID, conversationID, transport in
+        VoiceModeFeature(
+          id: id,
+          agentID: agentID,
+          conversationID: conversationID,
+          transport: transport,
+          capture: capture,
+          player: FakeAudioPlayer(),
+          haptics: FakeVoiceHaptics(),
+          permission: FakeSpeechPermission(granted: true),
+          session: FakeSpeechSessionControl(),
+          clock: TestAppClock(now: Date(timeIntervalSince1970: 1_000)),
+          dismissDelay: nil
+        )
+      }
+    )
+    feature.setConnection(.online)
+    await feature.appear()
+    feature.syncVoiceMode(available: true)
+
+    weak var released: VoiceModeFeature?
+    do {
+      let voice = feature.startVoiceMode()
+      released = voice
+      await voice?.start()
+      await eventually { await capture.isRunning }
+      await feature.stopVoiceMode()
+    }
+
+    // The session owns an `AVAudioEngine` and an `AVAudioPlayerNode`; a
+    // callback stored ON it that captured it back would keep both alive for
+    // the whole life of the chat screen, once per closed session.
+    for _ in 0..<500 where released != nil {
+      await Task.yield()
+      try? await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(released == nil)
+    #expect(feature.voiceMode == nil)
+  }
+
   private func makeFeature(
     conversation: ConversationSummaryDTO = summary(),
     persistence: FakeChatPersistence = FakeChatPersistence(),

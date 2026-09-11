@@ -154,13 +154,32 @@ struct VoiceModeFeatureTests {
     }
   }
 
-  @Test("the microphone level reaches the orb")
+  @Test("the microphone level reaches the orb without touching the session state")
   func levelsReachTheOrb() async {
     let harness = await Harness.started()
+    let before = harness.feature.state
 
     harness.levels.yield(0.6)
 
-    await expectEventuallyAsync("the level to land") { harness.feature.state.level == 0.6 }
+    await expectEventuallyAsync("the level to land") { harness.feature.level == 0.6 }
+    // `level` is its own observable property, NOT part of `VoiceModeState`:
+    // the meter writes 10-20 times a second, and folding it into the state
+    // would re-render the captions, the state line and both controls on every
+    // one of them.
+    #expect(harness.feature.state == before)
+  }
+
+  @Test("the meter stops writing once the session has ended")
+  func levelsStopAtTheEnd() async {
+    let harness = await Harness.started()
+    harness.levels.yield(0.6)
+    await expectEventuallyAsync("the level to land") { harness.feature.level == 0.6 }
+
+    await harness.feature.stop()
+    harness.levels.yield(0.9)
+    await Task.yield()
+
+    #expect(harness.feature.level == 0.6)
   }
 
   // MARK: - Playback
@@ -250,6 +269,40 @@ struct VoiceModeFeatureTests {
     #expect(await harness.transport.calls.contains(.stop(id: "voice-1")) == false)
   }
 
+  @Test("a flush cannot truncate the utterance that follows it")
+  func flushCannotTruncateTheNextUtterance() async {
+    let harness = await Harness.started()
+    let first = Data([0x01])
+    let second = Data([0x02])
+    harness.feature.receive(.voiceState(id: "voice-1", state: .speaking, turnId: "turn-1"))
+    harness.feature.receive(speech(audio: first, text: "Sunny"))
+    await expectEventuallyAsync("the first chunk") { await harness.player.enqueued.count == 1 }
+
+    // Park the effect chain on a slow send, so a flush that travelled on it
+    // could not run until the send cleared.
+    let gate = TestGate()
+    harness.feature.onStartLocalTurn = { _, _ in await gate.wait() }
+    harness.feature.receive(
+      .voiceTranscript(id: "voice-1", text: "and tomorrow?", final: true, turnId: "turn-2")
+    )
+    await gate.waitUntilWaiting()
+
+    // The user talks over the assistant; the next turn's first chunk follows
+    // immediately behind it.
+    harness.feature.receive(.voiceState(id: "voice-1", state: .listening, turnId: nil))
+    harness.feature.receive(.voiceState(id: "voice-1", state: .speaking, turnId: "turn-2"))
+    harness.feature.receive(speech(audio: second, text: "Rain"))
+
+    await expectEventuallyAsync("the second chunk") { await harness.player.enqueued.count == 2 }
+    #expect(
+      await harness.player.events == [
+        .enqueue(first), .flush, .stop, .enqueue(second),
+      ],
+      "the flush has to land BETWEEN the two utterances, not after both"
+    )
+    await gate.release()
+  }
+
   // MARK: - Transcripts
 
   @Test("a transcript carrying a turn id starts the optimistic row exactly once")
@@ -297,6 +350,56 @@ struct VoiceModeFeatureTests {
     #expect(await harness.player.flushCount >= 1)
     #expect(harness.session.deactivations == 1)
     #expect(harness.dismissals == 1)
+  }
+
+  @Test("stop does not wait for a gateway that never acknowledges it")
+  func stopDoesNotWaitForTheGateway() async {
+    let harness = await Harness.started()
+    await harness.transport.setStopHangs(true)
+
+    await harness.feature.stop()
+
+    // `voice_stop` is best-effort by design (Task B6: one sent before the
+    // session was live produces no frame at all). Waiting for it would leave
+    // the cover on screen with a live microphone behind it.
+    #expect(harness.dismissals == 1)
+    #expect(await harness.capture.isRunning == false)
+    #expect(harness.session.deactivations == 1)
+  }
+
+  @Test("an ending during capture start still releases the microphone and the route")
+  func endingDuringCaptureStartReleasesEverything() async {
+    let harness = Harness()
+    let gate = TestGate()
+    await harness.capture.setStartGate(gate)
+
+    await harness.feature.start()
+    await gate.waitUntilWaiting()
+    // The socket drops while `AudioCaptureService.start()` is still arming
+    // `.playAndRecord` — the route may already be live even though nothing
+    // here has a stream to show for it.
+    harness.feature.transportLost()
+    await gate.release()
+
+    await expectEventuallyAsync("the microphone to be stopped") {
+      await harness.capture.stopCount == 1
+    }
+    #expect(harness.session.deactivations >= 1)
+    #expect(await harness.capture.isRunning == false)
+  }
+
+  @Test("a capture that throws after arming the route still releases it")
+  func captureFailureReleasesTheRoute() async {
+    let harness = Harness()
+    // `AudioCaptureService.start()` activates the session and THEN installs
+    // the tap; a tap that throws leaves the route armed with nobody on it.
+    await harness.capture.setStartError(AudioCaptureError.couldNotStart)
+
+    await harness.feature.start()
+
+    await expectEventuallyAsync("the route to be released") {
+      harness.session.deactivations == 1
+    }
   }
 
   @Test("stopping twice is harmless")
@@ -383,6 +486,17 @@ struct VoiceModeFeatureTests {
     #expect(harness.haptics.events == [.impact(.light), .impact(.medium), .error])
   }
 
+  private func speech(audio: Data, text: String) -> MobileWSServerFrame {
+    .voiceSpeech(
+      id: "voice-1",
+      seq: 0,
+      audio: audio.base64EncodedString(),
+      format: "pcm16",
+      sampleRate: 24_000,
+      text: text
+    )
+  }
+
   // MARK: - Harness
 
   @MainActor
@@ -463,6 +577,13 @@ actor FakeAudioCapture: AudioCapturing {
   private(set) var stopCount = 0
 
   private var onStart: (@Sendable () async -> Void)?
+  private var startGate: TestGate?
+
+  /// Parks inside `start()` until the test releases it, so a test can end the
+  /// session while the microphone is still coming up.
+  func setStartGate(_ gate: TestGate) {
+    startGate = gate
+  }
 
   func setStartError(_ error: Error?) {
     startError = error
@@ -477,6 +598,7 @@ actor FakeAudioCapture: AudioCapturing {
   func start() async throws -> AsyncStream<Data> {
     if let startError { throw startError }
     await onStart?()
+    if let startGate { await startGate.wait() }
     guard isRunning == false else { throw AudioCaptureError.alreadyCapturing }
     isRunning = true
     let pair = AsyncStream<Data>.makeStream()
@@ -566,8 +688,17 @@ actor FakeVoiceTransport: ChatFeatureTransporting {
     calls.append(.mute(muted))
   }
 
+  private var stopHangs = false
+
+  /// A `voice_stop` the gateway never acknowledges — a socket already on its
+  /// way out is exactly when that happens.
+  func setStopHangs(_ value: Bool) {
+    stopHangs = value
+  }
+
   func voiceStop(id: String) async throws {
     calls.append(.stop(id: id))
+    if stopHangs { try? await Task.sleep(for: .seconds(60)) }
   }
 
   // Chat traffic: never exercised by voice mode, but the protocol is one.

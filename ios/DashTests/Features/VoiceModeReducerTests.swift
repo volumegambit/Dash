@@ -348,7 +348,6 @@ struct VoiceModeReducerTests {
       .started,
       .frame(.voiceState(id: "v1", state: .listening, turnId: nil)),
       .frame(.voiceTranscript(id: "v1", text: "hello", final: true, turnId: "turn-9")),
-      .micLevel(0.8),
       .muteToggled,
       .orbTapped,
       .captureInterrupted,
@@ -401,18 +400,7 @@ struct VoiceModeReducerTests {
     #expect(state.phase == .connecting)
   }
 
-  // MARK: - Mic level and the orb
-
-  @Test("micLevel only moves the meter")
-  func micLevelMovesTheMeter() {
-    var state = VoiceModeState(phase: .listening)
-
-    let effects = VoiceModeReducer.reduce(state: &state, action: .micLevel(0.42))
-
-    #expect(state.level == 0.42)
-    #expect(state.phase == .listening)
-    #expect(effects.isEmpty)
-  }
+  // MARK: - The orb
 
   @Test("tapping the orb while speaking interrupts playback locally")
   func orbTapInterruptsPlayback() {

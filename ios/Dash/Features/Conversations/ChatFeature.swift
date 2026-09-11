@@ -1312,12 +1312,29 @@ final class ChatFeature {
     feature.onStartLocalTurn = { [weak self] turnID, text in
       await self?.startLocalTurn(turnID: turnID, text: text)
     }
+    // Captures the session ID, NEVER `feature`. This closure is stored ON the
+    // feature, so capturing the feature here made it retain itself: every
+    // closed session — with its `AVAudioEngine` and `AVAudioPlayerNode` still
+    // attached — stayed alive for the whole life of the chat screen, one per
+    // session opened. `[weak self]` alone was not enough, because the cycle
+    // never went through `ChatFeature` at all.
     feature.onDismiss = { [weak self] in
-      guard let self, self.voiceMode === feature else { return }
-      self.voiceMode = nil
+      guard let self, let current = self.voiceMode, current.id == sessionID else { return }
+      self.releaseVoiceMode(current)
     }
     voiceMode = feature
     return feature
+  }
+
+  /// Drops the session and every callback it holds. The callbacks capture
+  /// `self` weakly, so they are not themselves a cycle — clearing them is
+  /// hygiene for the closures' own captures (`sessionID`, and whatever a
+  /// future hook adds) and makes "this session is over" a single fact rather
+  /// than three.
+  private func releaseVoiceMode(_ feature: VoiceModeFeature) {
+    guard voiceMode === feature else { return }
+    voiceMode = nil
+    feature.releaseCallbacks()
   }
 
   /// Ends the open session and takes the cover down. The close button, the
@@ -1325,7 +1342,10 @@ final class ChatFeature {
   func stopVoiceMode() async {
     guard let voiceMode else { return }
     await voiceMode.stop()
-    if self.voiceMode === voiceMode { self.voiceMode = nil }
+    // `stop()` dismisses through `onDismiss`, which already ran this; the
+    // second call is a guarded no-op, and covers a session whose callbacks
+    // were cleared before it.
+    releaseVoiceMode(voiceMode)
   }
 
   /// The optimistic row for a SPOKEN turn (Task B9). Exactly the two things
@@ -2477,8 +2497,7 @@ final class ChatFeature {
     // keep `.playAndRecord` armed for a conversation that is gone.
     voiceModeAvailable = false
     if let retiring = voiceMode {
-      voiceMode = nil
-      retiring.onDismiss = nil
+      releaseVoiceMode(retiring)
       Task { await retiring.stop() }
     }
   }

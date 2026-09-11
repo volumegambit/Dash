@@ -59,11 +59,14 @@ struct VoiceModeState: Equatable, Sendable {
   /// from `voice_speech` and cleared when the session settles back to
   /// listening.
   var assistantCaption: String = ""
-  /// 0…1 RMS microphone level, for the orb.
-  var level: Float = 0
   /// The last thing that went wrong, shown under the captions. Not fatal on
   /// its own — a provider hiccup mid-session leaves the session running.
   var error: String?
+
+  // The microphone level is deliberately NOT here. It is written 10-20 times
+  // a second, and every write to this struct re-renders the captions, the
+  // state line and both controls — so it lives on `VoiceModeFeature` as its
+  // own observable property, read only by the orb.
 
   /// Whether captured audio may be sent right now.
   ///
@@ -100,7 +103,6 @@ struct VoiceModeState: Equatable, Sendable {
 enum VoiceModeAction: Sendable {
   case started
   case frame(MobileWSServerFrame)
-  case micLevel(Float)
   case muteToggled
   /// A tap on the orb. A local interrupt affordance only — barge-in proper is
   /// server-driven (the gateway's VAD hears the user over the assistant and
@@ -152,10 +154,6 @@ enum VoiceModeReducer {
 
     case .frame(let frame):
       return reduce(state: &state, frame: frame)
-
-    case .micLevel(let level):
-      state.level = level
-      return []
 
     case .muteToggled:
       switch state.phase {

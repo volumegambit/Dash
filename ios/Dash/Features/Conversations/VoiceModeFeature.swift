@@ -66,6 +66,13 @@ final class VoiceModeFeature: Identifiable {
   let id: String
 
   private(set) var state = VoiceModeState()
+  /// The 0…1 RMS microphone level, for the orb and nothing else.
+  ///
+  /// Deliberately its OWN observable property rather than a field of
+  /// `VoiceModeState`: the meter writes 10-20 times a second, and every write
+  /// to the state invalidates the captions, the state line and both controls
+  /// as well. Here, only the view that actually reads it re-renders.
+  private(set) var level: Float = 0
 
   /// The spoken turn's optimistic row. `ChatFeature` does exactly what
   /// `send()` does — `.sendStarted` plus `localTurnIDs` — so the hub's
@@ -117,7 +124,6 @@ final class VoiceModeFeature: Identifiable {
   @ObservationIgnored private var dismissTask: Task<Void, Never>?
   @ObservationIgnored private var hasStarted = false
   @ObservationIgnored private var isCapturing = false
-  @ObservationIgnored private var isSessionActive = false
 
   init(
     id: String,
@@ -193,8 +199,10 @@ final class VoiceModeFeature: Identifiable {
   /// background all land here. Idempotent: the reducer's terminal guard turns
   /// a second call into a bare `.dismiss`.
   func stop() async {
+    // `.dismiss` and the teardown both start inside `apply`; only the
+    // teardown is worth waiting for, and `voice_stop` is not waited for at
+    // all (see `sendStop`).
     apply(.stopRequested)
-    await effectChain?.value
     await teardownTask?.value
   }
 
@@ -208,6 +216,15 @@ final class VoiceModeFeature: Identifiable {
   /// `voice_error { invalid }`.
   func transportLost() {
     apply(.transportLost)
+  }
+
+  /// Lets go of everything the owner handed this session. Called once the
+  /// session is over and the owner has dropped it, so nothing the closures
+  /// captured outlives the session that stored them.
+  func releaseCallbacks() {
+    prepare = nil
+    onStartLocalTurn = nil
+    onDismiss = nil
   }
 
   /// A `voice_*` frame from `ChatFeature`'s socket.
@@ -243,14 +260,29 @@ final class VoiceModeFeature: Identifiable {
     }
 
     guard effects.isEmpty == false else { return }
-    // Rule 1: `.play` is the one effect that can take seconds, so it gets its
-    // own chain; everything else is a frame or a callback and stays in order
-    // on the shared one.
+    // Three effects never touch the serial chain, each for its own reason:
+    //
+    // - `.play`/`.flushPlayback` belong to the PLAYBACK chain (rule 1), and
+    //   the flush in particular must take effect the instant the reducer says
+    //   so. Queued behind a slow `voice_mute` send, it would flush the
+    //   player AFTER the next utterance's first chunks had been buffered —
+    //   truncating the reply the user had only just asked for.
+    // - `.sendStop` is fire-and-forget (rule 5): the socket being gone is
+    //   exactly when it cannot be delivered, and the cover must not wait for
+    //   an acknowledgement that may never come.
+    // - `.dismiss` is a synchronous callback with nothing to await.
     var queued: [VoiceModeEffect] = []
     for effect in effects {
-      if case let .play(data, sampleRate, format) = effect {
+      switch effect {
+      case let .play(data, sampleRate, format):
         enqueuePlayback(data, sampleRate: sampleRate, format: format)
-      } else {
+      case .flushPlayback:
+        flushPlayback()
+      case .sendStop:
+        sendStop()
+      case .dismiss:
+        dismissNow()
+      case .sendStart, .sendMute, .startLocalTurn:
         queued.append(effect)
       }
     }
@@ -279,27 +311,32 @@ final class VoiceModeFeature: Identifiable {
       // over — the user can say so again, or close the cover.
       try? await transport.voiceMute(id: id, muted: muted)
 
-    case .sendStop:
-      // Never blocking, never fatal (Task B6): a `voice_stop` sent before the
-      // session was live produces no frame at all, and the socket being gone
-      // is exactly when this cannot be delivered anyway.
-      try? await transport.voiceStop(id: id)
-
     case let .startLocalTurn(turnID, text):
       await onStartLocalTurn?(turnID, text)
 
-    case .flushPlayback:
-      await flushPlayback()
-
-    case .dismiss:
-      dismissTask?.cancel()
-      dismissTask = nil
-      onDismiss?()
-
-    case .play:
-      // Routed to the playback chain by `apply`; unreachable here.
+    case .play, .flushPlayback, .sendStop, .dismiss:
+      // Handled synchronously by `apply`, which never queues these.
       break
     }
+  }
+
+  /// Never blocking, never fatal (Task B6): a `voice_stop` sent before the
+  /// session was live produces no frame at all, and the socket being gone is
+  /// exactly when this cannot be delivered. Detached so that closing the
+  /// cover is instant even when the gateway never answers.
+  private func sendStop() {
+    let transport = self.transport
+    let id = self.id
+    Task { try? await transport.voiceStop(id: id) }
+  }
+
+  private func dismissNow() {
+    // A local copy first: `onDismiss` clears itself through `ChatFeature`,
+    // and releasing the closure while it is still running is not safe.
+    let dismiss = onDismiss
+    dismissTask?.cancel()
+    dismissTask = nil
+    dismiss?()
   }
 
   // MARK: - Capture
@@ -308,10 +345,21 @@ final class VoiceModeFeature: Identifiable {
     let frames: AsyncStream<Data>
     do {
       frames = try await capture.start()
-      isCapturing = true
-      isSessionActive = true
     } catch {
+      // `AudioCaptureService.start()` activates the process-wide session
+      // BEFORE it installs the tap, so a tap that throws leaves the route
+      // armed. `.failed` runs the same `teardown()` every other ending does,
+      // and that deactivates unconditionally.
       apply(.failed(VoiceModeState.couldNotStartMessage))
+      return
+    }
+    isCapturing = true
+    // An ending that landed WHILE `start()` was in flight already ran
+    // `teardown()` — against a capture that did not exist yet, and against a
+    // route this call has since re-armed. Tear down again, now that there is
+    // something to tear down.
+    guard Task.isCancelled == false, state.phase.isEnded == false else {
+      await teardown()
       return
     }
     // Task B8: subscribe AFTER `start()` returns and before `stop()` — a late
@@ -345,9 +393,16 @@ final class VoiceModeFeature: Identifiable {
     levelTask = Task { [weak self] in
       for await level in stream {
         guard let self, Task.isCancelled == false else { return }
-        self.apply(.micLevel(level))
+        self.setLevel(level)
       }
     }
+  }
+
+  /// A sample buffered before the session ended can still arrive; a meter that
+  /// twitched under an "ended" orb would say the microphone was still live.
+  private func setLevel(_ value: Float) {
+    guard state.phase.isEnded == false else { return }
+    level = value
   }
 
   // MARK: - Playback
@@ -380,14 +435,27 @@ final class VoiceModeFeature: Identifiable {
     }
   }
 
-  private func flushPlayback() async {
+  /// Synchronous, and the new HEAD of the playback chain.
+  ///
+  /// Both halves matter. Bumping the generation the moment the reducer asks
+  /// for a flush is what makes already-queued chunks stale before the next
+  /// utterance's chunks are appended. Making the player's own `flush()`/
+  /// `stop()` the head of the chain — rather than an `await` on the effect
+  /// chain — is what keeps them ORDERED against those chunks: a flush that
+  /// travelled with the transport sends could run after the next reply had
+  /// already been buffered, and drop it.
+  ///
+  /// The previous chain is cancelled but deliberately NOT awaited: it may be
+  /// parked inside `playMP3`, and `player.stop()` below is the thing that
+  /// releases it. Awaiting it first would deadlock.
+  private func flushPlayback() {
     playbackGeneration &+= 1
     playbackChain?.cancel()
-    playbackChain = nil
-    await player.flush()
-    // `flush()` drops the PCM queue; `stop()` is what releases a `playMP3`
-    // still awaiting its clip.
-    await player.stop()
+    playbackChain = Task { [weak self] in
+      guard let self else { return }
+      await self.player.flush()
+      await self.player.stop()
+    }
   }
 
   /// The gateway's `voice_speech` carries a sample rate for PCM, but an older
@@ -414,15 +482,21 @@ final class VoiceModeFeature: Identifiable {
   }
 
   private func teardown() async {
-    await flushPlayback()
+    flushPlayback()
+    await playbackChain?.value
     if isCapturing {
       isCapturing = false
       await capture.stop()
     }
-    guard isSessionActive else { return }
-    isSessionActive = false
-    // `AudioCaptureService` activates the session itself (`.playAndRecord`
-    // with echo cancellation); nothing else will take it down.
+    // UNCONDITIONALLY, and not behind an "is it active?" flag.
+    // `AudioCaptureService` activates `.playAndRecord` itself, as the FIRST
+    // thing `start()` does, and nothing else will take it down. A flag set
+    // only once `start()` returned left the route armed for every ending that
+    // landed mid-start — a close tap, a `voice_stopped`, a lost socket, the
+    // app going to the background — and for the failure path where the tap
+    // throws after the session was activated. `setActive(false)` on a session
+    // that was never active is a no-op, so the cost of being wrong the other
+    // way is nothing.
     session.deactivate()
   }
 

@@ -365,6 +365,11 @@ actor FakeAudioPlayer: AudioPlaying {
   // this plumbing from scratch.
   private(set) var enqueued: [(Data, Double)] = []
   private(set) var flushCount = 0
+  /// The calls IN ORDER. `played`/`enqueued`/`flushCount` each answer "how
+  /// many"; voice mode's barge-in question is "in what order" — a flush that
+  /// lands after the next utterance's first chunk has already been buffered
+  /// truncates the reply, and no per-call counter can see that.
+  private(set) var events: [FakeAudioPlayerEvent] = []
 
   var isPlaying: Bool { playing }
 
@@ -374,6 +379,7 @@ actor FakeAudioPlayer: AudioPlaying {
 
   func playMP3(_ data: Data) async throws {
     played.append(data)
+    events.append(.play(data))
     if let failure { throw failure }
     playing = true
     try await withCheckedThrowingContinuation { continuation in
@@ -383,15 +389,18 @@ actor FakeAudioPlayer: AudioPlaying {
 
   func stop() async {
     stopCount += 1
+    events.append(.stop)
     finish()
   }
 
   func enqueuePCM(_ data: Data, sampleRate: Double) async {
     enqueued.append((data, sampleRate))
+    events.append(.enqueue(data))
   }
 
   func flush() async {
     flushCount += 1
+    events.append(.flush)
   }
 
   /// Playback reaching its natural end.
@@ -401,4 +410,11 @@ actor FakeAudioPlayer: AudioPlaying {
     playing = false
     pending.resume()
   }
+}
+
+enum FakeAudioPlayerEvent: Equatable, Sendable {
+  case play(Data)
+  case enqueue(Data)
+  case flush
+  case stop
 }
