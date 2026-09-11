@@ -257,7 +257,7 @@ private func closeCode(for request: URLRequest, session: URLSession) async throw
 extension MobileWSServerFrame {
   var liveSequence: Int? {
     switch self {
-    case .accepted(_, _, _, _, _, let sequence, _, _):
+    case .accepted(_, _, _, _, _, let sequence, _, _, _):
       return sequence
     case .event(_, _, let sequence, _),
       .done(_, _, let sequence, _),
