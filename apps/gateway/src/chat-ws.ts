@@ -77,6 +77,7 @@ const KNOWN_CLIENT_FRAME_TYPES = new Set([
   'voice_audio',
   'voice_mute',
   'voice_stop',
+  'voice_played',
 ]);
 const STRUCTURAL_CLIENT_FIELDS = new Set([
   'type',
@@ -234,7 +235,7 @@ function decodedBase64Bytes(data: string): number {
  */
 export type VoiceClientFrame = Extract<
   MobileWsClientFrame,
-  { type: 'voice_start' | 'voice_audio' | 'voice_mute' | 'voice_stop' }
+  { type: 'voice_start' | 'voice_audio' | 'voice_mute' | 'voice_stop' | 'voice_played' }
 >;
 
 export type ChatClientFrame = MobileWsClientFrame;
@@ -321,6 +322,11 @@ export function parseChatClientFrame(msg: unknown): ChatClientFrame | null {
   }
 
   if (m.type === 'voice_stop') return msg as VoiceClientFrame;
+
+  if (m.type === 'voice_played') {
+    if (!Number.isInteger(m.seq) || (m.seq as number) < 0) return null;
+    return msg as VoiceClientFrame;
+  }
 
   if (m.type === 'message') {
     const valid =
@@ -665,7 +671,11 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             return;
           }
 
-          if (msg.type === 'voice_audio' || msg.type === 'voice_mute') {
+          if (
+            msg.type === 'voice_audio' ||
+            msg.type === 'voice_mute' ||
+            msg.type === 'voice_played'
+          ) {
             if (!voice) {
               sendServerMessage(ws, {
                 type: 'voice_error',
@@ -678,6 +688,11 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
             // A duplicate or out-of-order `seq` is passed through untouched:
             // the VAD consumes whatever arrives, in arrival order.
             if (msg.type === 'voice_audio') voice.session?.audio(Buffer.from(msg.pcm, 'base64'));
+            // The drain acknowledgement (F1): the session holds `speaking`
+            // until the phone reports that everything on the wire has
+            // finished PLAYING, so the reply's tail is not cut off by the
+            // client's own flush-on-leaving-speaking.
+            else if (msg.type === 'voice_played') voice.session?.played(msg.seq);
             else voice.session?.mute(msg.muted);
             return;
           }

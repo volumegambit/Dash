@@ -1472,10 +1472,6 @@ class FakeVoiceSpeech implements SpeechService {
     return { text: this.transcripts.shift() ?? '' };
   }
 
-  async speechFormat() {
-    return { format: 'mp3' as const };
-  }
-
   async synthesize(text: string) {
     this.synthesized.push(text);
     return {
@@ -1578,6 +1574,13 @@ describe('parseChatClientFrame voice frames', () => {
     expect(parseChatClientFrame({ type: 'voice_mute', id: 'v', muted: 'yes' })).toBeNull();
   });
 
+  it('accepts voice_played and rejects a malformed seq', () => {
+    expect(parseChatClientFrame({ type: 'voice_played', id: 'voice-01', seq: 0 })).not.toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_played', id: 'voice-01' })).toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_played', id: 'voice-01', seq: -1 })).toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_played', id: 'voice-01', seq: 1.5 })).toBeNull();
+  });
+
   it('accepts 16 KB of pcm and rejects one byte more', () => {
     const atLimit = Buffer.alloc(16 * 1024).toString('base64');
     const overLimit = Buffer.alloc(16 * 1024 + 1).toString('base64');
@@ -1633,6 +1636,21 @@ describe('mountChatWs voice sessions', () => {
     expect(allFrames(connection.socket).some((f) => f.type === 'done' && f.id === turnId)).toBe(
       true,
     );
+    // F1: `listening` now waits for the phone's `voice_played` ack — the
+    // client flushes playback on leaving `speaking`, so announcing it while
+    // the speaker is still going truncated every reply's tail.
+    expect(voiceStates(connection.socket)).toEqual([
+      'listening',
+      'transcribing',
+      'thinking',
+      'speaking',
+    ]);
+    dispatch(connection, {
+      type: 'voice_played',
+      id: VOICE_START.id,
+      seq: (speech[0] as { seq: number }).seq,
+    });
+    await settle();
     expect(voiceStates(connection.socket)).toEqual([
       'listening',
       'transcribing',
@@ -1791,6 +1809,85 @@ describe('mountChatWs voice sessions', () => {
     } finally {
       log.mockRestore();
       errorLog.mockRestore();
+    }
+  });
+
+  it('routes voice_played to the session so the turn ends only once playback drained', async () => {
+    const harness = makeVoiceHarness();
+    const { connection, turnId, hubSink } = await speakOneTurn(harness);
+
+    hubSink.send({ type: 'event', id: turnId, event: { type: 'text_delta', text: 'Sunny. ' } });
+    hubSink.send({ type: 'done', id: turnId, outcome: 'completed' });
+    await settle();
+
+    // F1: the reply is on the wire but the phone is still playing it, so the
+    // session must still be `speaking` — leaving it is what makes the client
+    // flush, and that truncated every reply's tail.
+    const speech = voiceFramesOf(connection.socket).find((f) => f.type === 'voice_speech') as
+      | { seq: number }
+      | undefined;
+    expect(speech).toBeDefined();
+    expect(voiceStates(connection.socket).at(-1)).toBe('speaking');
+
+    dispatch(connection, {
+      type: 'voice_played',
+      id: VOICE_START.id,
+      seq: speech?.seq ?? 0,
+    });
+    await settle();
+
+    expect(voiceStates(connection.socket).at(-1)).toBe('listening');
+  });
+
+  it('answers voice_played with invalid when no session is running', async () => {
+    const harness = makeVoiceHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, { type: 'voice_played', id: 'voice-01', seq: 0 });
+    await settle();
+
+    expect(voiceFramesOf(connection.socket)).toEqual([
+      { type: 'voice_error', id: 'voice-01', code: 'invalid', error: expect.any(String) },
+    ]);
+  });
+
+  it('ends the session when the hub says the conversation is busy', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const harness = makeVoiceHarness();
+      harness.speech?.transcripts.push('What is the weather');
+      const connection = harness.connect();
+      harness.hub.start.mockImplementation(() => {
+        throw new ConversationServiceError(
+          'conversation_busy',
+          'Conversation has an active turn',
+          409,
+          false,
+        );
+      });
+
+      dispatch(connection, VOICE_START);
+      await settle();
+      feedVoice(connection, VOICE_START.id, utterancePcm());
+      await settle();
+
+      // F4: `conversation_busy` describes the CONVERSATION, not this turn —
+      // every later utterance would earn the same error, so the session ends
+      // with the hub's own code rather than looping `voice_error provider`.
+      const frames = voiceFramesOf(connection.socket);
+      expect(frames.at(-2)).toEqual({
+        type: 'voice_error',
+        id: VOICE_START.id,
+        code: 'unavailable',
+        error: 'Conversation has an active turn',
+      });
+      expect(frames.at(-1)).toEqual({
+        type: 'voice_stopped',
+        id: VOICE_START.id,
+        reason: 'provider',
+      });
+    } finally {
+      consoleError.mockRestore();
     }
   });
 

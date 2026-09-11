@@ -1,4 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
+import type { MobileApiErrorCode } from '@dash/mobile-contract';
 import { DEFAULT_SPEECH_CONFIG, type SpeechConfig } from './config.js';
 import type { SpeechProviderStatus, SpeechService } from './service.js';
 import type { TurnDriver } from './session.js';
@@ -143,10 +144,6 @@ export class FakeSpeechService implements SpeechService {
     });
   }
 
-  async speechFormat(): Promise<{ format: 'pcm16' | 'mp3'; sampleRate?: number }> {
-    return { format: this.format, sampleRate: this.sampleRate };
-  }
-
   async synthesize(
     text: string,
     _format?: 'pcm16' | 'mp3',
@@ -168,7 +165,11 @@ export class FakeSpeechService implements SpeechService {
 
 interface TurnHandlers {
   onEvent(event: AgentEvent): void;
-  onDone(outcome: 'completed' | 'cancelled' | 'failed', error?: string): void;
+  onDone(
+    outcome: 'completed' | 'cancelled' | 'failed',
+    error?: string,
+    code?: MobileApiErrorCode,
+  ): void;
 }
 
 /** A {@link TurnDriver} that records calls and lets the test drive each turn. */
@@ -192,7 +193,11 @@ export class FakeTurnDriver implements TurnDriver {
     turnId: string,
     text: string,
     onEvent: (event: AgentEvent) => void,
-    onDone: (outcome: 'completed' | 'cancelled' | 'failed', error?: string) => void,
+    onDone: (
+      outcome: 'completed' | 'cancelled' | 'failed',
+      error?: string,
+      code?: MobileApiErrorCode,
+    ) => void,
   ): void {
     this.starts.push({ turnId, text });
     this.handlers.set(turnId, { onEvent, onDone });
@@ -221,13 +226,14 @@ export class FakeTurnDriver implements TurnDriver {
     this.handlersFor(turnId).onEvent(event);
   }
 
-  /** Completes `turnId`. */
+  /** Completes `turnId`. `code` is the hub's own error code for a `failed` outcome. */
   done(
     turnId: string,
     outcome: 'completed' | 'cancelled' | 'failed' = 'completed',
     error?: string,
+    code?: MobileApiErrorCode,
   ): void {
-    this.handlersFor(turnId).onDone(outcome, error);
+    this.handlersFor(turnId).onDone(outcome, error, code);
   }
 
   private handlersFor(turnId: string): TurnHandlers {

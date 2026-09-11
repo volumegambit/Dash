@@ -252,40 +252,6 @@ describe('createSpeechService', () => {
     });
   });
 
-  describe('speechFormat', () => {
-    it('returns pcm16 with sampleRate for a pcm16-allow-listed tts model', async () => {
-      const service = createSpeechService({
-        config: configOf(PCM16_CONFIG),
-        providerKeys: async () => ({}),
-      });
-      expect(await service.speechFormat()).toEqual({ format: 'pcm16', sampleRate: 24000 });
-    });
-
-    it('returns mp3 with no sampleRate for a non-pcm16 tts model', async () => {
-      const config: SpeechConfig = {
-        ...DEFAULT_SPEECH_CONFIG,
-        tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'elevenlabs/multilingual-v2' },
-      };
-      const service = createSpeechService({
-        config: configOf(config),
-        providerKeys: async () => ({}),
-      });
-      expect(await service.speechFormat()).toEqual({ format: 'mp3' });
-    });
-
-    it('honors a config change between calls', async () => {
-      let config: SpeechConfig = PCM16_CONFIG;
-      const service = createSpeechService({
-        config: async () => config,
-        providerKeys: async () => ({}),
-      });
-      expect(await service.speechFormat()).toEqual({ format: 'pcm16', sampleRate: 24000 });
-
-      config = { ...config, tts: { ...config.tts, model: 'elevenlabs/multilingual-v2' } };
-      expect(await service.speechFormat()).toEqual({ format: 'mp3' });
-    });
-  });
-
   describe('synthesize', () => {
     it('throws unavailable when the configured provider has no key', async () => {
       const service = createSpeechService({
@@ -415,6 +381,43 @@ describe('createSpeechService', () => {
       expect(result.sampleRate).toBe(24000);
       const body = calls[0]?.body as { response_format?: string };
       expect(body.response_format).toBe('pcm');
+    });
+
+    // F8: "no content-type header" and "a content-type that is not PCM" used
+    // to be the same answer (`null` from `parsePcmContentType`), so an
+    // allow-listed model answering `audio/mpeg` for a PCM request shipped MP3
+    // bytes labelled `pcm16 @ 24 kHz` — noise on the phone.
+    it('throws a provider error when a PCM request comes back with a non-PCM content-type', async () => {
+      const { impl } = queueFetch([
+        streamResponse(200, [new Uint8Array([1, 2])], { 'content-type': 'audio/mpeg' }),
+      ]);
+      const config: SpeechConfig = {
+        ...DEFAULT_SPEECH_CONFIG,
+        tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'google/gemini-3.1-flash-tts-preview' },
+      };
+      const service = createSpeechService({
+        config: configOf(config),
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      await expect(service.synthesize('hello')).rejects.toMatchObject({
+        code: 'provider',
+        message: 'provider returned audio/mpeg for a PCM request',
+      });
+    });
+
+    it('falls back to the static table when the provider declares NO content-type', async () => {
+      const { impl } = queueFetch([streamResponse(200, [new Uint8Array([1, 2])], {})]);
+      const service = createSpeechService({
+        config: configOf(PCM16_CONFIG),
+        providerKeys: async () => ({ openrouter: 'sk-or-test' }),
+        fetch: impl,
+      });
+
+      const result = await service.synthesize('hello');
+      expect(result.format).toBe('pcm16');
+      expect(result.sampleRate).toBe(24000);
     });
 
     it('throws a provider error when pcm16 is required but neither the provider nor the static table declares a rate', async () => {

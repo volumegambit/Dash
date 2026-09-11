@@ -56,6 +56,7 @@ function harness(
     sampleRate?: number;
     config?: SpeechConfig;
     renderer?: () => SpokenRenderer;
+    drainTimeoutMs?: number;
   } = {},
 ): Harness {
   let clock = 10_000;
@@ -80,6 +81,7 @@ function harness(
     now: () => clock,
     newTurnId: () => `turn-${driver.starts.length + 1}`,
     ...(options.renderer ? { renderer: options.renderer } : {}),
+    ...(options.drainTimeoutMs === undefined ? {} : { drainTimeoutMs: options.drainTimeoutMs }),
     emit: (frame) => {
       frames.push(frame);
       timeline.push(`frame:${frame.type}`);
@@ -123,6 +125,46 @@ async function say(h: Harness, text: string): Promise<void> {
   if (!pending) throw new Error('no pending transcription');
   pending.resolve(text);
   await settle();
+}
+
+/**
+ * The highest `seq` the session has put on the wire — what the phone would
+ * quote back in `voice_played` once it had finished playing everything.
+ */
+function lastSeq(h: Harness): number {
+  const frames = speechFrames(h.frames);
+  const last = frames.at(-1);
+  if (!last) throw new Error('no voice_speech frame was emitted');
+  return last.seq;
+}
+
+/** The phone reports that every chunk so far has finished playing. */
+async function drained(h: Harness): Promise<void> {
+  h.session.played(lastSeq(h));
+  await settle();
+}
+
+/**
+ * Waits past a (deliberately tiny) injected `drainTimeoutMs`, for a NEGATIVE
+ * assertion: "nothing happened while a timer could have fired". A fixed sleep
+ * is right here — there is no state change to poll for.
+ */
+async function waitDrainTimeout(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await settle();
+}
+
+/**
+ * Waits for the injected `drainTimeoutMs` to actually fire. Polled rather than
+ * slept: a fixed sleep just over the timeout flakes under a loaded full-suite
+ * run, where a 5ms timer's callback can land tens of milliseconds late.
+ */
+async function expectDrainTimeout(h: Harness): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (h.session.state !== 'speaking') return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settle();
+  }
 }
 
 describe('VoiceSession', () => {
@@ -199,6 +241,12 @@ describe('VoiceSession', () => {
     h.driver.done('turn-1', 'completed');
     await settle();
 
+    // F1: `listening` now waits for the phone's `voice_played` ack — the
+    // client flushes playback on leaving `speaking`, so announcing it while
+    // the speaker is still going truncated the reply's tail.
+    expect(h.session.state).toBe('speaking');
+    await drained(h);
+
     expect(states(h.frames)).toEqual([
       'listening',
       'transcribing',
@@ -245,7 +293,10 @@ describe('VoiceSession', () => {
         audio: Buffer.from([2, 2]).toString('base64'),
         format: 'pcm16',
         sampleRate: 24_000,
-        text: 'One.',
+        // F2: `text` is the caption for the SENTENCE, so only the sentence's
+        // FIRST chunk carries it. This used to assert 'One.' here, which is
+        // what made the client's caption read "One.One.".
+        text: '',
       },
       {
         type: 'voice_speech',
@@ -303,6 +354,9 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].end();
     await settle();
 
+    // F1: `listening` now waits for the phone's `voice_played` ack, since the
+    // client flushes playback on leaving `speaking`.
+    await drained(h);
     expect(h.session.state).toBe('listening');
   });
 
@@ -439,6 +493,12 @@ describe('VoiceSession', () => {
 
     h.driver.done('turn-1', 'completed');
     await settle();
+    // F1: `listening` now waits for the phone's `voice_played` ack — the
+    // client flushes playback on leaving `speaking`, so announcing it while
+    // the speaker is still going truncated the reply's tail.
+    expect(setStartMs).toHaveBeenLastCalledWith(400);
+
+    await drained(h);
     expect(setStartMs).toHaveBeenLastCalledWith(300);
   });
 
@@ -525,6 +585,9 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].end();
     await settle();
 
+    // F1: `listening` now waits for the phone's `voice_played` ack, since the
+    // client flushes playback on leaving `speaking`.
+    await drained(h);
     // The turn is paused, not finished: the session listens for the answer.
     expect(h.session.state).toBe('listening');
 
@@ -559,6 +622,9 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].push(new Uint8Array([1]));
     h.speech.syntheses[0].end();
     await settle();
+    // F1: `listening` now waits for the phone's `voice_played` ack, since the
+    // client flushes playback on leaving `speaking`.
+    await drained(h);
     expect(h.session.state).toBe('listening');
 
     // The turn dies before the user answers (hub timeout, agent abort, ...).
@@ -601,6 +667,9 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].end();
     h.driver.done('turn-1', 'completed');
     await settle();
+    // F1: `listening` now waits for the phone's `voice_played` ack, since the
+    // client flushes playback on leaving `speaking`.
+    await drained(h);
 
     // The queued transcript is re-emitted WITH its turnId, then started.
     expect(transcripts(h.frames).at(-1)).toEqual({
@@ -793,6 +862,9 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].push(new Uint8Array([1]));
     h.speech.syntheses[0].end();
     await settle();
+    // F1: `listening` now waits for the phone's `voice_played` ack, since the
+    // client flushes playback on leaving `speaking`.
+    await drained(h);
 
     // Queued user speech is used as the answer, never silently dropped.
     expect(h.driver.answers).toEqual([
@@ -830,6 +902,9 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].end();
     h.driver.done('turn-1', 'failed', 'model exploded');
     await settle();
+    // F1: `listening` now waits for the phone's `voice_played` ack, since the
+    // client flushes playback on leaving `speaking`.
+    await drained(h);
 
     expect(h.frames.at(-2)).toEqual({
       type: 'voice_error',
@@ -932,5 +1007,323 @@ describe('VoiceSession', () => {
     });
     expect(h.frames.at(-1)).toEqual({ type: 'voice_stopped', id: 'sess-1', reason: 'provider' });
     expect(h.session.state).toBe('stopped');
+  });
+
+  // --- F1: the drain gate -------------------------------------------------
+  //
+  // `voice_state listening` used to be emitted the instant the LAST chunk was
+  // SENT, while the phone was still playing it — and the iOS reducer flushes
+  // playback on leaving `speaking`, so every reply's tail was cut off. The
+  // session now holds `speaking` until the phone acknowledges with
+  // `voice_played { seq }`, or a safety timer fires.
+
+  it('holds speaking until the phone reports the last chunk played', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. Two. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+    h.speech.syntheses[1].push(new Uint8Array([2]));
+    h.speech.syntheses[1].end();
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    // Both sentences are on the wire and the turn is done — but the phone is
+    // still playing, so the session must NOT have announced `listening`.
+    expect(speechFrames(h.frames)).toHaveLength(2);
+    expect(h.session.state).toBe('speaking');
+    expect(states(h.frames).at(-1)).toBe('speaking');
+
+    // An ack for the first sentence only is not enough.
+    h.session.played(0);
+    await settle();
+    expect(h.session.state).toBe('speaking');
+
+    await drained(h);
+    expect(h.session.state).toBe('listening');
+    expect(states(h.frames).at(-1)).toBe('listening');
+  });
+
+  it('advances without an ack once the drain safety timer fires', async () => {
+    const h = harness({ drainTimeoutMs: 5 });
+    await say(h, 'hello');
+
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    expect(h.session.state).toBe('speaking');
+    await expectDrainTimeout(h);
+    expect(h.session.state).toBe('listening');
+    expect(states(h.frames).at(-1)).toBe('listening');
+  });
+
+  it('arms the safety timer only at the END of the turn, not after each sentence', async () => {
+    const h = harness({ drainTimeoutMs: 5 });
+    await say(h, 'hello');
+
+    // Sentence 1 drains the QUEUE mid-turn, and `pump()` reaches
+    // `finishIfDrained` every time that happens. A timer armed here would be
+    // counting down while the rest of the turn is still being spoken — its
+    // 8s of slack measured from the wrong end — and once it fired it would
+    // raise the played high-water mark, so the turn's real end would then
+    // pass the gate with no acknowledgement at all.
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+    await waitDrainTimeout();
+
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    expect(h.session.state).toBe('speaking');
+    await drained(h);
+    expect(h.session.state).toBe('listening');
+  });
+
+  it('treats a barge-in during the drain window as an interruption', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. ' });
+    await settle();
+    const speakingSince = h.now();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    h.driver.done('turn-1', 'completed');
+    await settle();
+    expect(h.session.state).toBe('speaking');
+
+    h.setNow(speakingSince + 300);
+    feed(h.session, tone(600, 440, 0.5));
+    await settle();
+
+    expect(h.session.state).toBe('listening');
+    expect(states(h.frames).at(-1)).toBe('listening');
+    // The turn was already `done`, so there is nothing to cancel.
+    expect(h.driver.cancels).toEqual([]);
+
+    // A late ack for the interrupted generation must not re-announce anything.
+    const count = h.frames.length;
+    h.session.played(99);
+    await settle();
+    expect(h.frames).toHaveLength(count);
+  });
+
+  it('ignores a played ack for a stale seq', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. Two. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+    h.speech.syntheses[1].push(new Uint8Array([2]));
+    h.speech.syntheses[1].end();
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    h.session.played(0);
+    await settle();
+    expect(h.session.state).toBe('speaking');
+    // Out of order / replayed: still below the high-water mark, still ignored.
+    h.session.played(-1);
+    await settle();
+    expect(h.session.state).toBe('speaking');
+
+    h.session.played(1);
+    await settle();
+    expect(h.session.state).toBe('listening');
+  });
+
+  it('advances immediately when the turn spoke nothing', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    expect(speechFrames(h.frames)).toHaveLength(0);
+    expect(h.session.state).toBe('listening');
+  });
+
+  // --- F2: one caption per sentence ---------------------------------------
+
+  it('carries the sentence text only on the FIRST pcm16 chunk', async () => {
+    const h = harness({ format: 'pcm16', sampleRate: 24_000 });
+    await say(h, 'hello');
+
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. ' });
+    await settle();
+    const first = h.speech.syntheses[0];
+    first.push(new Uint8Array([1, 1]));
+    await settle();
+    first.push(new Uint8Array([2, 2]));
+    first.end();
+    await settle();
+
+    expect(speechFrames(h.frames).map((f) => f.text)).toEqual(['One.', '']);
+  });
+
+  // --- F3: a retryable synthesis failure is not fatal ----------------------
+
+  it('drops a sentence on a retryable synthesis failure and keeps the session alive', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.speech.failSynthesizeWith = new SpeechError('unavailable', 'provider busy');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. ' });
+    await settle();
+
+    expect(h.frames.at(-1)).toEqual({
+      type: 'voice_error',
+      id: 'sess-1',
+      code: 'unavailable',
+      error: 'provider busy',
+    });
+    expect(h.session.state).not.toBe('stopped');
+
+    // The NEXT sentence still speaks.
+    h.speech.failSynthesizeWith = undefined;
+    h.driver.event('turn-1', { type: 'text_delta', text: 'Two. ' });
+    await settle();
+    expect(h.speech.syntheses).toHaveLength(1);
+    h.speech.syntheses[0].push(new Uint8Array([9]));
+    h.speech.syntheses[0].end();
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    expect(speechFrames(h.frames).map((f) => f.text)).toEqual(['Two.']);
+    await drained(h);
+    expect(h.session.state).toBe('listening');
+  });
+
+  it('ends the session on the third consecutive retryable synthesis failure', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.speech.failSynthesizeWith = new SpeechError('unavailable', 'provider busy');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. Two. Three. ' });
+    await settle();
+
+    // THREE errors, not one: the first two cost their sentence and nothing
+    // more. Without this the test would pass just as well on the old
+    // one-strike behaviour.
+    expect(h.frames.filter((f) => f.type === 'voice_error')).toHaveLength(3);
+    expect(h.frames.at(-1)).toEqual({ type: 'voice_stopped', id: 'sess-1', reason: 'provider' });
+    expect(h.session.state).toBe('stopped');
+  });
+
+  it('resets the consecutive-failure count after a sentence speaks', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.speech.failSynthesizeWith = new SpeechError('network', 'reset by peer');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. ' });
+    await settle();
+    h.speech.failSynthesizeWith = undefined;
+    h.driver.event('turn-1', { type: 'text_delta', text: 'Two. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([2]));
+    h.speech.syntheses[0].end();
+    await settle();
+
+    // Two more failures would be the 2nd and 3rd overall, but only the 1st and
+    // 2nd CONSECUTIVE — the session survives them.
+    h.speech.failSynthesizeWith = new SpeechError('network', 'reset by peer');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'Three. Four. ' });
+    await settle();
+
+    expect(h.session.state).not.toBe('stopped');
+  });
+
+  // --- F4: a hub throw that can never succeed ends the session -------------
+
+  it('ends the session when the hub reports the conversation is busy', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.done('turn-1', 'failed', 'A turn is already running', 'conversation_busy');
+    await settle();
+
+    expect(h.frames.at(-2)).toEqual({
+      type: 'voice_error',
+      id: 'sess-1',
+      code: 'unavailable',
+      error: 'A turn is already running',
+    });
+    expect(h.frames.at(-1)).toEqual({ type: 'voice_stopped', id: 'sess-1', reason: 'provider' });
+    expect(h.session.state).toBe('stopped');
+  });
+
+  it('maps not_found and unauthorized to invalid and ends the session', async () => {
+    for (const code of ['not_found', 'unauthorized'] as const) {
+      const h = harness();
+      await say(h, 'hello');
+      h.driver.done('turn-1', 'failed', 'nope', code);
+      await settle();
+      expect(h.frames.at(-2)).toMatchObject({ type: 'voice_error', code: 'invalid' });
+      expect(h.frames.at(-1)).toMatchObject({ type: 'voice_stopped', reason: 'provider' });
+    }
+  });
+
+  it('keeps listening for an ordinary failed turn that carries no hub code', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.done('turn-1', 'failed', 'model exploded');
+    await settle();
+
+    expect(h.frames.at(-2)).toMatchObject({ type: 'voice_error', code: 'provider' });
+    expect(h.session.state).toBe('listening');
+  });
+
+  // --- F9: a failed answer aborts the in-flight sentence -------------------
+
+  it('aborts the in-flight synthesis when an answer cannot be delivered', async () => {
+    const h = harness();
+    await say(h, 'delete the file');
+
+    h.driver.event('turn-1', {
+      type: 'question',
+      id: 'q1',
+      question: 'Are you sure?',
+      options: ['yes', 'no'],
+    });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+
+    // The question has been spoken, so the next utterance is its answer — and
+    // the turn keeps producing prose behind it, still streaming.
+    h.driver.event('turn-1', { type: 'text_delta', text: 'Meanwhile, more words. ' });
+    await settle();
+    const inFlight = h.speech.syntheses[1];
+    expect(inFlight).toBeDefined();
+
+    h.driver.failAnswerWith = new Error('hub is gone');
+    feed(h.session, utterance());
+    await settle();
+    h.speech.transcribes[1].resolve('yes');
+    await settle();
+
+    // `answerFailed` retires the turn — and must abort the sentence that was
+    // still streaming, or its chunks would announce the NEXT turn as speaking.
+    expect(inFlight.returned).toBe(true);
+    const before = speechFrames(h.frames).length;
+    inFlight.push(new Uint8Array([7]));
+    inFlight.end();
+    await settle();
+    expect(speechFrames(h.frames)).toHaveLength(before);
   });
 });

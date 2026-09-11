@@ -11,7 +11,6 @@ function fakeSpeech(overrides: Partial<SpeechService> = {}): SpeechService {
     providers: vi.fn(),
     listModels: vi.fn(),
     transcribe: vi.fn(),
-    speechFormat: vi.fn(),
     synthesize: vi.fn(),
     available: vi.fn().mockResolvedValue(true),
     invalidate: vi.fn(),

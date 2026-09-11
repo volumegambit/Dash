@@ -69,6 +69,23 @@ export function parsePcmContentType(contentType: string | null | undefined): Pcm
 }
 
 /**
+ * The media type a provider DECLARED when it is not `audio/pcm`, or `null`
+ * when it declared nothing at all (or declared PCM).
+ *
+ * {@link parsePcmContentType} deliberately answers `null` for both "no header"
+ * and "header is not PCM", because it only ever reports a *parsed PCM format*.
+ * The difference matters at the call site: a missing header is the one case
+ * where falling back to the static sample-rate table is right, while a header
+ * that says `audio/mpeg` means the bytes are not PCM at all.
+ */
+export function declaredNonPcmType(contentType: string | null | undefined): string | null {
+  if (!contentType) return null;
+  const mediaType = contentType.split(';')[0]?.trim().toLowerCase();
+  if (!mediaType || mediaType === 'audio/pcm') return null;
+  return mediaType;
+}
+
+/**
  * Resolves which `response_format` to actually request from the provider
  * for `model`, given what the caller `wanted`:
  * - `pcm16` wanted: stays `pcm16` if the model is on the static PCM

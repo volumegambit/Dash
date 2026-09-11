@@ -410,6 +410,17 @@
         "id": { "type": "string", "format": "uuid" }
       }
     },
+    "VoicePlayed": {
+      "$comment": "The phone has finished PLAYING every voice_speech up to and including seq. The gateway holds the session in speaking until it arrives, or until an 8s safety timer fires.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "seq"],
+      "properties": {
+        "type": { "const": "voice_played" },
+        "id": { "type": "string", "format": "uuid" },
+        "seq": { "type": "integer", "minimum": 0 }
+      }
+    },
     "VoiceState": {
       "$comment": "turnId is set once a turn is running and cleared once it settles back to listening.",
       "type": "object",
@@ -489,7 +500,8 @@
         { "$ref": "#/$defs/VoiceStart" },
         { "$ref": "#/$defs/VoiceAudio" },
         { "$ref": "#/$defs/VoiceMute" },
-        { "$ref": "#/$defs/VoiceStop" }
+        { "$ref": "#/$defs/VoiceStop" },
+        { "$ref": "#/$defs/VoicePlayed" }
       ]
     },
     "MobileWsServerFrame": {

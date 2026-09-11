@@ -193,7 +193,6 @@ function makeSpeechService(overrides: Partial<SpeechService> = {}): SpeechServic
     ]),
     listModels: vi.fn().mockResolvedValue([]),
     transcribe: vi.fn().mockResolvedValue({ text: 'hi' }),
-    speechFormat: vi.fn().mockResolvedValue({ format: 'mp3' }),
     synthesize: vi.fn().mockResolvedValue({
       format: 'mp3',
       audio: (async function* () {

@@ -496,7 +496,18 @@ export type MobileWsClientFrame =
    */
   | { type: 'voice_audio'; id: string; seq: number; pcm: string }
   | { type: 'voice_mute'; id: string; muted: boolean }
-  | { type: 'voice_stop'; id: string };
+  | { type: 'voice_stop'; id: string }
+  /**
+   * The phone has finished PLAYING every `voice_speech` up to and including
+   * `seq` — not merely received it. The gateway holds the session in
+   * `speaking` until this arrives (or an 8 s safety timer fires), because the
+   * client flushes playback the moment it leaves `speaking`: announcing
+   * `listening` while the speaker is still going truncated every reply's tail.
+   *
+   * Sent once per drained playback chain (or once per sentence), carrying the
+   * highest `seq` enqueued so far. Never sent for audio a barge-in flushed.
+   */
+  | { type: 'voice_played'; id: string; seq: number };
 
 /**
  * The hands-free voice session's state machine (`@dash/speech`'s

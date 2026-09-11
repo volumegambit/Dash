@@ -1,5 +1,5 @@
 import type { AgentEvent } from '@dash/agent';
-import type { MobileWsServerFrame } from '@dash/mobile-contract';
+import type { MobileApiErrorCode, MobileWsServerFrame } from '@dash/mobile-contract';
 import { SpeechError, type SpeechService, type TurnDriver } from '@dash/speech';
 import type { ResumableChatHub, ResumableSendFrame, TurnFrameSink } from './resumable-chat-hub.js';
 
@@ -31,7 +31,6 @@ export function withTranscriptionDeadline(
     currentConfig: () => speech.currentConfig(),
     providers: () => speech.providers(),
     listModels: (kind) => speech.listModels(kind),
-    speechFormat: () => speech.speechFormat(),
     synthesize: (text, format) => speech.synthesize(text, format),
     available: () => speech.available(),
     invalidate: () => speech.invalidate(),
@@ -85,7 +84,11 @@ export interface VoiceTurnBridge {
 interface RunningTurn {
   turnId: string;
   onEvent(event: AgentEvent): void;
-  onDone(outcome: 'completed' | 'cancelled' | 'failed', error?: string): void;
+  onDone(
+    outcome: 'completed' | 'cancelled' | 'failed',
+    error?: string,
+    code?: MobileApiErrorCode,
+  ): void;
 }
 
 /**
@@ -123,7 +126,12 @@ export function createVoiceTurnBridge(options: VoiceTurnBridgeOptions): VoiceTur
       }
       if (frame.type === 'error') {
         running = null;
-        turn.onDone('failed', frame.error);
+        // F4: the hub's own code travels with the failure. `conversation_busy`
+        // (a turn already running on this conversation — routine with two
+        // devices), `not_found` and `unauthorized` describe the CONVERSATION,
+        // not this turn, so the session ends rather than looping the same
+        // `voice_error { provider }` on every later utterance.
+        turn.onDone('failed', frame.error, frame.code);
       }
     },
   };

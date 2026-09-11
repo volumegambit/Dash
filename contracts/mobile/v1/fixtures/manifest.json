@@ -224,6 +224,12 @@
       "valid": true
     },
     {
+      "file": "voice-played.json",
+      "document": "chat-ws",
+      "schema": "VoicePlayed",
+      "valid": true
+    },
+    {
       "file": "voice-state.json",
       "document": "chat-ws",
       "schema": "VoiceState",

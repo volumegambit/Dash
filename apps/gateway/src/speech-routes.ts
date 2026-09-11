@@ -23,13 +23,33 @@ const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
  */
 const MAX_CONTENT_LENGTH_BYTES = 12 * 1024 * 1024;
 
+/**
+ * The same fast-reject ceiling for the two SMALL bodies (F7). `POST /speech`
+ * carries at most 4,000 characters of text and `PATCH /config` a handful of
+ * short strings, so 64 KiB is generous for both while keeping the buffering a
+ * bearer-authenticated caller can force down to nothing.
+ *
+ * A chunked request without a `Content-Length` bypasses this, exactly as it
+ * does on `/transcriptions`; the per-field caps below are what actually
+ * enforce the limits.
+ */
+const MAX_SMALL_CONTENT_LENGTH_BYTES = 64 * 1024;
+
+/**
+ * `Content-Length` fast-reject shared by every body-bearing route: answers the
+ * `too_large` envelope BEFORE the body is read at all.
+ */
+function contentLengthTooLarge(c: Context, limit: number): Response | null {
+  const contentLength = c.req.header('content-length');
+  if (contentLength === undefined || Number(contentLength) <= limit) return null;
+  return c.json({ code: 'too_large', error: 'request body too large', retryable: false }, 413);
+}
+
 const AUDIO_FORMATS = new Set<AudioFormat>(['wav', 'm4a', 'mp3', 'flac', 'ogg', 'webm', 'aac']);
 
 export interface SpeechRoutesOptions {
   speech: SpeechService;
   store: SpeechConfigStore;
-  /** Called after a PATCH /config successfully persists a merged config. */
-  onConfigChanged?: () => void;
 }
 
 /**
@@ -170,6 +190,9 @@ export function createSpeechRoutes(opts: SpeechRoutesOptions): Hono {
   });
 
   app.patch('/config', async (c) => {
+    const tooLarge = contentLengthTooLarge(c, MAX_SMALL_CONTENT_LENGTH_BYTES);
+    if (tooLarge) return tooLarge;
+
     const parsed = await parseJsonBody(c);
     if (!parsed.ok) return parsed.response;
     const result = validateSpeechConfigPatch(parsed.body);
@@ -178,7 +201,6 @@ export function createSpeechRoutes(opts: SpeechRoutesOptions): Hono {
     const base = await store.load();
     const merged = mergeSpeechConfig(base, result.patch);
     await store.save(merged);
-    opts.onConfigChanged?.();
 
     const providers = await speech.providers();
     return c.json({ config: merged, providers });
@@ -200,10 +222,8 @@ export function createSpeechRoutes(opts: SpeechRoutesOptions): Hono {
   app.post('/transcriptions', async (c) => {
     // Fast-reject on the declared Content-Length before reading any body —
     // avoids buffering a multi-hundred-MB request just to reject it.
-    const contentLength = c.req.header('content-length');
-    if (contentLength !== undefined && Number(contentLength) > MAX_CONTENT_LENGTH_BYTES) {
-      return c.json({ code: 'too_large', error: 'request body too large', retryable: false }, 413);
-    }
+    const tooLarge = contentLengthTooLarge(c, MAX_CONTENT_LENGTH_BYTES);
+    if (tooLarge) return tooLarge;
 
     const parsed = await parseJsonBody<Record<string, unknown>>(c);
     if (!parsed.ok) return parsed.response;
@@ -247,6 +267,9 @@ export function createSpeechRoutes(opts: SpeechRoutesOptions): Hono {
   });
 
   app.post('/speech', async (c) => {
+    const tooLarge = contentLengthTooLarge(c, MAX_SMALL_CONTENT_LENGTH_BYTES);
+    if (tooLarge) return tooLarge;
+
     const parsed = await parseJsonBody<Record<string, unknown>>(c);
     if (!parsed.ok) return parsed.response;
     if (!isJsonObject(parsed.body)) return validationFailed(c, 'body must be an object');
@@ -268,8 +291,8 @@ export function createSpeechRoutes(opts: SpeechRoutesOptions): Hono {
 
     try {
       // This route always feeds a file player, so the format is pinned to
-      // 'mp3' explicitly rather than deferring to speechFormat()'s
-      // pcm16-for-realtime default (controller ruling, task-A5-brief.md).
+      // 'mp3' explicitly rather than left to `synthesize`'s pcm16-for-realtime
+      // default (controller ruling, task-A5-brief.md).
       // A PCM-only model (e.g. Gemini TTS) can't honor that and comes back
       // with format: 'pcm16' instead — handled below by buffering into WAV.
       const result = await speech.synthesize(text, 'mp3');

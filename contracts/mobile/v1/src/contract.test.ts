@@ -585,6 +585,7 @@ describe('mobile v1 contract fixtures', () => {
       '#/$defs/VoiceAudio',
       '#/$defs/VoiceMute',
       '#/$defs/VoiceStop',
+      '#/$defs/VoicePlayed',
     ]);
   });
 

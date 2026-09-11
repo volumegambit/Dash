@@ -317,7 +317,7 @@ frame must omit `modality` or send `'text'`, never `'voice'`.
 
 ### Voice frames
 
-Hands-free voice mode adds nine frames (four client, five server) to the same `/ws/chat` socket
+Hands-free voice mode adds ten frames (five client, five server) to the same `/ws/chat` socket
 used for resumable chat, gated on the same `speech-v1` capability as the [Speech](#speech) routes.
 `id` is the client-generated session id and is echoed on every `voice_*` frame in both directions.
 
@@ -329,6 +329,7 @@ used for resumable chat, gated on the same `speech-v1` capability as the [Speech
 | `voice_audio` | `id`, `seq`, `pcm` | One capture chunk: base64 PCM16, 16 kHz mono, at most 16384 decoded bytes (~512ms) per frame |
 | `voice_mute` | `id`, `muted` | Mute or unmute the microphone; playback is unaffected |
 | `voice_stop` | `id` | End the session from the client |
+| `voice_played` | `id`, `seq` | Every `voice_speech` up to and including `seq` has finished **playing** on the client |
 
 **Server frames**
 
@@ -362,6 +363,11 @@ Session rules:
   enum value on the wire; every session end is a `voice_stopped { reason }` frame instead.
 - `voice_audio.pcm` decodes to at most 16384 bytes (16 KiB) per frame; one byte over answers the
   ordinary `error` frame with `code: 'validation_failed'`, not `voice_error`.
+- After the last `voice_speech` of a turn the gateway stays in `speaking` until the client sends
+  `voice_played` with a `seq` at least as high as that chunk's, or until an 8-second safety timer
+  fires. Clients that flush playback when the session leaves `speaking` must send it, or every
+  reply's last sentence is cut off. A `voice_played` for audio a barge-in discarded should not be
+  sent; a stale or out-of-order `seq` is ignored.
 
 ## Channels
 

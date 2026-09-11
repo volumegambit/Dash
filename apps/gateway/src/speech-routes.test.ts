@@ -37,7 +37,6 @@ function makeSpeechService(overrides: Partial<SpeechService> = {}): SpeechServic
     providers: vi.fn().mockResolvedValue(OK_PROVIDERS),
     listModels: vi.fn().mockResolvedValue([{ id: 'm1', name: 'Model 1', kind: 'transcription' }]),
     transcribe: vi.fn().mockResolvedValue({ text: 'hello world' }),
-    speechFormat: vi.fn().mockResolvedValue({ format: 'mp3' }),
     synthesize: vi.fn().mockResolvedValue({
       format: 'mp3',
       audio: (async function* () {
@@ -174,16 +173,37 @@ describe('createSpeechRoutes', () => {
       expect(res.status).toBe(400);
     });
 
-    it('calls onConfigChanged after a successful save', async () => {
+    // F7: the same Content-Length fast-reject `/transcriptions` has, with a
+    // 64 KiB ceiling — a config patch is a handful of short strings.
+    it('rejects a Content-Length over 64 KiB before reading the body', async () => {
       const speech = makeSpeechService();
-      const onConfigChanged = vi.fn();
-      const app = createSpeechRoutes({ speech, store, onConfigChanged });
-      await app.request('/config', {
+      const app = createSpeechRoutes({ speech, store });
+      const res = await app.request('/config', {
         method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(64 * 1024 + 1),
+        },
         body: JSON.stringify({ tts: { voice: 'nova' } }),
       });
-      expect(onConfigChanged).toHaveBeenCalledTimes(1);
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as JsonBody).code).toBe('too_large');
+      // Nothing was read, so nothing was persisted.
+      expect((await store.load()).tts.voice).not.toBe('nova');
+    });
+
+    it('accepts a Content-Length of exactly 64 KiB', async () => {
+      const speech = makeSpeechService();
+      const app = createSpeechRoutes({ speech, store });
+      const res = await app.request('/config', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(64 * 1024),
+        },
+        body: JSON.stringify({ tts: { voice: 'nova' } }),
+      });
+      expect(res.status).toBe(200);
     });
   });
 
@@ -413,6 +433,42 @@ describe('createSpeechRoutes', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe('audio/mpeg');
       expect(speech.synthesize).toHaveBeenCalledWith('hello', 'mp3');
+    });
+
+    // F7: the same Content-Length fast-reject, at 64 KiB — the 4,000-char
+    // text cap below is what a body under the ceiling is still measured by.
+    it('rejects a Content-Length over 64 KiB before reading the body', async () => {
+      const speech = makeSpeechService();
+      const app = createSpeechRoutes({ speech, store });
+      const res = await app.request('/speech', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(64 * 1024 + 1),
+        },
+        body: JSON.stringify({ text: 'hello' }),
+      });
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as JsonBody).code).toBe('too_large');
+      expect(speech.synthesize).not.toHaveBeenCalled();
+    });
+
+    it('lets a Content-Length of exactly 64 KiB through to the text cap', async () => {
+      const speech = makeSpeechService();
+      const app = createSpeechRoutes({ speech, store });
+      const res = await app.request('/speech', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(64 * 1024),
+        },
+        body: JSON.stringify({ text: 'a'.repeat(4_001) }),
+      });
+      // Past the Content-Length gate — rejected by the 4,000-char cap
+      // instead, with its OWN code.
+      expect(res.status).toBe(413);
+      expect(((await res.json()) as JsonBody).code).toBe('too_long');
+      expect(speech.synthesize).not.toHaveBeenCalled();
     });
 
     it('streams chunks in order rather than buffering them', async () => {

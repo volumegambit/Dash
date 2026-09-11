@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@dash/agent';
+import type { MobileApiErrorCode } from '@dash/mobile-contract';
 import { SpeechError, type SpeechErrorCode } from './errors.js';
 import type { SpeechService } from './service.js';
 import { type SpeechItem, SpokenRenderer } from './spoken-renderer.js';
@@ -14,6 +15,26 @@ const LISTENING_START_MS = 300;
 const SPEAKING_START_MS = 400;
 /** A barge-in only counts once the session has been speaking for this long. */
 const BARGE_IN_GUARD_MS = 300;
+/**
+ * How long the session waits for the phone's `voice_played` acknowledgement
+ * before giving up on it and returning to `listening` anyway. A client that
+ * never sends one (an older build, a dropped frame) must not strand the
+ * session in `speaking` with a live microphone it refuses to act on.
+ */
+const DRAIN_TIMEOUT_MS = 8000;
+/**
+ * Consecutive synthesis failures tolerated before the session gives up. A
+ * retryable code (`unavailable`, `network`) costs the sentence and nothing
+ * more; three in a row is a provider outage, which the spec does sanction
+ * ending the session for.
+ */
+const MAX_CONSECUTIVE_SYNTHESIS_FAILURES = 3;
+/** Hub codes a voice session can never recover from by trying the turn again. */
+const FATAL_HUB_CODES: Partial<Record<MobileApiErrorCode, SpeechErrorCode>> = {
+  conversation_busy: 'unavailable',
+  not_found: 'invalid',
+  unauthorized: 'invalid',
+};
 
 export type VoiceState =
   | 'listening'
@@ -58,7 +79,17 @@ export interface TurnDriver {
     turnId: string,
     text: string,
     onEvent: (event: AgentEvent) => void,
-    onDone: (outcome: 'completed' | 'cancelled' | 'failed', error?: string) => void,
+    onDone: (
+      outcome: 'completed' | 'cancelled' | 'failed',
+      error?: string,
+      /**
+       * The hub's own `MobileApiErrorCode` for a `failed` outcome, when the
+       * driver knows it. `conversation_busy` / `not_found` / `unauthorized`
+       * mean the session can never run a turn on this conversation, so the
+       * session ends rather than looping the same error per utterance (F4).
+       */
+      code?: MobileApiErrorCode,
+    ) => void,
   ): void;
   answer(turnId: string, questionId: string, answer: string): Promise<void>;
   cancel(turnId: string): Promise<void>;
@@ -80,6 +111,11 @@ export interface VoiceSessionOptions {
   now?: () => number;
   /** Injectable so tests get deterministic turn ids. Defaults to `randomUUID`. */
   newTurnId?: () => string;
+  /**
+   * How long to wait for the phone's `voice_played` acknowledgement before
+   * returning to `listening` regardless. Defaults to {@link DRAIN_TIMEOUT_MS}.
+   */
+  drainTimeoutMs?: number;
 }
 
 type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never;
@@ -91,6 +127,13 @@ interface Turn {
   done: boolean;
   /** Set when the turn ended `failed`; reported once its speech has drained. */
   failure?: string;
+  /**
+   * At least one `voice_speech` was emitted for this turn. The drain gate is
+   * skipped entirely when nothing was spoken — `seq` is session-monotonic and
+   * never reset, so the emitted high-water mark alone cannot say whether THIS
+   * turn put anything on the wire.
+   */
+  spoke: boolean;
 }
 
 interface QueuedItem {
@@ -171,6 +214,15 @@ export class VoiceSession {
   private activeIterator: AsyncIterator<Uint8Array> | null = null;
   private seq = 0;
   private speakingSince: number | null = null;
+  /** The highest `seq` put on the wire, or -1 before the first chunk. */
+  private lastEmittedSeq = -1;
+  /** The highest `seq` the phone says it has finished playing. */
+  private lastPlayedSeq = -1;
+  /** Armed while the session is holding `speaking` for the phone to drain. */
+  private drainTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly drainTimeoutMs: number;
+  /** Synthesis failures since the last sentence that spoke (F3). */
+  private consecutiveSynthesisFailures = 0;
 
   constructor(options: VoiceSessionOptions) {
     this.id = options.id;
@@ -181,6 +233,7 @@ export class VoiceSession {
     this.now = options.now ?? Date.now;
     this.newTurnId = options.newTurnId ?? (() => randomUUID());
     this.newRenderer = options.renderer ?? (() => new SpokenRenderer({ now: this.now }));
+    this.drainTimeoutMs = options.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
 
     this.emit({ type: 'voice_state', state: 'listening' });
   }
@@ -215,6 +268,23 @@ export class VoiceSession {
     this.emitState(this.innerState);
   }
 
+  /**
+   * The phone has finished PLAYING every `voice_speech` up to and including
+   * `seq` (F1). Until this arrives the session stays `speaking`, because the
+   * client flushes playback the moment it leaves that state — announcing
+   * `listening` while the speaker is still going truncated every reply's tail.
+   *
+   * A stale or out-of-order `seq` only ever raises the high-water mark.
+   */
+  played(seq: number): void {
+    if (this.isStopped) return;
+    if (!Number.isFinite(seq) || seq <= this.lastPlayedSeq) return;
+    this.lastPlayedSeq = seq;
+    if (this.drainTimer === null || !this.hasDrained()) return;
+    this.clearDrainTimer();
+    this.finishIfDrained();
+  }
+
   /** Terminal and idempotent: cancels the turn, aborts playback, ignores everything after. */
   stop(reason: VoiceStopReason): void {
     if (this.isStopped) return;
@@ -227,6 +297,7 @@ export class VoiceSession {
     this.pendingQuestion = null;
     this.utteranceGeneration++;
     this.abortSynthesis();
+    this.clearDrainTimer();
     this.innerState = 'stopped';
     this.speakingSince = null;
 
@@ -331,13 +402,19 @@ export class VoiceSession {
       this.cancelTurn(turnId);
       this.turn = null;
     }
+    // F9: the dead turn's in-flight sentence has to be aborted BEFORE the
+    // queue is cleared, exactly as `bargeIn()` does. Left streaming, its next
+    // chunk would reach `emitSpeech` and announce whatever turn
+    // `advanceAfterTurn` had since started as already speaking.
+    this.abortSynthesis();
+    this.clearDrainTimer();
     this.queue = [];
     this.advanceAfterTurn();
   }
 
   private startTurn(text: string): void {
     const turnId = this.newTurnId();
-    const turn: Turn = { id: turnId, renderer: this.newRenderer(), done: false };
+    const turn: Turn = { id: turnId, renderer: this.newRenderer(), done: false, spoke: false };
     this.turn = turn;
 
     // Before driver.start, always: the phone dispatches its optimistic user
@@ -347,7 +424,7 @@ export class VoiceSession {
       turnId,
       text,
       (event) => this.onAgentEvent(turn, event),
-      (outcome, error) => this.onTurnDone(turn, outcome, error),
+      (outcome, error, code) => this.onTurnDone(turn, outcome, error, code),
     );
     this.setState('thinking', turnId);
   }
@@ -363,9 +440,25 @@ export class VoiceSession {
     turn: Turn,
     outcome: 'completed' | 'cancelled' | 'failed',
     error?: string,
+    code?: MobileApiErrorCode,
   ): void {
     if (this.isStopped || this.turn !== turn) return;
     turn.done = true;
+    // F4: `conversation_busy` / `not_found` / `unauthorized` describe the
+    // CONVERSATION, not this turn — every later utterance would earn the same
+    // error and the cover would sit there with no way out but Close. End the
+    // session instead, with the hub's own code rather than a flat `provider`.
+    // `done` is set above first, so `stop()` owes no `driver.cancel` for a
+    // turn the hub never started.
+    if (outcome === 'failed' && code !== undefined && FATAL_HUB_CODES[code] !== undefined) {
+      this.emit({
+        type: 'voice_error',
+        code: FATAL_HUB_CODES[code] as SpeechErrorCode,
+        error: error ?? 'turn failed',
+      });
+      this.stop('provider');
+      return;
+    }
     // Reported once the speech already rendered for this turn has drained, so
     // the failure lands after the half-answer the user is still hearing.
     if (outcome === 'failed') turn.failure = error ?? 'turn failed';
@@ -378,6 +471,7 @@ export class VoiceSession {
 
   private bargeIn(): void {
     this.abortSynthesis();
+    this.clearDrainTimer();
     this.queue = [];
     this.queuedTranscripts = [];
     this.pendingQuestion = null;
@@ -424,7 +518,7 @@ export class VoiceSession {
     } catch (error) {
       if (this.stale(generation)) return;
       this.synthesizing = false;
-      this.fail(error);
+      this.synthesisFailed(error);
       return;
     }
 
@@ -436,13 +530,24 @@ export class VoiceSession {
     this.activeIterator = iterator;
 
     const collected: Uint8Array[] = [];
+    let firstChunk = true;
     try {
       for (;;) {
         const next = await iterator.next();
         if (this.stale(generation)) return;
         if (next.done) break;
         if (result.format === 'pcm16') {
-          this.emitSpeech(next.value, item.text, result.format, result.sampleRate);
+          // F2: `text` is the caption for the SENTENCE, and a PCM sentence is
+          // several chunks. Repeating it on every chunk made the client's
+          // `assistantCaption += text` read "One.One.One." — so only the
+          // first chunk of a sentence carries it.
+          this.emitSpeech(
+            next.value,
+            firstChunk ? item.text : '',
+            result.format,
+            result.sampleRate,
+          );
+          firstChunk = false;
         } else {
           collected.push(next.value);
         }
@@ -451,7 +556,7 @@ export class VoiceSession {
       if (this.stale(generation)) return;
       this.activeIterator = null;
       this.synthesizing = false;
-      this.fail(error);
+      this.synthesisFailed(error);
       return;
     }
 
@@ -466,7 +571,30 @@ export class VoiceSession {
       this.pendingQuestion = { turnId: turn.id, questionId: item.questionId };
     }
 
+    this.consecutiveSynthesisFailures = 0;
     this.synthesizing = false;
+    this.pump();
+  }
+
+  /**
+   * One sentence could not be synthesized (F3).
+   *
+   * A retryable code (`unavailable`/`network` — what `SpeechService` maps a
+   * provider 429/5xx to) costs that sentence and nothing else: the error is
+   * reported, the sentence is dropped and the queue keeps moving, exactly as
+   * a failed TRANSCRIPTION does. Anything else, or three retryable failures
+   * in a row, is a provider outage and ends the session.
+   */
+  private synthesisFailed(error: unknown): void {
+    if (this.isStopped) return;
+    this.consecutiveSynthesisFailures++;
+    const code = error instanceof SpeechError ? error.code : 'provider';
+    const retryable = code === 'unavailable' || code === 'network';
+    if (!retryable || this.consecutiveSynthesisFailures >= MAX_CONSECUTIVE_SYNTHESIS_FAILURES) {
+      this.fail(error);
+      return;
+    }
+    this.emitError(error);
     this.pump();
   }
 
@@ -492,6 +620,9 @@ export class VoiceSession {
     if (this.isStopped || this.synthesizing || this.queue.length > 0) return;
 
     if (this.pendingQuestion) {
+      // F1, as below: the question's audio is still playing, and the client
+      // flushes playback the moment the session leaves `speaking`.
+      if (!this.awaitDrain()) return;
       const pending = this.pendingQuestion;
       // Anything the user said while the question was being spoken IS the
       // answer — dropping it would lose speech the session already echoed back.
@@ -506,12 +637,59 @@ export class VoiceSession {
     }
 
     const turn = this.turn;
+    // Deliberately BEFORE the drain gate. `pump()` reaches here every time the
+    // queue empties, which is after EVERY sentence — arming the safety timer
+    // there would count its slack down from the wrong end of the turn, and
+    // once it fired it would raise the played high-water mark, so the turn's
+    // real end would pass the gate with no acknowledgement at all.
     if (!turn || !turn.done) return;
+    // F1: everything below leaves `speaking`, and the client flushes playback
+    // when it does — so nothing below may run until the phone says it has
+    // finished playing what is already on the wire.
+    if (!this.awaitDrain()) return;
     this.turn = null;
     if (turn.failure !== undefined) {
       this.emit({ type: 'voice_error', code: 'provider', error: turn.failure });
     }
     this.advanceAfterTurn();
+  }
+
+  /**
+   * True when it is safe to leave `speaking`: either this turn spoke nothing,
+   * or the phone has acknowledged the last chunk. Otherwise arms the safety
+   * timer (once) and returns false; `played()` or the timer re-enters
+   * `finishIfDrained`.
+   */
+  private awaitDrain(): boolean {
+    const spoke = this.turn?.spoke ?? false;
+    if (!spoke || this.hasDrained()) {
+      this.clearDrainTimer();
+      return true;
+    }
+    if (this.drainTimer !== null) return false;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = null;
+      // The client never acknowledged. Leaving the session in `speaking`
+      // forever is worse than a tail the user may hear clipped, so treat
+      // everything on the wire as played and advance. Raising the high-water
+      // mark (rather than just re-entering) is what stops the re-entrant
+      // `finishIfDrained` below from arming a second timer for the same turn.
+      this.lastPlayedSeq = this.lastEmittedSeq;
+      this.finishIfDrained();
+    }, this.drainTimeoutMs);
+    // A pending drain must never hold the process open.
+    this.drainTimer.unref?.();
+    return false;
+  }
+
+  private hasDrained(): boolean {
+    return this.lastPlayedSeq >= this.lastEmittedSeq;
+  }
+
+  private clearDrainTimer(): void {
+    if (this.drainTimer === null) return;
+    clearTimeout(this.drainTimer);
+    this.drainTimer = null;
   }
 
   /** Starts the oldest queued transcript, or settles back into `listening`. */
@@ -559,6 +737,8 @@ export class VoiceSession {
     sampleRate: number | undefined,
   ): void {
     if (this.innerState !== 'speaking') this.setState('speaking', this.turn?.id);
+    if (this.turn) this.turn.spoke = true;
+    this.lastEmittedSeq = this.seq;
     this.emit({
       type: 'voice_speech',
       seq: this.seq++,

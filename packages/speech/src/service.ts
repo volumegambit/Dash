@@ -1,6 +1,11 @@
 import type { SpeechConfig } from './config.js';
 import { SpeechError } from './errors.js';
-import { parsePcmContentType, pcmFormatFor, speechRequestFormat } from './pcm-formats.js';
+import {
+  declaredNonPcmType,
+  parsePcmContentType,
+  pcmFormatFor,
+  speechRequestFormat,
+} from './pcm-formats.js';
 import { createOpenRouterSpeechProvider } from './providers/openrouter.js';
 import type {
   AudioFormat,
@@ -44,12 +49,6 @@ export interface SpeechService {
   /** Cached 1h per (provider, kind). */
   listModels(kind: SpeechModelKind): Promise<SpeechModel[]>;
   transcribe(audio: Uint8Array, format: AudioFormat, language?: string): Promise<Transcription>;
-  /**
-   * Derived from speechRequestFormat(config.tts.model, 'pcm16'), with the
-   * sampleRate (when applicable) coming from the static pcmFormatFor table
-   * — there's no live response yet to declare one.
-   */
-  speechFormat(): Promise<{ format: 'pcm16' | 'mp3'; sampleRate?: number }>;
   /**
    * `format` is the caller's WANTED format: omitted, it defaults to
    * 'pcm16'; given, it's still resolved through speechRequestFormat against
@@ -155,14 +154,6 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
     });
   }
 
-  async function speechFormat(): Promise<{ format: 'pcm16' | 'mp3'; sampleRate?: number }> {
-    const config = await opts.config();
-    const format = speechRequestFormat(config.tts.model, 'pcm16');
-    if (format !== 'pcm16') return { format: 'mp3' };
-    const pcm = pcmFormatFor(config.tts.model);
-    return pcm ? { format: 'pcm16', sampleRate: pcm.sampleRate } : { format: 'pcm16' };
-  }
-
   async function synthesize(
     text: string,
     format?: 'pcm16' | 'mp3',
@@ -194,6 +185,15 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
       // The provider's declared content-type beats the static table — it
       // reflects what THIS response actually is; the table is only a
       // fallback for a provider that omits the rate.
+      // F8: "no content-type header" and "a content-type that is not PCM"
+      // are different facts. Only the first may fall back to the static
+      // table — an allow-listed model that answers `audio/mpeg` for a PCM
+      // request would otherwise ship MP3 bytes labelled `pcm16 @ 24 kHz`,
+      // and the phone would decode them as PCM and play noise.
+      const declared = declaredNonPcmType(stream.contentType);
+      if (declared !== null) {
+        throw new SpeechError('provider', `provider returned ${declared} for a PCM request`);
+      }
       sampleRate =
         parsePcmContentType(stream.contentType)?.sampleRate ??
         pcmFormatFor(config.tts.model)?.sampleRate;
@@ -228,7 +228,6 @@ export function createSpeechService(opts: SpeechServiceOptions): SpeechService {
     providers,
     listModels,
     transcribe,
-    speechFormat,
     synthesize,
     available,
     invalidate,

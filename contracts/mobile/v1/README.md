@@ -52,8 +52,9 @@ The root fixtures are:
 - Chat frames: `chat-send.json`, `chat-resume.json`, `chat-answer.json`, `chat-cancel.json`,
   `chat-accepted.json`, `chat-event.json`, `chat-done.json`, and `chat-error.json`.
 - Hands-free voice frames: `voice-start.json`, `voice-audio.json`, `voice-mute.json`,
-  `voice-stop.json` (client), and `voice-state.json`, `voice-transcript.json`,
-  `voice-speech.json`, `voice-error.json`, `voice-stopped.json` (server).
+  `voice-stop.json`, `voice-played.json` (client), and `voice-state.json`,
+  `voice-transcript.json`, `voice-speech.json`, `voice-error.json`, `voice-stopped.json`
+  (server).
 - Streams: `chat-stream.jsonl`, `chat-resume.jsonl`, `sse-conversation-changed.txt`, and
   `sse-conversation-deleted.txt`.
 - Speech: `speech-config.json` (the shared `GET`/`PATCH /speech/config` body),
@@ -138,6 +139,11 @@ Negative conformance fixtures live under `fixtures/invalid/`:
 - `voice_state.state` is one of `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or
   `stopped` on the wire, but the gateway never actually sends `stopped`; a session's end is always
   a `voice_stopped { reason }` frame, never a terminal `voice_state`.
+- After the last `voice_speech` of a turn the session stays in `speaking` until the client sends
+  `voice_played { seq }` with a `seq` at least as high as that chunk's, or until an 8-second
+  safety timer fires. It reports audio that has finished PLAYING, not audio received; a client
+  that flushes playback when it leaves `speaking` must send it or the reply's tail is truncated.
+  A stale or out-of-order `seq` is ignored.
 - `message.modality` is `'voice'` only for the turn a hands-free voice session starts on the
   user's behalf; a dictated message that a client sends as a `message` frame must omit `modality`
   or send `'text'`.
