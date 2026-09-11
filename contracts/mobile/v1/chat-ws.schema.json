@@ -108,6 +108,7 @@
         "conversationId": { "$ref": "#/$defs/ConversationId" },
         "text": { "type": "string" },
         "location": { "$ref": "#/$defs/MobileClientLocation" },
+        "modality": { "enum": ["text", "voice"] },
         "images": {
           "type": "array",
           "items": {
@@ -279,6 +280,7 @@
         "conversationId": { "$ref": "#/$defs/ConversationId" },
         "text": { "type": "string" },
         "location": { "$ref": "#/$defs/MobileClientLocation" },
+        "modality": { "enum": ["text", "voice"] },
         "images": {
           "type": "array",
           "items": {

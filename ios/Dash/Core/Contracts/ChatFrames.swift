@@ -3,6 +3,14 @@ enum StreamingBehavior: String, Codable, Hashable, Sendable {
   case followUp
 }
 
+/// Set only for a turn spoken through the Phase B voice session — never for a
+/// dictated turn, which merely fills the text composer. `DashAgent.chat`
+/// appends the `<voice>` spoken-mode prompt block when this is `.voice`.
+enum Modality: String, Codable, Hashable, Sendable {
+  case text
+  case voice
+}
+
 enum MobileWSClientFrame: Codable, Hashable, Sendable {
   case message(
     id: String,
@@ -13,7 +21,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     location: ClientLocation?,
     images: [MessageImage]?,
     resumable: Bool?,
-    streamingBehavior: StreamingBehavior?
+    streamingBehavior: StreamingBehavior?,
+    modality: Modality?
   )
   case resume(id: String, agentId: String, conversationId: String, sinceSeq: Int)
   case answer(id: String, questionId: String, answer: String)
@@ -36,6 +45,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
     case images
     case resumable
     case streamingBehavior
+    case modality
     case sinceSeq
     case questionId
     case answer
@@ -58,7 +68,10 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       location: location,
       images: images,
       resumable: true,
-      streamingBehavior: nil
+      streamingBehavior: nil,
+      // A dictated turn never carries modality — only the Phase B voice
+      // session sets it.
+      modality: nil
     )
   }
 
@@ -79,7 +92,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
         streamingBehavior: try container.decodeIfPresent(
           StreamingBehavior.self,
           forKey: .streamingBehavior
-        )
+        ),
+        modality: try container.decodeIfPresent(Modality.self, forKey: .modality)
       )
     case "resume":
       self = .resume(
@@ -129,7 +143,8 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       location,
       images,
       resumable,
-      streamingBehavior
+      streamingBehavior,
+      modality
     ):
       try container.encode("message", forKey: .type)
       try container.encode(id, forKey: .id)
@@ -141,6 +156,7 @@ enum MobileWSClientFrame: Codable, Hashable, Sendable {
       try container.encodeIfPresent(images, forKey: .images)
       try container.encodeIfPresent(resumable, forKey: .resumable)
       try container.encodeIfPresent(streamingBehavior, forKey: .streamingBehavior)
+      try container.encodeIfPresent(modality, forKey: .modality)
     case let .resume(id, agentId, conversationId, sinceSeq):
       try container.encode("resume", forKey: .type)
       try container.encode(id, forKey: .id)

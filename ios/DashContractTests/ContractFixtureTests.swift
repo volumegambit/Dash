@@ -324,6 +324,9 @@ struct ContractFixtureTests {
     // Proves the hand-written Codable actually carries `location` rather than
     // silently dropping it on re-encode, which is what an unknown key does.
     try expectRoundTrip(MobileWSClientFrame.self, "chat-send-with-location.json")
+    // Same proof for `modality`: an unmodelled key decodes silently but
+    // vanishes on re-encode, so only a real round-trip catches a dropped field.
+    try expectRoundTrip(MobileWSClientFrame.self, "chat-send-voice.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-resume.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-answer.json")
     try expectRoundTrip(MobileWSClientFrame.self, "chat-cancel.json")
@@ -366,7 +369,7 @@ struct ContractFixtureTests {
       text: "Hello",
       images: nil
     )
-    guard case let .message(_, _, channelId, _, _, _, _, resumable, streamingBehavior) = frame
+    guard case let .message(_, _, channelId, _, _, _, _, resumable, streamingBehavior, _) = frame
 else {
       Issue.record("expected message frame")
       return

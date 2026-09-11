@@ -426,6 +426,13 @@ export type MobileWsClientFrame =
       conversationId: string;
       text: string;
       location?: MobileClientLocation;
+      /**
+       * Set only for a turn spoken through the Phase B voice session — never
+       * for a dictated turn, which merely fills the text composer. Threaded
+       * into `DashAgent.chat`, which appends the `<voice>` spoken-mode prompt
+       * block when it is `'voice'`.
+       */
+      modality?: 'text' | 'voice';
       images?: MobileImage[];
       streamingBehavior?: 'steer' | 'followUp';
       resumable?: boolean;

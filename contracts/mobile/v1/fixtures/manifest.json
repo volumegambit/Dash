@@ -128,6 +128,12 @@
       "valid": true
     },
     {
+      "file": "chat-send-voice.json",
+      "document": "chat-ws",
+      "schema": "ChatSend",
+      "valid": true
+    },
+    {
       "file": "chat-resume.json",
       "document": "chat-ws",
       "schema": "ChatResume",
