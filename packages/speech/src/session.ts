@@ -384,6 +384,13 @@ export class VoiceSession {
    */
   private answerQuestion(pending: { turnId: string; questionId: string }, text: string): void {
     this.pendingQuestion = null;
+    // The one exit from an armed drain window that is neither a barge-in, a
+    // stop nor a failure — and so the one that used not to clear the timer.
+    // An utterance whose `speech_start` landed before the question finished
+    // synthesizing (or inside the barge-in guard) is an ANSWER, not an
+    // interruption, and walks straight to `thinking` from here: a timer left
+    // armed would go on to credit audio the answer had not played yet.
+    this.clearDrainTimer();
     this.setState('thinking', pending.turnId);
     void Promise.resolve()
       .then(() => this.driver.answer(pending.turnId, pending.questionId, text))
@@ -667,14 +674,19 @@ export class VoiceSession {
       return true;
     }
     if (this.drainTimer !== null) return false;
+    // What was on the wire when the timer was armed — the most this timeout is
+    // ever entitled to credit. Reading `lastEmittedSeq` in the callback
+    // instead would credit whatever had been emitted in the meantime, which
+    // is audio the timeout says nothing about.
+    const armedAt = this.lastEmittedSeq;
     this.drainTimer = setTimeout(() => {
       this.drainTimer = null;
       // The client never acknowledged. Leaving the session in `speaking`
-      // forever is worse than a tail the user may hear clipped, so treat
-      // everything on the wire as played and advance. Raising the high-water
+      // forever is worse than a tail the user may hear clipped, so treat what
+      // this timeout covers as played and advance. Raising the high-water
       // mark (rather than just re-entering) is what stops the re-entrant
       // `finishIfDrained` below from arming a second timer for the same turn.
-      this.lastPlayedSeq = this.lastEmittedSeq;
+      this.lastPlayedSeq = Math.max(this.lastPlayedSeq, armedAt);
       this.finishIfDrained();
     }, this.drainTimeoutMs);
     // A pending drain must never hold the process open.

@@ -60,7 +60,7 @@ function configOf(config: SpeechConfig): () => Promise<SpeechConfig> {
 }
 
 // DEFAULT_SPEECH_CONFIG's tts model (minimax/speech-2.8-turbo) is MP3-only;
-// these speechFormat/synthesize tests need a model on the pcm16 allow-list.
+// these synthesize tests need a model on the pcm16 allow-list.
 const PCM16_CONFIG: SpeechConfig = {
   ...DEFAULT_SPEECH_CONFIG,
   tts: { ...DEFAULT_SPEECH_CONFIG.tts, model: 'hexgrad/kokoro-82m' },
@@ -279,7 +279,7 @@ describe('createSpeechService', () => {
       expect(await drain(ok.audio)).toBe(2);
     });
 
-    it('defaults format from speechFormat() (pcm16 with sampleRate) when omitted', async () => {
+    it('defaults to pcm16 (with its sampleRate) when no format is given', async () => {
       const { impl, calls } = queueFetch([streamResponse(200, [new Uint8Array([9, 9, 9])])]);
       const service = createSpeechService({
         config: configOf(PCM16_CONFIG),
@@ -295,10 +295,10 @@ describe('createSpeechService', () => {
       expect(body.response_format).toBe('pcm');
     });
 
-    it('uses the explicit format override instead of speechFormat(), with no sampleRate for mp3', async () => {
+    it('honors an explicit mp3 override, with no sampleRate', async () => {
       const { impl, calls } = queueFetch([streamResponse(200, [new Uint8Array([9, 9, 9])])]);
       const service = createSpeechService({
-        config: configOf(PCM16_CONFIG), // tts.model is pcm16-allow-listed -> speechFormat() would say pcm16
+        config: configOf(PCM16_CONFIG), // tts.model is pcm16-allow-listed, so pcm16 is the default
         providerKeys: async () => ({ openrouter: 'sk-or-test' }),
         fetch: impl,
       });

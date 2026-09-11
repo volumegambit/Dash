@@ -149,8 +149,8 @@ async function drained(h: Harness): Promise<void> {
  * assertion: "nothing happened while a timer could have fired". A fixed sleep
  * is right here — there is no state change to poll for.
  */
-async function waitDrainTimeout(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 30));
+async function waitDrainTimeout(ms = 30): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
   await settle();
 }
 
@@ -1085,6 +1085,56 @@ describe('VoiceSession', () => {
     await settle();
 
     expect(h.session.state).toBe('speaking');
+    await drained(h);
+    expect(h.session.state).toBe('listening');
+  });
+
+  it("does not let a question's drain timer credit the ANSWER's audio", async () => {
+    // The one exit from an armed drain window that is not a barge-in, a stop
+    // or a failure: the user answers a spoken question. Their `speech_start`
+    // fired before the question finished synthesizing (or inside the 300ms
+    // barge-in guard), so it is not an interruption — `onUtterance` walks
+    // straight into `answerQuestion`, which moves the session to `thinking`.
+    // A timer left armed across that would later credit chunks the ANSWER
+    // emitted, and the answer's real end would pass the gate with no ack.
+    const h = harness({ drainTimeoutMs: 50 });
+    await say(h, 'delete the file');
+
+    h.driver.event('turn-1', {
+      type: 'question',
+      id: 'q1',
+      question: 'Are you sure?',
+      options: ['yes', 'no'],
+    });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+    // The question is spoken and the session is holding `speaking` for the ack.
+    expect(h.session.state).toBe('speaking');
+
+    // Answered inside the barge-in guard, so this is an ANSWER, not a barge-in.
+    feed(h.session, utterance());
+    await settle();
+    h.speech.transcribes[1].resolve('yes');
+    await settle();
+    expect(h.driver.answers).toEqual([{ turnId: 'turn-1', questionId: 'q1', answer: 'yes' }]);
+
+    // The answer's own sentence, emitted AFTER the timer was armed.
+    h.driver.event('turn-1', { type: 'text_delta', text: 'Deleted. ' });
+    await settle();
+    h.speech.syntheses[1].push(new Uint8Array([2]));
+    h.speech.syntheses[1].end();
+    await settle();
+
+    await waitDrainTimeout(150);
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    // A timer that credited `lastEmittedSeq` — which by now includes the
+    // answer's chunk — would have let this pass the gate unacknowledged.
+    expect(h.session.state).toBe('speaking');
+
     await drained(h);
     expect(h.session.state).toBe('listening');
   });
