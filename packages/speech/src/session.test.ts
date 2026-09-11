@@ -1065,7 +1065,10 @@ describe('VoiceSession', () => {
   });
 
   it('arms the safety timer only at the END of the turn, not after each sentence', async () => {
-    const h = harness({ drainTimeoutMs: 5 });
+    // 300ms, not 5: after `done` the timer IS legitimately armed, and the
+    // `settle()` before the 'speaking' assertion must not be able to outrun it
+    // on a loaded full-suite run (a 5ms timer lost that race once).
+    const h = harness({ drainTimeoutMs: 300 });
     await say(h, 'hello');
 
     // Sentence 1 drains the QUEUE mid-turn, and `pump()` reaches
@@ -1079,7 +1082,7 @@ describe('VoiceSession', () => {
     h.speech.syntheses[0].push(new Uint8Array([1]));
     h.speech.syntheses[0].end();
     await settle();
-    await waitDrainTimeout();
+    await waitDrainTimeout(400);
 
     h.driver.done('turn-1', 'completed');
     await settle();
