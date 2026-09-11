@@ -22,6 +22,13 @@ protocol AudioCapturing: Sendable {
   /// a NEW device becoming available does not stop capture). Either way the
   /// feature treats a finished stream as "capture stopped"; there is no
   /// separate "interrupted" error to catch.
+  ///
+  /// Fix round 1 (concern 3): the stream also calls `stop()` on its own if
+  /// the CONSUMER walks away — the `for await` loop's task is cancelled, or
+  /// the stream is dropped without being read to completion — via
+  /// `AsyncStream.Continuation.onTermination`. Without this, abandoning the
+  /// stream (a view dismissed mid-turn, a cancelled parent task) would leave
+  /// the tap installed and the microphone live with nobody listening.
   func start() async throws -> AsyncStream<Data>
   /// Ends capture. A no-op if capture already ended, whether that was this
   /// call, a prior `stop()`, or the stream finishing itself.
@@ -91,6 +98,18 @@ actor AudioCaptureService: AudioCapturing {
     let framerBox = FramerBox()
     let levelBroadcaster = levelBroadcaster
     let (stream, continuation) = AsyncStream<Data>.makeStream(of: Data.self)
+
+    // Fix round 1 (concern 3): fires on EITHER termination case — `.finished`
+    // (this actor's own `finishCapture()` calling `continuation.finish()`,
+    // in which case `stop()` below is a harmless no-op since `isCapturing`
+    // is already false) or `.cancelled` (the consumer's task walking away
+    // without anyone calling `stop()`, which is the case this exists for).
+    // `Task { await self?.stop() }` is fire-and-forget on purpose:
+    // `onTermination`'s closure is synchronous and non-isolated, so it
+    // cannot await the actor directly.
+    continuation.onTermination = { [weak self] _ in
+      Task { await self?.stop() }
+    }
 
     input.installTap(onBus: 0, bufferSize: 1_600, format: inputFormat) { buffer, _ in
       guard let pcmData = Self.convert(buffer: buffer, using: converter) else { return }

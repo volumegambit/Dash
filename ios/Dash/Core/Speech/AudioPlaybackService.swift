@@ -73,6 +73,13 @@ actor AudioPlaybackService: AudioPlaying {
 
   var isPlaying: Bool { player?.isPlaying ?? false }
 
+  /// Test-only window into the PCM engine, distinct from `isPlaying` (which
+  /// only ever reflects `playMP3`'s `AVAudioPlayer`). Not part of
+  /// `AudioPlaying` — `AudioPlaybackServiceTests` uses it to confirm
+  /// `flush()`/`stop()` leave the engine stopped, not merely the player node
+  /// idle.
+  var isPCMEngineRunning: Bool { pcmEngine.isRunning }
+
   init() {
     // Attached once, up front: `AVAudioPlayerNode.stop()`/`.reset()` are safe
     // to call on an attached-but-never-connected node, which is exactly the
@@ -126,21 +133,38 @@ actor AudioPlaybackService: AudioPlaying {
     guard !data.isEmpty else { return }
     guard let format = reconnectedFormat(sampleRate: sampleRate) else { return }
 
-    let frameCount = UInt32(data.count / MemoryLayout<Int16>.size)
-    guard frameCount > 0,
-      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+    // Fix round 1 (concern 1): the player node connects to the mixer at
+    // `AVAudioFormat(standardFormatWithSampleRate:channels:)` — Float32,
+    // deinterleaved, the one format every `AVAudioEngine` mixer is
+    // guaranteed to accept. Connecting at `.pcmFormatInt16` directly (the
+    // original approach) was never actually exercised off a device and
+    // `AVAudioEngine.connect` rejects an unsupported format with an
+    // uncatchable ObjC exception rather than a Swift error — not a risk
+    // worth taking. So PCM16 is decoded to Float32 here instead.
+    //
+    // Sample count truncates any odd trailing byte — half a sample cannot be
+    // decoded, so it is dropped rather than treated as an error.
+    let sampleCount = data.count / MemoryLayout<Int16>.size
+    guard sampleCount > 0,
+      let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleCount))
     else { return }
-    buffer.frameLength = frameCount
+    buffer.frameLength = AVAudioFrameCount(sampleCount)
 
-    guard let channel = buffer.int16ChannelData else { return }
+    guard let channel = buffer.floatChannelData else { return }
     data.withUnsafeBytes { raw in
-      guard let base = raw.bindMemory(to: Int16.self).baseAddress else { return }
-      channel[0].update(from: base, count: Int(frameCount))
+      let samples = raw.bindMemory(to: Int16.self)
+      for index in 0..<sampleCount {
+        // `Int16(littleEndian:)` makes the wire's byte order explicit rather
+        // than relying on the host also being little-endian (true today, but
+        // not something this line should quietly assume).
+        let sample = Int16(littleEndian: samples[index])
+        channel[0][index] = Float(sample) / 32_768.0
+      }
     }
 
     if !pcmEngine.isRunning {
       // Nothing sensible to do if the engine refuses to start (no output
-      // route, e.g. a Mac host with audio disabled) — the frame is simply
+      // route, e.g. a host with audio disabled) — the frame is simply
       // dropped rather than throwing, since `enqueuePCM` promises not to.
       try? pcmEngine.start()
     }
@@ -156,20 +180,26 @@ actor AudioPlaybackService: AudioPlaying {
     // voice must go silent immediately, not after draining its queue.
     pcmPlayerNode.stop()
     pcmPlayerNode.reset()
+    // The engine itself is also stopped, not just the node: there is nothing
+    // left to play once flushed, so there is no reason to keep the audio
+    // hardware open — the next `enqueuePCM` restarts it on demand.
+    if pcmEngine.isRunning {
+      pcmEngine.stop()
+    }
   }
 
   /// The PCM path plays exactly one sample rate at a time; a change means
   /// disconnecting and reconnecting the node at the new rate. Returns the
   /// live format to build the next buffer against, or `nil` if the format
   /// itself is invalid (an unsupported sample rate from the gateway).
+  ///
+  /// Float32/standard, not `.pcmFormatInt16` — see the fix-round-1 comment
+  /// in `enqueuePCM` for why.
   private func reconnectedFormat(sampleRate: Double) -> AVAudioFormat? {
     if let pcmFormat, pcmFormat.sampleRate == sampleRate {
       return pcmFormat
     }
-    guard
-      let format = AVAudioFormat(
-        commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true
-      )
+    guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
     else { return nil }
 
     let wasRunning = pcmEngine.isRunning

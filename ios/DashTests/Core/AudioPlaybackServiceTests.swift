@@ -39,6 +39,60 @@ struct AudioPlaybackServiceTests {
     #expect(await service.isPlaying == false)
   }
 
+  /// Fix round 1 (concern 1): now that `enqueuePCM` converts PCM16 to
+  /// Float32 and connects the player node at
+  /// `AVAudioFormat(standardFormatWithSampleRate:channels:)` instead of
+  /// `.pcmFormatInt16`, this exercises the ACTUAL conversion and reconnect
+  /// path with real (non-empty, non-silent) audio data — a 440 Hz tone — at
+  /// two different sample rates back to back, which forces
+  /// `reconnectedFormat` to disconnect and reconnect mid-run.
+  ///
+  /// What this suite still cannot confirm, per the class header above, is
+  /// that anything audible comes out of this machine's route — `enqueuePCM`
+  /// deliberately swallows an `AVAudioEngine.start()` failure (no output
+  /// device is not this method's error to throw), so a host with no usable
+  /// audio output is a valid, silent pass here, not a failure. What IS
+  /// pinned unconditionally: neither call throws or traps, and after
+  /// `flush()` + `stop()` the PCM engine itself is stopped — not merely the
+  /// player node reset — so a barge-in or a torn-down turn never leaves the
+  /// audio hardware open behind it.
+  @Test("enqueuePCM converts PCM16 to Float32 across a sample-rate reconnect; flush/stop always stop the engine")
+  func pcmPlaybackAcrossSampleRateChangeThenFlushAndStop() async {
+    let service = AudioPlaybackService()
+
+    let frame24k = makeTonePCM16(frequency: 440, sampleRate: 24_000, sampleCount: 1_600)
+    #expect(frame24k.count == 3_200)
+    await service.enqueuePCM(frame24k, sampleRate: 24_000)
+
+    // A different sample rate forces `reconnectedFormat` to disconnect and
+    // reconnect the node mid-run rather than reusing the first connection.
+    let frame16k = makeTonePCM16(frequency: 440, sampleRate: 16_000, sampleCount: 1_600)
+    #expect(frame16k.count == 3_200)
+    await service.enqueuePCM(frame16k, sampleRate: 16_000)
+
+    await service.flush()
+    await service.stop()
+
+    #expect(await service.isPCMEngineRunning == false)
+  }
+
+  /// A real, non-silent PCM16 mono tone at `sampleRate`, little-endian —
+  /// the same wire shape `enqueuePCM` documents. `frequency` and
+  /// `sampleRate` are deliberately real audio parameters (not degenerate
+  /// zeros) so the conversion loop in `enqueuePCM` runs over actual varying
+  /// sample values, not a buffer of silence that would pass even a broken
+  /// scaling factor.
+  private func makeTonePCM16(frequency: Double, sampleRate: Double, sampleCount: Int) -> Data {
+    var data = Data(capacity: sampleCount * MemoryLayout<Int16>.size)
+    for index in 0..<sampleCount {
+      let time = Double(index) / sampleRate
+      let amplitude = 0.5 * Double(Int16.max)
+      let sample = Int16(sin(2 * Double.pi * frequency * time) * amplitude)
+      data.appendLittleEndian(sample)
+    }
+    return data
+  }
+
   /// Builds a minimal, valid canonical WAV clip: the standard 44-byte
   /// RIFF/WAVE/fmt/data header, plus a handful of silent 16-bit mono samples
   /// so the clip has a real, nonzero duration rather than being header-only.
@@ -76,6 +130,11 @@ extension Data {
   }
 
   fileprivate mutating func appendLittleEndian(_ value: UInt16) {
+    var littleEndian = value.littleEndian
+    Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
+  }
+
+  fileprivate mutating func appendLittleEndian(_ value: Int16) {
     var littleEndian = value.littleEndian
     Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
   }

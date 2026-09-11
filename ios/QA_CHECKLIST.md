@@ -120,7 +120,9 @@ less precisely.
 
 `AudioCaptureService` and `AudioPlaybackService`'s PCM path (Task B8) need a real microphone and
 a real audio route, so — like dictation and read-aloud above — none of this is exercised on the
-simulator; `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level logic only.
+simulator; `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level logic only, and
+`AudioCaptureTerminationTests` covers only the stream-termination plumbing pattern, not the real
+capture actor.
 
 - [ ] Start voice mode and speak -> frames arrive at roughly 10/s (100 ms each); the orb's level
       meter visibly tracks your voice, not a flat line
@@ -129,7 +131,9 @@ simulator; `PCMFramerTests` and `AudioPlaybackServiceTests` cover the byte-level
       than continuing to listen on the old route or silently hanging. Plugging in a NEW input
       device does not stop capture on its own
 - [ ] While the agent is speaking, start talking (barge-in) -> playback stops instantly, with no
-      trailing audio or delay before the mic is heard again
+      trailing audio or delay before the mic is heard again. PCM16 is rendered through a Float32
+      mixer connection, so also confirm the agent's voice sounds correct (no static, pitch shift,
+      or clipping) — that conversion is new as of fix round 1
 
 ## Evidence notes
 
