@@ -1571,6 +1571,10 @@ async function main() {
     eventLogStore,
     verbose: verboseWs,
     swarmCoordinator,
+    // Hands-free voice mode: one VoiceSession per socket, gated on the
+    // speech provider actually being available at `voice_start` time.
+    speech,
+    conversations: conversationService,
     // This is the listener the relay forwards browser `/ws/chat` traffic to.
     wsTickets,
   });
@@ -1602,6 +1606,8 @@ async function main() {
       eventLogStore,
       verbose: verboseWs,
       swarmCoordinator,
+      speech,
+      conversations: conversationService,
       wsTickets,
     });
     lanServer = serve({

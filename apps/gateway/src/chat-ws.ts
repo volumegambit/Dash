@@ -1,5 +1,11 @@
 import type { AgentEvent, ImageBlock } from '@dash/agent';
 import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-contract';
+import {
+  type SpeechService,
+  type VoiceServerFrame,
+  VoiceSession,
+  type VoiceStopReason,
+} from '@dash/speech';
 import { isTransientAgentEvent } from '@dash/swarm';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
@@ -9,6 +15,7 @@ import { toMobileApiError } from './conversation-routes.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
 import type { ResumableChatHub, ResumableSendFrame, TurnFrameSink } from './resumable-chat-hub.js';
+import { createVoiceTurnBridge, withTranscriptionDeadline } from './voice-bridge.js';
 import type { WsTicketStore } from './ws-ticket-store.js';
 
 export interface ChatWsOptions {
@@ -35,6 +42,20 @@ export interface ChatWsOptions {
    */
   swarmCoordinator?: { cancelTurn(agentId: string, conversationId: string): boolean };
   /**
+   * Speech provider for the hands-free voice mode. Absent (or unavailable at
+   * `voice_start` time) answers every `voice_start` with
+   * `voice_error { code: 'unavailable' }` — the socket still serves ordinary
+   * chat, so a gateway with no speech credential is not a broken gateway.
+   */
+  speech?: SpeechService;
+  /**
+   * Conversation lookup, used ONLY to reject a `voice_start` naming a
+   * conversation that does not exist or belongs to another agent. Structural
+   * (the hub's own `assertOwnedConversation` check) so tests can pass a stub;
+   * omitted, the check is skipped and the hub rejects the first turn instead.
+   */
+  conversations?: { get(id: string): { agentId: string } | null };
+  /**
    * Single-use ticket store for browser WebSocket upgrades. Browsers cannot
    * set an `Authorization` header on a WebSocket handshake, so a caller that
    * exposes `/ws/chat` to browser clients mints short-lived tickets via HTTP
@@ -52,6 +73,10 @@ const KNOWN_CLIENT_FRAME_TYPES = new Set([
   'cancel',
   'subscribe',
   'unsubscribe',
+  'voice_start',
+  'voice_audio',
+  'voice_mute',
+  'voice_stop',
 ]);
 const STRUCTURAL_CLIENT_FIELDS = new Set([
   'type',
@@ -68,6 +93,10 @@ const STRUCTURAL_CLIENT_FIELDS = new Set([
   'images',
   'location',
   'modality',
+  'seq',
+  'muted',
+  // NOTE: 'pcm' is deliberately absent. Audio bytes never reach a log line —
+  // the summary below records only that a frame carried pcm, and how much.
 ]);
 
 /** Allowlist protocol metadata; never recursively serialize untrusted values. */
@@ -98,6 +127,13 @@ function summarizeInboundForLog(raw: string, value: unknown): Record<string, unk
   if (typeof record.resumable === 'boolean') summary.resumable = record.resumable;
   if (record.streamingBehavior === 'steer' || record.streamingBehavior === 'followUp') {
     summary.streamingBehavior = record.streamingBehavior;
+  }
+  if (typeof record.seq === 'number') summary.seq = record.seq;
+  if (typeof record.muted === 'boolean') summary.muted = record.muted;
+  // Presence and size only: a `voice_audio` frame is the user's microphone.
+  if (typeof record.pcm === 'string') {
+    summary.hasPcm = true;
+    summary.pcmBytes = Buffer.from(record.pcm, 'base64').byteLength;
   }
   if (typeof record.text === 'string') summary.textLength = record.text.length;
   if (typeof record.answer === 'string') summary.answerLength = record.answer.length;
@@ -138,12 +174,21 @@ type WsServerMessage =
   | { type: 'error'; id: string; seq?: number; error: string };
 
 function summarizeOutboundForLog(
-  msg: WsServerMessage | MobileWsServerFrame,
+  msg: WsServerMessage | MobileWsServerFrame | VoiceServerFrame,
 ): Record<string, unknown> {
   const summary: Record<string, unknown> = { frameType: msg.type };
   if (typeof msg.id === 'string') summary.idLength = msg.id.length;
   if ('seq' in msg && typeof msg.seq === 'number') summary.seq = msg.seq;
   if (msg.type === 'event') summary.eventType = msg.event?.type ?? 'unknown';
+  // A voice frame's `audio` is never summarized, by construction: this
+  // function only ever copies the fields it names.
+  if (msg.type === 'voice_state') summary.state = msg.state;
+  if (msg.type === 'voice_stopped') summary.reason = msg.reason;
+  if (msg.type === 'voice_transcript') summary.textLength = msg.text.length;
+  if (msg.type === 'voice_error') {
+    summary.errorCode = msg.code;
+    summary.errorMessageLength = msg.error.length;
+  }
   if (msg.type === 'error') {
     summary.errorMessageLength = msg.error.length;
     if ('code' in msg && typeof msg.code === 'string') summary.errorCode = msg.code;
@@ -180,7 +225,28 @@ function decodedBase64Bytes(data: string): number {
   return Buffer.from(data, 'base64').byteLength;
 }
 
-export function parseChatClientFrame(msg: unknown): MobileWsClientFrame | null {
+/**
+ * The hands-free voice frames. Task B7 moves these into `contracts/mobile/v1`
+ * beside the chat frames; until then they are typed here so the gateway can
+ * parse them, and `parseChatClientFrame` returns the wider union.
+ */
+export type VoiceClientFrame =
+  | { type: 'voice_start'; id: string; agentId: string; conversationId: string }
+  /** `pcm` is base64 PCM16 at 16 kHz mono; `seq` is advisory and never reordered. */
+  | { type: 'voice_audio'; id: string; seq: number; pcm: string }
+  | { type: 'voice_mute'; id: string; muted: boolean }
+  | { type: 'voice_stop'; id: string };
+
+export type ChatClientFrame = MobileWsClientFrame | VoiceClientFrame;
+
+/**
+ * One capture frame from the phone. 16 KB is 512ms of 16 kHz mono PCM16 — far
+ * more than the ~20-100ms chunks the client sends, and small enough that a
+ * flood of them cannot be used to buffer megabytes per socket.
+ */
+const MAX_VOICE_PCM_BYTES = 16 * 1024;
+
+export function parseChatClientFrame(msg: unknown): ChatClientFrame | null {
   if (typeof msg !== 'object' || msg === null) return null;
   const m = msg as Record<string, unknown>;
   if (typeof m.id !== 'string' || typeof m.type !== 'string') return null;
@@ -215,6 +281,32 @@ export function parseChatClientFrame(msg: unknown): MobileWsClientFrame | null {
     }
     return msg as MobileWsClientFrame;
   }
+
+  if (m.type === 'voice_start') {
+    if (
+      typeof m.agentId !== 'string' ||
+      typeof m.conversationId !== 'string' ||
+      !isValidConversationId(m.conversationId)
+    ) {
+      return null;
+    }
+    return msg as VoiceClientFrame;
+  }
+
+  if (m.type === 'voice_audio') {
+    if (typeof m.pcm !== 'string') return null;
+    if (!Number.isInteger(m.seq) || (m.seq as number) < 0) return null;
+    const bytes = decodedBase64Bytes(m.pcm);
+    if (bytes < 0 || bytes > MAX_VOICE_PCM_BYTES) return null;
+    return msg as VoiceClientFrame;
+  }
+
+  if (m.type === 'voice_mute') {
+    if (typeof m.muted !== 'boolean') return null;
+    return msg as VoiceClientFrame;
+  }
+
+  if (m.type === 'voice_stop') return msg as VoiceClientFrame;
 
   if (m.type === 'message') {
     const valid =
@@ -253,6 +345,17 @@ export function parseChatClientFrame(msg: unknown): MobileWsClientFrame | null {
   }
 
   return null;
+}
+
+/** The one voice session a socket may hold, plus the hub sink it runs turns on. */
+interface VoiceSlot {
+  sink: TurnFrameSink;
+  /**
+   * Installed once `speech.available()` has resolved true — a `voice_audio`
+   * that arrives before then is dropped, not rejected, since the phone starts
+   * streaming the moment it sends `voice_start`.
+   */
+  session?: VoiceSession;
 }
 
 function conversationKey(agentId: string, conversationId: string): string {
@@ -298,7 +401,7 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
 
   const sendServerMessage = (
     ws: { send(data: string): void },
-    msg: WsServerMessage | MobileWsServerFrame,
+    msg: WsServerMessage | MobileWsServerFrame | VoiceServerFrame,
   ): void => {
     const payload = JSON.stringify(msg, (_key, value) =>
       value instanceof Error ? value.message : value,
@@ -309,18 +412,18 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
     ws.send(payload);
   };
 
-  const sendHubError = (
-    ws: { send(data: string): void },
+  /** A hub failure as the client's error frame. Logs the failure without its text. */
+  const hubErrorFrame = (
     id: string,
     conversationId: string | undefined,
     error: unknown,
-  ): void => {
+  ): MobileWsServerFrame => {
     if (!(error instanceof ConversationServiceError)) {
       console.error('[chat-ws] resumable dispatch failed', summarizeErrorForLog(error));
     }
     const mapped = toMobileApiError(error);
     const activeTurnId = mapped.body.details?.activeTurnId;
-    sendServerMessage(ws, {
+    return {
       type: 'error',
       id,
       ...(conversationId !== undefined ? { conversationId } : {}),
@@ -328,7 +431,16 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
       code: mapped.body.code,
       retryable: mapped.body.retryable,
       ...(typeof activeTurnId === 'string' ? { activeTurnId } : {}),
-    });
+    };
+  };
+
+  const sendHubError = (
+    ws: { send(data: string): void },
+    id: string,
+    conversationId: string | undefined,
+    error: unknown,
+  ): void => {
+    sendServerMessage(ws, hubErrorFrame(id, conversationId, error));
   };
 
   const dispatchHub = (
@@ -394,6 +506,107 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
         },
       };
 
+      /** One voice session per socket: a second `voice_start` replaces the first. */
+      let voice: VoiceSlot | undefined;
+
+      /**
+       * Best-effort frame sink for the session. Unlike the hub's `sink` above
+       * this NEVER throws: the session emits `voice_stopped` from `stop()`,
+       * which the socket's own close handler calls, and a throw there would
+       * escape into the WebSocket callback.
+       */
+      const emitVoice = (frame: VoiceServerFrame | MobileWsServerFrame): void => {
+        const ws = connectionSocket;
+        if (!ws) return;
+        try {
+          sendServerMessage(ws, frame);
+        } catch {
+          // The socket went away mid-frame; `onClose` tears the session down.
+        }
+      };
+
+      const stopVoice = (reason: VoiceStopReason): void => {
+        const current = voice;
+        voice = undefined;
+        if (!current) return;
+        current.session?.stop(reason);
+        // The bridge's sink is the hub's, not the connection's: a conversation
+        // subscription taken out by a voice turn outlives the turn itself.
+        resumableChatHub.detach(current.sink);
+      };
+
+      const startVoice = (
+        ws: { send(data: string): void },
+        frame: Extract<VoiceClientFrame, { type: 'voice_start' }>,
+      ): void => {
+        stopVoice('replaced');
+        const speech = options.speech;
+        if (!speech) {
+          sendServerMessage(ws, {
+            type: 'voice_error',
+            id: frame.id,
+            code: 'unavailable',
+            error: 'Speech is not configured on this gateway',
+          });
+          return;
+        }
+        // The same ownership check the hub makes on `start`, made here so the
+        // phone learns immediately rather than after its first utterance.
+        if (
+          options.conversations &&
+          options.conversations.get(frame.conversationId)?.agentId !== frame.agentId
+        ) {
+          sendServerMessage(ws, {
+            type: 'voice_error',
+            id: frame.id,
+            code: 'invalid',
+            error: 'Conversation not found',
+          });
+          return;
+        }
+
+        const bridge = createVoiceTurnBridge({
+          hub: resumableChatHub,
+          agentId: frame.agentId,
+          conversationId: frame.conversationId,
+          forward: emitVoice,
+          errorFrame: hubErrorFrame,
+        });
+        const slot: VoiceSlot = { sink: bridge.sink };
+        voice = slot;
+
+        void (async () => {
+          let available = false;
+          try {
+            available = await speech.available();
+          } catch (error) {
+            console.error(
+              '[chat-ws] speech availability check failed',
+              summarizeErrorForLog(error),
+            );
+          }
+          // Replaced, stopped, or the socket closed while we were asking.
+          if (voice !== slot) return;
+          if (!available) {
+            voice = undefined;
+            resumableChatHub.detach(slot.sink);
+            emitVoice({
+              type: 'voice_error',
+              id: frame.id,
+              code: 'unavailable',
+              error: 'No speech provider is available',
+            });
+            return;
+          }
+          slot.session = new VoiceSession({
+            id: frame.id,
+            speech: withTranscriptionDeadline(speech),
+            driver: bridge.driver,
+            emit: emitVoice,
+          });
+        })();
+      };
+
       return {
         onOpen(_event, ws) {
           connectionSocket = ws;
@@ -430,6 +643,35 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
               code: 'validation_failed',
               retryable: false,
             });
+            return;
+          }
+
+          if (msg.type === 'voice_start') {
+            startVoice(ws, msg);
+            return;
+          }
+
+          if (msg.type === 'voice_audio' || msg.type === 'voice_mute') {
+            if (!voice) {
+              sendServerMessage(ws, {
+                type: 'voice_error',
+                id: msg.id,
+                code: 'invalid',
+                error: 'No voice session is running',
+              });
+              return;
+            }
+            // A duplicate or out-of-order `seq` is passed through untouched:
+            // the VAD consumes whatever arrives, in arrival order.
+            if (msg.type === 'voice_audio') voice.session?.audio(Buffer.from(msg.pcm, 'base64'));
+            else voice.session?.mute(msg.muted);
+            return;
+          }
+
+          if (msg.type === 'voice_stop') {
+            // Idempotent teardown: stopping a session that already ended (or
+            // never started) is not worth an error frame.
+            stopVoice('client');
             return;
           }
 
@@ -602,6 +844,10 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
         },
 
         onClose() {
+          // First: a voice session must not emit into a dead socket, and a
+          // `voice_start` still awaiting `available()` must not install one.
+          connectionSocket = undefined;
+          stopVoice('socket');
           resumableChatHub.detach(sink);
           for (const { controller, agentId, conversationId } of activeStreams.values()) {
             controller.abort();
@@ -610,7 +856,6 @@ export function mountChatWs(app: Hono, options: ChatWsOptions): void {
           }
           activeStreams.clear();
           conversationStreams.clear();
-          connectionSocket = undefined;
         },
       };
     }),

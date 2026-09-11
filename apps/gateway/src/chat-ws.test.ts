@@ -2,16 +2,22 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { AgentBackend, AgentEvent, AgentState, RunOptions } from '@dash/agent';
 import type { MobileWsClientFrame, MobileWsServerFrame } from '@dash/mobile-contract';
+import { DEFAULT_SPEECH_CONFIG, type SpeechService, type VoiceServerFrame } from '@dash/speech';
 import { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentChatCoordinator } from './agent-chat-coordinator.js';
 import { createAgentChatCoordinator } from './agent-chat-coordinator.js';
 import { AgentRegistry } from './agent-registry.js';
-import { isValidConversationId, mountChatWs, parseChatClientFrame } from './chat-ws.js';
+import {
+  type VoiceClientFrame,
+  isValidConversationId,
+  mountChatWs,
+  parseChatClientFrame,
+} from './chat-ws.js';
 import { ConversationServiceError } from './conversation-service.js';
 import type { EventLogStore } from './event-log-store.js';
-import type { ResumableChatHub } from './resumable-chat-hub.js';
+import type { ResumableChatHub, TurnFrameSink } from './resumable-chat-hub.js';
 import { WsTicketStore } from './ws-ticket-store.js';
 
 const FIXTURE_ROOT = fileURLToPath(
@@ -518,6 +524,8 @@ function makeWsHarness(
     streamFactory?: () => ScriptedStream;
     eventLogStore?: EventLogStore;
     wsTickets?: WsTicketStore;
+    speech?: SpeechService;
+    conversations?: { get(id: string): { agentId: string } | null };
   } = {},
 ) {
   const hub = makeResumableHub();
@@ -566,6 +574,8 @@ function makeWsHarness(
     verbose: options.verbose,
     eventLogStore: options.eventLogStore,
     wsTickets: options.wsTickets,
+    speech: options.speech,
+    conversations: options.conversations,
   });
 
   return {
@@ -596,7 +606,7 @@ function makeWsHarness(
 
 function dispatch(
   connection: { handlers: CapturedHandlers; socket: TestSocket },
-  frame: MobileWsClientFrame,
+  frame: MobileWsClientFrame | VoiceClientFrame,
 ): void {
   connection.handlers.onMessage?.({ data: JSON.stringify(frame) }, connection.socket);
 }
@@ -1350,5 +1360,437 @@ describe('summarizeInboundForLog location handling', () => {
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+// --- voice sessions ---------------------------------------------------------
+
+const SAMPLE_RATE = 16000;
+const BYTES_PER_MS = 32; // 16 kHz, mono, 16-bit PCM
+const VOICE_FRAME_MS = 20;
+/** The bytes every fake synthesis yields; base64 `AQIDBAUGBwg=`. */
+const SYNTH_CHUNK = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+const SYNTH_CHUNK_BASE64 = Buffer.from(SYNTH_CHUNK).toString('base64');
+
+function pcmSilence(ms: number): Uint8Array {
+  return new Uint8Array(Math.round((ms * SAMPLE_RATE) / 1000) * 2);
+}
+
+function pcmTone(ms: number, amplitude = 0.5): Uint8Array {
+  const samples = Math.round((ms * SAMPLE_RATE) / 1000);
+  const bytes = new Uint8Array(samples * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < samples; i++) {
+    const value = amplitude * Math.sin((2 * Math.PI * 440 * i) / SAMPLE_RATE);
+    view.setInt16(i * 2, Math.round(value * 32767), true);
+  }
+  return bytes;
+}
+
+/**
+ * One utterance as the phone would stream it: 500ms of silence for the VAD's
+ * calibration window, 800ms of speech (over the 300ms confirmation window and
+ * the 500ms minimum utterance), then 800ms of silence to confirm the end.
+ */
+function utterancePcm(): Uint8Array {
+  const parts = [pcmSilence(500), pcmTone(800), pcmSilence(800)];
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function pcmFramesOf(pcm: Uint8Array): string[] {
+  const frameBytes = VOICE_FRAME_MS * BYTES_PER_MS;
+  const out: string[] = [];
+  for (let offset = 0; offset < pcm.length; offset += frameBytes) {
+    out.push(Buffer.from(pcm.subarray(offset, offset + frameBytes)).toString('base64'));
+  }
+  return out;
+}
+
+function feedVoice(
+  connection: { handlers: CapturedHandlers; socket: TestSocket },
+  id: string,
+  pcm: Uint8Array,
+): void {
+  let seq = 0;
+  for (const frame of pcmFramesOf(pcm)) {
+    dispatch(connection, { type: 'voice_audio', id, seq: seq++, pcm: frame });
+  }
+}
+
+/** Every frame the socket saw, voice frames included (they are not `MobileWsServerFrame`s). */
+function allFrames(socket: TestSocket): Record<string, unknown>[] {
+  return socket.send.mock.calls.map(
+    ([data]) => JSON.parse(data as string) as Record<string, unknown>,
+  );
+}
+
+function voiceFramesOf(socket: TestSocket): VoiceServerFrame[] {
+  return allFrames(socket).filter((frame) =>
+    String(frame.type).startsWith('voice_'),
+  ) as unknown as VoiceServerFrame[];
+}
+
+function voiceStates(socket: TestSocket): string[] {
+  return voiceFramesOf(socket)
+    .filter((frame) => frame.type === 'voice_state')
+    .map((frame) => (frame as { state: string }).state);
+}
+
+/** Lets every pending microtask / `setImmediate` continuation run. */
+async function settle(rounds = 8): Promise<void> {
+  for (let i = 0; i < rounds; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/** A `SpeechService` whose transcripts are scripted and whose syntheses are instant. */
+class FakeVoiceSpeech implements SpeechService {
+  readonly transcripts: string[] = [];
+  readonly transcribedBytes: number[] = [];
+  readonly synthesized: string[] = [];
+  isAvailable = true;
+
+  async currentConfig() {
+    return DEFAULT_SPEECH_CONFIG;
+  }
+
+  async providers() {
+    return [];
+  }
+
+  async listModels() {
+    return [];
+  }
+
+  async transcribe(audio: Uint8Array) {
+    this.transcribedBytes.push(audio.byteLength);
+    return { text: this.transcripts.shift() ?? '' };
+  }
+
+  async speechFormat() {
+    return { format: 'mp3' as const };
+  }
+
+  async synthesize(text: string) {
+    this.synthesized.push(text);
+    return {
+      format: 'mp3' as const,
+      audio: (async function* () {
+        yield SYNTH_CHUNK;
+      })(),
+    };
+  }
+
+  async available() {
+    return this.isAvailable;
+  }
+
+  invalidate(): void {}
+}
+
+const VOICE_CONVERSATIONS = {
+  get: (id: string) => (id === 'conversation-01' ? { agentId: 'agent-01' } : null),
+};
+
+function makeVoiceHarness(
+  options: {
+    speech?: FakeVoiceSpeech | null;
+    conversations?: { get(id: string): { agentId: string } | null };
+    verbose?: boolean;
+  } = {},
+) {
+  const speech = options.speech === null ? undefined : (options.speech ?? new FakeVoiceSpeech());
+  const harness = makeWsHarness({
+    speech,
+    conversations: options.conversations ?? VOICE_CONVERSATIONS,
+    verbose: options.verbose,
+  });
+  return { ...harness, speech };
+}
+
+const VOICE_START = {
+  type: 'voice_start',
+  id: 'voice-01',
+  agentId: 'agent-01',
+  conversationId: 'conversation-01',
+} as const;
+
+/** Starts a session, speaks one utterance, and returns the turn the hub was asked to run. */
+async function speakOneTurn(
+  harness: ReturnType<typeof makeVoiceHarness>,
+  text = 'What is the weather',
+): Promise<{
+  connection: { handlers: CapturedHandlers; socket: TestSocket };
+  turnId: string;
+  hubSink: TurnFrameSink;
+}> {
+  harness.speech?.transcripts.push(text);
+  const connection = harness.connect();
+  let hubSink: TurnFrameSink | undefined;
+  harness.hub.start.mockImplementation((frame, sink) => {
+    hubSink = sink;
+    sink.send({
+      type: 'accepted',
+      id: frame.id,
+      conversationId: frame.conversationId,
+      userMessageId: 'user-01',
+      assistantMessageId: 'assistant-01',
+      revision: 1,
+      seq: 1,
+    });
+  });
+  dispatch(connection, VOICE_START);
+  await settle();
+  feedVoice(connection, VOICE_START.id, utterancePcm());
+  await settle();
+  const started = harness.hub.start.mock.calls[0]?.[0];
+  if (!started || !hubSink) throw new Error('the voice session never started a turn');
+  return { connection, turnId: started.id, hubSink };
+}
+
+describe('parseChatClientFrame voice frames', () => {
+  it('accepts the four voice client frames', () => {
+    expect(parseChatClientFrame(VOICE_START)).not.toBeNull();
+    expect(
+      parseChatClientFrame({ type: 'voice_audio', id: 'voice-01', seq: 0, pcm: 'AAAA' }),
+    ).not.toBeNull();
+    expect(
+      parseChatClientFrame({ type: 'voice_mute', id: 'voice-01', muted: true }),
+    ).not.toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_stop', id: 'voice-01' })).not.toBeNull();
+  });
+
+  it('rejects malformed voice frames', () => {
+    expect(parseChatClientFrame({ type: 'voice_start', id: 'v', agentId: 'a' })).toBeNull();
+    expect(
+      parseChatClientFrame({ type: 'voice_start', id: 'v', agentId: 'a', conversationId: '../x' }),
+    ).toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_audio', id: 'v', seq: -1, pcm: 'AAAA' })).toBeNull();
+    expect(
+      parseChatClientFrame({ type: 'voice_audio', id: 'v', seq: 1.5, pcm: 'AAAA' }),
+    ).toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_audio', id: 'v', seq: 0, pcm: '!!!' })).toBeNull();
+    expect(parseChatClientFrame({ type: 'voice_mute', id: 'v', muted: 'yes' })).toBeNull();
+  });
+
+  it('accepts 16 KB of pcm and rejects one byte more', () => {
+    const atLimit = Buffer.alloc(16 * 1024).toString('base64');
+    const overLimit = Buffer.alloc(16 * 1024 + 1).toString('base64');
+    expect(
+      parseChatClientFrame({ type: 'voice_audio', id: 'v', seq: 0, pcm: atLimit }),
+    ).not.toBeNull();
+    expect(
+      parseChatClientFrame({ type: 'voice_audio', id: 'v', seq: 0, pcm: overLimit }),
+    ).toBeNull();
+  });
+});
+
+describe('mountChatWs voice sessions', () => {
+  it('runs a full voice turn and sends the transcript before the hub accepts it', async () => {
+    const harness = makeVoiceHarness();
+    const { connection, turnId, hubSink } = await speakOneTurn(harness);
+
+    expect(harness.hub.start).toHaveBeenCalledOnce();
+    expect(harness.hub.start.mock.calls[0]?.[0]).toEqual({
+      type: 'message',
+      id: turnId,
+      agentId: 'agent-01',
+      channelId: 'ios',
+      conversationId: 'conversation-01',
+      text: 'What is the weather',
+      resumable: true,
+      modality: 'voice',
+    });
+
+    const frames = allFrames(connection.socket);
+    const transcriptAt = frames.findIndex(
+      (frame) => frame.type === 'voice_transcript' && frame.turnId === turnId,
+    );
+    const acceptedAt = frames.findIndex(
+      (frame) => frame.type === 'accepted' && frame.id === turnId,
+    );
+    expect(transcriptAt).toBeGreaterThanOrEqual(0);
+    expect(acceptedAt).toBeGreaterThan(transcriptAt);
+
+    hubSink.send({
+      type: 'event',
+      id: turnId,
+      event: { type: 'text_delta', text: 'It is sunny. ' },
+    });
+    hubSink.send({ type: 'done', id: turnId, outcome: 'completed' });
+    await settle();
+
+    expect(harness.speech?.synthesized.join(' ')).toContain('It is sunny.');
+    const speech = voiceFramesOf(connection.socket).filter((f) => f.type === 'voice_speech');
+    expect(speech).toHaveLength(1);
+    expect(speech[0]).toMatchObject({ id: 'voice-01', audio: SYNTH_CHUNK_BASE64, format: 'mp3' });
+    // The hub's own frames are forwarded verbatim alongside the voice frames.
+    expect(allFrames(connection.socket).some((f) => f.type === 'done' && f.id === turnId)).toBe(
+      true,
+    );
+    expect(voiceStates(connection.socket)).toEqual([
+      'listening',
+      'transcribing',
+      'thinking',
+      'speaking',
+      'listening',
+    ]);
+  });
+
+  it('rejects voice_audio and voice_mute with no running session', async () => {
+    const harness = makeVoiceHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, { type: 'voice_audio', id: 'voice-01', seq: 0, pcm: 'AAAA' });
+    dispatch(connection, { type: 'voice_mute', id: 'voice-01', muted: true });
+
+    expect(voiceFramesOf(connection.socket)).toEqual([
+      { type: 'voice_error', id: 'voice-01', code: 'invalid', error: expect.any(String) },
+      { type: 'voice_error', id: 'voice-01', code: 'invalid', error: expect.any(String) },
+    ]);
+  });
+
+  it('rejects pcm over 16 KB with the validation_failed error frame', async () => {
+    const harness = makeVoiceHarness();
+    const connection = harness.connect();
+
+    dispatch(connection, {
+      type: 'voice_audio',
+      id: 'voice-01',
+      seq: 0,
+      pcm: Buffer.alloc(16 * 1024 + 1).toString('base64'),
+    });
+
+    expect(allFrames(connection.socket)).toEqual([
+      {
+        type: 'error',
+        id: 'voice-01',
+        error: 'Invalid message: missing required fields',
+        code: 'validation_failed',
+        retryable: false,
+      },
+    ]);
+  });
+
+  it('drops audio while muted and re-announces the state on unmute', async () => {
+    const harness = makeVoiceHarness();
+    const connection = harness.connect();
+    dispatch(connection, VOICE_START);
+    await settle();
+
+    dispatch(connection, { type: 'voice_mute', id: 'voice-01', muted: true });
+    feedVoice(connection, 'voice-01', utterancePcm());
+    await settle();
+    expect(harness.speech?.transcribedBytes).toEqual([]);
+    expect(harness.hub.start).not.toHaveBeenCalled();
+
+    dispatch(connection, { type: 'voice_mute', id: 'voice-01', muted: false });
+    expect(voiceStates(connection.socket)).toEqual(['listening', 'muted', 'listening']);
+  });
+
+  it('replaces a running session and stops the old one', async () => {
+    const harness = makeVoiceHarness();
+    const connection = harness.connect();
+    dispatch(connection, VOICE_START);
+    await settle();
+
+    dispatch(connection, { ...VOICE_START, id: 'voice-02' });
+    await settle();
+
+    const frames = voiceFramesOf(connection.socket);
+    expect(frames).toEqual([
+      { type: 'voice_state', id: 'voice-01', state: 'listening' },
+      { type: 'voice_stopped', id: 'voice-01', reason: 'replaced' },
+      { type: 'voice_state', id: 'voice-02', state: 'listening' },
+    ]);
+  });
+
+  it('cancels a running voice turn when the socket closes', async () => {
+    const harness = makeVoiceHarness();
+    const { connection, turnId } = await speakOneTurn(harness);
+
+    connection.handlers.onClose?.({}, connection.socket);
+
+    await vi.waitFor(() => expect(harness.hub.cancel).toHaveBeenCalledOnce());
+    expect(harness.hub.cancel.mock.calls[0]?.[0]).toBe(turnId);
+    // Both the connection sink and the voice bridge's own sink are detached.
+    expect(harness.hub.detach).toHaveBeenCalledTimes(2);
+  });
+
+  it('never writes pcm or synthesized audio to a verbose log line', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const harness = makeVoiceHarness({ verbose: true });
+      const { turnId, hubSink } = await speakOneTurn(harness);
+      hubSink.send({ type: 'event', id: turnId, event: { type: 'text_delta', text: 'Sunny. ' } });
+      hubSink.send({ type: 'done', id: turnId, outcome: 'completed' });
+      await settle();
+
+      const logged = [...log.mock.calls, ...errorLog.mock.calls]
+        .flat()
+        .map((part) => (typeof part === 'string' ? part : JSON.stringify(part)))
+        .join(' ');
+      for (const frame of pcmFramesOf(utterancePcm())) {
+        // A frame of digital silence is a run of 'A's — only assert on the
+        // ones that actually carry a signal.
+        if (/^A+=*$/.test(frame)) continue;
+        expect(logged).not.toContain(frame);
+      }
+      expect(logged).not.toContain(SYNTH_CHUNK_BASE64);
+      expect(logged).toContain('"hasPcm":true');
+      expect(logged).toContain('"pcmBytes":640');
+      expect(logged).toContain('"frameType":"voice_audio"');
+    } finally {
+      log.mockRestore();
+      errorLog.mockRestore();
+    }
+  });
+
+  it('answers voice_start with unavailable when no speech service is wired up', async () => {
+    const harness = makeVoiceHarness({ speech: null });
+    const connection = harness.connect();
+
+    dispatch(connection, VOICE_START);
+    await settle();
+
+    expect(voiceFramesOf(connection.socket)).toEqual([
+      { type: 'voice_error', id: 'voice-01', code: 'unavailable', error: expect.any(String) },
+    ]);
+  });
+
+  it('answers voice_start with unavailable when no provider is available', async () => {
+    const speech = new FakeVoiceSpeech();
+    speech.isAvailable = false;
+    const harness = makeVoiceHarness({ speech });
+    const connection = harness.connect();
+
+    dispatch(connection, VOICE_START);
+    await settle();
+
+    expect(voiceFramesOf(connection.socket)).toEqual([
+      { type: 'voice_error', id: 'voice-01', code: 'unavailable', error: expect.any(String) },
+    ]);
+  });
+
+  it('answers voice_start with invalid for an unknown or foreign conversation', async () => {
+    const harness = makeVoiceHarness({
+      conversations: { get: (id: string) => (id === 'other' ? { agentId: 'agent-99' } : null) },
+    });
+    const connection = harness.connect();
+
+    dispatch(connection, VOICE_START);
+    dispatch(connection, { ...VOICE_START, id: 'voice-02', conversationId: 'other' });
+    await settle();
+
+    expect(voiceFramesOf(connection.socket)).toEqual([
+      { type: 'voice_error', id: 'voice-01', code: 'invalid', error: expect.any(String) },
+      { type: 'voice_error', id: 'voice-02', code: 'invalid', error: expect.any(String) },
+    ]);
   });
 });
