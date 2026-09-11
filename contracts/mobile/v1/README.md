@@ -135,8 +135,9 @@ Negative conformance fixtures live under `fixtures/invalid/`:
 - The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before that
   turn's `ChatAccepted`, so a client can render the optimistic user row before the turn is
   confirmed.
-- There is no `voice_state` value of `stopped`; a session's end is always a `voice_stopped` frame,
-  never a terminal `voice_state`.
+- `voice_state.state` is one of `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or
+  `stopped` on the wire, but the gateway never actually sends `stopped`; a session's end is always
+  a `voice_stopped { reason }` frame, never a terminal `voice_state`.
 - `message.modality` is `'voice'` only for the turn a hands-free voice session starts on the
   user's behalf; a dictated message that a client sends as a `message` frame must omit `modality`
   or send `'text'`.

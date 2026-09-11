@@ -317,9 +317,9 @@ frame must omit `modality` or send `'text'`, never `'voice'`.
 
 ### Voice frames
 
-Hands-free voice mode adds ten frames to the same `/ws/chat` socket used for resumable chat, gated
-on the same `speech-v1` capability as the [Speech](#speech) routes. `id` is the client-generated
-session id and is echoed on every `voice_*` frame in both directions.
+Hands-free voice mode adds nine frames (four client, five server) to the same `/ws/chat` socket
+used for resumable chat, gated on the same `speech-v1` capability as the [Speech](#speech) routes.
+`id` is the client-generated session id and is echoed on every `voice_*` frame in both directions.
 
 **Client frames**
 
@@ -334,7 +334,7 @@ session id and is echoed on every `voice_*` frame in both directions.
 
 | Type | Meaning |
 |------|---------|
-| `voice_state` | The session's phase: `listening`, `transcribing`, `thinking`, `speaking`, or `muted`. There is no `stopped` state here — see `voice_stopped` |
+| `voice_state` | The session's phase: `listening`, `transcribing`, `thinking`, `speaking`, `muted`, or `stopped`. The gateway never actually sends `stopped` — a session ends with a `voice_stopped { reason }` frame instead |
 | `voice_transcript` | Text recognized from the user's speech. The transcript that starts a turn carries `final: true` and a `turnId`, and is always emitted before that turn's `accepted` |
 | `voice_speech` | One chunk of the agent's spoken reply: `format: 'mp3'` (one clip per sentence) or `format: 'pcm16'` (raw chunks, with `sampleRate` set) |
 | `voice_error` | A provider-level failure. `code` is the narrower `SpeechErrorCode` union: `unauthorized`, `unavailable`, `too_long`, `too_large`, `invalid`, `provider`, `network` |
@@ -358,7 +358,8 @@ Session rules:
 - The `voice_transcript` carrying the `turnId` that starts a turn is always emitted before the
   resumable hub's `accepted` for that turn, so a client can render the optimistic user row before
   the turn is confirmed.
-- There is no `voice_state stopped` frame; every session end is a `voice_stopped` frame instead.
+- The gateway never sends `voice_state { state: 'stopped' }`, even though `stopped` is a valid
+  enum value on the wire; every session end is a `voice_stopped { reason }` frame instead.
 - `voice_audio.pcm` decodes to at most 16384 bytes (16 KiB) per frame; one byte over answers the
   ordinary `error` frame with `code: 'validation_failed'`, not `voice_error`.
 
