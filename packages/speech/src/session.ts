@@ -71,11 +71,12 @@ export interface VoiceSessionOptions {
   emit: (frame: VoiceServerFrame) => void;
   vad?: VoiceActivityDetector;
   /**
-   * Renderer for the FIRST turn only. A renderer covers one turn (it suppresses
-   * repeat error statuses and tracks tool-status bursts for its lifetime), so
-   * every later turn gets a fresh one.
+   * Builds the renderer for a turn. A renderer covers exactly ONE turn (it
+   * suppresses repeat error statuses and tracks tool-status bursts for its
+   * lifetime), so this is a factory, not an instance. Defaults to
+   * `() => new SpokenRenderer({ now })`.
    */
-  renderer?: SpokenRenderer;
+  renderer?: () => SpokenRenderer;
   now?: () => number;
   /** Injectable so tests get deterministic turn ids. Defaults to `randomUUID`. */
   newTurnId?: () => string;
@@ -88,6 +89,8 @@ interface Turn {
   renderer: SpokenRenderer;
   /** The driver has called `onDone` — no `cancel` is owed and the queue may drain to `listening`. */
   done: boolean;
+  /** Set when the turn ended `failed`; reported once its speech has drained. */
+  failure?: string;
 }
 
 interface QueuedItem {
@@ -143,15 +146,23 @@ export class VoiceSession {
   private readonly now: () => number;
   private readonly newTurnId: () => string;
 
-  private firstRenderer: SpokenRenderer | null;
+  private readonly newRenderer: () => SpokenRenderer;
   private innerState: VoiceState = 'listening';
   private muted = false;
   private isStopped = false;
 
   private turn: Turn | null = null;
   private pendingQuestion: { turnId: string; questionId: string } | null = null;
-  /** A transcript captured while a turn was still running; it starts the next turn. */
-  private queuedTranscript: string | null = null;
+  /** Transcripts captured while a turn was running, in utterance order (FIFO). */
+  private queuedTranscripts: string[] = [];
+  /**
+   * Utterances are transcribed one at a time, in the order they were spoken:
+   * concurrent transcriptions would let a short clip's result overtake a long
+   * one's and start the turns in the wrong order.
+   */
+  private transcribeChain: Promise<void> = Promise.resolve();
+  /** Bumped by a barge-in; a transcription from an older generation is discarded. */
+  private utteranceGeneration = 0;
 
   private queue: QueuedItem[] = [];
   private synthesizing = false;
@@ -169,7 +180,7 @@ export class VoiceSession {
     this.vad = options.vad ?? new VoiceActivityDetector();
     this.now = options.now ?? Date.now;
     this.newTurnId = options.newTurnId ?? (() => randomUUID());
-    this.firstRenderer = options.renderer ?? null;
+    this.newRenderer = options.renderer ?? (() => new SpokenRenderer({ now: this.now }));
 
     this.emit({ type: 'voice_state', state: 'listening' });
   }
@@ -185,7 +196,7 @@ export class VoiceSession {
     if (this.isStopped || this.muted) return;
     for (const event of this.vad.push(pcm)) {
       if (event.type === 'speech_start') this.onSpeechStart();
-      else if (event.type === 'speech_end') void this.onUtterance(event.pcm);
+      else if (event.type === 'speech_end') this.enqueueUtterance(event.pcm);
     }
   }
 
@@ -212,13 +223,14 @@ export class VoiceSession {
     const turn = this.turn;
     this.turn = null;
     this.queue = [];
-    this.queuedTranscript = null;
+    this.queuedTranscripts = [];
     this.pendingQuestion = null;
+    this.utteranceGeneration++;
     this.abortSynthesis();
     this.innerState = 'stopped';
     this.speakingSince = null;
 
-    if (turn && !turn.done) void this.driver.cancel(turn.id).catch(() => undefined);
+    if (turn && !turn.done) this.cancelTurn(turn.id);
     this.emit({ type: 'voice_stopped', reason });
   }
 
@@ -233,7 +245,22 @@ export class VoiceSession {
     this.bargeIn();
   }
 
-  private async onUtterance(pcm: Uint8Array): Promise<void> {
+  /**
+   * Queues an utterance for transcription behind whatever is already in flight.
+   * The chain's `catch` is the session's last line of defence: a throw from a
+   * caller-supplied callback (`emit`, `driver.start`) would otherwise reject a
+   * floating promise and, with no `unhandledRejection` handler in the host,
+   * take the process down.
+   */
+  private enqueueUtterance(pcm: Uint8Array): void {
+    const generation = this.utteranceGeneration;
+    this.transcribeChain = this.transcribeChain
+      .then(() => this.onUtterance(pcm, generation))
+      .catch((error) => this.fail(error));
+  }
+
+  private async onUtterance(pcm: Uint8Array, generation: number): Promise<void> {
+    if (this.stopped(generation)) return;
     // `listening` is the only state an utterance can interrupt: during a turn
     // it is queued (state unchanged), and while a question is pending the turn
     // is non-null but the session IS listening, so the answer transcribes too.
@@ -246,13 +273,13 @@ export class VoiceSession {
       const result = await this.speech.transcribe(audio, 'wav', config.stt.language);
       text = result.text.trim();
     } catch (error) {
-      if (this.isStopped) return;
+      if (this.stopped(generation)) return;
       this.emitError(error);
       if (this.innerState === 'transcribing') this.setState('listening');
       return;
     }
 
-    if (this.isStopped) return;
+    if (this.stopped(generation)) return;
     if (!text) {
       // Nothing was said (or nothing survived the trim): no turn, no frame.
       if (this.innerState === 'transcribing') this.setState('listening');
@@ -261,16 +288,8 @@ export class VoiceSession {
 
     if (this.pendingQuestion) {
       const pending = this.pendingQuestion;
-      this.pendingQuestion = null;
       this.emit({ type: 'voice_transcript', text, final: true });
-      this.setState('thinking', pending.turnId);
-      try {
-        await this.driver.answer(pending.turnId, pending.questionId, text);
-      } catch (error) {
-        if (this.isStopped) return;
-        this.emitError(error);
-        this.setState('listening');
-      }
+      this.answerQuestion(pending, text);
       return;
     }
 
@@ -279,7 +298,7 @@ export class VoiceSession {
       // optimistic row on the SECOND emission of this transcript, the one that
       // carries the turnId once the turn actually starts.
       this.emit({ type: 'voice_transcript', text, final: true });
-      this.queuedTranscript = text;
+      this.queuedTranscripts.push(text);
       if (this.innerState === 'transcribing') this.setState('thinking', this.turn.id);
       return;
     }
@@ -287,9 +306,38 @@ export class VoiceSession {
     this.startTurn(text);
   }
 
+  /**
+   * Sends `text` as the answer to `pending`. The transcript frame is emitted by
+   * the caller, since a queued transcript already announced itself when it was
+   * captured and must not be announced twice.
+   */
+  private answerQuestion(pending: { turnId: string; questionId: string }, text: string): void {
+    this.pendingQuestion = null;
+    this.setState('thinking', pending.turnId);
+    void Promise.resolve()
+      .then(() => this.driver.answer(pending.turnId, pending.questionId, text))
+      .catch((error) => this.answerFailed(pending.turnId, error));
+  }
+
+  /**
+   * The driver could not deliver the answer. The turn is unreachable now — left
+   * alive it would swallow every later utterance into the queue — so it is
+   * cancelled and retired.
+   */
+  private answerFailed(turnId: string, error: unknown): void {
+    if (this.isStopped) return;
+    this.emitError(error);
+    if (this.turn?.id === turnId) {
+      this.cancelTurn(turnId);
+      this.turn = null;
+    }
+    this.queue = [];
+    this.advanceAfterTurn();
+  }
+
   private startTurn(text: string): void {
     const turnId = this.newTurnId();
-    const turn: Turn = { id: turnId, renderer: this.takeRenderer(), done: false };
+    const turn: Turn = { id: turnId, renderer: this.newRenderer(), done: false };
     this.turn = turn;
 
     // Before driver.start, always: the phone dispatches its optimistic user
@@ -304,12 +352,6 @@ export class VoiceSession {
     this.setState('thinking', turnId);
   }
 
-  private takeRenderer(): SpokenRenderer {
-    const first = this.firstRenderer;
-    this.firstRenderer = null;
-    return first ?? new SpokenRenderer({ now: this.now });
-  }
-
   // --- turn ----------------------------------------------------------------
 
   private onAgentEvent(turn: Turn, event: AgentEvent): void {
@@ -319,11 +361,14 @@ export class VoiceSession {
 
   private onTurnDone(
     turn: Turn,
-    _outcome: 'completed' | 'cancelled' | 'failed',
-    _error?: string,
+    outcome: 'completed' | 'cancelled' | 'failed',
+    error?: string,
   ): void {
     if (this.isStopped || this.turn !== turn) return;
     turn.done = true;
+    // Reported once the speech already rendered for this turn has drained, so
+    // the failure lands after the half-answer the user is still hearing.
+    if (outcome === 'failed') turn.failure = error ?? 'turn failed';
     // A question this turn asked can no longer be answered — leaving it pending
     // would park `finishIfDrained` on a finished turn forever.
     if (this.pendingQuestion?.turnId === turn.id) this.pendingQuestion = null;
@@ -334,12 +379,15 @@ export class VoiceSession {
   private bargeIn(): void {
     this.abortSynthesis();
     this.queue = [];
-    this.queuedTranscript = null;
+    this.queuedTranscripts = [];
     this.pendingQuestion = null;
+    // Anything still being transcribed belongs to the conversation the user
+    // just interrupted; the interrupting utterance is the new generation.
+    this.utteranceGeneration++;
 
     const turn = this.turn;
     this.turn = null;
-    if (turn && !turn.done) void this.driver.cancel(turn.id).catch(() => undefined);
+    if (turn && !turn.done) this.cancelTurn(turn.id);
 
     // The utterance that interrupted is still being captured by the VAD; its
     // `speech_end` starts the next turn like any other.
@@ -364,7 +412,7 @@ export class VoiceSession {
       return;
     }
     this.synthesizing = true;
-    void this.speak(next.turn, next.item);
+    void this.speak(next.turn, next.item).catch((error) => this.fail(error));
   }
 
   private async speak(turn: Turn, item: SpeechItem): Promise<void> {
@@ -376,7 +424,7 @@ export class VoiceSession {
     } catch (error) {
       if (this.stale(generation)) return;
       this.synthesizing = false;
-      this.failFromSynthesis(error);
+      this.fail(error);
       return;
     }
 
@@ -403,7 +451,7 @@ export class VoiceSession {
       if (this.stale(generation)) return;
       this.activeIterator = null;
       this.synthesizing = false;
-      this.failFromSynthesis(error);
+      this.fail(error);
       return;
     }
 
@@ -427,6 +475,11 @@ export class VoiceSession {
     return this.isStopped || this.generation !== generation;
   }
 
+  /** True once this utterance's conversation is gone (barge-in) or the session stopped. */
+  private stopped(generation: number): boolean {
+    return this.isStopped || this.utteranceGeneration !== generation;
+  }
+
   private abortSynthesis(): void {
     this.generation++;
     this.synthesizing = false;
@@ -439,6 +492,14 @@ export class VoiceSession {
     if (this.isStopped || this.synthesizing || this.queue.length > 0) return;
 
     if (this.pendingQuestion) {
+      const pending = this.pendingQuestion;
+      // Anything the user said while the question was being spoken IS the
+      // answer — dropping it would lose speech the session already echoed back.
+      const answer = this.queuedTranscripts.shift();
+      if (answer !== undefined) {
+        this.answerQuestion(pending, answer);
+        return;
+      }
       // The turn is paused on a question, not finished: listen for the answer.
       if (this.innerState !== 'listening') this.setState('listening');
       return;
@@ -447,20 +508,46 @@ export class VoiceSession {
     const turn = this.turn;
     if (!turn || !turn.done) return;
     this.turn = null;
+    if (turn.failure !== undefined) {
+      this.emit({ type: 'voice_error', code: 'provider', error: turn.failure });
+    }
+    this.advanceAfterTurn();
+  }
 
-    const queued = this.queuedTranscript;
-    this.queuedTranscript = null;
-    if (queued) {
+  /** Starts the oldest queued transcript, or settles back into `listening`. */
+  private advanceAfterTurn(): void {
+    const queued = this.queuedTranscripts.shift();
+    if (queued !== undefined) {
       this.startTurn(queued);
       return;
     }
     if (this.innerState !== 'listening') this.setState('listening');
   }
 
-  private failFromSynthesis(error: unknown): void {
-    // No spoken apology: the voice is exactly what just failed.
-    this.emitError(error);
-    this.stop('provider');
+  /**
+   * Terminal failure of the session, from anywhere including a rejected
+   * floating promise. Best-effort by construction: if the caller's `emit`
+   * is what threw, there is nowhere left to report it.
+   */
+  private fail(error: unknown): void {
+    if (this.isStopped) return;
+    try {
+      this.emitError(error);
+    } catch {
+      // The frame sink itself failed; the stop below is still worth attempting.
+    }
+    try {
+      this.stop('provider');
+    } catch {
+      // Nothing left to do — the session is unusable either way.
+    }
+  }
+
+  /** `driver.cancel` is fire-and-forget, and may throw synchronously. */
+  private cancelTurn(turnId: string): void {
+    void Promise.resolve()
+      .then(() => this.driver.cancel(turnId))
+      .catch(() => undefined);
   }
 
   // --- frames --------------------------------------------------------------

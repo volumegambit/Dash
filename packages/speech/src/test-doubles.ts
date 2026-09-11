@@ -176,6 +176,12 @@ export class FakeTurnDriver implements TurnDriver {
   readonly starts: { turnId: string; text: string }[] = [];
   readonly answers: { turnId: string; questionId: string; answer: string }[] = [];
   readonly cancels: string[] = [];
+  /** When set, `start` throws it synchronously (a dead hub, a bug in the caller). */
+  failStartWith: unknown;
+  /** When set, `answer` throws it synchronously. */
+  failAnswerWith: unknown;
+  /** When set, `cancel` throws it synchronously — the nastiest case, since callers ignore it. */
+  failCancelWith: unknown;
 
   private readonly handlers = new Map<string, TurnHandlers>();
 
@@ -191,16 +197,23 @@ export class FakeTurnDriver implements TurnDriver {
     this.starts.push({ turnId, text });
     this.handlers.set(turnId, { onEvent, onDone });
     this.onCall?.('start');
+    if (this.failStartWith !== undefined) throw this.failStartWith;
   }
 
-  async answer(turnId: string, questionId: string, answer: string): Promise<void> {
+  // Deliberately not `async`: these throw SYNCHRONOUSLY so a caller that
+  // forgets to wrap the call cannot hide behind a rejected promise.
+  answer(turnId: string, questionId: string, answer: string): Promise<void> {
     this.answers.push({ turnId, questionId, answer });
     this.onCall?.('answer');
+    if (this.failAnswerWith !== undefined) throw this.failAnswerWith;
+    return Promise.resolve();
   }
 
-  async cancel(turnId: string): Promise<void> {
+  cancel(turnId: string): Promise<void> {
     this.cancels.push(turnId);
     this.onCall?.('cancel');
+    if (this.failCancelWith !== undefined) throw this.failCancelWith;
+    return Promise.resolve();
   }
 
   /** Delivers an agent event to the session that started `turnId`. */

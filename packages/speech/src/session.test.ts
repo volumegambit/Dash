@@ -1,6 +1,7 @@
 import { DEFAULT_SPEECH_CONFIG, type SpeechConfig } from './config.js';
 import { SpeechError } from './errors.js';
 import { type VoiceServerFrame, VoiceSession } from './session.js';
+import { SpokenRenderer } from './spoken-renderer.js';
 import { silence, tone } from './test-audio.js';
 import { FakeSpeechService, FakeTurnDriver } from './test-doubles.js';
 import { VoiceActivityDetector } from './vad.js';
@@ -50,7 +51,12 @@ interface Harness {
 }
 
 function harness(
-  options: { format?: 'pcm16' | 'mp3'; sampleRate?: number; config?: SpeechConfig } = {},
+  options: {
+    format?: 'pcm16' | 'mp3';
+    sampleRate?: number;
+    config?: SpeechConfig;
+    renderer?: () => SpokenRenderer;
+  } = {},
 ): Harness {
   let clock = 10_000;
   const frames: VoiceServerFrame[] = [];
@@ -73,6 +79,7 @@ function harness(
     vad,
     now: () => clock,
     newTurnId: () => `turn-${driver.starts.length + 1}`,
+    ...(options.renderer ? { renderer: options.renderer } : {}),
     emit: (frame) => {
       frames.push(frame);
       timeline.push(`frame:${frame.type}`);
@@ -670,5 +677,260 @@ describe('VoiceSession', () => {
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
+  });
+  it('fails the session when the driver throws instead of starting a turn', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      const h = harness();
+      h.driver.failStartWith = new Error('hub gone');
+
+      feed(h.session, utterance());
+      await settle();
+      h.speech.transcribes[0].resolve('hello');
+      await settle();
+
+      expect(h.frames.at(-2)).toEqual({
+        type: 'voice_error',
+        id: 'sess-1',
+        code: 'provider',
+        error: 'hub gone',
+      });
+      expect(h.frames.at(-1)).toEqual({ type: 'voice_stopped', id: 'sess-1', reason: 'provider' });
+      expect(h.session.state).toBe('stopped');
+
+      await settle();
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('recovers when the driver rejects an answer instead of wedging the turn', async () => {
+    const h = harness();
+    await say(h, 'delete the file');
+
+    h.driver.event('turn-1', { type: 'question', id: 'q1', question: 'Sure?', options: [] });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+
+    h.driver.failAnswerWith = new Error('hub gone');
+    await say(h, 'yes');
+
+    expect(h.frames.at(-2)).toMatchObject({ type: 'voice_error', code: 'provider' });
+    expect(h.frames.at(-1)).toEqual({ type: 'voice_state', id: 'sess-1', state: 'listening' });
+    expect(h.driver.cancels).toEqual(['turn-1']);
+
+    // Not wedged: the next utterance is a new turn, not another answer.
+    h.driver.failAnswerWith = undefined;
+    await say(h, 'never mind');
+    expect(h.driver.starts).toEqual([
+      { turnId: 'turn-1', text: 'delete the file' },
+      { turnId: 'turn-2', text: 'never mind' },
+    ]);
+  });
+
+  it('serializes transcription and starts queued turns in utterance order', async () => {
+    const h = harness();
+    feed(h.session, utterance());
+    feed(h.session, utterance());
+    feed(h.session, utterance());
+    await settle();
+
+    // One transcription at a time: the second is not even requested until the
+    // first resolves, which is what makes the turn order deterministic.
+    expect(h.speech.transcribes).toHaveLength(1);
+    h.speech.transcribes[0].resolve('one');
+    await settle();
+    expect(h.speech.transcribes).toHaveLength(2);
+    h.speech.transcribes[1].resolve('two');
+    await settle();
+    expect(h.speech.transcribes).toHaveLength(3);
+    h.speech.transcribes[2].resolve('three');
+    await settle();
+
+    expect(h.driver.starts).toEqual([{ turnId: 'turn-1', text: 'one' }]);
+
+    h.driver.done('turn-1', 'completed');
+    await settle();
+    h.driver.done('turn-2', 'completed');
+    await settle();
+
+    expect(h.driver.starts).toEqual([
+      { turnId: 'turn-1', text: 'one' },
+      { turnId: 'turn-2', text: 'two' },
+      { turnId: 'turn-3', text: 'three' },
+    ]);
+    // Every utterance eventually gets a transcript frame carrying its turnId.
+    expect(
+      transcripts(h.frames)
+        .filter((t) => t.turnId !== undefined)
+        .map((t) => [t.text, t.turnId]),
+    ).toEqual([
+      ['one', 'turn-1'],
+      ['two', 'turn-2'],
+      ['three', 'turn-3'],
+    ]);
+  });
+
+  it('answers a pending question with a transcript queued while it was being spoken', async () => {
+    const h = harness();
+    await say(h, 'delete the file');
+
+    h.driver.event('turn-1', { type: 'question', id: 'q1', question: 'Sure?', options: [] });
+    await settle();
+
+    // The user answers before the question has finished playing.
+    feed(h.session, utterance());
+    await settle();
+    h.speech.transcribes[1].resolve('yes go ahead');
+    await settle();
+    expect(h.driver.answers).toEqual([]);
+
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+
+    // Queued user speech is used as the answer, never silently dropped.
+    expect(h.driver.answers).toEqual([
+      { turnId: 'turn-1', questionId: 'q1', answer: 'yes go ahead' },
+    ]);
+    expect(h.driver.starts).toHaveLength(1);
+    expect(h.session.state).toBe('thinking');
+  });
+
+  it('builds a fresh renderer per turn from the injected factory', async () => {
+    let built = 0;
+    const h = harness({
+      renderer: () => {
+        built++;
+        return new SpokenRenderer({ now: h.now });
+      },
+    });
+
+    await say(h, 'one');
+    expect(built).toBe(1);
+    h.driver.done('turn-1', 'completed');
+    await settle();
+
+    await say(h, 'two');
+    expect(built).toBe(2);
+  });
+
+  it('reports a failed turn once its speech has drained', async () => {
+    const h = harness();
+    await say(h, 'hello');
+
+    h.driver.event('turn-1', { type: 'text_delta', text: 'Half an answer. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    h.driver.done('turn-1', 'failed', 'model exploded');
+    await settle();
+
+    expect(h.frames.at(-2)).toEqual({
+      type: 'voice_error',
+      id: 'sess-1',
+      code: 'provider',
+      error: 'model exploded',
+    });
+    expect(h.frames.at(-1)).toEqual({ type: 'voice_state', id: 'sess-1', state: 'listening' });
+  });
+
+  it('survives a driver that throws instead of cancelling', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      const h = harness();
+      await say(h, 'hello');
+      h.driver.failCancelWith = new Error('cancel exploded');
+
+      expect(() => h.session.stop('client')).not.toThrow();
+      expect(h.frames.at(-1)).toEqual({ type: 'voice_stopped', id: 'sess-1', reason: 'client' });
+      expect(h.session.state).toBe('stopped');
+
+      await settle();
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('discards a transcription that was in flight when the user barged in', async () => {
+    const h = harness();
+    await say(h, 'hello');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. Two. ' });
+    await settle();
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].end();
+    await settle();
+    const speakingSince = h.now();
+
+    // Spoken inside the guard: queued, and its transcription is still pending.
+    feed(h.session, utterance());
+    await settle();
+    expect(h.speech.transcribes).toHaveLength(2);
+
+    h.setNow(speakingSince + 400);
+    feed(h.session, tone(600, 440, 0.5));
+    await settle();
+    expect(h.session.state).toBe('listening');
+
+    // The stale transcription resolves after the barge-in: it must not become a turn.
+    h.speech.transcribes[1].resolve('the reply I interrupted');
+    await settle();
+
+    expect(h.driver.starts).toEqual([{ turnId: 'turn-1', text: 'hello' }]);
+    expect(transcripts(h.frames).map((t) => t.text)).toEqual(['hello']);
+  });
+
+  it('emits no audio after a barge-in even if the aborted stream yields again', async () => {
+    const h = harness({ format: 'pcm16', sampleRate: 24_000 });
+    await say(h, 'hello');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'One. Two. ' });
+    await settle();
+
+    const stream = h.speech.syntheses[0];
+    stream.push(new Uint8Array([1, 1]));
+    await settle();
+    const speakingSince = h.now();
+
+    h.setNow(speakingSince + 300);
+    feed(h.session, tone(600, 440, 0.5));
+    await settle();
+    expect(states(h.frames).at(-1)).toBe('listening');
+
+    stream.push(new Uint8Array([2, 2]));
+    stream.end();
+    await settle();
+
+    const listeningAt = h.frames.findLastIndex(
+      (f) => f.type === 'voice_state' && f.state === 'listening',
+    );
+    expect(h.frames.slice(listeningAt + 1).filter((f) => f.type === 'voice_speech')).toEqual([]);
+  });
+
+  it('stops the session when the synthesis stream fails mid-sentence', async () => {
+    const h = harness();
+    await say(h, 'hello');
+    h.driver.event('turn-1', { type: 'text_delta', text: 'It is sunny. ' });
+    await settle();
+
+    h.speech.syntheses[0].push(new Uint8Array([1]));
+    h.speech.syntheses[0].fail(new SpeechError('provider', 'stream died'));
+    await settle();
+
+    expect(h.frames.at(-2)).toEqual({
+      type: 'voice_error',
+      id: 'sess-1',
+      code: 'provider',
+      error: 'stream died',
+    });
+    expect(h.frames.at(-1)).toEqual({ type: 'voice_stopped', id: 'sess-1', reason: 'provider' });
+    expect(h.session.state).toBe('stopped');
   });
 });
