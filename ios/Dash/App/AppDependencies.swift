@@ -598,6 +598,26 @@ struct AppDependencies: Sendable {
               player: AudioPlaybackService(),
               onRetire: { await speechAPI.shutdown() }
             )
+          },
+          // Unlike dictation and read aloud this needs no `GatewayAPI` at all:
+          // a voice session speaks over the chat SOCKET (the transport handed
+          // in), because the gateway keys voice frames by connection. What it
+          // does need is the hardware neither `ChatFeature` nor this closure's
+          // siblings can see — the microphone, the speaker, and the level
+          // stream the orb animates from, which must come from the SAME
+          // capture instance that is recording.
+          makeVoiceMode: { id, agentID, conversationID, transport in
+            let capture = AudioCaptureService()
+            return VoiceModeFeature(
+              id: id,
+              agentID: agentID,
+              conversationID: conversationID,
+              transport: transport,
+              capture: capture,
+              player: AudioPlaybackService(),
+              levels: { capture.levels },
+              clock: clock
+            )
           }
         )
       },

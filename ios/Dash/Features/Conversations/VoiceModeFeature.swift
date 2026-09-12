@@ -470,9 +470,13 @@ final class VoiceModeFeature: Identifiable {
     // user has already talked over.
     guard generation == playbackGeneration else { return }
     if format == VoiceModeFeature.mp3Format {
-      // Returns when the clip ENDS — which is what serializes the queue, and
-      // what `flushPlayback`'s `stop()` cuts short.
-      try? await player.playMP3(data)
+      // NOT `playMP3`: that is read aloud's path, and its contract is a
+      // `.playback` session this mode cannot adopt without evicting the live
+      // microphone — under voice mode's own session it produced no audible
+      // output at all on a device. `enqueueCompressed` decodes the chunk and
+      // sends it down the same engine the PCM path uses, so which format the
+      // configured model returns stops mattering.
+      await player.enqueueCompressed(data)
     } else {
       await player.enqueuePCM(data, sampleRate: sampleRate ?? VoiceModeFeature.defaultSampleRate)
     }
